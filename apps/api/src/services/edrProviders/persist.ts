@@ -198,6 +198,8 @@ async function loadTenantsByVendorId(tx: EdrSyncTx, connectionId: string) {
       id: edrTenants.id,
       vendorTenantId: edrTenants.vendorTenantId,
       orgId: edrTenants.orgId,
+      // NULL until the tenant's first successful detection sync (#8166 first-sync stamp).
+      lastDetectionSyncAt: edrTenants.lastDetectionSyncAt,
     })
     .from(edrTenants)
     .where(eq(edrTenants.connectionId, connectionId));
@@ -452,9 +454,18 @@ export async function persistDetections(
       byKey.set(`${detection.vendorKind}\u0000${detection.vendorDetectionId}`, detection);
     }
 
+    // First successful detection sync of this tenant (#8166, owner decision):
+    // the adapter back-fills its lookback window (GravityZone: 30 days), so
+    // every row INSERTED now is stamped notified at its own severity and the
+    // Phase 4 notifier never pages on history. Keyed on the tenant's
+    // last_detection_sync_at, not the cursor (an adapter may never return one).
+    // The ON CONFLICT set list omits notified_severity, so an existing row's
+    // notification state is never touched by a re-sync.
+    const firstSync = tenant.lastDetectionSyncAt === null;
     const values = [...byKey.values()].map((d) => {
       const endpoint = d.vendorEndpointId ? endpointByVendorId.get(d.vendorEndpointId) : undefined;
       return {
+        ...(firstSync ? { notifiedSeverity: d.severity } : {}),
         connectionId: conn.id,
         partnerId: conn.partnerId,
         orgId,

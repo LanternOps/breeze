@@ -45,7 +45,7 @@ vi.mock('./configPolicyOwnership', () => ({
 const redis = { get: vi.fn(), set: vi.fn() };
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => redis) }));
 
-import { buildHelperConfigUpdate } from './helperSettings';
+import { buildHelperConfigUpdate, helperSettingsFromRows } from './helperSettings';
 
 /** No helper policy link matches, so the legacy org flag decides. */
 function queueNoPolicyMatch() {
@@ -75,6 +75,16 @@ describe('buildHelperConfigUpdate', () => {
     expect(redis.set).toHaveBeenCalledWith('helper:settings:device:dev-1', expect.any(String), 'EX', 120);
   });
 
+  it('skipCacheWrite: resolves the same value but never writes the device cache (#8616)', async () => {
+    queueNoPolicyMatch();
+    queue.push({ rows: [{ settings: { helper: { enabled: true } } }] });
+
+    const settings = await buildHelperConfigUpdate('dev-1', 'org-1', { skipCacheWrite: true });
+
+    expect(settings.enabled).toBe(true);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
   it('surfaces a failed org-flag read instead of reporting the Helper disabled', async () => {
     queueNoPolicyMatch();
     queue.push({ error: new Error('connection terminated') });
@@ -96,5 +106,23 @@ describe('buildHelperConfigUpdate', () => {
 
     await expect(buildHelperConfigUpdate('dev-1', 'org-1')).rejects.toThrow('connection terminated');
     expect(redis.set).not.toHaveBeenCalled();
+  });
+});
+
+describe('endpointMessaging rollout flag (#8741)', () => {
+  const row = (inlineSettings: unknown) => [{ level: 'organization', assignmentPriority: 0, inlineSettings }];
+
+  it('defaults to disabled when the policy does not mention it', () => {
+    expect(helperSettingsFromRows(row({ enabled: true }))?.endpointMessaging).toEqual({ enabled: false });
+  });
+
+  it('maps an explicit endpointMessaging.enabled from the winning policy', () => {
+    expect(helperSettingsFromRows(row({ enabled: true, endpointMessaging: { enabled: true } }))?.endpointMessaging)
+      .toEqual({ enabled: true });
+  });
+
+  it('ignores a non-boolean value (fail closed)', () => {
+    expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: 'yes' } }))?.endpointMessaging)
+      .toEqual({ enabled: false });
   });
 });

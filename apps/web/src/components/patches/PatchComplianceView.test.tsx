@@ -789,3 +789,44 @@ describe('PatchComplianceView', () => {
     expect(screen.queryByText(/^Install failed/)).toBeNull();
   });
 });
+
+// #7214: failed installs were bucketed as "Pending approval" in this view.
+describe('PatchComplianceView failed installs (#7214)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    orgState.currentOrgId = 'org-1';
+  });
+
+  it('shows a failed-install count, not a pending-approval count, for a failed install', async () => {
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url === '/patches/compliance') {
+        return makeJsonResponse({
+          data: {
+            totalDevices: 1,
+            compliantDevices: 0,
+            devicesNeedingPatches: [
+              {
+                id: 'dev-1', name: 'Workstation-1', os: 'windows',
+                missingCount: 1, approvedMissing: 0, unapprovedMissing: 0, failedMissing: 1,
+                criticalCount: 0, importantCount: 0, osMissing: 1, thirdPartyMissing: 0,
+                pendingReboot: false,
+              },
+            ],
+          },
+        });
+      }
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({ devices: [{ id: 'dev-1', hostname: 'Workstation-1', osType: 'windows' }] });
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<PatchComplianceView ringId={null} />);
+
+    expect(await screen.findByText('1 failed install')).toBeTruthy();
+    expect(screen.queryByText('1 pending approval')).toBeNull();
+    expect(screen.getByRole('columnheader', { name: 'Failed' })).toBeTruthy();
+    expect(screen.getByTestId('failed-installs-dev-1').textContent).toBe('1');
+  });
+});

@@ -37,6 +37,7 @@ vi.mock('../db/schema', () => ({
     keyPrefix: 'keyPrefix', status: 'status', expiresAt: 'expiresAt', rateLimit: 'rateLimit',
     lastUsedAt: 'lastUsedAt', revokedAt: 'revokedAt', rotatedFromId: 'rotatedFromId', createdAt: 'createdAt',
   },
+  users: { id: 'id', name: 'name' },
 }));
 vi.mock('../middleware/auth', () => ({
   authMiddleware: mocks.authMiddleware,
@@ -143,8 +144,9 @@ describe('service principal management routes', () => {
 
   it('lists principals and masked keys without hashes or plaintext', async () => {
     selectRows(
-      [{ id: PRINCIPAL_ID, partnerId: PARTNER_ID, name: 'Weavestream', status: 'active', scopes: ['devices:read'] }],
+      [{ id: PRINCIPAL_ID, partnerId: PARTNER_ID, name: 'Weavestream', status: 'active', scopes: ['devices:read'], createdBy: USER_ID }],
       [{ id: KEY_ID, partnerServicePrincipalId: PRINCIPAL_ID, keyPrefix: 'brz_sp_abc123', status: 'active' }],
+      [{ id: USER_ID, name: 'Admin' }],
     );
     const res = await app.request('/partner-service-principals');
     const body = await res.json();

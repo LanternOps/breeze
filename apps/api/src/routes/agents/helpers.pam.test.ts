@@ -435,6 +435,21 @@ describe('buildPamConfigUpdate — Redis cache behavior', () => {
     );
   });
 
+  it('skipCacheWrite: cache miss resolves from DB but never writes the device cache (#8616)', async () => {
+    redisMock.get.mockResolvedValue(null);
+    setDbQueue(
+      [{ orgId: ORG_ID, siteId: SITE_ID }],
+      [{ partnerId: PARTNER_ID }],
+      [],
+      [{ level: 'device', assignmentPriority: 1, inlineSettings: { uacInterceptionEnabled: true } }],
+    );
+
+    const result = await buildPamConfigUpdate(DEVICE_ID, { skipCacheWrite: true });
+
+    expect(result.uacInterceptionEnabled).toBe(true);
+    expect(redisMock.set).not.toHaveBeenCalled();
+  });
+
   it('redis.get throws → still resolves from DB (fail-open) and returns settings', async () => {
     redisMock.get.mockRejectedValue(new Error('Redis connection error'));
     setDbQueue(

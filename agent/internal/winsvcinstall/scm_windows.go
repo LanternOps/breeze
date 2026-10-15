@@ -49,6 +49,10 @@ func (s *scmManager) Create(spec Spec, exePath string) (Service, error) {
 		ErrorControl: mgr.ErrorNormal,
 	}, spec.Args...)
 	if err != nil {
+		// Lost a race with a concurrent installer; Install updates in place.
+		if errors.Is(err, windows.ERROR_SERVICE_EXISTS) {
+			return nil, ErrAlreadyExists
+		}
 		return nil, err
 	}
 	return &scmService{s: handle}, nil

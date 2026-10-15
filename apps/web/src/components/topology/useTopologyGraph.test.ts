@@ -42,6 +42,24 @@ it('polls health every 15 seconds and merges it into existing structure without 
   expect(result.current.graph!.revisions.health).toBe('2');
 });
 
+it('polls health with the ids in a POST body, not the URL (#8307)', async () => {
+  const base = topologyGraphFixture();
+  vi.mocked(fetchWithAuth).mockImplementation(async (url) => {
+    if (String(url).includes('/health')) {
+      return jsonResponse({ siteId: SITE, graphRevision: base.revisions.graph, healthRevision: '2', nodes: [], relationships: [] });
+    }
+    return jsonResponse(base);
+  });
+  const { result } = renderHook(() => useTopologyGraph({ siteId: SITE }, { view: 'overview' }));
+  await waitFor(() => expect(result.current.graph).not.toBeNull());
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  await waitFor(() => expect(result.current.graph!.revisions.health).toBe('2'));
+  const [url, options] = vi.mocked(fetchWithAuth).mock.calls.find(([u]) => String(u).includes('/health'))!;
+  expect(String(url)).toBe(`/topology/sites/${SITE}/health`);
+  expect(options?.method).toBe('POST');
+  expect(JSON.parse(String(options?.body))).toEqual({ nodeIds: base.nodes.map((n) => n.id), relationshipIds: base.relationships.map((r) => r.id), graphRevision: base.revisions.graph });
+});
+
 it('discards a health response whose graph revision no longer matches the latest structure', async () => {
   const base = topologyGraphFixture();
   vi.mocked(fetchWithAuth).mockImplementation(async (url) => {

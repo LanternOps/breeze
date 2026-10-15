@@ -123,7 +123,62 @@
     "copy": "Copy",
     "copied": "Copied",
     "oneTimeWarning": "This plaintext key is shown once and cannot be retrieved later.",
-    "done": "Done"
+    "done": "Done",
+    "owner": "Owner",
+    "unknownOwner": "Unknown user",
+    "ownerOnlyTooltip": "Only {{owner}} can issue or rotate keys",
+    "ownerOnlyScopeTooltip": "Only {{owner}} can add scopes",
+    "ownerOnlyEditNotice": "You can rename, narrow or shorten this principal. Only {{owner}} can add scopes, extend its expiry or loosen its source IPs.",
+    "ownerOnlyWidening": "Only {{owner}} can extend the expiry or loosen the source IPs. Undo those changes to save.",
+    "presetsHint": "Start from a preset, then adjust the scopes below. Presets only fill in the checkboxes.",
+    "presets": {
+      "docs-sync": {
+        "label": "Read-only documentation / asset sync",
+        "description": "Read access to organizations, sites, devices, inventory, configuration, scripts, backup configuration and custom fields."
+      },
+      "provisioning": {
+        "label": "Tenant provisioning",
+        "description": "The read set plus creating organizations and sites and minting enrollment keys. Enrollment keys require an expiry and source IPs."
+      },
+      "alert-feed": {
+        "label": "Alert feed",
+        "description": "Read organizations and alerts."
+      },
+      "ticketing": {
+        "label": "Ticketing integration",
+        "description": "Read organizations, and read and write tickets."
+      },
+      "ai-mcp": {
+        "label": "AI / MCP client",
+        "description": "MCP access with ai:read. Add ai:write or ai:execute only if the client needs them."
+      },
+      "custom": {
+        "label": "Custom",
+        "description": "Clear the selection and choose each scope yourself."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Organization names, slugs and types across every org the principal can reach.",
+      "sites_read": "Sites (locations) and their details.",
+      "devices_read": "Device records: hostname, OS, hardware and group membership.",
+      "inventory_read": "Hardware and software inventory collected from devices.",
+      "configuration_read": "Configuration policies and their assignments.",
+      "scripts_read": "Script library entries, including script contents.",
+      "backup-configuration_read": "Backup configuration and schedules (not backup data).",
+      "custom-fields_read": "Custom field definitions and the values set on devices.",
+      "alerts_read": "Alert titles and messages across every org the principal can reach.",
+      "tickets_read": "Ticket subjects, descriptions and comments, which are customer-authored, across every org the principal can reach.",
+      "device-status_read": "Live heartbeat state: online/offline, last-seen time and agent version. Not implied by devices:read.",
+      "organizations_write": "Create organizations. Cannot update or delete.",
+      "sites_write": "Create sites. Cannot update or delete.",
+      "enrollment-keys_write": "Mint device enrollment keys. Requires an expiry and at least one source IP or CIDR.",
+      "contracts_write": "Read, create and edit contracts and contract lines, and remove lines. Cannot activate, pause or cancel.",
+      "tickets_write": "Create, update, assign, change status of and comment on tickets. Cannot delete or move tickets.",
+      "ai_read": "Connect to the MCP endpoint and use read-only tools. Required by every other ai:* scope.",
+      "ai_write": "MCP tools that change data.",
+      "ai_execute": "MCP tools that run actions on devices.",
+      "ai_execute_admin": "MCP tools that run administrative actions. Grant only to a client you fully trust."
+    }
   },
   "language": {
     "title": "Language",
@@ -375,7 +430,8 @@
       "duplicate_model": "That model id is already on this connection.",
       "geo_not_supported": "This kind of connection cannot set an inference region.",
       "key_required_for_new_endpoint": "Enter the key for the new URL (or remove the key).",
-      "too_many_models": "This connection already has the maximum number of hand-entered models."
+      "too_many_models": "This connection already has the maximum number of hand-entered models.",
+      "not_removable": "Only models added by hand can be removed. Disable this one instead."
     },
     "org": {
       "title": "Model defaults",
@@ -512,7 +568,12 @@
       "verify": "Verify",
       "verifyQueued": "Model check queued",
       "verifyFailed": "Couldn't queue the model check.",
-      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens)."
+      "verifyGatewayHint": "Runs a short tool-calling test against your endpoint (uses a few thousand tokens).",
+      "remove": "Remove model",
+      "removeTitle": "Remove this model?",
+      "removeMessage": "“{{model}}” will be deleted from this connection. Past usage and cost history is kept. You can add it again later.",
+      "removed": "Model removed",
+      "removeFailed": "Couldn’t remove the model. Try again."
     },
     "defaults": {
       "title": "Defaults by feature",
@@ -1342,6 +1403,9 @@
       "invoice_number": "Invoice number",
       "due_date": "Due date",
       "invite_url": "Invite URL",
+      "name": "Recipient name",
+      "inviter_name": "Inviter name",
+      "expires_days": "Days until the invite expires",
       "cta_button": "Button",
       "client_name": "Client name",
       "setup_link": "Automatic payments setup link",
@@ -1367,7 +1431,11 @@
       "days_overdue": "Days overdue",
       "pay_link": "Payment link",
       "charge_total": "Total charge",
-      "attempted_amount": "Attempted payment amount"
+      "attempted_amount": "Attempted payment amount",
+      "approval_ask": "Approval ask",
+      "approval_snapshot": "Approval figures",
+      "approval_expires": "Approval deadline",
+      "approval_status": "Approval status"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1379,7 +1447,10 @@
       "autopay_resumed": "Automatic payments resumed",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Online payment receipt",
-      "payment_failed": "Payment could not be completed"
+      "payment_failed": "Payment could not be completed",
+      "ticket_approval_requested_approver": "Work approval request (approver)",
+      "ticket_approval_requested_notify": "Work approval request (for information)",
+      "ticket_approval_decided": "Work approval decision"
     }
   },
   "inboundEmail": {
@@ -1473,6 +1544,7 @@
     },
     "scopeMailbox": "Scope this mailbox (Application Access Policy)",
     "reauthRequired": "Administrator re-consent is required before Microsoft 365 polling and replies resume.",
+    "pollFailing": "The last {{failures}} checks of this mailbox failed with a temporary Microsoft 365 error. Breeze keeps retrying; new mail is picked up once Microsoft 365 responds again.",
     "retest": "Re-test",
     "reconnect": "Reconnect",
     "disconnect": "Disconnect",
@@ -1922,9 +1994,25 @@
           "label": "Network visibility",
           "description": "Show read-only network health and discovered assets in the customer portal."
         },
+        "enableEdrVisibility": {
+          "label": "Endpoint protection (EDR)",
+          "description": "Show customers a generic “Managed endpoint protection” status and threat counts from connected EDR providers. Vendor names are never shown in the portal."
+        },
         "enableNetworkAlerts": {
           "label": "Network alerts",
           "description": "Show active alert counts and linked open tickets on network assets in the customer portal."
+        },
+        "enablePatchDetail": {
+          "label": "Patch detail",
+          "description": "Show every portal login of this organization each device's pending, installed and failed patches (title, severity, version, KB link). This reveals which machines are missing patches. Not turned on by Enable all visibility."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Vulnerability detail",
+          "description": "Show every portal login of this organization each device's CVE findings and their severity (CVE ID, description, severity, CVSS score, patch availability, status). This reveals which machines are vulnerable. Not turned on by Enable all visibility."
+        },
+        "enableHourBlock": {
+          "label": "Support hours",
+          "description": "Show prepaid block hours used and remaining inside the customer's Support usage section. Requires Support usage. Not turned on by Enable all visibility."
         }
       }
     },
@@ -2809,6 +2897,7 @@
           "blocked_by_app_rule": "Blocked by an app rule",
           "awaiting_manual_approval": "Awaiting manual approval",
           "no_ring_resolved": "The device has no update ring",
+          "ring_reference_invalid": "Policy's update ring is invalid",
           "device_not_in_org": "Device not in this organization"
         },
         "failureClasses": {
@@ -4191,7 +4280,16 @@
     "partnerCurrencyUnavailable": "Could not load your partner currency.",
     "retry": "Retry",
     "priceCouldNotBeSavedRetry": "The {{currency}} price could not be saved. Retry.",
-    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry."
+    "priceCouldNotBeRemovedRetry": "The {{currency}} price could not be removed. Retry.",
+    "billing": "Billing",
+    "billingOneTime": "One-time",
+    "billingRecurring": "Recurring",
+    "billingFrequency": "Frequency",
+    "frequencyMonthly": "Monthly",
+    "frequencyAnnual": "Annual",
+    "commitmentTerm": "Commitment term (months)",
+    "commitmentTermPlaceholder": "e.g. 12",
+    "commitmentTermRange": "Commitment term: enter a whole number from 1–120 months."
   },
   "catalogItemsTab": {
     "itemArchived": "Item archived",
@@ -5524,7 +5622,8 @@
     "loading": "Loading ticket settings…",
     "errors": {
       "load": "Ticket settings failed to load.",
-      "save": "Failed to save ticket settings"
+      "save": "Failed to save ticket settings",
+      "savedApprovalFailed": "Ticket settings saved, but the customer approval policy failed to save"
     },
     "toasts": {
       "saved": "Ticket settings saved"
@@ -5550,6 +5649,28 @@
       "inherit": "Inherit",
       "billableOption": "Billable",
       "nonBillableOption": "Non-billable"
+    },
+    "approval": {
+      "title": "Customer work approval",
+      "description": "Override the partner default for this organization. Choose Inherit to use the partner default.",
+      "enabled": "Require customer approval",
+      "budgetTrigger": "Ask when a ticket budget would be exceeded",
+      "afterHoursTrigger": "Ask for after-hours work",
+      "enforcement": "Enforcement",
+      "enforcementSoft": "Soft (warn, allow logging)",
+      "enforcementHard": "Hard (block until approved)",
+      "ttl": "Approval request expires after (hours)",
+      "ttlRange": "Expiry must be between {{min}} and {{max}} hours",
+      "on": "On",
+      "off": "Off",
+      "inherit": "Inherit",
+      "inheritValue": "Inherit ({{value}})",
+      "clear": "Clear override (inherit)",
+      "pendingInherit": "Will inherit the default after saving",
+      "loadFailed": "Could not load the customer approval settings.",
+      "sourceOrg": "Organization override",
+      "sourcePartner": "Partner default",
+      "sourceDefault": "Built-in default"
     }
   },
   "organizationForm": {
@@ -5801,7 +5922,8 @@
       "title": "Address"
     },
     "actions": {
-      "saveChanges": "Save changes"
+      "saveChanges": "Save changes",
+      "sendMessage": "Send message"
     },
     "policies": {
       "assignedTitle": "Assigned Policies",
@@ -6100,6 +6222,7 @@
     "accessDenied": "You don't have permission to view users.",
     "title": "Users",
     "description": "Manage user access, roles, and permissions.",
+    "sessionTimeoutPointer": "Session idle timeout is configured under Security",
     "never": "Never",
     "actions": {
       "tryAgain": "Try again",
@@ -6250,7 +6373,27 @@
     "locationEnabledLabel": "Suggest a timer when a technician arrives at a client site",
     "locationHelp": "Each technician must also allow location on their phone. Location is checked on the phone and is never sent to Breeze.",
     "radiusLabel": "Default arrival radius (m)",
-    "radiusRange": "Arrival radius must be between {{min}} and {{max}} meters"
+    "radiusRange": "Arrival radius must be between {{min}} and {{max}} meters",
+    "approval": {
+      "heading": "Customer work approval",
+      "description": "Ask the customer to approve work before it is logged against their budget or outside business hours. This is the partner default; organizations can override it.",
+      "enabledLabel": "Require customer approval for work",
+      "budgetTriggerLabel": "Ask when a ticket budget would be exceeded",
+      "afterHoursTriggerLabel": "Ask for after-hours work",
+      "enforcementLabel": "Enforcement",
+      "enforcementSoft": "Soft (warn, allow logging)",
+      "enforcementHard": "Hard (block until approved)",
+      "ttlLabel": "Approval request expires after (hours)",
+      "ttlRange": "Expiry must be between {{min}} and {{max}} hours",
+      "readOnly": "You need partner-wide settings rights to change this policy. Showing the current values.",
+      "loadFailed": "Could not load the customer approval settings.",
+      "source": {
+        "org": "Organization",
+        "partner": "Partner",
+        "default": "Default"
+      }
+    },
+    "savedApprovalFailed": "Time settings saved, but the customer approval policy failed to save"
   },
   "contactImportPreview": {
     "selectAll": "Select all new and linked rows",
@@ -6538,7 +6681,8 @@
     "nameTaken": "A work type with this name already exists.",
     "rename": "Rename",
     "loadError": "Could not load work types.",
-    "empty": "No work types yet. Add your first work type above."
+    "empty": "No work types yet. Add your first work type above.",
+    "afterHours": "After-hours (requires customer approval when enabled)"
   },
   "ticketCategories": {
     "defaultWorkType": "Default work type",

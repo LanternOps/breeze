@@ -3,6 +3,7 @@ import type { TransportSession } from './types';
 import { capabilitiesFor } from './types';
 import type { VncTunnelInfo } from '../tunnel';
 import { attachVncClipboard, type VncClipboardDeps, type VncClipboardHandle } from '../vncClipboard';
+import type { ViewScaling } from '../displayScaling';
 
 export type { VncTunnelInfo };
 
@@ -26,6 +27,12 @@ export interface VncSessionWrapper extends TransportSession {
   kind: 'vnc';
   vncContainer: HTMLDivElement;
   clipboard: VncClipboardHandle | null;
+  /** View-only (#8241): noVNC stops sending and releases the keys it holds. */
+  setViewOnly(viewOnly: boolean): void;
+  /** Fit scales the framebuffer into the window; actual (100%) scrolls. */
+  setScaling(mode: ViewScaling): void;
+  /** The current framebuffer as PNG, or null when there is none to read. */
+  captureFrame(): Promise<Blob | null>;
 }
 
 /**
@@ -207,6 +214,27 @@ export async function connectVnc(
     capabilities: capabilitiesFor('vnc'),
     vncContainer: deps.container as HTMLDivElement,
     clipboard,
+    setViewOnly: (viewOnly) => {
+      rfb.viewOnly = viewOnly;
+    },
+    // resizeSession is deliberately left as it is in both modes: it is what
+    // keeps a Retina Mac from sending full-resolution frames (see above).
+    setScaling: (mode) => {
+      if (mode === 'actual') {
+        rfb.clipViewport = false;
+        rfb.scaleViewport = false;
+      } else {
+        rfb.scaleViewport = true;
+      }
+    },
+    captureFrame: () => new Promise<Blob | null>((resolve) => {
+      try {
+        rfb.toBlob((blob: Blob | null) => resolve(blob), 'image/png');
+      } catch (err) {
+        console.warn('[vnc] frame capture failed:', err);
+        resolve(null);
+      }
+    }),
     close: () => {
       if (disposed) return;
       disposed = true;

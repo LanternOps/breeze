@@ -153,7 +153,15 @@ describe('manage_contracts', () => {
       'line-1',
       actor,
     );
-    expect(JSON.parse(out)).toEqual({ ok: true });
+    expect(JSON.parse(out)).toEqual({ ok: true, retired: false });
+  });
+
+  it('remove_line reports retired: true when the service kept the line as history (#4547 W03)', async () => {
+    vi.mocked(contractService.removeContractLine).mockResolvedValueOnce({
+      orgId: 'org-1', contractId: 'contract-1', contractName: 'Acme MSA', contractLineId: 'line-1', lineType: 'hour_block', retired: true,
+    } as never);
+    const out = await getTool().handler({ action: 'remove_line', contractId: 'contract-1', lineId: 'line-1' }, auth);
+    expect(JSON.parse(out)).toEqual({ ok: true, retired: true });
   });
 
   it('returns a JSON error when a service action rejects with ContractServiceError', async () => {
@@ -422,15 +430,94 @@ describe('manage_contracts update_line (#3205 W03)', () => {
       expect(desc).toContain('includedQuantity');
       expect(desc).toContain('overageMode');
       expect(desc).toContain('overageUnitPrice');
-      // The fixed-allowance rule is the one thing a model will otherwise get wrong.
-      expect(desc).toMatch(/every period even when the live count is lower/i);
     }
+    // The fixed-allowance rule is the one thing a model will otherwise get wrong.
+    expect(JSON.stringify(schema.properties.line)).toMatch(/Bills a minimum/i);
+    expect(JSON.stringify(schema.properties.patch)).toMatch(/every period even if the live count is lower/i);
     const lineDesc = JSON.stringify(schema.properties.line);
-    expect(lineDesc).toMatch(/For add_line, includedQuantity and overageMode must be supplied together/i);
+    expect(lineDesc).toMatch(/Supply with overageMode/i);
     const patchDesc = JSON.stringify(schema.properties.patch);
-    expect(patchDesc).toMatch(/For update_line, the rule applies to the merged line/i);
-    expect(patchDesc).toMatch(/absent fields are unchanged/i);
+    expect(patchDesc).toMatch(/Rule applies to the merged line/i);
+    expect(patchDesc).toMatch(/absent fields unchanged/i);
     expect(patchDesc).toMatch(/null clears/i);
     expect(patchDesc).toMatch(/send includedQuantity, overageMode and overageUnitPrice all as null/i);
+  });
+});
+
+describe('manage_contracts — hour_block (#4547 W03)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const block = {
+    lineType: 'hour_block', description: 'Support block', unitPrice: '1000.00', taxable: false,
+    includedQuantity: '10', overageMode: 'bill', overageUnitPrice: '150.00', rolloverPolicy: 'carry_forward',
+    rolloverCapHours: '4', hourBlockAlertPct: 80,
+  };
+  const CID = 'contract-1';
+
+  it('add_line accepts a valid block and forwards it verbatim', async () => {
+    const out = await getTool().handler({ action: 'add_line', contractId: CID, line: block }, auth);
+    expect(contractService.addContractLineToContract).toHaveBeenCalledWith(CID, block, actor);
+    expect(JSON.parse(out)).toMatchObject({ id: 'line-1' });
+  });
+
+  it("add_line rejects overageMode 'flag' on a block with a VALIDATION_ERROR naming the field", async () => {
+    const parsed = JSON.parse(await getTool().handler({
+      action: 'add_line', contractId: CID, line: { ...block, overageMode: 'flag', overageUnitPrice: undefined },
+    }, auth));
+    expect(parsed.code).toBe('VALIDATION_ERROR');
+    expect(parsed.error).toMatch(/overageMode/);
+    expect(contractService.addContractLineToContract).not.toHaveBeenCalled();
+  });
+
+  it('add_line rejects a block with no rolloverPolicy, and block fields on a flat line', async () => {
+    const noPolicy = JSON.parse(await getTool().handler({ action: 'add_line', contractId: CID, line: { ...block, rolloverPolicy: undefined } }, auth));
+    expect(noPolicy.code).toBe('VALIDATION_ERROR');
+    const onFlat = JSON.parse(await getTool().handler({
+      action: 'add_line', contractId: CID,
+      line: { lineType: 'flat', description: 'x', unitPrice: '1.00', taxable: false, rolloverPolicy: 'none' },
+    }, auth));
+    expect(onFlat.code).toBe('VALIDATION_ERROR');
+    expect(contractService.addContractLineToContract).not.toHaveBeenCalled();
+  });
+
+  it('a client-supplied first-period start never reaches the service', async () => {
+    (contractService.addContractLineToContract as any).mockClear();
+    await getTool().handler({ action: 'add_line', contractId: CID, line: { ...block, hourBlockFirstPeriodStart: '2020-01-01' } }, auth);
+    // The schema strips the unknown key (it does not reject): the add still goes through, minus that field.
+    const calls = (contractService.addContractLineToContract as any).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatchObject({ lineType: 'hour_block', description: 'Support block' });
+    expect(calls[0][1]).not.toHaveProperty('hourBlockFirstPeriodStart');
+  });
+
+  it('update_line accepts the patchable block fields; the server-stamped ones are HOUR_BLOCK_FIELD_LOCKED, not a generic validation error', async () => {
+    await getTool().handler({ action: 'update_line', contractId: CID, lineId: 'line-1', patch: { rolloverCapHours: null, hourBlockAlertPct: 90 } }, auth);
+    expect(contractService.updateContractLine).toHaveBeenCalledWith(CID, 'line-1', { rolloverCapHours: null, hourBlockAlertPct: 90 }, actor);
+    (contractService.updateContractLine as any).mockClear();
+    for (const key of ['hourBlockRetiredAt', 'hourBlockFirstPeriodStart']) {
+      const bad = JSON.parse(await getTool().handler({ action: 'update_line', contractId: CID, lineId: 'line-1', patch: { [key]: '2026-01-01' } }, auth));
+      expect(bad).toMatchObject({ code: 'HOUR_BLOCK_FIELD_LOCKED', details: { fields: [key] } });
+    }
+    // an unrelated unknown key stays an ordinary validation error
+    const other = JSON.parse(await getTool().handler({ action: 'update_line', contractId: CID, lineId: 'line-1', patch: { lineType: 'flat' } }, auth));
+    expect(other.code).toBe('VALIDATION_ERROR');
+    expect(contractService.updateContractLine).not.toHaveBeenCalled();
+  });
+
+  it('remove_line reports whether the block was retired', async () => {
+    (contractService.removeContractLine as any).mockResolvedValueOnce({
+      orgId: 'org-1', contractId: CID, contractName: 'Acme MSA', contractLineId: 'line-1', lineType: 'hour_block', retired: true,
+    });
+    expect(JSON.parse(await getTool().handler({ action: 'remove_line', contractId: CID, lineId: 'line-1' }, auth)))
+      .toEqual({ ok: true, retired: true });
+  });
+
+  it('the line description teaches the model that hour_block and its fields exist', () => {
+    const props = getTool().definition.input_schema.properties as Record<string, { description?: string; properties?: Record<string, { description?: string }> }>;
+    expect(props.line!.description).toContain('hour_block');
+    for (const field of ['rolloverPolicy', 'rolloverCapHours', 'hourBlockAlertPct']) {
+      expect(props.line!.properties).toHaveProperty(field);
+      expect(props.patch!.properties).toHaveProperty(field);
+    }
+    expect(props.line!.properties!.includedQuantity!.description).toContain('hour_block');
   });
 });

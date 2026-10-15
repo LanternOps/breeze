@@ -323,6 +323,10 @@ function replaceSpans(text: string, spans: Array<{ span: Match; rule: string }>)
  * responsible for refusing to persist/forward it. Otherwise 'redact' matches
  * are replaced with `[REDACTED:<detector>]` tokens; 'log' matches are
  * recorded but leave the text untouched; 'off' detectors are never scanned.
+ *
+ * Idempotence holds for redaction only: re-scanning already-redacted output
+ * yields the same text and no new findings. A 'log' detector leaves the text
+ * unchanged, so it re-reports the same hits on every re-scan by design.
  */
 export function applyDlpToText(text: string, config: DlpConfig): DlpTextResult {
   const rules = compileRules(config);

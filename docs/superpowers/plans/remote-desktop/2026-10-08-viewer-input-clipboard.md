@@ -1514,3 +1514,122 @@ Each fix has a regression test that failed before it:
 Accepted as-is:
 - **L3:** move failures log at Debug, to avoid 60 Hz log spam.
 - **L4:** `SetAtLoginWindow` and WS `StopSession` can wait up to the 2 s close timeout.
+
+## W2b shipped wire contract (#8246)
+
+Agent side of spec §1–2, shipped in the W2b PR. W03 (viewer) codes against exactly these names.
+Old viewers that use none of this keep the W2a behaviour unchanged.
+
+**Discovery.** The `input_capabilities` reply on `control` adds three keys:
+`reliableInput: true`, `inputEpoch: <uint32>` (current reset epoch) and `geoEpoch: <uint32>`
+(current geometry epoch). An agent that does not send `reliableInput` speaks only W2a.
+
+**Channels.**
+- `input-r`: a viewer-opened data channel. It must be ordered and fully reliable (no
+  `maxRetransmits`, no `maxPacketLifeTime`), or the agent closes it. Every event on it must carry
+  `seq > 0`. It carries all discrete events (`mouse_down`/`up`/`click`/`scroll`, `key_*`) and
+  `input_reset`. Activity on it resets the idle timer, except `input_reset`.
+- `input`: unchanged for legacy events (`seq` absent). In a W2b session it carries only sequenced
+  `mouse_move`. A sequenced discrete event or an `input_reset` on `input` is dropped.
+
+**Event fields** (on `InputEvent`, all omitted by legacy viewers):
+- `seq` (uint, 1 … 2^53−1): per session, strictly increasing across both channels.
+- `after` (`mouse_move` only): the `seq` of the last discrete event the viewer sent before this
+  move. It must be `< seq`. The move waits until that event has been handled. A move is dropped if
+  a later discrete event has already been handled, or if a newer move has replaced it. Only the
+  newest pending move is kept.
+- `epoch` (uint32): the reset epoch the viewer believes is current. Required on every sequenced
+  event.
+- `geoEpoch` (uint32): the geometry epoch. Required on pointer events (`mouse_*`). A mismatch is
+  dropped, never applied with the new monitor's offset.
+- `mouse_down`/`mouse_up` carry their own `x`,`y`.
+
+**`input_reset`** (viewer → agent, on `input-r` only):
+`{"type":"input_reset","seq":N,"epoch":E}`. Both fields are required and non-zero. `E` must equal
+the agent's current reset epoch. On acceptance the agent releases all held input, in order, and
+opens the gate. Sequenced input is dropped until then. The first accepted `input_reset` switches
+the session to W2b: legacy (`seq`-less) events are dropped until `input-r` closes. After that
+close, the agent releases held input and accepts legacy events again, so the viewer can fall back to
+W2a on `input`. Reopening `input-r` plus a new `input_reset` re-enters W2b.
+
+**Agent-side resets.** Release-all events bump the reset epoch and close the gate. These include
+monitor/desktop switch, channel close or replacement, and peer disconnect. Queued and in-flight
+pre-reset events are then discarded. A geometry change (monitor switch, desktop switch) also bumps
+`geoEpoch` in the same step.
+
+**Epochs, agent → viewer** (on `control`):
+- `{"type":"input_epoch","epoch":E,"reason":"<string>"}`: sent after an agent-side reset. It is
+  also sent as `reason:"resync"`, rate-limited, when sequenced input arrives with a stale epoch or
+  before the handshake. It is sent only to sessions that opened `input-r`. The viewer reconciles
+  its held state, then sends `input_reset{epoch:E}`.
+- `monitor_switched` adds `inputEpoch` and `geoEpoch`. The geometry epoch is delivered only here,
+  together with the new frame size. It is also re-sent after a desktop switch, and after a
+  monitor switch whose capturer failed (same `index`, new epochs).
+
+Epochs are never 0 (0 means absent). They wrap from 2^32−1 to 1.
+
+## W2c shipped wire contract (#8247)
+
+Agent side of spec §3, shipped in the W2c PR. It matches what W03 (#8239) assumed: one flag,
+`keyCodes`, gates every field below. Old viewers send none of these and get the W2b behaviour
+unchanged.
+
+**Discovery.** The `input_capabilities` reply adds `keyCodes: true`. It is sent together with
+`reliableInput`, only by sessions that have the input worker. No other flags were added.
+
+**Event fields** (on `InputEvent`, all optional):
+
+| Field | Events | Validation (event dropped if it fails) |
+|---|---|---|
+| `code` | `key_press`, `key_down`, `key_up` | 1–32 bytes, ASCII letters and digits only; rejected on any other event type. An unknown code is accepted and falls back to `key`. |
+| `numLock` | key events | JSON boolean (anything else fails decoding) |
+| `deltaX` | `mouse_scroll` | integer, \|deltaX\| ≤ 120 (same bound as `delta`); positive = right; `delta` may be 0 |
+| `button: "back"` / `"forward"` | `mouse_down`, `mouse_up`, `mouse_click` | added to the button allowlist (`""`, `left`, `right`, `middle`, `back`, `forward`) |
+
+One difference from what W03 assumed: the viewer's `clampInputEvent` removes a `code` only when it
+is over 64 bytes, while the agent rejects the whole key event when `code` is over 32 bytes or holds
+anything but ASCII letters and digits. No standard DOM code trips this. The viewer can mirror the
+stricter bound later.
+
+`code` is never passed to a syscall as text. The Windows agent looks it up in a fixed table
+(`winCodeKeys`, `input_keycode.go`). The `key_up` for a key carries the same `code` as its
+`key_down`, and the held-state tracker records `code`, so a release resolves to the key that was
+pressed.
+
+**Per-platform behaviour**
+
+| | Windows | macOS | Linux (X11) |
+|---|---|---|---|
+| `code` | Injected by scancode (`KEYEVENTF_SCANCODE`, plus `KEYEVENTF_EXTENDEDKEY` for E0 keys) when it is in the table: left/right Shift, Ctrl, Alt, Meta (`OSLeft`/`OSRight` too), ContextMenu, NumpadEnter, NumpadDivide, arrows, Insert/Delete/Home/End/PageUp/PageDown, F13–F24, IntlBackslash (`VK_OEM_102`), IntlRo, IntlYen, volume and media-track keys. Anything else uses `key` as before. Letters, digits and punctuation stay on `key` on purpose: a scancode is a physical position, so `KeyA` on an AZERTY remote would type "q". Lock keys and Pause also stay on `key`. | ignored (`key` map) | ignored (`key` map) |
+| `back`/`forward` | `XBUTTON1`/`XBUTTON2` (`MOUSEEVENTF_XDOWN`/`XUP`, `mouseData`) | other-mouse buttons 3/4 (CGEvent; IOHID other-mouse with `buttonNumber`) | buttons 8/9 |
+| `deltaX` | `MOUSEEVENTF_HWHEEL`, `deltaX × 120` (positive = right). The vertical `WHEEL` is skipped when `delta` is 0. | two-axis `CGEventCreateScrollWheelEvent`, wheel2 = −deltaX (IOHID `deltaAxis2`) | buttons 7 (right) / 6 (left), abs(deltaX) clicks |
+| `numLock`, `capsLock` | Synced, sequenced events only (see below) | Caps Lock as before (#3595); `numLock` ignored | Synced, sequenced events only |
+| Held modifiers | unchanged | Running flags mask, sequenced events only (see below) | unchanged |
+| Repeat | Forwarded repeats are plain `key_down`s and are re-injected; no wire field | same | the viewer does not forward repeats (X autorepeats XTEST-held keys) |
+
+With `deltaX` 0 and buttons `left`/`right`/`middle`, every platform posts exactly what it did
+before W2c. Button names are now matched case-insensitively on every platform, as the held-state
+tracker already did. Before, a `"Right"` press on Windows and Linux was a left press released as
+right.
+
+**Lock-key sync (Windows, Linux).** It runs only for sequenced events (`seq > 0`). Viewers since
+#3595 send `capsLock` on every key event, and these agents ignored it. Legacy and WebSocket
+sessions still do. For each lock state the event asserts, the agent reads the remote state
+(Windows `GetKeyState` low bit; X11 `LockMask`, and for Num Lock the modifier bit that
+`GetModifierMapping` binds `Num_Lock` to). It taps the lock key only on a mismatch. It acts only
+when the asserted value differs from the last one it established. So it is idempotent, and a
+stale read right after its own tap cannot make it tap again. A lock toggled at the remote console
+stays as it is until the viewer's state next changes. A lock key whose state the same event
+asserts is not injected, because the sync already set it.
+
+**macOS running flags mask.** In a sequenced session, a modifier `key_down` (`shift`, `ctrl`,
+`alt`, `meta`; `*Right` codes select the right-hand keycode) is held. Its bit joins a running mask
+and a `kCGEventFlagsChanged` is posted (IOHID: `NX_FLAGSCHANGED`). The mask is then set on every
+key and mouse event, so Shift+click and Cmd+click work. A modifier `key_up` clears the bit whatever
+its `seq`, so ReleaseAll's releases clear the mask. A `key_up` without the pressing `code` clears
+every held key of that name. A legacy modifier `key_down` is still rejected as an unknown key, so
+legacy sessions never hold a modifier, and their events keep the ambient flags exactly as before.
+
+**Not verified in CI:** real injection on Windows and macOS (scancode/XBUTTON/HWHEEL,
+`GetKeyState` from the agent's input thread, flags-changed and other-mouse CGEvents) and on X11.
+These are lab checks.

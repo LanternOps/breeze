@@ -35,7 +35,9 @@ export function agentRunReservationBaseKey(runId: string): string {
 /**
  * The served hop, written together (ai_agent_runs_served_chk: all four or
  * none). `served_funding_source` is the TOKEN funding; compute stays on the
- * admitted `funding_source` (D7).
+ * admitted `funding_source` (D7). A run-loop hop never carries admission's
+ * failover source (#7787): the column is cleared, and a re-driven hop's
+ * ledger source comes from the resolver (its dispatch origin).
  */
 export async function recordServedHop(
   runId: string,
@@ -48,6 +50,7 @@ export async function recordServedHop(
       servedFundingSource: served.funding,
       servedFailoverHop: served.hop,
       servedFailoverCause: served.cause,
+      servedFailoverFromOfferingId: null,
     })
     .where(eq(aiAgentRuns.id, runId)));
 }
@@ -139,13 +142,17 @@ export async function nextAgentHop(input: AgentHopProbeInput & { runId: string }
   return next;
 }
 
-/** Re-drive: a run resumes on the hop it last recorded; a fresh run starts at hop 0 on its admitted offering. */
+/**
+ * Re-drive: a run resumes on the hop it last recorded; a fresh run starts at
+ * hop 0 on its admitted offering. Admission's own failover provenance
+ * (served = admitted, #7787) is not a hop: hop 0.
+ */
 export function startHopFor(run: {
   servedOfferingId?: string | null;
   servedFailoverHop?: number | null;
   admittedOfferingId?: string | null;
 }): { requestedOfferingId: string | null; hop: number } {
-  if (run.servedOfferingId && run.servedFailoverHop) {
+  if (run.servedOfferingId && run.servedFailoverHop && run.servedOfferingId !== run.admittedOfferingId) {
     return { requestedOfferingId: run.servedOfferingId, hop: run.servedFailoverHop };
   }
   return { requestedOfferingId: run.admittedOfferingId ?? null, hop: 0 };

@@ -1,0 +1,23 @@
+{
+  "schema": "breeze.perf.kpi/v1",
+  "profile": "nightly-200",
+  "gitSha": "0123456789abcdef0123456789abcdef01234567",
+  "runId": "fixture-baseline-0001",
+  "measuredAt": "2026-10-13T03:45:00Z",
+  "hardware": { "cpuModel": "Fixture CPU @ 3.00GHz", "cpus": 8, "memGiB": 31, "kernel": "6.8.0-fixture", "dockerVersion": "27.0.0" },
+  "stack": { "profile": "wt-stack-dev", "role": "all", "admissionMode": "observe", "e2eMode": true },
+  "window": { "start": "2026-10-13T03:20:05Z", "end": "2026-10-13T03:40:05Z", "seconds": 1200, "agentMinutes": 4000 },
+  "kpis": {
+    "agentCostCpuMsPerAgentMin": 41.7,
+    "heartbeatP95Ms": 38.2,
+    "dbTxPerAgentMin": 3.9,
+    "heartbeatP50Ms": 12.0,
+    "heartbeatP99Ms": 90.1,
+    "idleCpuMsPerMin": 950.0,
+    "requestsPerAgentMin": 5.2,
+    "elu": { "mean": 0.22, "max": 0.48 },
+    "lagMaxSeconds": 0.04,
+    "poolWaitingMax": 1
+  },
+  "sources": { "agentsimReport": "agentsim-report.json", "samples": "samples.csv" }
+}

@@ -47,9 +47,19 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     json: vi.fn().mockResolvedValue(payload)
   }) as unknown as Response;
 
+const APPROVAL_URL = `/orgs/${ORG_ID}/ticketing/approval-settings`;
+const APPROVAL = {
+  enabled: { value: true, source: 'org' },
+  budgetTrigger: { value: true, source: 'default' },
+  afterHoursTrigger: { value: true, source: 'default' },
+  enforcement: { value: 'hard', source: 'partner' },
+  requestTtlHours: { value: 48, source: 'org' },
+};
+
 function mockApi(settings: unknown = SETTINGS) {
   fetchMock.mockImplementation(async (input, init) => {
     const url = String(input);
+    if (url === APPROVAL_URL) return makeJsonResponse({ data: APPROVAL });
     if (url === `/orgs/organizations/${ORG_ID}/ticket-settings` && !init?.method) {
       return makeJsonResponse({ data: settings });
     }
@@ -241,4 +251,73 @@ describe('OrgTicketSettingsEditor', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
   });
 
+
+  describe('customer approval overrides', () => {
+    const approvalPatch = () => {
+      const call = fetchMock.mock.calls.find(([url, init]) => String(url) === APPROVAL_URL && init?.method === 'PATCH');
+      return call ? JSON.parse(String(call[1]!.body)) : null;
+    };
+
+    it('shows overridden values and the inherited source for the rest', async () => {
+      mockApi();
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-approval-ttl');
+      expect((screen.getByTestId('org-approval-ttl') as HTMLInputElement).value).toBe('48');
+      expect((screen.getByTestId('org-approval-enabled') as HTMLSelectElement).value).toBe('true');
+      // enforcement is inherited from the partner: blank override, source shown
+      expect((screen.getByTestId('org-approval-enforcement') as HTMLSelectElement).value).toBe('');
+      expect(screen.getByTestId('org-approval-enforcement-source')).toHaveTextContent(/partner/i);
+    });
+
+    it('clearing an override sends null for that field only', async () => {
+      mockApi();
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-approval-ttl');
+      fireEvent.click(screen.getByTestId('org-approval-ttl-clear'));
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(approvalPatch()).not.toBeNull());
+      expect(approvalPatch()).toEqual({ requestTtlHours: null });
+    });
+
+    it('first PATCH ok + approval PATCH 500: shows the specific message and no plain "saved" toast', async () => {
+      mockApi();
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        if (String(input) === APPROVAL_URL && init?.method === 'PATCH') return makeJsonResponse({}, false, 500);
+        return base(input, init);
+      });
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-approval-ttl');
+      fireEvent.click(screen.getByTestId('org-approval-ttl-clear'));
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(approvalPatch()).not.toBeNull());
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringContaining('saved, but the customer approval') }),
+        ),
+      );
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      expect(onSave).not.toHaveBeenCalled();
+    });
+
+    it('does not PATCH approval settings when nothing changed', async () => {
+      mockApi();
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-approval-ttl');
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      expect(approvalPatch()).toBeNull();
+    });
+
+    it('setting an inherited field sends its typed value', async () => {
+      mockApi();
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-approval-ttl');
+      fireEvent.change(screen.getByTestId('org-approval-enforcement'), { target: { value: 'soft' } });
+      fireEvent.change(screen.getByTestId('org-approval-budget-trigger'), { target: { value: 'false' } });
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(approvalPatch()).not.toBeNull());
+      expect(approvalPatch()).toEqual({ enforcement: 'soft', budgetTrigger: false });
+    });
+  });
 });

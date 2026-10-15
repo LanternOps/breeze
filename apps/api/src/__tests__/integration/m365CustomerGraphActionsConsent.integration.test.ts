@@ -88,9 +88,15 @@ const PROFILE_MANIFEST = M365_PERMISSION_PROFILES['customer-graph-actions'];
 const REQUIRED_GRANTS: CanonicalAppRoleAssignment[] = [...PROFILE_MANIFEST.applicationPermissionAssignments];
 const GRANT_USER_RW = REQUIRED_GRANTS[0]!;
 const GRANT_PASSWORD_RW = REQUIRED_GRANTS[1]!;
+// m365_connections.observed_grants must be stored in canonical order (sorted by
+// resourceApplicationId, appRoleId; breeze_m365_observed_grants_are_canonical),
+// and this fixture is appended after the two required grants. The GUID therefore
+// has to sort AFTER the highest required appRoleId ('cc117bb9-…'); '9999…' sorted
+// before it once the manifest moved to application role IDs (#8648), so the row
+// write was rejected and the callback landed on executor_unavailable.
 const EXTRA_GRANT: CanonicalAppRoleAssignment = {
   resourceApplicationId: '00000003-0000-0000-c000-000000000000',
-  appRoleId: '99999999-1111-4222-8333-444444444444',
+  appRoleId: 'dddddddd-1111-4222-8333-444444444444',
   value: 'Group.ReadWrite.All',
 };
 

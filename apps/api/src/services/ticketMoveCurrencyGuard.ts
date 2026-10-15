@@ -102,7 +102,10 @@ export async function assertTicketMoveCurrencyCompatible(
     .where(
       and(
         inArray(timeEntries.ticketId, input.ticketIds),
-        eq(timeEntries.billingStatus, 'not_billed'),
+        // #4617: held time (awaiting customer approval) is unbilled money in
+        // its stamped currency too — a move must not strand it any more than
+        // not_billed time.
+        inArray(timeEntries.billingStatus, ['not_billed', 'awaiting_approval']),
         isNotNull(timeEntries.hourlyRate)
       )
     )

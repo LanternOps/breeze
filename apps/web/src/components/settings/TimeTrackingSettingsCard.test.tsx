@@ -2,7 +2,11 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 
 const fetchWithAuth = vi.fn();
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
+let canManagePartnerWide: boolean | undefined = true;
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a),
+  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { canManagePartnerWide } }),
+}));
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 
@@ -12,8 +16,27 @@ import TimeTrackingSettingsCard from './TimeTrackingSettingsCard';
 const partnerRes = (settings: unknown) =>
   ({ ok: true, status: 200, json: async () => ({ id: 'p-1', settings }) }) as Response;
 
+const APPROVAL_DEFAULTS = {
+  enabled: { value: false, source: 'default' },
+  budgetTrigger: { value: true, source: 'default' },
+  afterHoursTrigger: { value: true, source: 'default' },
+  enforcement: { value: 'soft', source: 'default' },
+  requestTtlHours: { value: 72, source: 'default' },
+};
+let approvalEffective: Record<string, unknown> = APPROVAL_DEFAULTS;
+
+const approvalPatchBody = () => {
+  const call = fetchWithAuth.mock.calls.find(
+    (c) => c[0] === '/ticketing/approval-settings' && (c[1] as RequestInit | undefined)?.method === 'PATCH',
+  );
+  return call ? JSON.parse((call[1] as RequestInit).body as string) : null;
+};
+
 function mockPartner(settings: unknown) {
   fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === '/ticketing/approval-settings') {
+      return { ok: true, status: 200, json: async () => ({ data: approvalEffective }) } as Response;
+    }
     if (url === '/orgs/partners/me' && (!init || init.method !== 'PATCH')) return partnerRes(settings);
     return { ok: true, status: 200, json: async () => ({ data: {} }) } as Response;
   });
@@ -27,6 +50,8 @@ const lastPatchBody = () => {
 beforeEach(() => {
   fetchWithAuth.mockReset();
   showToast.mockReset();
+  canManagePartnerWide = true;
+  approvalEffective = APPROVAL_DEFAULTS;
 });
 
 describe('TimeTrackingSettingsCard', () => {
@@ -181,5 +206,89 @@ describe('TimeTrackingSettingsCard', () => {
     fireEvent.click(screen.getByTestId('time-suggestions-save'));
     await waitFor(() => expect(screen.getByTestId('time-suggestions-error')).toBeTruthy());
     expect(lastPatchBody()).toBeNull();
+  });
+
+  describe('customer approval section', () => {
+    it('renders the inherited source label for a field whose source is default', async () => {
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      const source = await screen.findByTestId('approval-enabled-source');
+      expect(source).toHaveTextContent('Default');
+      expect((screen.getByTestId('approval-enabled') as HTMLInputElement).checked).toBe(false);
+      expect((screen.getByTestId('approval-ttl') as HTMLInputElement).value).toBe('72');
+    });
+
+    it('shows the partner source once a field is set at the partner level', async () => {
+      approvalEffective = { ...APPROVAL_DEFAULTS, enforcement: { value: 'hard', source: 'partner' } };
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      const source = await screen.findByTestId('approval-enforcement-source');
+      expect(source).toHaveTextContent(/partner/i);
+      expect((screen.getByTestId('approval-enforcement') as HTMLSelectElement).value).toBe('hard');
+    });
+
+    it('saving sends only the changed approval fields to /ticketing/approval-settings', async () => {
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      await screen.findByTestId('approval-enabled-source');
+      fireEvent.click(screen.getByTestId('approval-enabled'));
+      fireEvent.change(screen.getByTestId('approval-ttl'), { target: { value: '48' } });
+      fireEvent.click(screen.getByTestId('time-suggestions-save'));
+      await waitFor(() => expect(approvalPatchBody()).not.toBeNull());
+      expect(approvalPatchBody()).toEqual({ enabled: true, requestTtlHours: 48 });
+    });
+
+    it('does not PATCH the approval endpoint when no approval field changed', async () => {
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      await screen.findByTestId('approval-enabled-source');
+      fireEvent.click(screen.getByTestId('time-suggestions-save'));
+      await waitFor(() => expect(lastPatchBody()).not.toBeNull());
+      expect(approvalPatchBody()).toBeNull();
+    });
+
+    it('first PATCH ok + approval PATCH 500: shows the specific message and no plain "saved" toast', async () => {
+      mockPartner({});
+      const base = fetchWithAuth.getMockImplementation()!;
+      fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === '/ticketing/approval-settings' && init?.method === 'PATCH') {
+          return { ok: false, status: 500, json: async () => ({}) } as Response;
+        }
+        return base(url, init);
+      });
+      render(<TimeTrackingSettingsCard />);
+      await screen.findByTestId('approval-enabled-source');
+      fireEvent.click(screen.getByTestId('approval-enabled'));
+      fireEvent.click(screen.getByTestId('time-suggestions-save'));
+      await waitFor(() => expect(approvalPatchBody()).not.toBeNull());
+      await waitFor(() =>
+        expect(showToast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'error', message: expect.stringContaining('saved, but the customer approval') }),
+        ),
+      );
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      // The draft stays dirty so the user can retry.
+      expect((screen.getByTestId('approval-enabled') as HTMLInputElement).checked).toBe(true);
+    });
+
+    it('rejects an out-of-range TTL before sending anything', async () => {
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      await screen.findByTestId('approval-enabled-source');
+      fireEvent.change(screen.getByTestId('approval-ttl'), { target: { value: '9999' } });
+      fireEvent.click(screen.getByTestId('time-suggestions-save'));
+      expect(await screen.findByTestId('approval-error')).toBeInTheDocument();
+      expect(approvalPatchBody()).toBeNull();
+    });
+
+    it('is read-only with an explanation without partner-wide rights', async () => {
+      canManagePartnerWide = false;
+      mockPartner({});
+      render(<TimeTrackingSettingsCard />);
+      await screen.findByTestId('approval-enabled-source');
+      expect(screen.getByTestId('approval-readonly-note')).toBeInTheDocument();
+      expect((screen.getByTestId('approval-enabled') as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByTestId('approval-ttl') as HTMLInputElement).disabled).toBe(true);
+    });
   });
 });

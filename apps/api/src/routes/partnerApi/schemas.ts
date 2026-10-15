@@ -691,6 +691,8 @@ export const PARTNER_TICKET_STATUSES = ['new', 'open', 'pending', 'on_hold', 're
 export const PARTNER_TICKET_PRIORITIES = ['low', 'normal', 'high', 'urgent'] as const;
 export const PARTNER_TICKET_SOURCES = ['portal', 'email', 'alert', 'manual', 'api', 'ai'] as const;
 export const PARTNER_TICKET_WORK_KINDS = ['support', 'deliverable', 'project_task'] as const;
+// #7900: the fixed ITIL classification (separate from workKind).
+export const PARTNER_TICKET_TYPES = ['incident', 'service_request', 'problem', 'change'] as const;
 export const PARTNER_TICKET_COMMENT_TYPES = ['comment', 'internal', 'status_change', 'assignment', 'time_entry', 'system'] as const;
 export const PARTNER_TICKET_ORIGIN_PRINCIPAL_KINDS = ['user', 'ai_agent', 'system', 'service_principal', 'unknown'] as const;
 /** Long free-text ticket fields are capped in the DTO (see alerts.message). */
@@ -719,6 +721,7 @@ export const partnerTicketExportRecordSchema = z.object({
   priority: z.enum(PARTNER_TICKET_PRIORITIES),
   source: z.enum(PARTNER_TICKET_SOURCES),
   workKind: z.enum(PARTNER_TICKET_WORK_KINDS),
+  ticketType: z.enum(PARTNER_TICKET_TYPES),
   categoryId: nullableUuid,
   assigneeId: nullableUuid,
   deviceId: nullableUuid,
@@ -739,6 +742,10 @@ export const partnerTicketExportRecordSchema = z.object({
   slaBreachReason: z.string().max(1000).nullable(),
   createdAt: partnerExportTimestampSchema,
   updatedAt: partnerExportTimestampSchema,
+  // The migration window that imported the ticket (#8313), null for a live
+  // one. A mirror skips imported rows with it, so an import is never pushed
+  // back into its own source.
+  migrationWindowId: nullableUuid,
   // Opaque, monotonic per row: changes whenever the row is written. Compare
   // for equality only; never parse.
   changeVersion: z.string().regex(/^[0-9]{1,20}$/u),
@@ -836,6 +843,15 @@ export const partnerTicketCommentExportRecordSchema = z.object({
   newValue: z.string().max(2000).nullable(),
   createdAt: partnerExportTimestampSchema,
   editedAt: nullableTimestamp,
+  // #8313: the migration window that imported the comment (null when live),
+  // and, for an imported comment, who wrote it in the source — display only,
+  // no Breeze user or contact. `name` is also in authorName.
+  migrationWindowId: nullableUuid,
+  originalAuthor: z.object({
+    name: z.string().max(510).nullable(),
+    email: z.string().max(640).nullable(),
+    kind: z.enum(['staff', 'requester']),
+  }).strict().nullable(),
   revision: z.string().regex(/^[a-f0-9]{64}$/u),
 }).strict();
 

@@ -107,7 +107,8 @@ vi.mock('../services/bullmqUtils', () => ({
   enqueueOrReplaceStale: vi.fn(async () => ({ id: 'job-1' })),
 }));
 
-import { selectDueConnections, syncConnectionById } from './backupProviderSync';
+import { selectDueConnections, syncConnectionById, processSyncConnection } from './backupProviderSync';
+import { makeRealJob } from './__helpers__/realBullJob';
 
 const CONNECTION_ID = '00000000-0000-4000-8000-0000000000c1';
 const BASE_ROW = {
@@ -279,5 +280,23 @@ describe('syncConnectionById — failure handling', () => {
     await syncConnectionById(CONNECTION_ID);
     expect(order[0]).toMatch(/^persist@[1-9]/);
     expect(order[1]).toBe('alerts@0');
+  });
+});
+
+describe('processSyncConnection — final-attempt detection with a real BullMQ Job (#8351)', () => {
+  const data = { type: 'sync-connection' as const, connectionId: CONNECTION_ID };
+
+  it('leaves the row running on the first of three attempts (attemptsMade 0)', async () => {
+    listDevices.mockRejectedValueOnce(new Error('transient'));
+    await expect(processSyncConnection(data, makeRealJob(data, { attemptsMade: 0, attempts: 3 })))
+      .rejects.toThrow('transient');
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(false);
+  });
+
+  it('records the terminal error on the third of three attempts (attemptsMade 2)', async () => {
+    listDevices.mockRejectedValueOnce(new Error('exhausted'));
+    await expect(processSyncConnection(data, makeRealJob(data, { attemptsMade: 2, attempts: 3 })))
+      .rejects.toThrow('exhausted');
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(true);
   });
 });

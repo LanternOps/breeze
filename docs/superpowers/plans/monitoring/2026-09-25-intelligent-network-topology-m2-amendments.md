@@ -186,6 +186,7 @@ follow-up work.
 - **UniFi bindings are as fresh as the last UniFi snapshot.** `inventoryDeviceId` is computed by the adapter at
   ingest from same-site agent NIC MACs; a later NIC-MAC change reaches the UniFi rows only on the next poll whose
   normalized digest changes. The legacy telemetry cross-site MAC mutation/fallback remains a follow-up (D16).
-- **Unbound endpoint nodes do not age.** Scoped unbound nodes (`lldp-chassis:`, `cdp-device:`, `mac-endpoint:`,
-  `physical-target:`, `unifi:`) persist after their relationships withdraw; they are hidden by relationship
-  lifecycle, not removed.
+- **Unbound endpoint nodes age out after 30 days (#7267).** Scoped unbound nodes (`lldp-chassis:`, `cdp-device:`,
+  `mac-endpoint:`, `physical-target:`, `unifi:`) are deleted by the hourly topology retention pass once neither the
+  node nor any relationship touching it has been active for 30 days (`unboundNodeRetention.ts`). Bound, labelled,
+  pinned, alias, and monitoring-policy nodes are kept.

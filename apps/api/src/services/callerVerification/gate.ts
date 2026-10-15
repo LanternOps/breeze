@@ -32,6 +32,7 @@ import { requesterAuthorized } from './access';
 import { computeTier } from './tiers';
 import { withSubjectLocks } from './locks';
 import { callerVerificationPorts as ports } from './ports';
+import { withMailboxReader } from './mailboxReader';
 
 export interface GateInput {
   orgId: string;
@@ -120,7 +121,9 @@ export async function requireCallerVerification(input: GateInput): Promise<{ ver
     if (initial.rows.some((r) => r.status === 'verified' && r.method === 'email')) {
       try {
         mailboxHashes = new Set(
-          (await ports.mailboxes({ orgId: input.orgId, target: input.target }))
+          // Attributed to the technician the gate acts for (headless: no
+          // AuthContext), still outside any DB context.
+          (await withMailboxReader(input.technicianUserId, () => ports.mailboxes({ orgId: input.orgId, target: input.target })))
             .map((a) => a.replace(/^smtp:/i, ''))
             .map((a) => normalizeDestination('email', a))
             .filter((a): a is string => !!a)

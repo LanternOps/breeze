@@ -223,7 +223,8 @@ export async function getOrgCurrencyImpact(
     .from(timeEntries)
     .where(and(
       eq(timeEntries.orgId, orgId),
-      eq(timeEntries.billingStatus, 'not_billed'),
+      // #4617: held time keeps its stamped currency like any unbilled time.
+      inArray(timeEntries.billingStatus, ['not_billed', 'awaiting_approval']),
       isNotNull(timeEntries.hourlyRate),
       ne(timeEntries.currencyCode, target)
     ))
@@ -254,7 +255,8 @@ export async function getOrgCurrencyImpact(
     .from(timeEntries)
     .where(and(
       eq(timeEntries.orgId, orgId),
-      eq(timeEntries.billingStatus, 'not_billed'),
+      // #4617: held time keeps its stamped currency like any unbilled time.
+      inArray(timeEntries.billingStatus, ['not_billed', 'awaiting_approval']),
       isNull(timeEntries.hourlyRate)
     ))
     .groupBy(timeEntries.currencyCode);

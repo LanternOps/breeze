@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import { ARCHIVE_PRIOR_STATUS_KEY } from './orgArchive';
 import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
+import { EVIDENCE_HOLD_SCOPED_ERASURE_KEY } from './orgEvidenceHold';
 import {
   ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
   ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
@@ -31,6 +32,7 @@ describe('ORG_LIFECYCLE_INTERNAL_SETTINGS_KEYS', () => {
         ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
         ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
         ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+        EVIDENCE_HOLD_SCOPED_ERASURE_KEY,
         MERGE_PRIOR_STATUS_KEY,
       ].sort(),
     );

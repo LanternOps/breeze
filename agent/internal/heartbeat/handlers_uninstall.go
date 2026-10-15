@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/macosuninstall"
+	"github.com/breeze-rmm/agent/internal/psscript"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/securefs"
 )
@@ -498,25 +499,19 @@ func prepareSelfUninstallWindows(removeConfig bool) error {
 		DelaySeconds:       uninstallHelperDelaySeconds,
 	})
 
-	scriptFile, err := os.CreateTemp("", "breeze-uninstall-*.ps1")
+	// psscript stamps the UTF-8 BOM: the script interpolates install paths,
+	// which Windows PowerShell 5.1 would mis-decode as ANSI under a localized
+	// (non-ASCII) install directory (#3581).
+	scriptPath, err := psscript.CreateTemp("breeze-uninstall-*.ps1", script)
 	if err != nil {
-		return fmt.Errorf("create uninstall helper script: %w", err)
-	}
-	if _, err := scriptFile.WriteString(script); err != nil {
-		_ = scriptFile.Close()
-		_ = os.Remove(scriptFile.Name())
 		return fmt.Errorf("write uninstall helper script: %w", err)
-	}
-	if err := scriptFile.Close(); err != nil {
-		_ = os.Remove(scriptFile.Name())
-		return fmt.Errorf("close uninstall helper script: %w", err)
 	}
 
 	if err := startDetachedProcess("powershell.exe",
 		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-		"-File", scriptFile.Name(),
+		"-File", scriptPath,
 	); err != nil {
-		_ = os.Remove(scriptFile.Name())
+		_ = os.Remove(scriptPath)
 		return fmt.Errorf("spawn detached teardown helper: %w", err)
 	}
 	return nil

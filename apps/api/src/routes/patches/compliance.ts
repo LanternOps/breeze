@@ -27,9 +27,16 @@ import {
   resolveRequestReportAuthority,
   type PersistedSiteScopeColumns,
 } from '../../services/siteScope';
+import { loadFailedInstallPairs } from '../../services/patchInstallFailures';
 import { isPatchReportPastRetention } from '../../services/patchReportFiles';
 
 import { notParkedDeviceCondition } from '../../services/unassignedPool/selectorPredicate';
+import { compliancePercentWithImageTerm } from '@breeze/shared';
+import {
+  containerImageComplianceTerms,
+  imageTermAppliesToView,
+  sumContainerImageTerms,
+} from '../../services/workloads/imageCompliance';
 export const complianceRoutes = new Hono();
 
 // A device_patches row that still needs installing. 'missing' is a stale
@@ -290,10 +297,31 @@ complianceRoutes.get(
     // not over summary.total — total includes stale 'missing' tombstones and
     // 'skipped' rows, which would otherwise deflate the percentage. This matches
     // the device-detail view (routes/devices/patches.ts: installed / (pending + installed)).
+    //
+    // W06 (#8195): container images fold in as items — a stale image is a
+    // pending item, a current image an installed item, unknowns stay out.
+    // Severity-, source- and ring-filtered views are about patches with those
+    // properties, which an image does not have, so they exclude the term.
+    const imageTermsByDevice = imageTermAppliesToView(query)
+      ? await containerImageComplianceTerms({ deviceIds })
+      : new Map<string, { stale: number; current: number; unknown: number }>();
+    const imageTerms = sumContainerImageTerms(imageTermsByDevice.values());
     const relevantTotal = summary.installed + summary.pending;
-    const compliancePercent = relevantTotal > 0
-      ? Math.round((summary.installed / relevantTotal) * 100)
-      : 100;
+    const compliancePercent = compliancePercentWithImageTerm(summary.installed, relevantTotal, imageTerms);
+
+    // #7214: an outstanding patch whose latest install attempt failed is a failed
+    // install, not "pending approval". Split it out of the approval buckets so
+    // approved + unapproved + failed partition missingCount.
+    const failedPairs = await loadFailedInstallPairs(deviceIds);
+    const isFailedInstall = failedPairs.length > 0
+      // One jsonb bind parameter regardless of pair count (a tuple list costs
+      // 2 binds per pair, which overflows Postgres' 65,535 limit on big fleets).
+      ? sql`(${devicePatches.deviceId}, ${devicePatches.patchId}) in (
+          select fp.d, fp.p
+          from jsonb_to_recordset(${JSON.stringify(failedPairs.map(p => ({ d: p.deviceId, p: p.patchId })))}::jsonb)
+            as fp(d uuid, p uuid)
+        )`
+      : sql`false`;
 
     // Per-device patch breakdown for "devices needing patches" table
     const deviceBreakdown = await db
@@ -303,20 +331,21 @@ complianceRoutes.get(
         osType: devices.osType,
         lastSeenAt: devices.lastSeenAt,
         missingCount: sql<number>`count(*) filter (where ${isOutstanding})`,
+        failedMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${isFailedInstall})`,
         approvedMissing: preApprovedPatchIds !== null
-          ? sql<number>`count(*) filter (where ${isOutstanding} and ${
+          ? sql<number>`count(*) filter (where ${isOutstanding} and not ${isFailedInstall} and ${
               preApprovedPatchIds.size > 0
                 ? inArray(devicePatches.patchId, [...preApprovedPatchIds])
                 : sql`false`
             })`
-          : sql<number>`count(*) filter (where ${isOutstanding} and ${isApprovedForInstall})`,
+          : sql<number>`count(*) filter (where ${isOutstanding} and not ${isFailedInstall} and ${isApprovedForInstall})`,
         unapprovedMissing: preApprovedPatchIds !== null
-          ? sql<number>`count(*) filter (where ${isOutstanding} and ${
+          ? sql<number>`count(*) filter (where ${isOutstanding} and not ${isFailedInstall} and ${
               preApprovedPatchIds.size > 0
                 ? sql`not ${inArray(devicePatches.patchId, [...preApprovedPatchIds])}`
                 : sql`true`
             })`
-          : sql<number>`count(*) filter (where ${isOutstanding} and not ${isApprovedForInstall})`,
+          : sql<number>`count(*) filter (where ${isOutstanding} and not ${isFailedInstall} and not ${isApprovedForInstall})`,
         criticalCount: sql<number>`count(*) filter (where ${isOutstanding} and ${EFFECTIVE_PATCH_SEVERITY_SQL} = 'critical')`,
         importantCount: sql<number>`count(*) filter (where ${isOutstanding} and ${EFFECTIVE_PATCH_SEVERITY_SQL} = 'important')`,
         osMissing: sql<number>`count(*) filter (where ${isOutstanding} and ${patches.source} in ('microsoft', 'apple', 'linux'))`,
@@ -343,13 +372,18 @@ complianceRoutes.get(
       .having(sql`count(*) filter (where ${isOutstanding}) > 0`)
       .orderBy(sql`count(*) filter (where ${isOutstanding} and ${EFFECTIVE_PATCH_SEVERITY_SQL} = 'critical') desc`);
 
-    const devicesNeedingPatches = deviceBreakdown.map(row => ({
+    const imageFields = (deviceId: string) => {
+      const terms = imageTermsByDevice.get(deviceId);
+      return terms ? { staleImages: terms.stale, unknownImages: terms.unknown } : {};
+    };
+    const devicesNeedingPatches: Array<Record<string, unknown> & { id: string }> = deviceBreakdown.map(row => ({
       id: row.deviceId,
       name: row.hostname,
       os: row.osType,
       missingCount: Number(row.missingCount),
       approvedMissing: Number(row.approvedMissing),
       unapprovedMissing: Number(row.unapprovedMissing),
+      failedMissing: Number(row.failedMissing),
       criticalCount: Number(row.criticalCount),
       importantCount: Number(row.importantCount),
       osMissing: Number(row.osMissing),
@@ -357,8 +391,43 @@ complianceRoutes.get(
       lastInstalledAt: row.lastInstalledAt ?? undefined,
       pendingReboot: row.pendingReboot ?? false,
       lastScannedAt: row.lastScannedAt ?? undefined,
-      lastSeen: row.lastSeenAt?.toISOString() ?? undefined
+      lastSeen: row.lastSeenAt?.toISOString() ?? undefined,
+      ...imageFields(row.deviceId)
     }));
+
+    // W06: a device with no outstanding OS patch but a stale image still
+    // needs an update, so it is listed (all patch counts zero) and is not
+    // compliant: totalDevices - compliantDevices === devicesNeedingPatches.length.
+    const listed = new Set(devicesNeedingPatches.map(d => d.id));
+    const staleOnlyIds = [...imageTermsByDevice.entries()]
+      .filter(([id, terms]) => terms.stale > 0 && !listed.has(id))
+      .map(([id]) => id);
+    if (staleOnlyIds.length > 0) {
+      const staleOnly = await db
+        .select({ id: devices.id, hostname: devices.hostname, osType: devices.osType, lastSeenAt: devices.lastSeenAt })
+        .from(devices)
+        .where(inArray(devices.id, staleOnlyIds));
+      for (const d of staleOnly.sort((a, b) => a.hostname.localeCompare(b.hostname))) {
+        devicesNeedingPatches.push({
+          id: d.id,
+          name: d.hostname,
+          os: d.osType,
+          missingCount: 0,
+          approvedMissing: 0,
+          unapprovedMissing: 0,
+          failedMissing: 0,
+          criticalCount: 0,
+          importantCount: 0,
+          osMissing: 0,
+          thirdPartyMissing: 0,
+          lastInstalledAt: undefined,
+          pendingReboot: false,
+          lastScannedAt: undefined,
+          lastSeen: d.lastSeenAt?.toISOString() ?? undefined,
+          ...imageFields(d.id)
+        });
+      }
+    }
 
     // Severity-level summaries. "total" is the RELEVANT set (installed +
     // outstanding) for that severity, NOT count(*) over all statuses — stale
@@ -411,7 +480,8 @@ complianceRoutes.get(
           source: query.source ?? null,
           severity: query.severity ?? null,
           ringId: query.ringId ?? null
-        }
+        },
+        ...(imageTerms ? { containerImages: imageTerms } : {})
       }
     });
   }

@@ -90,6 +90,31 @@ describe('DeviceUserIdleStat', () => {
     expect(vi.mocked(fetchWithAuth)).toHaveBeenCalledWith('/devices/dev-1/sessions/active');
   });
 
+  it('renders translated activity labels rather than missing translation keys', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { activeUsers: [session({ sessionType: null, idleMinutes: 0 })], count: 1 } }),
+    } as Response);
+
+    render(<DeviceUserIdleStat deviceId="dev-1" />);
+
+    await waitFor(() => expect(screen.getByText('Active')).toBeTruthy());
+    const stat = screen.getByText('Active');
+    expect(stat.getAttribute('title')).toContain('Unknown');
+    expect(stat.getAttribute('title')).toContain('as of');
+  });
+
+  it('renders the translated locked activity label', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { activeUsers: [session({ activityState: 'locked', idleMinutes: 42 })], count: 1 } }),
+    } as Response);
+
+    render(<DeviceUserIdleStat deviceId="dev-1" />);
+
+    await waitFor(() => expect(screen.getByText('Locked')).toBeTruthy());
+  });
+
   it('renders em dash when the fetch fails', async () => {
     vi.mocked(fetchWithAuth).mockRejectedValue(new Error('network'));
 

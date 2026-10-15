@@ -15,6 +15,7 @@ import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/pe
 import { encryptSnmpSecret, isMaskedSnmpSecret, maskSnmpSecret } from '../services/snmpSecrets';
 import { enqueueSnmpPoll } from '../jobs/snmpWorker';
 import { captureException } from '../services/sentry';
+import { filterToActiveWatches, loadActiveWatchKeys, watchKey } from '../services/monitoringActiveWatches';
 
 import {
   resolveOrgIdForAuth as resolveOrgId,
@@ -1203,12 +1204,15 @@ monitoringRoutes.get(
 
     // Deduplicate to latest per (watchType, name)
     const seen = new Set<string>();
-    const latest = allResults.filter(r => {
-      const key = `${r.watchType}:${r.name}`;
+    const deduped = allResults.filter(r => {
+      const key = watchKey(r.watchType, r.name);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+    // #8287: a watch removed from the policy stops reporting; its last row
+    // (e.g. not_found) must not keep rendering as a live problem.
+    const latest = filterToActiveWatches(deduped, await loadActiveWatchKeys(deviceId));
 
     return c.json({
       data: latest.map(r => ({
@@ -1265,8 +1269,10 @@ monitoringRoutes.get(
 
     const seen = new Set<string>();
     const latestStatuses: string[] = [];
-    for (const r of allResults) {
-      const key = `${r.watchType}:${r.name}`;
+    // #8287: only watches still in the device's resolved config count.
+    const activeResults = filterToActiveWatches(allResults, await loadActiveWatchKeys(deviceId));
+    for (const r of activeResults) {
+      const key = watchKey(r.watchType, r.name);
       if (seen.has(key)) continue;
       seen.add(key);
       latestStatuses.push(r.status);

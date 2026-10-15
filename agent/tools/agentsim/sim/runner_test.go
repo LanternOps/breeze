@@ -53,6 +53,120 @@ func TestRunEnrollsOnceThenReusesTheStore(t *testing.T) {
 	}
 }
 
+func TestRunWithoutAStormHasNoStormSections(t *testing.T) {
+	f := newFakeAPI(t)
+	cfg := runnerConfig(f, t.TempDir())
+	rep, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(rep)
+	for _, k := range []string{`"timeline"`, `"pool"`, `"storm"`} {
+		if strings.Contains(string(data), k) {
+			t.Fatalf("%s present in a plain run (W07 reads this schema; additive and omitted)", k)
+		}
+	}
+}
+
+// A storm run registers every agent socket with the hub and runs the
+// scheduler: the internal drop-sockets action closes them all.
+func TestRunStormDropsEverySocket(t *testing.T) {
+	f := newFakeAPI(t)
+	cfg := runnerConfig(f, t.TempDir())
+	cfg.Commander.PerMinute = 0
+	cfg.Duration, cfg.Warmup = 4*time.Second, 200*ms
+	cfg.Storm = &Scenario{Name: "drop", Events: []Event{{Name: "drop", At: Duration{1500 * ms}, Recovery: Duration{time.Second},
+		Start: []Action{{Internal: ActionDropSockets}}}}}
+	cfg.StormPreWindow = 300 * ms
+	cfg.TimelineStep = 100 * ms
+	rep, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.count(RouteWSUpgrade); got < 10 {
+		t.Fatalf("upgrades %d: 5 agents must each dial, be dropped, and redial", got)
+	}
+	if rep.Storm.StepsFailed != 0 || !rep.Storm.Pass {
+		t.Fatalf("the drop closed sockets, so the storm passes: %+v", rep.Storm.Steps)
+	}
+}
+
+// apiDownExec plays an API kill against the fake API: "docker kill" refuses
+// upgrades and drops every socket; "docker start" accepts upgrades again.
+type apiDownExec struct{ f *fakeAPI }
+
+func (e apiDownExec) Exec(_ context.Context, argv []string) (string, error) {
+	switch argv[1] {
+	case "kill":
+		e.f.setRejectWS(true)
+		e.f.dropSockets()
+	case "start":
+		e.f.setRejectWS(false)
+	}
+	return "", nil
+}
+
+func TestRunStormShowsTroughAndRecovery(t *testing.T) {
+	f := newFakeAPI(t)
+	cfg := runnerConfig(f, t.TempDir())
+	cfg.Commander.PerMinute = 0
+	cfg.Duration, cfg.Warmup = 6*time.Second, 200*ms
+	cfg.Storm = &Scenario{Name: "kill", Events: []Event{{Name: "kill", At: Duration{1500 * ms}, Hold: Duration{500 * ms},
+		Recovery: Duration{3 * time.Second},
+		Start:    []Action{{Exec: []string{"docker", "kill", "api"}}},
+		End:      []Action{{Exec: []string{"docker", "start", "api"}}}}}}
+	cfg.StormPreWindow = 500 * ms // test-only; production is 60 s
+	cfg.TimelineStep = 100 * ms   // a 6 s run needs finer buckets than 1 s
+	cfg.executor = apiDownExec{f}
+	rep, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Timeline == nil || rep.Storm == nil || len(rep.Storm.Events) != 1 || len(rep.Storm.Steps) != 2 {
+		t.Fatalf("storm sections missing: %+v", rep.Storm)
+	}
+	rc := rep.Storm.Events[0].Reconnect
+	if rc.Baseline != 5 || rc.Trough != 0 || rc.ConnectFailures == 0 {
+		t.Fatalf("5 sockets, all gone while upgrades are refused: %+v", rc)
+	}
+	// Refused connects back off 1 s ±30 % (the real agent's loop), so the
+	// fleet is back within ~0.2-0.8 s of the end action (first retry 0.7-1.3 s
+	// after the failed redial at the drop). 100 ms buckets can round t99 down,
+	// so the bounds are loose; Trough == 0 above is what proves the dip.
+	if rc.T99S == nil || *rc.T99S > 2 {
+		t.Fatalf("t99 %v, want the backoff-shaped recovery", rc.T99S)
+	}
+	if rep.Pool != nil {
+		t.Fatal("no scrape token: the pool section must be omitted")
+	}
+	if p := rep.Storm.Events[0].Pool; p.Samples != 0 || p.Note == "" {
+		t.Fatalf("an unsampled pool says why: %+v", p)
+	}
+}
+
+func TestRunStormSamplesThePool(t *testing.T) {
+	f := newFakeAPI(t)
+	healthy := strings.NewReplacer("_effective_permits 27", "_effective_permits 30", "_wedged_client_read_backends 1", "_wedged_client_read_backends 0").Replace(scrapeFixture)
+	f.setScrape("tok", healthy)
+	cfg := runnerConfig(f, t.TempDir())
+	cfg.Commander.PerMinute = 0
+	cfg.Duration, cfg.Warmup = 5*time.Second, 200*ms
+	cfg.Storm = &Scenario{Name: "drop", Events: []Event{{Name: "drop", At: Duration{time.Second}, Recovery: Duration{3 * time.Second},
+		Start: []Action{{Internal: ActionDropSockets}}}}}
+	cfg.StormPreWindow, cfg.TimelineStep = 300*ms, 100*ms
+	cfg.ScrapeToken, cfg.ScrapeInterval = "tok", time.Second
+	rep, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Pool == nil || len(rep.Pool.Samples) < 2 || strings.Contains(rep.Pool.URL, "tok") {
+		t.Fatalf("pool section: %+v", rep.Pool)
+	}
+	if p := rep.Storm.Events[0].Pool; p.OKSamples == 0 || p.RecoveryS == nil {
+		t.Fatalf("event pool block: %+v", p)
+	}
+}
+
 func TestRunRefusesAShortStoreWithoutAKey(t *testing.T) {
 	f := newFakeAPI(t)
 	cfg := runnerConfig(f, t.TempDir())

@@ -78,6 +78,71 @@ func TestWriteProviderSmallFilesBatchPutURLs(t *testing.T) {
 	}
 }
 
+// Uploads made concurrently in planned order (the snapshot's upload pool,
+// #8381) still cost about one resolve per maxBatch files: a worker whose URL
+// is already being resolved by another worker's batch waits for that batch
+// instead of resolving an overlapping one of its own.
+func TestWriteProviderConcurrentSmallFilesShareBatches(t *testing.T) {
+	const n, workers = 2000, 8
+	b := newFakeWriteBackend(t)
+	p := newTestWriteProvider(t, b, Options{})
+	dir := t.TempDir()
+	plan := make([]providers.PlannedUpload, n)
+	for i := range plan {
+		local := filepath.Join(dir, fmt.Sprintf("f%05d", i))
+		if err := os.WriteFile(local, []byte{byte(i)}, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		plan[i] = providers.PlannedUpload{LocalPath: local, Key: objKey(fmt.Sprintf("files/f%05d", i))}
+	}
+	p.PrepareUploads(plan)
+	next := make(chan providers.PlannedUpload)
+	go func() {
+		defer close(next)
+		for _, e := range plan {
+			next <- e
+		}
+	}()
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for e := range next {
+				if _, err := p.UploadWithDigest(context.Background(), e.LocalPath, e.Key); err != nil {
+					errs <- fmt.Errorf("upload %s: %w", e.Key, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	calls := b.callsFor("objects:resolve")
+	objects := 0
+	for _, c := range calls {
+		reqs, _ := c.body["requests"].([]any)
+		objects += len(reqs)
+	}
+	t.Logf("%d small files over %d workers: %d resolves, %d URLs resolved", n, workers, len(calls), objects)
+	// The session budget counts objects: each URL is resolved about once,
+	// not once per worker that missed the cache at a batch boundary (~4.4x
+	// without the shared pending set). The slack covers lookahead that
+	// re-resolves a URL a worker running a few files ahead already used.
+	if objects > n+n/4 {
+		t.Fatalf("%d URLs resolved for %d files", objects, n)
+	}
+	// Workers that race ahead of a boundary's batch resolve their own URL in
+	// a small call, so calls stay at a few per batch, never one per file.
+	if len(calls) > ceilDiv(n, 100)*workers {
+		t.Fatalf("%d resolves for %d files", len(calls), n)
+	}
+}
+
 // Stored-object checks read back through batched GET URLs.
 func TestWriteProviderPlannedDownloadsAreBatched(t *testing.T) {
 	b := newFakeWriteBackend(t)

@@ -207,6 +207,77 @@
     "sentineloneThreats": "Minacce SentinelOne",
     "threatsAndIncidentsAcrossYourFleetFrom": "Minacce e incidenti nella tua flotta da SentinelOne e Huntress."
   },
+  "securityOtherEdr": {
+    "tabLabel": "Altri EDR",
+    "statusError": "Impossibile verificare la presenza di altri provider EDR.",
+    "title": "Rilevamenti di altri EDR",
+    "loading": "Caricamento dei rilevamenti...",
+    "showing": "Visualizzazione di {{from}}-{{to}} su {{total}}",
+    "refresh": "Aggiorna",
+    "filters": {
+      "severity": "Gravità",
+      "status": "Stato",
+      "provider": "Provider",
+      "allSeverities": "Tutte le gravità",
+      "allProviders": "Tutti i provider",
+      "openDefault": "Aperti (predefinito)",
+      "allStatuses": "Tutti gli stati"
+    },
+    "severities": {
+      "critical": "Critica",
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Bassa",
+      "info": "Info",
+      "unknown": "Sconosciuta"
+    },
+    "statuses": {
+      "open": "Aperto",
+      "in_progress": "In corso",
+      "mitigated": "Mitigato",
+      "resolved": "Risolto",
+      "false_positive": "Falso positivo",
+      "dismissed": "Ignorato",
+      "unknown": "Sconosciuto"
+    },
+    "connectionStatuses": {
+      "connected": "Connesso",
+      "error": "Errore",
+      "reauth_required": "Riautenticazione richiesta"
+    },
+    "tenants": {
+      "stale": "Tenant obsoleti",
+      "failed": "Tenant con errori",
+      "pending": "Tenant in sospeso",
+      "unmapped": "Tenant non associati"
+    },
+    "openDetections": "Rilevamenti aperti",
+    "endpoints": "Endpoint",
+    "linkedEndpoints": "Endpoint collegati",
+    "unhealthyEndpoints": "Endpoint non integri",
+    "lastDetectionSync": "Ultima sincronizzazione dei rilevamenti",
+    "never": "Mai",
+    "coverageHeading": "Informazioni sulla copertura",
+    "emptyPartial": "Nessun rilevamento restituito. La copertura è incompleta - vedi le note sopra.",
+    "empty": "Nessun rilevamento corrisponde ai filtri.",
+    "table": {
+      "provider": "Provider",
+      "detection": "Rilevamento",
+      "severity": "Gravità",
+      "status": "Stato",
+      "device": "Dispositivo",
+      "detected": "Rilevato",
+      "actions": "Azioni"
+    },
+    "unnamedDetection": "Rilevamento",
+    "detached": "Scollegato",
+    "promoteToIncident": "Promuovi a incidente",
+    "promoted": "Promosso",
+    "alreadyPromoted": "Già promosso",
+    "promoteFailed": "Impossibile creare l'incidente",
+    "previous": "Precedente",
+    "next": "Successivo"
+  },
   "securityEdrSummaryPanel": {
     "edrStatusUnavailable": "Impossibile caricare lo stato EDR. Aggiorna per riprovare.",
     "endpointDetectionAndAmpResponse": "Endpoint Detection & Response",

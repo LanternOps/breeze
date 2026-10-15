@@ -1,0 +1,161 @@
+# promtool test rules for the `breeze-capacity-kpis` group (Scaling W07, #8146).
+#
+#   promtool test rules monitoring/rules/tests/breeze-capacity-kpis.test.yml
+#   (CI: .github/workflows/perf-rules.yml runs it with the pinned prom/prometheus image)
+#
+# Fleet: region eu has instances a (10 sockets) and b (20), region us has c (30),
+# region ap has d with 0 sockets (must produce no per-agent sample: the `> 0`
+# guard turns an empty fleet into "no data", never +Inf).
+# Every series below grows linearly, one sample per minute, so rate() is exact.
+rule_files:
+  - ../breeze-rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  - interval: 1m
+    input_series:
+      # --- process CPU: a and b 0.5 s/min user + 0.1 s/min system; c 1.2 s/min user
+      - series: 'breeze_process_cpu_seconds_total{job="breeze-api-eu",region="eu",instance="a",mode="user"}'
+        values: '0+0.5x10'
+      - series: 'breeze_process_cpu_seconds_total{job="breeze-api-eu",region="eu",instance="a",mode="system"}'
+        values: '0+0.1x10'
+      - series: 'breeze_process_cpu_seconds_total{job="breeze-api-eu",region="eu",instance="b",mode="user"}'
+        values: '0+0.5x10'
+      - series: 'breeze_process_cpu_seconds_total{job="breeze-api-eu",region="eu",instance="b",mode="system"}'
+        values: '0+0.1x10'
+      - series: 'breeze_process_cpu_seconds_total{job="breeze-api-us",region="us",instance="c",mode="user"}'
+        values: '0+1.2x10'
+      - series: 'breeze_process_cpu_seconds_total{job="breeze-api-ap",region="ap",instance="d",mode="user"}'
+        values: '0+0.5x10'
+
+      # --- owned agent sockets
+      - series: 'breeze_agent_ws_connections{job="breeze-api-eu",region="eu",instance="a"}'
+        values: '10x10'
+      - series: 'breeze_agent_ws_connections{job="breeze-api-eu",region="eu",instance="b"}'
+        values: '20x10'
+      - series: 'breeze_agent_ws_connections{job="breeze-api-us",region="us",instance="c"}'
+        values: '30x10'
+      - series: 'breeze_agent_ws_connections{job="breeze-api-ap",region="ap",instance="d"}'
+        values: '0x10'
+
+      # --- heartbeat histogram on instance a, per minute: 0 ≤10ms, 80 ≤25ms, 95 ≤50ms, 100 ≤100ms
+      #     (cumulative; these are real bucket boundaries of http_request_duration_seconds)
+      - series: 'http_request_duration_seconds_bucket{job="breeze-api-eu",region="eu",instance="a",route="/api/v1/agents/:id/heartbeat",le="0.01"}'
+        values: '0x10'
+      - series: 'http_request_duration_seconds_bucket{job="breeze-api-eu",region="eu",instance="a",route="/api/v1/agents/:id/heartbeat",le="0.025"}'
+        values: '0+80x10'
+      - series: 'http_request_duration_seconds_bucket{job="breeze-api-eu",region="eu",instance="a",route="/api/v1/agents/:id/heartbeat",le="0.05"}'
+        values: '0+95x10'
+      - series: 'http_request_duration_seconds_bucket{job="breeze-api-eu",region="eu",instance="a",route="/api/v1/agents/:id/heartbeat",le="0.1"}'
+        values: '0+100x10'
+      - series: 'http_request_duration_seconds_bucket{job="breeze-api-eu",region="eu",instance="a",route="/api/v1/agents/:id/heartbeat",le="+Inf"}'
+        values: '0+100x10'
+
+      # --- DB transactions: eu 120/min; ap has traffic but no sockets
+      - series: 'pg_stat_database_xact_commit{job="postgres",region="eu",datname="breeze"}'
+        values: '0+120x10'
+      - series: 'pg_stat_database_xact_commit{job="postgres",region="eu",datname="postgres"}'
+        values: '0+9000x10'
+      - series: 'pg_stat_database_xact_commit{job="postgres",region="ap",datname="breeze"}'
+        values: '0+120x10'
+
+      # --- request mix on a: 30/min heartbeat + 30/min workspace crawl-config poll
+      #     are agent traffic; 600/min /api/v1/devices is not
+      - series: 'http_requests_total{job="breeze-api-eu",region="eu",instance="a",method="POST",route="/api/v1/agents/:id/heartbeat",status_class="2xx"}'
+        values: '0+30x10'
+      - series: 'http_requests_total{job="breeze-api-eu",region="eu",instance="a",method="GET",route="/api/v1/workspace/agent/crawl-config",status_class="2xx"}'
+        values: '0+30x10'
+      - series: 'http_requests_total{job="breeze-api-eu",region="eu",instance="a",method="GET",route="/api/v1/devices",status_class="2xx"}'
+        values: '0+600x10'
+      - series: 'http_requests_total{job="breeze-api-ap",region="ap",instance="d",method="POST",route="/api/v1/agents/:id/heartbeat",status_class="2xx"}'
+        values: '0+30x10'
+
+    promql_expr_test:
+      # Sockets
+      - expr: breeze:agent_ws_connections:region
+        eval_time: 10m
+        exp_samples:
+          - labels: 'breeze:agent_ws_connections:region{region="ap"}'
+            value: 0
+          - labels: 'breeze:agent_ws_connections:region{region="eu"}'
+            value: 30
+          - labels: 'breeze:agent_ws_connections:region{region="us"}'
+            value: 30
+
+      # API CPU-ms per minute: a = (0.5 + 0.1) s/min = 600 ms/min
+      - expr: breeze:api_cpu_ms_per_minute:instance{instance="a"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'breeze:api_cpu_ms_per_minute:instance{instance="a",region="eu"}'
+            value: 600
+
+      # Agent cost per instance: 600 / 10 = 60
+      - expr: breeze:agent_cost_cpu_ms_per_agent_minute:instance{instance="a"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'breeze:agent_cost_cpu_ms_per_agent_minute:instance{instance="a",region="eu"}'
+            value: 60
+
+      # Agent cost per region: eu (600 + 600) / 30 = 40; us 1200 / 30 = 40; ap none
+      # (round(x * 1000): rate() extrapolation leaves float noise in the last bits)
+      - expr: round(breeze:agent_cost_cpu_ms_per_agent_minute:region * 1000)
+        eval_time: 10m
+        exp_samples:
+          - labels: '{region="eu"}'
+            value: 40000
+          - labels: '{region="us"}'
+            value: 40000
+
+      # Zero-socket region produces no per-agent sample (the `> 0` guard)
+      - expr: breeze:agent_cost_cpu_ms_per_agent_minute:region{region="ap"}
+        eval_time: 10m
+        exp_samples: []
+      - expr: breeze:agent_cost_cpu_ms_per_agent_minute:instance{instance="d"}
+        eval_time: 10m
+        exp_samples: []
+      - expr: breeze:db_tx_per_agent_minute:region{region="ap"}
+        eval_time: 10m
+        exp_samples: []
+      - expr: breeze:agent_requests_per_agent_minute:region{region="ap"}
+        eval_time: 10m
+        exp_samples: []
+
+      # DB intensity: 120 tx/min on datname="breeze" / 30 sockets = 4 (the
+      # datname="postgres" maintenance traffic is excluded)
+      - expr: breeze:db_tx_per_agent_minute:region
+        eval_time: 10m
+        exp_samples:
+          - labels: 'breeze:db_tx_per_agent_minute:region{region="eu"}'
+            value: 4
+
+      # Heartbeat latency (server histogram), in microseconds via round(x * 1e6)
+      - expr: round(breeze:heartbeat_latency_seconds:p50_region * 1e6)
+        eval_time: 10m
+        exp_samples:
+          # rank 50 in the (0.01, 0.025] bucket of 80: 0.01 + 0.015 * 50/80
+          - labels: '{region="eu"}'
+            value: 19375
+      - expr: round(breeze:heartbeat_latency_seconds:p95_region * 1e6)
+        eval_time: 10m
+        exp_samples:
+          - labels: '{region="eu"}'
+            value: 50000
+      - expr: round(breeze:heartbeat_latency_seconds:p99_region * 1e6)
+        eval_time: 10m
+        exp_samples:
+          # rank 99 in the (0.05, 0.1] bucket of 5: 0.05 + 0.05 * 4/5
+          - labels: '{region="eu"}'
+            value: 90000
+      - expr: round(breeze:heartbeat_latency_seconds:p95_instance * 1e6)
+        eval_time: 10m
+        exp_samples:
+          - labels: '{instance="a",region="eu"}'
+            value: 50000
+
+      # Request mix (G2): (30 + 30) / 30 = 2; /api/v1/devices excluded
+      - expr: breeze:agent_requests_per_agent_minute:region
+        eval_time: 10m
+        exp_samples:
+          - labels: 'breeze:agent_requests_per_agent_minute:region{region="eu"}'
+            value: 2

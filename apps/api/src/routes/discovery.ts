@@ -35,6 +35,7 @@ import { DiscoveredAssetSiteMoveError, moveDiscoveredAssetsToSite } from '../ser
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import {
   findLinkPlacementConflict,
+  PlacementConcurrentUpdateError,
   PlacementLinkConflictError,
   reconcilePlacementOnLinkOrThrow,
 } from '../services/assetPlacement';
@@ -174,6 +175,51 @@ async function validateRequestedDiscoveryAgent(
   }
 
   return { ok: true } as const;
+}
+
+/**
+ * #7969: a profile's pinned scan agent must be a real, agent-backed device in
+ * the profile's own org and site. Checked on every write that sets a pin or
+ * moves a pinned profile's site; online status is deliberately NOT required
+ * here — an offline pin fails the run visibly instead (worker
+ * resolvePinnedDiscoveryAgent).
+ *
+ * The lookup runs under the caller's RLS context, so another tenant's device
+ * reads as not found; the explicit org comparison is defence in depth (and
+ * the composite FK (pinned_device_id, org_id) -> devices(id, org_id) refuses
+ * it at the database). Parked and Quick Support devices live in their
+ * partner's holding / quick_support org, so the org check excludes them too;
+ * isEphemeral is checked anyway.
+ */
+async function validatePinnedDiscoveryDevice(
+  pinnedDeviceId: string,
+  profile: { orgId: string; siteId: string }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const [device] = await db
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      siteId: devices.siteId,
+      agentId: devices.agentId,
+      isEphemeral: devices.isEphemeral,
+    })
+    .from(devices)
+    .where(eq(devices.id, pinnedDeviceId))
+    .limit(1);
+
+  if (!device || device.isEphemeral) {
+    return { ok: false, error: 'Scan agent device not found' };
+  }
+  if (device.orgId !== profile.orgId) {
+    return { ok: false, error: 'Scan agent must belong to the same organization as this profile' };
+  }
+  if (device.siteId !== profile.siteId) {
+    return { ok: false, error: "Scan agent must be in this profile's site" };
+  }
+  if (!device.agentId) {
+    return { ok: false, error: 'Scan agent device has no Breeze agent' };
+  }
+  return { ok: true };
 }
 
 function serializeDiscoveryProfile(profile: typeof discoveryProfiles.$inferSelect) {
@@ -358,7 +404,10 @@ const createProfileSchema = z.object({
   identifyOS: z.boolean().optional(),
   resolveHostnames: z.boolean().optional(),
   timeout: z.number().int().positive().optional(),
-  concurrency: z.number().int().positive().optional()
+  concurrency: z.number().int().positive().optional(),
+  // #7969: devices.id of the agent that must run this profile's scans; null
+  // or absent = automatic selection.
+  pinnedDeviceId: z.string().guid().nullable().optional()
 });
 
 const updateProfileSchema = z.object({
@@ -383,7 +432,9 @@ const updateProfileSchema = z.object({
   resolveHostnames: z.boolean().optional(),
   timeout: z.number().int().positive().optional(),
   concurrency: z.number().int().positive().optional(),
-  alertSettings: alertSettingsSchema
+  alertSettings: alertSettingsSchema,
+  // #7969: null clears the pin (automatic selection).
+  pinnedDeviceId: z.string().guid().nullable().optional()
 });
 
 const scanSchema = z.object({
@@ -559,6 +610,7 @@ discoveryRoutes.get(
           deepScan: p.deepScan,
           resolveHostnames: p.resolveHostnames,
           alertSettings: p.alertSettings ?? null,
+          pinnedDeviceId: p.pinnedDeviceId ?? null,
           createdAt: p.createdAt.toISOString(),
           updatedAt: p.updatedAt.toISOString(),
           lastRunAt: row.lastRunAt ? dateFromSqlValue(row.lastRunAt).toISOString() : null
@@ -590,6 +642,10 @@ discoveryRoutes.post(
     if (!siteAuthorization.ok) {
       return c.json({ error: siteAuthorization.error }, siteAuthorization.status);
     }
+    if (body.pinnedDeviceId) {
+      const pin = await validatePinnedDiscoveryDevice(body.pinnedDeviceId, { orgId: orgResult.orgId!, siteId: body.siteId });
+      if (!pin.ok) return c.json({ error: pin.error }, 400);
+    }
 
     const [profile] = await db.insert(discoveryProfiles).values({
       orgId: orgResult.orgId!,
@@ -608,6 +664,7 @@ discoveryRoutes.post(
       resolveHostnames: body.resolveHostnames ?? false,
       timeout: body.timeout ?? null,
       concurrency: body.concurrency ?? null,
+      pinnedDeviceId: body.pinnedDeviceId ?? null,
       createdBy: auth.user?.id ?? null
     }).returning();
 
@@ -711,6 +768,7 @@ discoveryRoutes.patch(
       snmpCommunities: discoveryProfiles.snmpCommunities,
       snmpCredentials: discoveryProfiles.snmpCredentials,
       deepScan: discoveryProfiles.deepScan,
+      pinnedDeviceId: discoveryProfiles.pinnedDeviceId,
     }).from(discoveryProfiles)
       .where(and(...conditions)).limit(1);
     if (!existing) return c.json({ error: 'Profile not found' }, 404);
@@ -776,6 +834,26 @@ discoveryRoutes.patch(
     }
     const moveAssets = siteMoveTarget !== null && updates.moveDiscoveredAssets === true;
 
+    // #7969: the pin is checked against the site the profile will have AFTER
+    // this update. A site move that leaves a stored pin behind is refused
+    // rather than silently carried (it could never run) or silently cleared.
+    // An unchanged pin re-sent by the form on an unrelated edit (rename,
+    // schedule) is NOT re-validated: a pin gone stale since it was set fails
+    // the scan visibly at run time, and must not lock the rest of the profile.
+    const effectiveSiteId = siteMoveTarget?.toSiteId ?? existing.siteId;
+    const nextPin = updates.pinnedDeviceId !== undefined ? updates.pinnedDeviceId : existing.pinnedDeviceId;
+    const pinChanged = updates.pinnedDeviceId !== undefined && updates.pinnedDeviceId !== existing.pinnedDeviceId;
+    if (nextPin && (pinChanged || siteMoveTarget)) {
+      const pin = await validatePinnedDiscoveryDevice(nextPin, { orgId: existing.orgId, siteId: effectiveSiteId });
+      if (!pin.ok) {
+        return c.json({
+          error: pinChanged
+            ? pin.error
+            : "This profile's pinned scan agent is not in the new site. Choose a scan agent in that site, or set it to automatic.",
+        }, 400);
+      }
+    }
+
     const setValues: Record<string, unknown> = { updatedAt: new Date() };
     if (siteMoveTarget) setValues.siteId = siteMoveTarget.toSiteId;
     if (updates.name !== undefined) setValues.name = updates.name;
@@ -794,6 +872,7 @@ discoveryRoutes.patch(
     if (updates.timeout !== undefined) setValues.timeout = updates.timeout;
     if (updates.concurrency !== undefined) setValues.concurrency = updates.concurrency;
     if (updates.alertSettings !== undefined) setValues.alertSettings = updates.alertSettings;
+    if (updates.pinnedDeviceId !== undefined) setValues.pinnedDeviceId = updates.pinnedDeviceId;
 
     const applyProfileUpdate = (executor: Pick<typeof db, 'update'>) => executor
       .update(discoveryProfiles)
@@ -1832,6 +1911,17 @@ discoveryRoutes.post(
             error: 'The asset and the device have different physical placements; resolve them before linking.',
             code: 'PLACEMENT_CONFLICT',
             conflict: err.conflict,
+          },
+          409,
+        );
+      }
+      if (err instanceof PlacementConcurrentUpdateError) {
+        // A concurrent placement PUT committed first (unique index on the
+        // device's placement). The link tx rolled back; nothing was written.
+        return c.json(
+          {
+            error: 'The device placement was changed by a concurrent update; reload and try again.',
+            code: 'PLACEMENT_CONCURRENT_UPDATE',
           },
           409,
         );

@@ -186,3 +186,26 @@ describe('navigateTo reports which path it took', () => {
     }
   });
 });
+
+describe('navigateTo router-state seeding (#8331)', () => {
+  beforeEach(() => {
+    navigateMock.mockReset();
+  });
+
+  it('seeds history.state before a replace navigation when a hash write wiped it', async () => {
+    window.history.replaceState(null, '', '/devices#foo');
+    let stateAtNavigate: unknown = 'unset';
+    navigateMock.mockImplementation(async () => {
+      stateAtNavigate = window.history.state;
+    });
+    await navigateTo('/devices', { replace: true });
+    expect(stateAtNavigate).toMatchObject({ index: expect.any(Number) });
+  });
+
+  it('does not clobber existing router state', async () => {
+    window.history.replaceState({ index: 4, scrollX: 0, scrollY: 0 }, '', '/devices');
+    navigateMock.mockResolvedValue(undefined);
+    await navigateTo('/devices', { replace: true });
+    expect(window.history.state).toEqual({ index: 4, scrollX: 0, scrollY: 0 });
+  });
+});

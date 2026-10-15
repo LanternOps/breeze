@@ -116,15 +116,25 @@ export const MISS_BUDGET_GLOBAL_PER_WINDOW = 500;
 const GLOBAL_MISS_BUDGET_KEY = 'support-code:miss-budget';
 
 /**
- * Per-source sub-budget key prefix. The suffix is `rateLimitIpKey(ip)`, so it
+ * Independent budget namespaces sharing one algorithm. `caller-verification`
+ * (#6354 W03, the public `/verify/:token` card) keeps its own Redis keys so
+ * link-token guessing can never exhaust Quick Support (or vice versa); the
+ * Quick Support metrics and once-per-window warn stay Quick-Support-only.
+ */
+export type MissBudgetNamespace = 'support-code' | 'caller-verification';
+
+function globalMissBudgetKey(namespace: MissBudgetNamespace): string {
+  return namespace === 'support-code' ? GLOBAL_MISS_BUDGET_KEY : `${namespace}:miss-budget`;
+}
+
+/**
+ * Per-source sub-budget key. The suffix is `rateLimitIpKey(ip)`, so it
  * folds to the exact same /64 identity the per-IP rate limiter keys on (IPv4
  * and IPv4-mapped IPv6 unchanged — a mapped address must NOT pool the whole
  * IPv4 internet into one bucket — real IPv6 folded to /64).
  */
-const SOURCE_MISS_BUDGET_KEY_PREFIX = 'support-code:miss-budget:src:';
-
-function sourceMissBudgetKey(ip: string): string {
-  return `${SOURCE_MISS_BUDGET_KEY_PREFIX}${rateLimitIpKey(ip)}`;
+function sourceMissBudgetKey(ip: string, namespace: MissBudgetNamespace = 'support-code'): string {
+  return `${globalMissBudgetKey(namespace)}:src:${rateLimitIpKey(ip)}`;
 }
 
 type SupportCodeMetricsRecorder = {
@@ -184,24 +194,26 @@ export function _resetSupportCodeMissBudgetStateForTests(): void {
 export async function isSupportCodeMissBudgetExhausted(
   redis: Redis | null,
   ip: string,
+  namespace: MissBudgetNamespace = 'support-code',
 ): Promise<boolean> {
   if (!redis) return false;
-  const sourceKey = sourceMissBudgetKey(ip);
+  const globalKey = globalMissBudgetKey(namespace);
+  const sourceKey = sourceMissBudgetKey(ip, namespace);
   try {
     const windowStart = Date.now() - MISS_BUDGET_WINDOW_SECONDS * 1000;
     const results = await redis
       .multi()
       .zremrangebyscore(sourceKey, '-inf', windowStart)
       .zcard(sourceKey)
-      .zremrangebyscore(GLOBAL_MISS_BUDGET_KEY, '-inf', windowStart)
-      .zcard(GLOBAL_MISS_BUDGET_KEY)
+      .zremrangebyscore(globalKey, '-inf', windowStart)
+      .zcard(globalKey)
       .exec();
 
     const sourceCount = toCount(results?.[1]?.[1]);
     const globalCount = toCount(results?.[3]?.[1]);
 
     // Re-arm the once-per-window global warn as soon as the backstop drains.
-    if (globalCount < MISS_BUDGET_GLOBAL_PER_WINDOW) globalBudgetTripped = false;
+    if (namespace === 'support-code' && globalCount < MISS_BUDGET_GLOBAL_PER_WINDOW) globalBudgetTripped = false;
 
     return (
       sourceCount >= MISS_BUDGET_PER_SOURCE_PER_WINDOW
@@ -221,13 +233,18 @@ export async function isSupportCodeMissBudgetExhausted(
  * Best-effort: a Redis failure here loses a count rather than failing the
  * request, for the same reason the check above fails open.
  */
-export async function recordSupportCodeMiss(redis: Redis | null, ip: string): Promise<void> {
-  metricsRecorder.onMiss();
+export async function recordSupportCodeMiss(
+  redis: Redis | null,
+  ip: string,
+  namespace: MissBudgetNamespace = 'support-code',
+): Promise<void> {
+  if (namespace === 'support-code') metricsRecorder.onMiss();
   if (!redis) return;
+  const globalKey = globalMissBudgetKey(namespace);
 
   const now = Date.now();
   const windowStart = now - MISS_BUDGET_WINDOW_SECONDS * 1000;
-  const sourceKey = sourceMissBudgetKey(ip);
+  const sourceKey = sourceMissBudgetKey(ip, namespace);
   // Unique member per miss — a sorted set scored by timestamp is the same
   // rolling-window shape `services/rate-limit.ts` uses, so the counters age out
   // identically and share Redis eviction behavior. The two keys are distinct,
@@ -241,14 +258,16 @@ export async function recordSupportCodeMiss(redis: Redis | null, ip: string): Pr
       .zadd(sourceKey, now, member)
       .zcard(sourceKey)
       .expire(sourceKey, MISS_BUDGET_WINDOW_SECONDS)
-      .zremrangebyscore(GLOBAL_MISS_BUDGET_KEY, '-inf', windowStart)
-      .zadd(GLOBAL_MISS_BUDGET_KEY, now, member)
-      .zcard(GLOBAL_MISS_BUDGET_KEY)
-      .expire(GLOBAL_MISS_BUDGET_KEY, MISS_BUDGET_WINDOW_SECONDS)
+      .zremrangebyscore(globalKey, '-inf', windowStart)
+      .zadd(globalKey, now, member)
+      .zcard(globalKey)
+      .expire(globalKey, MISS_BUDGET_WINDOW_SECONDS)
       .exec();
 
     const sourceCount = toCount(results?.[2]?.[1]);
     const globalCount = toCount(results?.[6]?.[1]);
+    // Metrics, latch and warn below are Quick Support's alone.
+    if (namespace !== 'support-code') return;
 
     // Per-source trip: fire the metric on the crossing miss only (the record
     // that brings this /64 to its limit), so it counts ~once per window per

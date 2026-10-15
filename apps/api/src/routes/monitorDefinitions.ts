@@ -61,6 +61,7 @@ import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
   monitorKindSchema,
+  monitorEventLogCollectionWarnings,
 } from '@breeze/shared';
 
 /**
@@ -158,6 +159,18 @@ monitorDefinitionRoutes.get('/kinds', requireScope('organization', 'partner', 's
   }),
 );
 
+/**
+ * Advisory save-time warnings (#8174): an event_log rule on Information- or
+ * Warning-level Application events from a provider the agent does not collect
+ * at those levels can never fully match. Computed from the saved row so a
+ * partial PATCH (no kind/condition in the body) is still checked. Omitted when
+ * empty so the response shape is unchanged for every other monitor.
+ */
+function collectionWarnings(row: { kind: unknown; condition: unknown }): { warnings?: string[] } {
+  const warnings = monitorEventLogCollectionWarnings(row.kind, row.condition);
+  return warnings.length > 0 ? { warnings } : {};
+}
+
 // POST /monitors
 monitorDefinitionRoutes.post(
   '/',
@@ -193,7 +206,7 @@ monitorDefinitionRoutes.post(
         resourceName: created.name,
         details: { kind: created.kind, partnerWide: created.orgId === null },
       });
-      return c.json({ data: created }, 201);
+      return c.json({ data: created, ...collectionWarnings(created) }, 201);
     } catch (error) {
       const mapped = errorResponse(error);
       if (mapped) return c.json(mapped.body, mapped.status);
@@ -273,7 +286,7 @@ monitorDefinitionRoutes.patch(
         resourceId: updated.id,
         resourceName: updated.name,
       });
-      return c.json({ data: updated });
+      return c.json({ data: updated, ...collectionWarnings(updated) });
     } catch (error) {
       const mapped = errorResponse(error);
       if (mapped) return c.json(mapped.body, mapped.status);

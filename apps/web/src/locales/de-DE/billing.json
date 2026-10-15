@@ -24,7 +24,8 @@
         "perDeviceRole": "Pro Geräterolle",
         "perDeviceGroup": "Pro Gerätegruppe",
         "perSeat": "Pro Sitzplatz",
-        "manual": "Manuelle Menge"
+        "manual": "Manuelle Menge",
+        "hourBlock": "Stundenkontingent"
       },
       "dynamicGroup": "dynamisch",
       "deletedGroup": "{{name}} (gelöschte Gruppe)",
@@ -587,6 +588,62 @@
       "publishSuccess": "Version veröffentlicht",
       "warnings": {
         "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Vereinbarungstexte unterstützen Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
+      }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Enthaltene Stunden pro Zeitraum",
+        "extraRate": "Preis pro zusätzlicher Stunde",
+        "rolloverMode": "Ungenutzte Stunden am Zeitraumende",
+        "rolloverExpire": "Verfallen",
+        "rolloverCarry": "Übertragen",
+        "carryCap": "Übertragslimit in Stunden (leer für unbegrenzt)",
+        "alertPct": "Warnung bei % des Kontingents (optional)",
+        "required": "Geben Sie die enthaltenen Stunden und den Preis pro zusätzlicher Stunde ein.",
+        "firstPeriod": "Die Stunden zählen ab dem ersten Abrechnungszeitraum, der noch nicht abgerechnet wurde; bei einem Entwurf wird er bei der Aktivierung festgelegt. Frühere Zeit wird wie gewohnt abgerechnet.",
+        "midPeriodEdit": "Änderungen gelten für den laufenden Zeitraum ({{start}} – {{end}}) bei dessen Abschluss.",
+        "midPeriodEditNoDates": "Änderungen gelten für den laufenden Zeitraum bei dessen Abschluss.",
+        "onlyOne": "Diese Organisation hat bereits ein aktives Kontingent. Beenden Sie es, bevor Sie ein weiteres hinzufügen."
+      },
+      "row": {
+        "perPeriod": "{{hours}} Stunden pro Zeitraum",
+        "retiredBadge": "Beendet",
+        "startsOn": "Zählt ab {{date}}"
+      },
+      "errors": {
+        "exists": "Diese Organisation hat bereits eine aktive Stundenkontingent-Position. Beenden Sie sie zuerst und fügen Sie dann die neue hinzu.",
+        "locked": "Dieses Feld kann bei einer Stundenkontingent-Position nicht geändert werden."
+      },
+      "retire": {
+        "title": "Stundenkontingent beenden",
+        "message": "„{{description}}“ hat eine Abrechnungshistorie und wird daher beendet statt gelöscht. Keine neuen Zeiträume; bereits abgerechnete Zeiträume werden weiterhin abgeschlossen. Abgeschlossene Zeiträume bleiben im Vertrag.",
+        "confirm": "Kontingent beenden",
+        "toast": "Stundenkontingent beendet"
+      },
+      "detail": {
+        "title": "Stundenkontingent",
+        "usage": "{{used}} von {{included}} Stunden verbraucht · {{remaining}} verbleibend · Zeitraum endet am {{end}}",
+        "carried": "Enthält {{hours}} übertragene Stunden.",
+        "unapproved": "{{hours}} Stunden dieser Zeit sind noch nicht genehmigt.",
+        "foreign": "{{hours}} Stunden wurden in einer anderen Währung erfasst; sie verbrauchen das Kontingent trotzdem.",
+        "over": "{{hours}} Stunden über dem Kontingent → {{amount}} bei Zeitraumabschluss",
+        "advanceNote": "Mehrstunden werden auf der folgenden Rechnung abgerechnet.",
+        "arrearsNote": "Mehrstunden werden auf der Rechnung für diesen Zeitraum abgerechnet.",
+        "lateEntry": "{{hours}} Stunden wurden nach Abschluss ihres Zeitraums erfasst und werden separat abgerechnet.",
+        "startsLater": "Das Kontingent beginnt am {{date}}.",
+        "extraRate": "Zusätzliche Stunden: je {{rate}}",
+        "loadFailed": "Die Kontingentnutzung konnte nicht geladen werden."
+      },
+      "history": {
+        "title": "Abgeschlossene Kontingentzeiträume",
+        "empty": "Noch kein Kontingentzeitraum abgeschlossen.",
+        "included": "Enthalten",
+        "carriedIn": "Übertrag Eingang",
+        "used": "Verbraucht",
+        "over": "Darüber",
+        "carriedOut": "Übertrag Ausgang",
+        "loadMore": "Mehr laden",
+        "invoiceRemoved": "Mehrstunden-Rechnung entfernt – Stunden nicht abgerechnet"
       }
     }
   },
@@ -1714,7 +1771,8 @@
       "saveNotes": "Notizen konnten nicht gespeichert werden.",
       "saveTerms": "Die Bedingungen konnten nicht gespeichert werden.",
       "updateLine": "Position konnte nicht aktualisiert werden.",
-      "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position."
+      "noPriceForCurrency": "Kein Preis in {{currency}} für dieses Element. Legen Sie einen im Katalog an oder erfassen Sie eine manuelle Position.",
+      "saveLineDetail": "Die Darstellung der Zeiteinträge konnte nicht aktualisiert werden"
     },
     "fields": {
       "descriptionOptional": "Beschreibung (optional)",
@@ -1781,6 +1839,35 @@
     "linesScrollAria": "Rechnungspositionen – scrollen Sie seitwärts für weitere Spalten",
     "unsavedField": {
       "lines": "Positionen"
+    },
+    "lineDetail": {
+      "default": "Abrechnungsvorgabe",
+      "grouping": "Darstellung",
+      "groupingDay": "Nach Tag gruppieren",
+      "groupingEntry": "Eine Zeile pro Eintrag",
+      "help": "Überschreibt Ihre Abrechnungsvorgabe nur für diesen Entwurf.",
+      "hide": "Ausblenden",
+      "show": "Anzeigen",
+      "showDate": "Arbeitsdatum",
+      "showNote": "Notiz des Technikers",
+      "showWorkedTime": "Geleistete vs. abgerechnete Zeit",
+      "title": "Zeiteintragszeilen"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} Zeilen blockieren die Ausstellung: Ihre Zeiteinträge wurden auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "billedElsewhere_one": "{{count}} Zeile blockiert die Ausstellung: Ihr Zeiteintrag wurde auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "billedElsewhere_other": "{{count}} Zeilen blockieren die Ausstellung: Ihre Zeiteinträge wurden auf einer anderen Rechnung abgerechnet. Vor dem Ausstellen entfernen:",
+      "button": "Aus Zeiteinträgen aktualisieren",
+      "drifted": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "drifted_one": "{{count}} Zeile unverändert: Die abgerechnete Zeit des Zeiteintrags passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "drifted_other": "{{count}} Zeilen unverändert: Die abgerechnete Zeit der Zeiteinträge passt nicht mehr zur Menge. Menge anpassen oder neuen Entwurf erstellen.",
+      "error": "Aktualisierung aus Zeiteinträgen fehlgeschlagen",
+      "help": "Übernimmt Notizen, Arbeitsdatum und Freigabe aus den Zeiteinträgen. Mengen, Preise und von Hand bearbeitete Beschreibungen ändern sich nie.",
+      "running": "Wird aktualisiert…",
+      "skipped": "{{count}} Zeilen übersprungen: Die Zeiteinträge wurden anderweitig abgerechnet, entfernt oder sind für diesen Entwurf nicht mehr abrechenbar.",
+      "skipped_one": "{{count}} Zeile übersprungen: Der Zeiteintrag wurde anderweitig abgerechnet, entfernt oder ist für diesen Entwurf nicht mehr abrechenbar.",
+      "skipped_other": "{{count}} Zeilen übersprungen: Die Zeiteinträge wurden anderweitig abgerechnet, entfernt oder sind für diesen Entwurf nicht mehr abrechenbar.",
+      "summary": "Aktualisiert: {{refreshed}} · Bereits aktuell: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2028,6 +2115,7 @@
     "empty": "Diese Rechnung enthält noch keine Einzelposten.",
     "fallbackTitle": "Rechnung",
     "issued": "Ausgestellt",
+    "laborLine": "Arbeitszeit",
     "preview": {
       "description": "Das sieht Ihr Kunde auf seiner Rechnung.",
       "downloadError": "Die Rechnung PDF konnte nicht heruntergeladen werden.",
@@ -2124,7 +2212,9 @@
       "sourceAria": "Rechnungsquelle",
       "title": "Neue Rechnung",
       "to": "Zu",
-      "working": "Arbeiten…"
+      "working": "Arbeiten…",
+      "heldForHourBlock_one": "{{count}} Zeiteintrag ({{hours}} Stunden) wird für das Stundenkontingent dieser Organisation zurückgehalten und abgerechnet, sobald der Kontingentzeitraum abgeschlossen ist.",
+      "heldForHourBlock_other": "{{count}} Zeiteinträge ({{hours}} Stunden) werden für das Stundenkontingent dieser Organisation zurückgehalten und abgerechnet, sobald der Kontingentzeitraum abgeschlossen ist."
     },
     "empty": {
       "description": "Fassen Sie nicht abgerechnete Zeit und Teile in einem Entwurf zusammen oder erstellen Sie eine leere Rechnung.",
@@ -2295,7 +2385,15 @@
       "prefixInvalid": "Geben Sie ein Präfix mit 1 bis 12 Zeichen ein.",
       "taxRateInvalid": "Geben Sie einen Steuersatz von 0 bis 100 ein.",
       "termsDaysInvalid": "Geben Sie eine ganze Zahl von 0 bis 365 Tagen ein.",
-      "title": "Abrechnungsvorgaben"
+      "title": "Abrechnungsvorgaben",
+      "lineDetailTitle": "Zeiteintragszeilen auf Rechnungen",
+      "lineDetailHelp": "Legen Sie fest, was Kunden bei Zeiteinträgen sehen. Ein Rechnungsentwurf kann dies überschreiben; die Auswahl wird bei der Ausstellung der Rechnung festgeschrieben.",
+      "lineShowDate": "Arbeitsdatum anzeigen",
+      "lineShowNote": "Notiz des Technikers anzeigen",
+      "lineShowWorkedTime": "Geleistete und abgerechnete Zeit anzeigen",
+      "lineGrouping": "Darstellung",
+      "lineGroupingEntry": "Eine Zeile pro Eintrag",
+      "lineGroupingDay": "Nach Tag gruppieren"
     },
     "loadError": "Die Abrechnungseinstellungen konnten nicht geladen werden.",
     "loading": "Abrechnungseinstellungen werden geladen…",

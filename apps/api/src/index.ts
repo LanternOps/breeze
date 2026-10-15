@@ -17,8 +17,12 @@ import { secureHeaders } from 'hono/secure-headers';
 import { securityMiddleware } from './middleware/security';
 import { exceptPathPrefix } from './middleware/pathExemption';
 import { requestPathLogger } from './middleware/requestPathLogger';
+import { agentAdmission } from './middleware/agentAdmission';
+import { startAdmissionControl, stopAdmissionControl } from './services/admission/admissionRuntime';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
 import { globalRateLimit } from './middleware/globalRateLimit';
+import { exceptTunnelSurface, isTunnelSurface, tunnelHostClassifier, tunnelHostDispatch } from './middleware/tunnelHostDispatch';
+import { tunnelHostRoutes } from './routes/tunnelHost';
 import { authRoutes } from './routes/auth';
 import { accountDeletionAdminRoutes } from './routes/auth/accountDeletion';
 import { configRoutes } from './routes/config';
@@ -35,6 +39,7 @@ import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
 import { callerVerificationRoutes } from './routes/callerVerification';
+import { endpointMessageRoutes } from './routes/endpointMessages';
 import { mailboxRoutes } from './routes/tickets/mailboxConnect';
 import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
@@ -51,6 +56,7 @@ import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
 import { ticketApprovalSettingsRoutes } from './routes/tickets/approvalSettings';
+import { ticketApprovalRoutes } from './routes/tickets/approvals';
 import { autopayRoutes } from './routes/autopay';
 import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { publicAutopayRoutes } from './routes/autopay/public';
@@ -91,10 +97,12 @@ import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
 import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
+import { migrationWindowRoutes } from './routes/migrationWindows';
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
 import { supportPublicRoutes } from './routes/supportPublic';
+import { callerVerifyPublicRoutes } from './routes/callerVerifyPublic';
 import { ssoRoutes } from './routes/sso';
 import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
 import { preAssignmentRoutes } from './routes/preAssignment';
@@ -289,6 +297,7 @@ import { registerTopologyPhysicalAuthorities } from './services/topology/physica
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
+import { getClusterCacheBus } from './services/clusterCacheBus';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
@@ -329,11 +338,13 @@ import { webhookDeliveries } from './db/schema';
 import { resolveFallbackOrgId } from './services/auditFallbackOrg';
 import { ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
+import { registerAllEffectProbes } from './services/aiOperator/effectProbes/bootstrap';
 import {
   createReadinessEvaluator,
   type WorkerInitPhase
 } from './services/readiness';
 import { createReadinessHandler } from './routes/readiness';
+import { dbSaturationResponse } from './middleware/dbSaturationResponse';
 import { resolveReadinessTiming } from './config/readinessConfig';
 
 const { db } = dbModule;
@@ -451,6 +462,17 @@ const resolveCorsOrigin = createCorsOriginResolver({
 // but was never mounted, so neither series appeared in a production scrape.
 app.use('*', metricsMiddleware);
 app.use('*', requestPathLogger());
+// W08 (#8147): agent admission control. Directly after the request logger so a
+// refusal is still counted (metricsMiddleware) and logged with its reason, and
+// before everything that costs: secure headers, the body-limit gate, the Redis
+// round trip in globalRateLimit, the partner guard, agent auth's DB transaction
+// and any body read. O(1), no I/O, never inside a DB context. A pass-through
+// until the admission controller starts, and in BREEZE_ADMISSION_MODE=off.
+app.use('*', agentAdmission());
+// Network Proxy host mode (spec 2026-10-06 §3): classify by Host + the Caddy
+// tunnel-site assertion. Runs after metrics/logging (they cover tunnel traffic)
+// and before every app header/CORS middleware (those skip tunnel surfaces).
+app.use('*', tunnelHostClassifier());
 
 // The tunnel-http proxy route (routes/tunnelHttp.ts) sets its own response
 // headers on every request — a restrictive sandboxed CSP that intentionally
@@ -461,7 +483,9 @@ app.use('*', requestPathLogger());
 // wrong for that one route: applied on top, they silently won the merge over
 // the route's own response and broke iframe embedding entirely (the route's
 // sandbox CSP never reached the browser). Skip only the conflicting header
-// output for that path prefix; every other route keeps it unchanged.
+// output for that path prefix; every other route keeps it unchanged. Tunnel
+// hosts (host mode) are exempted the same way via `exceptTunnelSurface` /
+// `skipHeadersWhen`.
 //
 // `securityMiddleware()` also enforces FORCE_HTTPS redirect and
 // canonical-Host rejection, which have nothing to do with the CSP conflict
@@ -469,7 +493,7 @@ app.use('*', requestPathLogger());
 // its own `skipHeadersPathPrefix` option (headers only), not via
 // `exceptTunnelHttp`, which would drop that transport enforcement as well.
 const TUNNEL_HTTP_PATH_PREFIX = '/api/v1/tunnel-http/';
-const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, mw);
+const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, exceptTunnelSurface(mw));
 
 app.use(
   '*',
@@ -485,7 +509,7 @@ app.use(
     })
   )
 );
-app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX }));
+app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface }));
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
@@ -494,6 +518,9 @@ app.use(
   })
 );
 app.use('*', globalRateLimit());
+// Tunnel hosts end here: the body limit (fixed policy on tunnel surfaces, not
+// path-keyed), rate limit (tunnel bucket, no path skips), metrics and logging ran; no app route, auth, prettyJSON or CORS is reachable on a tunnel host.
+app.use('*', tunnelHostDispatch(tunnelHostRoutes));
 app.use('*', prettyJSON());
 app.use(
   '*',
@@ -762,11 +789,19 @@ api.route('/alert-templates', alertTemplateRoutes);
 // authMiddleware) gate (the Microsoft admin-consent redirect carries no Bearer
 // token). The callback authenticates via signed state + binding cookie instead.
 api.route('/tickets/mailbox', mailboxRoutes);
+// Customer work approval staff routes (#4617 W03): absolute paths spanning
+// /tickets/:id/approval-*, /ticket-approval-requests/:id/* and
+// /time-entries/:id/write-off-held, each with its own authMiddleware. Mounted
+// BEFORE the /tickets and /time-entries hubs so these paths are matched here
+// first and never fall through those hubs' .use('*') chains.
+api.route('/', ticketApprovalRoutes);
 api.route('/tickets', ticketsRoutes);
 // Caller verification (#6354 W01): mounted at the root because its paths
 // span /orgs/:orgId/…, /partner/… and /orgs/:orgId/tickets/:ticketId/…; the
 // router gates itself (404 while CALLER_VERIFICATION_ENABLED !== 'true').
 api.route('/', callerVerificationRoutes);
+// Endpoint messaging (#8741 W1): technician -> end-user message fan-out.
+api.route('/endpoint-messages', endpointMessageRoutes);
 api.route('/catalog', catalogRoutes);
 // Public, token-gated invoice view-and-pay (no auth) — MUST precede the
 // auth-gated /invoices router so the unauthenticated /invoices/public/* sub-path
@@ -838,6 +873,8 @@ api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/service-principals', servicePrincipalRoutes);
 api.route('/partner-service-principals', partnerServicePrincipalRoutes);
+// Ticket migration windows (#8313): partner-wide admin grants of import mode.
+api.route('/migration-windows', migrationWindowRoutes);
 api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -846,6 +883,11 @@ api.route('/installer', installerRoutes);
 // Guarded by ~44 bits of code entropy, a 15-minute TTL, per-IP rate limits
 // and a single atomic pending->claimed transition.
 api.route('/support', supportPublicRoutes);
+// Public caller-verification card (#6354 W03) — the 32-byte SMS/email link
+// token is the only credential (no bearer). 404 while CALLER_VERIFICATION_ENABLED
+// is off, before any Redis/DB work; per-IP, per-token and miss budgets; one
+// hash lookup in a short system context. See routes/callerVerifyPublic.ts.
+api.route('/verify', callerVerifyPublicRoutes);
 api.route('/sso', ssoRoutes);
 // Mounted directly at /partners (not nested under /orgs' /partners/me or the
 // legacy singular /partner router) — final URL /api/v1/partners/me/login-branding
@@ -1103,6 +1145,13 @@ app.onError((err, c) => {
     );
   }
 
+  // W08 (#8147): a pool-acquire timeout (#8229/#8243) or an RLS prologue
+  // timeout means the caller's work never ran — answer 503 + Retry-After so
+  // agents make one attempt per cycle instead of four, and keep saturation out
+  // of Sentry (see middleware/dbSaturationResponse.ts).
+  const saturated = dbSaturationResponse(err, c);
+  if (saturated) return saturated;
+
   // #3022 — say out loud what a CONNECT_TIMEOUT actually means before the raw
   // error is logged. The driver's own message is `write CONNECT_TIMEOUT
   // <host>:<port>`, which reads as a database or network fault and sent the
@@ -1330,6 +1379,7 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
   // requirement — it just stops starvation warnings from being emitted about a
   // process that is deliberately winding down and no longer serving traffic.
   stopEventLoopMonitor();
+  stopAdmissionControl();
   // #3214. Also already unref'd, so this is tidiness — but it additionally stops
   // the watchdog opening a fresh probe connection while the pool is draining,
   // which would report `database-unreachable` about a process that is simply
@@ -1433,6 +1483,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         shutdownAgentCommandRelayWorker,
       ],
     },
+    // 3b. W05: the cluster cache subscriber owns its own duplicate connection.
+    { name: 'cluster-cache-bus', tasks: [() => getClusterCacheBus().stop()] },
     // 4. Event bus releases its borrowed connection reference (no quit — Task 2).
     { name: 'eventbus', tasks: [async () => getEventBus().close()] },
     // 5. The ONLY owner of the Redis quits.
@@ -1699,6 +1751,8 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Platform admin bootstrap failed (non-fatal):', err);
   }
 
+  registerAllEffectProbes(); // Recipe Library E4: provider effect probes, registered once
+
   await runStartupChecks();
 
   // #6452 — Redis memory watchdog. Started after runStartupChecks so the
@@ -1866,6 +1920,16 @@ async function bootstrap(): Promise<void> {
   // issued. Installed before serving, so no request can dial without it.
   registerGatewayConnectionCheck();
 
+  // W05 (#8144): subscribe to cluster cache invalidations before serving, so a
+  // write on another instance reaches this one's hot-path caches. Bounded at
+  // 1 s and never throws; without Redis the caches stay TTL-only.
+  const clusterCacheOutcome = startupChecks.redisOk ? await getClusterCacheBus().start() : 'unavailable';
+  if (clusterCacheOutcome === 'subscribed') console.log('[clusterCache] subscriber subscribed');
+  else console.warn(`[clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this instance are TTL-only until it subscribes`);
+
+  // W08: start sampling only after migrations and boot work, so their stalls
+  // never enter the controller's history. Admission never affects /ready.
+  startAdmissionControl();
   server = serve({
     fetch: app.fetch,
     port

@@ -32,6 +32,7 @@ import DeviceCoverageNotice, { formatUncoveredBreakdown } from './DeviceCoverage
 import { LINE_TYPE_LABELS } from './lineTypes';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
 import PeriodOutcomeRow from './PeriodOutcomeRow';
+import HourBlockPanel from './HourBlockPanel';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -386,6 +387,16 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             )}
           </div>
 
+          {lines.some((l) => l.lineType === 'hour_block') && (
+            <HourBlockPanel
+              contractId={contract.id}
+              currency={currency}
+              hourBlock={estimate?.hourBlock ?? null}
+              estimateFailed={estimateFailed}
+              reloadKey={estimate}
+            />
+          )}
+
           {/* Lines (read-only) */}
           <div className="rounded-lg border bg-card shadow-xs">
             <table className="w-full text-sm" data-testid="contract-detail-lines">
@@ -426,6 +437,9 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                                 ? `${l.deviceGroup.name}${l.deviceGroup.type === 'dynamic' ? ` · ${t('contracts.shared.dynamicGroup')}` : ''}`
                                 : t('contracts.shared.deletedGroup', { name: l.deviceGroupName ?? '' })}
                             </span>
+                          : null}
+                        {l.lineType === 'hour_block' && l.hourBlockRetiredAt
+                          ? <span className="block text-xs text-muted-foreground">{t('contracts.hourBlock.row.retiredBadge')}</span>
                           : null}
                       </td>
                       <td className="px-3 py-2">{l.description}</td>

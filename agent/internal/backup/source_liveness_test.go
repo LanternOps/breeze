@@ -467,6 +467,9 @@ func (p *expiringProvider) attemptCount() int {
 // the run with an explicit error, NOT record every remaining healthy file as an
 // individual per-file failure.
 func TestCreateSnapshot_ShadowCopyLostMidRun_AbortsExplicitly(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	defer setShortUploadRetryDelayForTest(0)()
 	defer setUploadRetryDelayForTest(0)()
 
@@ -599,6 +602,9 @@ func (p *dyingOnRetryProvider) Delete(string) error           { return nil }
 // upload loop probes liveness on both sides of the retry, and this pins the
 // second probe specifically.
 func TestCreateSnapshot_ShadowCopyLostDuringRetry_AbortsExplicitly(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	defer setShortUploadRetryDelayForTest(0)()
 	defer setUploadRetryDelayForTest(0)()
 
@@ -646,6 +652,9 @@ func TestCreateSnapshot_ShadowCopyLostDuringRetry_AbortsExplicitly(t *testing.T)
 // next attempt resumes into the very same snapshot ID. No manifest is published
 // — that would stake a completed-snapshot claim on an ID still being filled in.
 func TestCreateSnapshot_SourceGoneWithJournal_PreservesPrefixAndJournal(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	defer setShortUploadRetryDelayForTest(0)()
 	defer setUploadRetryDelayForTest(0)()
 
@@ -708,6 +717,9 @@ func TestCreateSnapshot_SourceGoneWithJournal_PreservesPrefixAndJournal(t *testi
 // against pre-#3260 behaviour, where the same run left a usable (flagged)
 // restore point behind. The run is still reported as failed.
 func TestCreateSnapshot_SourceGoneWithoutJournal_PublishesPartialManifest(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	defer setShortUploadRetryDelayForTest(0)()
 	defer setUploadRetryDelayForTest(0)()
 
@@ -755,6 +767,9 @@ func TestCreateSnapshot_SourceGoneWithoutJournal_PublishesPartialManifest(t *tes
 // Nothing landed: there is no restore point to preserve, so the journal-less
 // abort disposes of the prefix as any other journal-less abort would.
 func TestCreateSnapshot_SourceGoneWithoutJournal_NoFilesUploaded_CleansUp(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	defer setShortUploadRetryDelayForTest(0)()
 	defer setUploadRetryDelayForTest(0)()
 

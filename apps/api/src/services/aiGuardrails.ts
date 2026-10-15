@@ -82,12 +82,20 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     'log_time_entry',
     'start_timer',
     'stop_timer',
+    'update_time_entry',
     // P2-4 (#4191) ticket triage: same family as update_fields — low-risk,
     // ticket-scoped mutations an autonomous triage run makes. link_device
     // only sets a currently-null device_id (never overwrites); draft only
     // writes an internal ticket_drafts row, never a customer-visible comment.
     'link_device',
-    'draft'
+    'draft',
+    // #8596: ticket-to-ticket links. Same tier as comment/assign: internal,
+    // reversible, bounded to one org (the service refuses cross-org links).
+    // Listing them here is also what denies them to a ticket-triggered
+    // (device-less) agent run — ticketShadowGuardrail.contract.test.ts
+    // derives its mutation set from this list.
+    'link_ticket',
+    'unlink_ticket'
   ],
   // #6930: ticket-scoped checklist step edits, same family as update_fields.
   // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
@@ -294,7 +302,7 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_service_monitors: ['list'],
   manage_software_policies: ['list', 'get'],
   manage_ticket_checklist: ['list', 'list_templates', 'get_template'],
-  manage_tickets: ['list', 'get', 'list_work_types'],
+  manage_tickets: ['list', 'get', 'list_work_types', 'list_links'],
   manage_update_rings: ['list', 'get'],
   query_agent_versions: ['list_versions', 'check_upgrades'],
   query_analytics: ['sla_compliance', 'capacity_predictions', 'sla_definitions'],
@@ -522,6 +530,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // headless registry via makeSessionAwareHandler, but still carry a real
   // tier via m365ToolTiers).
   'm365_disable_user', 'm365_reset_password',
+  // AI Operator plan approval — ONE four-eyes decision over an ordered,
+  // digest-pinned set of provider effects (Recipe Library spec §6.4). Four-eyes
+  // for the same reason every effect inside it is: the set can destroy a
+  // person's access across two providers.
+  'operator_plan',
   // Identity / account control — Google Workspace. Every mutating Google tool
   // acts on a human identity/mailbox/account, not a device, so the whole
   // mutating surface is classified four_eyes (categorical reading of spec
@@ -864,10 +877,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_time_entries: { resource: 'time_entries', action: 'read' },
   get_running_timer: { resource: 'time_entries', action: 'read' },
   get_timesheet: { resource: 'time_entries', action: 'read' },
+  get_ticket_approval_status: { resource: 'tickets', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_device_hardware_health: { resource: 'devices', action: 'read' },
   get_device_time_status: { resource: 'devices', action: 'read' },
+  query_device_workloads: { resource: 'devices', action: 'read' },
   list_time_sync_issues: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
@@ -877,6 +892,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   analyze_metrics: { resource: 'devices', action: 'read' },
   get_s1_status: { resource: 'devices', action: 'read' },
   get_s1_threats: { resource: 'devices', action: 'read' },
+  get_edr_status: { resource: 'devices', action: 'read' },
+  list_edr_detections: { resource: 'devices', action: 'read' },
   s1_isolate_device: { resource: 'devices', action: 'execute' },
   s1_threat_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
@@ -918,6 +935,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     log_time_entry: { resource: 'time_entries', action: 'write' },
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },
+    update_time_entry: { resource: 'time_entries', action: 'write' },
     // P2-4 (#4191): deliberately 'update', not 'write' — no seeded role
     // grants `tickets:update` (seed.ts only ever grants tickets:read/write/
     // manage), so this fails CLOSED for `checkToolPermission`'s interactive
@@ -928,6 +946,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // caller of these two actions needs a real permission grant added first.
     link_device: { resource: 'tickets', action: 'update' },
     draft: { resource: 'tickets', action: 'update' },
+    // #8596 — same grants as routes/tickets/links.ts (GET read, POST/DELETE write).
+    list_links: { resource: 'tickets', action: 'read' },
+    link_ticket: { resource: 'tickets', action: 'write' },
+    unlink_ticket: { resource: 'tickets', action: 'write' },
   },
   // #6930 — same grants as routes/tickets/checklist.ts (TICKETS_READ/WRITE)
   // and the templates route (reads are TICKETS_READ).
@@ -955,6 +977,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_draft: { resource: 'invoices', action: 'write' },
     assemble_from_org: { resource: 'invoices', action: 'write' },
     assemble_from_ticket: { resource: 'invoices', action: 'write' },
+    refresh_time_lines: { resource: 'invoices', action: 'write' },
     issue: { resource: 'invoices', action: 'send' },
     void: { resource: 'invoices', action: 'send' },
     record_payment: { resource: 'invoices', action: 'send' },
@@ -1351,6 +1374,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
+  get_fleet_device_stats: { resource: 'devices', action: 'read' },
   get_invite_funnel: { resource: 'devices', action: 'read' },
   // Fleet hygiene findings (Task 8) — read-only, mirrors the
   // GET /fleet/findings route's requireFindingsRead (DEVICES_READ) gate.
@@ -1546,6 +1570,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   m365_recent_signins: { resource: 'organizations', action: 'read' },
   m365_list_group_memberships: { resource: 'organizations', action: 'read' },
   m365_disable_user: { resource: 'organizations', action: 'write' },
+  // Org-wide identity governance, provider-neutral: a plan may hold M365,
+  // Google and device effects at once, so it takes the identity-tenant ceiling.
+  operator_plan: { resource: 'organizations', action: 'write' },
   m365_reset_password: { resource: 'organizations', action: 'write' },
   // Google Workspace helpdesk tools (DWD service-account-backed). Same
   // reasoning as the M365 block above; routes/google.ts:29-30 gates the
@@ -2978,6 +3005,11 @@ function buildApprovalDescription(
   const parts: string[] = [];
 
   switch (toolName) {
+    case 'operator_plan': {
+      const n = Array.isArray(input.effects) ? input.effects.length : 0;
+      parts.push(`Approve a ${n}-effect plan for AI Operator task ${String(input.taskId ?? '')}`);
+      break;
+    }
     case 'execute_command': {
       const commandType = nonEmptyText(input.commandType);
       const payload = (input.payload && typeof input.payload === 'object'

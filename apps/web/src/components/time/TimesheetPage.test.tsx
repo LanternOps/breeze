@@ -138,6 +138,17 @@ describe('TimesheetPage', () => {
     expect(screen.getByTestId('timesheet-entry-te-3').textContent).not.toContain('$');
   });
 
+  it('#8604: the edit form tells the tech the note prints on the invoice', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/time-entries/timesheet')) return jsonRes(week);
+      if (url.startsWith('/users')) return jsonRes([]);
+      return jsonRes({});
+    });
+    render(<TimesheetPage />);
+    fireEvent.click(await screen.findByTestId(`timesheet-edit-${entry.id}`));
+    expect(screen.getByTestId('time-entry-note-invoice-cue')).toHaveTextContent(/on their invoice/i);
+  });
+
   // Review #5 (#3776): a billed entry may still have its description edited, but
   // the API rejects the PATCH (409 ENTRY_BILLED) if any locked field is PRESENT
   // in the body — so the body must carry only the description for billed rows.
@@ -511,6 +522,49 @@ describe('TimesheetPage — delete entry (#8133)', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
       type: 'error',
       message: "This entry has been invoiced and can't be deleted. Void the invoice first.",
+    })));
+  });
+});
+
+// Customer work approval (#8196).
+describe('TimesheetPage held time', () => {
+  const heldEntry = { ...entry, id: 'held-1', billingStatus: 'awaiting_approval' };
+  const route = () => fetchWithAuth.mockImplementation(async (url: string) => {
+    if (url === '/billing-profiles/work-types') return { ok: true, json: async () => ({ workTypes: [] }) } as Response;
+    if (url.startsWith('/time-entries/timesheet')) {
+      return jsonRes({ ...week, days: [{ date: '2026-06-08', totalMinutes: 90, billableMinutes: 90, entries: [heldEntry, entry] }, ...week.days.slice(1)] });
+    }
+    if (url.startsWith('/users')) return jsonRes([]);
+    return jsonRes({});
+  });
+
+  it('chips held entries and offers Write off only to billing managers', async () => {
+    route();
+    const { unmount } = render(<TimesheetPage />);
+    expect(await screen.findByTestId('time-entry-awaiting-approval-held-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('time-entry-awaiting-approval-te-1')).toBeNull();
+    expect(screen.getByTestId('time-entry-write-off-held-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('time-entry-write-off-te-1')).toBeNull();
+    unmount();
+    canManageBilling = false;
+    render(<TimesheetPage />);
+    await screen.findByTestId('time-entry-awaiting-approval-held-1');
+    expect(screen.queryByTestId('time-entry-write-off-held-1')).toBeNull();
+  });
+
+  it('shows localized copy when the write-off is refused with ENTRY_NOT_RESOLVABLE', async () => {
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return { ok: false, status: 409, json: async () => ({ error: 'x', code: 'ENTRY_NOT_RESOLVABLE' }) } as Response;
+      if (url === '/billing-profiles/work-types') return { ok: true, json: async () => ({ workTypes: [] }) } as Response;
+      if (url.startsWith('/time-entries/timesheet')) return jsonRes({ ...week, days: [{ date: '2026-06-08', totalMinutes: 90, billableMinutes: 90, entries: [heldEntry] }, ...week.days.slice(1)] });
+      return jsonRes([]);
+    });
+    render(<TimesheetPage />);
+    fireEvent.click(await screen.findByTestId('time-entry-write-off-held-1'));
+    fireEvent.click(await screen.findByTestId('time-entry-write-off-confirm-held-1'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error',
+      message: expect.stringMatching(/written off once its approval request/),
     })));
   });
 });

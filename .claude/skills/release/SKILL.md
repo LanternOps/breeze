@@ -37,6 +37,12 @@ git -C ~/breeze log --oneline $PREV..HEAD                  # everything that wil
 - **Full release of everything on main** (the normal case): tag off `main` HEAD.
 - **True surgical hotfix**: branch + tag off `$PREV`, cherry-pick *only* the fix. Do **not** tag off main HEAD if you don't intend to ship all of main.
 
+**Candidate / hotfix prerelease tags (commit not on main): register first, then tag.** The Release workflow's Validate Release Lineage step reads `.github/release-provenance/candidate-tags.tsv` from `origin/main`, so the row must be on main before the tag build runs:
+
+1. Open a PR adding the row `<tag>\t<exact candidate commit SHA>\t<integration ref>\t<note>`. A row whose tag does not exist yet is skipped by both CI's Check Migrations and other candidates' Validate Release Lineage (#8132), so it does not block anything while pending.
+2. Merge it.
+3. Push the tag at exactly that SHA. Once the tag exists, both scripts check the row whenever they read the registry: a tag that peels to a different commit fails with `candidate registry SHA mismatch`. If a candidate is abandoned before tagging, remove its row.
+
 If migrations are listed, you're committing prod to those migrations the moment the new API boots. Read them; confirm there are no large-table rewrites/backfills before you proceed (call those out in the upgrade notes if present).
 
 **Smoke-test privileged migrations as a NON-SUPERUSER role (learned the hard way, v0.95.0→v0.95.1).** CI and the local docker-compose test DB both migrate as the Postgres **superuser** (`POSTGRES_USER=breeze`), which silently passes statements a least-privilege role would be *denied*. Prod is DO-managed **`doadmin` — NOT a superuser**, so a migration that only a superuser can run passes every test and then **crash-loops the API on deploy** (this is exactly what took EU down on v0.95.0: `ALTER FUNCTION ... OWNER TO <role>` requires the *new owner* to hold `CREATE` on the schema; a superuser bypasses that check, doadmin does not → `permission denied for schema public`). So: any migration in the range that does `CREATE ROLE`, `ALTER ... OWNER TO`, `GRANT`/`REVOKE` on a schema, `CREATE EXTENSION`, or a `SECURITY DEFINER` function — **run it against a non-superuser role before tagging.** Two ways: pipe the migration to a real managed DB (or a droplet's `doadmin`) inside `BEGIN; ...; ROLLBACK;` with `ON_ERROR_STOP=1`, or `SET ROLE <nosuperuser-createrole-role>` on a local DB that already has the full schema. If it only works as a superuser, fix it forward (grant the owning role the privilege for the one statement, then revoke) **before** it reaches prod.
@@ -48,6 +54,29 @@ If migrations are listed, you're committing prod to those migrations the moment 
 1. Read the newest `docs/testing/release-sweeps/*.md` and its **"Before the release cut"** list, plus `docs/release-notes/next-release-draft.md` → "Release to-do". Any sweep fix PR named there merges before the tag.
 2. **Rows a sweep left `BLOCKED` / `PARTIAL` for want of a live agent are run on the SSH lab rigs before tagging — not deferred to after the cut, and not left for a reporter to find.** Use the non-prod rigs (the second Windows Server VM and the lab-hyperv-host `lab-ubuntu-src` VM are lab-enrolled against a local stack; the first Windows VM and the Ubuntu KVM rig are prod-enrolled — leave those alone unless the row is about prod upgrade behaviour). Recipe: `pnpm wt-stack up` at the commit to be tagged → cross-compile the agent family from that commit (`GOOS=… CGO_ENABLED=0 go build -ldflags "-X main.version=<v>"`) → back up the rig's agent config → re-point `server_url` at the Mac's Tailscale/LAN address and re-enroll → run the rows → restore the config. Record results in the sweep doc.
 3. A row that still cannot be run (no hardware for it) is carried into the release body's known-gaps note with the exact prerequisite, by name.
+
+## Step 0.3 — Dynamic security gates, at the exact commit you will tag
+
+Unit tests and static analysis read the code. These gates exercise it running. All three are run against the SHA you are about to tag, not "main around now". Results and any findings go in the **private** release register in `~/breeze-security`, never in the release body, a PR, or an issue.
+
+Both workflow gates are dispatched at the SHA and watched to the end. `gh run list -L1` right after `gh workflow run` often returns the PREVIOUS run, and a dispatch run's head SHA is the workflow's branch, not your `ref`, so pick the run created after your dispatch. Each run's summary records the commit it actually tested; check it says your SHA.
+
+```bash
+SHA=$(git -C ~/breeze rev-parse HEAD)
+dispatch_and_watch() {   # $1 = repo, $2 = workflow file
+  local since run; since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  gh workflow run "$2" -R "$1" -f ref="$SHA" || return 1
+  until run=$(gh run list -R "$1" -w "$2" -e workflow_dispatch -L5 --json databaseId,createdAt \
+      --jq "[.[] | select(.createdAt >= \"$since\")] | last | .databaseId // empty") && [ -n "$run" ]; do sleep 5; done
+  gh run watch "$run" -R "$1" --exit-status
+}
+```
+
+1. **Extended fuzzing (private).** The agent's fuzz targets (`agent/**/*_fuzz_test.go`) run time-boxed in the private security repo so a crashing input never appears in public logs: `dispatch_and_watch LanternOps/breeze-security agent-fuzz.yml`. Green is required. A red run means a crasher: it blocks the cut until it is triaged privately (fixed, or written up as not exploitable with Todd's sign-off). Do not re-run to get green.
+2. **Tenant isolation through the browser.** `e2e-tests/tests/tenant-isolation.spec.ts` signs in as one tenant and probes a second tenant's pages and API resources, with a positive control for every probe. It runs nightly on `main`, but the nightly run is not the gate: dispatch it at the SHA with `dispatch_and_watch LanternOps/breeze tenant-isolation-e2e.yml`. To run it locally instead: `pnpm wt-stack up`, then `pnpm wt-stack test -- tests/tenant-isolation.spec.ts`.
+3. **Pentest playbook on a running lab, for what this release touched.** Against a `wt-stack` or lab rig at this SHA, run the private playbook's per-release quick set, plus the chapters that `~/breeze-security/pentest/release-gate-map.md` selects for this release's changed paths (Step 0's `git diff --name-only $PREV..HEAD`). Any change to tenancy/RLS, auth/sessions/MFA, roles and permissions, agent enrollment, install or update, IPC, remote access, or AI tools always includes the cross-tenant quick leg. Record date, SHA, chapters run and results in the private release register. A finding of Medium or higher blocks the cut until fixed or explicitly accepted by Todd.
+
+If a gate cannot run (lab down, no hardware), the cut waits or Todd explicitly waives that gate for this release in the private register. A waiver is never implied.
 
 ## Step 0.4 — Author the in-app "What's New" entry (BEFORE tagging)
 
@@ -442,6 +471,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] `docs/release-notes/next-release-draft.md` read and folded into the body — then cleared
 - [ ] `git diff $PREV..HEAD --stat` + migrations reviewed — blast radius understood
 - [ ] **Pre-cut gates** (Step 0.2): newest sweep doc's "Before the release cut" list cleared, sweep fix PR merged, live-agent rows run on the lab rigs (not deferred)
+- [ ] **Dynamic security gates** (Step 0.3) at the tag SHA: private extended fuzz green, Tenant Isolation E2E green, touched-area pentest playbook entries run on the lab and recorded privately
 - [ ] In-app What's New entry added to `WHATS_NEW_ENTRIES` (`apps/web/src/lib/whatsNew.ts`) and **merged to main BEFORE the tag** — version = bare semver of this release (or deliberately skipped for an internal-only release)
 - [ ] Tag pushed (off main for full release / off $PREV for surgical hotfix)
 - [ ] **Abuse-asset gate** (Step 0.6): agent-family exes/MSI verified unsigned at the byte level, manifest all `edition=self-host`, checksums spot-checked
@@ -456,6 +486,7 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - [ ] Droplets deployed — **night region first** (back up → deploy → verify), then the other + `/health` green
 - [ ] Agent fleet promoted via slot-aware DB row change (both DBs) — only with Todd's go-ahead
 - [ ] Firewall exception removed (if the doctl fallback was used)
+- [ ] CVE requested for each advisory the private disclosure policy says gets one (request from the draft; it stays private until publish)
 - [ ] GHSA published *after* rollout (security releases only) — **and its row in `internal/security-advisory-queue.md` moved to Published.** If rollout finishes after this session ends, the queue row is what carries the debt forward; the next release's pre-flight gate will block on it.
 
 ## Notes & gotchas

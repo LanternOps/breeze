@@ -61,6 +61,10 @@ export const configFeatureTypeEnum = pgEnum('config_feature_type', [
   'time_sync',
   // #3834. APPENDED, matching the migration's ADD VALUE order.
   'workload_inventory',
+  // #4609. APPENDED, matching the migration's ADD VALUE order.
+  'system_protection',
+  // #6960. APPENDED, matching the migration's ADD VALUE order.
+  'security_agents',
 ]);
 
 export const configAssignmentLevelEnum = pgEnum('config_assignment_level', [
@@ -316,6 +320,12 @@ export const configPolicyPatchSettings = pgTable('config_policy_patch_settings',
   rebootAllowDeferral: boolean('reboot_allow_deferral').notNull().default(false),
   rebootMaxDeferrals: integer('reboot_max_deferrals').notNull().default(3),
   rebootDeferralMinutes: integer('reboot_deferral_minutes').notNull().default(60),
+  // #8030: optional replacement text for the end-user restart prompt. NULL
+  // keeps the agent's built-in text. Plain text, validated by the shared
+  // patchInlineSettingsSchema; `{{countdown}}` is substituted by the agent.
+  rebootPromptTitle: varchar('reboot_prompt_title', { length: 100 }),
+  rebootPromptBody: varchar('reboot_prompt_body', { length: 500 }),
+  rebootPromptButton: varchar('reboot_prompt_button', { length: 40 }),
   // #1872: when true, the Windows agent suppresses the native Windows Update
   // automatic-install channel (NoAutoUpdate=1) so patches flow only through
   // Breeze. Breeze's own WUA-driven installs are unaffected.

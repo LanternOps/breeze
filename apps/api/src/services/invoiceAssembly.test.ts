@@ -114,7 +114,7 @@ describe('partitionByCurrency', () => {
   const toSpec = (row: { id: string; currencyCode: string | null }, currency: string): DraftLineSpec => ({
     sourceType: 'time_entry', sourceId: row.id, catalogItemId: null, ticketId: null,
     description: `row ${row.id} in ${currency}`, quantity: '1.00', unitPrice: '1.00', costBasis: null,
-    taxable: false, customerVisible: true, lineTotal: '1.00', isUnapprovedTime: false, workedMinutes: null
+    taxable: false, customerVisible: true, lineTotal: '1.00', isUnapprovedTime: false, workedMinutes: null, workDate: null
   });
 
   it('includes header-currency rows and buckets the rest by their own currency (null → UNKNOWN)', () => {
@@ -200,7 +200,7 @@ describe('mergeAssembly', () => {
   const spec = (id: string): DraftLineSpec => ({
     sourceType: 'part', sourceId: id, catalogItemId: null, ticketId: null, description: id,
     quantity: '1', unitPrice: '1.00', costBasis: null, taxable: true, customerVisible: true,
-    lineTotal: '1.00', isUnapprovedTime: false, workedMinutes: null
+    lineTotal: '1.00', isUnapprovedTime: false, workedMinutes: null, workDate: null
   });
 
   it('concatenates included and merges blocked keys across parts', () => {
@@ -330,7 +330,7 @@ describe('aiUsageChargeToLineSpec (#7608)', () => {
     expect(aiUsageChargeToLineSpec(row, 'USD')).toMatchObject({
       sourceType: 'ai_usage', sourceId: 'ch-1', quantity: '1.00', unitPrice: '41.27', lineTotal: '41.27',
       taxable: false, customerVisible: true, ticketId: null, catalogItemId: null, costBasis: null,
-      isUnapprovedTime: false, workedMinutes: null,
+      isUnapprovedTime: false, workedMinutes: null, workDate: null,
       description: 'AI usage — W10 Test — 2026-11 · 1204 requests · 3200000 tokens',
     });
   });
@@ -357,5 +357,63 @@ describe('aiUsageChargeToLineSpec (#7608)', () => {
     const out = partitionByCurrency([row, { ...row, id: 'ch-eur', currencyCode: 'EUR' }], 'USD', aiUsageChargeToLineSpec);
     expect(out.included.map((s) => s.sourceId)).toEqual(['ch-1']);
     expect(out.blockedByCurrency.EUR!.map((s) => [s.sourceId, s.lineTotal])).toEqual([['ch-eur', '41.27']]);
+  });
+});
+
+describe('workDate on invoice lines (#8603)', () => {
+  const base = {
+    id: 'te-wd', ticketId: 'tk-1', description: 'Remote fix', durationMinutes: 60, billableMinutes: null,
+    hourlyRate: '100.00', isApproved: true, currencyCode: 'USD' as string | null,
+  };
+
+  it('stamps workDate from startedAt in the partner timezone, not UTC', () => {
+    // 02:30Z on Sep 17 is the evening of Sep 16 in New York.
+    const spec = timeEntryToLineSpec({ ...base, startedAt: new Date('2026-09-17T02:30:00Z') }, 'USD', 'America/New_York');
+    expect(spec.workDate).toBe('2026-09-16');
+  });
+
+  it('dates by startedAt only: a 23:30-local start that runs past midnight keeps the start day', () => {
+    // 23:30 Sep 16 New York (03:30Z Sep 17) + 90 min ends Sep 17 locally; the
+    // spec has no endedAt input at all, so the work date can only be Sep 16.
+    const spec = timeEntryToLineSpec({ ...base, durationMinutes: 90, startedAt: new Date('2026-09-17T03:30:00Z') }, 'USD', 'America/New_York');
+    expect(spec.workDate).toBe('2026-09-16');
+  });
+
+  it('defaults to UTC when no zone is passed', () => {
+    const spec = timeEntryToLineSpec({ ...base, startedAt: new Date('2026-09-17T02:30:00Z') }, 'USD');
+    expect(spec.workDate).toBe('2026-09-17');
+  });
+
+  it('leaves workDate null when startedAt is missing (never fabricates a date)', () => {
+    expect(timeEntryToLineSpec({ ...base, startedAt: null }, 'USD', 'UTC').workDate).toBeNull();
+    expect(timeEntryToLineSpec({ ...base }, 'USD', 'UTC').workDate).toBeNull();
+  });
+
+  it('does not change quantity, unitPrice, lineTotal or description', () => {
+    const a = timeEntryToLineSpec({ ...base, startedAt: new Date('2026-09-16T10:00:00Z') }, 'USD', 'UTC');
+    const b = timeEntryToLineSpec({ ...base, startedAt: null }, 'USD', 'UTC');
+    expect(a.workDate).toBe('2026-09-16');
+    expect({ ...a, workDate: null }).toEqual(b);
+  });
+
+  it('partitionTimeEntries threads the zone into included and currency-blocked specs', () => {
+    const result = partitionTimeEntries([
+      { ...base, id: 'a', startedAt: new Date('2026-09-17T02:30:00Z') },
+      { ...base, id: 'b', currencyCode: 'EUR', startedAt: new Date('2026-09-17T02:30:00Z') },
+    ], 'USD', 'America/New_York');
+    expect(result.included[0]!.workDate).toBe('2026-09-16');
+    expect(result.blockedByCurrency.EUR![0]!.workDate).toBe('2026-09-16');
+  });
+
+  it('part and AI-usage lines never carry a workDate', () => {
+    const part = ticketPartToLineSpec(
+      { id: 'p-1', ticketId: 'tk-1', catalogItemId: null, description: 'Cable', quantity: '2', unitPrice: '10.00', costBasis: null },
+      'USD'
+    );
+    expect(part.workDate).toBeNull();
+    const ai = aiUsageChargeToLineSpec({ id: 'ch-1', servedModel: 'm', modelLabel: 'M', periodStart: '2026-11-01',
+      usagePeriodStart: '2026-11-01', invocationCount: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0,
+      cacheWriteTokens: 0, amount: '1.00', currencyCode: 'USD' }, 'USD');
+    expect(ai.workDate).toBeNull();
   });
 });

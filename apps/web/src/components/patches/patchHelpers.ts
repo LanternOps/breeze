@@ -200,6 +200,10 @@ export function normalizeRing(raw: Record<string, unknown>): UpdateRingItem {
     gracePeriodHours: Number(raw.gracePeriodHours ?? 4),
     autoApprove: normalizeRingAutoApprove(raw.autoApprove),
     categoryRules: Array.isArray(raw.categoryRules) ? raw.categoryRules as UpdateRingItem['categoryRules'] : [],
+    // #8187: the ring's per-app block / pin rules. The editor round-trips this
+    // value, so anything that is not a list (missing on an older API, or a
+    // malformed row) loads as no rules rather than reaching the form.
+    appRules: Array.isArray(raw.appRules) ? raw.appRules as UpdateRingItem['appRules'] : [],
     deviceCount: raw.deviceCount != null ? Number(raw.deviceCount) : undefined,
     updatedAt: raw.updatedAt ? String(raw.updatedAt) : undefined,
   };
@@ -213,6 +217,8 @@ export type DevicePatchRow = {
   pendingPatches: number;
   approvedMissing: number;
   unapprovedMissing: number;
+  /** Outstanding patches whose latest install attempt failed (#7214). Disjoint from approved/unapprovedMissing. */
+  failedMissing: number;
   criticalMissing: number;
   importantMissing: number;
   osMissing: number;
@@ -220,6 +226,8 @@ export type DevicePatchRow = {
   lastInstalledAt?: string;
   lastScannedAt?: string;
   pendingReboot: boolean;
+  /** W06: distinct container images behind their registry tag; a stale image is an outstanding update. */
+  staleImages?: number;
   /** Device status from the /devices API ('online' | 'offline' | ...). Used to
    *  mute the pending-reboot badge for offline devices, whose reboot flag is
    *  frozen at the last heartbeat and may be stale (#2219). */
@@ -360,4 +368,13 @@ export function normalizeCompliance(raw: Record<string, unknown>): PatchComplian
     importantSummary,
     devicesNeedingPatches
   };
+}
+
+/**
+ * A device needs updates when it has an outstanding OS/software patch or a
+ * container image behind its registry tag (W06, spec §10.1 — the API's
+ * compliant-device count uses the same rule).
+ */
+export function deviceNeedsUpdates(device: Pick<DevicePatchRow, 'pendingPatches' | 'staleImages'>): boolean {
+  return device.pendingPatches > 0 || (device.staleImages ?? 0) > 0;
 }

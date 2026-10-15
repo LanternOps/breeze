@@ -192,7 +192,8 @@
     "script": "Skriptprüfung",
     "network_check": "Netzwerkprüfung",
     "hardware_health": "Hardwarezustand",
-    "time_sync": "Zeitsynchronisierung"
+    "time_sync": "Zeitsynchronisierung",
+    "container_image_currency": "Aktualität von Container-Images"
   },
   "fields": {
     "operator": "Vergleich",
@@ -244,7 +245,9 @@
     "expectedValue": "Erwarteter Wert",
     "nameserver": "DNS-Server",
     "degradedIsFailure": "Beeinträchtigt als Ausfall werten",
-    "maxResponseMs": "Fehler bei Antwort langsamer als (ms)"
+    "maxResponseMs": "Fehler bei Antwort langsamer als (ms)",
+    "eventLogCollectionNoSource": "Informations- und Warnungsereignisse aus dem Anwendungsprotokoll werden nur von {{providers}} erfasst. Ereignisse anderer Quellen lösen diese Regel nur auf den Stufen Fehler oder Kritisch aus.",
+    "eventLogCollectionSourceNotCollected": "Der Agent erfasst keine Informations- oder Warnungsereignisse aus dem Anwendungsprotokoll von „{{source}}“, daher greift diese Regel nur bei deren Fehler- oder kritischen Ereignissen. Erfasste Anbieter: {{providers}}."
   },
   "operators": {
     "gt": "größer als",
@@ -268,6 +271,7 @@
     "system": "System"
   },
   "eventLevels": {
+    "info": "Informationen",
     "warning": "Warnung",
     "error": "Fehler",
     "critical": "Kritisch"
@@ -359,7 +363,7 @@
   "legacy": {
     "title": "Ältere Alarmregeln",
     "description": "Eigenständige Alarmregeln, die nicht von einem Monitor verwaltet werden. Konvertieren Sie sie, um Reaktionen, Zustellung und Eskalation an einem Ort zu erhalten.",
-    "empty": "Keine älteren Regeln.",
+    "empty": "Keine eigenständigen Alarmregeln müssen konvertiert werden.",
     "columns": {
       "name": "Name",
       "template": "Vorlage",
@@ -535,6 +539,7 @@
       "more": "Mehr laden",
       "empty": "Kein Konvertierungsverlauf.",
       "system": "Automatisches System",
+      "unknownUser": "Unbekannter Benutzer",
       "reverted": "Rückgängig gemacht",
       "deadline": "Rückgängig ist nach Entfernung der Quelllaufzeit durch die Stilllegung der Legacy-Benachrichtigungen nicht verfügbar."
     },
@@ -643,6 +648,9 @@
           "policy_not_applied": "Zeitrichtlinie wurde nicht angewendet",
           "policy_conflict_gpo": "Gruppenrichtlinie steuert die Zeiteinstellungen"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Mindestanzahl Tage veraltet"
       }
     }
   },

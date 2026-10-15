@@ -44,6 +44,9 @@ export function timerStarted(state: TimeState, entry: TimeEntry): TimeState {
       ticketId: entry.ticketId,
       startedAt: entry.startedAt,
       description: entry.description,
+      ...(entry.orgId !== undefined ? { orgId: entry.orgId } : {}),
+      ...(entry.siteId !== undefined ? { siteId: entry.siteId } : {}),
+      ...(entry.source !== undefined ? { source: entry.source } : {}),
     },
     lastError: null,
   };

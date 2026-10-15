@@ -142,6 +142,10 @@ const CLASSIFICATION: Record<string, Classification> = {
     kind: 'eligibility',
     reason: 'The dispatch read joins the device org type; a parked device fails the actuation before the raw insert',
   },
+  'routes/devices/pamReconciliation.ts': {
+    kind: 'chokepoint',
+    reason: 'insertQueuedCommandInTransaction checks parked-device delivery on the held transaction and the route returns its typed 409 refusal',
+  },
   'routes/devices/actuateElevation.ts': {
     kind: 'eligibility',
     reason: 'Asserted first in the actuation transaction, before the approval flip and the insert',
@@ -220,13 +224,17 @@ const CLASSIFICATION: Record<string, Classification> = {
     kind: 'chokepoint',
     reason: 'Pushes a diagnostic row only after claimPendingCommandForDelivery claimed it',
   },
+  'services/callerVerification/deliverers/workstation.ts': {
+    kind: 'chokepoint',
+    reason: 'caller_verify rows persist only through insertQueuedCommandInTransaction (parked refused as not-found); the post-commit dispatchCommandToAgent push sends only a row claimPendingCommandForDelivery claimed',
+  },
 
   // --- remote_gated ---------------------------------------------------------
   'routes/terminalWs.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/desktopWs.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/tunnelWs.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/tunnels.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
-  'routes/tunnelHttp.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
+  'routes/tunnelHttpCore.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
   'routes/remote/sessions.ts': { kind: 'remote_gated', reason: REMOTE_REASON },
 
   // --- socket_only: rowless probes over the live socket ---------------------

@@ -1,6 +1,11 @@
 import { and, eq, isNull, SQL } from 'drizzle-orm';
 import type { z } from 'zod';
-import { patchInlineSettingsSchema, policyAppRuleSchema } from '@breeze/shared/validators';
+import {
+  canonicalAppRuleKey,
+  patchInlineSettingsSchema,
+  policyAppRuleSchema,
+  rebootPromptTextSchemas,
+} from '@breeze/shared/validators';
 import { db } from '../db';
 import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
 import { captureException } from './sentry';
@@ -123,6 +128,36 @@ function coerceCategoryList(value: unknown): string[] {
   return value.filter((v): v is string => typeof v === 'string' && v.length > 0);
 }
 
+/**
+ * #8030: the restart-prompt text columns are cosmetic, so an invalid stored
+ * value (a hand-edited row, a future unvalidated write) must not make the
+ * strict parse below throw and take the whole policy's patching down with it.
+ * Each field is re-validated on its own; a failing one is nulled (the agent
+ * then shows its built-in text) and reported. Mirrors rebootPromptTextFrom on
+ * the dispatch path.
+ */
+export function salvageRebootPromptColumns(
+  columns: { rebootPromptTitle: unknown; rebootPromptBody: unknown; rebootPromptButton: unknown },
+  featureLinkId: string,
+): { rebootPromptTitle: string | null; rebootPromptBody: string | null; rebootPromptButton: string | null } {
+  const salvage = (field: 'title' | 'body' | 'button', column: string, value: unknown): string | null => {
+    const parsed = rebootPromptTextSchemas[field].safeParse(value);
+    if (parsed.success) return parsed.data;
+    console.warn(
+      `[configPolicyPatching] feature link ${featureLinkId} has an invalid stored ${column}; ignoring it`,
+    );
+    captureException(
+      new Error(`Invalid config_policy_patch_settings.${column} for feature link ${featureLinkId}; ignored`),
+    );
+    return null;
+  };
+  return {
+    rebootPromptTitle: salvage('title', 'reboot_prompt_title', columns.rebootPromptTitle),
+    rebootPromptBody: salvage('body', 'reboot_prompt_body', columns.rebootPromptBody),
+    rebootPromptButton: salvage('button', 'reboot_prompt_button', columns.rebootPromptButton),
+  };
+}
+
 export function normalizePatchInlineSettings(settings: unknown): PatchInlineSettings {
   return patchInlineSettingsSchema.parse(settings ?? {});
 }
@@ -156,7 +191,7 @@ export function tryNormalizePatchInlineSettings(settings: unknown): {
  * `policyAppRuleSchema`, and `autoApproveDeferralDays` when it is a valid
  * non-negative integer <= 60.
  */
-function normalizeStoredInlineSettingsWithSalvage(
+export function normalizeStoredInlineSettingsWithSalvage(
   raw: unknown,
   context: { configPolicyId: string; featureLinkId: string }
 ): PatchInlineSettings {
@@ -225,6 +260,184 @@ function normalizeStoredInlineSettingsWithSalvage(
   }
 
   return settings;
+}
+
+/**
+ * A configuration-policy patch write tried to change approval config that now
+ * lives on the Update Ring (#8186): the per-app `apps` rules, or switching
+ * policy-level `autoApprove` on. Routes map it to a 400 with `code`.
+ */
+export class PolicyApprovalFieldMovedError extends Error {
+  readonly status = 400 as const;
+  readonly code = 'APPROVAL_RULES_MOVED_TO_RING' as const;
+
+  constructor() {
+    super('Approval and application rules are configured on the Update Ring linked to this policy.');
+    this.name = 'PolicyApprovalFieldMovedError';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * What a rule list enforces, order- and case-insensitively: one
+ * `key|action|version` token per entry (display names do not count, and a
+ * block's stray version is ignored, as the evaluator ignores it). A
+ * non-object entry keeps a raw token so it can never match a stored list.
+ */
+export function enforcedAppRuleSet(apps: unknown): string[] {
+  if (!Array.isArray(apps)) return [];
+  const tokens = apps.map((entry) => {
+    if (!isRecord(entry)) return `invalid|${JSON.stringify(entry)}`;
+    const key = canonicalAppRuleKey(String(entry.source), String(entry.packageId));
+    const version = entry.action === 'pin' ? String(entry.pinnedVersion ?? '') : '';
+    return `${key}|${String(entry.action)}|${version}`;
+  });
+  return [...new Set(tokens)].sort();
+}
+
+export function sameAppRuleSet(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((token, i) => token === b[i]);
+}
+
+/**
+ * Reject a patch feature-link write that edits approval config which the
+ * Update Ring now owns (#8186, Open Decision 4 = A):
+ *  - `apps` present and enforcing a different set than the stored link's;
+ *  - `autoApprove: true` when the stored link does not already have it.
+ *
+ * An unchanged round-trip passes, so a Patch tab loaded before the release
+ * can still save its other fields. "Stored" is matched both as the raw link
+ * salvages it and as the read path hands it to a client (a stored document
+ * that fails validation is read back with schema defaults, i.e. `apps: []`).
+ * `stored` is the link's current `inline_settings`, or null for a new link.
+ */
+export function assertNoPolicyApprovalEdits(
+  stored: unknown,
+  incoming: unknown,
+  context: { configPolicyId: string; featureLinkId: string } = { configPolicyId: 'unknown', featureLinkId: 'unknown' },
+): void {
+  if (!isRecord(incoming)) return;
+
+  if (incoming.apps !== undefined) {
+    const incomingSet = enforcedAppRuleSet(incoming.apps);
+    const acceptable = stored === null || stored === undefined
+      ? [[]]
+      : [
+          enforcedAppRuleSet(
+            normalizeStoredInlineSettingsWithSalvage(stored, context).apps,
+          ),
+          enforcedAppRuleSet(tryNormalizePatchInlineSettings(stored).settings.apps),
+        ];
+    if (!acceptable.some((set) => sameAppRuleSet(set, incomingSet))) {
+      throw new PolicyApprovalFieldMovedError();
+    }
+  }
+
+  if (incoming.autoApprove === true && !(isRecord(stored) && stored.autoApprove === true)) {
+    throw new PolicyApprovalFieldMovedError();
+  }
+}
+
+/**
+ * The approval keys a patch link still stores from before the Update Ring
+ * owned them (#8186). W04 strips them; until then a write that does not send
+ * them keeps the stored values (#8671).
+ */
+export const LEGACY_PATCH_APPROVAL_KEYS = [
+  'apps',
+  'autoApprove',
+  'autoApproveSeverities',
+  'autoApproveDeferralDays',
+] as const;
+
+/**
+ * `patchInlineSettingsSchema` fills an absent `apps` with `[]` and absent
+ * `autoApprove*` with their defaults. Hand the service only the legacy
+ * approval keys the client actually sent, so an omitted key means "unchanged"
+ * rather than an explicit edit the ring-ownership guards reject (#8671).
+ */
+export function omitUnsentLegacyApprovalKeys(
+  raw: unknown,
+  parsed: Record<string, unknown>,
+): Record<string, unknown> {
+  const sent = isRecord(raw) ? raw : {};
+  const result: Record<string, unknown> = { ...parsed };
+  for (const key of LEGACY_PATCH_APPROVAL_KEYS) {
+    if (!(key in sent)) delete result[key];
+  }
+  return result;
+}
+
+/**
+ * Fill the legacy approval keys an update did not send from what the link
+ * stores, so a write that omits them (the Patch tab, the AI tool, a PATCH
+ * routed through `omitUnsentLegacyApprovalKeys`) does not reset them to
+ * schema defaults (#8671). `stored` is the link JSONB with the relational
+ * `autoApprove` the read path serves overlaid; `apps` comes from the salvage
+ * reader so a stored document that fails validation still yields its valid
+ * rules instead of failing the write.
+ */
+export function withStoredLegacyApprovalKeys(
+  incoming: Record<string, unknown>,
+  stored: unknown,
+  context: { configPolicyId: string; featureLinkId: string },
+): Record<string, unknown> {
+  const missing = LEGACY_PATCH_APPROVAL_KEYS.filter((key) => !(key in incoming));
+  if (missing.length === 0 || stored === null || stored === undefined) return incoming;
+  const salvaged = normalizeStoredInlineSettingsWithSalvage(stored, context);
+  const storedRecord = isRecord(stored) ? stored : {};
+  const result: Record<string, unknown> = { ...incoming };
+  for (const key of missing) {
+    if (key === 'apps') {
+      result.apps = salvaged.apps;
+    } else if (key === 'autoApprove') {
+      result.autoApprove = storedRecord.autoApprove === true;
+    } else if (key === 'autoApproveSeverities') {
+      result.autoApproveSeverities = salvaged.autoApproveSeverities;
+    } else {
+      result.autoApproveDeferralDays = salvaged.autoApproveDeferralDays;
+    }
+  }
+  // The schema refuses autoApprove without a severity. A stored document can
+  // only reach that state by failing validation (its severities fall back to
+  // the default); the policy flag is inert since reads moved to the ring, so
+  // drop it rather than fail an unrelated save.
+  if (
+    result.autoApprove === true
+    && Array.isArray(result.autoApproveSeverities)
+    && result.autoApproveSeverities.length === 0
+  ) {
+    console.warn(
+      `[configPolicyPatching] Dropping stored autoApprove with no valid severity for config policy ` +
+        `${context.configPolicyId} (feature link ${context.featureLinkId}); the Update Ring owns auto-approval`,
+    );
+    result.autoApprove = false;
+  }
+  return result;
+}
+
+/** The enforced set of a link's stored legacy `apps`, as the salvage reads it. */
+export function storedLegacyAppRuleSet(
+  stored: unknown,
+  context: { configPolicyId: string; featureLinkId: string },
+): string[] {
+  if (stored === null || stored === undefined) return [];
+  return enforcedAppRuleSet(normalizeStoredInlineSettingsWithSalvage(stored, context).apps);
+}
+
+/** The partner a configuration policy's patch ring must belong to. */
+export async function loadConfigPolicyPartnerId(configPolicyId: string): Promise<string | null> {
+  const [policy] = await db
+    .select({ partnerId: configurationPolicies.partnerId, orgId: configurationPolicies.orgId })
+    .from(configurationPolicies)
+    .where(eq(configurationPolicies.id, configPolicyId))
+    .limit(1);
+  if (!policy) return null;
+  if (policy.partnerId) return policy.partnerId;
+  return policy.orgId ? resolvePartnerIdForOrg(policy.orgId) : null;
 }
 
 export async function resolvePatchPolicyReference(
@@ -361,6 +574,7 @@ export async function loadPolicyLocalPatchConfig(
         rebootAllowDeferral: row.patchSettings.rebootAllowDeferral,
         rebootMaxDeferrals: row.patchSettings.rebootMaxDeferrals,
         rebootDeferralMinutes: row.patchSettings.rebootDeferralMinutes,
+        ...salvageRebootPromptColumns(row.patchSettings, row.featureLinkId),
         exclusiveWindowsUpdate: row.patchSettings.exclusiveWindowsUpdate,
       })
     : storedInline;
@@ -437,6 +651,9 @@ export async function backfillMissingPatchSettings(): Promise<{
       rebootAllowDeferral: normalized.settings.rebootAllowDeferral,
       rebootMaxDeferrals: normalized.settings.rebootMaxDeferrals,
       rebootDeferralMinutes: normalized.settings.rebootDeferralMinutes,
+      rebootPromptTitle: normalized.settings.rebootPromptTitle,
+      rebootPromptBody: normalized.settings.rebootPromptBody,
+      rebootPromptButton: normalized.settings.rebootPromptButton,
       exclusiveWindowsUpdate: normalized.settings.exclusiveWindowsUpdate,
     });
     repaired += 1;

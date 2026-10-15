@@ -34,6 +34,22 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn())
 }));
 
+// #6354 W02: the late caller-rejection branch imports the caller leaf module.
+const { callerReceiptMock, callerLateDecisionMock } = vi.hoisted(() => ({
+  callerReceiptMock: vi.fn(),
+  callerLateDecisionMock: vi.fn(),
+}));
+vi.mock('../services/callerVerification/workstationResult', () => ({
+  isCallerNotMe: (stdout: string | undefined, result: unknown) => {
+    try {
+      const value = stdout !== undefined ? JSON.parse(stdout) : result;
+      return (value as { choice?: string } | null)?.choice === 'not_me';
+    } catch { return false; }
+  },
+  persistCallerNotMeReceipt: (...args: unknown[]) => callerReceiptMock(...args),
+  handleCallerVerifyResult: (...args: unknown[]) => callerLateDecisionMock(...args),
+}));
+
 // #6503: the WS close/error handlers delegate the actual offline transition +
 // transition-effects persistence to offlineDetector.ts's transitionDeviceOffline
 // (which itself opens a BullMQ queue / hits offlineEffectsStore internals this
@@ -47,6 +63,17 @@ const { transitionDeviceOfflineMock } = vi.hoisted(() => ({
 }));
 vi.mock('../jobs/offlineDetector', () => ({
   transitionDeviceOffline: transitionDeviceOfflineMock,
+}));
+
+const { shouldDeferOfflineTransitionMock, recordOfflineDeferredMock } = vi.hoisted(() => ({
+  shouldDeferOfflineTransitionMock: vi.fn(() => false),
+  recordOfflineDeferredMock: vi.fn(),
+}));
+vi.mock('../services/admission/admissionRuntime', () => ({
+  shouldDeferOfflineTransition: shouldDeferOfflineTransitionMock,
+}));
+vi.mock('../services/admission/admissionMetrics', () => ({
+  recordOfflineDeferred: recordOfflineDeferredMock,
 }));
 
 const { recordDesktopClipboardSummaryMock } = vi.hoisted(() => ({
@@ -382,6 +409,15 @@ vi.mock('../services/remoteRevocationLease', () => ({
   renewRevocationLease: (...a: unknown[]) => renewRevocationLeaseMock(...(a as [])),
 }));
 
+// #4757 W06: the restore-point ledger ingest, mocked at the module boundary
+// (its own behaviour is covered in services/restorePointIngest.test.ts). Never
+// called for a result without a `restorePoint` key.
+const { ingestRestorePointOutcomeMock } = vi.hoisted(() => ({
+  ingestRestorePointOutcomeMock: vi.fn(),
+}));
+vi.mock('../services/restorePointIngest', () => ({
+  ingestRestorePointOutcome: ingestRestorePointOutcomeMock,
+}));
 vi.mock('../services/sentry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/sentry')>();
   // captureException is also stubbed (#5128 review round 2): the generic
@@ -1807,6 +1843,63 @@ describe('agent websocket command results', () => {
 
     expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  describe('late caller_verify rejection (#6354 W02)', () => {
+    const commandId = '44444444-4444-4444-8444-444444444444';
+    const owned = { id: commandId, type: 'caller_verify', targetRole: 'agent', status: 'completed', deviceId: 'device-123', payload: {} };
+    const authorizedDevice = [{ status: 'online', agentTokenSuspendedAt: null, orgType: 'customer' }];
+    const notMe = { type: 'command_result', commandId, status: 'completed', result: { delivered: true, choice: 'not_me' } };
+
+    it.each(['completed', 'failed', 'cancelled'])('honours a rejection after the command was %s', async (status) => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // terminal: the accepting lookup misses
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: { ...owned, status }, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice(authorizedDevice) as any);
+      callerReceiptMock.mockResolvedValue(true);
+      callerLateDecisionMock.mockResolvedValue(undefined);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, deviceId: 'device-123' }));
+      expect(callerLateDecisionMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, resolvedDeviceId: 'device-123' }));
+      expect(db.update).not.toHaveBeenCalled(); // never reopens the command row
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    });
+
+    it('never records a receipt for a command another agent owns', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+        .mockReturnValue(selectWithInnerJoin([]) as any);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+      expect(callerLateDecisionMock).not.toHaveBeenCalled();
+    });
+
+    it('re-checks containment before writing anything', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: owned, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice([{ status: 'decommissioned', agentTokenSuspendedAt: null, orgType: 'customer' }]) as any);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+      expect(callerLateDecisionMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the committed receipt when the decision fails (reconciliation finishes it)', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: owned, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice(authorizedDevice) as any);
+      callerReceiptMock.mockResolvedValue(true);
+      callerLateDecisionMock.mockRejectedValue(new Error('db down'));
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).toHaveBeenCalledTimes(1);
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    });
   });
 
   it('updates command result when command belongs to connected agent', async () => {
@@ -4526,6 +4619,34 @@ describe('Findings #8 / #5 — WS command-result audit + secret redaction', () =
     }
   });
 
+  it('persists the agent errorCode on the WebSocket leg so the classifier can use it (#4026)', async () => {
+    const preValidatedAgent = { deviceId: 'device-e', orgId: 'org-e', partnerId: 'partner-e' };
+    const { handlers, ws } = await connectedAgent('agent-e', preValidatedAgent);
+    vi.mocked(db.select).mockReturnValueOnce(selectOwnedCommandResult([
+      { id: 'cmd-1', type: 'file_read', payload: {}, deviceId: 'device-e' },
+    ]) as any);
+    const setSpy = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-1' }]) }),
+    });
+    vi.mocked(db.update).mockReturnValue({ set: setSpy } as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '99999999-9999-4999-8999-999999999999',
+        status: 'failed',
+        exitCode: 1,
+        error: 'no such item at /nope',
+        errorCode: 'path_not_found',
+      }),
+    } as any, ws as any);
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    const stored = setSpy.mock.calls[0]![0] as { result: { errorCode?: string; error?: string } };
+    expect(stored.result.errorCode).toBe('path_not_found');
+    expect(stored.result.error).toBe('no such item at /nope');
+  });
+
   // #3409 PR4a. The heuristic redaction above is NAME-based: it only fires when
   // a secret sits next to a recognized key name, so a bare echoed credential
   // survives it. These pin the exact-value layer at the WS chokepoint.
@@ -7140,5 +7261,216 @@ describe('WebSocket desktop fallback start results', () => {
     vi.mocked(closeDesktopRelayForStop).mockClear();
     sendCommandToAgent('agent-stop-relay', { id: 'c-script', type: 'script', payload: { sessionId: SESSION } });
     expect(closeDesktopRelayForStop).not.toHaveBeenCalled();
+  });
+});
+
+describe('W08 admission integration', () => {
+  const preValidatedAgent = { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // resetAllMocks drops the hoisted default; re-arm the not-shedding state.
+    shouldDeferOfflineTransitionMock.mockReturnValue(false);
+  });
+
+  async function openThenClose(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([
+      { id: 'device-123', siteId: 'site-1', status: 'online', hostname: 'host-1' },
+    ]) as any);
+    await handlers.onClose({}, ws as any);
+  }
+
+  it('leaves the offline flip to the offline detector while admission is shedding', async () => {
+    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('close');
+    expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled(); // presence still cleared at once
+  });
+
+  it('still flips offline at once when admission is not shedding', async () => {
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+  });
+
+  async function openThenError(handlers: ReturnType<typeof createAgentWsHandlers>, ws: ReturnType<typeof wsMock>) {
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    await handlers.onOpen({}, ws as any);
+    transitionDeviceOfflineMock.mockClear();
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([{ status: 'online' }]) as any);
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    handlers.onError({}, ws as any);
+    await new Promise((r) => setImmediate(r));
+    spy.mockRestore();
+  }
+
+  it('onError leaves the offline flip to the offline detector while admission is shedding', async () => {
+    shouldDeferOfflineTransitionMock.mockReturnValue(true);
+    await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).not.toHaveBeenCalled();
+    expect(recordOfflineDeferredMock).toHaveBeenCalledWith('error');
+    expect(vi.mocked(clearAgentPresence)).toHaveBeenCalled();
+  });
+
+  it('onError still flips offline at once when admission is not shedding', async () => {
+    await openThenError(createAgentWsHandlers('agent-123', preValidatedAgent), wsMock());
+    expect(transitionDeviceOfflineMock).toHaveBeenCalledWith('agent-123', ['online']);
+    expect(recordOfflineDeferredMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the admission setup slot even when onOpen throws', async () => {
+    const slot = { release: vi.fn() };
+    vi.mocked(db.update).mockImplementation(() => { throw new Error('open boom'); });
+    vi.mocked(db.select).mockImplementation(() => { throw new Error('open boom'); });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await createAgentWsHandlers('agent-123', preValidatedAgent, slot).onOpen({}, wsMock() as any).catch(() => {});
+    spy.mockRestore();
+    expect(slot.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the admission setup slot when onOpen finishes, and on a close that skipped onOpen', async () => {
+    const opened = { release: vi.fn() };
+    await openThenClose(createAgentWsHandlers('agent-123', preValidatedAgent, opened), wsMock());
+    expect(opened.release).toHaveBeenCalled();
+
+    const neverOpened = { release: vi.fn() };
+    await createAgentWsHandlers('agent-456', preValidatedAgent, neverOpened).onClose({}, wsMock() as any);
+    expect(neverOpened.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4757 W06 — restore-point outcome ingest on the WS transport
+// ---------------------------------------------------------------------------
+
+describe('#4757: restore-point outcome ingest after the WS terminal CAS', () => {
+  const COMMAND_ID = '55555555-5555-4555-8555-555555555555';
+  const REQUEST_ID = '3f1d1a0e-0000-4000-8000-000000000001';
+  const outcome = {
+    status: 'created', requestId: REQUEST_ID, sequenceNumber: '42',
+    attemptedAt: '2026-09-02T18:03:11Z', durationMs: 1234,
+  };
+  const commandRow = {
+    id: COMMAND_ID, type: 'install_patches', payload: {}, deviceId: 'device-rp', status: 'sent',
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(runOutsideDbContext).mockImplementation(((fn: any) => fn()) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation(((fn: any) => fn()) as any);
+    vi.mocked(withDbAccessContext).mockImplementation(((_ctx: any, fn: any) => fn()) as any);
+  });
+
+  /** Drive one command_result frame; returns the CAS `.set()` payloads and the socket. */
+  async function driveResult(
+    frame: Record<string, unknown>,
+    opts: { casRows?: unknown[]; commandRows?: unknown[] } = {},
+  ) {
+    const { handlers, ws } = await connectedAgent('agent-rp', {
+      deviceId: 'device-rp', orgId: 'org-rp', partnerId: 'partner-rp',
+    });
+    let commandReads = 0;
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        const rows = table === deviceCommands && commandReads++ === 0 ? (opts.commandRows ?? [commandRow]) : [];
+        return {
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        };
+      }),
+    })) as any);
+    const sets: Array<Record<string, unknown>> = [];
+    vi.mocked(db.update).mockImplementation((() => {
+      const returning = vi.fn().mockResolvedValue(opts.casRows ?? [{ id: COMMAND_ID }]);
+      return {
+        set: vi.fn((set: Record<string, unknown>) => {
+          sets.push(set);
+          return { where: vi.fn().mockReturnValue({ returning }), returning };
+        }),
+      };
+    }) as any);
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'command_result', commandId: COMMAND_ID, status: 'completed', exitCode: 0, ...frame }),
+    } as any, ws as any);
+    return { sets, ws };
+  }
+
+  it('terminalises the ledger after the CAS wins, with the command link, and stores the outcome', async () => {
+    ingestRestorePointOutcomeMock.mockResolvedValue({ outcome: 'terminalised' });
+    const { sets, ws } = await driveResult({ restorePoint: outcome });
+
+    expect(ingestRestorePointOutcomeMock).toHaveBeenCalledTimes(1);
+    expect(ingestRestorePointOutcomeMock).toHaveBeenCalledWith(outcome, {
+      orgId: 'org-rp', deviceId: 'device-rp', deviceCommandId: COMMAND_ID,
+    });
+    expect((sets[0]!.result as Record<string, unknown>).restorePoint).toEqual(outcome);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('terminalises for a FAILED command result too (the command went terminal)', async () => {
+    ingestRestorePointOutcomeMock.mockResolvedValue({ outcome: 'terminalised' });
+    const failedOutcome = { ...outcome, status: 'failed', sequenceNumber: undefined, message: 'vss error' };
+    const { sets } = await driveResult({ status: 'failed', exitCode: 1, restorePoint: failedOutcome });
+    expect(sets[0]!.status).toBe('failed');
+    expect(ingestRestorePointOutcomeMock).toHaveBeenCalledTimes(1);
+    expect(ingestRestorePointOutcomeMock.mock.calls[0]![0]).toMatchObject({ status: 'failed', message: 'vss error' });
+  });
+
+  it('does NOT terminalise when the CAS lost (duplicate / late frame)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await driveResult({ restorePoint: outcome }, { casRows: [] });
+    } finally {
+      warnSpy.mockRestore();
+    }
+    expect(ingestRestorePointOutcomeMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT terminalise for a UUID result with no acceptable command row (orphan branch, no CAS)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await driveResult({ restorePoint: outcome }, { commandRows: [] });
+    } finally {
+      warnSpy.mockRestore();
+    }
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ingestRestorePointOutcomeMock).not.toHaveBeenCalled();
+  });
+
+  it('never calls ingest and stores no restorePoint key when the agent sent none', async () => {
+    const { sets } = await driveResult({});
+    expect(ingestRestorePointOutcomeMock).not.toHaveBeenCalled();
+    expect('restorePoint' in (sets[0]!.result as Record<string, unknown>)).toBe(false);
+  });
+
+  it('an invalid / unknown-status outcome leaves the command result accepted and stored without it', async () => {
+    ingestRestorePointOutcomeMock.mockResolvedValue({ outcome: 'invalid', reason: 'unknown_status' });
+    const { sets, ws } = await driveResult({ restorePoint: { ...outcome, status: 'probably_fine' } });
+    expect(sets[0]!.status).toBe('completed');
+    expect('restorePoint' in (sets[0]!.result as Record<string, unknown>)).toBe(false);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"error"'));
+  });
+
+  it('a ledger ingest failure does not fail the command result', async () => {
+    ingestRestorePointOutcomeMock.mockRejectedValue(new Error('ledger down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { sets, ws } = await driveResult({ restorePoint: outcome });
+      expect(sets).toHaveLength(1); // the CAS only -- no park as result_processing_failed
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('RESULT_PROCESSING_FAILED'));
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(captureException).toHaveBeenCalled();
   });
 });

@@ -67,10 +67,11 @@ import { isParkedDeliverableCommandType } from '../services/unassignedPool/deliv
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID, writeAuditEvent, requestLikeFromSnapshot } from '../services/auditEvents';
 import { redactSecretsFromOutput, redactOptionalSecretText, redactAgentResultErrorFields } from '../services/secretRedaction';
-import { isRawStdoutArtifactCommand } from '../services/commandAudit';
+import { buildStoredCommandResult } from '../services/storedCommandResult';
 import { detectResultValidationFamily, validateCriticalCommandResult, DR_COMMAND_TYPES, type CriticalResultFamily } from '../services/agentCommandResultValidation';
 import { updateRestoreJobByCommandId, updateRestoreJobFromResult } from '../services/restoreResultPersistence';
 import { captureException } from '../services/sentry';
+import { ingestRestorePointOutcome } from '../services/restorePointIngest';
 import { publishEvent } from '../services/eventBus';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import {
@@ -114,7 +115,6 @@ import { applyCommandAutomationTerminal } from '../services/automationTerminalEv
 import {
   commandAcceptsAgentResult,
   commandAcceptsAgentResultCondition,
-  collapseAgentReportedTimeoutStatus,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
 } from '../services/commandResultAcceptance';
 import { markCommandResultProcessingFailed } from '../services/commandResultProcessingFailure';
@@ -122,6 +122,9 @@ import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
 import { INSTANCE_ID } from '../services/instanceIdentity';
 import { clearAgentPresence, clearAgentPresenceUnfenced, setAgentPresence, refreshAgentPresence } from '../services/agentPresence';
+import { shouldDeferOfflineTransition } from '../services/admission/admissionRuntime';
+import { recordOfflineDeferred } from '../services/admission/admissionMetrics';
+import type { WsSetupSlot } from '../services/admission/wsUpgradeGate';
 import { breezeRole } from '../config/env';
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import type { PartnerTrustState } from '../db/schema/orgs';
@@ -134,6 +137,7 @@ import {
 import { checkAgentWsMessageBudget } from '../services/agentWsMessageBudget';
 import { beginAgentUpdateStatusWrite, finishAgentUpdateStatusWrite } from '../services/agentUpdateStatusCoalescer';
 import { sniffCommandId, sniffTerminalMessageType } from '../services/agentWsTerminalMessageSniff';
+import { registerConnectedAgentSource } from '../services/capacityMetrics';
 /** Capabilities advertised to agents in the post-connect `connected` message. */
 export const AGENT_WS_CAPABILITIES = [
   'terminal_output_base64',
@@ -766,38 +770,6 @@ export function buildAgentMessageRejection(args: {
 function commandResultToStdout(result: AgentCommandResult): string | undefined {
   return result.stdout ??
     (result.result !== undefined ? JSON.stringify(result.result) : undefined);
-}
-
-function buildStoredCommandResult(
-  commandType: string,
-  result: AgentCommandResult,
-  stdout: string | undefined,
-) {
-  // Finding #5 (WS leg): strip full PEM private-key blocks from agent output
-  // BEFORE it is persisted into device_commands.result and later shown to
-  // scripts:read users. Mirrors the REST ingest path
-  // (routes/agents/commands.ts). Pre-update agents don't redact
-  // server-side-visible output, so we redact here as defense-in-depth.
-  // Preserve null/undefined (don't coerce to '') to keep the stored shape
-  // stable; exitCode/status/durationMs are untouched.
-  //
-  // Exception: artifact-bearing stdout (capture_pprof base64 profiles) must be
-  // stored byte-for-byte -- the redaction patterns statistically fire inside
-  // megabytes of random base64 and would silently corrupt the artifact (#2401).
-  const skipStdoutRedaction = isRawStdoutArtifactCommand(commandType);
-  return {
-    // See collapseAgentReportedTimeoutStatus: an agent-reported 'timeout'
-    // must never be stored verbatim — that literal string doubles as the
-    // server's own reopen marker.
-    status: collapseAgentReportedTimeoutStatus(result.status),
-    exitCode: result.exitCode,
-    stdout: stdout != null && !skipStdoutRedaction ? redactSecretsFromOutput(stdout) : stdout,
-    stderr: result.stderr != null ? redactSecretsFromOutput(result.stderr) : result.stderr,
-    durationMs: result.durationMs,
-    error: result.error != null
-      ? redactSecretsFromOutput(result.error)
-      : result.status === 'timeout' ? 'Agent reported a timeout' : result.error,
-  };
 }
 
 function rejectMalformedCriticalResult(
@@ -2150,6 +2122,68 @@ async function runWithAgentOrgDbAccess<T>(
  *   'handled' for everything else (recorded, duplicate, orphaned, ignored, or
  *   an error in a post-commit follow-up).
  */
+/**
+ * Late caller-verification rejection on the WS transport (#6354 W02).
+ *
+ * Returns false (nothing done) unless the result is a readable "not_me" for
+ * a caller_verify command owned by THIS socket's agent. Otherwise: re-check
+ * containment, commit a durable receipt on the command row in its own short
+ * system context, then apply the decision in the agent's org context. If the
+ * decision step fails the committed receipt lets reconciliation finish it.
+ */
+async function applyLateCallerVerifyRejection(
+  agentId: string,
+  result: z.infer<typeof commandResultSchema>,
+  orgId: string,
+  partnerId: string,
+  credentialAlreadyReauthorized: boolean,
+): Promise<boolean> {
+  const late = await import('../services/callerVerification/workstationResult');
+  if (!late.isCallerNotMe(result.stdout, result.result)) return false;
+  const [owned] = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ command: deviceCommands, deviceId: devices.id })
+        .from(deviceCommands)
+        .innerJoin(devices, eq(deviceCommands.deviceId, devices.id))
+        .where(and(
+          eq(deviceCommands.id, result.commandId),
+          eq(devices.agentId, agentId),
+          eq(deviceCommands.type, 'caller_verify'),
+          eq(deviceCommands.targetRole, 'agent'),
+        ))
+        .limit(1),
+    'callerVerification.wsLateRejection.owner'),
+  );
+  if (!owned) return false;
+  if (!credentialAlreadyReauthorized && !(await isAgentDeviceStillAuthorized(agentId))) {
+    disconnectAgent(agentId, 4001, 'Device no longer authorized');
+    return true;
+  }
+  const recorded = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => late.persistCallerNotMeReceipt({
+      commandId: result.commandId, deviceId: owned.deviceId, stdout: result.stdout, result: result.result,
+    }), 'callerVerification.wsLateRejection.receipt'),
+  );
+  if (!recorded) {
+    console.warn(`[AgentWs] late caller rejection for command ${result.commandId} could not be recorded; ignored`);
+    return true;
+  }
+  try {
+    await runWithAgentOrgDbAccess('agentWs.commandResult.callerRejection', orgId, partnerId, () =>
+      late.handleCallerVerifyResult({
+        agentId, command: owned.command, commandId: result.commandId, result,
+        resolvedDeviceId: owned.deviceId, stdout: result.stdout,
+      }),
+    );
+  } catch (err) {
+    // The receipt is committed; reconciliation re-applies the rejection.
+    console.error(`[AgentWs] late caller rejection for command ${result.commandId} not applied yet; reconciliation will retry`, err);
+    captureException(err, undefined, { command_result_phase: 'ws_caller_late_rejection', commandId: result.commandId });
+  }
+  return true;
+}
+
 async function processCommandResult(
   agentId: string,
   result: z.infer<typeof commandResultSchema>,
@@ -2285,6 +2319,13 @@ async function processCommandResult(
     }
 
     if (!command || !resolvedDeviceId) {
+      // Caller verification (#6354 W02): a "This is not me" for a caller_verify
+      // command that is already terminal never matches the lookup above, but
+      // must still be honoured. Owned/authorized inside; anything else falls
+      // through to the orphaned path exactly as before.
+      if (await applyLateCallerVerifyRejection(agentId, result, orgId, partnerId, credentialAlreadyReauthorized)) {
+        return 'handled';
+      }
       // Discovery and SNMP commands are dispatched directly via WebSocket
       // without creating a deviceCommands record. Handle them here (short org
       // wrap for the same reason as the non-UUID branch above, #3021).
@@ -2579,6 +2620,24 @@ async function processCommandResult(
     }
     if (finalized === 'queue_ack') return 'handled';
 
+    // #4757 W06: terminalise the restore-point ledger only now -- the CAS won
+    // and its transaction committed, so a losing duplicate frame never reaches
+    // here. Before the validationError return: the command still went
+    // terminal, so the observation is real. Skipped entirely when the agent
+    // sent no restorePoint (every agent shipped to date). The ingest opens its
+    // own system context and is non-throwing; the catch is the last line
+    // keeping a ledger problem out of an already-recorded command result.
+    if (result.restorePoint !== undefined) {
+      try {
+        await ingestRestorePointOutcome(result.restorePoint, {
+          orgId, deviceId: resolvedDeviceId!, deviceCommandId: result.commandId,
+        });
+      } catch (err) {
+        console.error(`[AgentWs] restore-point ledger ingest failed for ${result.commandId}; result unaffected:`, err);
+        captureException(err, undefined, { restore_point_ingest: 'call_site' });
+      }
+    }
+
     // Derived from the authoritative command state, so it runs only AFTER that
     // state committed. It opens its own system context (automation ledger).
     await applyCommandAutomationTerminal({
@@ -2688,7 +2747,7 @@ async function processCommandResult(
  * Authentication is done BEFORE the WebSocket upgrade in the HTTP middleware,
  * so onOpen no longer needs to validate the token.
  */
-export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext) {
+function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext) {
   const agentDb = preValidatedAgent;
 
   /**
@@ -4129,7 +4188,15 @@ onClose: async (_event: unknown, ws: WSContext) => {
 
         // Update device status to offline (but preserve 'updating' — let
         // the offline detector handle the timeout for stale updating devices)
-        if (agentDb) {
+        //
+        // W08: while admission is shedding (enforce, level 1+), leave the
+        // offline flip to the offline detector — lastSeenAt still ages out
+        // within 5 min — instead of one transaction per socket at the moment
+        // thousands drop at once. Presence was cleared above, so command
+        // routing already treats the agent as gone.
+        if (agentDb && shouldDeferOfflineTransition()) {
+          recordOfflineDeferred('close');
+        } else if (agentDb) {
           // #6836: the inner try/catch below only covers the query/transition
           // body. When the context PROLOGUE itself fails (observed: a
           // `DbAccessContextPrologueTimeoutError` during a Postgres stall),
@@ -4195,7 +4262,9 @@ if (activeConnections.get(agentId)?.ws === ws) {
         }
         void clearAgentPresence(agentId, connectionToken);
       }
-      if (agentDb) {
+      if (agentDb && shouldDeferOfflineTransition()) {
+        recordOfflineDeferred('error');
+      } else if (agentDb) {
         void runWithAgentDbAccess('agentWs.onError.markOffline', async () => {
           try {
             const [current] = await db
@@ -4221,6 +4290,40 @@ if (activeConnections.get(agentId)?.ws === ws) {
         });
       }
     }
+  };
+}
+
+/**
+ * W08: the agent WS handlers, optionally holding an admission setup slot
+ * (middleware/agentAdmission.ts) that bounds how many upgrades are between
+ * admission and the end of onOpen at once. The slot is returned when onOpen
+ * finishes — however it exits — or on close/error if onOpen never ran; release
+ * is idempotent, and the slot's own 30 s backstop covers handlers that never fire.
+ */
+export function createAgentWsHandlers(
+  agentId: string,
+  preValidatedAgent: AgentDbContext,
+  setupSlot?: WsSetupSlot,
+): ReturnType<typeof buildAgentWsHandlers> {
+  const handlers = buildAgentWsHandlers(agentId, preValidatedAgent);
+  if (!setupSlot) return handlers;
+  return {
+    ...handlers,
+    onOpen: async (event: unknown, ws: WSContext) => {
+      try {
+        await handlers.onOpen(event, ws);
+      } finally {
+        setupSlot.release();
+      }
+    },
+    onClose: async (event: unknown, ws: WSContext) => {
+      setupSlot.release();
+      await handlers.onClose(event, ws);
+    },
+    onError: (event: unknown, ws: WSContext) => {
+      setupSlot.release();
+      handlers.onError(event, ws);
+    },
   };
 }
 
@@ -4788,7 +4891,8 @@ export function createAgentWsRoutes(upgradeWebSocket: Function): Hono {
     upgradeWebSocket((c: { req: { param: (key: string) => string }; get: (key: string) => unknown }) => {
       const agentId = c.req.param('id');
       const agentCtx = c.get('agentDb') as AgentDbContext;
-      return createAgentWsHandlers(agentId, agentCtx);
+      const setupSlot = c.get('admissionWsSetupSlot') as WsSetupSlot | undefined;
+      return createAgentWsHandlers(agentId, agentCtx, setupSlot);
     })
   );
 
@@ -4920,6 +5024,9 @@ export function getConnectedAgentIds(): string[] {
 export function getConnectedAgentCount(): number {
   return activeConnections.size;
 }
+
+// W07 (#8146): publish the owned-socket count as breeze_agent_ws_connections (spec §3 agent-cost denominator).
+registerConnectedAgentSource(getConnectedAgentCount);
 
 /**
  * Broadcast a message to all connected agents

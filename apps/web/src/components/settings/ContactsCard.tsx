@@ -5,6 +5,9 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError } from '@/lib/runAction';
 import BulkContactImport from '../organizations/BulkContactImport';
+import { useHashState } from '@/lib/useHashState';
+import { useCallerVerificationEnabled } from '@/lib/useCallerVerificationEnabled';
+import { ContactVerificationDrawer } from '../callerVerification/ContactVerificationDrawer';
 import { CONTACT_ROLES, CONTACT_ROLE_LABEL_KEYS as ROLE_LABEL_KEYS, isKnownContactRole as isKnownRole, type ContactRole } from '@/lib/contactRoles';
 
 /**
@@ -114,6 +117,9 @@ function createBody(draft: Draft): Record<string, unknown> {
 
 type ContactsCardProps = { orgId: string };
 
+const VERIFICATION_HASH = /^contacts\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/verification$/i;
+const verificationContactFromHash = (raw: string): string | null => VERIFICATION_HASH.exec(raw)?.[1] ?? null;
+
 export default function ContactsCard({ orgId }: ContactsCardProps) {
   const { t } = useTranslation('settings');
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -139,6 +145,10 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
    * without this the slower response wins and paints a list nobody asked for.
    */
   const loadSeq = useRef(0);
+  // Caller verification (#6354): the drawer is hash-addressed
+  // (#contacts/<id>/verification) and never mounts while the flag is off.
+  const callerVerificationEnabled = useCallerVerificationEnabled();
+  const [verifyingContactId, setVerifyingContactId] = useHashState<string | null>(null, verificationContactFromHash);
 
   const unauthorized = useCallback(() => { void navigateTo('/login', { replace: true }); }, []);
 
@@ -637,6 +647,16 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
                         : (pinned ?? t('contactsCard.unknownSite'))}
                     </td>
                     <td className="px-3 py-2 text-right">
+                      {callerVerificationEnabled && (
+                        <button
+                          type="button"
+                          data-testid={`org-contacts-verify-${c.id}`}
+                          onClick={() => { window.location.hash = `contacts/${c.id}/verification`; setVerifyingContactId(c.id); }}
+                          className="rounded-md px-2 py-1 text-xs underline hover:bg-muted"
+                        >
+                          {t('callerVerificationTech:drawer.title')}
+                        </button>
+                      )}
                       <button
                         type="button"
                         data-testid={`org-contacts-edit-${c.id}`}
@@ -689,6 +709,15 @@ export default function ContactsCard({ orgId }: ContactsCardProps) {
             </button>
           </span>
         </div>
+      )}
+      {callerVerificationEnabled && verifyingContactId && (
+        <ContactVerificationDrawer
+          key={verifyingContactId}
+          orgId={orgId}
+          contactId={verifyingContactId}
+          contactName={contacts.find((c) => c.id === verifyingContactId)?.name ?? null}
+          onClose={() => { setVerifyingContactId(null); window.location.hash = 'contacts'; }}
+        />
       )}
     </div>
   );

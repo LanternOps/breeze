@@ -11,6 +11,7 @@ import { hasPermission } from '@/lib/permissions';
 import { FilterSelect } from '../shared/FilterSelect';
 import type { Permission } from '@/stores/auth';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+import type { RestorePointBadgeOutcome } from '../restorePoints/RestorePointBadge';
 export type { ExecutionStatus } from '@breeze/shared';
 type ScriptsT = TFunction<'scripts'>;
 
@@ -55,6 +56,10 @@ export type ScriptExecution = {
   // marker. Only present once the execution-detail endpoint has been fetched
   // (the list endpoint omits it, same as stdout/stderr).
   customFieldResult?: ScriptCustomFieldWriteResult | null;
+  // #4759 W08 — the newest System Restore ledger row for this execution, from
+  // GET /scripts/executions/:id only (the list endpoint omits it). NULL/absent
+  // when Breeze never asked. status 'requested' means the device has not reported.
+  restorePoint?: RestorePointBadgeOutcome | null;
   // #4885 — the runtime values this execution was submitted with. Both
   // GET /scripts/:id/executions and GET /scripts/executions/:id already
   // return `script_executions.parameters` on the wire; this was simply never

@@ -61,6 +61,7 @@ vi.mock('../db/schema', () => ({
     rateLimit: 'rateLimit', lastUsedAt: 'lastUsedAt', revokedAt: 'revokedAt',
     rotatedFromId: 'rotatedFromId', createdAt: 'createdAt',
   },
+  users: { id: 'id', name: 'name' },
 }));
 
 vi.mock('../services/partnerServicePrincipalKeys', () => ({

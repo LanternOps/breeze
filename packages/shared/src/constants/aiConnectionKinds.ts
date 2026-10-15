@@ -35,6 +35,50 @@ export function isAnthropicApiConnectionKind(kind: string): kind is AnthropicApi
 }
 
 /**
+ * Every connection a partner can see: the implicit platform connection (no row)
+ * plus every stored row kind. The `AiConnectionDto.kind` domain.
+ */
+export const AI_CONNECTION_KINDS = ['platform', ...AI_CONNECTION_ROW_KINDS] as const;
+export type AiConnectionKind = (typeof AI_CONNECTION_KINDS)[number];
+
+/**
+ * Kinds a turn can dispatch through (eligibility, turn binding): platform, the
+ * Anthropic-dialect kinds and the gateway kinds. Today equal to AI_CONNECTION_KINDS;
+ * kept separate so a future non-dispatchable row kind stays one edit.
+ */
+export const AI_DISPATCHABLE_CONNECTION_KINDS = [
+  'platform', ...ANTHROPIC_API_CONNECTION_KINDS, ...GATEWAY_CONNECTION_KINDS,
+] as const;
+export type AiDispatchableConnectionKind = (typeof AI_DISPATCHABLE_CONNECTION_KINDS)[number];
+
+/**
+ * Env-bootstrap ownership of a gateway connection (`provider_config`):
+ *  - 'managed': kept in sync with MCP_LLM_* (managedBy = 'env');
+ *  - 'released': the variables were unset (envReleasedAt set). It still holds
+ *    the operator's endpoint and key, so it stays read-only for the partner —
+ *    who may only disconnect it — until the bootstrap re-adopts it.
+ */
+export type EnvManagementState = 'managed' | 'released' | null;
+
+export function envManagementState(providerConfig: Record<string, unknown> | null | undefined): EnvManagementState {
+  const cfg = providerConfig as { managedBy?: unknown; envReleasedAt?: unknown } | null | undefined;
+  if (cfg?.managedBy !== 'env') return null;
+  return typeof cfg.envReleasedAt === 'string' ? 'released' : 'managed';
+}
+
+/** The env-state fields of `AiConnectionDto`, derived from an {@link EnvManagementState}. */
+export interface AiConnectionEnvFields {
+  /** 'env' = bootstrapped from MCP_LLM_*. Read-only for partners (409 managed_by_env). */
+  managedBy: 'env' | null;
+  /** Env-managed but no longer synced; the partner may only disconnect it. False unless managedBy is 'env'. */
+  envReleased: boolean;
+}
+
+export function envStateDtoFields(state: EnvManagementState): AiConnectionEnvFields {
+  return { managedBy: state === null ? null : 'env', envReleased: state === 'released' };
+}
+
+/**
  * A model id on a BYO endpoint: what the provider's /models returns, or what an
  * admin types. Printable, no whitespace, no markup, ≤ 200 chars. Covers Ollama
  * tags (`qwen2.5:7b`), HF paths (`org/model`), OpenRouter (`a/b/c`) and

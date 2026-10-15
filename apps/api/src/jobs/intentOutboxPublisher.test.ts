@@ -65,7 +65,11 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
-import { publishOutboxRows } from './intentOutboxPublisher';
+import {
+  ACTION_INTENT_JOB_ATTEMPTS,
+  ACTION_INTENT_JOB_BACKOFF_MS,
+  publishOutboxRows,
+} from './intentOutboxPublisher';
 import { captureException } from '../services/sentry';
 import * as dbModule from '../db';
 
@@ -270,5 +274,49 @@ describe('intentOutboxPublisher.publishOutboxRows', () => {
     );
     expect(addMock).not.toHaveBeenCalled();
     expect(contextDuringAdd).toBe(false);
+  });
+
+  // #4156 — the action-intents consumer rethrows transient failures
+  // (PolicyDecisionTransientError from the intent_created branch, a DB fault
+  // before the release claim) expecting BullMQ to redeliver. With BullMQ's
+  // default attempts: 1 nothing ever did.
+  it('enqueues action-intent jobs with retry attempts and exponential backoff — #4156', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [] });
+    executeMock.mockResolvedValueOnce({
+      rows: [{
+        id: 7,
+        intent_id: 'intent-7',
+        pam_actuation_id: null,
+        event_type: 'intent_created',
+        payload: {},
+        publish_attempts: 1,
+      }],
+    });
+    const chain = makeUpdateChain();
+    updateMock.mockReturnValue({ set: chain.set });
+
+    await publishOutboxRows();
+
+    expect(addMock).toHaveBeenCalledTimes(1);
+    const opts = (addMock.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+    expect(opts.attempts).toBe(ACTION_INTENT_JOB_ATTEMPTS);
+    expect(opts.backoff).toEqual({ type: 'exponential', delay: ACTION_INTENT_JOB_BACKOFF_MS });
+    // Retries must actually be retries, not a single delivery.
+    expect(ACTION_INTENT_JOB_ATTEMPTS).toBeGreaterThan(1);
+  });
+
+  it('keeps the whole retry span well inside the shortest intent window — #4156', () => {
+    // BullMQ exponential backoff: retry n (1-based) waits delay * 2^(n-1).
+    let spanMs = 0;
+    for (let retry = 1; retry < ACTION_INTENT_JOB_ATTEMPTS; retry++) {
+      spanMs += ACTION_INTENT_JOB_BACKOFF_MS * 2 ** (retry - 1);
+    }
+    // The shortest window a retried job must land inside is a supervised chat
+    // intent's approval window (floor 5 min, intentService.ts
+    // clampChatApprovalWindowMs); the release lease is 10 min
+    // (RELEASE_LEASE_MS). A retry that lands after either is a fail-safe
+    // no-op, not recovery — so keep the span under 2 minutes.
+    expect(spanMs).toBeGreaterThan(0);
+    expect(spanMs).toBeLessThanOrEqual(2 * 60 * 1000);
   });
 });

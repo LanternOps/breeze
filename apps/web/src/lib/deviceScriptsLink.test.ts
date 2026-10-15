@@ -3,8 +3,34 @@ import {
   decodeScriptExecutionId,
   deviceScriptsHash,
   deviceScriptsHref,
+  deviceScriptsViewHash,
   scriptExecutionsHref,
+  scriptsViewFromHash,
 } from './deviceScriptsLink';
+
+describe('Scripts tab view hash (#7413)', () => {
+  it('parses #scripts/view=all and view=latest', () => {
+    expect(scriptsViewFromHash('scripts/view=all')).toBe('all');
+    expect(scriptsViewFromHash('scripts/view=latest')).toBe('latest');
+  });
+
+  it('returns undefined for no/unknown view and for execution-id hashes', () => {
+    expect(scriptsViewFromHash('scripts')).toBeUndefined();
+    expect(scriptsViewFromHash('scripts/view=bogus')).toBeUndefined();
+    expect(scriptsViewFromHash('scripts/3f2a')).toBeUndefined();
+    expect(scriptsViewFromHash('overview/view=all')).toBeUndefined();
+  });
+
+  it('builds the view hash', () => {
+    expect(deviceScriptsViewHash('all')).toBe('scripts/view=all');
+    expect(deviceScriptsViewHash('latest')).toBe('scripts/view=latest');
+  });
+
+  it('decodeScriptExecutionId never treats a view segment as an execution id', () => {
+    expect(decodeScriptExecutionId('view=all')).toBeUndefined();
+    expect(decodeScriptExecutionId('abc')).toBe('abc');
+  });
+});
 
 describe('deviceScriptsHref', () => {
   it('links to the device Scripts tab with no highlight when no execution id is given', () => {

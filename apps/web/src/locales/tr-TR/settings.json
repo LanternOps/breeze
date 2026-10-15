@@ -123,7 +123,62 @@
     "copy": "Kopyala",
     "copied": "Kopyalandı",
     "oneTimeWarning": "Bu düz metin anahtarı bir kez gösterilir ve daha sonra alınamaz.",
-    "done": "Bitti"
+    "done": "Bitti",
+    "owner": "Sahip",
+    "unknownOwner": "Bilinmeyen kullanıcı",
+    "ownerOnlyTooltip": "Yalnızca {{owner}} anahtar verebilir veya döndürebilir",
+    "ownerOnlyScopeTooltip": "Yalnızca {{owner}} kapsam ekleyebilir",
+    "ownerOnlyEditNotice": "Bu sorumluyu yeniden adlandırabilir, daraltabilir veya süresini kısaltabilirsiniz. Yalnızca {{owner}} kapsam ekleyebilir, süresini uzatabilir veya kaynak IP'lerini genişletebilir.",
+    "ownerOnlyWidening": "Yalnızca {{owner}} süreyi uzatabilir veya kaynak IP'lerini genişletebilir. Kaydetmek için bu değişiklikleri geri alın.",
+    "presetsHint": "Bir ön ayarla başlayın, ardından aşağıdaki kapsamları düzenleyin. Ön ayarlar yalnızca onay kutularını doldurur.",
+    "presets": {
+      "docs-sync": {
+        "label": "Salt okunur dokümantasyon / varlık eşitleme",
+        "description": "Kuruluşlara, sitelere, cihazlara, envantere, yapılandırmaya, betiklere, yedekleme yapılandırmasına ve özel alanlara okuma erişimi."
+      },
+      "provisioning": {
+        "label": "Kiracı sağlama",
+        "description": "Okuma kümesine ek olarak kuruluşları ve siteleri oluşturma ve kayıt anahtarları üretme. Kayıt anahtarları için son kullanma tarihi ve kaynak IP'ler gerekir."
+      },
+      "alert-feed": {
+        "label": "Uyarı akışı",
+        "description": "Kuruluşları ve uyarıları okuma."
+      },
+      "ticketing": {
+        "label": "Destek talebi entegrasyonu",
+        "description": "Kuruluşları okuma ile destek taleplerini okuma ve yazma."
+      },
+      "ai-mcp": {
+        "label": "AI / MCP istemcisi",
+        "description": "ai:read ile MCP erişimi. ai:write veya ai:execute kapsamlarını yalnızca istemcinin ihtiyacı varsa ekleyin."
+      },
+      "custom": {
+        "label": "Özel",
+        "description": "Seçimi temizleyin ve her kapsamı kendiniz seçin."
+      }
+    },
+    "scopeDescriptions": {
+      "organizations_read": "Sorumlunun erişebildiği tüm kuruluşların adları, slug'ları ve türleri.",
+      "sites_read": "Siteler (konumlar) ve ayrıntıları.",
+      "devices_read": "Cihaz kayıtları: ana bilgisayar adı, işletim sistemi, donanım ve grup üyeliği.",
+      "inventory_read": "Cihazlardan toplanan donanım ve yazılım envanteri.",
+      "configuration_read": "Yapılandırma ilkeleri ve atamaları.",
+      "scripts_read": "Betik içerikleri dahil betik kitaplığı girdileri.",
+      "backup-configuration_read": "Yedekleme yapılandırması ve zamanlamaları (yedek verileri değil).",
+      "custom-fields_read": "Özel alan tanımları ve cihazlarda ayarlanan değerler.",
+      "alerts_read": "Sorumlunun erişebildiği tüm kuruluşların uyarı başlıkları ve iletileri.",
+      "tickets_read": "Sorumlunun erişebildiği tüm kuruluşlardaki, müşteriler tarafından yazılan destek talebi konuları, açıklamaları ve yorumları.",
+      "device-status_read": "Canlı heartbeat durumu: çevrimiçi/çevrimdışı, son görülme zamanı ve aracı sürümü. devices:read içinde yer almaz.",
+      "organizations_write": "Kuruluş oluşturma. Güncelleme ve silme yapılamaz.",
+      "sites_write": "Site oluşturma. Güncelleme ve silme yapılamaz.",
+      "enrollment-keys_write": "Cihaz kayıt anahtarları oluşturma. Son kullanma tarihi ve en az bir kaynak IP veya CIDR gerekir.",
+      "contracts_write": "Sözleşme ve sözleşme satırlarını okuma, oluşturma ve düzenleme; satırları kaldırma. Etkinleştirme, duraklatma veya iptal yapılamaz.",
+      "tickets_write": "Destek taleplerini oluşturma, güncelleme, atama, durumunu değiştirme ve yorum ekleme. Talepler silinemez veya taşınamaz.",
+      "ai_read": "MCP uç noktasına bağlanma ve salt okunur araçları kullanma. Diğer tüm ai:* kapsamları için gereklidir.",
+      "ai_write": "Verileri değiştiren MCP araçları.",
+      "ai_execute": "Cihazlarda eylem çalıştıran MCP araçları.",
+      "ai_execute_admin": "Yönetim eylemleri çalıştıran MCP araçları. Yalnızca tamamen güvendiğiniz bir istemciye verin."
+    }
   },
   "language": {
     "title": "Dil",
@@ -375,7 +430,8 @@
       "duplicate_model": "Bu model kimliği bu bağlantıda zaten var.",
       "geo_not_supported": "Bu bağlantı türü bir çıkarım bölgesi belirleyemez.",
       "key_required_for_new_endpoint": "Yeni URL için anahtarı girin (veya anahtarı kaldırın).",
-      "too_many_models": "Bu bağlantıda elle eklenen model sayısı zaten en fazla düzeyde."
+      "too_many_models": "Bu bağlantıda elle eklenen model sayısı zaten en fazla düzeyde.",
+      "not_removable": "Yalnızca elle eklenen modeller kaldırılabilir. Bunun yerine bu modeli devre dışı bırakın."
     },
     "org": {
       "title": "Varsayılan modeller",
@@ -512,7 +568,12 @@
       "verify": "Doğrula",
       "verifyQueued": "Model denetimi sıraya alındı",
       "verifyFailed": "Model denetimi sıraya alınamadı.",
-      "verifyGatewayHint": "Uç noktanıza kısa bir araç çağırma testi uygular (birkaç bin token kullanır)."
+      "verifyGatewayHint": "Uç noktanıza kısa bir araç çağırma testi uygular (birkaç bin token kullanır).",
+      "remove": "Modeli kaldır",
+      "removeTitle": "Bu model kaldırılsın mı?",
+      "removeMessage": "“{{model}}” bu bağlantıdan silinecek. Geçmiş kullanım ve maliyet kayıtları korunur. Daha sonra yeniden ekleyebilirsiniz.",
+      "removed": "Model kaldırıldı",
+      "removeFailed": "Model kaldırılamadı. Yeniden deneyin."
     },
     "defaults": {
       "title": "Özellik başına varsayılanlar",
@@ -1342,6 +1403,9 @@
       "invoice_number": "Fatura numarası",
       "due_date": "Vade tarihi",
       "invite_url": "Davet URL'si",
+      "name": "Alıcının adı",
+      "inviter_name": "Davet edenin adı",
+      "expires_days": "Davetin sona ermesine kalan gün",
       "cta_button": "Düğme",
       "client_name": "Client name",
       "setup_link": "Automatic payments setup link",
@@ -1367,7 +1431,11 @@
       "days_overdue": "Gecikme günü",
       "pay_link": "Ödeme bağlantısı",
       "charge_total": "Toplam tahsilat",
-      "attempted_amount": "Denenen ödeme tutarı"
+      "attempted_amount": "Denenen ödeme tutarı",
+      "approval_ask": "Onay talebi",
+      "approval_snapshot": "Onay rakamları",
+      "approval_expires": "Onay son tarihi",
+      "approval_status": "Onay durumu"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1379,7 +1447,10 @@
       "autopay_resumed": "Otomatik ödemeler devam ediyor",
       "card_expiring": "Saved card expiring",
       "payment_receipt": "Çevrimiçi ödeme makbuzu",
-      "payment_failed": "Ödeme tamamlanamadı"
+      "payment_failed": "Ödeme tamamlanamadı",
+      "ticket_approval_requested_approver": "İş onayı talebi (onaylayan)",
+      "ticket_approval_requested_notify": "İş onayı talebi (bilgi amaçlı)",
+      "ticket_approval_decided": "İş onayı kararı"
     }
   },
   "inboundEmail": {
@@ -1473,6 +1544,7 @@
     },
     "scopeMailbox": "Bu posta kutusunun kapsamını belirleyin (Uygulama Erişim Politikası)",
     "reauthRequired": "Microsoft 365 yoklama ve yanıtlara devam edilmeden önce yöneticinin yeniden onayı gereklidir.",
+    "pollFailing": "Bu posta kutusunun son {{failures}} denetimi geçici bir Microsoft 365 hatasıyla başarısız oldu. Breeze yeniden denemeye devam ediyor; Microsoft 365 yeniden yanıt verdiğinde yeni postalar alınacak.",
     "retest": "Yeniden test edin",
     "reconnect": "Yeniden bağlan",
     "disconnect": "Bağlantıyı kes",
@@ -1922,9 +1994,25 @@
           "label": "Ağ görünürlüğü",
           "description": "Müşteri portalında ağ durumunu ve keşfedilen varlıkları salt okunur olarak gösterir."
         },
+        "enableEdrVisibility": {
+          "label": "Uç nokta koruması (EDR)",
+          "description": "Müşterilere genel bir “Yönetilen uç nokta koruması” durumunu ve bağlı EDR sağlayıcılarından gelen tehdit sayılarını gösterir. Sağlayıcı adları portalda asla gösterilmez."
+        },
         "enableNetworkAlerts": {
           "label": "Ağ uyarıları",
           "description": "Müşteri portalında ağ varlıklarındaki etkin uyarı sayısını ve bağlı açık talepleri gösterir."
+        },
+        "enablePatchDetail": {
+          "label": "Yama ayrıntısı",
+          "description": "Bu kuruluşun tüm portal girişlerine her cihazın bekleyen, yüklenen ve başarısız yamalarını (başlık, önem derecesi, sürüm, KB bağlantısı) gösterir. Hangi makinelerde yama eksik olduğunu açığa çıkarır. Tüm görünürlüğü etkinleştir seçeneğiyle açılmaz."
+        },
+        "enableVulnerabilityDetail": {
+          "label": "Güvenlik açığı ayrıntısı",
+          "description": "Bu kuruluşun her portal girişine, her cihazın CVE bulgularını ve önem derecesini gösterir (CVE kimliği, açıklama, önem derecesi, CVSS puanı, yama durumu, durum). Bu, hangi makinelerin savunmasız olduğunu ortaya çıkarır. Tüm görünürlüğü etkinleştir ile açılmaz."
+        },
+        "enableHourBlock": {
+          "label": "Destek saatleri",
+          "description": "Müşterinin destek kullanımı bölümünde ön ödemeli saat paketinin kullanılan ve kalan saatlerini gösterir. Destek kullanımı gerektirir. Tüm görünürlüğü etkinleştirdiğinizde açılmaz."
         }
       }
     },
@@ -2809,6 +2897,7 @@
           "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
           "awaiting_manual_approval": "Manuel onay bekleniyor",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
+          "ring_reference_invalid": "İlkenin güncelleme halkası geçersiz",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
         },
         "failureClasses": {
@@ -4191,7 +4280,16 @@
     "partnerCurrencyUnavailable": "İş ortağınızın para birimi yüklenemedi.",
     "retry": "Yeniden dene",
     "priceCouldNotBeSavedRetry": "{{currency}} fiyatı kaydedilemedi. Yeniden deneyin.",
-    "priceCouldNotBeRemovedRetry": "{{currency}} fiyatı kaldırılamadı. Yeniden deneyin."
+    "priceCouldNotBeRemovedRetry": "{{currency}} fiyatı kaldırılamadı. Yeniden deneyin.",
+    "billing": "Faturalandırma",
+    "billingOneTime": "Tek seferlik",
+    "billingRecurring": "Yinelenen",
+    "billingFrequency": "Sıklık",
+    "frequencyMonthly": "Aylık",
+    "frequencyAnnual": "Yıllık",
+    "commitmentTerm": "Taahhüt süresi (ay)",
+    "commitmentTermPlaceholder": "ör. 12",
+    "commitmentTermRange": "Taahhüt süresi: 1 ile 120 ay arasında bir tam sayı girin."
   },
   "catalogItemsTab": {
     "itemArchived": "Öğe arşivlendi",
@@ -5529,7 +5627,8 @@
     "loading": "Bilet ayarları yükleniyor…",
     "errors": {
       "load": "Bilet ayarları yüklenemedi.",
-      "save": "Bilet ayarları kaydedilemedi"
+      "save": "Bilet ayarları kaydedilemedi",
+      "savedApprovalFailed": "Talep ayarları kaydedildi, ancak müşteri onay politikası kaydedilemedi"
     },
     "toasts": {
       "saved": "Bilet ayarları kaydedildi"
@@ -5555,6 +5654,28 @@
       "inherit": "Devral",
       "billableOption": "Faturalandırılabilir",
       "nonBillableOption": "Faturalandırılamaz"
+    },
+    "approval": {
+      "title": "Müşteri iş onayı",
+      "description": "Bu kuruluş için iş ortağı varsayılanını geçersiz kılar. İş ortağı varsayılanını kullanmak için Devral’ı seçin.",
+      "enabled": "Müşteri onayı iste",
+      "budgetTrigger": "Bir talep bütçesi aşılacağında sor",
+      "afterHoursTrigger": "Mesai dışı iş için sor",
+      "enforcement": "Uygulama",
+      "enforcementSoft": "Esnek (uyar, kayda izin ver)",
+      "enforcementHard": "Katı (onaylanana kadar engelle)",
+      "ttl": "Onay isteği şu süre sonra sona erer (saat)",
+      "ttlRange": "Sona erme süresi {{min}} ile {{max}} saat arasında olmalıdır",
+      "on": "Açık",
+      "off": "Kapalı",
+      "inherit": "Devral",
+      "inheritValue": "Devral ({{value}})",
+      "clear": "Geçersiz kılmayı kaldır (devral)",
+      "pendingInherit": "Kaydettikten sonra varsayılanı devralacak",
+      "loadFailed": "Müşteri onayı ayarları yüklenemedi.",
+      "sourceOrg": "Kuruluş geçersiz kılması",
+      "sourcePartner": "İş ortağı varsayılanı",
+      "sourceDefault": "Yerleşik varsayılan"
     }
   },
   "organizationForm": {
@@ -5806,7 +5927,8 @@
       "title": "Adres"
     },
     "actions": {
-      "saveChanges": "Değişiklikleri kaydet"
+      "saveChanges": "Değişiklikleri kaydet",
+      "sendMessage": "Mesaj gönder"
     },
     "policies": {
       "assignedTitle": "Atanan Politikalar",
@@ -6105,6 +6227,7 @@
     "accessDenied": "Kullanıcıları görüntüleme izniniz yok.",
     "title": "Kullanıcılar",
     "description": "Kullanıcı erişimini, rollerini ve izinlerini yönetin.",
+    "sessionTimeoutPointer": "Oturum boşta kalma zaman aşımı Güvenlik bölümünden yapılandırılır",
     "never": "Hiçbir zaman",
     "actions": {
       "tryAgain": "Tekrar deneyin",
@@ -6255,7 +6378,27 @@
     "locationEnabledLabel": "Bir teknisyen müşteri sahasına vardığında zamanlayıcı öner",
     "locationHelp": "Her teknisyenin ayrıca telefonunda konum erişimine izin vermesi gerekir. Konum telefonda denetlenir ve asla Breeze’e gönderilmez.",
     "radiusLabel": "Varsayılan varış yarıçapı (m)",
-    "radiusRange": "Varış yarıçapı {{min}} ile {{max}} metre arasında olmalıdır"
+    "radiusRange": "Varış yarıçapı {{min}} ile {{max}} metre arasında olmalıdır",
+    "approval": {
+      "heading": "Müşteri iş onayı",
+      "description": "İş, müşterinin bütçesine veya mesai saatleri dışına kaydedilmeden önce müşteriden onay iste. Bu, iş ortağı varsayılanıdır; kuruluşlar bunu geçersiz kılabilir.",
+      "enabledLabel": "İş için müşteri onayı iste",
+      "budgetTriggerLabel": "Bir talep bütçesi aşılacağında sor",
+      "afterHoursTriggerLabel": "Mesai dışı iş için sor",
+      "enforcementLabel": "Uygulama",
+      "enforcementSoft": "Esnek (uyar, kayda izin ver)",
+      "enforcementHard": "Katı (onaylanana kadar engelle)",
+      "ttlLabel": "Onay isteği şu süre sonra sona erer (saat)",
+      "ttlRange": "Sona erme süresi {{min}} ile {{max}} saat arasında olmalıdır",
+      "readOnly": "Bu ilkeyi değiştirmek için iş ortağı genelinde ayar yetkisine ihtiyacınız var. Geçerli değerler gösteriliyor.",
+      "loadFailed": "Müşteri onayı ayarları yüklenemedi.",
+      "source": {
+        "org": "Kuruluş",
+        "partner": "İş ortağı",
+        "default": "Varsayılan"
+      }
+    },
+    "savedApprovalFailed": "Zaman ayarları kaydedildi, ancak müşteri onay politikası kaydedilemedi"
   },
   "contactsCard": {
     "title": "Kişiler",
@@ -6538,7 +6681,8 @@
     "nameTaken": "Bu ada sahip bir iş türü zaten var.",
     "rename": "Yeniden adlandır",
     "loadError": "İş türleri yüklenemedi.",
-    "empty": "Henüz iş türü yok. İlk iş türünüzü yukarıdan ekleyin."
+    "empty": "Henüz iş türü yok. İlk iş türünüzü yukarıdan ekleyin.",
+    "afterHours": "Mesai dışı (etkinse müşteri onayı gerektirir)"
   },
   "ticketCategories": {
     "defaultWorkType": "Varsayılan iş türü",

@@ -9,6 +9,7 @@ const { dbMocks, contextMocks, orgMocks, runtimeMocks, budgetMocks, executorMock
   contextMocks: {
     fromAuth: vi.fn((auth: unknown) => ({ scope: 'organization', auth })),
     withCaller: vi.fn(async <T>(_context: unknown, fn: () => Promise<T>) => fn()),
+    system: vi.fn(),
   },
   orgMocks: {
     resolveWritableToolOrgId: vi.fn(),
@@ -62,13 +63,14 @@ vi.mock('../../db', () => ({
     },
   },
   withDbAccessContext: contextMocks.withCaller,
+  withSystemDbAccessContext: vi.fn(async <T>(fn: () => Promise<T>, label?: string) => { contextMocks.system(label); return fn(); }),
 }));
 
 vi.mock('../../middleware/auth', () => ({
   dbAccessContextFromAuth: contextMocks.fromAuth,
 }));
 
-vi.mock('../aiTools', () => ({
+vi.mock('../aiToolWriteOrg', () => ({
   resolveWritableToolOrgId: orgMocks.resolveWritableToolOrgId,
 }));
 
@@ -101,7 +103,7 @@ vi.mock('../auditEvents', async (importActual) => {
   };
 });
 
-import { executeM365ReadAction } from './readActionService';
+import { executeM365MailboxReadByOrg, executeM365ReadAction } from './readActionService';
 import { GraphReadExecutorClientError } from './graphReadExecutorClient';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../auditEvents';
@@ -416,5 +418,52 @@ describe('executeM365ReadAction', () => {
 
     await expect(executeM365ReadAction(auth(), ORG_GET_ACTION)).rejects.toThrow('unexpected');
     expect(auditMocks.writeAuditEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeM365MailboxReadByOrg (#6354 W03)', () => {
+  const OID = '77777777-7777-4777-8777-777777777777';
+  const subject = { entraTenantId: TENANT_ID, entraOid: OID };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    runtimeMocks.enabled.mockReturnValue(true);
+    runtimeMocks.loadConfig.mockReturnValue(RUNTIME_CONFIG);
+    budgetMocks.consume.mockResolvedValue({ allowed: true });
+    executorMocks.createClient.mockReturnValue({ executeReadAction: executorMocks.executeReadAction });
+  });
+
+  it('pins tenant and object id in the executor envelope and audits the actor', async () => {
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockResolvedValue({ success: true, kind: 'resource', resource: { id: OID, proxyAddresses: [] } });
+    const result = await executeM365MailboxReadByOrg(ORG_ID, subject, ACTOR_ID);
+    expect(result).toEqual({ ok: true, kind: 'resource', resource: { id: OID, proxyAddresses: [] } });
+    expect(executorMocks.executeReadAction).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: TENANT_ID, action: { type: 'm365.user.mailboxes', userId: OID },
+    }));
+    // The connection read runs in its own short system scope, never the caller's.
+    expect(contextMocks.system).toHaveBeenCalledWith('callerVerification.mailboxes.readConnection');
+    expect(contextMocks.withCaller).not.toHaveBeenCalled();
+    expect(auditMocks.writeAuditEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['a tenant mismatch', () => dbMocks.selectResults.push([connectionRow({ tenantId: '99999999-9999-4999-8999-999999999999' })]), 'tenant_mismatch'],
+    ['an exhausted budget', () => { dbMocks.selectResults.push([connectionRow()]); budgetMocks.consume.mockResolvedValue({ allowed: false, retryAfterSeconds: 5 }); }, 'read_rate_limited'],
+    ['disabled tools', () => { runtimeMocks.enabled.mockReturnValue(false); }, 'tools_disabled'],
+    ['a missing connection', () => dbMocks.selectResults.push([]), 'connection_not_ready'],
+    ['a revoked connection', () => dbMocks.selectResults.push([connectionRow({ status: 'revoked' })]), 'connection_not_ready'],
+  ])('%s makes zero executor calls', async (_label, arrange, code) => {
+    arrange();
+    const result = await executeM365MailboxReadByOrg(ORG_ID, subject, ACTOR_ID);
+    expect(result).toMatchObject({ ok: false, code });
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
+  });
+
+  it('refuses a non-GUID object id before any DB access', async () => {
+    const result = await executeM365MailboxReadByOrg(ORG_ID, { ...subject, entraOid: 'alex@example.com' }, ACTOR_ID);
+    expect(result).toMatchObject({ ok: false });
+    expect(dbMocks.selectSpy).not.toHaveBeenCalled();
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
   });
 });

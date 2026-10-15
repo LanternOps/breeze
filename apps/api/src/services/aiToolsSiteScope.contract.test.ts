@@ -10,6 +10,7 @@ import {
   delegatesToGuardedHelper,
   enclosingWindow,
   guardedLocalHelpers,
+  handlerWindow,
   matchClose,
   siteAttributableTables,
   tablesWithColumnIn,
@@ -483,10 +484,11 @@ function scanOptionalArgTools(
     const declared = [...props.matchAll(/\b(deviceIds?|siteIds?)\s*:/g)].map((d) => d[1]!);
     if (declared.every((d) => new RegExp(`'${d}'`).test(required))) continue;
     total++;
-    // Handler window: from `handler` to the next tool definition's `name:`.
+    // Handler window: from `handler` to the next tool definition's `name:`,
+    // following a `handler: <identifier>` reference to its body (#8600).
     nameRe.lastIndex = handlerIdx;
     const next = nameRe.exec(src);
-    const window = src.slice(handlerIdx, next ? next.index : src.length);
+    const window = handlerWindow(src, handlerIdx, next ? next.index : src.length);
     nameRe.lastIndex = handlerIdx;
     if (namesSiteAxis(window) || delegatesToGuardedHelper(window, helpers)) continue;
     unguarded.push(`${file}:${m[1]!}`);
@@ -907,6 +909,47 @@ describe('scanner: the optional-argument scan discriminates the optional-id shap
       });
     `);
     expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: [], total: 1 });
+  });
+
+  // #8600: `run_script` registers `handler: runScriptHandler`, a module-level
+  // const. The window used to stop at the reference, so the handler's
+  // per-device `verifyDeviceAccess` calls were invisible and the tool read as
+  // unguarded the moment its schema stopped requiring `deviceIds`.
+  const referencedHandlerTool = (handlerName: string, helpers: string) => blankComments(`
+    ${helpers}
+    registerTool({
+      definition: {
+        name: 'fixture_tool',
+        input_schema: {
+          type: 'object',
+          properties: { deviceIds: { type: 'array' }, groupId: { type: 'string' } },
+          required: [],
+        },
+      },
+      handler: ${handlerName},
+    });
+  `);
+
+  it('a `handler: <identifier>` reference is followed to its same-file body', () => {
+    const src = referencedHandlerTool('fixtureHandler', `
+      const fixtureHandler: AiTool['handler'] = async (input, auth, context) => {
+        for (const id of input.deviceIds) await verifyDeviceAccess(id, auth);
+        return 'ok';
+      };
+    `);
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: [], total: 1 });
+  });
+
+  it('following the reference does not borrow a NEIGHBOUR\'s marker', () => {
+    // The referenced body is unguarded; a different same-file const is guarded.
+    // Only the identifier the tool registers may clear it.
+    const src = referencedHandlerTool('fixtureHandler', `
+      const otherHandler: AiTool['handler'] = async (input, auth) => verifyDeviceAccess(input.deviceId, auth);
+      const fixtureHandler: AiTool['handler'] = async (input, auth) => {
+        return db.select().from(alerts);
+      };
+    `);
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: ['f.ts:fixture_tool'], total: 1 });
   });
 
   it('a site marker named only in a COMMENT does not clear the tool', () => {

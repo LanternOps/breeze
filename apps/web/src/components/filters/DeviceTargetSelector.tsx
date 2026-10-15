@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { asList } from '@/lib/asList';
 import { useDeviceOptions, type UseDeviceOptionsResult } from '../../hooks/useDeviceOptions';
 import { DeviceOptionPicker } from './DeviceOptionPicker';
+import { executionRefusedFieldsUsed } from '@/lib/executionRefusedFields';
 
 type TargetMode = 'all' | 'manual' | 'groups' | 'filter';
 
@@ -21,6 +22,8 @@ interface GroupOption {
   id: string;
   name: string;
   deviceCount?: number;
+  type?: 'static' | 'dynamic';
+  filterFieldsUsed?: string[];
 }
 
 interface ProvidedDeviceOption {
@@ -42,10 +45,17 @@ export interface DeviceTargetSelectorProps {
   showPreview?: boolean;
   showSavedFilters?: boolean;
   requireCompleteSet?: boolean;
+  /** Scopes the device options AND the self-fetched group list to one org. */
   orgId?: string;
   siteId?: string;
   status?: string;
   osType?: string;
+  /**
+   * Disable (and explain) groups the server refuses as an execution target
+   * because their rules match on device-reported fields. Opt-in: only
+   * surfaces that execute against the selected groups should set it.
+   */
+  flagRefusedGroups?: boolean;
   onCanSubmitChange?: (canSubmit: boolean) => void;
   className?: string;
 }
@@ -98,6 +108,7 @@ export function DeviceTargetSelector({
   siteId,
   status,
   osType,
+  flagRefusedGroups = false,
   onCanSubmitChange,
   className = ''
 }: DeviceTargetSelectorProps) {
@@ -161,14 +172,18 @@ export function DeviceTargetSelector({
 
   useEffect(() => {
     if (!propGroups) {
-      fetchWithAuth('/device-groups').then(async (res) => {
+      // Scoped to the org when the caller pins one: an org-owned automation can
+      // only target its own org's groups, so other orgs' groups are noise (and
+      // would be rejected on save).
+      const url = orgId ? `/device-groups?orgId=${encodeURIComponent(orgId)}` : '/device-groups';
+      fetchWithAuth(url).then(async (res) => {
         if (res.ok) {
           const data = await res.json();
           setGroups(asList(data, 'groups'));
         }
       }).catch(() => {});
     }
-  }, [propGroups]);
+  }, [propGroups, orgId]);
 
   useEffect(() => {
     if (activeMode !== 'manual') onCanSubmitChange?.(true);
@@ -197,6 +212,10 @@ export function DeviceTargetSelector({
   };
 
   const handleGroupToggle = (groupId: string, checked: boolean) => {
+    if (checked && flagRefusedGroups) {
+      const group = groups.find((g) => g.id === groupId);
+      if (group && executionRefusedFieldsUsed(group.filterFieldsUsed).length > 0) return;
+    }
     const current = new Set(value.groupIds ?? []);
     if (checked) current.add(groupId); else current.delete(groupId);
     onChange({ ...value, type: 'groups', groupIds: Array.from(current) });
@@ -285,23 +304,43 @@ export function DeviceTargetSelector({
               ) : (
                 groups.map(group => {
                   const checked = value.groupIds?.includes(group.id) ?? false;
+                  const refusedFields = flagRefusedGroups ? executionRefusedFieldsUsed(group.filterFieldsUsed) : [];
+                  // A group that is already selected stays toggleable so it can be removed.
+                  const disabled = refusedFields.length > 0 && !checked;
                   return (
                     <label
                       key={group.id}
-                      className="flex items-center gap-3 rounded-md border bg-background px-3 py-2 text-sm transition hover:bg-muted/40 cursor-pointer"
+                      className={`flex items-center gap-3 rounded-md border bg-background px-3 py-2 text-sm transition ${
+                        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-muted/40'
+                      }`}
                     >
                       <input
                         type="checkbox"
+                        data-testid={`group-checkbox-${group.id}`}
                         checked={checked}
+                        disabled={disabled}
                         onChange={(e) => handleGroupToggle(group.id, e.target.checked)}
                         className="h-4 w-4 rounded border-muted text-primary focus:ring-primary"
                       />
                       <div className="flex-1 min-w-0">
                         <span className="font-medium">{group.name}</span>
+                        {group.type === 'dynamic' && (
+                          <span
+                            data-testid={`group-dynamic-${group.id}`}
+                            className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                          >
+                            {t('filters.targets.dynamic', { defaultValue: 'Dynamic' })}
+                          </span>
+                        )}
                         {typeof group.deviceCount === 'number' && (
                           <span className="ml-2 text-xs text-muted-foreground">
                             ({t('filters.targets.deviceCount', { count: group.deviceCount })})
                           </span>
+                        )}
+                        {refusedFields.length > 0 && (
+                          <p data-testid={`group-refused-${group.id}`} className="mt-1 text-xs text-amber-700 dark:text-amber-500">
+                            {t('filters.targets.refusedGroup', { fields: refusedFields.join(', ') })}
+                          </p>
                         )}
                       </div>
                     </label>

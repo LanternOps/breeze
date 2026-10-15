@@ -14,6 +14,7 @@ import {
   hashBootstrapToken,
 } from "../services/installerBootstrapToken";
 import { getTrustedClientIp } from "../services/clientIp";
+import { ANONYMOUS_ACTOR_ID, writeAuditEvent } from "../services/auditEvents";
 import { clampTtlToCap } from "../services/enrollmentDefaults";
 import { envInt } from "../utils/envInt";
 import { getDefaultEnrollmentKeyTtlMinutes } from "../services/enrollmentKeyTtlDefault";
@@ -308,9 +309,10 @@ async function redeemBootstrapToken(c: Context, token: string) {
       return null;
     }
 
-    // Success audit: consumed_at/consumed_from_ip on the token row only retain
-    // the LAST redeemer, so record each redemption's IP + running count here —
-    // this is the only per-device forensic trail for a multi-use token.
+    // consumed_at/consumed_from_ip on the token row only retain the LAST
+    // redeemer, so log each redemption's IP + running count. Operational log
+    // only — the durable per-device record is the installer.bootstrap_redeemed
+    // audit row written after this transaction commits (#7973).
     console.log("[installer] bootstrap redeemed", {
       reason: "redeemed",
       tokenId: row.id,
@@ -331,12 +333,50 @@ async function redeemBootstrapToken(c: Context, token: string) {
       rawChildKey,
       siteId: row.siteId,
       orgName: org?.name ?? "your organization",
+      audit: {
+        orgId: row.orgId,
+        tokenId: row.id,
+        enrollmentKeyId: row.parentEnrollmentKeyId,
+        childEnrollmentKeyId: childKey?.id ?? null,
+        platform: row.installerPlatform ?? null,
+        consumedCount: updated.consumedCount,
+        maxUsage: row.maxUsage,
+      },
     };
   });
 
   if (!result) {
     return c.json(INVALID_TOKEN_RESPONSE.body, INVALID_TOKEN_RESPONSE.status);
   }
+
+  // Audit trail for the redemption (#7973). Written only once the redeem
+  // transaction has committed, so every failure path (unknown / exhausted /
+  // expired / rotated parent / lost consume race) writes nothing. Carries ids
+  // only — never the bearer token, its log hash, or the minted child key.
+  const audit = result.audit;
+  writeAuditEvent(c, {
+    orgId: audit.orgId,
+    action: "installer.bootstrap_redeemed",
+    resourceType: "installer_bootstrap_token",
+    resourceId: audit.tokenId,
+    // Public endpoint: the token is the auth, there is no user to attribute.
+    actorType: "system",
+    actorId: ANONYMOUS_ACTOR_ID,
+    initiatedBy: "agent",
+    details: {
+      tokenId: audit.tokenId,
+      enrollmentKeyId: audit.enrollmentKeyId,
+      childEnrollmentKeyId: audit.childEnrollmentKeyId,
+      siteId: result.siteId,
+      platform: audit.platform,
+      consumedCount: audit.consumedCount,
+      maxUsage: audit.maxUsage,
+      remainingUsage: Math.max(0, audit.maxUsage - audit.consumedCount),
+      ip: ip === "unknown" ? null : ip,
+    },
+    ipAddress: ip === "unknown" ? undefined : ip,
+    result: "success",
+  });
 
   return c.json({
     serverUrl: process.env.PUBLIC_API_URL ?? process.env.API_URL ?? "",

@@ -74,6 +74,11 @@ type RebootNotification struct {
 	Title   string
 	Body    string
 	Urgency string
+	// Countdown is the time left until the machine goes down as this rung
+	// fires — the figure the built-in Body quotes. It is what an operator's
+	// {{countdown}} placeholder is filled from (#8030), so a custom body says
+	// exactly what the built-in one would have. After + Countdown == TotalDelay.
+	Countdown time.Duration
 }
 
 // RebootPlan is the whole timeline for one scheduled reboot, computed up front
@@ -120,10 +125,11 @@ func PlanReboot(totalDelay time.Duration) RebootPlan {
 	plan.OSInvokeAt = totalDelay - plan.OSGrace
 
 	closing := RebootNotification{
-		After:   plan.OSInvokeAt,
-		Title:   "Restarting Now",
-		Body:    fmt.Sprintf("This computer restarts for updates in %s. Save your work now.", humanizeRebootDelay(plan.OSGrace)),
-		Urgency: "critical",
+		After:     plan.OSInvokeAt,
+		Title:     "Restarting Now",
+		Body:      fmt.Sprintf("This computer restarts for updates in %s. Save your work now.", humanizeRebootDelay(plan.OSGrace)),
+		Urgency:   "critical",
+		Countdown: plan.OSGrace,
 	}
 
 	// A reboot so imminent that the closing notice lands at (or effectively at)
@@ -135,6 +141,7 @@ func PlanReboot(totalDelay time.Duration) RebootPlan {
 		plan.OSInvokeAt = 0
 		plan.OSGrace = totalDelay
 		closing.After = 0
+		closing.Countdown = totalDelay
 		closing.Body = fmt.Sprintf("This computer restarts for updates in %s. Save your work now.", humanizeRebootDelay(totalDelay))
 		plan.Notifications = []RebootNotification{closing}
 		return plan
@@ -146,9 +153,10 @@ func PlanReboot(totalDelay time.Duration) RebootPlan {
 		// "Restart", not "Reboot", throughout: it is what both Windows and macOS
 		// say in their own user-facing UI, and these strings go to an end user
 		// rather than a technician.
-		Title:   "Restart Scheduled",
-		Body:    fmt.Sprintf("A system restart for updates is scheduled in %s. Please save your work.", humanizeRebootDelay(totalDelay)),
-		Urgency: leadUrgency(totalDelay),
+		Title:     "Restart Scheduled",
+		Body:      fmt.Sprintf("A system restart for updates is scheduled in %s. Please save your work.", humanizeRebootDelay(totalDelay)),
+		Urgency:   leadUrgency(totalDelay),
+		Countdown: totalDelay,
 	})
 
 	// Reminder ladder, longest lead first so offsets come out ascending.
@@ -162,10 +170,11 @@ func PlanReboot(totalDelay time.Duration) RebootPlan {
 			continue // too close to the closing notice
 		}
 		plan.Notifications = append(plan.Notifications, RebootNotification{
-			After:   at,
-			Title:   reminderTitle(before),
-			Body:    fmt.Sprintf("A system restart for updates begins in %s. Please save your work.", humanizeRebootDelay(before)),
-			Urgency: reminderUrgency(before),
+			After:     at,
+			Title:     reminderTitle(before),
+			Body:      fmt.Sprintf("A system restart for updates begins in %s. Please save your work.", humanizeRebootDelay(before)),
+			Urgency:   reminderUrgency(before),
+			Countdown: before,
 		})
 	}
 

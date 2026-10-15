@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bmrCompleteSchema, bmrVmRestoreSchema, canonicalizeS3CredentialFields, jobListSchema } from './schemas';
+import { bmrCompleteSchema, bmrVmRestoreSchema, canonicalizeS3CredentialFields, configSchema, jobListSchema, validateS3Details } from './schemas';
 
 // D14: a bare-metal recovery completion report was answering "Request body
 // too large" for a payload carrying ~9,900 unbounded `warnings` strings (the
@@ -200,5 +200,56 @@ describe('canonicalizeS3CredentialFields', () => {
 describe('jobListSchema status (#5396)', () => {
   it('accepts completed_with_errors', () => {
     expect(jobListSchema.safeParse({ status: 'completed_with_errors' }).success).toBe(true);
+  });
+});
+
+// #7081: the destination key prefix is validated and normalized on every
+// config write, so a stored prefix is always one the snapshot key root can use.
+describe('validateS3Details key prefix', () => {
+  const base = { bucket: 'b', region: 'us-east-1' };
+
+  it.each([
+    ['a//b', 'must not contain empty, "." or ".." segments'],
+    ['snapshots', 'must not contain a "snapshots" segment'],
+    ['x/Snapshots', 'must not contain a "snapshots" segment'],
+    ['a b', "may only contain letters, digits and ! _ . * ' ( ) - separated by /"],
+    ['a'.repeat(257), 'must be at most 256 characters'],
+    [42, 'must be text'],
+  ])('rejects %j with an actionable message', (prefix, reason) => {
+    const result = validateS3Details({ ...base, prefix });
+    expect(result.error).toBe(`Invalid key prefix: ${reason}`);
+  });
+
+  it('returns the normalized prefix', () => {
+    expect(validateS3Details({ ...base, prefix: '/acme/' })).toMatchObject({ error: null, prefix: 'acme' });
+    expect(validateS3Details({ ...base, prefix: ' msp/acme ' })).toMatchObject({ error: null, prefix: 'msp/acme' });
+  });
+
+  it('reports no prefix as null', () => {
+    expect(validateS3Details({ ...base })).toMatchObject({ error: null, prefix: null });
+    expect(validateS3Details({ ...base, prefix: '' })).toMatchObject({ error: null, prefix: null });
+    expect(validateS3Details({ ...base, prefix: '/' })).toMatchObject({ error: null, prefix: null });
+  });
+
+  it('leaves an unchanged stored prefix alone on an update, but refuses a changed invalid one', () => {
+    expect(validateS3Details({ ...base, prefix: 'a b' }, { storedPrefix: 'a b' }))
+      .toMatchObject({ error: null, keepStoredPrefix: true });
+    expect(validateS3Details({ ...base, prefix: 'c d' }, { storedPrefix: 'a b' }).error).toMatch(/Invalid key prefix/);
+    expect(validateS3Details({ ...base, prefix: 'a b' }, { storedPrefix: undefined }).error).toMatch(/Invalid key prefix/);
+    // A valid prefix is always normalized, changed or not.
+    expect(validateS3Details({ ...base, prefix: '/acme/' }, { storedPrefix: '/acme/' }))
+      .toEqual(expect.objectContaining({ error: null, prefix: 'acme' }));
+    expect(validateS3Details({ ...base, prefix: '/acme/' }, { storedPrefix: '/acme/' }).keepStoredPrefix).toBeUndefined();
+  });
+
+  it('configSchema refuses an S3 create with an invalid prefix', () => {
+    const parsed = configSchema.safeParse({ name: 'x', provider: 's3', details: { ...base, prefix: 'a//b' } });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain('Invalid key prefix');
+  });
+
+  it('does not validate a local destination prefix', () => {
+    const parsed = configSchema.safeParse({ name: 'x', provider: 'local', details: { path: '/backups', prefix: 'a//b' } });
+    expect(parsed.success).toBe(true);
   });
 });

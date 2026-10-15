@@ -114,6 +114,27 @@ describe('portal layout chrome accent', () => {
   });
 });
 
+describe('PortalLayout approvals badge (#8200)', () => {
+  it('counts only pending requests the customer can decide, and treats a failed read as zero', () => {
+    expect(SOURCE).toContain('portalApi.getApprovals(');
+    expect(SOURCE).toContain('pendingOnly: true');
+    expect(SOURCE).toMatch(/canDecide/);
+    expect(SOURCE).toMatch(/statusCode === 200/);
+    expect(SOURCE).toMatch(/buildPortalNavItems\(branding,[^)]*approvalsPendingCount\)/);
+  });
+
+  it('only asks when ticketing is on', () => {
+    expect(SOURCE).toMatch(/branding\.enableTickets !== false[\s\S]{0,200}getApprovals/);
+  });
+
+  it('renders the badge in both the rail and the phone menu', () => {
+    const occurrences = SOURCE.match(/item\.badge/g) ?? [];
+    expect(occurrences.length).toBeGreaterThanOrEqual(4);
+    expect(SOURCE.match(/data-testid=\{`portal-nav-badge-\$\{/g)?.length ?? 0).toBe(1);
+    expect(SOURCE.match(/data-testid=\{`portal-nav-badge-mobile-/g)?.length ?? 0).toBe(1);
+  });
+});
+
 describe('PortalLayout custom CSS (#5940)', () => {
   it('builds the saved customCss via the shared sanitizer', () => {
     expect(SOURCE).toContain("import { buildPortalCustomCss } from '../lib/customCss'");

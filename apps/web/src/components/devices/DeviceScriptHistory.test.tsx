@@ -76,6 +76,8 @@ const scriptDetail = {
 
 describe('DeviceScriptHistory "Run again" (#4885)', () => {
   beforeEach(() => {
+    // These suites exercise the chronological table (#7413 made per-script latest the default).
+    window.location.hash = '#scripts/view=all';
     vi.clearAllMocks();
     fetchWithAuthMock.mockImplementation(async (input: string) => {
       const url = String(input);
@@ -193,6 +195,8 @@ describe('DeviceScriptHistory "Run again" (#4885)', () => {
 
 describe('DeviceScriptHistory highlighted execution (#4886)', () => {
   beforeEach(() => {
+    // These suites exercise the chronological table (#7413 made per-script latest the default).
+    window.location.hash = '#scripts/view=all';
     vi.clearAllMocks();
     fetchWithAuthMock.mockImplementation(async (input: string) => {
       const url = String(input);
@@ -279,6 +283,8 @@ describe('DeviceScriptHistory run context (#4888)', () => {
   }
 
   beforeEach(() => {
+    // These suites exercise the chronological table (#7413 made per-script latest the default).
+    window.location.hash = '#scripts/view=all';
     vi.clearAllMocks();
   });
 
@@ -330,6 +336,8 @@ describe('DeviceScriptHistory AI initiator chip (#5022 W02)', () => {
   }
 
   beforeEach(() => {
+    // These suites exercise the chronological table (#7413 made per-script latest the default).
+    window.location.hash = '#scripts/view=all';
     vi.clearAllMocks();
   });
 

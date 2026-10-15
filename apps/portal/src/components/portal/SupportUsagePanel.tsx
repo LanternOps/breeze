@@ -1,6 +1,7 @@
-import type { SupportUsageDto } from '@breeze/shared';
+import type { PortalHourBlockDto, SupportUsageDto } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { ROW, CELL, TH, ErrorNotice } from './ui';
+import { HourBlockCard, HourBlockStartsNotice } from './HourBlockCard';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -61,8 +62,17 @@ function Totals({ usage }: { usage: SupportUsageDto }) {
     { key: 'billed', label: 'Billed', value: usage.totals.billed },
     { key: 'to-be-billed', label: 'To be billed', value: usage.totals.toBeBilled },
     { key: 'contract', label: 'Covered by contract', value: usage.totals.coveredByContract },
+    // Block hours (#8179): only when the org's Support hours flag is on AND the
+    // bucket has time; otherwise the rows read as before. "Over" is shown
+    // separately so hours past the block are never labelled "covered".
+    ...(usage.totals.coveredByBlock && usage.totals.coveredByBlock.minutes > 0
+      ? [{ key: 'block', label: 'Covered by your support hours', value: usage.totals.coveredByBlock }]
+      : []),
+    ...(usage.totals.overBlock && usage.totals.overBlock.minutes > 0
+      ? [{ key: 'over-block', label: 'Over your support hours', value: usage.totals.overBlock }]
+      : []),
     { key: 'pending', label: 'Pending review', value: usage.totals.pendingReview },
-  ] as const;
+  ];
 
   return (
     <dl className="mb-8 divide-y divide-border/70 border-y border-border/70">
@@ -85,17 +95,33 @@ function Totals({ usage }: { usage: SupportUsageDto }) {
 export function SupportUsagePanel({
   usage,
   error,
+  hourBlock,
+  hourBlockStartsOn,
+  hourBlockError,
 }: {
   usage: SupportUsageDto | null;
   error?: string;
+  hourBlock?: PortalHourBlockDto | null;
+  hourBlockStartsOn?: string | null;
+  hourBlockError?: string;
 }) {
   if (error) return <ErrorNotice>{error}</ErrorNotice>;
   if (!usage) return null;
+
+  const showBlock = usage.totals.coveredByBlock !== undefined;
+  const hourBlockSlot = (
+    <>
+      {hourBlockError && <div className="mb-8"><ErrorNotice>{hourBlockError}</ErrorNotice></div>}
+      {hourBlock && <HourBlockCard hourBlock={hourBlock} />}
+      {!hourBlock && hourBlockStartsOn && <HourBlockStartsNotice startsOn={hourBlockStartsOn} />}
+    </>
+  );
 
   if (usage.dataStatus === 'no_data') {
     return (
       <section data-testid="portal-support-usage">
         <SectionHeading usage={usage} />
+        {hourBlockSlot}
         <div className="border-y border-border/70 px-4 py-8">
           <p
             className="text-sm text-muted-foreground"
@@ -111,6 +137,7 @@ export function SupportUsagePanel({
   return (
     <section data-testid="portal-support-usage">
       <SectionHeading usage={usage} />
+      {hourBlockSlot}
       <Totals usage={usage} />
 
       <div className="overflow-x-auto">
@@ -126,6 +153,7 @@ export function SupportUsagePanel({
               <th scope="col" className={cn(TH, 'text-right')}>Billed</th>
               <th scope="col" className={cn(TH, 'text-right')}>To be billed</th>
               <th scope="col" className={cn(TH, 'text-right')}>Covered</th>
+              {showBlock && <th scope="col" className={cn(TH, 'text-right')}>Support hours</th>}
               <th scope="col" className={cn(TH, 'text-right')}>Pending review</th>
             </tr>
           </thead>
@@ -151,6 +179,15 @@ export function SupportUsagePanel({
                   <span className="sm:hidden">Covered </span>
                   <span className="text-figures">{ticket.coveredByContractMinutes} min</span>
                 </td>
+                {showBlock && (
+                  <td className={cn(CELL, 'order-4 text-xs text-muted-foreground sm:text-right sm:text-sm')}>
+                    <span className="sm:hidden">Support hours </span>
+                    <span className="text-figures">{ticket.coveredByBlockMinutes ?? 0} min</span>
+                    {(ticket.overBlockMinutes ?? 0) > 0 && (
+                      <span className="text-figures"> + {ticket.overBlockMinutes} over</span>
+                    )}
+                  </td>
+                )}
                 <td className={cn(CELL, 'order-5 text-xs text-muted-foreground sm:text-right sm:text-sm')}>
                   <span className="sm:hidden">Pending review </span>
                   <span className="text-figures">{ticket.pendingReviewMinutes} min</span>

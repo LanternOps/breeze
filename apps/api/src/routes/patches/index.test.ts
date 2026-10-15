@@ -160,7 +160,15 @@ vi.mock('../../db/schema', () => ({
 // #4223 deployment overlay — real SQL is covered by
 // __tests__/integration/patchInstallFailureStatus.integration.test.ts.
 vi.mock('../../services/patchInstallFailures', () => ({
-  loadPatchInstallFailures: vi.fn(async () => new Map())
+  loadPatchInstallFailures: vi.fn(async () => new Map()),
+  loadFailedInstallPairs: vi.fn(async () => [])
+}));
+
+// W06 image term — real SQL is covered by
+// services/workloads/imageCompliance.integration.test.ts; no workload rows here.
+vi.mock('../../services/workloads/imageCompliance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/workloads/imageCompliance')>()),
+  containerImageComplianceTerms: vi.fn(async () => new Map())
 }));
 
 vi.mock('../../services/commandQueue', () => ({

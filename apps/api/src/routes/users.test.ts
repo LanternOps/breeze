@@ -948,6 +948,130 @@ describe('user routes', () => {
       expect(clearPermissionCache).toHaveBeenCalledWith('11111111-1111-1111-1111-111111111111');
     });
 
+
+    it('staff invite email carries the partner name and saved staff_invite override (#7468)', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                id: '22222222-2222-2222-2222-222222222222',
+                scope: 'partner',
+                name: 'Admin',
+                description: null,
+                isSystem: true,
+                partnerId: null,
+                orgId: null
+              }
+            ])
+          })
+        })
+      } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ parentRoleId: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any)
+        // Partner-org ownership probe for the selected list (Finding 2).
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: '33333333-3333-3333-3333-333333333333' }])
+          })
+        } as any)
+        // Tombstone pre-flight lookup: same row shape the sibling test's queue hands it.
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'unused', settings: {} }]) })
+          })
+        } as any)
+        // Post-commit partner lookup for the invite email (name + template overrides).
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                name: 'Fix-It MSP',
+                settings: { emailTemplates: { staff_invite: { subject: 'Einladung', heading: null, buttonLabel: null, html: null } } },
+              }])
+            })
+          })
+        } as any);
+
+      const txSelect = vi
+        .fn()
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        });
+
+      const txInsert = vi
+        .fn()
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: '11111111-1111-1111-1111-111111111111',
+                email: 'invitee@example.com',
+                name: 'Invitee',
+                status: 'invited'
+              }
+            ])
+          })
+        })
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'link-1' }])
+          })
+        });
+
+      vi.mocked(db.transaction).mockImplementation(async (fn) => {
+        return fn({ select: txSelect, insert: txInsert } as any);
+      });
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'invitee@example.com',
+          name: 'Invitee',
+          roleId: '22222222-2222-2222-2222-222222222222',
+          orgAccess: 'selected',
+          orgIds: ['33333333-3333-3333-3333-333333333333']
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.email).toBe('invitee@example.com');
+      expect(body.status).toBe('invited');
+      // partners is forced-RLS: the branding read must escalate to system context
+      // (an org-scoped inviter has no accessible partners).
+      expect(withSystemDbAccessContext).toHaveBeenCalled();
+      expect(sendInviteMock).toHaveBeenCalledWith(expect.objectContaining({
+        expiresDays: 7,
+        partnerName: 'Fix-It MSP',
+        custom: expect.objectContaining({ subject: 'Einladung' }),
+      }));
+    });
+
     // The response for an address claimed by a DIFFERENT
     // tenant (invisible to the caller's own ambient RLS context) must be
     // indistinguishable from a genuine new invite — no insert, no distinct

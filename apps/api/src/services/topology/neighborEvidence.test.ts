@@ -149,6 +149,13 @@ describe('buildNeighborEvidenceIndex', () => {
     expect(buildNeighborEvidenceIndex({ baselines: [baseline({ interfaces: null })], limited: false }, NOW).tupleCount).toBe(0);
   });
 
+  it('a freshness horizon (presence anchors) accepts content expired within it, and only within it', () => {
+    const expiredHourAgo = baseline({ expiresAt: '2026-10-02T11:00:00.000Z', interfaces: { rows: [eth()], expiresAt: '2026-10-02T11:00:00.000Z' } });
+    expect(buildNeighborEvidenceIndex({ baselines: [expiredHourAgo], limited: false }, NOW).tupleCount).toBe(0);
+    expect(buildNeighborEvidenceIndex({ baselines: [expiredHourAgo], limited: false }, NOW, { freshnessHorizonSeconds: 7_200 }).tupleCount).toBe(1);
+    expect(buildNeighborEvidenceIndex({ baselines: [expiredHourAgo], limited: false }, NOW, { freshnessHorizonSeconds: 1_800 }).tupleCount).toBe(0);
+  });
+
   it('only uses positive outcomes', () => {
     expect(buildNeighborEvidenceIndex({ baselines: [baseline({ outcome: 'failed' })], limited: false }, NOW).tupleCount).toBe(0);
     expect(buildNeighborEvidenceIndex({ baselines: [baseline({ outcome: 'partial' })], limited: false }, NOW).tupleCount).toBe(1);

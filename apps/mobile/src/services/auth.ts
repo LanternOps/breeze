@@ -4,7 +4,9 @@ import type { User } from './api';
 import { APPROVAL_CACHE_KEY, clearApprovalCacheOrThrow } from './approvalCache';
 import { APP_LOCK_STATE_KEY } from './appLockState';
 import { CSRF_TOKEN_KEY, clearCsrfToken } from './csrfToken';
+import { ARRIVAL_MEMORY_KEY, clearArrivalMemory } from './arrivalMemory';
 import { LOCAL_TIMER_KEY, clearLocalTimer } from './localTimer';
+import { LOCATION_SITES_CACHE_KEY, clearLocationSitesOrThrow } from './locationSitesCache';
 import { QUEUE_KEY, clearQueueForSignOut } from './timeEntryQueue';
 import { clearWorkTypeCache } from './workTypes';
 import {
@@ -153,6 +155,11 @@ export async function clearAuthData(
     // that work under the new identity. Safe to clear on ANY session end — it
     // holds no unsent work, only an in-progress span the technician can restart.
     { key: LOCAL_TIMER_KEY, run: () => clearLocalTimer() },
+    // #8211: partner-owned site names and coordinates, plus which sites this
+    // technician dismissed. Both are account-scoped, so the next account on
+    // this device must not read them.
+    { key: LOCATION_SITES_CACHE_KEY, run: () => clearLocationSitesOrThrow() },
+    { key: ARRIVAL_MEMORY_KEY, run: () => clearArrivalMemory() },
     // Unsent time-entry writes ARE unsent work, so they are parked-and-cleared
     // only on a deliberate sign-out (see the doc comment above). The park has
     // to land first: `clearQueueForSignOut` rejects rather than delete rows it

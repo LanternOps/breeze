@@ -131,6 +131,8 @@ import {
   listMailboxConnections,
   markPendingConsentFailed,
   probeMailbox,
+  recordTransientPollFailure,
+  resetDeltaCursor,
   restoreVerifiedConnection,
   setConnectedMailboxStatus,
   updateDeltaCursor,
@@ -234,6 +236,8 @@ describe('ticket mailbox connection service', () => {
       tenantId: TENANT_ID,
       status: 'connected',
       lastError: null,
+      consecutiveTransientFailures: 0,
+      lastTransientFailureAt: null,
     });
     expect(dbMocks.updateWheres[0]).toEqual({
       op: 'and',
@@ -311,6 +315,8 @@ describe('ticket mailbox connection service', () => {
     expect(dbMocks.updatedValues[0]).toMatchObject({
       status: 'connected',
       lastError: null,
+      consecutiveTransientFailures: 0,
+      lastTransientFailureAt: null,
     });
     expect(dbMocks.updateWheres[0]).toEqual({
       op: 'and',
@@ -322,6 +328,56 @@ describe('ticket mailbox connection service', () => {
         { op: 'eq', column: ticketMailboxConnections.status, value: 'error' },
       ],
     });
+  });
+
+  // #8308: a transient poll failure is counted under the same connected-generation
+  // CAS as every other worker write, and a completed poll or a 410 ends the run.
+  it('records a transient poll failure as a counter and time, never error text', async () => {
+    const snapshot = {
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    };
+    const failedAt = new Date('2026-10-11T12:00:00Z');
+    dbMocks.updateResults.push([{ count: 4 }]);
+
+    await expect(recordTransientPollFailure(snapshot, failedAt)).resolves.toBe(4);
+
+    const set = dbMocks.updatedValues[0]!;
+    expect(Object.keys(set).sort()).toEqual(['consecutiveTransientFailures', 'lastTransientFailureAt', 'updatedAt']);
+    expect(set.lastTransientFailureAt).toBe(failedAt);
+    expect(set.lastError).toBeUndefined();
+    expect(set.status).toBeUndefined();
+    expect(dbMocks.updateWheres[0]).toEqual(expect.objectContaining({
+      op: 'and',
+      conditions: expect.arrayContaining([
+        { op: 'eq', column: ticketMailboxConnections.id, value: CONNECTION_ID },
+        { op: 'eq', column: ticketMailboxConnections.tenantId, value: TENANT_ID },
+        { op: 'eq', column: ticketMailboxConnections.consentAttemptId, value: ATTEMPT_ID },
+        { op: 'eq', column: ticketMailboxConnections.status, value: 'connected' },
+      ]),
+    }));
+    expect(contextMocks.withSystem).toHaveBeenCalled();
+  });
+
+  it('returns null when a transient failure lands on a stale generation', async () => {
+    dbMocks.updateResults.push([]);
+    await expect(recordTransientPollFailure({
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID, consentAttemptId: ATTEMPT_ID,
+    }, new Date())).resolves.toBeNull();
+  });
+
+  it('a completed poll clears the transient failure fields; a 410 cursor reset leaves them', async () => {
+    const snapshot = {
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    };
+    dbMocks.updateResults.push([{ id: CONNECTION_ID }], [{ id: CONNECTION_ID }]);
+
+    await updateDeltaCursor(snapshot, null, 'delta-next', new Date(), null);
+    await resetDeltaCursor(snapshot, 'delta-next');
+
+    expect(dbMocks.updatedValues[0]).toMatchObject({ deltaLink: 'delta-next', consecutiveTransientFailures: 0, lastTransientFailureAt: null });
+    expect(dbMocks.updatedValues[1]).toEqual({ deltaLink: null, updatedAt: expect.any(Date) });
   });
 
   it('fails closed rather than activating a connection without matching verified ownership', async () => {
@@ -343,7 +399,7 @@ describe('ticket mailbox connection service', () => {
 
     await expect(isConnectedMailboxSnapshotCurrent(snapshot)).resolves.toBe(true);
     await expect(setConnectedMailboxStatus(snapshot, 'error', 'poll failed')).resolves.toBe(true);
-    await expect(updateDeltaCursor(snapshot, 'delta-next', new Date(), null)).resolves.toBe(true);
+    await expect(updateDeltaCursor(snapshot, null, 'delta-next', new Date(), null)).resolves.toBe(true);
 
     for (const where of [dbMocks.selectWheres.at(-1), ...dbMocks.updateWheres.slice(-2)]) {
       expect(where).toEqual(expect.objectContaining({
@@ -357,6 +413,23 @@ describe('ticket mailbox connection service', () => {
         ]),
       }));
     }
+  });
+
+  it('cursor writes compare-and-swap on the cursor the sweep started from (#8400)', async () => {
+    const snapshot = {
+      id: CONNECTION_ID, partnerId: PARTNER_ID, tenantId: TENANT_ID,
+      consentAttemptId: ATTEMPT_ID,
+    };
+    dbMocks.updateResults.push([]);
+
+    // Another sweep already moved the cursor: the update matches no row.
+    await expect(updateDeltaCursor(snapshot, 'delta-old', 'delta-next', new Date(), null)).resolves.toBe(false);
+    expect(dbMocks.updateWheres.at(-1)).toEqual(expect.objectContaining({
+      op: 'and',
+      conditions: expect.arrayContaining([
+        { op: 'eq', column: ticketMailboxConnections.deltaLink, value: 'delta-old' },
+      ]),
+    }));
   });
 
   it('rechecks no-transition retests against the original status and exact generation', async () => {
@@ -420,12 +493,13 @@ describe('ticket mailbox connection service', () => {
 
     const result = await listMailboxConnections(PARTNER_ID);
 
-    expect(result).toEqual([{ ...publicRow, verificationError: null, consentExpired: false, gmailHandling: null }]);
+    expect(result).toEqual([{ ...publicRow, verificationError: null, transientPollFailures: null, consentExpired: false, gmailHandling: null }]);
     expect(Object.keys(result[0]!)).toEqual([
-      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'consentExpired', 'gmailHandling',
+      'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'verificationError', 'transientPollFailures', 'consentExpired', 'gmailHandling',
     ]);
     expect(Object.keys(dbMocks.selectedFields[0] ?? {})).toEqual([
       'id', 'provider', 'orgId', 'orgName', 'mailboxAddress', 'displayName', 'status', 'lastPolledAt', 'lastMessageAt', 'lastError',
+      'consecutiveTransientFailures', 'lastTransientFailureAt',
       'gmailHandledLabel', 'gmailArchiveOnHandle', 'gmailHandledError', 'gmailHandledErrorAt', 'consentSessionLive',
     ]);
   });
@@ -450,6 +524,18 @@ describe('ticket mailbox connection service', () => {
     const result = await listMailboxConnections(PARTNER_ID);
     expect(result[0]!.gmailHandling).toBeNull();
     expect(result[1]!.gmailHandling).toEqual({ label: 'Breeze', archive: false, error: 'access_denied', errorAt: at });
+  });
+
+  it('exposes the transient poll failure count and time on m365 rows only (#8308)', async () => {
+    const base = { mailboxAddress: 'help@example.com', displayName: null, status: 'connected', lastPolledAt: null, lastMessageAt: null, lastError: null };
+    const at = new Date('2026-10-11T12:00:00Z');
+    dbMocks.selectResults.push([
+      { ...base, id: 'failing', provider: 'm365', consecutiveTransientFailures: 5, lastTransientFailureAt: at },
+      { ...base, id: 'healthy', provider: 'm365', consecutiveTransientFailures: 0, lastTransientFailureAt: at },
+      { ...base, id: 'g', provider: 'gmail', consecutiveTransientFailures: 2, lastTransientFailureAt: at },
+    ]);
+    const result = await listMailboxConnections(PARTNER_ID);
+    expect(result.map((r) => r.transientPollFailures)).toEqual([{ count: 5, lastAt: at }, null, null]);
   });
 
   it('exposes lastError only when it is our sanitized verification reason, never poller error text', async () => {

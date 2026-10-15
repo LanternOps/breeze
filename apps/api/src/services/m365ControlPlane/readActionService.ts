@@ -2,16 +2,17 @@ import { randomUUID } from 'node:crypto';
 import type { M365ReadAction, ReadActionFailureCode, ReadActionResult } from '@breeze/shared/m365';
 import {
   isM365SyncActionId,
+  m365ReadActionSchema,
   type M365SyncActionResult,
   type M365SyncDomain,
   type M365SyncFailureCode,
 } from '@breeze/shared/m365';
 import { and, eq } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, type RequestLike } from '../auditEvents';
-import { resolveWritableToolOrgId } from '../aiTools';
+import { resolveWritableToolOrgId } from '../aiToolWriteOrg';
 import {
   createGraphReadExecutorClient,
   GraphReadExecutorClientError,
@@ -412,5 +413,53 @@ export async function executeM365ReadAction(
     correlationId: randomUUID(),
     actorId: auth.user.id,
     auditRequest,
+  }) as Promise<M365ReadActionServiceResult>;
+}
+
+export type M365MailboxReadResult =
+  | M365ReadActionServiceResult
+  | { ok: false; code: 'tenant_mismatch' | 'invalid_subject'; message: string };
+
+/**
+ * Caller verification (#6354 W03): the target's canonical mailbox set through
+ * the customer-graph-read control plane — an INTERNAL read for the release
+ * gate, never an AI tool, so it takes no AuthContext (none exists on the
+ * headless gate path) and fabricates none. `actorId` is the technician the
+ * gate is acting for, recorded on the per-call audit event.
+ *
+ * Runs with no ambient DB context: only the org-filtered connection read
+ * elects a short system scope, and it closes before the executor call. No
+ * executor call happens on an invalid object id, disabled tools, a missing /
+ * not-ready connection, a tenant other than the subject's pinned tenant, or an
+ * exhausted read budget.
+ */
+export async function executeM365MailboxReadByOrg(
+  orgId: string,
+  subject: { entraTenantId: string; entraOid: string },
+  actorId: string,
+): Promise<M365MailboxReadResult> {
+  const action = m365ReadActionSchema.safeParse({ type: 'm365.user.mailboxes', userId: subject.entraOid });
+  if (!action.success) {
+    return { ok: false, code: 'invalid_subject', message: 'A Microsoft 365 user object id is required.' };
+  }
+  if (!isM365GraphReadToolsEnabledForOrg(orgId)) {
+    return { ok: false, code: 'tools_disabled', message: 'Microsoft 365 Graph read tools are not enabled for this organization.' };
+  }
+  const [connection] = await withSystemDbAccessContext(() => db.select().from(m365Connections).where(and(
+    eq(m365Connections.orgId, orgId),
+    eq(m365Connections.profile, PROFILE),
+  )).limit(1), 'callerVerification.mailboxes.readConnection');
+  const notReady = connectionNotReadyState(connection);
+  const snapshot = notReady ? null : connectionExecutionSnapshot(connection);
+  if (!snapshot || snapshot.orgId !== orgId) {
+    return { ok: false, code: 'connection_not_ready', message: connectionNotReadyMessage(notReady ?? 'missing') };
+  }
+  if (snapshot.tenantId.toLowerCase() !== subject.entraTenantId.toLowerCase()) {
+    return { ok: false, code: 'tenant_mismatch', message: 'The Microsoft 365 connection no longer matches the subject tenant.' };
+  }
+  return callGraphReadExecutor(snapshot, action.data, {
+    route: 'read',
+    correlationId: randomUUID(),
+    actorId,
   }) as Promise<M365ReadActionServiceResult>;
 }

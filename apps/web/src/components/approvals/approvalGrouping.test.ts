@@ -59,6 +59,7 @@ describe('isGroupable', () => {
     ['a human-originated card', { origin: 'human' as const }],
     ['a four-eyes card', { approvalScope: 'four_eyes' }],
     ['a card with no linked intent org', { orgId: null }],
+    ['an operator_plan (must be read on its own card)', { actionToolName: 'operator_plan' }],
     // The batch route deliberately does not plumb `reauthVerified`, so a
     // critical card can never clear the L4 ladder inside a batch.
     ['a critical card', { riskTier: 'critical' as const }],

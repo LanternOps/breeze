@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
 import { HardDrive, Loader2, Server, Usb, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { extractApiError } from '@/lib/apiError';
+import { ActionError, runAction } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
@@ -50,6 +51,10 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
     includeIds: deviceId ? [deviceId] : [],
   });
 
+  // Edit mode shows the vault's own device; options[] is just the org's device
+  // page (alphabetical), so index 0 is not it.
+  const selectedDevice = deviceOptions.options.find((o) => o.id === deviceId);
+
   const handleSave = useCallback(async () => {
     setError(undefined);
 
@@ -72,33 +77,43 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
 
     setSaving(true);
     try {
+      // The API schema keys are `vaultType` / `vaultPath` / `retentionCount`
+      // (unknown keys are silently stripped, which is how `type` was ignored).
+      // PATCH never moves a vault to another device, so deviceId is create-only.
       const body = {
-        deviceId,
+        ...(isEdit ? {} : { deviceId }),
         vaultPath,
-        type: vaultType,
+        vaultType,
         retentionCount,
       };
 
       const url = isEdit ? `/backup/vault/${vault.id}` : '/backup/vault';
       const method = isEdit ? 'PATCH' : 'POST';
 
-      const response = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(body),
+      const result = await runAction<{ deviceConfig?: { status?: string; error?: string } } | null>({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
+        errorFallback: t('vaultConfigDialog.failedToSave'),
       });
 
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(extractApiError(data, `Failed to ${isEdit ? 'update' : 'create'} vault`));
+      // The row is saved either way; tell the operator when the device did not
+      // receive the configuration.
+      if (result?.deviceConfig?.status === 'failed') {
+        showToast({
+          type: 'warning',
+          message: t('vaultConfigDialog.deviceConfigNotSent', { error: result.deviceConfig.error ?? '' }),
+        });
       }
 
       onClose(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
+      if (!(err instanceof ActionError)) {
+        showToast({ type: 'error', message: t('vaultConfigDialog.failedToSave') });
+      }
     } finally {
       setSaving(false);
     }
-  }, [deviceId, deviceOptions.canSubmit, isEdit, onClose, retentionCount, vault?.id, vaultPath, vaultType]);
+  }, [deviceId, deviceOptions.canSubmit, isEdit, onClose, retentionCount, t, vault?.id, vaultPath, vaultType]);
 
   const placeholderExamples: Record<VaultType, string> = {
     local: '/mnt/backup/vault or D:\\Backups\\Vault',
@@ -139,7 +154,7 @@ export default function VaultConfigDialog({ vault, onClose }: VaultConfigDialogP
                   ? t('vaultConfigDialog.loadingDevices')
                   : deviceOptions.state === 'error' || !deviceOptions.canSubmit
                     ? (deviceOptions.error?.message ?? 'Selected device could not be resolved')
-                    : (deviceOptions.options[0]?.displayName ?? deviceOptions.options[0]?.hostname ?? deviceId)}
+                    : (selectedDevice?.displayName?.trim() || selectedDevice?.hostname || deviceId)}
               </div>
             ) : (
               <DeviceOptionPicker

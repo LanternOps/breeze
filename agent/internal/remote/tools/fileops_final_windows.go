@@ -11,6 +11,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/breeze-rmm/agent/internal/wire"
 )
 
 // On Windows a path string is a poor witness of where an operation lands:
@@ -233,7 +235,7 @@ func pinEntry(verb, cleanPath string, check bool) (*pinnedEntry, error) {
 	}
 	if isSensitiveReadPath(final) {
 		_ = windows.CloseHandle(h)
-		return nil, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, cleanPath)
+		return nil, withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("%s denied on sensitive path (resolved): %s", verb, cleanPath))
 	}
 	return &pinnedEntry{h: h, path: cleanPath}, nil
 }
@@ -264,7 +266,7 @@ func (e *pinnedEntry) renameTo(newPath string, replace, checkDest bool) error {
 			return containmentDeniedf("write denied: cannot determine where %s resolves: %v", parentPath, err)
 		}
 		if isSensitiveReadPath(filepath.Join(final, name)) {
-			return containmentDeniedf("write denied on sensitive path (resolved): %s", newPath)
+			return withErrorCode(wire.ErrCodeSensitivePathDenied, containmentDeniedf("write denied on sensitive path (resolved): %s", newPath))
 		}
 	}
 	if err := setRenameRelative(e.h, parent, name, replace); err != nil {

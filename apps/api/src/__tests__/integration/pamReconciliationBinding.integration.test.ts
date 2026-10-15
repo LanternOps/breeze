@@ -4,8 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 
-import { resolvePamReconciliationBindings } from '../../services/pamReconciliationBinding';
-import { withDbAccessContext, type DbAccessContext } from '../../db';
+import {
+  resolvePamReconciliationBindings,
+  type PamReconciliationBindingDisposition,
+} from '../../services/pamReconciliationBinding';
+import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { getTestDb } from './setup';
 import { createOrganization, createPartner } from './db-utils';
 
@@ -82,15 +85,56 @@ function orgContext(orgId: string): DbAccessContext {
   };
 }
 
-function resolve(fixture: Fixture, candidates: ReturnType<typeof candidate>[]) {
-  return withDbAccessContext(orgContext(fixture.orgId), () =>
+type FunctionRow = { ordinal: number; observation_id: string; status: string; command_id: string | null };
+
+/**
+ * PAM ownership epochs W3 (#8205): every case runs through BOTH the service
+ * and the definer function `breeze_pam_epoch_binding` called directly, and
+ * the two must agree byte-for-byte on current-epoch candidates.
+ */
+async function callBindingFunction(
+  fixture: Fixture,
+  candidates: ReturnType<typeof candidate>[],
+): Promise<PamReconciliationBindingDisposition[]> {
+  const encoded = JSON.stringify(candidates.map((item, index) => ({
+    ordinal: index + 1,
+    observation_id: item.observationId,
+    actuation_id: item.actuationId,
+    generation: item.generation,
+  })));
+  const result = await withDbAccessContext(orgContext(fixture.orgId), () => db.execute<FunctionRow>(sql`
+    SELECT ordinal, observation_id::text AS observation_id, status, command_id::text AS command_id
+    FROM public.breeze_pam_epoch_binding(${fixture.agentId}, ${fixture.deviceId}::uuid, ${encoded}::jsonb)
+    ORDER BY ordinal
+  `));
+  const rows = ((result as unknown as { rows?: FunctionRow[] }).rows ?? result) as FunctionRow[];
+  return rows.map((row) => (row.status === 'bound'
+    ? { status: 'bound', observationId: row.observation_id, commandId: row.command_id! }
+    : { status: row.status, observationId: row.observation_id }) as PamReconciliationBindingDisposition);
+}
+
+async function resolve(fixture: Fixture, candidates: ReturnType<typeof candidate>[]) {
+  const viaService = await withDbAccessContext(orgContext(fixture.orgId), () =>
     resolvePamReconciliationBindings({
       agentId: fixture.agentId,
       deviceId: fixture.deviceId,
-      orgId: fixture.orgId,
+      protocolVersion: 2,
       candidates,
     }),
   );
+  const viaServiceV1 = await withDbAccessContext(orgContext(fixture.orgId), () =>
+    resolvePamReconciliationBindings({
+      agentId: fixture.agentId,
+      deviceId: fixture.deviceId,
+      protocolVersion: 1,
+      candidates,
+    }),
+  );
+  const viaFunction = await callBindingFunction(fixture, candidates);
+  expect(viaFunction).toEqual(viaService);
+  // Current-epoch candidates never retire, so v1 and v2 are identical.
+  expect(viaServiceV1).toEqual(viaService);
+  return viaService;
 }
 
 describe('PAM reconciliation binding resolver ownership', () => {

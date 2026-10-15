@@ -511,7 +511,10 @@ vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
 // inert stand-ins since these tests only exercise the exported functions,
 // never `createWorker` itself.
 vi.mock('bullmq', () => ({
-  Worker: vi.fn().mockImplementation(() => ({ on: vi.fn(), close: vi.fn() })),
+  // `function`, not an arrow: the #4156 reporting tests construct it with `new`.
+  Worker: vi.fn().mockImplementation(function () {
+    return { on: vi.fn(), close: vi.fn() };
+  }),
   Job: class {},
 }));
 
@@ -519,7 +522,14 @@ vi.mock('bullmq', () => ({
 // Import under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { releaseApprovedIntent, processIntentReleaseJob } from './intentReleaseWorker';
+import {
+  releaseApprovedIntent,
+  processIntentReleaseJob,
+  classifyIntentReleaseFailure,
+  initializeIntentReleaseWorker,
+  shutdownIntentReleaseWorker,
+} from './intentReleaseWorker';
+import { Worker } from 'bullmq';
 // The mocked db handle the worker threads into the digest recompute — imported
 // so that call can be asserted against the real object rather than
 // expect.anything().
@@ -5052,5 +5062,78 @@ describe('script lane checkpoint precondition (#5612 W04)', () => {
         details: expect.objectContaining({ errorCode: 'checkpoint_unavailable', reason: 'checkpoint_failed' }),
       }),
     );
+  });
+});
+
+// #4156 — action-intents jobs now carry attempts + exponential backoff, and
+// BullMQ emits `failed` on EVERY attempt (worker.js handleFailed emits after
+// each moveToFailed, retried or not). The expected, self-healing transient —
+// PolicyDecisionTransientError, rethrown precisely so BullMQ redelivers — must
+// reach Sentry once, when the job gives up, not once per attempt per listener.
+describe('BullMQ retry failure reporting (#4156)', () => {
+  type FailedHandler = (job: unknown, err: Error) => void;
+
+  let failedHandlers: FailedHandler[];
+  let processor: (job: unknown) => Promise<unknown>;
+
+  const makeJob = (attemptsMade: number) => ({
+    id: 'intent-intent_created-intent-1',
+    name: 'intent_created',
+    data: { intentId: 'intent-1', eventType: 'intent_created' },
+    opts: { attempts: 5 },
+    attemptsMade,
+  });
+
+  beforeEach(async () => {
+    await shutdownIntentReleaseWorker();
+    vi.clearAllMocks();
+    await initializeIntentReleaseWorker();
+    const WorkerMock = Worker as unknown as Mock;
+    const instance = WorkerMock.mock.results.at(-1)!.value as { on: Mock };
+    failedHandlers = instance.on.mock.calls
+      .filter(([event]) => event === 'failed')
+      .map(([, handler]) => handler as FailedHandler);
+    processor = WorkerMock.mock.calls.at(-1)![1] as typeof processor;
+  });
+
+  afterEach(async () => {
+    await shutdownIntentReleaseWorker();
+  });
+
+  const fireFailed = (job: unknown, err: Error) => {
+    for (const handler of failedHandlers) handler(job, err);
+  };
+
+  it('classifies only PolicyDecisionTransientError as report-when-exhausted', () => {
+    const transient = new PolicyDecisionTransientError('intent-1', new Error('connection terminated'));
+    expect(classifyIntentReleaseFailure(undefined, transient)).toEqual(
+      expect.objectContaining({ reportOnlyWhenExhausted: true, level: 'error' }),
+    );
+    // A genuine fault (e.g. a throw after the release claim, whose retry
+    // no-ops) must keep the default every-attempt report or it would vanish.
+    expect(classifyIntentReleaseFailure(undefined, new Error('boom'))).toBeNull();
+  });
+
+  it('an intermediate transient attempt reaches Sentry zero times; the exhausting attempt exactly once', () => {
+    const transient = new PolicyDecisionTransientError('intent-1', new Error('connection terminated'));
+
+    fireFailed(makeJob(1), transient); // attemptsMade is already incremented when `failed` fires
+    expect(sentryMock.captureException).not.toHaveBeenCalled();
+
+    fireFailed(makeJob(5), transient);
+    expect(sentryMock.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('a genuine (unclassified) failure is still reported on its attempt — exactly once, not once per listener', () => {
+    fireFailed(makeJob(1), new Error('boom'));
+    expect(sentryMock.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it("the processor rethrows without capturing — reporting is the failed listener's job", async () => {
+    const transient = new PolicyDecisionTransientError('intent-1', new Error('connection terminated'));
+    policyDecideMock.attemptPolicyDecision.mockRejectedValueOnce(transient);
+
+    await expect(processor(makeJob(0))).rejects.toBe(transient);
+    expect(sentryMock.captureException).not.toHaveBeenCalled();
   });
 });

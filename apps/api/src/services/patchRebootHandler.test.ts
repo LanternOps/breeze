@@ -24,6 +24,7 @@ import {
   computeRebootDeadline,
   rebootDeferralSettingsFrom,
   resolveRebootDeferralSettings,
+  rebootPromptTextFrom,
 } from './patchRebootHandler';
 import { queueCommandForExecution } from './commandQueue';
 import { checkDeviceMaintenanceWindow, resolvePatchConfigForDevice } from './featureConfigResolver';
@@ -167,10 +168,11 @@ describe('executeReboot', () => {
     expect(resolvePatchConfigForDevice).toHaveBeenCalledTimes(1);
   });
 
-  it('skips the policy lookup entirely when the caller supplies delay AND deferral', async () => {
+  it('skips the policy lookup entirely when the caller supplies delay, deferral AND prompt text', async () => {
     await executeReboot('dev-1', 'reason', {
       delayMinutes: 15,
       deferral: { allowDeferral: false, maxDeferrals: 0, deferralMinutes: 0 },
+      promptText: {},
     });
     expect(resolvePatchConfigForDevice).not.toHaveBeenCalled();
   });
@@ -402,6 +404,104 @@ describe('executeReboot deferral payload (#3207)', () => {
     const payload = payloadOf();
     expect(payload.maxDeferrals).toBe(1);
     expect(payload.deferralMinutes).toBe(10);
+  });
+});
+
+describe('restart-prompt text (#8030)', () => {
+  const policy = {
+    rebootDelayMinutes: 15, rebootAllowDeferral: false,
+    rebootMaxDeferrals: 3, rebootDeferralMinutes: 60,
+  };
+
+  it('omits every prompt key when the policy sets no text, so the agent keeps its built-in copy', async () => {
+    vi.mocked(resolvePatchConfigForDevice).mockResolvedValue({
+      ...policy, rebootPromptTitle: null, rebootPromptBody: null, rebootPromptButton: null,
+    } as never);
+
+    await executeReboot('dev-1', 'Patch install');
+
+    const payload = payloadOf();
+    expect(payload).not.toHaveProperty('promptTitle');
+    expect(payload).not.toHaveProperty('promptBody');
+    expect(payload).not.toHaveProperty('promptButton');
+  });
+
+  it('sends the text the device policy resolves to', async () => {
+    vi.mocked(resolvePatchConfigForDevice).mockResolvedValue({
+      ...policy,
+      rebootPromptTitle: 'Neustart geplant',
+      rebootPromptBody: 'Neustart in {{countdown}}.',
+      rebootPromptButton: 'Jetzt neu starten',
+    } as never);
+
+    await executeReboot('dev-1', 'Patch install');
+
+    expect(payloadOf()).toMatchObject({
+      promptTitle: 'Neustart geplant',
+      promptBody: 'Neustart in {{countdown}}.',
+      promptButton: 'Jetzt neu starten',
+    });
+  });
+
+  it('sends only the fields that are set', async () => {
+    vi.mocked(resolvePatchConfigForDevice).mockResolvedValue({
+      ...policy, rebootPromptTitle: null, rebootPromptBody: 'Body {{countdown}}', rebootPromptButton: '',
+    } as never);
+
+    await executeReboot('dev-1', 'Patch install');
+
+    const payload = payloadOf();
+    expect(payload.promptBody).toBe('Body {{countdown}}');
+    expect(payload).not.toHaveProperty('promptTitle');
+    expect(payload).not.toHaveProperty('promptButton');
+  });
+
+  it('drops a stored value that fails validation and reports it, rather than shipping it', async () => {
+    vi.mocked(resolvePatchConfigForDevice).mockResolvedValue({
+      ...policy,
+      rebootPromptTitle: '<b>Restart</b>',
+      rebootPromptBody: 'x'.repeat(501),
+      rebootPromptButton: 'OK',
+    } as never);
+
+    await executeReboot('dev-1', 'Patch install');
+
+    const payload = payloadOf();
+    expect(payload).not.toHaveProperty('promptTitle');
+    expect(payload).not.toHaveProperty('promptBody');
+    expect(payload.promptButton).toBe('OK');
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('sends no text when the policy lookup fails', async () => {
+    vi.mocked(resolvePatchConfigForDevice).mockRejectedValue(new Error('db down'));
+
+    await executeReboot('dev-1', 'Patch install');
+
+    expect(payloadOf()).not.toHaveProperty('promptBody');
+  });
+
+  it('resolves the text from the policy even when the caller supplies delay and deferral', async () => {
+    vi.mocked(resolvePatchConfigForDevice).mockResolvedValue({
+      ...policy, rebootPromptTitle: 'Titel', rebootPromptBody: null, rebootPromptButton: null,
+    } as never);
+
+    await executeReboot('dev-1', 'reason', { delayMinutes: 20, deferral: DEFERRAL_OFF });
+
+    expect(payloadOf().promptTitle).toBe('Titel');
+  });
+
+  it('skips the policy walk only when the caller supplies delay, deferral and prompt text', async () => {
+    await executeReboot('dev-1', 'reason', {
+      delayMinutes: 20, deferral: DEFERRAL_OFF, promptText: { body: 'Hi {{countdown}}' },
+    });
+
+    expect(resolvePatchConfigForDevice).not.toHaveBeenCalled();
+    expect(payloadOf().promptBody).toBe('Hi {{countdown}}');
+  });
+
+  it('rebootPromptTextFrom returns an empty object for no settings', () => {
+    expect(rebootPromptTextFrom(null, 'dev-1')).toEqual({});
   });
 });
 

@@ -80,6 +80,10 @@ const NOT_ENFORCED: Record<
   vulnerability:     { label: 'Vulnerability Scanning', behavior: 'Not enforced — vulnerability correlation does not run for these devices.' },
   device_lifecycle:  { label: 'Device Lifecycle',    behavior: 'Not enforced — removed devices are kept until deleted manually.' },
   monitors:          { label: 'Monitors',           behavior: 'Not enforced — no monitors are evaluated for these devices.' },
+  // Describes the platform default (beforePatching true, the other two false),
+  // which is the agent's existing behaviour — not "nothing happens".
+  system_protection: { label: 'System Protection',  behavior: 'Not enforced — patch installs still attempt a Windows restore point; scripts and software installs do not.' },
+  security_agents:   { label: 'Security Agents',    behavior: 'Not enforced — no third-party security agents are installed from policy.' },
 };
 
 export function getPolicyBaselineDefaults(): BaselineEntry[] {

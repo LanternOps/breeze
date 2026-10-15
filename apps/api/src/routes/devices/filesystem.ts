@@ -25,6 +25,7 @@ import {
   buildCleanupPreview,
   getFilesystemScanState,
   setFilesystemScanGeneration,
+  findInFlightFilesystemScan,
   getLatestFilesystemSnapshot,
   getLatestFilesystemCleanupSnapshot,
   readCheckpointPendingDirectories,
@@ -253,6 +254,23 @@ filesystemRoutes.post(
 
     const osType = (device as { osType?: unknown }).osType;
     const scanPath = normalizeScanPath(osType, payload.path);
+
+    // #8509: one scan at a time per device. Hand back the scan already in
+    // flight (any volume — the agent runs one walker) instead of queueing a
+    // second; the caller polls its commandId exactly as for a new one. Checked
+    // before anything registers a scan generation, which would otherwise make
+    // the running scan's result look superseded.
+    const inFlight = await findInFlightFilesystemScan(deviceId);
+    if (inFlight) {
+      return okJson(c, {
+        commandId: inFlight.id,
+        status: inFlight.status,
+        createdAt: inFlight.createdAt,
+        scanPath: inFlight.scanPath ?? scanPath,
+        requestedScanPath: scanPath,
+        inFlight: true,
+      }, 202);
+    }
 
     // Inventory identifies volume roots and supplies their own disk usage.
     // The volumes service includes the OS root even before inventory arrives.

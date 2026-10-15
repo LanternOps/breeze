@@ -558,6 +558,23 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     expect(selectQueue).toEqual([]);
   });
 
+  it('never retires an expired prefixed_flat row while GC does not support that layout', async () => {
+    selectQueue.push([
+      { id: 'snap-prefixed', snapshotId: 'snap-prefixed-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'prefixed_flat', backupType: 'file' },
+    ]); // expired query
+    selectQueue.push([]); // versionBoundSnapshots query
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await cleanupExpiredSnapshots('org-1');
+    log.mockRestore();
+
+    expect(result.skippedUnsupportedLayout).toBe(1);
+    expect(result.deleted).toBe(0);
+    expect(mockDb.delete).not.toHaveBeenCalled();
+    expect(insertedRows).toEqual([]);
+    expect(selectQueue).toEqual([]);
+  });
+
   it('keeps a max-versions candidate in an unsupported key layout in its slot, without pruning it or the rows behind it', async () => {
     selectQueue.push([]); // expired query -- nothing expired by date
     const base = { deviceId: 'd1', configId: 'c1', storageIdentity: 's3::e::b', backupType: 'file' as const, retention: { maxVersions: 1 } };
@@ -750,6 +767,9 @@ describe('sweepUnreferencedBackupObjects', () => {
       ['recorded under the identity', () => ({ storageIdentity: identityKeyFor(destination), configId: 'cfg-9', keyLayout: 'device_scoped' })],
       ['with a NULL identity whose config maps to it', () => ({ storageIdentity: null, configId: 'cfg-1', keyLayout: 'device_scoped' })],
       ['recorded under a stale identity string, whose config now maps to it', () => ({ storageIdentity: 's3::stale::backups', configId: 'cfg-1', keyLayout: 'device_scoped' })],
+      // Readable but not yet GC-supported: a root-blind sweep must never touch
+      // an identity holding a prefixed snapshot.
+      ['in the readable-but-not-GC-supported prefixed_flat layout', () => ({ storageIdentity: identityKeyFor(destination), configId: 'cfg-9', keyLayout: 'prefixed_flat' })],
     ])('skips the whole identity — no listing, no deletes — for a row in an unsupported key layout %s', async (_name, row) => {
       pushRunLevel([destination], [], { unsupportedLayouts: [row()] });
 

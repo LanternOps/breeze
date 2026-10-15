@@ -3,9 +3,12 @@
  * before resuming a session on another model, count the persisted
  * transcript with the TARGET model's tokenizer, through the target's own
  * connection. A transcript over the target's window makes the CLI
- * auto-compact lossily — it dropped the user's prompt and still reported
- * `success` — so anything that is not a positive count under the limit is
- * treated as "does not fit" by the caller (continuation, never resume).
+ * auto-compact: on SDK 0.3.286/0.3.288 lossily (it dropped the user's prompt
+ * and still reported `success`); on 0.3.296 it compacts on the SOURCE model
+ * first and bills that call to it on a target-model turn. Either way the
+ * outcome depends on CLI behaviour that changes between patch releases, so
+ * anything that is not a positive count under the limit is treated as
+ * "does not fit" by the caller (continuation, never resume).
  */
 import { getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import { anthropicClientFor } from './connectionFactory';

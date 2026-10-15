@@ -631,21 +631,26 @@ func TestBrokeredRun_PlansItsUploadsInOrder(t *testing.T) {
 		createTempFile(t, src, name, "content of "+name)
 	}
 	p := &plannedIssuer{fakeIssuer: newFakeIssuer(brokeredIssuedID)}
-	if _, err := brokeredManager(p, src, t.TempDir(), testJobID).RunBackupContext(context.Background(), nil); err != nil {
+	job, err := brokeredManager(p, src, t.TempDir(), testJobID).RunBackupContext(context.Background(), nil)
+	if err != nil {
 		t.Fatalf("RunBackupContext: %v", err)
 	}
-	var fileUploads []string
+	// The plan follows the walk order the file pass assigns keys in. The
+	// uploads themselves run on several workers (#8381), so their call order
+	// is not fixed; the manifest's entry order is.
+	uploaded := map[string]bool{}
 	for _, k := range p.uploadedKeys() {
 		if strings.Contains(k, "/files/") {
-			fileUploads = append(fileUploads, k)
+			uploaded[k] = true
 		}
 	}
-	if len(p.plan) != len(fileUploads) || len(fileUploads) != 4 {
-		t.Fatalf("plan %v, uploads %v", p.plan, fileUploads)
+	entries := job.Snapshot.Files
+	if len(p.plan) != len(entries) || len(entries) != 4 || len(uploaded) != 4 {
+		t.Fatalf("plan %v, manifest %d entries, uploads %v", p.plan, len(entries), uploaded)
 	}
 	for i, e := range p.plan {
-		if e.Key != fileUploads[i] || !strings.HasPrefix(pathpkg.Base(e.LocalPath), strings.TrimSuffix(pathpkg.Base(e.Key), ".gz")) {
-			t.Fatalf("planned upload %d = %+v, uploaded %s", i, e, fileUploads[i])
+		if e.Key != entries[i].BackupPath || !uploaded[e.Key] || !strings.HasPrefix(pathpkg.Base(e.LocalPath), strings.TrimSuffix(pathpkg.Base(e.Key), ".gz")) {
+			t.Fatalf("planned upload %d = %+v, manifest entry %s (uploaded: %v)", i, e, entries[i].BackupPath, uploaded[e.Key])
 		}
 	}
 }

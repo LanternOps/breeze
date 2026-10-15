@@ -5,6 +5,7 @@ import type {
   WorkloadKind,
   WorkloadRuntime,
   WorkloadState,
+  WorkloadUpstreamStatus,
 } from '@breeze/shared';
 import { db } from '../../db';
 import { deviceWorkloadRuntimes, deviceWorkloads, devices } from '../../db/schema';
@@ -50,6 +51,10 @@ export interface DeviceWorkloadView {
   runtimeCreatedAt: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  /** Image currency (W05, spec §9.1); containers only — VMs/LXC stay `pending`. */
+  upstreamStatus: WorkloadUpstreamStatus;
+  upstreamDigest: string | null;
+  upstreamCheckedAt: string | null;
 }
 
 /** Spec §6.3: exactly these three keys. */
@@ -116,6 +121,9 @@ export function buildDeviceWorkloadsView(
         runtimeCreatedAt: isoOrNull(row.runtimeCreatedAt),
         firstSeenAt: iso(row.firstSeenAt),
         lastSeenAt: iso(row.lastSeenAt),
+        upstreamStatus: row.upstreamStatus,
+        upstreamDigest: row.upstreamDigest,
+        upstreamCheckedAt: isoOrNull(row.upstreamCheckedAt),
       }),
     );
   return { capability: capability >= 1 ? 1 : 0, runtimes, workloads };

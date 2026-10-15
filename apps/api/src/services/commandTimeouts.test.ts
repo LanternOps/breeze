@@ -2,12 +2,27 @@ import { describe, expect, it, vi } from 'vitest';
 import { SYSTEM_CLEANUP_ACTION_IDS, systemCleanupRunBudgetMs } from '@breeze/shared/validators';
 import {
   BACKUP_JOB_ABSOLUTE_TIMEOUT_MS,
+  CALLER_VERIFY_TIMEOUT_MS,
   getCommandTimeoutMs,
   SYSTEM_CLEANUP_RUN_MAX_TIMEOUT_MS,
 } from './commandTimeouts';
 import { CommandTypes } from './commandQueue';
+import { WORKSTATION_TIMEOUT_MAX_MS } from './callerVerification/workstationProtocol';
 
 describe('command timeouts', () => {
+  it('times caller_verify out just past the longest prompt the helper can show (#6354 W02)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const timeout = getCommandTimeoutMs(CommandTypes.CALLER_VERIFY);
+      expect(timeout).toBe(CALLER_VERIFY_TIMEOUT_MS);
+      expect(timeout).toBeGreaterThan(WORKSTATION_TIMEOUT_MAX_MS);
+      expect(timeout).toBeLessThanOrEqual(WORKSTATION_TIMEOUT_MAX_MS + 60_000);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('gives backup_run the backup job ceiling instead of the unknown-type default (#7105)', () => {
     // backup_run used to fall through to the 30-minute default with an
     // "Unknown command type" warning. A file backup is governed by the

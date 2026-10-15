@@ -6,7 +6,7 @@ import { organizations } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
-import { orgTicketSettingsSchema } from '@breeze/shared';
+import { ERROR_CODES, orgTicketSettingsSchema } from '@breeze/shared';
 import { getOrgTicketSettings, upsertOrgTicketSettings } from '../services/ticketConfigService';
 
 // Admin read/write for an org's ticketing overrides (org_ticket_settings:
@@ -18,7 +18,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   const orgRows = await db
     .select({ id: organizations.id })
@@ -26,7 +26,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
     .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
     .limit(1);
   if (!orgRows[0]) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   return { id };
 }

@@ -1,0 +1,11 @@
+{ "public": {
+  "title": "Destek isteğini inceleyin", "loading": "İstek yükleniyor…", "hello": "Merhaba {{name}}",
+  "request": "{{partner}} şirketinden {{technician}} şu işlemi yapmak istiyor:",
+  "reset_password": "{{target}} hesabının parolasını sıfırlamak", "disable_user": "{{target}} hesabını devre dışı bırakmak",
+  "any": "{{target}} için bir destek isteğini onaylamak", "target": "ilgili hesap", "provider": "destek sağlayıcınız",
+  "reverse": "İstek kodu", "choose": "Teknisyeninizin seçmenizi istediği sayıya dokunun. Hiçbir kodu sesli olarak okumayın.",
+  "notMe": "Bu ben değilim", "caution": "Yalnızca şu anda {{technician}} ile telefonda konuşuyorsanız bir sayıya dokunun. Emin değilseniz telefonu kapatın ve {{partner}} şirketini önceden bildiğiniz numaradan arayın.",
+  "expires": "{{seconds}} saniye içinde sona erer", "expired": "Bu istek kullanılamıyor veya süresi dolmuş.",
+  "received": "Yanıtınız alındı.", "failed": "Yanıtınız gönderilemedi. Lütfen yeniden deneyin.",
+  "loadFailed": "İstek yüklenemedi. Lütfen yeniden deneyin.", "retry": "Yeniden dene", "sending": "Gönderiliyor…"
+} }

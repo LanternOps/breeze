@@ -59,6 +59,9 @@ export const monitorKindEnum = pgEnum('monitor_kind', [
   'hardware_health',
   // W02 (time sync) — 2026-11-10-110100-monitor-kind-time-sync.sql
   'time_sync',
+  // W06 (workload inventory) —
+  // 2026-12-26-180000-container-image-currency-monitor.sql
+  'container_image_currency',
 ]);
 
 export const monitorDefinitions = pgTable(

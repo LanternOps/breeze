@@ -7,7 +7,8 @@ import { navigateTo } from './navigation';
 // Invoice-domain enum SSOT lives in @breeze/shared (billing-enums.ts). Imported
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
-import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
+import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
+import { lineWorkedVsBilled } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -353,6 +354,11 @@ export interface TicketSummary {
   subject: string;
   status: TicketStatus;
   priority: TicketPriority;
+  /**
+   * Read-only classification (#8596), shown as a quiet label. Optional: an
+   * older API omits it, and the portal can never set it.
+   */
+  ticketType?: TicketType;
   createdAt: string;
   updatedAt: string;
   sla: SlaDto;
@@ -388,6 +394,11 @@ export interface TicketComment {
    * on an 'email' comment is the only signal that the CUSTOMER wrote it.
    */
   senderPortalUserId?: string | null;
+  /**
+   * Set on a comment imported from another helpdesk (#8313): who wrote it
+   * there. 'requester' is the customer's own reply, which has no portal login.
+   */
+  originalAuthorKind?: 'staff' | 'requester' | null;
   content: string;
   createdAt: string;
   /** Absent on a reply the customer just posted locally. */
@@ -499,6 +510,9 @@ export interface InvoiceLine {
    *  non-time-entry lines and legacy rows predating the column; optional
    *  because older test fixtures and API responses predate the field. */
   workedMinutes?: number | null;
+  /** #8604: the partner-local day (YYYY-MM-DD) the line was worked. Non-null only
+   *  when the invoice prints dates and the line is a dated time-entry line. */
+  workDate?: string | null;
 }
 
 /** #6467 — one line naming the worked time whenever it differs from the
@@ -509,11 +523,8 @@ export interface InvoiceLine {
  *  on this page — the note is plain English; that gap is pre-existing and
  *  portal-wide, not specific to this note. */
 export function lineWorkedVsBilledNote(l: { quantity: string; workedMinutes?: number | null }): string | null {
-  if (l.workedMinutes == null) return null;
-  const worked = (l.workedMinutes / 60).toFixed(2);
-  const billed = Number(l.quantity).toFixed(2);
-  if (worked === billed) return null;
-  return `${worked} h worked · ${billed} h billed`;
+  const wb = lineWorkedVsBilled(l);
+  return wb ? `${wb.worked} h worked · ${wb.billed} h billed` : null;
 }
 
 import type {InvoiceAutopayOffer as InvoiceAutopayDisclosure} from '@breeze/shared';
@@ -547,6 +558,8 @@ export interface InvoiceDetail {
     notes: string | null;
     sellerSnapshot?: SellerSnapshot | null;
     termsAndConditions?: string | null;
+    /** #8604: resolved line grouping; 'day' only when dates are on. */
+    lineGrouping?: 'entry' | 'day';
   };
   lines: InvoiceLine[];
   /** Partner branding for the document shell, matching QuoteDetail. Optional:
@@ -768,6 +781,8 @@ export interface PublicInvoiceDetail {
     sellerSnapshot?: SellerSnapshot | null;
     termsAndConditions?: string | null;
     paidAt?: string | null;
+    /** #8604: resolved line grouping; 'day' only when dates are on. */
+    lineGrouping?: 'entry' | 'day';
   };
   lines: InvoiceLine[];
   chargeNow: { amount: string; isDeposit: boolean } | null;
@@ -830,6 +845,14 @@ export interface BrandingConfig {
   enablePerformanceMetrics?: boolean;
   enableSoftwareInventory?: boolean;
   enableNetworkVisibility?: boolean;
+  /** EDR framework W02 (#8166): MSP turned managed endpoint protection on for this org. */
+  enableEdrVisibility?: boolean;
+  /** Block hours W04 (#8179): MSP turned the Support hours card on for this org. */
+  enableHourBlock?: boolean;
+  /** Visibility W05 (#7735): MSP turned sensitive per-host patch detail on for this org. */
+  enablePatchDetail?: boolean;
+  /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
+  enableVulnerabilityDetail?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
   chromeAccent?: string | null;
@@ -874,7 +897,110 @@ export interface PortalSoftwarePage<T = PortalSoftwareItem> {
   pagination: { page: number; limit: number; total: number };
 }
 
+export type PortalPatchStatus = 'pending' | 'installed' | 'failed';
+export interface PortalPatchSummaryItem {
+  title: string;
+  severity: string;
+  version: string | null;
+  kbArticleUrl: string | null;
+  pendingDevices: number;
+  failedDevices: number;
+  installedDevices: number;
+  lastCheckedAt: string | null;
+}
+export interface PortalDevicePatchItem {
+  title: string;
+  severity: string;
+  version: string | null;
+  kbArticleUrl: string | null;
+  status: PortalPatchStatus;
+  installedAt: string | null;
+  installedVersion: string | null;
+  availableVersion: string | null;
+  lastCheckedAt: string | null;
+}
+
+export type PortalVulnerabilityStatus = 'open' | 'patched' | 'mitigated' | 'accepted';
+export interface PortalVulnerabilitySummaryItem {
+  cveId: string;
+  description: string;
+  severity: string;
+  cvssScore: number | null;
+  publishedAt: string | null;
+  patchAvailable: boolean;
+  affectedDevices: number;
+}
+export interface PortalVulnerabilityFindingItem {
+  cveId: string;
+  description: string;
+  severity: string;
+  cvssScore: number | null;
+  publishedAt: string | null;
+  patchAvailable: boolean;
+  status: PortalVulnerabilityStatus;
+  detectedAt: string;
+  resolvedAt: string | null;
+  deviceId: string;
+  deviceName: string;
+}
+
+// Customer work approval (#8200): staff ask the customer to approve extra or
+// after-hours work on a ticket. Dates arrive as ISO strings.
+export type PortalApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
+
+export interface PortalApproval {
+  id: string;
+  ticketId: string;
+  ticketNumber: string;
+  ticketSubject: string;
+  trigger: 'budget' | 'after_hours';
+  status: PortalApprovalStatus;
+  revision: number;
+  requestedAt: string;
+  expiresAt: string;
+  decidedAt: string | null;
+  decisionOrigin: 'customer' | 'on_behalf' | null;
+  /** Staff message to the customer. */
+  message: string | null;
+  ask: {
+    minutes: number | null;
+    amount: string | null;
+    currencyCode: string | null;
+    coverageStartsAt: string | null;
+    coverageEndsAt: string | null;
+  };
+  snapshot: {
+    budgetMinutes: number | null;
+    consumedMinutes: number | null;
+    budgetAmount: string | null;
+    consumedAmount: string | null;
+  };
+  role: 'approver' | 'notify';
+  canDecide: boolean;
+}
+
+export interface PortalApprovalDecisionBody {
+  /** The revision the customer was looking at; the API refuses a stale one. */
+  revision: number;
+  signerName: string;
+  note?: string;
+}
+
+export interface PortalApprovalDecisionResult {
+  status: 'approved' | 'denied';
+  releasedEntryCount: number;
+  stillHeldEntryCount: number;
+}
+
 export const portalApi = {
+  getVulnerabilitySummary: (params: ListParams & { status?: PortalVulnerabilityStatus } = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalVulnerabilitySummaryItem>>> =>
+    apiGet<PortalSoftwarePage<PortalVulnerabilitySummaryItem>>('/portal/vulnerabilities/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50, status: params.status ?? 'open' }), config),
+  getVulnerabilityFindings: (params: ListParams & { status?: PortalVulnerabilityStatus; deviceId?: string } = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalVulnerabilityFindingItem>>> =>
+    apiGet<PortalSoftwarePage<PortalVulnerabilityFindingItem>>('/portal/vulnerabilities/findings' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50, status: params.status ?? 'open', deviceId: params.deviceId }), config),
+  getPatchSummary: (params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalPatchSummaryItem>>> =>
+    apiGet<PortalSoftwarePage<PortalPatchSummaryItem>>('/portal/patches/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
+  getDevicePatches: (deviceId: string, params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage<PortalDevicePatchItem>>> =>
+    apiGet<PortalSoftwarePage<PortalDevicePatchItem>>('/portal/patches/devices/' + encodeURIComponent(deviceId) + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
   getSoftwareSummary: (params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage>> =>
     apiGet<PortalSoftwarePage>('/portal/software/summary' + buildQueryString({ page: params.page ?? 1, limit: params.limit ?? 50 }), config),
   getDeviceSoftware: (deviceId: string, params: ListParams = {}, config: ApiRequestConfig = {}): Promise<ApiResponse<PortalSoftwarePage>> =>
@@ -890,6 +1016,38 @@ export const portalApi = {
         data: EnrichedPortalDevice[];
         pagination: Pagination;
       }>(`/portal/devices${query}`, config)
+    );
+  },
+
+  getApprovals: async (
+    config: ApiRequestConfig = {},
+    options: { pendingOnly?: boolean } = {}
+  ): Promise<ApiResponse<{ data: PortalApproval[] }>> => {
+    const query = buildQueryString({ status: options.pendingOnly ? 'pending' : undefined });
+    return apiGet<{ data: PortalApproval[] }>(`/portal/approvals${query}`, config);
+  },
+
+  approveApproval: async (
+    id: string,
+    body: PortalApprovalDecisionBody,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalApprovalDecisionResult }>> => {
+    return apiPost<{ data: PortalApprovalDecisionResult }>(
+      `/portal/approvals/${encodeURIComponent(id)}/approve`,
+      body,
+      config
+    );
+  },
+
+  denyApproval: async (
+    id: string,
+    body: PortalApprovalDecisionBody,
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<{ data: PortalApprovalDecisionResult }>> => {
+    return apiPost<{ data: PortalApprovalDecisionResult }>(
+      `/portal/approvals/${encodeURIComponent(id)}/deny`,
+      body,
+      config
     );
   },
 
@@ -1347,6 +1505,13 @@ export const portalApi = {
       `/portal/tickets/usage${buildQueryString({ month })}`,
       config
     ),
+
+  // Block hours W04 (#8179): read-only prepaid-hours balance. Only called
+  // when branding.enableHourBlock is true (see pages/tickets/index.astro).
+  getHourBlock: (
+    config: ApiRequestConfig = {}
+  ): Promise<ApiResponse<PortalHourBlockResponse>> =>
+    apiGet<PortalHourBlockResponse>('/portal/support-usage/hour-block', config),
 
   // W10 — customer reports
   getReportRuns: async (

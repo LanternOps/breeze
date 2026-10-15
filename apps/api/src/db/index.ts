@@ -154,7 +154,7 @@ const dbContextMetaStorage = new AsyncLocalStorage<DbAccessContext>();
 // Work deferred until the OUTERMOST context's transaction has settled (see
 // runAfterDbContextExit). One list per outermost context; joined inner
 // contexts and savepoints share it.
-type AfterContextExitTask = { label: string; run: () => unknown };
+type AfterContextExitTask = { label: string; run: () => unknown; commitOnly?: boolean };
 const afterContextExitStorage = new AsyncLocalStorage<AfterContextExitTask[]>();
 // #8143. The pool permit of the OUTERMOST context in this async scope.
 // Deliberately NOT exited by runOutsideDbContext: a context opened from inside
@@ -654,13 +654,21 @@ function runInPoolSlot<T>(
       // Exactly one release, when the UNDERLYING transaction settles: commit,
       // rollback, a late connection refused with DbPoolAcquireAbortedError, or
       // a connection closed by the reclaimer. Deferred work starts after it.
+      // #7277: `commitOnly` tasks run only when the transaction COMMITTED.
+      let committed = false;
       void transaction
         .then(
-          () => slot.release('resolved'),
+          () => {
+            committed = true;
+            slot.release('resolved');
+          },
           (err: unknown) => slot.release(classifyPoolSlotSettlement(err)),
         )
         .finally(() => {
-          for (const task of pending.splice(0)) startAfterContextExitTask(task);
+          for (const task of pending.splice(0)) {
+            if (task.commitOnly && !committed) continue;
+            startAfterContextExitTask(task);
+          }
         })
         // Terminal: nobody awaits this chain, so a throw from release/drain or
         // a task start must be logged here, never become an unhandled rejection.
@@ -833,7 +841,25 @@ function startAfterContextExitTask(task: AfterContextExitTask): void {
  * task labels are logged when the transaction is abandoned).
  */
 export function runAfterDbContextExit(label: string, work: () => unknown): void {
-  const task = { label, run: work };
+  deferAfterContextExit({ label, run: work });
+}
+
+/**
+ * Like {@link runAfterDbContextExit}, but `work` runs ONLY if the outermost
+ * transaction COMMITTED — a rollback silently drops it (#7277). Use it to
+ * publish an event that announces a state change: a subscriber must never be
+ * told about a row that was rolled back. Everything else (fire-and-forget,
+ * outside any context, runs immediately with no context held) is identical.
+ *
+ * Caveat: a savepoint that rolls back inside a transaction that still commits
+ * does NOT drop work registered inside that savepoint; register after the
+ * state change is final.
+ */
+export function runAfterDbContextCommit(label: string, work: () => unknown): void {
+  deferAfterContextExit({ label, run: work, commitOnly: true });
+}
+
+function deferAfterContextExit(task: AfterContextExitTask): void {
   const pending = dbContextStorage.getStore() ? afterContextExitStorage.getStore() : undefined;
   if (pending) {
     pending.push(task);

@@ -38,7 +38,7 @@ export interface ReadinessTickets {
 }
 
 /* ---- W03 wire shapes (mirror apps/api/src/services/orgAccountReadinessIntegrations.ts) ---- */
-export type ConnectorSystem = 'quickbooks' | 'xero' | 'psa' | 'pax8' | 'huntress' | 'sentinelone';
+export type ConnectorSystem = 'quickbooks' | 'xero' | 'psa' | 'pax8' | 'huntress' | 'sentinelone' | 'edr';
 export type ConnectorState = 'connected' | 'reauth_required' | 'disconnected' | 'error' | 'disabled';
 export interface ReadinessConnector {
   system: ConnectorSystem;
@@ -58,6 +58,8 @@ export interface ReadinessIntegration {
   reason?: IntegrationReason;
   /** 'external' rows: the raw organization_external_links.system value. */
   label?: string;
+  /** EDR rows: the API's already-resolved provider display name (single-provider orgs only). */
+  provider?: string;
 }
 
 export interface ReadinessOrg {
@@ -423,6 +425,7 @@ export const SYSTEM_DISPLAY_NAMES: Record<Exclude<IntegrationSystem, 'psa' | 'dn
   m365: 'Microsoft 365',
   huntress: 'Huntress',
   sentinelone: 'SentinelOne',
+  edr: 'EDR',
 };
 
 /** PSA provider ids from PSA_PROVIDERS (@breeze/shared validators/psa.ts) → product names. */
@@ -443,10 +446,11 @@ export const CONNECTOR_SETTINGS_HREF: Record<ConnectorSystem, string> = {
   pax8: '/integrations#pax8',
   huntress: '/integrations#huntress',
   sentinelone: '/integrations#sentinelone',
+  edr: '/integrations#edr',
 };
 
 /** Connectors that imply a per-org mapping (a dashed "not linked" is meaningful). M365 / DNS / external have no partner connector. */
-export const NOT_LINKED_CONNECTOR_SYSTEMS: readonly ConnectorSystem[] = ['quickbooks', 'xero', 'psa', 'pax8', 'huntress', 'sentinelone'];
+export const NOT_LINKED_CONNECTOR_SYSTEMS: readonly ConnectorSystem[] = ['quickbooks', 'xero', 'psa', 'pax8', 'huntress', 'sentinelone', 'edr'];
 
 export function deriveIntegrationBadges(
   readiness: ReadinessOrg | undefined,

@@ -34,6 +34,10 @@ function pgTextArray(values: string[]): string {
  * raw call site joins the table as `s`, which is the default.
  */
 export function visibleSourcePredicateSql(sql: SqlTag, groupIds: string[], alias = 's'): SQL {
+  // `alias` goes through sql.raw, so it must be a bare identifier.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) {
+    throw new Error(`visibleSourcePredicateSql: invalid table alias ${JSON.stringify(alias)}`);
+  }
   const status = sql.raw(`${alias}.status`);
   const groups = sql.raw(`${alias}.visibility_group_ids`);
   return sql`${status} = 'active' AND (${groups} = '[]'::jsonb

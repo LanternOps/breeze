@@ -87,6 +87,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
+  'container_image_upstream_cache', // Workload image currency W05 (#8194, spec §9.3): global cache of what PUBLIC registries serve per registry/repository:tag — no tenant column by design (fleet-wide dedup, D13). Forced RLS, single system-only policy, NO permissive SELECT (keys are derived from what tenants run). Written only by the imageCurrencyWorker for anonymous lookups that succeeded; private/failed results land only on the tenant's own device_workloads rows. No org_id/device_id, so no cascade, merge or export registration applies.
   'pam_ledger_retirements', // PAM ownership epochs (#8203, spec §4.5): identifier-only markers (device_id, actuation_id, epoch) — no org, no evidence. Forced RLS, single system-only policy; written only by the SECURITY DEFINER devices org-change trigger, read only by system-scope lineage lookups. Lives with the device (FK ON DELETE CASCADE + CORE_DEVICE_CASCADE_DELETE_TABLES).
   'intent_outbox', // Generalized transactional outbox: system-scoped workers-only queue. Its XOR parent FK cascades from either action_intents or pam_actuations (both direct-org, forced RLS). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
@@ -132,6 +133,9 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
 // lifecycle filtering only, and tenant-wide revocation uses system DB context
 // after app-layer authorization.
 const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
+  // migration_window_orgs (#8313): partner-axis (PARTNER_TENANT_TABLES); its
+  // org_id names an org the window may import into, not the row's tenant.
+  'migration_window_orgs',
   'oauth_authorization_codes',
   'oauth_grants',
   'oauth_refresh_tokens',
@@ -324,6 +328,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Policy: breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
   // Functional forge: customerEmailDomainsRls.integration.test.ts.
   ['customer_email_domains', 'partner_id'],
+  // Ticket migration windows (#8313, 2026-12-25-120000): partner-axis grants
+  // of import mode to one keyless principal across chosen orgs. Policy:
+  // breeze_current_scope()='system' OR breeze_has_partner_access(partner_id).
+  // migration_window_orgs also carries a non-tenancy org_id and is in
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap). Functional forge:
+  // migrationWindowsRls.integration.test.ts.
+  ['migration_windows', 'partner_id'],
+  ['migration_window_orgs', 'partner_id'],
   // Stripe payments (2026-06-15): one connected Stripe account per partner
   // (RLS shape 3, flat breeze_has_partner_access(partner_id)). The sibling
   // invoice_stripe_payments table carries a direct org_id column and is
@@ -398,6 +410,15 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // for cascadeDeletePartner's dynamic partner_id sweep.
   // Functional cross-partner forge proof: orgMergeEventsRls.integration.test.ts.
   ['org_merge_events', 'partner_id'],
+  // org_evidence_holds (PAM ownership epochs W5, #8207): a merged-away org kept
+  // as a held shell because it still owns PAM-chain evidence. Partner-axis
+  // (Shape 3), mirrors org_merge_events: no org_id column (loser_org_id has no
+  // FK; survivor_org_id and merge_event_id are ON DELETE RESTRICT), so no org
+  // cascade / merge registry / export entry. RESTRICTIVE system-only policies
+  // for INSERT/UPDATE/DELETE sit on top of the partner-axis policy asserted
+  // here. GRANT includes DELETE for the erasure path and cascadeDeletePartner's
+  // partner_id sweep. Functional proof: orgEvidenceHold.integration.test.ts.
+  ['org_evidence_holds', 'partner_id'],
   // device_pool_assignment_events: the
   // holding-area ledger. Partner-axis (Shape 3), no org_id column — from/to org
   // ids are historical snapshots, not tenancy keys — so no cascade / export /
@@ -463,6 +484,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  'service_catalogs',
+  'service_catalog_items',
   'billing_payment_settings',
   // caller_verification_policies (#6354 W01): org XOR partner via
   // caller_verification_policies_one_owner_chk; SELECT-only partner-wide branch

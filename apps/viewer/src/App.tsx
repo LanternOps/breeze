@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import DesktopViewer from './components/DesktopViewer';
 import UpdateIndicator from './components/UpdateIndicator';
+import { QuitConfirm } from './components/QuitConfirm';
 import { parseDeepLink, type ConnectionParams } from './lib/protocol';
 
 /**
@@ -155,6 +156,7 @@ export default function App() {
     return (
       <>
         <UpdateIndicator />
+        <QuitConfirm />
         <DesktopViewer
           params={params}
           onDisconnect={handleDisconnect}
@@ -168,6 +170,7 @@ export default function App() {
   return (
     <>
       <UpdateIndicator />
+      <QuitConfirm />
       <div className="flex items-center justify-center h-screen bg-gray-900">
         <div className="text-center">
           <div className="w-6 h-6 border-2 border-accent-soft border-t-transparent rounded-full animate-spin mx-auto mb-3" />

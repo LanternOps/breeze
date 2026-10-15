@@ -299,7 +299,6 @@ This is what you paste into your incumbent RMM's script engine. It runs as SYSTE
     SERVER='https://breeze.yourdomain.com'
     KEY='<64-hex-enrollment-key>'
     SECRET='<AGENT_ENROLLMENT_SECRET>'
-    SITE_ID='<site-uuid>'
 
     case "$(uname -s)" in
       Darwin) OS=darwin; CFG='/Library/Application Support/Breeze/agent.yaml' ;;
@@ -316,7 +315,7 @@ This is what you paste into your incumbent RMM's script engine. It runs as SYSTE
     chmod +x /usr/local/bin/breeze-agent
 
     /usr/local/bin/breeze-agent enroll "$KEY" \
-      --server "$SERVER" --enrollment-secret "$SECRET" --site-id "$SITE_ID" --quiet
+      --server "$SERVER" --enrollment-secret "$SECRET" --quiet
     /usr/local/bin/breeze-agent service install
     echo 'breeze agent enrolled'
     ```

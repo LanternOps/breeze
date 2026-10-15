@@ -41,6 +41,8 @@ export function cardSummaries(nodes: readonly RenderNode[]): Map<string, CardSum
   for (const node of nodes) {
     if (!node.parent) continue;
     const entry = counts.get(node.parent) ?? { total: 0, bySection: new Map(), online: 0, offline: 0 };
+    // A visitor is never a card member: it keeps its card on the summary list (a card of visitors only) but adds to no count.
+    if (node.kind === 'visitor') { counts.set(node.parent, entry); continue; }
     const section = sectionOf(node.glyph);
     entry.total++; entry.bySection.set(section, (entry.bySection.get(section) ?? 0) + 1);
     // Agent presence only: a scan answer is not an agent heartbeat, and neither is health.

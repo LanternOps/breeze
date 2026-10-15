@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/backup"
+	"github.com/breeze-rmm/agent/internal/backup/providers"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
@@ -21,6 +24,7 @@ func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupi
 	}
 	var p struct {
 		VaultID    string `json:"vaultId"`
+		VaultPath  string `json:"vaultPath"`
 		SnapshotID string `json:"snapshotId"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -28,6 +32,15 @@ func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupi
 	}
 	if p.SnapshotID == "" {
 		return fail("snapshotId is required for vault sync")
+	}
+	// The helper holds one vault (agent.yaml vault_path), while the server can
+	// list several per device. Refuse a sync aimed at a different vault rather
+	// than copy into this one and report success for the other.
+	if p.VaultPath != "" {
+		configured := vaultMgr.Path()
+		if !sameVaultPath(configured, p.VaultPath) {
+			return fail(fmt.Sprintf("this device is configured for vault path %q, not %q; save the vault again to send its configuration to the device", configured, p.VaultPath))
+		}
 	}
 	syncResult, err := vaultMgr.SyncAfterBackup(p.SnapshotID)
 	if err != nil {
@@ -42,6 +55,16 @@ func execVaultSync(payload json.RawMessage, vaultState *vaultManagerRef) backupi
 		"manifestVerified": syncResult.ManifestVerified,
 		"vaultPath":        syncResult.VaultPath,
 	}, nil)
+}
+
+// sameVaultPath compares two vault paths after cleaning them. Windows paths
+// are compared case-insensitively.
+func sameVaultPath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func execVaultStatus(vaultState *vaultManagerRef) backupipc.BackupCommandResult {
@@ -138,8 +161,10 @@ func emitVaultAutoSyncResult(conn *ipc.Conn, snapshotID string, syncResult *back
 }
 
 // autoSyncToVault parses the backup_run result to extract the snapshot ID and
-// syncs to vault in the background.
-func autoSyncToVault(backupResult string, vaultState *vaultManagerRef, conn *ipc.Conn) {
+// syncs to vault in the background. source is the provider the backup wrote
+// the snapshot through: on a policy-managed device that is a payload-built
+// provider, not the vault's startup primary, which would never find it (#8385).
+func autoSyncToVault(backupResult string, vaultState *vaultManagerRef, conn *ipc.Conn, source providers.BackupProvider) {
 	if vaultState == nil {
 		return
 	}
@@ -161,7 +186,13 @@ func autoSyncToVault(backupResult string, vaultState *vaultManagerRef, conn *ipc
 		return
 	}
 	slog.Info("vault auto-sync starting", "snapshotId", result.Snapshot.ID)
-	syncResult, err := vaultMgr.SyncAfterBackup(result.Snapshot.ID)
+	var syncResult *backup.VaultSyncResult
+	var err error
+	if source != nil {
+		syncResult, err = vaultMgr.SyncAfterBackupFrom(source, result.Snapshot.ID)
+	} else {
+		syncResult, err = vaultMgr.SyncAfterBackup(result.Snapshot.ID)
+	}
 	if err != nil {
 		slog.Warn("vault auto-sync failed", "snapshotId", result.Snapshot.ID, "error", err.Error())
 		emitVaultAutoSyncResult(conn, result.Snapshot.ID, syncResult, err)

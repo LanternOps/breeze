@@ -81,6 +81,15 @@ describe('CHANGE_INGEST_MAX_ITEMS resolver — env validation', () => {
 describe('heartbeatSchema — PAM reconciliation telemetry', () => {
   const minimal = { status: 'ok' as const, agentVersion: '0.65.15' };
 
+  it('accepts reset support while normal PAM admission is unavailable', () => {
+    const parsed = heartbeatSchema.safeParse({
+      ...minimal,
+      securityCapabilities: { pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 1 },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.securityCapabilities?.pamReconciliationResetProtocolVersion).toBe(1);
+  });
+
   it('accepts exact bounded reconciliation status', () => {
     const parsed = heartbeatSchema.safeParse({
       ...minimal,

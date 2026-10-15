@@ -127,6 +127,11 @@ func TestTimedOutStopRetainsLiveGenerationAndSuppressesReplacement(t *testing.T)
 	proc.terminateExits = false
 	spawner := &fakeHelperSpawner{byKey: map[HelperKey]helperProcess{key: proc}}
 	m := newLifecycleHarness(t, []DetectedSession{{Session: "7", State: "active", Type: "rdp"}}, spawner)
+	// Registered after the harness, so it runs first (LIFO). Releasing the fake
+	// helper lets its reaper goroutine (blocked in Wait) exit even when an
+	// early t.Fatalf skips the end of the test, and, if stopKey regresses to
+	// an unbounded wait, keeps the harness's m.Stop() from hanging on it.
+	t.Cleanup(func() { proc.markExited(1) })
 	m.gracePeriod = time.Millisecond
 	m.finalWait = time.Millisecond
 	m.reconcile()
@@ -134,10 +139,22 @@ func TestTimedOutStopRetainsLiveGenerationAndSuppressesReplacement(t *testing.T)
 	m.registry.current[key].lastFailure = time.Now().Add(-time.Minute)
 	m.registry.mu.Unlock()
 
-	started := time.Now()
-	m.stopKey(key)
-	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
-		t.Fatalf("bounded stop took %v", elapsed)
+	// The property: stopKey gives up after gracePeriod+finalWait instead of
+	// blocking until the helper exits, which this helper never does. The
+	// bound is that budget plus generous slack for scheduler stalls on loaded
+	// CI runners (#8353 saw 228ms against a 2ms budget). A stop that is not
+	// bounded at all still fails at the deadline instead of hanging the suite.
+	const schedulingSlack = 2 * time.Second
+	bound := m.gracePeriod + m.finalWait + schedulingSlack
+	stopped := make(chan struct{})
+	go func() {
+		m.stopKey(key)
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(bound):
+		t.Fatalf("stopKey did not return within gracePeriod+finalWait+slack (%v) for a helper that never exits", bound)
 	}
 	if got := m.registry.processID(key); got != proc.pid {
 		t.Fatalf("live stopping generation PID = %d, want %d", got, proc.pid)
@@ -146,8 +163,6 @@ func TestTimedOutStopRetainsLiveGenerationAndSuppressesReplacement(t *testing.T)
 	if got := spawner.SpawnCount(key); got != 1 {
 		t.Fatalf("spawn count with live stopping generation = %d, want 1", got)
 	}
-
-	proc.markExited(1)
 }
 
 func (p *fakeHelperProcess) Wait() (int, error) {

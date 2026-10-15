@@ -122,7 +122,8 @@ vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
 }));
 
-import { syncIntegrationById } from './huntressSync';
+import { syncIntegrationById, processSyncIntegration } from './huntressSync';
+import { makeRealJob } from './__helpers__/realBullJob';
 
 describe('huntressSync — DB context boundaries (#1697)', () => {
   beforeEach(() => {
@@ -287,5 +288,23 @@ describe('huntressSync — DB context boundaries (#1697)', () => {
 
     expect(listOrganizations).not.toHaveBeenCalled();
     expect(result.upsertedAgents).toBe(0);
+  });
+});
+
+describe('processSyncIntegration — final-attempt detection with a real BullMQ Job (#8351)', () => {
+  const data = { type: 'sync-integration' as const, integrationId: 'integration-1' };
+
+  it('does not record a terminal error on the first of three attempts (attemptsMade 0)', async () => {
+    listAgents.mockRejectedValueOnce(new Error('transient CONNECTION_CLOSED'));
+    await expect(processSyncIntegration(data, makeRealJob(data, { attemptsMade: 0, attempts: 3 })))
+      .rejects.toThrow('transient');
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(false);
+  });
+
+  it('records the terminal error on the third of three attempts (attemptsMade 2)', async () => {
+    listAgents.mockRejectedValueOnce(new Error('exhausted CONNECTION_CLOSED'));
+    await expect(processSyncIntegration(data, makeRealJob(data, { attemptsMade: 2, attempts: 3 })))
+      .rejects.toThrow('exhausted');
+    expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(true);
   });
 });

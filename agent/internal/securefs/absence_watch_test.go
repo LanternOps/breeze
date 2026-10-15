@@ -192,6 +192,32 @@ type publishRecord struct {
 	err        error
 }
 
+// renameCall is one rename syscall (NtSetInformationFile with a rename
+// information class) as the Windows concurrency test observed it.
+type renameCall struct {
+	start, end time.Time
+	done       bool   // false while the syscall has not returned
+	failed     bool   // returned an error
+	class      uint32 // 65 FileRenameInformationEx (POSIX), 10 legacy
+}
+
+// renamesSpanning returns the rename syscalls that were entered strictly
+// before firstMiss and had neither returned nor failed by lastMiss: the kernel
+// was still executing them across the whole absence (#8491). A call that has
+// not returned yet counts — its outcome is unknown, but it is in flight.
+func renamesSpanning(log []renameCall, firstMiss, lastMiss time.Time) []renameCall {
+	var spanning []renameCall
+	for _, c := range log {
+		if !c.start.Before(firstMiss) || c.failed {
+			continue
+		}
+		if !c.done || c.end.After(lastMiss) {
+			spanning = append(spanning, c)
+		}
+	}
+	return spanning
+}
+
 // publishesCompletedWithin counts successful publishes that RETURNED strictly
 // between firstMiss and lastMiss. Each one is a rename whose post-condition
 // (the destination name refers to the published file) held before a lookup

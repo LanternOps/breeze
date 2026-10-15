@@ -1,0 +1,22 @@
+{
+  "title": "Contatos responsáveis",
+  "subtitle": "Resolvido para este registro. Atribuições mais específicas têm prioridade.",
+  "loading": "Carregando contatos responsáveis…",
+  "loadFailed": "Não foi possível carregar os contatos responsáveis.",
+  "empty": "Nenhum contato responsável foi atribuído ainda.",
+  "primary": "Principal",
+  "roles": {
+    "billing": "Faturamento",
+    "technical": "Técnico",
+    "escalation": "Escalonamento",
+    "admin": "Administração",
+    "site": "Contato local",
+    "after_hours": "Fora do expediente",
+    "portal": "Portal"
+  },
+  "scope": {
+    "organization": "Organização inteira",
+    "site": "Este site",
+    "device_group": "Grupo de dispositivos"
+  }
+}

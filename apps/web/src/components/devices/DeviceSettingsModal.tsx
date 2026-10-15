@@ -77,7 +77,10 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
       const effectiveName = displayName.trim() || undefined;
       const originalName = device.displayName || undefined;
       if (effectiveName !== originalName) body.displayName = effectiveName ?? null;
-      if (siteId !== device.siteId) body.siteId = siteId;
+      if (siteId !== device.siteId) {
+        body.siteId = siteId;
+        body.expectedSiteId = device.siteId;
+      }
       const tagsChanged = JSON.stringify(tags) !== JSON.stringify(device.tags ?? []);
       if (tagsChanged) body.tags = tags;
       const originalPurchase = device.purchaseDate ?? '';
@@ -97,6 +100,8 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
           }),
         errorFallback: t('deviceSettingsModal.errors.saveSettings'),
         successMessage: t('deviceSettingsModal.saved'),
+        friendly: (code) =>
+          code === 'device_site_changed' ? t('deviceSettingsModal.errors.siteChanged') : undefined,
       });
 
       onSaved();

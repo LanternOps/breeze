@@ -1,4 +1,7 @@
 export * from './errorCodes';
+// Partner service principal scope registry + task-named presets (#8173), shared
+// by the API validation layer and the web create dialog so they cannot drift.
+export * from './partnerServicePrincipalScopes';
 // Permission registry (resource:action grants) + derived literal-union types.
 export * from './permissions';
 

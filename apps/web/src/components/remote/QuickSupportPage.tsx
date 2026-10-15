@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import ConnectDesktopButton from './ConnectDesktopButton';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 export type SupportSessionStatus =
   | 'pending'
@@ -127,7 +128,7 @@ export default function QuickSupportPage() {
     setSelectedId(null);
     // Strip the fragment without leaving a bare "#" (and without a hashchange
     // round-trip — the state is already cleared above).
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    replaceUrl(`${window.location.pathname}${window.location.search}`);
   }, [setSelectedId]);
 
   // Poll the selected session until it reaches a terminal state. The first pass

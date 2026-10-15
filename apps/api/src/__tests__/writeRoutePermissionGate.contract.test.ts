@@ -79,6 +79,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PUT /api/v1/agents/:id/connections': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/elevationRequests.ts
   'POST /api/v1/agents/:id/elevation-requests': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/messageEvents.ts
+  'POST /api/v1/agents/:id/message-events': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/enrollment.ts
   'POST /api/v1/agents/enroll': 'device credential: Agent enrollment; one-time enrollment secret checked in handler, IP rate limited',
   // routes/agents/eventlogs.ts
@@ -320,6 +322,9 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   // routes/portal/profile.ts
   'PATCH /api/v1/portal/profile': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/profile/password': 'portal session: portal session auth (portalAuthMiddleware)',
+  // routes/portal/approvals.ts
+  'POST /api/v1/portal/approvals/:id/approve': 'portal session: portal session auth (portalAuthMiddleware); approver check against the session email + decision service re-check',
+  'POST /api/v1/portal/approvals/:id/deny': 'portal session: portal session auth (portalAuthMiddleware); approver check against the session email + decision service re-check',
   // routes/portal/quotes.ts
   'POST /api/v1/portal/quotes/:id/accept': 'portal session: portal session auth (portalAuthMiddleware)',
   'POST /api/v1/portal/quotes/:id/decline': 'portal session: portal session auth (portalAuthMiddleware)',
@@ -341,6 +346,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/sso/link/confirm': 'public: Link confirm via pending-link cookie and password',
   // routes/supportPublic.ts
   'POST /api/v1/support/redeem': 'public: one-time support code redemption, rate limited',
+  // routes/callerVerifyPublic.ts
+  'POST /api/v1/verify/:token': 'public: caller-verification SMS/email link token is the credential; single CAS decision, per-IP/per-token/miss budgets',
   // routes/system.ts
   'POST /api/v1/system/setup-complete': 'own account: sets caller\'s own setupCompletedAt',
   // routes/tickets/emailWebhook.ts
