@@ -10,7 +10,9 @@
  * the caller can access.
  *
  * `system_cleanup` is the cleanest probe: `list` is self-managed, `status` is
- * not, and both target a device. Each test uses an OFFLINE device, so a call
+ * not, and both target a device. The fix opens a SHORT context for the
+ * resolver only; one test pins that it is closed again before the handler
+ * starts, so nothing is held across the handler's device wait. Each test uses an OFFLINE device, so a call
  * that gets through the resolver ends at the handler's own online check with
  * no agent dispatch.
  */
@@ -20,6 +22,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { Hono } from 'hono';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
+import { hasDbAccessContext } from '../../db';
 import { devices, partnerServicePrincipalKeys, partnerServicePrincipals } from '../../db/schema';
 import {
   assignUserToPartner,
@@ -135,6 +138,34 @@ describe('MCP pre-dispatch for selfManagedDbContext device tools (#8798)', () =>
     });
     expect(body.error).toBeUndefined();
     expect(toolText(body)).toMatch(/is not online/);
+  });
+
+  it('the pre-dispatch context is closed before the handler runs (none is held across a device wait)', async () => {
+    const p = await partnerFixture();
+    const device = await offlineDevice(p.org.id);
+
+    // Wrap the REAL registered handler and record whether a DB access context
+    // is active when the handler starts. executeTool reads the registry at call
+    // time, so the wrapper is what runs.
+    const { aiTools } = await import('../../services/aiTools');
+    const original = aiTools.get('system_cleanup')!;
+    const contextAtEntry: boolean[] = [];
+    aiTools.set('system_cleanup', {
+      ...original,
+      handler: async (input, auth, ...rest) => {
+        contextAtEntry.push(hasDbAccessContext());
+        return original.handler(input, auth, ...rest);
+      },
+    });
+    try {
+      const body = await callTool(p.rawKey, 'system_cleanup', {
+        deviceId: device.id, action: 'list', commandId: randomUUID(),
+      });
+      expect(body.error).toBeUndefined();
+    } finally {
+      aiTools.set('system_cleanup', original);
+    }
+    expect(contextAtEntry).toEqual([false]);
   });
 
   it('a self-managed Tier 3 tool (network_discovery) reaches the handler too', async () => {
