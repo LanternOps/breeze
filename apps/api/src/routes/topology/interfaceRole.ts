@@ -12,11 +12,11 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { CircuitError, interfaceRoleBodySchema, setInterfaceWanRole } from '../../services/circuits';
 import { requireTopologySiteAccess, TopologyError } from '../../services/topology/access';
 import { getUserPermissions, type UserPermissions } from '../../services/permissions';
-import type { AuthContext } from '../../middleware/auth';
+import { requireMfa, type AuthContext } from '../../middleware/auth';
 
 export const topologyInterfaceRoleRoutes = new Hono();
 
-topologyInterfaceRoleRoutes.patch('/interfaces/:id/role', zValidator('json', interfaceRoleBodySchema), async (c) => {
+topologyInterfaceRoleRoutes.patch('/interfaces/:id/role', requireMfa(), zValidator('json', interfaceRoleBodySchema), async (c) => {
   try {
     const interfaceId = c.req.param('id')!;
     const [current] = await db
