@@ -995,6 +995,15 @@ type AgentDbContext = {
   role?: AgentCredentialRole;
   /** The device's org is a holding org (see ActiveAgentConnection.parked). */
   parked?: boolean;
+  /**
+   * `Date.now()` when validateAgentToken read the device row and confirmed this
+   * exact agent-role credential generation, with the same lifecycle/holding-org
+   * predicates the lease re-check applies (and tenant/certificate checks on
+   * top). It is the socket's first confirmed authorization: the credential
+   * lease's grace window is anchored here, so an indeterminate onOpen re-check
+   * does not close a socket validated moments earlier (#8838).
+   */
+  credentialValidatedAt?: number;
 };
 
 type AgentTokenValidation =
@@ -1204,6 +1213,9 @@ export async function validateAgentToken(
       .limit(1);
     return row ?? null;
   });
+  // When the row below was read: the earliest point at which it confirms the
+  // credential, so the lease grace that hangs off it is never overstated.
+  const credentialValidatedAt = Date.now();
 
   if (!device) {
     return rejectTerminally('device_not_found');
@@ -1313,6 +1325,7 @@ export async function validateAgentToken(
       partnerId: device.partnerId,
       role: match.role,
       credentialTokenHash: tokenHash,
+      credentialValidatedAt,
       parked: isUnassignedPoolOrgType(device.organizationType),
     },
   };
@@ -2858,10 +2871,14 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
   // Credential lease (#5474, #8838). `credentialValidUntil` is the end of the
   // current confirmed lease; `credentialConfirmedAt` is when the DB last
   // confirmed this socket's generation, and anchors the indeterminate grace
-  // window. It stays null until onOpen's first check succeeds: the grace
-  // window extends a confirmed authorization, it never stands in for one.
+  // window. The upgrade's validateAgentToken is the first confirmation, so an
+  // indeterminate onOpen re-check falls into the same bounded grace as any
+  // later frame. A context without that timestamp has no confirmation to
+  // extend (null): its first check must succeed outright. The grace window
+  // extends a confirmed authorization, it never stands in for one.
+  // validUntil stays 0 so onOpen still re-checks the validate→upgrade race.
   let credentialValidUntil = 0;
-  let credentialConfirmedAt: number | null = null;
+  let credentialConfirmedAt: number | null = agentDb.credentialValidatedAt ?? null;
   // At most one re-check query per socket. A query that outlives its bounded
   // wait is usually queued for a pooled connection; later frames must not
   // stack another one behind it, or a pool stall amplifies itself.
@@ -2975,8 +2992,10 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
       // If subscription setup is unavailable, the DB lease below still bounds
       // stale authority to TTL + query timeout (32 seconds) while the DB
       // answers, and to AGENT_CREDENTIAL_RECHECK_GRACE_MS (120 seconds) from
-      // the last confirmed check while it cannot (#8838). This first check has
-      // no confirmed authorization to extend, so it must succeed outright.
+      // the last confirmed check while it cannot (#8838). For this first check
+      // the last confirmation is the upgrade's validateAgentToken: a definitive
+      // denial here (a reset that won the validate→upgrade race) still closes at
+      // once; an indeterminate answer keeps the socket inside that grace.
       await initializeAgentCredentialSubscription();
       // Close the validate→upgrade race before presence, status or socket-map
       // side effects. A reset can commit after HTTP auth but before onOpen.

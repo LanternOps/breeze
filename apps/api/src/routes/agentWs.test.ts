@@ -910,7 +910,9 @@ describe('validateAgentToken — tenant-status gate', () => {
   it('accepts a valid agent token for an active tenant', async () => {
     queueDeviceSelect(deviceRow);
 
+    const before = Date.now();
     const result = await validateAgentToken('agent-1', TOKEN);
+    const after = Date.now();
 
     expect(result).toEqual({
       ok: true,
@@ -920,9 +922,14 @@ describe('validateAgentToken — tenant-status gate', () => {
         partnerId: 'partner-1',
         role: 'agent',
         credentialTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+        credentialValidatedAt: expect.any(Number),
         parked: false,
       },
     });
+    // #8838: the upgrade's confirmation anchors the socket's lease grace.
+    const validatedAt = (result as { ctx: { credentialValidatedAt: number } }).ctx.credentialValidatedAt;
+    expect(validatedAt).toBeGreaterThanOrEqual(before);
+    expect(validatedAt).toBeLessThanOrEqual(after);
     expect(getAgentTenantState).toHaveBeenCalledWith('org-1');
   });
 
@@ -1104,6 +1111,7 @@ describe('validateAgentToken — certificate/device binding (Wave 5 Task 6)', ()
         partnerId: 'partner-1',
         role: 'agent',
         credentialTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+        credentialValidatedAt: expect.any(Number),
         parked: false,
       },
     });
@@ -4253,7 +4261,7 @@ describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
     expect(refreshAgentPresence).not.toHaveBeenCalled();
   });
 
-  it('fails closed at onOpen when the first bounded generation query does not return', async () => {
+  it('fails closed at onOpen when the first bounded query does not return and no upgrade validation was recorded', async () => {
     const handlers = createAgentWsHandlers('agent-generation-timeout', {
       deviceId: 'device-generation-timeout',
       orgId: 'org-generation-timeout',
@@ -4848,6 +4856,94 @@ describe('#8838 — indeterminate credential re-check keeps the socket inside a 
     vi.mocked(refreshAgentPresence).mockClear();
     await handlers.onMessage(pong(), ws as any);
     expect(refreshAgentPresence).not.toHaveBeenCalled();
+  });
+
+  describe('onOpen: the upgrade validation is the first confirmation', () => {
+    function validatedHandlers(agentId: string, validatedAt: number) {
+      return createAgentWsHandlers(agentId, {
+        deviceId: `device-${agentId}`,
+        orgId: `org-${agentId}`,
+        partnerId: `partner-${agentId}`,
+        credentialTokenHash: tokenHash,
+        credentialValidatedAt: validatedAt,
+      });
+    }
+
+    it('an onOpen re-check that throws keeps the socket and completes setup', async () => {
+      const handlers = validatedHandlers('agent-open-throws', now);
+      const ws = wsMock();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(db.update).mockReturnValue(updateResult() as any);
+      vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+
+      await handlers.onOpen({}, ws as any);
+
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(isAgentConnected('agent-open-throws')).toBe(true);
+      expect(setAgentPresence).toHaveBeenCalledWith('agent-open-throws', expect.anything());
+    });
+
+    it('an onOpen re-check that exceeds its bounded wait keeps the socket and completes setup', async () => {
+      const handlers = validatedHandlers('agent-open-timeout', now);
+      const ws = wsMock();
+      const hung = selectPending();
+      vi.mocked(db.update).mockReturnValue(updateResult() as any);
+      vi.mocked(db.select).mockReturnValueOnce(hung.select as any).mockReturnValue(selectAgentDevice([]) as any);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+      const open = handlers.onOpen({}, ws as any);
+      await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS + 1);
+      await open;
+
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(isAgentConnected('agent-open-timeout')).toBe(true);
+      expect(setAgentPresence).toHaveBeenCalledWith('agent-open-timeout', expect.anything());
+    });
+
+    it('a definitive denial at onOpen still closes 4001 before any setup', async () => {
+      const handlers = validatedHandlers('agent-open-denied', now);
+      const ws = wsMock();
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([generationRow({
+        agentTokenHash: createHash('sha256').update('replacement-token').digest('hex'),
+      })]) as any);
+
+      await handlers.onOpen({}, ws as any);
+
+      expect(ws.close).toHaveBeenCalledWith(4001, DENIED);
+      expect(isAgentConnected('agent-open-denied')).toBe(false);
+      expect(setAgentPresence).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('a socket that opens during an outage fails closed once the grace window from upgrade validation elapses', async () => {
+      const validatedAt = now;
+      const handlers = validatedHandlers('agent-open-outage', validatedAt);
+      const ws = wsMock();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(db.update).mockReturnValue(updateResult() as any);
+      vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+
+      // onOpen runs a little after the upgrade validated the token.
+      now = validatedAt + 500;
+      await handlers.onOpen({}, ws as any);
+      expect(ws.close).not.toHaveBeenCalled();
+
+      // Never confirmed since: open up to validatedAt + grace...
+      now = validatedAt + AGENT_CREDENTIAL_RECHECK_GRACE_MS;
+      await handlers.onMessage(pong(), ws as any);
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+
+      // ...and closed with the unverified reason just after it.
+      now = validatedAt + AGENT_CREDENTIAL_RECHECK_GRACE_MS + 1;
+      await handlers.onMessage(pong(), ws as any);
+      expect(ws.close).toHaveBeenCalledWith(4001, UNVERIFIED);
+      expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(
+        new RegExp(`agent-open-outage.*${AGENT_CREDENTIAL_RECHECK_GRACE_MS + 1}ms`),
+      ));
+    });
   });
 
   it('a command result on a hash-less socket proceeds when the lifecycle re-check is indeterminate', async () => {
