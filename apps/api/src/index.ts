@@ -175,6 +175,8 @@ import { aiRoutes } from './routes/ai';
 import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
 import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
 import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
+import { aiDataPolicyRoutes } from './routes/ai/dataPolicy';
+import { partnerAiDataPolicyRoutes } from './routes/partnerAiDataPolicy';
 import { aiModelsRoutes } from './routes/aiModels';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
@@ -1012,6 +1014,7 @@ api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
 // W04 (#5612): the partner CEILING for the unattended script lane.
 api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
+api.route('/partner/ai/data-policy', partnerAiDataPolicyRoutes);
 // W03 (partner sending domains). MUST stay above the catch-all `/partner`
 // mount below, the same ordering `/partner/trust` relies on — Hono matches in
 // registration order, so a later specific mount is never reached.
@@ -1057,6 +1060,7 @@ api.route('/ai/script-proposals', aiScriptProposalRoutes);
 // registered ahead of '/ai' so the literal paths never fall into a sibling
 // param route.
 api.route('/ai', aiScriptPolicyRoutes);
+api.route('/ai', aiDataPolicyRoutes);
 // BEFORE /ai: aiRoutes owns broad paths. There is no /ai/agents mount here —
 // the per-run artifact LIST lives inside aiAgentsRoutes itself (see
 // routes/aiAgents.ts, above its /runs/:runId), so no second router shares

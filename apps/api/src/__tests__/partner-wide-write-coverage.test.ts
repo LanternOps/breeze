@@ -156,6 +156,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // Enabling the lane is additionally gated at the route: approvals:decide +
   // MFA + a resource-bound ai_script_lane_grant step-up.
   'routes/ai/scriptPolicy.ts': 'org GRANT writes only (org_id always set); partner ceiling gated at routes/partnerAiScriptPolicy.ts — canManagePartnerWidePolicies on the PUT',
+  'routes/ai/dataPolicy.ts': 'org override writes only (org_id always set); partner default gated at routes/partnerAiDataPolicy.ts — canManagePartnerWidePolicies on the PUT',
   'routes/softwareInventory.ts': 'software_policies/configurationPolicies writes here are always org-scoped — resolveOrgId always resolves a concrete org id, so this route can never create or modify a partner-wide (org_id NULL) row; the site-restricted-user gap is closed separately by canMutateOrgWideGovernance',
 
   // ==========================================================================
