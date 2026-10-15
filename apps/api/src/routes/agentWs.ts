@@ -312,6 +312,12 @@ const AGENT_CREDENTIAL_DENIED_CLOSE_REASON = 'Device no longer authorized';
  */
 const AGENT_CREDENTIAL_UNVERIFIED_CLOSE_REASON = 'Device authorization could not be verified';
 const AGENT_CREDENTIAL_UNKNOWN_WARN_INTERVAL_MS = 60_000;
+/**
+ * After an indeterminate re-check, the socket waits this long before asking
+ * the DB again. A fast-failing outage (connection refused) would otherwise
+ * re-query and log on every frame of every socket.
+ */
+export const AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS = 5_000;
 
 /**
  * Outcome of a live lifecycle/credential re-check. `unknown` means the check
@@ -2863,6 +2869,8 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
   // The bounded wait on that query, null once it has resolved (on the query's
   // answer or on AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS).
   let credentialBoundedWait: Promise<AgentDeviceAuthorization> | null = null;
+  // Earliest time to retry after an indeterminate answer.
+  let credentialRetryNotBefore = 0;
   // Terminal for this socket once set: every later frame closes with the same
   // reason and never re-queries.
   let credentialCloseReason: string | null = null;
@@ -2893,16 +2901,24 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
           const confirmedAt = Date.now();
           credentialConfirmedAt = confirmedAt;
           credentialValidUntil = confirmedAt + AGENT_CREDENTIAL_RECHECK_TTL_MS;
-        } else if (decision === 'denied' && credentialCloseReason === null) {
+        } else if (decision === 'unknown') {
+          credentialRetryNotBefore = Date.now() + AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS;
+        } else if (credentialCloseReason === null) {
           // Also applies an answer that arrives after its bounded wait expired:
-          // a late definitive denial still closes the socket.
-          failCredential(ws, AGENT_CREDENTIAL_DENIED_CLOSE_REASON, 'denied');
+          // a late definitive denial still closes the socket. The latch is set
+          // before ws.close, so a throwing close cannot reopen the socket.
+          try {
+            failCredential(ws, AGENT_CREDENTIAL_DENIED_CLOSE_REASON, 'denied');
+          } catch (err) {
+            console.error(`[AgentWs] credential denial close failed for ${agentId}:`, err);
+          }
         }
         return decision;
       });
     credentialBoundedWait = new Promise<AgentDeviceAuthorization>((resolve) => {
       const timeout = setTimeout(() => resolve('unknown'), AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS);
-      void query.then(resolve).finally(() => clearTimeout(timeout));
+      // Never leave the wait pending: frames await it.
+      void query.then(resolve, () => resolve('unknown')).finally(() => clearTimeout(timeout));
     }).then((decision) => {
       // One sample per re-check: what the socket saw within its bounded wait.
       recordAgentWsCredentialRecheck(decision);
@@ -2927,9 +2943,10 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
     }
     if (Date.now() < credentialValidUntil) return true;
 
-    if (!credentialQueryInFlight) startCredentialRecheck(ws);
-    // A query that already outlived its bounded wait is still pending; this
-    // frame treats it as indeterminate rather than waiting on it again.
+    if (!credentialQueryInFlight && Date.now() >= credentialRetryNotBefore) startCredentialRecheck(ws);
+    // A query that already outlived its bounded wait is still pending, or the
+    // last answer was indeterminate and the retry backoff has not elapsed:
+    // this frame is indeterminate too, without waiting or re-querying.
     const decision: AgentDeviceAuthorization = credentialBoundedWait
       ? await credentialBoundedWait
       : 'unknown';

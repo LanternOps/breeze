@@ -448,6 +448,7 @@ import {
   AGENT_CREDENTIAL_RECHECK_TTL_MS,
   AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS,
   AGENT_CREDENTIAL_RECHECK_GRACE_MS,
+  AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS,
   AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS,
 } from './agentWs';
 import { metricsRegistry } from '../services/metricsRegistry';
@@ -4275,6 +4276,7 @@ describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
     // the reason that says it could not be verified (#8838), not "denied".
     expect(ws.close).toHaveBeenCalledWith(4001, 'Device authorization could not be verified');
     expect(ws.close).not.toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    expect(isAgentConnected('agent-generation-timeout')).toBe(false);
     expect(setAgentPresence).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
 
@@ -4627,12 +4629,81 @@ describe('#8838 — indeterminate credential re-check keeps the socket inside a 
     expect(ws.close).not.toHaveBeenCalled();
     expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
 
-    // The next frame is still processed, and it retries the check: an
-    // indeterminate result never extends the lease.
+    // The next frame is still processed. Inside the retry backoff it does not
+    // re-query (a fast-failing outage must not query on every frame)...
     await handlers.onMessage(pong(), ws as any);
     expect(ws.close).not.toHaveBeenCalled();
     expect(refreshAgentPresence).toHaveBeenCalledTimes(2);
+    expect(db.select).toHaveBeenCalledTimes(1);
+
+    // ...and after it, the check is retried: an indeterminate result never
+    // extended the lease.
+    now += AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS;
+    await handlers.onMessage(pong(), ws as any);
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(3);
     expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it('concurrent frames share one bounded re-check', async () => {
+    const { handlers, ws } = await openSocket('agent-concurrent-frames');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    const hung = selectPending();
+    vi.mocked(db.select).mockReturnValue(hung.select as any);
+
+    const frames = [handlers.onMessage(pong(), ws as any), handlers.onMessage(pong(), ws as any)];
+    hung.resolve([generationRow()]);
+    await Promise.all(frames);
+
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(2);
+    expect(ws.close).not.toHaveBeenCalled();
+  });
+
+  it('a re-check that never returns still fails closed once the grace window expires', async () => {
+    const { handlers, ws } = await openSocket('agent-hung-forever');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    const hung = selectPending();
+    vi.mocked(db.select).mockReturnValue(hung.select as any);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const frame = handlers.onMessage(pong(), ws as any);
+    await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS + 1);
+    await frame;
+    expect(ws.close).not.toHaveBeenCalled();
+
+    now += AGENT_CREDENTIAL_RECHECK_GRACE_MS;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, UNVERIFIED);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('a late confirmation from a re-check that outlived its bounded wait renews the lease and the grace anchor', async () => {
+    const openedAt = now;
+    const { handlers, ws } = await openSocket('agent-late-authorized');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    const hung = selectPending();
+    vi.mocked(db.select).mockReturnValue(hung.select as any);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const frame = handlers.onMessage(pong(), ws as any);
+    await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS + 1);
+    await frame;
+
+    now = openedAt + AGENT_CREDENTIAL_RECHECK_GRACE_MS - 1;
+    hung.resolve([generationRow()]);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    // Past onOpen + grace, but inside the lease the late answer granted.
+    now = openedAt + AGENT_CREDENTIAL_RECHECK_GRACE_MS + 10;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the socket open when the re-check exceeds its bounded wait, without piling up DB queries', async () => {
@@ -4750,7 +4821,7 @@ describe('#8838 — indeterminate credential re-check keeps the socket inside a 
     expect(ws.close).not.toHaveBeenCalled();
 
     vi.mocked(db.select).mockReturnValue(selectAgentDevice([generationRow({ status: 'decommissioned' })]) as any);
-    now += 1;
+    now += AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS;
     await handlers.onMessage(pong(), ws as any);
 
     expect(ws.close).toHaveBeenCalledWith(4001, DENIED);
