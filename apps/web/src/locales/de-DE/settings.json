@@ -112,7 +112,11 @@
     "saved": "KI-Datenrichtlinie gespeichert",
     "failedToSave": "KI-Datenrichtlinie konnte nicht gespeichert werden",
     "partnerInheritDefault": "Breeze-Standard: {{value}}",
-    "readOnly": "Sie haben keine Berechtigung, diese Standardwerte zu ändern."
+    "readOnly": "Sie haben keine Berechtigung, diese Standardwerte zu ändern.",
+    "retentionKeepDays": "Aufbewahren für (Tage)",
+    "retentionKeepForever": "Unbegrenzt aufbewahren",
+    "retentionBreezeDefault": "Breeze-Standard: {{days}} Tage",
+    "partnerRetentionHelp": "Legen Sie fest, wie lange KI-Tool-Ausgaben aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt."
   },
   "partnerServicePrincipals": {
     "title": "Dienstprinzipale",

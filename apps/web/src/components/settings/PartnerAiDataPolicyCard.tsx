@@ -32,6 +32,9 @@ export default function PartnerAiDataPolicyCard() {
   const [defaults, setDefaults] = useState<Defaults | null>(null);
   const [canManage, setCanManage] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Bumped after a failed save / rejected entry so the uncontrolled days input
+  // remounts with the stored value.
+  const [reloadKey, setReloadKey] = useState(0);
 
   const load = async () => {
     try {
@@ -65,6 +68,7 @@ export default function PartnerAiDataPolicyCard() {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiDataPolicy.failedToSave') });
+      setReloadKey((k) => k + 1);
       await load();
     } finally {
       setSaving(false);
@@ -74,6 +78,10 @@ export default function PartnerAiDataPolicyCard() {
   if (!defaults) return null;
   const current = policy?.deviceFileReadLevel ?? '';
   const locked = saving || !canManage;
+  // No row -> Breeze default. Row with NULL -> keep forever (explicit).
+  const stored = policy ? policy.toolOutputRetentionDays : defaults.toolOutputRetentionDays;
+  const keepForever = stored === null;
+  const days = stored ?? defaults.toolOutputRetentionDays ?? 30;
 
   return (
     <div className="mb-6" data-testid="partner-ai-data-policy-card">
@@ -105,22 +113,44 @@ export default function PartnerAiDataPolicyCard() {
         ))}
       </fieldset>
 
-      <label className="mt-6 block max-w-xs">
-        <span className="text-sm font-medium">{t('aiDataPolicy.retentionLabel')}</span>
-        <input type="number" min={1} max={3650} disabled={locked}
-          data-testid="partner-ai-data-policy-retention"
-          key={policy?.toolOutputRetentionDays ?? 'inherit'}
-          defaultValue={policy?.toolOutputRetentionDays ?? ''}
-          placeholder={t('aiDataPolicy.partnerInheritDefault', { value: defaults.toolOutputRetentionDays ?? t('aiDataPolicy.keepForever') })}
-          onBlur={(e) => {
-            const v = e.currentTarget.value.trim();
-            const next = v === '' ? null : Number(v);
-            if (next === (policy?.toolOutputRetentionDays ?? null)) return;
-            void save({ toolOutputRetentionDays: next });
-          }}
-          className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm" />
-        <span className="mt-1 block text-xs text-muted-foreground">{t('aiDataPolicy.retentionHelp')}</span>
-      </label>
+      {/* On a partner row NULL retention means keep forever; the Breeze default
+          (30 days) applies only while no row exists. So the mode is explicit. */}
+      <fieldset className="mt-6" disabled={locked}>
+        <legend className="text-sm font-medium">{t('aiDataPolicy.retentionLabel')}</legend>
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input type="radio" name="partner-ai-data-policy-retention-mode" checked={!keepForever} disabled={locked}
+            data-testid="partner-ai-data-policy-retention-days-mode"
+            onChange={() => void save({ toolOutputRetentionDays: days })} />
+          <span>{t('aiDataPolicy.retentionKeepDays')}</span>
+          <input type="number" min={1} max={3650} step={1} disabled={locked || keepForever}
+            data-testid="partner-ai-data-policy-retention"
+            key={`${stored ?? 'forever'}-${reloadKey}`}
+            defaultValue={keepForever ? '' : days}
+            onBlur={(e) => {
+              const raw = e.currentTarget.value.trim();
+              const n = Number(raw);
+              if (raw === '' || !Number.isInteger(n) || n < 1 || n > 3650) {
+                setReloadKey((k) => k + 1);
+                return;
+              }
+              if (n === days && !keepForever) return;
+              void save({ toolOutputRetentionDays: n });
+            }}
+            className="w-24 rounded-md border bg-background px-2 py-1 text-sm" />
+        </label>
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input type="radio" name="partner-ai-data-policy-retention-mode" checked={keepForever} disabled={locked}
+            data-testid="partner-ai-data-policy-retention-forever"
+            onChange={() => void save({ toolOutputRetentionDays: null })} />
+          <span>{t('aiDataPolicy.retentionKeepForever')}</span>
+        </label>
+        {!policy && (
+          <p className="mt-1 text-xs text-muted-foreground" data-testid="partner-ai-data-policy-retention-default">
+            {t('aiDataPolicy.retentionBreezeDefault', { days: defaults.toolOutputRetentionDays ?? 30 })}
+          </p>
+        )}
+        <p className="mt-1 text-xs text-muted-foreground">{t('aiDataPolicy.partnerRetentionHelp')}</p>
+      </fieldset>
     </div>
   );
 }

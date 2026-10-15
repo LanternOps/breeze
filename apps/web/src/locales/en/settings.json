@@ -112,7 +112,11 @@
     "saved": "AI data policy saved",
     "failedToSave": "Failed to save AI data policy",
     "partnerInheritDefault": "Breeze default: {{value}}",
-    "readOnly": "You do not have permission to change these defaults."
+    "readOnly": "You do not have permission to change these defaults.",
+    "retentionKeepDays": "Keep for (days)",
+    "retentionKeepForever": "Keep forever",
+    "retentionBreezeDefault": "Breeze default: {{days}} days",
+    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run."
   },
   "partnerServicePrincipals": {
     "title": "Service principals",

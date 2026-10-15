@@ -112,7 +112,11 @@
     "saved": "Yapay zeka veri ilkesi kaydedildi",
     "failedToSave": "Yapay zeka veri ilkesi kaydedilemedi",
     "partnerInheritDefault": "Breeze varsayılanı: {{value}}",
-    "readOnly": "Bu varsayılanları değiştirme izniniz yok."
+    "readOnly": "Bu varsayılanları değiştirme izniniz yok.",
+    "retentionKeepDays": "Şu kadar sakla (gün)",
+    "retentionKeepForever": "Süresiz sakla",
+    "retentionBreezeDefault": "Breeze varsayılanı: {{days}} gün",
+    "partnerRetentionHelp": "Yapay zeka araç çıktılarının ne kadar saklanacağını seçin veya süresiz saklayın. Daha eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir."
   },
   "partnerServicePrincipals": {
     "title": "Hizmet sorumluları",

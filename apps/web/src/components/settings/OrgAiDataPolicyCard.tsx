@@ -38,6 +38,9 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
   const [effective, setEffective] = useState<Effective | null>(null);
   const [ceiling, setCeiling] = useState<Effective | null>(null);
   const [saving, setSaving] = useState(false);
+  // Bumped after a failed save so the uncontrolled retention input remounts
+  // with the stored value instead of keeping the rejected number.
+  const [reloadKey, setReloadKey] = useState(0);
 
   const load = async () => {
     try {
@@ -70,6 +73,7 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('aiDataPolicy.failedToSave') });
+      setReloadKey((k) => k + 1);
       await load();
     } finally {
       setSaving(false);
@@ -95,8 +99,11 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
           <input type="radio" name="org-ai-data-policy-level" value="" checked={current === ''} onChange={() => void save({ deviceFileReadLevel: null })} />
           <span data-testid="org-ai-data-policy-level-inherit">
             {t('aiDataPolicy.inherit', {
-              value: levelTexts[effective.deviceFileReadLevel].label,
-              source: sourceLabel(effective.source.deviceFileReadLevel),
+              // Inherit means "clear the org override", so it resolves to the
+              // partner ceiling, not to the current effective value (which an
+              // org-stored tighter level would otherwise misreport).
+              value: levelTexts[ceiling.deviceFileReadLevel].label,
+              source: sourceLabel(ceiling.source.deviceFileReadLevel),
             })}
           </span>
         </label>
@@ -120,7 +127,7 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
         <span className="text-sm font-medium">{t('aiDataPolicy.retentionLabel')}</span>
         <input type="number" min={1} max={ceiling.toolOutputRetentionDays ?? 3650} disabled={saving}
           data-testid="org-ai-data-policy-retention"
-          key={policy?.toolOutputRetentionDays ?? 'inherit'}
+          key={`${policy?.toolOutputRetentionDays ?? 'inherit'}-${reloadKey}`}
           defaultValue={policy?.toolOutputRetentionDays ?? ''}
           placeholder={t('aiDataPolicy.retentionInherit', {
             value: effective.toolOutputRetentionDays ?? t('aiDataPolicy.keepForever'),

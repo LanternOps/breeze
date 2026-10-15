@@ -229,6 +229,20 @@ describe('PUT /', () => {
     expect(writes[0]!.set).toMatchObject({ deviceFileReadLevel: null, toolOutputRetentionDays: null });
   });
 
+  it('seeds the 30-day default on first insert when the body omits retention, without touching it on conflict', async () => {
+    const res = await putReq({ deviceFileReadLevel: 'off' });
+    expect(res.status).toBe(200);
+    expect(writes[0]!.values).toMatchObject({ deviceFileReadLevel: 'off', toolOutputRetentionDays: 30 });
+    expect(writes[0]!.set).not.toHaveProperty('toolOutputRetentionDays');
+  });
+
+  it('an explicit null retention stores NULL (keep forever) in both insert and conflict set', async () => {
+    const res = await putReq({ toolOutputRetentionDays: null });
+    expect(res.status).toBe(200);
+    expect(writes[0]!.values.toolOutputRetentionDays).toBeNull();
+    expect(writes[0]!.set.toolOutputRetentionDays).toBeNull();
+  });
+
   it.each([
     ['retention 0', { toolOutputRetentionDays: 0 }],
     ['retention above 3650', { toolOutputRetentionDays: 3651 }],

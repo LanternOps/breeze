@@ -64,7 +64,17 @@ partnerAiDataPolicyRoutes.put(
     const now = new Date();
     const [row] = await db
       .insert(aiDataPolicies)
-      .values({ partnerId: auth.partnerId, orgId: null, createdBy: auth.user.id, ...body })
+      .values({
+        partnerId: auth.partnerId,
+        orgId: null,
+        createdBy: auth.user.id,
+        // A partner row with NULL retention means keep-forever, so a first save
+        // that omits the key must seed the built-in default rather than NULL.
+        // An explicit null still stores NULL; the conflict `set` below leaves
+        // an existing row's retention alone unless the body carries the key.
+        ...('toolOutputRetentionDays' in body ? {} : { toolOutputRetentionDays: AI_DATA_POLICY_DEFAULTS.toolOutputRetentionDays }),
+        ...body,
+      })
       .onConflictDoUpdate({ target: aiDataPolicies.partnerId, set: { ...body, updatedAt: now } })
       .returning();
     if (!row) return c.json({ error: 'Failed to save AI data policy' }, 500);

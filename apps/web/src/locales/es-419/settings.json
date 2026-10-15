@@ -112,7 +112,11 @@
     "saved": "Política de datos de IA guardada",
     "failedToSave": "No se pudo guardar la política de datos de IA",
     "partnerInheritDefault": "Predeterminado de Breeze: {{value}}",
-    "readOnly": "No tiene permiso para cambiar estos valores predeterminados."
+    "readOnly": "No tiene permiso para cambiar estos valores predeterminados.",
+    "retentionKeepDays": "Conservar durante (días)",
+    "retentionKeepForever": "Conservar siempre",
+    "retentionBreezeDefault": "Predeterminado de Breeze: {{days}} días",
+    "partnerRetentionHelp": "Elija cuánto tiempo se conservan las salidas de las herramientas de IA, o conservarlas siempre. Las salidas más antiguas se reemplazan por un marcador en la ejecución nocturna."
   },
   "partnerServicePrincipals": {
     "title": "Principales de servicio",

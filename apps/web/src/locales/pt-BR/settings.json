@@ -112,7 +112,11 @@
     "saved": "Política de dados de IA salva",
     "failedToSave": "Falha ao salvar a política de dados de IA",
     "partnerInheritDefault": "Padrão do Breeze: {{value}}",
-    "readOnly": "Você não tem permissão para alterar estes padrões."
+    "readOnly": "Você não tem permissão para alterar estes padrões.",
+    "retentionKeepDays": "Manter por (dias)",
+    "retentionKeepForever": "Manter para sempre",
+    "retentionBreezeDefault": "Padrão do Breeze: {{days}} dias",
+    "partnerRetentionHelp": "Escolha por quanto tempo manter as saídas das ferramentas de IA, ou mantenha-as para sempre. Saídas mais antigas são substituídas por um marcador na execução noturna."
   },
   "partnerServicePrincipals": {
     "title": "Entidades de serviço",
