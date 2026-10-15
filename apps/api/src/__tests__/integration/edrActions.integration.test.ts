@@ -1,6 +1,6 @@
 /**
  * EDR W03 (#8167 / epic #8164) — response actions against real Postgres.
- * Migration: 2026-12-28-120000-edr-actions.sql.
+ * Migration: 2026-12-28-150000-edr-actions.sql.
  *
  * Covers the in-flight uniqueness index (one queued/submitted row per target +
  * action), migration replay, and (from A13) cross-tenant insert refusal,
@@ -86,7 +86,7 @@ import { createOrganization, createPartner, createSite, createUser } from './db-
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
-const MIGRATION = new URL('../../../migrations/2026-12-28-120000-edr-actions.sql', import.meta.url);
+const MIGRATION = new URL('../../../migrations/2026-12-28-150000-edr-actions.sql', import.meta.url);
 
 type Row = Record<string, unknown>;
 const admin = () => getTestDb() as typeof db;
