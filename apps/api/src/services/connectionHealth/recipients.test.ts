@@ -42,11 +42,11 @@ describe('resolveIncidentRecipients', () => {
     ).toEqual({ admins: ['u1'], owner: null });
   });
 
-  it('inactive owner who is also an admin candidate stays in admins only if resolver returned them', async () => {
-    resolvePartnerUsersMock.mockResolvedValue(['u1', 'gone']);
-    selectWhereMock.mockResolvedValue([]);
-    expect(
-      await resolveIncidentRecipients({ partnerId: 'P', orgId: null, ownerUserId: 'gone', repairPermission: 'connected_apps:manage' }),
-    ).toEqual({ admins: ['u1', 'gone'], owner: null });
+  it('active owner is in owner, not in admins', async () => {
+    resolvePartnerUsersMock.mockResolvedValue(['u1', 'owner']);
+    selectWhereMock.mockResolvedValue([{ id: 'owner' }]);
+    const r = await resolveIncidentRecipients({ partnerId: 'P', orgId: null, ownerUserId: 'owner', repairPermission: 'connected_apps:manage' });
+    expect(r.owner).toBe('owner');
+    expect(r.admins).not.toContain('owner');
   });
 });

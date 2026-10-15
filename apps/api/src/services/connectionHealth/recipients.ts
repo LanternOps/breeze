@@ -33,5 +33,5 @@ export async function resolveIncidentRecipients(incident: {
     incident.ownerUserId && (await activeUserIds([incident.ownerUserId])).length > 0
       ? incident.ownerUserId
       : null;
-  return { admins: admins.filter((id) => id !== owner), owner };
+  return { admins: admins.filter((id) => id !== incident.ownerUserId), owner };
 }
