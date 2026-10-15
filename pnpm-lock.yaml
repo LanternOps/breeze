@@ -1286,8 +1286,8 @@ importers:
         specifier: 4.13.12
         version: 4.13.12
       mailparser:
-        specifier: ^3.9.31
-        version: 3.9.31
+        specifier: ^3.9.38
+        version: 3.9.38
       re2-wasm:
         specifier: ^1.0.2
         version: 1.0.2
@@ -1302,8 +1302,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/extension-testkit
       '@types/mailparser':
-        specifier: ^3.4.6
-        version: 3.4.6
+        specifier: ^3.9.0
+        version: 3.9.0
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
@@ -5692,8 +5692,8 @@ packages:
   '@types/koa@3.0.3':
     resolution: {integrity: sha512-TdtNEJ7sYSrFQcVuS2ySsVqnq5EyE3oJbnfFJvkC9UtGP4Kpem5KE7r+ivHIbIAQAofSqnlB5D3vkfYO69TQpg==}
 
-  '@types/mailparser@3.4.6':
-    resolution: {integrity: sha512-wVV3cnIKzxTffaPH8iRnddX1zahbYB1ZEoAxyhoBo3TBCBuK6nZ8M8JYO/RhsCuuBVOw/DEN/t/ENbruwlxn6Q==}
+  '@types/mailparser@3.9.0':
+    resolution: {integrity: sha512-YnhrRiRVDiEAphFvd72hKa1n8y2b9Q3rgSQiONZQyhQz67h5g4MZHNApET3XWXVEFdInWtHqDHKEwnyjxU3QVw==}
 
   '@types/mdast@4.0.4':
     resolution: {integrity: sha512-kGaNbPh1k7AFzgpud/gMdvIm5xuECykRR+JnWKQno9TAXVa6WIVCGTPvYGekIDL4uwCZQSYbUxNBSb1aUo79oA==}
@@ -5963,8 +5963,8 @@ packages:
   '@xterm/xterm@6.0.0':
     resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
-  '@zone-eu/mailsplit@5.4.19':
-    resolution: {integrity: sha512-nDWzw+X3tqfwd7DpDThAjg3KqtrNA6bG2gkrf6m2j1JBaGyyKAZzu1TguzB4GEco+HYpXAbXZ7kbl4Sn8H1vXw==}
+  '@zone-eu/mailsplit@5.4.20':
+    resolution: {integrity: sha512-6B2w0zRBWOwbO5h7SL5N/2z1AuNchTP3OT33MObUr4/cz9bWPrZ6KadLKxnSrOZG0AGu7Q03p4X7eQhZHc1u/A==}
 
   abbrev@2.0.0:
     resolution: {integrity: sha512-6/mh1E2u2YgEsCHdY0Yx5oW+61gZU+1vXaoiHHrpKeuRNNgFvS+/jrwHiQhB5apAf5oB7UB7E19ol2R2LKH8hQ==}
@@ -8370,8 +8370,8 @@ packages:
     resolution: {integrity: sha512-ehuGcf94bQXhfagULNXrJdfnWO38v070jxSx/qE87Kjzmu2fU7ro5EFAb+OPituLqgfyuQaym5DlrNydW2sJ9A==}
     engines: {node: '>=12.22.0'}
 
-  ip-address@10.7.3:
-    resolution: {integrity: sha512-A1kdq/tSb5QjvKvAMgIoEvDBIgL7qaqVP/jkvSwYYRZ9iEzvPpopxp2wQfu3SuZRHtpHNxMn8Fs0bS+gf5Xmwg==}
+  ip-address@10.7.4:
+    resolution: {integrity: sha512-DWBMKyeM25D70nrIiTkgQth59/G+naKOTep6huF9j+GmeK3DMD60Zvxg5d5qQnz+38AHgou6ean2LECX+lrKDg==}
     engines: {node: '>= 12'}
 
   ipaddr.js@1.9.1:
@@ -8731,11 +8731,11 @@ packages:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
 
-  libbase64@1.3.1:
-    resolution: {integrity: sha512-1b9LXEjEtXj35YKOR9RqNKBootlb37qbIzmqiw4MsP52cjOsfR6i/AYU1Y8qN4kV2TJQmLJ5aiXn45qI6h+Szw==}
+  libbase64@1.3.2:
+    resolution: {integrity: sha512-fFCoI0ceXhTu/0QiJ6Uf6BV9k7X/8QW2/D4BR1vw3BPrHcIjLbGLH+U7inQ4SeWrfNCOmpGE09Qt4XjSFfus0g==}
 
-  libmime@5.4.6:
-    resolution: {integrity: sha512-Cgx1vHd76GTwDaLNsl0K44CjNFfhkX/1bMcoruoWr8Ugcl0/zMw7x/8NpZERIOcpGyzlQo10tOEw9goGsv2Wlg==}
+  libmime@5.4.7:
+    resolution: {integrity: sha512-r1ENu4wMVSB52AAORwaW4L/MeQJr9rryzHLRpcjud3zcUPWXh1Xkgn+tAqL8oTnRO/LW7y5xxPBE20ta5amtMA==}
 
   libqp@2.1.2:
     resolution: {integrity: sha512-rp+U80tl9Os4K7GnVbPzPRmghPu6eqB8rcF+ontvNAnoga0JhMFG/bkTD/reC8yoznKMgOc5/ttZHJasiWeFPw==}
@@ -9022,8 +9022,8 @@ packages:
   magicast@0.5.5:
     resolution: {integrity: sha512-UicdXN8zQ3JHlxVq+28afMXPr1z7WNY6+7EJnzTdQWkTAlMLF5fNCCKxJHBQwGaNGR11581EiQmQzx73+MvszA==}
 
-  mailparser@3.9.31:
-    resolution: {integrity: sha512-m4G7Dpozc7Qr3Eap80sxZZ6sM79FlpXLCVGJGlRw0swR+iC5QURYytI21TCYc4DK1EXa1kwKIRezDUVEI4XufA==}
+  mailparser@3.9.38:
+    resolution: {integrity: sha512-CeSx2cx6MgFzuFPx2bnyGNmJABiMWvGJbrotOv6Ve47aQhlfCHO7cGd2CJHGVC3klfWjjcJ9itXDOdj2xXZFYg==}
     engines: {node: '>=20.0.0'}
 
   make-dir@4.0.0:
@@ -9567,8 +9567,8 @@ packages:
     resolution: {integrity: sha512-He9XskOFms62SyAKkLu8CcGcYHAo+BSHSsORI8s4PJH8qZgZY4L4lDfvyN0twvmbpyG+eGrxpyBlskj9d9rJ8A==}
     engines: {node: '>=20.0.0'}
 
-  nodemailer@10.0.12:
-    resolution: {integrity: sha512-PQ46oNbNMuH/Sno7B5IWIU9etytwrO0xdTFvWXpIQFRXhBAXtzD48243AS+BCbQQTPD8y3fqUrgLn0tSo77gvg==}
+  nodemailer@10.1.0:
+    resolution: {integrity: sha512-fXW8AulB25aOTuwfRYV6lqHyfz2VM4rr4SGXH03mE7x5znEUpzL5mu6anARUpZN7744Ziwkmr4AxSLPJsBQspg==}
     engines: {node: '>=20.0.0'}
 
   nopt@7.2.1:
@@ -16887,7 +16887,7 @@ snapshots:
       '@types/koa-compose': 3.2.9
       '@types/node': 26.6.5
 
-  '@types/mailparser@3.4.6':
+  '@types/mailparser@3.9.0':
     dependencies:
       '@types/node': 26.6.5
       iconv-lite: 0.6.3
@@ -17263,10 +17263,10 @@ snapshots:
 
   '@xterm/xterm@6.0.0': {}
 
-  '@zone-eu/mailsplit@5.4.19':
+  '@zone-eu/mailsplit@5.4.20':
     dependencies:
-      libbase64: 1.3.1
-      libmime: 5.4.6
+      libbase64: 1.3.2
+      libmime: 5.4.7
       libqp: 2.1.2
 
   abbrev@2.0.0:
@@ -19155,7 +19155,7 @@ snapshots:
     dependencies:
       debug: 4.4.3
       express: 5.3.0
-      ip-address: 10.7.3
+      ip-address: 10.7.4
     transitivePeerDependencies:
       - supports-color
 
@@ -20145,7 +20145,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  ip-address@10.7.3: {}
+  ip-address@10.7.4: {}
 
   ipaddr.js@1.9.1: {}
 
@@ -20524,13 +20524,13 @@ snapshots:
       prelude-ls: 1.2.1
       type-check: 0.4.0
 
-  libbase64@1.3.1: {}
+  libbase64@1.3.2: {}
 
-  libmime@5.4.6:
+  libmime@5.4.7:
     dependencies:
       encoding-japanese: 2.4.0
       iconv-lite: 0.7.3
-      libbase64: 1.3.1
+      libbase64: 1.3.2
       libqp: 2.1.2
 
   libqp@2.1.2: {}
@@ -20763,16 +20763,16 @@ snapshots:
       '@babel/types': 7.29.8
       source-map-js: 1.2.2
 
-  mailparser@3.9.31:
+  mailparser@3.9.38:
     dependencies:
-      '@zone-eu/mailsplit': 5.4.19
+      '@zone-eu/mailsplit': 5.4.20
       encoding-japanese: 2.4.0
       he: 1.2.0
       html-to-text: 10.0.1
       iconv-lite: 0.7.3
-      libmime: 5.4.6
+      libmime: 5.4.7
       linkify-it: 5.0.2
-      nodemailer: 10.0.12
+      nodemailer: 10.1.0
       punycode.js: 2.3.1
       tlds: 1.261.0
 
@@ -21734,7 +21734,7 @@ snapshots:
 
   nodemailer@10.0.10: {}
 
-  nodemailer@10.0.12: {}
+  nodemailer@10.1.0: {}
 
   nopt@7.2.1:
     dependencies:

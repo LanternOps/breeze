@@ -18,14 +18,14 @@
     "@breeze/shared": "workspace:*",
     "drizzle-orm": "0.45.4",
     "hono": "4.13.12",
-    "mailparser": "^3.9.31",
+    "mailparser": "^3.9.38",
     "re2-wasm": "^1.0.2",
     "v9u-smb2": "^1.0.6",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@breeze/extension-testkit": "workspace:*",
-    "@types/mailparser": "^3.4.6",
+    "@types/mailparser": "^3.9.0",
     "@types/node": "^26.6.5",
     "dotenv": "17.4.2",
     "happy-dom": "^20.11.0",
