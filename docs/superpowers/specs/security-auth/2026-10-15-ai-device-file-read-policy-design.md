@@ -110,18 +110,21 @@ cross-request cache.
 
 ### Write gate
 
-Partner row: `canManagePartnerWidePolicies(auth)`. Org row: org admin with
-`settings:manage` for that org. Every change writes an audit row
-`ai.data_policy.updated` with before/after values.
+Partner row: `canManagePartnerWidePolicies(auth)` plus `ai_agents:write` and
+MFA, as `routes/partnerAiScriptPolicy.ts` does. Org row: `ai_agents:write`,
+MFA, and `canMutateOrgWideGovernance(auth)`, as `routes/ai/scriptPolicy.ts`
+does. Every change writes an audit row `ai.data_policy.updated` with the
+submitted values.
 
 ### Settings home (settings rule 9)
 
 - Concept: "AI data & privacy". Configured in **0** places before, **2** after.
-- Partner level: a new "Data & privacy" card on the AI Usage page
-  (`/settings/ai-usage`, already `partnerScopeOnly`). Fields: file read level
-  (radio, with the honest label "Excludes user profile folders" for the
-  default), tool output retention (number, blank = keep forever). Autosave
-  with toast.
+- Partner level: a new "AI data & privacy" card on Partner settings → AI
+  Features (`/settings/partner#ai-features`, a self-saving tab). The AI Usage
+  page is deliberately read-only (#6004), so it is not the home. Fields: file
+  read level (radio, with the honest label "Excludes user profile folders"
+  for the default), tool output retention (number, blank = keep forever).
+  Autosave with toast.
 - Org level: an override card on the org's settings page
   (`/settings/organizations/[id]`), same two fields, blank = inherit, showing
   the inherited value and its source. Options looser than the partner value
