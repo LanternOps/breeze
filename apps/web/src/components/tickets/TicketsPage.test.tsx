@@ -484,6 +484,13 @@ describe('TicketsPage', () => {
       render(<TicketsPage />);
       await screen.findByTestId('ticket-row-tk-healthy');
       expect(screen.getByTestId('tickets-filter-type')).toHaveValue('');
+      // Let the mount settle first (#8880): the row can render before the
+      // auto-select effect writes `#T-2026-0001`. A hashchange fired in that gap
+      // is clobbered by the auto-select's hash write (it still holds the old
+      // type), and jsdom's own async hashchange then resets the filter to "All".
+      // That gap is between a commit and its passive effects, so a real
+      // sidebar click is not expected to hit it; the test must not either.
+      await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001'));
 
       window.location.hash = '#type=incident';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -494,6 +501,11 @@ describe('TicketsPage', () => {
       await waitFor(() => {
         expect(ticketFetchUrls().at(-1)).toContain('ticketType=incident');
       });
+      // The re-run auto-select keeps the type segment in the hash it rewrites,
+      // so the filter survives the selection write.
+      await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&type=incident'));
+      expect(screen.getByTestId('tickets-filter-type')).toHaveValue('incident');
+      expect(ticketFetchUrls().at(-1)).toContain('ticketType=incident');
     });
 
     it('counts as an active filter and clear-filters removes it from the hash', async () => {
