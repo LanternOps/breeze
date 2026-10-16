@@ -86,6 +86,7 @@ import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
 import { useExtensionNavigation } from '../extensions/useExtensionNavigation';
 import '../../lib/i18n';
 import { URL_CHANGE_EVENT } from '../../lib/replaceUrl';
+import { claimSamePageHashClick } from '../../lib/samePageHashClick';
 import { ticketTypeFromHash, type TicketType } from '../tickets/ticketType';
 
 interface SidebarProps {
@@ -944,7 +945,14 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         href={item.href}
         aria-current={isActive ? 'page' : undefined}
         title={narrow && !hovered ? label : undefined}
-        onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
+        onClick={(event) => {
+          if (forMobileOverlay) closeMobileMenu();
+          // `/tickets#type=<t>` while already on /tickets: Astro's router would
+          // pushState it silently (no hashchange), leaving TicketsPage's
+          // useHashState filter stale (#8682 sweep). Cross-page clicks fall
+          // through to the router untouched.
+          claimSamePageHashClick(event, item.href);
+        }}
         className={cn(
           'flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-colors',
           withRecents && 'min-w-0 flex-1',
