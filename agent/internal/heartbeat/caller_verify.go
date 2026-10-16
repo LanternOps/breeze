@@ -117,9 +117,12 @@ func runCallerVerify(req ipc.CallerVerifyRequest, resolve callerVerifyResolver, 
 	// A late-delivered command (#8668) waits only until the verification's
 	// absolute deadline; one already past is never shown and reports a
 	// timeout, exactly as if nobody answered.
-	countdown, show := req.Countdown(time.Now())
+	now := time.Now()
+	countdown, show := req.Countdown(now)
 	if !show {
-		log.Info("caller verification: deadline already passed, not shown", "verificationId", req.VerificationID)
+		// Warn: a device clock well ahead of the API's also lands here.
+		log.Warn("caller verification: deadline already passed, not shown",
+			"verificationId", req.VerificationID, "deadlineAt", req.DeadlineAt, "now", now.UTC().Format(time.RFC3339))
 		return timedOut
 	}
 	timeout := countdown + callerVerifyIPCGrace

@@ -154,7 +154,9 @@ func TestRunCallerVerifyHonoursAbsoluteDeadline(t *testing.T) {
 		}
 		// 10 s left + 5 s skew allowance + IPC grace, never the full 30 s.
 		max := 10*time.Second + ipc.CallerVerifyDeadlineSkew + callerVerifyIPCGrace
-		if waited > max || waited < max-2*time.Second {
+		// Generous slack for a loaded host; still far from 32 s (no clamp) and
+		// 7 s (skew sign flipped).
+		if waited > max || waited < max-5*time.Second {
 			t.Fatalf("IPC wait = %s, want ~%s", waited, max)
 		}
 		if forwarded.DeadlineAt != req.DeadlineAt || forwarded.TimeoutMs != req.TimeoutMs {

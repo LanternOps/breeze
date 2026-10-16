@@ -60,6 +60,7 @@ describe('workstationCommandSchema', () => {
   it.each([
     ['not a timestamp', 'tomorrow'],
     ['date only', '2026-10-16'],
+    ['missing seconds (agent and helper parsers refuse it)', '2026-10-16T12:00Z'],
     ['epoch number', 1_760_000_000_000],
     ['empty', ''],
   ])('rejects a deadlineAt that is %s', (_label, deadlineAt) => {

@@ -61,8 +61,8 @@ const CallerVerifyDeadlineSkew = 5 * time.Second
 // DeadlineAt (plus the skew allowance) when one was sent, so a late-delivered
 // command does not restart a full countdown. It never exceeds TimeoutMs.
 // show is false once the deadline has passed by the allowance or more: the
-// card must not be rendered at all. A missing or unparseable DeadlineAt
-// (Validate refuses the latter) leaves TimeoutMs unchanged.
+// card must not be rendered at all. A missing DeadlineAt leaves TimeoutMs
+// unchanged; an unparseable one (Validate already refuses it) is not shown.
 func (r CallerVerifyRequest) Countdown(now time.Time) (d time.Duration, show bool) {
 	d = time.Duration(r.TimeoutMs) * time.Millisecond
 	if r.DeadlineAt == "" {
@@ -70,7 +70,7 @@ func (r CallerVerifyRequest) Countdown(now time.Time) (d time.Duration, show boo
 	}
 	deadline, err := time.Parse(time.RFC3339, r.DeadlineAt)
 	if err != nil {
-		return d, true
+		return 0, false
 	}
 	if left := deadline.Sub(now) + CallerVerifyDeadlineSkew; left < d {
 		d = left

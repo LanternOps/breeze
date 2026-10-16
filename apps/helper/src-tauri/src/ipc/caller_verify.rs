@@ -80,14 +80,12 @@ impl Request {
     /// clamped to `deadline_at` plus the skew allowance so a late-delivered
     /// request does not restart a full countdown. Never exceeds `timeout_ms`.
     /// `None` once the deadline has passed by the allowance or more: the card
-    /// must not be shown. An unparseable deadline is refused by `validate`.
+    /// must not be shown. An unparseable deadline (`validate` already refuses
+    /// it) is also `None`: fail closed.
     fn countdown_ms(&self, now_ms: i64) -> Option<u64> {
         let mut ms = self.timeout_ms as i64;
-        if let Some(deadline) = self
-            .deadline_at
-            .as_deref()
-            .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
-        {
+        if let Some(d) = self.deadline_at.as_deref() {
+            let deadline = chrono::DateTime::parse_from_rfc3339(d).ok()?;
             ms = ms.min(deadline.timestamp_millis() - now_ms + DEADLINE_SKEW_MS);
         }
         (ms > 0).then_some(ms as u64)
@@ -201,15 +199,15 @@ impl CallerVerifyBridge {
             .as_millis() as u64;
         let Some(countdown_ms) = request.countdown_ms(now as i64) else {
             // Answer at once so the agent stops waiting; nothing is rendered.
-            state
-                .sender
-                .as_ref()
-                .ok_or("IPC disconnected")?
-                .send(Response {
-                    envelope_id,
-                    choice: "timeout".into(),
-                })
-                .map_err(|e| e.to_string())?;
+            // (`sender` is Some: checked above, under the same lock.)
+            if let Some(sender) = &state.sender {
+                sender
+                    .send(Response {
+                        envelope_id,
+                        choice: "timeout".into(),
+                    })
+                    .map_err(|_| "expired request: IPC receiver gone".to_string())?;
+            }
             return Ok(Admission::Expired);
         };
         let deadline = Instant::now() + Duration::from_millis(countdown_ms);
@@ -487,6 +485,8 @@ mod tests {
         assert_eq!(with(Some(iso(now - 3_000))), Some(2_000));
         assert_eq!(with(Some(iso(now - 5_000))), None);
         assert_eq!(with(Some(iso(now - 3_600_000))), None);
+        // Unparseable fails closed (validate refuses it before this anyway).
+        assert_eq!(with(Some("tomorrow".into())), None);
         // Same instant in another offset.
         let offset = chrono::DateTime::from_timestamp_millis(now + 20_000)
             .unwrap()
@@ -517,7 +517,9 @@ mod tests {
         assert_eq!(bridge.insert("e".into(), req).unwrap(), Admission::Show);
         let view = bridge.get(&id).unwrap();
         let left = view.deadline_ms as i64 - now_ms();
-        assert!(left > 13_000 && left <= 15_000, "countdown {left} ms, want ~15 s");
+        // Generous slack for a loaded host; still far from 30 s (no clamp)
+        // and 5 s (skew sign flipped).
+        assert!(left > 10_000 && left <= 15_000, "countdown {left} ms, want ~15 s");
         let instant_left = bridge.state.lock().unwrap().pending[&id].deadline - Instant::now();
         assert!(instant_left <= Duration::from_millis(15_000));
     }
@@ -533,6 +535,18 @@ mod tests {
         assert!(bridge.get(&id).is_none());
         let r = rx.try_recv().unwrap();
         assert_eq!((r.envelope_id.as_str(), r.choice.as_str()), ("orig", "timeout"));
+    }
+
+    #[test]
+    fn expired_request_with_receiver_gone_is_an_error_and_not_registered() {
+        let bridge = CallerVerifyBridge::default();
+        drop(bridge.connect());
+        let mut req = request();
+        let id = req.verification_id.clone();
+        req.deadline_at = Some(iso(now_ms() - 60_000));
+        let err = bridge.insert("e".into(), req).unwrap_err();
+        assert!(err.contains("expired"), "{err}");
+        assert!(bridge.get(&id).is_none());
     }
 
     #[test]

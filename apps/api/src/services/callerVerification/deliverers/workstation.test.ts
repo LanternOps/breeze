@@ -210,6 +210,15 @@ describe('deliverWorkstation', () => {
     expect(m.contexts[0]).toBe('outside');
   });
 
+  it('pushes a stored payload that carries the absolute deadline unchanged (#8668)', async () => {
+    const withDeadline = { ...loaded, payload: { ...payload, deadlineAt: '2026-10-16T12:02:00.000Z' } };
+    state.results.push([withDeadline]);
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt });
+    m.dispatch.mockResolvedValue({ status: 'sent', via: 'local' });
+    await deliverWorkstation(ID);
+    expect(m.dispatch).toHaveBeenCalledWith('agent-1', { id: CMD, type: 'caller_verify', payload: withDeadline.payload });
+  });
+
   it.each(['held', 'not_claimable', 'cancelled'])('never pushes a %s claim', async (status) => {
     state.results.push([loaded]);
     m.claim.mockResolvedValue({ status, id: CMD });

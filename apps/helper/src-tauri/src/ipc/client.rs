@@ -467,7 +467,7 @@ where
                                     Ok(super::caller_verify::Admission::Expired) => {
                                         eprintln!("[helper] caller_verify_request past its deadline; not shown");
                                     }
-                                    Err(_) => eprintln!("[helper] caller_verify_request rejected"),
+                                    Err(e) => eprintln!("[helper] caller_verify_request rejected: {}", e),
                                 }
                             }
                         }

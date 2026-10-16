@@ -45,7 +45,10 @@ export const workstationCommandSchema = z.object({
   reverseCode: z.string().regex(/^\d{4}$/),
   choices: z.tuple([numberChoice, numberChoice, numberChoice]),
   timeoutMs: z.number().int().min(WORKSTATION_TIMEOUT_MIN_MS).max(WORKSTATION_TIMEOUT_MAX_MS),
-  deadlineAt: z.string().datetime({ offset: true }).optional(),
+  // Seconds required: Go's time.RFC3339 and chrono's RFC 3339 parsers refuse
+  // `HH:mmZ`, which zod's datetime alone would accept, and the agent then
+  // refuses the whole command.
+  deadlineAt: z.string().datetime({ offset: true }).regex(/T\d{2}:\d{2}:\d{2}/).optional(),
 }).strict().refine((value) => new Set(value.choices).size === 3, { message: 'choices must be distinct' });
 
 export type WorkstationCommand = z.infer<typeof workstationCommandSchema>;

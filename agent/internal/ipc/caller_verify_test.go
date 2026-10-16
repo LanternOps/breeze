@@ -147,6 +147,7 @@ func TestCallerVerifyCountdown(t *testing.T) {
 		{name: "just past, within skew allowance", deadline: at(-3 * time.Second), want: 2 * time.Second, show: true},
 		{name: "past by exactly the allowance", deadline: at(-CallerVerifyDeadlineSkew), want: 0, show: false},
 		{name: "long past", deadline: at(-time.Hour), want: 0, show: false},
+		{name: "unparseable fails closed", deadline: "tomorrow", want: 0, show: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := validCallerVerifyRequest()
