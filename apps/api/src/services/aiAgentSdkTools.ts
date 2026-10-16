@@ -210,6 +210,7 @@ export const TOOL_TIERS = {
   get_edr_status: 1,
   list_edr_detections: 1,
   s1_isolate_device: 3,
+  edr_endpoint_action: 3,
   s1_threat_action: 3,
   sync_huntress_data: 2,
   execute_command: 3,
@@ -1818,6 +1819,18 @@ export function buildBreezeSdkTools(
     ),
 
     tool(
+      'edr_endpoint_action',
+      registryDescription('edr_endpoint_action'),
+      {
+        deviceId: uuid,
+        action: z.enum(['isolate', 'unisolate', 'scan']),
+        connectionId: uuid.optional(),
+        reason: z.string().max(500).optional(),
+      },
+      makeHandler('edr_endpoint_action', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       's1_isolate_device',
       registryDescription('s1_isolate_device'),
       {
@@ -2217,7 +2230,7 @@ export function buildBreezeSdkTools(
       registryDescription('network_discovery'),
       {
         deviceId: uuid,
-        subnet: z.string().max(50).optional(),
+        subnet: z.string().max(50).regex(/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/, 'Invalid CIDR notation'),
         scanType: z.enum(['ping', 'arp', 'full']).optional(),
       },
       makeHandler('network_discovery', getAuth, onPreToolUse, onPostToolUse)

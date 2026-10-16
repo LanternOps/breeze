@@ -2149,7 +2149,7 @@
     "severity": {
       "critical": "Critico",
       "error": "Errore",
-      "info": "Info",
+      "info": "Informazione",
       "warning": "Avviso"
     },
     "showOffenders": "Mostra servizi e componenti problematici",
@@ -2364,9 +2364,13 @@
     "updatesAvailable_other": "{{count}} aggiornamenti disponibili"
   },
   "deviceUserIdleStat": {
+    "active": "Attivo",
+    "asOf": "alle {{time}}",
     "label": "Inattività utente",
+    "locked": "Bloccato",
     "retryAria": "Impossibile caricare lo stato di inattività — riprova",
-    "retryTitle": "Impossibile caricare lo stato di inattività — fai clic per riprovare"
+    "retryTitle": "Impossibile caricare lo stato di inattività — fai clic per riprovare",
+    "unknown": "Sconosciuto"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {
@@ -4145,7 +4149,7 @@
       "high": "Alta",
       "medium": "Media",
       "low": "Bassa",
-      "info": "Info",
+      "info": "Informazione",
       "unknown": "Sconosciuta"
     },
     "detectionStatus": {
@@ -4156,6 +4160,84 @@
       "false_positive": "Falso positivo",
       "dismissed": "Ignorato",
       "unknown": "Sconosciuto"
+    }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Invia messaggio agli utenti",
+    "sendAction": "Invia messaggio",
+    "fields": {
+      "title": "Titolo",
+      "body": "Messaggio",
+      "severity": "Gravità",
+      "requiresAck": "Richiedi conferma di lettura",
+      "expiry": "Scade"
+    },
+    "severity": {
+      "info": "Informazione",
+      "warning": "Avviso",
+      "critical": "Critico"
+    },
+    "expiry": {
+      "h1": "1 ora",
+      "h4": "4 ore",
+      "h24": "24 ore",
+      "h72": "72 ore",
+      "untilClosed": "Fino alla chiusura (max 7 giorni)"
+    },
+    "preview": {
+      "heading": "Anteprima",
+      "sender": "Dalla tua azienda",
+      "footer": "Inviato dal tuo fornitore IT",
+      "acknowledge": "Conferma"
+    },
+    "recipients": "Destinatari: {{count}} dispositivi",
+    "columns": {
+      "device": "Dispositivo",
+      "delivery": "Consegna"
+    },
+    "capability": {
+      "assist_card": "Scheda Assist (sessione console) o notifica nativa di riserva",
+      "native": "Notifica nativa",
+      "unsupported": "Versione agente non supportata - non verrà consegnato"
+    },
+    "confirm": {
+      "text": "Questo messaggio verrà inviato a {{count}} dispositivi. Controlla la scheda esatta qui sotto.",
+      "send": "Invia a {{count}} dispositivi"
+    },
+    "result": {
+      "summary": "{{queued}} in coda, {{failed}} non riusciti",
+      "queued": "In coda",
+      "failed": "Non riuscito"
+    },
+    "actions": {
+      "send": "Invia messaggio",
+      "sending": "Invio...",
+      "cancel": "Annulla",
+      "back": "Indietro",
+      "close": "Chiudi"
+    },
+    "errors": {
+      "send_failed": "Impossibile inviare il messaggio. Riprova.",
+      "agent_unsupported": "L'agente su questo dispositivo non supporta ancora i messaggi.",
+      "no_permission": "Non hai l'autorizzazione per inviare messaggi a questo dispositivo.",
+      "offline_rejected": "Il dispositivo è offline e il messaggio non è stato messo in coda.",
+      "rate_limited": "Troppi messaggi inviati di recente. Riprova più tardi.",
+      "cap_exceeded": "Questo invio supera il limite consentito.",
+      "feature_disabled": "I messaggi agli endpoint non sono abilitati per questa organizzazione.",
+      "queue_failed": "Impossibile mettere in coda il messaggio per questo dispositivo.",
+      "in_progress": "Questo messaggio è già in corso di invio. Attendi un momento, poi controlla il risultato.",
+      "unavailable": "L'invio dei messaggi è temporaneamente non disponibile. Riprova tra poco.",
+      "no_devices_resolved": "Nessun dispositivo corrisponde a questa selezione.",
+      "idempotency_conflict": "Questo ID messaggio è già stato usato per un messaggio diverso. Modifica il messaggio e invialo di nuovo."
+    },
+    "issues": {
+      "html": "L'HTML non è consentito nel corpo del messaggio.",
+      "images": "Le immagini non sono consentite nel corpo del messaggio.",
+      "httpsLinks": "I link nel corpo del messaggio devono usare https.",
+      "referenceLinks": "I link di riferimento non sono consentiti. Usa invece link inline.",
+      "titleHtml": "L'HTML non è consentito nel titolo.",
+      "titleLinks": "I link non sono consentiti nel titolo.",
+      "invalid": "Il messaggio contiene contenuti non consentiti."
     }
   }
 }

@@ -35,6 +35,8 @@ vi.mock('../../middleware/auth', () => ({
   },
   requirePermission: (resource: string, action: string) => async (c: any, next: any) => {
     if (!permRef.granted.has(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
+    // The real middleware stores the caller's resolved grants for later checks.
+    c.set('permissions', { permissions: [...permRef.granted].map((g) => { const [r, a] = g.split(':'); return { resource: r, action: a }; }) });
     await next();
   },
 }));
@@ -89,10 +91,20 @@ describe('GET /tickets/:id/links', () => {
     const res = await app().request(`/tickets/${T1}/links`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: [{ id: L1 }] });
-    expect(svc.listTicketLinks).toHaveBeenCalledWith(T1, { counterpartFilter: 'SITE_SCOPE_SQL' });
+    expect(svc.listTicketLinks).toHaveBeenCalledWith(T1, { counterpartFilter: 'SITE_SCOPE_SQL', canManage: false });
 
     permRef.granted = new Set(['tickets:write']);
     expect((await app().request(`/tickets/${T1}/links`)).status).toBe(403);
+  });
+
+  it('#8747: only a caller holding tickets:manage is told to reveal a trashed ticket subject', async () => {
+    svc.listTicketLinks.mockResolvedValue([]);
+    await app().request(`/tickets/${T1}/links`);
+    expect(svc.listTicketLinks.mock.calls[0]![1].canManage).toBe(false);
+
+    permRef.granted = new Set(['tickets:read', 'tickets:manage']);
+    await app().request(`/tickets/${T1}/links`);
+    expect(svc.listTicketLinks.mock.calls[1]![1].canManage).toBe(true);
   });
 
   it('a device-bound caller (allowedDeviceIds) also gets the exact-device axis on counterparts', async () => {

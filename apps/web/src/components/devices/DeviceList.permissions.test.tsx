@@ -72,3 +72,27 @@ describe('DeviceList — Remote terminal is gated on remote:access', () => {
     expect(screen.getByRole('button', { name: /remote terminal/i })).toBeTruthy();
   });
 });
+
+describe('DeviceList — bulk Send message is gated on endpoint_messages:send', () => {
+  beforeEach(() => granted.clear());
+  const online: Device = { ...offline, status: 'online' };
+
+  const openBulk = () => {
+    fireEvent.click(screen.getByLabelText('Select all devices on this page'));
+    fireEvent.click(screen.getByRole('button', { name: /bulk actions/i }));
+  };
+
+  it('hides the bulk Send message item without the permission (other items still render)', () => {
+    render(<DeviceList devices={[online]} pageSize={50} />);
+    openBulk();
+    expect(screen.getByTestId('bulk-actions-menu')).toBeTruthy();
+    expect(screen.queryByTestId('bulk-send-message')).toBeNull();
+  });
+
+  it('shows the bulk Send message item with the permission', () => {
+    granted.add('endpoint_messages:send');
+    render(<DeviceList devices={[online]} pageSize={50} />);
+    openBulk();
+    expect(screen.getByTestId('bulk-send-message')).toBeTruthy();
+  });
+});

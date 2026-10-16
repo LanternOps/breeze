@@ -42,6 +42,9 @@ const TARGET_GLOBS = [
   'src/components/backup/VaultDashboard.tsx',
   'src/components/backup/VaultConfigDialog.tsx',
   'src/components/settings/TicketPushoverSettings.tsx',
+  // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
+  'src/lib/endpointMessages.ts',
+  'src/components/endpointMessages/SendMessageDialog.tsx',
   'src/components/devices/DeviceSettingsModal.tsx', // device tags/name/site PATCH via runAction (success toast)
   'src/components/billing/PaymentsSettingsTab.tsx',
   'src/components/billing/autopayClient.ts',
@@ -922,7 +925,8 @@ describe('no silent mutations in targeted set', () => {
     // #8385 adds backup/VaultDashboard.tsx and backup/VaultConfigDialog.tsx: 223 → 225.
     // Caller verification W04 (#6354) adds lib/api/callerVerification.ts and
     // callerVerification/{VerifyCallerModal,ContactVerificationDrawer,CallerVerificationPolicyForm}.tsx: 225 → 229.
-    expect(absoluteFiles.length).toBe(229);
+    // Endpoint messaging W1 (#8741) adds lib/endpointMessages.ts and endpointMessages/SendMessageDialog.tsx: 229 → 231.
+    expect(absoluteFiles.length).toBe(231);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

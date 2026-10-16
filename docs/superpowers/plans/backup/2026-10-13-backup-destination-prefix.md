@@ -1,6 +1,7 @@
 ---
 issue: LanternOps/breeze#7081
 status: plan-drafted
+tracking_issue: LanternOps/breeze#8730
 ---
 
 # Backup Destination Prefix Applied to S3 Snapshot Keys — Implementation Plan
@@ -803,6 +804,8 @@ Advisor quorum: Fable's position, then an independent `codex exec` review (read-
 - the AI tools' `resolveS3ProviderConfig` and the bucket-root capability probe as missed sites.
 
 It also corrected one factual premise: BMR bootstrap already forces token mode, so W03 Task 2 is now a defensive guard.
+
+**Owner approved all recommendations 2026-10-13.**
 
 ## Self-review notes
 

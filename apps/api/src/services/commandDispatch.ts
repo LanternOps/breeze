@@ -308,6 +308,7 @@ export async function claimPendingCommandsForDevice(
     peripheralPolicyProtocolVersion?: number;
     rollbackProtocolVersion?: number;
     pamLifetimeProtocolVersion?: number;
+    pamReconciliationResetProtocolVersion?: number;
   },
 ): Promise<DeviceCommandRow[]> {
   // Only HTTP delivery paths (heartbeat responses) claim batches; the agent
@@ -358,6 +359,11 @@ export async function claimPendingCommandsForDevice(
     }
     if (targetRole === 'agent' && capabilities?.pamLifetimeProtocolVersion !== 2) {
       unsupportedProtocolTypes.push('pam_apply_v2', 'pam_cleanup_v2');
+    }
+    // Recovery must remain deliverable while the normal PAM capability is 0,
+    // but only builds implementing the evidence-preserving reset may claim it.
+    if (targetRole === 'agent' && capabilities?.pamReconciliationResetProtocolVersion !== 1) {
+      unsupportedProtocolTypes.push('pam_reconcile_v2');
     }
 
     // A device parked in a holding org is claimed under the removal allowlist

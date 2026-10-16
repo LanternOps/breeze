@@ -8,11 +8,17 @@ describe('capabilitySnapshot', () => {
       'tenants:partner',
       'detections:poll',
       'installer:none',
+      'action:isolate',
+      'action:unisolate',
+      'action:scan',
       'note:quarantine: API not enabled on key',
     ]);
   });
 
   it('no notes -> keys only', () => {
-    expect(capabilitySnapshot(bitdefenderAdapter, [])).toEqual(['tenants:partner', 'detections:poll', 'installer:none']);
+    expect(capabilitySnapshot(bitdefenderAdapter, [])).toEqual([
+      'tenants:partner', 'detections:poll', 'installer:none',
+      'action:isolate', 'action:unisolate', 'action:scan',
+    ]);
   });
 });

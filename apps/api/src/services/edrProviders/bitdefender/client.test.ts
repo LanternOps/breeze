@@ -410,3 +410,134 @@ describe('GravityZoneClient secret hygiene', () => {
     }
   });
 });
+
+describe('GravityZoneClient write calls', () => {
+  const ACT = '7f0c0000-0000-4000-8000-00000000a001';
+
+  it('never retries a write on 502 (the vendor may have accepted it)', async () => {
+    const { impl, calls } = makeFetch([{ status: 502, body: '<html>bad gateway</html>' }]);
+    const { client, sleep } = makeClient(impl);
+    const err = await rejection(client.createIsolateEndpointTask('ep1', ACT));
+    expect(err).toMatchObject({ code: 'outcome_unknown', scope: 'operation', reauth: false });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('never retries a write on a network error', async () => {
+    const impl: GuardedFetch = vi.fn(async () => { throw new Error(`socket hang up ${API_KEY}`); });
+    const { client, sleep } = makeClient(impl);
+    const err = await rejection(client.createScanTask('ep1', ACT));
+    expect(err).toMatchObject({ code: 'outcome_unknown', scope: 'operation', reauth: false });
+    expect(err.message).not.toContain(API_KEY);
+    expect(impl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('never retries a write on a non-JSON 2xx', async () => {
+    const { impl, calls } = makeFetch([{ body: '<html>ok?</html>' }]);
+    const { client, sleep } = makeClient(impl);
+    await expect(client.createRestoreEndpointFromIsolationTask('ep1', ACT)).rejects.toMatchObject({ code: 'outcome_unknown' });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('uses the action id as the JSON-RPC id and the right service, method and endpointId', async () => {
+    const a = makeFetch([{ body: fx('action-isolate-ok.json') }]);
+    const b = makeFetch([{ body: fx('action-restore-ok.json') }]);
+    const c = makeFetch([{ body: fx('action-scan-ok.json') }]);
+    await makeClient(a.impl).client.createIsolateEndpointTask('ep1', ACT);
+    await makeClient(b.impl).client.createRestoreEndpointFromIsolationTask('ep1', ACT);
+    await makeClient(c.impl).client.createScanTask('ep1', ACT);
+    expect(a.calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/incidents`);
+    expect(a.calls[0]!.body).toMatchObject({ id: ACT, method: 'createIsolateEndpointTask', params: { endpointId: 'ep1' } });
+    expect(b.calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/incidents`);
+    expect(b.calls[0]!.body).toMatchObject({ id: ACT, method: 'createRestoreEndpointFromIsolationTask', params: { endpointId: 'ep1' } });
+    expect(c.calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/network`);
+    expect(c.calls[0]!.body).toMatchObject({ id: ACT, method: 'createScanTask', params: { targetIds: ['ep1'] } });
+  });
+
+  it('acquires the actions operation class', async () => {
+    const { impl } = makeFetch([{ body: fx('action-isolate-ok.json') }]);
+    const { client, limiter } = makeClient(impl);
+    await client.createIsolateEndpointTask('ep1', ACT);
+    expect(limiter.acquire).toHaveBeenCalledWith('actions');
+  });
+
+  it('a licence error on isolate is code licence, scope operation (classifier output), not reauth', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('error-licence-isolate.json') }]);
+    const err = await rejection(makeClient(impl).client.createIsolateEndpointTask('ep1', ACT));
+    expect(err).toMatchObject({ code: 'licence', scope: 'operation', reauth: false });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('429 on a write is rate_limited without sleeping (nothing was accepted)', async () => {
+    const { impl, calls } = makeFetch([{ status: 429, body: fx('error-429-nginx.html'), headers: { 'retry-after': '30' } }]);
+    const { client, sleep } = makeClient(impl);
+    await expect(client.createIsolateEndpointTask('ep1', ACT)).rejects.toMatchObject({ code: 'rate_limited' });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('JSON-RPC -32003 on a write is rate_limited without sleeping', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('error-too-many-32003.json') }]);
+    const { client, sleep } = makeClient(impl);
+    await expect(client.createScanTask('ep1', ACT)).rejects.toMatchObject({ code: 'rate_limited' });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('normalizes isolate/restore boolean true to accepted', async () => {
+    const a = makeFetch([{ body: fx('action-isolate-ok.json') }]);
+    const b = makeFetch([{ body: fx('action-restore-ok.json') }]);
+    expect(await makeClient(a.impl).client.createIsolateEndpointTask('ep1', ACT)).toEqual({ kind: 'accepted' });
+    expect(await makeClient(b.impl).client.createRestoreEndpointFromIsolationTask('ep1', ACT)).toEqual({ kind: 'accepted' });
+  });
+
+  it('normalizes the scan result shapes: task-id array, string id, boolean true', async () => {
+    const arr = makeFetch([{ body: fx('action-scan-ok.json') }]);
+    expect(await makeClient(arr.impl).client.createScanTask('ep1', ACT)).toEqual({ kind: 'task', taskId: '6a0000000000000000000b01' });
+    const str = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: '6a0000000000000000000b02' }) }]);
+    expect(await makeClient(str.impl).client.createScanTask('ep1', ACT)).toEqual({ kind: 'task', taskId: '6a0000000000000000000b02' });
+    const bool = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: true }) }]);
+    expect(await makeClient(bool.impl).client.createScanTask('ep1', ACT)).toEqual({ kind: 'accepted' });
+  });
+
+  it('an uninterpretable 2xx result is outcome_unknown (the vendor may have acted)', async () => {
+    for (const result of [false, null, {}, [], [1], '']) {
+      const { impl } = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result }) }]);
+      await expect(makeClient(impl).client.createIsolateEndpointTask('ep1', ACT)).rejects.toMatchObject({ code: 'outcome_unknown' });
+    }
+  });
+
+  it('read calls still retry (retry defaults to true)', async () => {
+    const { impl, calls } = makeFetch([{ status: 502, body: 'x' }, { body: fx('endpoint-details.json') }]);
+    const { client, sleep } = makeClient(impl);
+    await client.getEndpointDetails('ep1');
+    expect(calls).toHaveLength(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GravityZoneClient getScanTaskStatus', () => {
+  it('reads network.getScanTasksList filtered by task id and maps the status code', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('action-scan-task-status.json') }]);
+    expect(await makeClient(impl).client.getScanTaskStatus('6a0000000000000000000b01')).toBe('finished');
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/network`);
+    expect(calls[0]!.body.method).toBe('getScanTasksList');
+    expect(calls[0]!.body.params).toMatchObject({ taskId: '6a0000000000000000000b01' });
+  });
+
+  it.each([[1, 'pending'], [2, 'in_progress'], [3, 'finished'], [4, 'failed'], [99, 'unknown']])(
+    'status code %s -> %s', async (code, expected) => {
+      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { items: [{ id: 't1', status: code }] } });
+      expect(await makeClient(makeFetch([{ body }]).impl).client.getScanTaskStatus('t1')).toBe(expected);
+    },
+  );
+
+  it('absent task / missing status -> unknown', async () => {
+    for (const result of [{ items: [] }, { items: [{ id: 't1' }] }, { items: [{ id: 'other', status: 3 }] }, null]) {
+      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, result });
+      expect(await makeClient(makeFetch([{ body }]).impl).client.getScanTaskStatus('t1')).toBe('unknown');
+    }
+  });
+});

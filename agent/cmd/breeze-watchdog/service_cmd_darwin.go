@@ -252,9 +252,10 @@ func restartWatchdogService() error {
 	return nil
 }
 
-// agentBinaryPath returns the platform-specific agent binary path.
+// agentBinaryPath returns the agent binary the .pkg installed:
+// /Library/Breeze/bin when it holds the agent, else /usr/local/bin (#8778).
 func agentBinaryPath() string {
-	return "/usr/local/bin/breeze-agent"
+	return installedAgentPath(securefs.TrustedExecutableDir, "/usr/local/bin")
 }
 
 func isWatchdogLoaded() bool {

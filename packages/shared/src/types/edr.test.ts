@@ -65,3 +65,18 @@ describe('EDR normalized tuples', () => {
     for (const v of set) expect(v).toMatch(/^[a-z_]+$/);
   });
 });
+
+describe('EDR action partition (W03)', () => {
+  it('endpoint + detection action sets partition EDR_ACTIONS exactly', async () => {
+    const { EDR_ENDPOINT_ACTIONS, EDR_DETECTION_ACTIONS } = await import('./edr');
+    const union = [...EDR_ENDPOINT_ACTIONS, ...EDR_DETECTION_ACTIONS];
+    expect(new Set(union).size).toBe(union.length);
+    expect([...union].sort()).toEqual([...EDR_ACTIONS].sort());
+  });
+
+  it('is exported from the shared barrel', async () => {
+    const barrel = await import('../index');
+    expect(barrel.EDR_ENDPOINT_ACTIONS).toBeDefined();
+    expect(barrel.EDR_DETECTION_ACTIONS).toBeDefined();
+  });
+});

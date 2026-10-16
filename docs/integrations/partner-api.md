@@ -589,7 +589,11 @@ Each feed item is one of two shapes:
   snapshot taken at creation), `tags`, `externalTicketId` /
   `externalTicketUrl` (this principal's ref), SLA targets and stamps,
   `source`, `workKind`, `ticketType` (`incident` | `service_request` |
-  `problem` | `change`), `changeVersion` and `revision`. Free text
+  `problem` | `change`), `migrationWindowId`, `changeVersion` and
+  `revision`. `migrationWindowId` is the migration window that imported the
+  ticket from another helpdesk, and null for a ticket created in Breeze: a
+  mirror that feeds a helpdesk skips imported rows with it, so an import is
+  never pushed back into its own source. Free text
   (`description`, `resolutionNote`, `pendingReason`) is capped at 12,000
   characters with a trailing `…`. Raw `custom_fields`, `field_provenance`,
   attachments and time entries are not exported.
@@ -620,7 +624,11 @@ Guarantees and limits, in addition to the alerts feed's:
 - Comments carry `originPrincipalKind` (`user`, `ai_agent`, `system`,
   `service_principal`) and `originPrincipalId`: compare the latter to your
   own principal id to skip exactly the comments your integration wrote, even
-  when several integrations share one partner. An edited comment carries
+  when several integrations share one partner. An imported comment also
+  carries `migrationWindowId` and `originalAuthor` (`{ name, email, kind }`,
+  `kind` being `staff` or `requester`): who wrote it in the source helpdesk,
+  for display only. It keeps the source's `createdAt`, so it can appear
+  before comments you already hold; the re-read below picks it up. An edited comment carries
   `editedAt` and a changed `revision`; a deleted one is returned in its
   creation-order slot as `{ id, ticketId, orgId, removed: true, deletedAt,
   createdAt }` with no content. Re-read the (bounded) list **without `since`**

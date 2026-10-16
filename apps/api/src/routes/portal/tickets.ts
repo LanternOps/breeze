@@ -369,6 +369,10 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       // to label the two apart instead of showing the IT team's reply back to
       // the customer as their own.
       senderPortalUserId: ticketComments.portalUserId,
+      // #8313: an imported comment's original author kind. A requester's
+      // reply imported from another desk has no portal login, so this is
+      // the only signal that the customer wrote it.
+      originalAuthorKind: ticketComments.originalAuthorKind,
       content: ticketComments.content,
       createdAt: ticketComments.createdAt
     })

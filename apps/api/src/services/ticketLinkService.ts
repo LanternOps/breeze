@@ -75,7 +75,11 @@ export interface TicketLinkView {
   other: {
     id: string;
     ticketNumber: string;
-    subject: string;
+    /**
+     * null only for a trashed counterpart the caller may not manage (#8747):
+     * the number and the `deleted` flag stay, the subject does not.
+     */
+    subject: string | null;
     status: (typeof tickets.$inferSelect)['status'];
     ticketType: (typeof tickets.$inferSelect)['ticketType'];
     /**
@@ -107,7 +111,7 @@ function canonical(sourceId: string, targetId: string, linkType: TicketLinkType)
  */
 export async function listTicketLinks(
   ticketId: string,
-  opts: { counterpartFilter?: SQL } = {},
+  opts: { counterpartFilter?: SQL; canManage?: boolean } = {},
 ): Promise<TicketLinkView[]> {
   const counterpartId = sql`CASE WHEN ${ticketLinks.sourceTicketId} = ${ticketId}::uuid THEN ${ticketLinks.targetTicketId} ELSE ${ticketLinks.sourceTicketId} END`;
   const rows = await db
@@ -131,7 +135,7 @@ export async function listTicketLinks(
       opts.counterpartFilter,
     ))
     .orderBy(asc(ticketLinks.createdAt), asc(ticketLinks.id));
-  return rows.map((r) => {
+  return redactTrashedSubjects(rows.map((r) => {
     const direction = r.sourceTicketId === ticketId ? 'outgoing' as const : 'incoming' as const;
     return {
       id: r.id,
@@ -148,7 +152,18 @@ export async function listTicketLinks(
       },
       createdAt: r.createdAt.toISOString(),
     };
-  });
+  }), opts.canManage === true);
+}
+
+/**
+ * #8747: a trashed ticket's subject is for people who can manage tickets (the
+ * grant that restores it). Everyone else sees the number and the deleted flag
+ * only. Shared by the REST route and the `list_links` AI action, which both
+ * go through listTicketLinks; `canManage` defaults to false there.
+ */
+export function redactTrashedSubjects(links: TicketLinkView[], canManage: boolean): TicketLinkView[] {
+  if (canManage) return links;
+  return links.map((l) => (l.other.deleted ? { ...l, other: { ...l.other, subject: null } } : l));
 }
 
 /**

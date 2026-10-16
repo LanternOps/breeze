@@ -27,9 +27,21 @@ export function createEdrRateLimiter(o: {
   operationBudgets?: EdrCapabilities['operationBudgets'];
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Share of the credential-wide windows held back for response actions
+   * (spec §4.4, W03). Applies only when the adapter declares an `actions`
+   * operation class: every other class is admitted while usage is below
+   * `floor(limit * (1 - reserve))` (never below 1); `actions` may use the full
+   * limit. The `actions` class's own window caps actions, so they cannot
+   * starve polling either (the polling floor).
+   */
+  actionReserveFraction?: number;
 }): EdrRateLimiter {
   const maxWaitMs = o.maxWaitMs ?? 60_000;
   const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const reserve = o.operationBudgets?.actions ? (o.actionReserveFraction ?? 0.2) : 0;
+  const sharedLimit = (limit: number, operationClass: string | undefined): number =>
+    operationClass === 'actions' || reserve <= 0 ? limit : Math.max(1, Math.floor(limit * (1 - reserve)));
 
   return {
     async acquire(operationClass?: string): Promise<void> {
@@ -42,7 +54,7 @@ export function createEdrRateLimiter(o: {
       }
       const checks: Array<{ key: string; w: Window }> = windowsOf(o.budget).map((w) => ({
         key: `edr:${o.fingerprint}:${w.name}`,
-        w,
+        w: { ...w, limit: sharedLimit(w.limit, operationClass) },
       }));
       if (operationClass) {
         for (const w of windowsOf(o.operationBudgets?.[operationClass])) {

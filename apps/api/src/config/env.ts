@@ -308,6 +308,21 @@ export function aiWorkspaceEnabled(): boolean {
 }
 
 /**
+ * EDR response actions (#8167 W03) — the SERVER-WIDE kill switch. Default ON:
+ * the per-connection `edr_connections.actions_enabled` opt-in (default OFF,
+ * partner admin + MFA) is the real gate, and an env default of OFF would make
+ * every self-hoster set a variable AND flip the switch for no added safety.
+ * Read at CALL time, so `BREEZE_EDR_ACTIONS_ENABLED=false` + restart stops new
+ * actions without a deploy. Empty = unset = ON; a recognized false value =
+ * OFF; an UNRECOGNIZED value fails closed (whoever set it meant to change it).
+ */
+export function edrActionsEnabled(): boolean {
+  const raw = (process.env.BREEZE_EDR_ACTIONS_ENABLED ?? '').trim().toLowerCase();
+  if (!raw) return true;
+  return RECOGNIZED_TRUE_FLAG_VALUES.has(raw);
+}
+
+/**
  * Large-tool-result capture + `read_artifact` (A-W05, #6732). Independent of
  * the AI-workspace lane: nothing about paging back an oversized tool result
  * needs the sandbox, so a self-hoster can opt in with their own S3/MinIO.

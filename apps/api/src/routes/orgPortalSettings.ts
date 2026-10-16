@@ -7,7 +7,7 @@ import { organizations, portalBranding } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
-import { updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
+import { ERROR_CODES, updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
 import {
   PORTAL_VISIBILITY_FLAG_KEYS,
   onPortalFlagsChanged,
@@ -180,7 +180,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   const orgRows = await db
     .select({ id: organizations.id })
@@ -188,7 +188,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
     .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
     .limit(1);
   if (!orgRows[0]) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   return { id };
 }
@@ -224,7 +224,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
     async (c) => {
       const body = c.req.valid('json');
       if (Object.keys(body).length === 0) {
-        return c.json({ error: 'No updates provided' }, 400);
+        return c.json({ error: 'No updates provided', code: ERROR_CODES.NO_UPDATES_PROVIDED }, 400);
       }
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;

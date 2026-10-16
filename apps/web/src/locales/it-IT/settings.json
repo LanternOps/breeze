@@ -4275,7 +4275,16 @@
     "partnerCurrencyUnavailable": "Impossibile caricare la valuta del partner.",
     "retry": "Riprova",
     "priceCouldNotBeSavedRetry": "Impossibile salvare il prezzo in {{currency}}. Riprova.",
-    "priceCouldNotBeRemovedRetry": "Impossibile rimuovere il prezzo in {{currency}}. Riprova."
+    "priceCouldNotBeRemovedRetry": "Impossibile rimuovere il prezzo in {{currency}}. Riprova.",
+    "billing": "Fatturazione",
+    "billingOneTime": "Una tantum",
+    "billingRecurring": "Ricorrente",
+    "billingFrequency": "Frequenza",
+    "frequencyMonthly": "Mensile",
+    "frequencyAnnual": "Annuale",
+    "commitmentTerm": "Durata dell'impegno (mesi)",
+    "commitmentTermPlaceholder": "ad es. 12",
+    "commitmentTermRange": "Durata dell'impegno: inserisci un numero intero da 1 a 120 mesi."
   },
   "catalogItemsTab": {
     "itemArchived": "Elemento archiviato",
@@ -5913,7 +5922,8 @@
       "title": "Indirizzo"
     },
     "actions": {
-      "saveChanges": "Salva modifiche"
+      "saveChanges": "Salva modifiche",
+      "sendMessage": "Invia messaggio"
     },
     "policies": {
       "assignedTitle": "Criteri assegnati",

@@ -51,6 +51,8 @@ const patchConnectionSchema = z.object({
   inventoryIntervalMinutes: intervalSchema.nullable().optional(),
   credentials: z.record(z.string(), z.unknown()).optional(),
   baseUrl: z.string().max(300).optional(),
+  /** W03 (#8167): allow response actions through this console. Partner admin + MFA (route gates). */
+  actionsEnabled: z.boolean().optional(),
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field must be supplied' });
 
 const OPEN_STATUSES = ['open', 'in_progress', 'unknown'] as const;
@@ -266,6 +268,9 @@ edrConnectionRoutes.patch(
     if (body.isActive !== undefined) updates.isActive = body.isActive;
     if (body.detectionIntervalMinutes !== undefined) updates.detectionIntervalMinutes = body.detectionIntervalMinutes;
     if (body.inventoryIntervalMinutes !== undefined) updates.inventoryIntervalMinutes = body.inventoryIntervalMinutes;
+    // Turning actions on needs no re-test: every action still passes the
+    // adapter's capability check and the vendor stays authoritative.
+    if (body.actionsEnabled !== undefined) updates.actionsEnabled = body.actionsEnabled;
 
     const retest = body.credentials !== undefined || body.baseUrl !== undefined;
     if (retest) {
@@ -354,6 +359,16 @@ edrConnectionRoutes.patch(
         credentialsRotated: body.credentials !== undefined,
       },
     });
+    if (body.actionsEnabled !== undefined) {
+      // A dedicated, greppable record of who switched remote containment on/off.
+      writeRouteAudit(c, {
+        orgId: null,
+        action: body.actionsEnabled ? 'edr.connection.actions_enabled' : 'edr.connection.actions_disabled',
+        resourceType: 'edr_connection',
+        resourceId: id,
+        details: { partnerId: gate.partnerId, actionsEnabled: body.actionsEnabled },
+      });
+    }
 
     return c.json({ data: updated });
   },

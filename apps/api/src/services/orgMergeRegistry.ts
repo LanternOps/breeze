@@ -134,8 +134,9 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // PAM ownership-epoch lineage (#8203, spec §4). Append-only: the devices
   // repoint fires breeze_device_ownership_epoch_advance(), which closes each
   // loser-org epoch and opens the survivor epoch itself. The loser's epoch and
-  // closure rows stay with the loser shell and go with its erasure. W5
-  // revisits this for evidence-held shells.
+  // closure rows stay with the loser shell and go with its erasure; under an
+  // evidence hold they are retained with the PAM chain
+  // (EVIDENCE_HOLD_ANCHOR_TABLES) until the hold is released (#8746).
   device_ownership_epochs: { kind: 'leave-for-erasure', note: 'ownership lineage is immutable; the loser epoch closes when the devices repoint opens a survivor epoch' },
   device_ownership_epoch_closures: { kind: 'leave-for-erasure', note: 'ownership lineage is immutable; a loser-epoch closure belongs to the loser and goes with its erasure' },
   autopay_setup_attempts: {kind:'leave-for-erasure',note:'Immutable enrollment authority stays with the loser; its generation/status fence prevents completion after merge'},
@@ -869,6 +870,10 @@ const REPOINT_TABLES: readonly string[] = [
   "config_policy_onedrive_libraries",
   "config_policy_onedrive_settings",
   "configuration_policies",
+  // Partner-wide rows (org_id NULL) never match the `WHERE org_id = <loser>`
+  // repoint. A connection the merge deduplicates disappears from its source,
+  // and the next reconcile retires the incident (spec §2.1).
+  "connection_health_incidents",
   "contract_billing_period_outcomes",
   "contract_billing_periods",
   "contract_documents",
@@ -1135,6 +1140,8 @@ const REPOINT_TABLES: readonly string[] = [
   "sensitive_data_findings",
   "sensitive_data_policies",
   "sensitive_data_scans",
+  "service_catalog_items",
+  "service_catalogs",
   "service_deliverable_evidence",
   "service_deliverable_occurrences",
   "service_principals",

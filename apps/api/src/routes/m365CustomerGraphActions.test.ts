@@ -30,6 +30,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
   mocks: {
     list: vi.fn(),
     initiate: vi.fn(),
+    upgrade: vi.fn(),
     retest: vi.fn(),
     disconnect: vi.fn(),
     onboardingEnabled: vi.fn(() => true),
@@ -89,6 +90,7 @@ vi.mock('../services/m365ControlPlane/writeActionConnectionService', async (impo
   ...await importActual<typeof import('../services/m365ControlPlane/writeActionConnectionService')>(),
   listCustomerGraphActionsConnections: mocks.list,
   initiateCustomerGraphActionsConsent: mocks.initiate,
+  initiateCustomerGraphActionsUpgradeConsent: mocks.upgrade,
   retestCustomerGraphActionsConnection: mocks.retest,
   disconnectCustomerGraphActionsConnection: mocks.disconnect,
   readPendingCustomerGraphActionsTenantConfirmation: mocks.pending,
@@ -223,6 +225,14 @@ beforeEach(() => {
     },
     authorizationUrl: 'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?server-built=true',
   });
+  mocks.upgrade.mockResolvedValue({
+    connection: connection(),
+    binding: {
+      phase: 'identity_verification', rawState: 'upgrade-state', connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, tenantId: TENANT_ID,
+    },
+    authorizationUrl: `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?state=upgrade-state`,
+  });
   mocks.retest.mockResolvedValue(connection());
   mocks.disconnect.mockResolvedValue(connection({
     tenantId: null, clientId: '', displayName: null, status: 'revoked',
@@ -334,6 +344,7 @@ const mutationRequests = [
   ['consent', (orgId = ORG_ID) => app().request(`/m365/customer-graph-actions/connections/consent?orgId=${orgId}`, { method: 'POST' })],
   ['retest', (orgId = ORG_ID) => app().request(`/m365/customer-graph-actions/connections/${CONNECTION_ID}/retest?orgId=${orgId}`, { method: 'POST' })],
   ['disconnect', (orgId = ORG_ID) => app().request(`/m365/customer-graph-actions/connections/${CONNECTION_ID}/disconnect?orgId=${orgId}`, { method: 'POST' })],
+  ['upgrade-consent', (orgId = ORG_ID) => app().request(`/m365/customer-graph-actions/connections/${CONNECTION_ID}/upgrade-consent?orgId=${orgId}`, { method: 'POST' })],
 ] as const;
 
 describe.each(mutationRequests)('%s authorization', (_name, request) => {
@@ -404,6 +415,73 @@ describe('POST /m365/customer-graph-actions/connections/consent', () => {
     expect(mocks.initiate).not.toHaveBeenCalled();
     expect((await app().request(`/m365/customer-graph-actions/connections/${CONNECTION_ID}/retest?orgId=${ORG_ID}`, { method: 'POST' })).status).toBe(200);
     expect((await app().request(`/m365/customer-graph-actions/connections/${CONNECTION_ID}/disconnect?orgId=${ORG_ID}`, { method: 'POST' })).status).toBe(200);
+  });
+});
+
+describe('POST /m365/customer-graph-actions/connections/:id/upgrade-consent', () => {
+  const post = (orgId = ORG_ID) => app().request(
+    `/m365/customer-graph-actions/connections/${CONNECTION_ID}/upgrade-consent?orgId=${orgId}`,
+    { method: 'POST' },
+  );
+
+  it('passes the scoped id, sets the ACTIONS binding cookie, audits, and returns only the URL', async () => {
+    const response = await post();
+    expect(response.status).toBe(200);
+    expect(mocks.upgrade).toHaveBeenCalledWith({
+      connectionId: CONNECTION_ID,
+      orgId: ORG_ID,
+      auth: expect.objectContaining({ scope: 'organization' }),
+    });
+    await expect(response.json()).resolves.toEqual({
+      adminConsentUrl: `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/authorize?state=upgrade-state`,
+    });
+    expect(mocks.buildActionsBindingCookie).toHaveBeenCalledWith({
+      phase: 'identity_verification', rawState: 'upgrade-state', connectionId: CONNECTION_ID,
+      consentAttemptId: ATTEMPT_ID, tenantId: TENANT_ID,
+    });
+    expect(mocks.buildBindingCookie).not.toHaveBeenCalled();
+    expect(response.headers.get('set-cookie')).toContain('breeze_m365_graph_actions_consent=');
+    expect(mocks.audit).toHaveBeenCalledTimes(1);
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_actions.upgrade_consent_initiated',
+      orgId: ORG_ID,
+      connectionId: CONNECTION_ID,
+      profile: 'customer-graph-actions',
+      consentAttemptId: ATTEMPT_ID,
+      outcome: 'initiated',
+      actorId: USER_ID,
+    }));
+    expect(JSON.stringify(mocks.audit.mock.calls)).not.toContain('upgrade-state');
+  });
+
+  it('404s an organization the caller cannot access without calling the service', async () => {
+    const response = await post(OTHER_ORG_ID);
+    expect(response.status).toBe(404);
+    expect(mocks.upgrade).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
+  it('maps connection_not_found to the non-oracular 404 with no cookie', async () => {
+    mocks.upgrade.mockRejectedValueOnce(Object.assign(new Error('connection_not_found'), { code: 'connection_not_found' }));
+    const response = await post();
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: 'Connection not found' });
+    expect(response.headers.get('set-cookie')).toBeNull();
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
+  it('409s when the stored manifest is already current', async () => {
+    mocks.upgrade.mockRejectedValueOnce(Object.assign(new Error('manifest_current'), { code: 'manifest_current' }));
+    const response = await post();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Connection operation could not be completed' });
+    expect(response.headers.get('set-cookie')).toBeNull();
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
+  it('is not gated by onboarding enablement', async () => {
+    mocks.onboardingEnabled.mockReturnValue(false);
+    expect((await post()).status).toBe(200);
   });
 });
 
@@ -490,6 +568,7 @@ const strictOrgQueryRoutes = [
   ['consent', 'POST', '/m365/customer-graph-actions/connections/consent'],
   ['retest', 'POST', `/m365/customer-graph-actions/connections/${CONNECTION_ID}/retest`],
   ['disconnect', 'POST', `/m365/customer-graph-actions/connections/${CONNECTION_ID}/disconnect`],
+  ['upgrade-consent', 'POST', `/m365/customer-graph-actions/connections/${CONNECTION_ID}/upgrade-consent`],
 ] as const;
 
 const invalidOrgQueries = [
@@ -511,6 +590,7 @@ describe.each(strictOrgQueryRoutes)('%s strict orgId query contract', (_name, me
     expect(mocks.initiate).not.toHaveBeenCalled();
     expect(mocks.retest).not.toHaveBeenCalled();
     expect(mocks.disconnect).not.toHaveBeenCalled();
+    expect(mocks.upgrade).not.toHaveBeenCalled();
   });
 
   it.each(invalidOrgQueries)('rejects %s before scope, service, or audit work', async (_case, query) => {
@@ -522,6 +602,7 @@ describe.each(strictOrgQueryRoutes)('%s strict orgId query contract', (_name, me
     expect(mocks.initiate).not.toHaveBeenCalled();
     expect(mocks.retest).not.toHaveBeenCalled();
     expect(mocks.disconnect).not.toHaveBeenCalled();
+    expect(mocks.upgrade).not.toHaveBeenCalled();
     expect(mocks.audit).not.toHaveBeenCalled();
   });
 });
@@ -566,6 +647,18 @@ describe('cross-mount route ownership (mounted exactly as index.ts)', () => {
     expect(actionsConsent.status).toBe(200);
     expect(mocks.initiate).toHaveBeenCalledWith({ orgId: ORG_ID, actorId: USER_ID });
     expect(mocks.readInitiate).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes upgrade-consent under the actions mount to the actions service', async () => {
+    const target = mountedLikeIndex();
+
+    const actionsUpgrade = await target.request(`/m365/customer-graph-actions/connections/${CONNECTION_ID}/upgrade-consent?orgId=${ORG_ID}`, { method: 'POST' });
+    expect(actionsUpgrade.status).toBe(200);
+    expect(mocks.upgrade).toHaveBeenCalledWith(expect.objectContaining({ connectionId: CONNECTION_ID, orgId: ORG_ID }));
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_actions.upgrade_consent_initiated',
+    }));
+    expect(mocks.readAudit).not.toHaveBeenCalled();
   });
 
   it('routes retest to the profile-matched service for the same connection id shape', async () => {
@@ -649,6 +742,7 @@ describe('customer-graph-actions mutations — org-wide governance site ceiling'
     expect(mocks.initiate).not.toHaveBeenCalled();
     expect(mocks.retest).not.toHaveBeenCalled();
     expect(mocks.disconnect).not.toHaveBeenCalled();
+    expect(mocks.upgrade).not.toHaveBeenCalled();
   });
 
   it.each(mutationRequests)('%s is 403 when the ceiling is the EMPTY site list', async (_name, request) => {

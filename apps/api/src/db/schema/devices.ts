@@ -248,6 +248,8 @@ export const devices = pgTable('devices', {
   peripheralPolicyProtocolVersion: integer('peripheral_policy_protocol_version').notNull().default(0),
   rollbackProtocolVersion: integer('rollback_protocol_version').notNull().default(0),
   pamLifetimeProtocolVersion: integer('pam_lifetime_protocol_version').notNull().default(0),
+  // Independent of PAM availability: unavailable agents can still retry verification.
+  pamReconciliationResetProtocolVersion: integer('pam_reconciliation_reset_protocol_version').notNull().default(0),
   // PAM ownership epochs (#8203): current ownership epoch. Trigger-managed —
   // advanced by exactly +1 on every org_id change; a caller-written change is
   // refused with 42501. Never set it from app code.

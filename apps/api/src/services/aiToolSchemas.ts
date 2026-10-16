@@ -896,6 +896,14 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
+  // #8167 W03. Only actions an adapter implements are offered to the model.
+  edr_endpoint_action: z.object({
+    deviceId: uuid,
+    action: z.enum(['isolate', 'unisolate', 'scan']),
+    connectionId: uuid.optional(),
+    reason: z.string().max(500).optional(),
+  }),
+
   s1_isolate_device: z.object({
     orgId: uuid.optional(),
     deviceId: uuid.optional(),
@@ -1400,7 +1408,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     subnet: z.string().max(50).regex(
       /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/,
       'Invalid CIDR notation'
-    ).optional(),
+    ),
     scanType: z.enum(['ping', 'arp', 'full']).optional(),
   }),
 

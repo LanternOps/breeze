@@ -33,6 +33,7 @@ import { billingRoutes } from './billing';
 import { provisionRoutes } from './provision';
 import { moveOrgRoutes } from './moveOrg';
 import { actuateElevationRoutes } from './actuateElevation';
+import { pamReconciliationRoutes } from './pamReconciliation';
 import { softwareActionsRoutes } from './softwareActions';
 import { homebrewBootstrapRoutes } from './homebrewBootstrap';
 import { networkRoutes } from './network';
@@ -185,6 +186,7 @@ deviceRoutes.route('/', bootMetricsRoutes);
 // :id-prefixed, so it cannot be shadowed by core's /:id matcher.
 deviceRoutes.route('/', deviceRestorePointAttemptsRoutes);
 deviceRoutes.route('/', actuateElevationRoutes);
+deviceRoutes.route('/', pamReconciliationRoutes);
 deviceRoutes.route('/', homebrewBootstrapRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere

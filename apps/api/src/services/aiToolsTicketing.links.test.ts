@@ -58,6 +58,12 @@ vi.mock('./ticketLinkService', async () => {
   return { ...actual, ...svc };
 });
 
+const permMocks = vi.hoisted(() => ({ getUserPermissions: vi.fn() }));
+vi.mock('./permissions', async () => {
+  const actual = await vi.importActual<typeof import('./permissions')>('./permissions');
+  return { ...actual, getUserPermissions: permMocks.getUserPermissions };
+});
+
 const ticketSvc = vi.hoisted(() => ({
   createTicket: vi.fn(),
   updateTicketFields: vi.fn(),
@@ -178,7 +184,26 @@ describe('manage_tickets list_links', () => {
     const out = await run({ action: 'list_links', ticketId: A }, auth);
     expect(out).toEqual({ links: [VIEW] });
     expect(ticketCounterpartScopeCondition).toHaveBeenCalledWith(auth);
-    expect(svc.listTicketLinks).toHaveBeenCalledWith(A, { counterpartFilter: 'COUNTERPART_SCOPE' });
+    expect(svc.listTicketLinks).toHaveBeenCalledWith(A, { counterpartFilter: 'COUNTERPART_SCOPE', canManage: false });
+  });
+
+  it('#8747: reveals a trashed ticket subject only to a caller holding tickets:manage', async () => {
+    svc.listTicketLinks.mockResolvedValue([]);
+    selectQueue.push([row(A)]);
+    permMocks.getUserPermissions.mockResolvedValue({ permissions: [{ resource: 'tickets', action: 'write' }] });
+    await run({ action: 'list_links', ticketId: A });
+    expect(svc.listTicketLinks.mock.calls[0]![1].canManage).toBe(false);
+
+    selectQueue.push([row(A)]);
+    permMocks.getUserPermissions.mockResolvedValue({ permissions: [{ resource: 'tickets', action: 'manage' }] });
+    await run({ action: 'list_links', ticketId: A });
+    expect(svc.listTicketLinks.mock.calls[1]![1].canManage).toBe(true);
+
+    // No resolvable grants (e.g. an ai_agent principal) is non-manager.
+    selectQueue.push([row(A)]);
+    permMocks.getUserPermissions.mockResolvedValue(null);
+    await run({ action: 'list_links', ticketId: A }, agentAuth());
+    expect(svc.listTicketLinks.mock.calls[2]![1].canManage).toBe(false);
   });
 
   it('a ticket outside the caller scope is not found and the service is never asked', async () => {

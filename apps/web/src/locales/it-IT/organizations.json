@@ -22,7 +22,8 @@
       "archive": "Archivia",
       "merge": "Unisci",
       "restore": "Ripristina",
-      "retry": "Riprova"
+      "retry": "Riprova",
+      "sendMessage": "Invia messaggio"
     },
     "tabs": {
       "overview": "Panoramica",

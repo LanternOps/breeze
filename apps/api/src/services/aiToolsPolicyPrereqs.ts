@@ -31,6 +31,7 @@ import {
   AI_AUTO_INSTALL_REFUSAL_MESSAGE,
   remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
+import { managedSoftwarePolicyRefusal } from './securityAgents/managedSoftwarePolicyGuard';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
 import {
@@ -112,12 +113,19 @@ function validateRingAppRules(raw: unknown): { value: unknown[] } | { error: str
  * coercion of its own.
  */
 function resolveS3ProviderConfig(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  opts: { storedPrefix?: unknown } = {},
 ): { value: Record<string, unknown> } | { error: string } {
   const details: Record<string, unknown> = { ...raw };
-  const { error, region, endpoint } = validateS3Details(details);
+  const { error, region, endpoint, prefix, keepStoredPrefix } = validateS3Details(details, opts);
   if (error) return { error };
   if (region) details.region = region;
+  // #7081: persist the normalized key prefix; none is an absent key. An
+  // unchanged stored prefix is left as it is (see validateS3Details).
+  if (!keepStoredPrefix) {
+    if (prefix) details.prefix = prefix;
+    else delete details.prefix;
+  }
   if (endpoint) {
     details.endpoint = endpoint;
   } else {
@@ -556,6 +564,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
           return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
         }
+
+        // #6960: a generated (security_agents) policy is owned by its config policy.
+        const managed = await managedSoftwarePolicyRefusal(existing);
+        if (managed) return JSON.stringify(managed);
 
         // Contract-A D4: AI callers may never arm software installation.
         if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
@@ -1132,7 +1144,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           const mergedProviderConfig = preserveSecretFields(incomingProviderConfig, existingProviderConfig) as Record<string, unknown>;
 
           if (targetProvider === 's3') {
-            const resolved = resolveS3ProviderConfig(mergedProviderConfig);
+            const resolved = resolveS3ProviderConfig(mergedProviderConfig, { storedPrefix: existingProviderConfig.prefix });
             if ('error' in resolved) return JSON.stringify({ error: resolved.error });
             updates.providerConfig = resolved.value;
           } else {

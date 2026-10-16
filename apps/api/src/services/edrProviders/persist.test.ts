@@ -7,6 +7,7 @@ vi.mock('./registry', () => ({
 }));
 
 import {
+  clearExpiredTenantDenials,
   isDeadlockError,
   persistDetections,
   persistInventory,
@@ -364,5 +365,19 @@ describe('maintenance statements', () => {
     expect(s).toMatch(/d\.detached_at IS NULL/);
     expect(s).toMatch(/d\.status IN \('open', 'in_progress', 'unknown'\)/);
     expect(s).toMatch(/IS DISTINCT FROM e\.breeze_device_id/);
+  });
+});
+
+describe('clearExpiredTenantDenials (W03, #8167)', () => {
+  it('clears only this connection\'s denials older than 24 h and returns the count', async () => {
+    const { tx, ops } = makeTx({ executes: [[{ id: 'a' }]] });
+    expect(await clearExpiredTenantDenials(tx, CONN.id, NOW)).toBe(1);
+    const q = ops[0]!.sql!;
+    expect(q).toMatch(/UPDATE edr_tenants SET unsupported_actions = '\{\}'/);
+    expect(q).toMatch(/unsupported_actions_at = NULL/);
+    expect(q).toMatch(/connection_id = \$1::uuid/);
+    expect(q).toMatch(/unsupported_actions_at < \$2::timestamptz/);
+    expect(q).toContain(CONN.id);
+    expect(q).toContain('2026-12-15T12:00:00.000Z');
   });
 });

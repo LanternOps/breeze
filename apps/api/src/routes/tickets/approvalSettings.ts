@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { partnerTicketApprovalSettingsPatchSchema, orgTicketApprovalSettingsPatchSchema } from '@breeze/shared';
+import { ERROR_CODES, partnerTicketApprovalSettingsPatchSchema, orgTicketApprovalSettingsPatchSchema } from '@breeze/shared';
 import { db } from '../../db';
 import { organizations } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
@@ -66,10 +66,10 @@ ticketApprovalSettingsRoutes.patch('/ticketing/approval-settings',
   zValidator('json', partnerTicketApprovalSettingsPatchSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
-    if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
     const partnerId = partnerFrom(c);
     const patch = c.req.valid('json');
-    if (Object.keys(patch).length === 0) return c.json({ error: 'No settings to update' }, 400);
+    if (Object.keys(patch).length === 0) return c.json({ error: 'No settings to update', code: ERROR_CODES.NO_UPDATES_PROVIDED }, 400);
     await updatePartnerTicketApprovalSettings(db, partnerId, patch);
     writeRouteAudit(c as never, {
       orgId: await resolveAuditOrgIdForPartner(partnerId),
@@ -96,7 +96,7 @@ ticketApprovalSettingsRoutes.patch('/orgs/:orgId/ticketing/approval-settings',
     const { orgId } = c.req.valid('param');
     const partnerId = await orgPartner(c, orgId);
     const patch = c.req.valid('json');
-    if (Object.keys(patch).length === 0) return c.json({ error: 'No settings to update' }, 400);
+    if (Object.keys(patch).length === 0) return c.json({ error: 'No settings to update', code: ERROR_CODES.NO_UPDATES_PROVIDED }, 400);
     await updateOrgTicketApprovalSettings(db, orgId, patch);
     writeRouteAudit(c as never, {
       orgId,

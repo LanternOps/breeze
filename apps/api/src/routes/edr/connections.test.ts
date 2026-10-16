@@ -444,6 +444,53 @@ describe('EDR connection routes', () => {
     it('404 for an unknown connection', async () => {
       expect((await patch({ name: 'x' })).status).toBe(404);
     });
+
+    describe('W03 actionsEnabled (#8167)', () => {
+      it('turns actions on without a vendor re-test and writes a dedicated audit', async () => {
+        dbState.connections = [connectionRow({ actionsEnabled: false })];
+        const res = await patch({ actionsEnabled: true });
+        expect(res.status).toBe(200);
+        expect(testConnection).not.toHaveBeenCalled();
+        expect(dbState.updated[0]).toMatchObject({ actionsEnabled: true });
+        const actions = vi.mocked(writeRouteAudit).mock.calls.map((c) => (c[1] as { action: string }).action);
+        expect(actions).toContain('edr.connection.actions_enabled');
+      });
+
+      it('turning actions off audits actions_disabled', async () => {
+        dbState.connections = [connectionRow({ actionsEnabled: true })];
+        expect((await patch({ actionsEnabled: false })).status).toBe(200);
+        expect(dbState.updated[0]).toMatchObject({ actionsEnabled: false });
+        const actions = vi.mocked(writeRouteAudit).mock.calls.map((c) => (c[1] as { action: string }).action);
+        expect(actions).toContain('edr.connection.actions_disabled');
+      });
+
+      it('a non-boolean actionsEnabled is a 400', async () => {
+        dbState.connections = [connectionRow()];
+        expect((await patch({ actionsEnabled: 'yes' })).status).toBe(400);
+        expect(dbState.updated).toHaveLength(0);
+      });
+
+      it('selected-org partner user, org token and missing MFA are each refused with nothing written', async () => {
+        dbState.connections = [connectionRow()];
+        authState.partnerOrgAccess = 'selected';
+        expect((await patch({ actionsEnabled: true })).status).toBe(403);
+        authState.partnerOrgAccess = 'all';
+        authState.scope = 'organization';
+        authState.orgId = '11111111-1111-4111-8111-111111111111';
+        expect((await patch({ actionsEnabled: true })).status).toBe(403);
+        authState.scope = 'partner';
+        authState.orgId = null;
+        gates.mfa = true;
+        expect((await patch({ actionsEnabled: true })).status).toBe(403);
+        expect(dbState.updated).toHaveLength(0);
+      });
+
+      it('GET /edr/connections exposes actionsEnabled', async () => {
+        dbState.connections = [connectionRow({ actionsEnabled: true })];
+        const body = await (await app.request('/edr/connections')).json();
+        expect(body.data[0]).toMatchObject({ actionsEnabled: true });
+      });
+    });
   });
 
   describe('POST /edr/connections/:id/test', () => {

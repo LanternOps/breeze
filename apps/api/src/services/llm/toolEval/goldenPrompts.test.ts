@@ -27,9 +27,10 @@ const BASELINE_UNDECLARED_TOOLS = new Set([
 ]);
 
 describe('GOLDEN_CASES', () => {
-  it('has 67 unique ids', () => {
-    expect(GOLDEN_CASES).toHaveLength(67);
-    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(67);
+  it('has 68 unique ids', () => {
+    // g68 (#8167 W03): EDR-framework containment.
+    expect(GOLDEN_CASES).toHaveLength(68);
+    expect(new Set(GOLDEN_CASES.map((c) => c.id)).size).toBe(68);
   });
   it('expects registered tools and declared actions, with only known chat-visibility gaps', () => {
     for (const c of GOLDEN_CASES) for (const e of c.expect) {
