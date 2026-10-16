@@ -33,6 +33,10 @@ import {
   peripheralPolicyTargetTypeEnum,
   peripheralEventTypeEnum
 } from '../db/schema/peripheralControl';
+import {
+  RESTORE_POINT_ATTEMPT_STATUSES,
+  RESTORE_POINT_ATTEMPT_TRIGGERS,
+} from '../db/schema/deviceRestorePointAttempts';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { aiPathRefusal } from './aiPathRestriction';
 import { CONTACT_ROLES } from './contacts/types';
@@ -215,6 +219,13 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_device_time_status: z.object({ deviceId: uuid }),
+  // #8584 — System Restore ledger read (aiToolsRestorePoints.ts).
+  list_device_restore_point_attempts: z.object({
+    deviceId: uuid,
+    trigger: z.enum(RESTORE_POINT_ATTEMPT_TRIGGERS).optional(),
+    status: z.enum(RESTORE_POINT_ATTEMPT_STATUSES).optional(),
+    ...pageZodShape(20, 50),
+  }),
   query_device_workloads: z.object({
     deviceId: uuid,
     runtime: z.enum(WORKLOAD_RUNTIMES).optional(),
