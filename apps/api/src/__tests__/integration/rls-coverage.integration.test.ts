@@ -591,6 +591,15 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'tool_sources',
   'tool_source_tools',
   'users',
+  // connection_health_incidents (#8845, spec 2026-10-15 connection health
+  // §2.1): partner_id always set, org_id NULL only for a partner-owned
+  // connection — like deployment_invites, NOT org XOR partner, so it is
+  // deliberately absent from XOR_OWNERSHIP_DUAL_AXIS_TABLES and carries no
+  // breeze_current_partner_id() read branch (an org token must never see a
+  // partner-owned connection's incident). Composite FK
+  // connection_health_incidents_org_partner_fk ties org_id to partner_id.
+  // Functional forge proof: connectionHealthIncidentsRls.integration.test.ts.
+  'connection_health_incidents',
   'deployment_invites',
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR

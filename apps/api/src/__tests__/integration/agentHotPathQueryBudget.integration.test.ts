@@ -1217,8 +1217,8 @@ describe('agent hot-path DB budget (#8053) — real PostgreSQL', () => {
     try {
       expect(await redis.exists(presenceKey), 'onOpen took the presence lease').toBe(1);
       await frame({ type: 'pong', timestamp: Date.now() }); // the first frame after open is not steady state
-      // Steady state: the agent answers the server's ping every 30 s, well
-      // past AGENT_CREDENTIAL_RECHECK_TTL_MS (5 s), so each pong re-checks.
+      // Steady state: the agent answers the server's ping every 30 s, at or
+      // past AGENT_CREDENTIAL_RECHECK_TTL_MS (30 s), so each pong re-checks.
       advanceClock(WS_PING_INTERVAL_MS);
       // Shorten the lease (just before measuring) so the pong's refresh is
       // observable: a pong the handler silently dropped would otherwise

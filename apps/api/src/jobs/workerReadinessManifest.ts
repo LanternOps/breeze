@@ -271,6 +271,10 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // accountingReconcileWorker likewise reads no integrations flag — its
   // per-connection gating happens inside the sweep job, at job time.
   consumers('aiBudgetAlertDeliveryWorker', ['ai-budget-alert-delivery']),
+  // Connection health W1 (#8845) — one Worker, no flag gate, constructed and
+  // attached unconditionally under CONNECTION_HEALTH_QUEUE, which differs from
+  // the registry key.
+  consumers('connectionHealthReconcileWorker', ['connection-health-reconcile']),
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),

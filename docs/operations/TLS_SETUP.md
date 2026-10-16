@@ -39,6 +39,47 @@ sudo apt install -y caddy
 Create `/etc/caddy/Caddyfile`:
 
 ```caddyfile
+{
+    # Redact credential headers and query parameters in ALL Caddy logs,
+    # including the error logs, which record the full request header map and
+    # URI. Keep this identical to the `log default` block in
+    # docker/Caddyfile.prod (enforced by apps/api/src/config/caddyLogRedaction.test.ts).
+    log default {
+        format filter {
+            wrap json
+            request>headers>X-Api-Key replace REDACTED
+            request>headers>X-Agent-Enrollment-Secret replace REDACTED
+            request>headers>X-Agent-Reenrollment-Token replace REDACTED
+            request>headers>X-Breeze-Bootstrap-Token replace REDACTED
+            request>headers>X-Breeze-Native-Auth-Binding replace REDACTED
+            request>headers>X-Breeze-Storage-Session replace REDACTED
+            request>headers>X-Recovery-Token replace REDACTED
+            request>headers>X-Automation-Secret replace REDACTED
+            request>headers>X-Webhook-Secret replace REDACTED
+            request>headers>X-Breeze-Signature replace REDACTED
+            request>headers>X-Signature replace REDACTED
+            request>headers>X-Huntress-Signature replace REDACTED
+            request>headers>X-Xero-Signature replace REDACTED
+            request>headers>Stripe-Signature replace REDACTED
+            request>headers>Svix-Signature replace REDACTED
+            request>headers>Intuit-Signature replace REDACTED
+            request>headers>Mcp-Session-Id replace REDACTED
+            request>headers>Cf-Access-Jwt-Assertion replace REDACTED
+            resp_headers>X-Breeze-Native-Auth-Binding replace REDACTED
+            request>uri query {
+                replace ticket REDACTED
+                replace __bzt REDACTED
+                replace t REDACTED
+                replace token REDACTED
+                replace access_token REDACTED
+                replace code REDACTED
+                replace state REDACTED
+                replace secret REDACTED
+            }
+        }
+    }
+}
+
 breeze.example.com {
     # Caddy automatically:
     # - Obtains Let's Encrypt certificates

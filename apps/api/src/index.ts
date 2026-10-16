@@ -89,6 +89,7 @@ import { permissionsCatalogRoutes } from './routes/permissionsCatalog';
 import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { edrRoutes } from './routes/edr';
+import { connectionHealthRoutes } from './routes/connectionHealth';
 import { reportRoutes } from './routes/reports';
 import { incidentRoutes } from './routes/incidents';
 import { searchRoutes } from './routes/search';
@@ -859,6 +860,7 @@ api.route('/permissions', permissionsCatalogRoutes);
 api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/edr', edrRoutes); // EDR provider framework (#8164 W01b)
+api.route('/connection-health', connectionHealthRoutes);
 api.route('/reports', reportRoutes);
 api.route('/incidents', incidentRoutes);
 api.route('/search', searchRoutes);

@@ -375,6 +375,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'configurationPolicies/patchJobs.ts': { tools: ['manage_patches'] },
   'configurationPolicies/resolution.ts': { tools: ['get_effective_configuration', 'preview_configuration_change', 'configuration_policy_compliance'] },
   'connectedApps.ts': { exempt: 'identity' },
+  'connectionHealth.ts': { exempt: 'tool_in_later_wave', note: 'Connection health incidents: read-only panel feed (W2 UI); no MCP tool planned yet (#8844).' },
   'contracts/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/cancel; the single-item equivalents already have tools.' },
   'contracts/contracts.ts': { tools: ['list_contracts', 'get_contract', 'manage_contracts'] },
   'contracts/deliverables.ts': { tools: ['list_deliverables'] },
