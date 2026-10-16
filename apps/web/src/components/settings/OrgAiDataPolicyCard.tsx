@@ -54,7 +54,7 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
       // Informational card: stays hidden if the policy cannot be loaded.
     }
   };
-  useEffect(() => { void load(); }, [orgId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [orgId]);
 
   const save = async (patch: { deviceFileReadLevel?: Level | null; toolOutputRetentionDays?: number | null }) => {
     setSaving(true);
