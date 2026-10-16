@@ -3,7 +3,7 @@ tracking_issue: LanternOps/breeze#8865
 ---
 # Standalone agreement signing — Spec
 
-**Status:** draft (spec-drafted, awaiting approval).
+**Status:** approved by Todd 2026-10-15. All recommendations in §7 were accepted as written (OD1 A, OD2 A with B and OD2b as follow-ups, OD3 A, OD4 A, OD5 A, OD6 A, OD7 B, OD8 A, OD9 A, OD10 A).
 **Tracking:** LanternOps/breeze#8865.
 **Vocabulary:** follows `2026-09-14-agreements-vocabulary-and-ia-design.md` §2 — "Agreement template", "Signed agreement", "Contract" (billing). This spec adds one term: **Agreement request** — an agreement sent to a client for signature on its own. UI never says "contract document".
 **Advisor quorum:** Fable + Codex `gpt-6-astra` xhigh (verdict in §9).
