@@ -91,6 +91,7 @@ export const EDR_CONNECTION_PUBLIC_SELECT = {
   lastSyncAmbiguousEndpoints: edrConnections.lastSyncAmbiguousEndpoints,
   lastSyncOpenDetections: edrConnections.lastSyncOpenDetections,
   capabilitiesSnapshot: edrConnections.capabilitiesSnapshot,
+  actionsEnabled: edrConnections.actionsEnabled,
   createdAt: edrConnections.createdAt,
   updatedAt: edrConnections.updatedAt,
   hasCredentials: sql<boolean>`(${edrConnections.credentialsEncrypted} IS NOT NULL AND ${edrConnections.credentialsEncrypted} <> '')`,

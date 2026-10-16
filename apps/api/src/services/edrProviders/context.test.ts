@@ -48,3 +48,18 @@ describe('buildEdrAdapterContext', () => {
     expect(a).toBe(b);
   });
 });
+
+describe('buildEdrAdapterContext — W03 request-path wait cap', () => {
+  it('passes maxWaitMs through to the limiter (request-path actions must not wait 60 s)', () => {
+    createEdrRateLimiter.mockClear();
+    buildEdrAdapterContext(adapter, { creds: { apiKey: 'k' }, baseUrl: null, region: null, redis: null, maxWaitMs: 5_000 });
+    expect(createEdrRateLimiter).toHaveBeenCalledWith(expect.objectContaining({ maxWaitMs: 5_000 }));
+  });
+
+  it('omits maxWaitMs when not given (sync keeps the limiter default)', () => {
+    createEdrRateLimiter.mockClear();
+    buildEdrAdapterContext(adapter, { creds: { apiKey: 'k' }, baseUrl: null, region: null, redis: null });
+    const arg = (createEdrRateLimiter.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+    expect('maxWaitMs' in arg).toBe(false);
+  });
+});

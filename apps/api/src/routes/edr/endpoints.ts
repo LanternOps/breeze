@@ -8,6 +8,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pgErrorCode } from './access';
+import { describeEndpointActionsForRows } from '../../services/edrProviders/actionAvailability';
 
 export const edrEndpointRoutes = new Hono();
 
@@ -103,7 +104,10 @@ edrEndpointRoutes.get(
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(edrEndpoints.hostname);
 
-    return c.json({ data: rows });
+    // W03 (#8167): what the caller could do to each endpoint, with reasons. No vendor call.
+    if (rows.length === 0) return c.json({ data: rows });
+    const availability = await describeEndpointActionsForRows(auth, perms, rows);
+    return c.json({ data: rows.map((r) => ({ ...r, actions: availability.get(r.id) ?? [] })) });
   },
 );
 
