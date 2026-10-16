@@ -223,6 +223,50 @@ describe('aiChatSlice — one assistant row per model message (#8888)', () => {
     expect(s.streamingMessageId).toBeNull();
   });
 
+  it('keeps a failed empty trailing row (and its retry) through the finish that follows the error', () => {
+    let s = play(startTurn(), [
+      { type: 'message_start' },
+      { type: 'content_delta', delta: 'Working on it.' },
+      { type: 'message_start' },
+    ]);
+    s = reducer(s, failAssistantMessage({ id: T, error: 'Network error' }));
+    s = play(s, [{ type: 'done' }]);
+    const assistants = s.messages.filter((m) => m.role === 'assistant');
+    expect(assistants).toHaveLength(2);
+    const last = assistants[1];
+    expect(last.role === 'assistant' && last.failed).toBe(true);
+    expect(s.status).toBe('error');
+  });
+
+  it('carries the turn model off an empty trailing row that done drops', () => {
+    let s = play(startTurn(), [
+      { type: 'message_start' },
+      { type: 'content_delta', delta: 'Done.' },
+      { type: 'message_start' },
+    ]);
+    const turnModel = { servedDisplayName: 'M' } as never;
+    s = reducer(s, setTurnModel({ messageId: T, turnModel }));
+    s = play(s, [{ type: 'done' }]);
+    const assistants = s.messages.filter((m) => m.role === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].role === 'assistant' && assistants[0].turnModel).toBe(turnModel);
+    expect(s.streamingMessageId).toBeNull();
+    expect(s.inFlightTool).toBeNull();
+  });
+
+  it('plan events land on the row that proposed the plan, after later rows start', () => {
+    let s = play(startTurn(), LIVE.slice(0, 12));
+    const planRow = () => s.messages.find((m) => m.role === 'assistant' && m.plan);
+    const row = planRow();
+    expect(row?.role === 'assistant' && row.plan?.planId).toBe('p1');
+    s = reducer(s, planStreamEvent({ messageId: T, event: { type: 'plan_step_start', planId: 'p1', stepIndex: 0 } }));
+    s = reducer(s, planStreamEvent({ messageId: T, event: { type: 'plan_complete', planId: 'p1', status: 'completed' } }));
+    const after = planRow();
+    expect(after?.id).toBe(row?.id);
+    expect(after?.role === 'assistant' && after.plan?.status).toBe('completed');
+    expect(s.messages.filter((m) => m.role === 'assistant' && m.plan)).toHaveLength(1);
+  });
+
   it('a late tool_result lands on the row that holds its tool call', () => {
     const s = play(startTurn(), [
       { type: 'message_start' },

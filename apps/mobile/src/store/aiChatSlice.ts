@@ -258,9 +258,10 @@ const aiChatSlice = createSlice({
     ) {
       let rows = turnRows(state, action.payload.id);
       const turnIds = new Set([action.payload.id, ...rows.map((r) => r.id)]);
-      // A last message that produced nothing leaves no row, as in history.
+      // A last message that produced nothing leaves no row, as in history —
+      // unless the stream failed on it: that row carries the retry.
       const trailing = rows[rows.length - 1];
-      if (rows.length > 1 && rowIsEmpty(trailing)) {
+      if (rows.length > 1 && rowIsEmpty(trailing) && !trailing.failed) {
         state.messages = state.messages.filter((m) => m.id !== trailing.id);
         rows = rows.slice(0, -1);
         if (trailing.turnModel) rows[rows.length - 1].turnModel = trailing.turnModel;

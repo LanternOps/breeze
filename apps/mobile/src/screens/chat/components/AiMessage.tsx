@@ -32,8 +32,9 @@ interface Props {
 const noPlanAction = async () => null;
 
 // AI messages are unboxed text-on-canvas. No bubble, no avatar bezel. A row
-// is one model message, in the order the model wrote it (and the server
-// stored it, #8888): streamed text content, completed tool events (rendered
+// is one model message (one server `ai_messages` assistant row, #8888), whose
+// text normally precedes its tool calls: streamed text content (the server
+// joins a message's text blocks with "\n\n"), completed tool events (rendered
 // as ToolIndicator), the plan card, then either a pulse (waiting for first
 // delta) or an in-flight tool caption.
 export function AiMessage({ message, turnLive, inFlightTool, onRetry, onPlanDecide, onPlanStop }: Props) {
