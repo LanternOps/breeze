@@ -219,6 +219,23 @@ describe('evaluatePolicy — tag-targeted results are observe-only (#8857)', () 
     expect(writeAuditEventMock).not.toHaveBeenCalled();
   });
 
+  it('a partner-wide tag-targeted policy attributes its audit row to the owning partner', async () => {
+    const PARTNER_ID = '9999aaaa-0000-4000-8000-00000000aaaa';
+    queueSelects(
+      [{ id: DEVICE.orgId }], // partner-wide fan-out: the partner's orgs
+      [DEVICE],               // resolveTargetDevices
+    );
+
+    await evaluatePolicy(
+      { ...(policyWithTargets({ targetType: 'tags', targetIds: ['finance'] }) as object), orgId: null, partnerId: PARTNER_ID } as never,
+      { requestRemediation: true },
+    );
+
+    expect(publishEventMock).not.toHaveBeenCalled();
+    expect(writeAuditEventMock).toHaveBeenCalledTimes(1);
+    expect(writeAuditEventMock.mock.calls[0]![1]).toMatchObject({ orgId: null, partnerId: PARTNER_ID });
+  });
+
   it('device ids take precedence over tags, exactly as the resolver does, so such a policy is not gated', async () => {
     queueEvaluatePolicySelects();
 

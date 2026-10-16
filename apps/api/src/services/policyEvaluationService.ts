@@ -1399,6 +1399,17 @@ async function resolveTargetDevices(policy: PolicyRow, options: ResolveTargetDev
  * reconcile uses it: a device the policy no longer targets is never evaluated
  * again, so nothing else would close the alert it raised there.
  */
+/**
+ * Tag-targeted automation policies are observe-only (#8857): their evaluation
+ * dispatches no remediation and publishes no policy.* event — see evaluatePolicy.
+ * The compliance-alert reconcile uses it too: such a policy publishes no
+ * policy.compliant, so an alert raised before it was retargeted to tags would
+ * otherwise never close.
+ */
+export function automationPolicyIsObserveOnly(policy: Pick<PolicyRow, 'targets'>): boolean {
+  return targetKindOf(normalizeTargetConfig(policy.targets)) === 'tags';
+}
+
 export async function automationPolicyTargetedDeviceIds(policy: PolicyRow, deviceIds: string[]): Promise<Set<string>> {
   const targeted = await resolveTargetDevices(policy, { deviceIds, auditRefusedGroups: false });
   return new Set(targeted.map((device) => device.id));
@@ -1542,7 +1553,7 @@ export async function evaluatePolicy(
   // dispatched and no policy.* event is published: an event-triggered
   // automation runs on the event's device, and the alert the policy alert
   // bridge raises from policy.violation can trigger automations and AI agents.
-  const observeOnly = targetKindOf(normalizeTargetConfig(policy.targets)) === 'tags';
+  const observeOnly = automationPolicyIsObserveOnly(policy);
   const requestRemediation = !observeOnly && (options.requestRemediation ?? true);
   const wantsRemediation = requestRemediation && policy.enforcement === 'enforce';
 
@@ -1744,6 +1755,9 @@ export async function evaluatePolicy(
     // execution refused for a device-writable target field.
     writeAuditEvent(requestLikeFromSnapshot({}), {
       orgId: policy.orgId,
+      // A partner-wide policy (orgId NULL) audits to its partner; with no
+      // request auth to derive it from, the row would otherwise be platform-wide.
+      partnerId: policy.orgId ? undefined : (policy.partnerId ?? null),
       action: 'policy_evaluation.execution_target_refused_agent_reported_fields',
       resourceType: 'automation_policy',
       resourceId: policy.id,
