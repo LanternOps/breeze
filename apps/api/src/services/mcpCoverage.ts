@@ -729,6 +729,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'viewers/download.ts': { exempt: 'internal_plumbing' },
   'vulnerabilities.ts': { tools: ['get_vulnerability_report', 'get_device_vulnerabilities', 'remediate_vulnerability'] },
   'webhooks.ts': { tools: ['query_webhooks', 'test_webhook'] },
+  'webhooks/edr.ts': { exempt: 'inbound_integration' },
   'webhooks/emailProvider.ts': { exempt: 'inbound_integration' },
   'webhooks/quickbooks.ts': { exempt: 'inbound_integration' },
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },

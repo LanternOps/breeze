@@ -22,8 +22,8 @@ import type { EdrWebhookHint } from './types';
  * a Date truncates microseconds, so `pending_hint_at <= <ms value>` would never
  * match the value it came from and the CAS would never clear (endless reruns).
  *
- * Nothing here writes detections, calls a vendor, or touches edr_actions: a
- * hint only schedules a read sync.
+ * Nothing here writes a detection, calls a vendor, or reaches the response-action
+ * ledger: a hint only schedules a read sync (edrActions.chokepoint.contract.test.ts).
  */
 
 export const EDR_HINT_SET_CAP = 500;
