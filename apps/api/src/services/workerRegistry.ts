@@ -215,6 +215,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'connectionHealthReconcileWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/connectionHealthReconcile');
+      return { init: m.initializeConnectionHealthReconcileWorker, shutdown: m.shutdownConnectionHealthReconcileWorker };
+    },
+  },
+  {
     name: 'aiArtifactSweeper',
     placement: 'global',
     load: async () => {
