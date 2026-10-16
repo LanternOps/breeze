@@ -114,7 +114,8 @@
     "ticketsIncidents": "Incidents",
     "ticketsServiceRequests": "Service Requests",
     "ticketsProblems": "Problems",
-    "ticketsChanges": "Changes"
+    "ticketsChanges": "Changes",
+    "endpointMessages": "Messages"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

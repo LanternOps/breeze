@@ -4238,6 +4238,89 @@
       "titleHtml": "Başlıkta HTML kullanılamaz.",
       "titleLinks": "Başlıkta bağlantı kullanılamaz.",
       "invalid": "Mesaj izin verilmeyen içerik barındırıyor."
+    },
+    "history": {
+      "title": "Uç nokta mesajları",
+      "description": "Kişilere cihazlarında gönderilen mesajlar ve her birine ne olduğu.",
+      "empty": "Henüz mesaj gönderilmedi.",
+      "loading": "Yükleniyor...",
+      "loadFailed": "Mesajlar yüklenemedi.",
+      "retry": "Tekrar dene",
+      "loadMore": "Daha fazla yükle",
+      "selectPrompt": "Teslimat ayrıntılarını görmek için bir mesaj seçin.",
+      "detailLoadFailed": "Bu mesaj yüklenemedi.",
+      "notFound": "Bu mesaj bulunamadı.",
+      "noAccess": "Uç nokta mesajlarını görüntüleme izniniz yok.",
+      "purgedTitle": "İçerik kaldırıldı",
+      "purgedBody": "Mesaj metni 90 gün sonra kaldırıldı. Teslimat geçmişi saklanır.",
+      "purgedListTitle": "(içerik kaldırıldı)",
+      "badgeRetracted": "Geri çekildi",
+      "badgeAi": "Yapay zekâ",
+      "devicesLabel": "Cihazlar: {{count}}",
+      "fields": {
+        "body": "Mesaj",
+        "deliveries": "Cihazlar",
+        "host": "Cihaz",
+        "status": "Durum",
+        "surface": "Gösterildiği yer",
+        "error": "Hata",
+        "sent": "Gönderildi",
+        "expires": "Sona erer",
+        "delivered": "Teslim edildi",
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "retracted": "Geri çekildi",
+        "receipts": "Makbuzlar",
+        "noReceipts": "Yok",
+        "requiresAck": "Onay gerekir"
+      },
+      "receiptEvents": {
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "expired": "Süresi doldu"
+      },
+      "surface": {
+        "assist": "Assist kartı",
+        "native": "Yerel bildirim"
+      },
+      "statuses": {
+        "queued": "Kuyrukta",
+        "delivered": "Teslim edildi",
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "expired": "Süresi doldu",
+        "retracted": "Geri çekildi",
+        "failed": "Başarısız",
+        "superseded": "Değiştirildi"
+      },
+      "actions": {
+        "retract": "Geri çek",
+        "retracting": "Geri çekiliyor...",
+        "resend": "Başarısız veya süresi dolanlara yeniden gönder",
+        "resending": "Yeniden gönderiliyor..."
+      },
+      "retractConfirm": {
+        "title": "Bu mesaj geri çekilsin mi?",
+        "message": "Şu anda gösteren cihazlardan kaldırılır. Henüz almamış cihazlar mesajı almaz.",
+        "confirm": "Geri çek"
+      },
+      "messages": {
+        "retractSuccess": "Mesaj geri çekildi.",
+        "retractPartial": "Mesaj geri çekildi, ancak {{count}} cihaz güncellenemedi.",
+        "retractFailed": "Mesaj geri çekilemedi.",
+        "resendSuccess": "Mesaj yeniden gönderildi. Cihazlar: {{count}}.",
+        "resendFailed": "Mesaj yeniden gönderilemedi."
+      },
+      "resendErrors": {
+        "retracted": "Bu mesaj geri çekildi ve yeniden gönderilemez.",
+        "body_purged": "Mesaj metni kaldırıldığı için yeniden gönderilemez.",
+        "in_progress": "Bu mesaj için bir gönderim zaten sürüyor.",
+        "idempotency_conflict": "Bu yeniden gönderim zaten farklı ayrıntılarla iletildi.",
+        "nothing_to_resend": "Yeniden gönderilecek başarısız veya süresi dolmuş cihaz yok."
+      }
     }
   }
 }

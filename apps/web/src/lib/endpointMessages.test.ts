@@ -6,7 +6,47 @@ vi.mock('@breeze/shared', async () => {
   return { ...actual, agentSupportsEndpointMessaging: supports };
 });
 
-import { deviceMessagingCapability, endpointMessageIssueKey } from './endpointMessages';
+vi.mock('../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+
+import { fetchWithAuth } from '../stores/auth';
+import {
+  deviceMessagingCapability,
+  endpointMessageIssueKey,
+  getEndpointMessage,
+  listEndpointMessages,
+  resendEndpointMessage,
+  retractEndpointMessage,
+} from './endpointMessages';
+
+const authMock = vi.mocked(fetchWithAuth);
+const res = (status: number, payload: unknown) =>
+  ({ ok: status < 400, status, json: async () => payload }) as Response;
+
+describe('history API client', () => {
+  beforeEach(() => authMock.mockReset());
+
+  it('lists with limit and cursor', async () => {
+    authMock.mockResolvedValue(res(200, { items: [], nextCursor: null }));
+    await expect(listEndpointMessages({ limit: 50, cursor: 'abc' })).resolves.toEqual({ items: [], nextCursor: null });
+    expect(authMock.mock.calls[0]![0]).toBe('/endpoint-messages?limit=50&cursor=abc');
+  });
+
+  it('loads one message and returns null on 404', async () => {
+    authMock.mockResolvedValue(res(404, { error: 'not_found' }));
+    await expect(getEndpointMessage('m1')).resolves.toBeNull();
+    expect(authMock.mock.calls[0]![0]).toBe('/endpoint-messages/m1');
+  });
+
+  it('retract POSTs with no body; resend POSTs the new messageId', async () => {
+    authMock.mockResolvedValue(res(200, { ok: true }));
+    await retractEndpointMessage('m1', { errorFallback: 'x' });
+    expect(authMock.mock.calls[0]![0]).toBe('/endpoint-messages/m1/retract');
+    expect((authMock.mock.calls[0]![1] as RequestInit).method).toBe('POST');
+    await resendEndpointMessage('m1', 'new-id', { errorFallback: 'x' });
+    expect(authMock.mock.calls[1]![0]).toBe('/endpoint-messages/m1/resend');
+    expect(JSON.parse(String((authMock.mock.calls[1]![1] as RequestInit).body))).toEqual({ messageId: 'new-id' });
+  });
+});
 
 describe('deviceMessagingCapability', () => {
   beforeEach(() => supports.mockReset());

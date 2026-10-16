@@ -4238,6 +4238,89 @@
       "titleHtml": "HTML ist im Titel nicht erlaubt.",
       "titleLinks": "Links sind im Titel nicht erlaubt.",
       "invalid": "Die Nachricht enthält nicht erlaubte Inhalte."
+    },
+    "history": {
+      "title": "Endpunkt-Nachrichten",
+      "description": "Nachrichten an Personen an ihren Geräten und was mit jeder davon passiert ist.",
+      "empty": "Es wurden noch keine Nachrichten gesendet.",
+      "loading": "Wird geladen...",
+      "loadFailed": "Nachrichten konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "loadMore": "Mehr laden",
+      "selectPrompt": "Wählen Sie eine Nachricht aus, um die Zustelldetails zu sehen.",
+      "detailLoadFailed": "Diese Nachricht konnte nicht geladen werden.",
+      "notFound": "Diese Nachricht wurde nicht gefunden.",
+      "noAccess": "Sie haben keine Berechtigung, Endpunkt-Nachrichten anzuzeigen.",
+      "purgedTitle": "Inhalt entfernt",
+      "purgedBody": "Der Nachrichtentext wurde nach 90 Tagen entfernt. Der Zustellverlauf bleibt erhalten.",
+      "purgedListTitle": "(Inhalt entfernt)",
+      "badgeRetracted": "Zurückgezogen",
+      "badgeAi": "KI",
+      "devicesLabel": "Geräte: {{count}}",
+      "fields": {
+        "body": "Nachricht",
+        "deliveries": "Geräte",
+        "host": "Gerät",
+        "status": "Status",
+        "surface": "Angezeigt in",
+        "error": "Fehler",
+        "sent": "Gesendet",
+        "expires": "Läuft ab",
+        "delivered": "Zugestellt",
+        "displayed": "Angezeigt",
+        "acknowledged": "Bestätigt",
+        "dismissed": "Geschlossen",
+        "retracted": "Zurückgezogen",
+        "receipts": "Quittungen",
+        "noReceipts": "Keine",
+        "requiresAck": "Bestätigung erforderlich"
+      },
+      "receiptEvents": {
+        "displayed": "Angezeigt",
+        "acknowledged": "Bestätigt",
+        "dismissed": "Geschlossen",
+        "expired": "Abgelaufen"
+      },
+      "surface": {
+        "assist": "Assist-Karte",
+        "native": "Native Benachrichtigung"
+      },
+      "statuses": {
+        "queued": "In Warteschlange",
+        "delivered": "Zugestellt",
+        "displayed": "Angezeigt",
+        "acknowledged": "Bestätigt",
+        "dismissed": "Geschlossen",
+        "expired": "Abgelaufen",
+        "retracted": "Zurückgezogen",
+        "failed": "Fehlgeschlagen",
+        "superseded": "Ersetzt"
+      },
+      "actions": {
+        "retract": "Zurückziehen",
+        "retracting": "Wird zurückgezogen...",
+        "resend": "An fehlgeschlagene oder abgelaufene erneut senden",
+        "resending": "Wird gesendet..."
+      },
+      "retractConfirm": {
+        "title": "Diese Nachricht zurückziehen?",
+        "message": "Auf Geräten, die sie gerade anzeigen, wird sie entfernt. Geräte, die sie noch nicht erhalten haben, bekommen sie nicht mehr.",
+        "confirm": "Zurückziehen"
+      },
+      "messages": {
+        "retractSuccess": "Nachricht zurückgezogen.",
+        "retractPartial": "Nachricht zurückgezogen, aber {{count}} Geräte konnten nicht aktualisiert werden.",
+        "retractFailed": "Die Nachricht konnte nicht zurückgezogen werden.",
+        "resendSuccess": "Nachricht erneut gesendet. Geräte: {{count}}.",
+        "resendFailed": "Die Nachricht konnte nicht erneut gesendet werden."
+      },
+      "resendErrors": {
+        "retracted": "Diese Nachricht wurde zurückgezogen und kann nicht erneut gesendet werden.",
+        "body_purged": "Der Nachrichtentext wurde entfernt, daher kann sie nicht erneut gesendet werden.",
+        "in_progress": "Ein Versand für diese Nachricht läuft bereits.",
+        "idempotency_conflict": "Dieser erneute Versand wurde bereits mit anderen Angaben übermittelt.",
+        "nothing_to_resend": "Keine fehlgeschlagenen oder abgelaufenen Geräte zum erneuten Senden."
+      }
     }
   }
 }

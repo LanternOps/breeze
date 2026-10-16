@@ -18,6 +18,8 @@ import { recordDeliveryEvent } from '../../services/endpointMessaging/receipts';
 import { retractEndpointMessage } from '../../services/endpointMessaging/retract';
 import { getEndpointMessageDetail, listEndpointMessages } from '../../services/endpointMessaging/history';
 import { runEndpointMessageRetentionOnce } from '../../jobs/endpointMessageRetention';
+import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
+import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -264,6 +266,28 @@ describe('endpoint messaging W02 flow (real Postgres)', () => {
       auth, permissions: { allowedSiteIds: [randomUUID()] }, messageRowId: page.items[0]!.id,
     }));
     expect(restricted?.deliveries).toEqual([]);
+  });
+
+  it('a queued (non-terminal) notify_user keeps its body through claim-for-delivery; terminal erasure strips it', async () => {
+    const cmdId = await insertCommand(f.devA1, {
+      source: 'endpoint_message', title: 'Reboot tonight', body: 'Body still needed for delivery', messageId: randomUUID(), batchId: randomUUID(),
+    }, 'pending');
+    await sys(() => db.execute(sql`UPDATE device_commands SET submitted_org_id = ${f.orgA}::uuid WHERE id = ${cmdId}::uuid`));
+    const claimed = await sys(() => claimPendingCommandsForDevice(f.devA1));
+    const mine = claimed.find((c) => c.id === cmdId);
+    expect(mine, 'the pending message must be claimable').toBeDefined();
+    expect((mine!.payload as Record<string, unknown>).body).toBe('Body still needed for delivery');
+    const [stored] = await sys(() => db.select().from(deviceCommands).where(eq(deviceCommands.id, cmdId)));
+    expect(stored!.status).toBe('sent');
+    expect((stored!.payload as Record<string, unknown>).body).toBe('Body still needed for delivery');
+
+    await sys(() => db.update(deviceCommands)
+      .set({ status: 'completed', completedAt: new Date(), ...terminalPayloadErasureSet() })
+      .where(eq(deviceCommands.id, cmdId)));
+    const [done] = await sys(() => db.select().from(deviceCommands).where(eq(deviceCommands.id, cmdId)));
+    expect(done!.payload).not.toHaveProperty('body');
+    expect(done!.payload).not.toHaveProperty('title');
+    expect(done!.payload).toHaveProperty('messageId');
   });
 
   it('retention: purges bodies after 90 days, expires past-expiry live deliveries, deletes 13-month history, leaves recent rows', async () => {

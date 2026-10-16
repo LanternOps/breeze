@@ -1,6 +1,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  MessageSquare,
   LayoutDashboard,
   Monitor,
   Radar,
@@ -330,6 +331,8 @@ export const navSections: NavSection[] = [
       { name: 'Network', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
+      // Messages sent to people at their devices and their delivery history (#8742).
+      { name: 'Messages', labelKey: 'nav.endpointMessages', href: '/endpoint-messages', icon: MessageSquare, requiredPermission: { resource: 'endpoint_messages', action: 'read' } },
     ],
   },
   {
