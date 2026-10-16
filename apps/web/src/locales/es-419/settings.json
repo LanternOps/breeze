@@ -2036,7 +2036,9 @@
       "email": "Correo electrónico de soporte",
       "phone": "Teléfono de soporte",
       "welcomeMessage": "Mensaje de bienvenida",
-      "footerText": "Texto de pie de página"
+      "footerText": "Texto de pie de página",
+      "footerTextHelp": "Se muestra al pie del portal de clientes y se imprime en las cotizaciones y facturas de esta organización, en lugar del pie de página de documentos del socio. Déjelo en blanco para imprimir el pie de página del socio.",
+      "footerTextInheritedSource": "Pie de página de documentos del socio"
     }
   },
   "orgPortalUsersEditor": {

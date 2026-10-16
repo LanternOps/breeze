@@ -2036,7 +2036,9 @@
       "email": "Support-E-Mail",
       "phone": "Support-Telefon",
       "welcomeMessage": "Willkommensnachricht",
-      "footerText": "Fußzeilentext"
+      "footerText": "Fußzeilentext",
+      "footerTextHelp": "Wird unten im Kundenportal angezeigt und auf die Angebote und Rechnungen dieser Organisation gedruckt – anstelle der Partner-Dokumentfußzeile. Leer lassen, um die Partner-Fußzeile zu drucken.",
+      "footerTextInheritedSource": "Partner-Dokumentfußzeile"
     }
   },
   "orgPortalUsersEditor": {

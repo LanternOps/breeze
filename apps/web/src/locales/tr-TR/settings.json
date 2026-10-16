@@ -2036,7 +2036,9 @@
       "email": "Destek e-postası",
       "phone": "Destek telefonu",
       "welcomeMessage": "Hoş geldiniz mesajı",
-      "footerText": "Altbilgi metni"
+      "footerText": "Altbilgi metni",
+      "footerTextHelp": "Müşteri portalının altında gösterilir ve bu kuruluşun fiyat tekliflerine ve faturalarına iş ortağı belge altbilgisi yerine basılır. İş ortağı altbilgisini basmak için boş bırakın.",
+      "footerTextInheritedSource": "İş ortağı belge altbilgisi"
     }
   },
   "orgPortalUsersEditor": {

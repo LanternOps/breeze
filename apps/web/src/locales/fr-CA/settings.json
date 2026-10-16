@@ -2036,7 +2036,9 @@
       "email": "Courriel de soutien",
       "phone": "Téléphone d’assistance",
       "welcomeMessage": "Message de bienvenue",
-      "footerText": "Texte du bas de page"
+      "footerText": "Texte du bas de page",
+      "footerTextHelp": "Affiché au bas du portail client et imprimé sur les devis et factures de cette organisation, à la place du pied de page des documents du partenaire. Laissez vide pour imprimer le pied de page du partenaire.",
+      "footerTextInheritedSource": "Pied de page des documents du partenaire"
     }
   },
   "orgPortalUsersEditor": {

@@ -2036,7 +2036,9 @@
       "email": "email assistenza",
       "phone": "Telefono assistenza",
       "welcomeMessage": "Messaggio di benvenuto",
-      "footerText": "Testo footer"
+      "footerText": "Testo footer",
+      "footerTextHelp": "Mostrato in fondo al portale clienti e stampato su preventivi e fatture di questa organizzazione, al posto del piè di pagina dei documenti del partner. Lascia vuoto per stampare il piè di pagina del partner.",
+      "footerTextInheritedSource": "Piè di pagina dei documenti del partner"
     }
   },
   "orgPortalUsersEditor": {

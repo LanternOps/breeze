@@ -769,8 +769,6 @@
   "billing.orgBillingSettings.tax.taxExempt",
   "billing.orgBillingSettings.terms.partnerDefault",
   "billing.partnerBillingSettings.company.useCompanyAddress",
-  "billing.partnerBillingSettings.defaults.currencyCode",
-  "billing.partnerBillingSettings.defaults.invoiceFooter",
   "billing.partnerBillingSettings.defaults.invoiceNumberPrefix",
   "billing.quotes.actions.acceptOnBehalf.method.purchase_order",
   "billing.quotes.actions.acceptOnBehalf.method.signed_document",

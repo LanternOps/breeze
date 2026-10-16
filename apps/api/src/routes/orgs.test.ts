@@ -3915,6 +3915,40 @@ describe('org routes', () => {
       expect(body.partnerDefaultInvoiceTermsDays).toBe(45);
     });
 
+    // #7510: org currency is NOT inherited (organizations.currency_code is
+    // NOT NULL, stamped at creation), so the org Billing tab names the partner
+    // default only to say it applies to organizations created later.
+    it('includes the partner default currency alongside the org currency', async () => {
+      const orgId = '33333333-3333-3333-3333-333333333333';
+      setAuthContext({
+        scope: 'partner',
+        partnerId: 'partner-123',
+        accessibleOrgIds: [orgId]
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: orgId, name: 'Org', partnerId: 'partner-123', currencyCode: 'CAD' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ defaultTaxRate: null, invoiceTermsDays: 30, currencyCode: 'EUR' }])
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/orgs/organizations/${orgId}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.currencyCode).toBe('CAD');
+      expect(body.partnerDefaultCurrencyCode).toBe('EUR');
+    });
+
     it('should return 404 when organization not found', async () => {
       // In the caller's accessible set AND uuid-shaped, so this reaches the
       // real lookup and 404s on an empty result — not on the scope check or
