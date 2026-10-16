@@ -229,7 +229,7 @@ describe('list_device_restore_point_attempts AI tool (real Postgres, breeze_app)
   }
 
   // App-layer org predicate disabled, so RLS is the only org defense exercised.
-  function orgAuth(orgId: string): AuthContext {
+  function orgAuth(orgId: string, over: Partial<Record<string, unknown>> = {}): AuthContext {
     return {
       principal: { kind: 'user_session' },
       user: { id: randomUUID(), email: 'op@example.com', name: 'Op', isPlatformAdmin: false },
@@ -243,6 +243,7 @@ describe('list_device_restore_point_attempts AI tool (real Postgres, breeze_app)
       allowedSiteIds: undefined,
       allowedDeviceIds: undefined,
       canAccessSite: () => true,
+      ...over,
     } as unknown as AuthContext;
   }
 
@@ -273,5 +274,54 @@ describe('list_device_restore_point_attempts AI tool (real Postgres, breeze_app)
       handler()({ deviceId: aDevice.id }, orgAuth(b.organization.id)));
     expect(JSON.parse(crossText)).toEqual({ error: 'Device not found or access denied' });
     expect(crossText).not.toContain('org-a-secret');
+  });
+  runDb('pages newest first across tied requested_at with no repeat or gap', async () => {
+    const env = await setupTestEnvironment({ rolePermissions: READ });
+    const device = await createDevice({ orgId: env.organization.id, siteId: env.site.id });
+    const rows: Array<{ id: string; at: string }> = [];
+    for (const at of [
+      '2026-09-03T10:00:00.000000Z',
+      '2026-09-02T10:00:00.500000Z',
+      '2026-09-02T10:00:00.500000Z',
+      '2026-09-02T10:00:00.500000Z',
+      '2026-09-01T10:00:00.000000Z',
+    ]) rows.push({ id: await seedAttempt({ orgId: env.organization.id, deviceId: device.id, requestedAt: at }), at });
+    const expected = [...rows]
+      .sort((x, y) => (x.at === y.at ? (x.id < y.id ? 1 : -1) : x.at < y.at ? 1 : -1))
+      .map((r) => r.id);
+
+    const auth = orgAuth(env.organization.id);
+    const seen: string[] = [];
+    const hasMore: boolean[] = [];
+    let cursor: string | undefined;
+    for (let i = 0; i < 5; i++) {
+      const body = JSON.parse(await withDbAccessContext(ctx(env.organization.id), () =>
+        handler()({ deviceId: device.id, limit: 2, ...(cursor ? { cursor } : {}) }, auth)));
+      seen.push(...body.attempts.map((r: { requestId: string }) => r.requestId));
+      hasMore.push(body.hasMore);
+      cursor = body.nextCursor ?? undefined;
+      if (!cursor) break;
+    }
+    expect(seen).toEqual(expected);
+    expect(hasMore).toEqual([true, true, false]);
+  });
+
+  runDb('refuses a device outside the caller site or device allowlist (real verifyDeviceAccess)', async () => {
+    const env = await setupTestEnvironment({ rolePermissions: READ });
+    const device = await createDevice({ orgId: env.organization.id, siteId: env.site.id });
+    await seedAttempt({ orgId: env.organization.id, deviceId: device.id, requestedAt: '2026-09-02T10:00:00.000000Z', message: 'site-secret' });
+    const call = (over: Record<string, unknown>) => withDbAccessContext(ctx(env.organization.id), () =>
+      handler()({ deviceId: device.id }, orgAuth(env.organization.id, over)));
+
+    // Control: the unrestricted caller does see the row.
+    expect(await call({})).toContain('site-secret');
+    for (const over of [
+      { allowedSiteIds: [randomUUID()], canAccessSite: () => false },
+      { allowedDeviceIds: [randomUUID()] },
+    ]) {
+      const text = await call(over);
+      expect(JSON.parse(text)).toEqual({ error: 'Device not found or access denied' });
+      expect(text).not.toContain('site-secret');
+    }
   });
 });
