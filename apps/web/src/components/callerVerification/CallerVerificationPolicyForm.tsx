@@ -195,7 +195,7 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
 
 /**
  * Integer input that keeps the raw text while typing (so "3" on the way to
- * "30" is not rejected) and commits on blur, clamped to [min, max]; an empty
+ * "30" is not rejected) and commits on blur or Enter, clamped to [min, max]; an empty
  * or non-numeric entry reverts to the current value.
  */
 function NumberField({ id, min, max, value, onCommit }: { id: string; min: number; max: number; value: number; onCommit: (n: number) => void }) {
@@ -204,7 +204,7 @@ function NumberField({ id, min, max, value, onCommit }: { id: string; min: numbe
   // than in an effect: a pending mount effect is flushed ahead of the next
   // keystroke's re-render and would overwrite what was just typed (#8879).
   const [synced, setSynced] = useState(value);
-  if (synced !== value) {
+  if (!Object.is(synced, value)) {
     setSynced(value);
     setText(String(value));
   }
