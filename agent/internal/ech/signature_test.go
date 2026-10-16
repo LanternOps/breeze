@@ -3,7 +3,6 @@ package ech
 import (
 	"crypto/tls"
 	"io"
-	"net"
 	"net/url"
 	"testing"
 )
@@ -33,22 +32,8 @@ func TestIsFilterSignature_NilAndUnrelated(t *testing.T) {
 }
 
 func TestIsFilterSignature_RealListener(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			c.Write([]byte("HTTP/1.1 302 Found\r\nLocation: https://example.invalid/warn\r\nConnection: close\r\n\r\n"))
-			c.Close()
-		}
-	}()
-	_, err = tls.Dial("tcp", ln.Addr().String(), &tls.Config{ServerName: "example.test", InsecureSkipVerify: true})
+	addr, _ := startFilterListener(t)
+	_, err := tls.Dial("tcp", addr, &tls.Config{ServerName: "example.test", InsecureSkipVerify: true})
 	if err == nil {
 		t.Fatal("expected TLS dial error")
 	}
