@@ -184,6 +184,10 @@
   "authShell": {
     "tagline": "La piattaforma RMM moderna pensata per velocità, chiarezza e scalabilità."
   },
+  "authFooter": {
+    "reportAbuse": "Segnala un abuso",
+    "security": "Sicurezza"
+  },
   "errorPage": {
     "notFoundBody": "La pagina che stai cercando non esiste o potrebbe essere stata spostata.",
     "serverErrorBody": "Si è verificato un errore imprevisto da parte nostra. Il nostro team è stato avvisato — riprova tra un momento.",

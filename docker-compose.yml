@@ -917,6 +917,10 @@ services:
       PUBLIC_SENTRY_DSN_WEB: ${PUBLIC_SENTRY_DSN_WEB:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       SENTRY_RELEASE: ${SENTRY_RELEASE:-}
+      # Operator abuse/security contacts (#8872): auth footer + /.well-known/security.txt
+      PUBLIC_ABUSE_CONTACT: ${PUBLIC_ABUSE_CONTACT:-}
+      PUBLIC_SECURITY_CONTACT: ${PUBLIC_SECURITY_CONTACT:-}
+      PUBLIC_SECURITY_POLICY_URL: ${PUBLIC_SECURITY_POLICY_URL:-}
     depends_on:
       api:
         condition: service_healthy
