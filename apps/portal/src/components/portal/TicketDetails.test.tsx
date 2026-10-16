@@ -56,8 +56,47 @@ describe('TicketDetails — statuses', () => {
 });
 
 describe('TicketDetails — pending approval banner (#8200)', () => {
+  const budgetApproval = {
+    trigger: 'budget' as const,
+    ticketNumber: 'T-1',
+    ask: { minutes: 60, amount: null, currencyCode: null, coverageStartsAt: null, coverageEndsAt: null },
+  };
+
+  it('renders the after-hours window in the viewer local time, not the server UTC', () => {
+    const prevTz = process.env.TZ;
+    process.env.TZ = 'America/Chicago'; // UTC-6 in December
+    try {
+      render(
+        <TicketDetails
+          ticket={ticket()}
+          pendingApproval={{
+            id: 'req-9',
+            approval: {
+              trigger: 'after_hours',
+              ticketNumber: 'T-1',
+              ask: {
+                minutes: null,
+                amount: null,
+                currencyCode: null,
+                coverageStartsAt: '2026-12-02T00:25:00.000Z',
+                coverageEndsAt: '2026-12-02T02:25:00.000Z',
+              },
+            },
+          }}
+        />
+      );
+      const text = screen.getByTestId('ticket-pending-approval').textContent ?? '';
+      expect(text).toContain('06:25 PM');
+      expect(text).toContain('08:25 PM');
+      expect(text).not.toContain('12:25 AM');
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    }
+  });
+
   it('shows a banner linking to the request when work awaits approval', () => {
-    render(<TicketDetails ticket={ticket()} pendingApproval={{ id: 'req-9', askSentence: 'Approve up to 1 h more on ticket #T-1' }} />);
+    render(<TicketDetails ticket={ticket()} pendingApproval={{ id: 'req-9', approval: budgetApproval }} />);
     const banner = screen.getByTestId('ticket-pending-approval');
     expect(banner.textContent).toContain('This ticket has work waiting for your approval');
     expect(banner.textContent).toContain('Approve up to 1 h more on ticket #T-1');
