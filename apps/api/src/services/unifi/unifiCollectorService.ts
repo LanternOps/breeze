@@ -213,10 +213,12 @@ export async function deviceHasAgentCollectors(db: DbExecutor, deviceId: string,
  * #8053 — NEGATIVE cache for the agent's collector poll, keyed by org AND
  * device. Only "this device has no collectors" is ever stored (never a config:
  * those carry decrypted controller keys), so the worst a stale entry can do is
- * delay a NEW collector's first poll. Bounded by the TTL across instances, and
- * cleared on this process by every collector create/re-point below
- * (upsertCollector, upsertSelfHostedController), after their transaction
- * commits. Deletes need no invalidation: they only ever make "none" truer.
+ * delay a NEW collector's first poll. Writers below invalidate every API
+ * instance within about 1 s through the cluster bus (W05, #8144), once their
+ * transaction commits: every collector create/re-point (upsertCollector,
+ * upsertSelfHostedController) and an org merge (whole cache). Writers not
+ * listed rely on the TTL. Deletes need no invalidation: they only ever make
+ * "none" truer.
  */
 export const AGENT_COLLECTOR_ABSENCE_TTL_MS = 5 * 60_000;
 
@@ -226,6 +228,7 @@ export const agentCollectorAbsenceCache = new HotPathTtlCache<string, boolean>({
   // One small entry per collector-less agent; past the bound the oldest device
   // just probes again on its next poll.
   maxEntries: 50_000,
+  cluster: true,
 });
 
 export function agentCollectorAbsenceKey(deviceId: string, orgId: string): string {

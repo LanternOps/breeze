@@ -55,6 +55,15 @@ it('formats timestamps, shows converter and monitor names, and labels reverted r
   expect(section.textContent).not.toContain('2026-09-19T00:00:00Z');
   expect(screen.getByTestId('ledger-reverted-c2')).toHaveTextContent('Reverted');
 });
+it('never renders a raw user id when the converter name cannot be resolved', async () => {
+  const uuid = '3f2a9c1e-7b4d-4e0a-9d21-5c6b8a1f0e77';
+  request.mockResolvedValueOnce(json({ items: [{ ...entry, convertedBy: uuid, convertedByName: null }], nextCursor: null }));
+  render(<ConversionLedger />);
+  await screen.findByTestId('ledger-undo-c1');
+  const text = screen.getByTestId('conversion-ledger').textContent ?? '';
+  expect(text).not.toContain(uuid);
+  expect(text).toContain('Unknown user');
+});
 it('refreshes lifecycle state after a 409 and never reports successful Undo', async () => {
   request.mockResolvedValueOnce(json({ items: [entry], nextCursor: null }))
     .mockResolvedValueOnce(json({ error: 'conversion_revert_unavailable' }, 409))

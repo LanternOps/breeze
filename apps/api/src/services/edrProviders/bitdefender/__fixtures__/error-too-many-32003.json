@@ -1,0 +1,1 @@
+{"id":1,"jsonrpc":"2.0","error":{"code":-32003,"message":"Too many requests","data":{"details":"Rate limit exceeded. Maximum 3 requests per 60 seconds allowed."}}}

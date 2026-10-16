@@ -7,7 +7,27 @@ import {
   clampTtlToOfferableOption,
   ENROLLMENT_TTL_OPTIONS,
   MAX_ENROLLMENT_TTL_MINUTES,
+  DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES,
+  MAX_BOOTSTRAP_TOKEN_TTL_MINUTES,
 } from './enrollmentDefaults.js';
+
+describe('installer bootstrap token lifetime limits', () => {
+  it('defaults to 7 days and allows at most 30 days', () => {
+    expect(DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES).toBe(10080);
+    expect(MAX_BOOTSTRAP_TOKEN_TTL_MINUTES).toBe(43200);
+  });
+
+  it('is a canonical picker option, so a picker bounded by it keeps a labelled top option', () => {
+    expect(ENROLLMENT_TTL_OPTIONS).toContain(MAX_BOOTSTRAP_TOKEN_TTL_MINUTES);
+    expect(ENROLLMENT_TTL_OPTIONS).toContain(DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES);
+    expect(MAX_BOOTSTRAP_TOKEN_TTL_MINUTES).toBeLessThanOrEqual(MAX_ENROLLMENT_TTL_MINUTES);
+  });
+
+  it('bounds the offerable installer options to 30 days', () => {
+    expect(enrollmentTtlOptionsWithinCap(Math.min(MAX_ENROLLMENT_TTL_MINUTES, MAX_BOOTSTRAP_TOKEN_TTL_MINUTES)))
+      .toEqual([60, 1440, 10080, 43200]);
+  });
+});
 
 describe('resolveEnrollmentDefaults', () => {
   it('inherits the partner value when the org has not set one', () => {

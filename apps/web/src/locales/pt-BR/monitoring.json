@@ -192,7 +192,8 @@
     "script": "Verificação de script",
     "network_check": "Verificação de rede",
     "hardware_health": "Integridade do hardware",
-    "time_sync": "Sincronização de horário"
+    "time_sync": "Sincronização de horário",
+    "container_image_currency": "Atualização de imagens de contêiner"
   },
   "fields": {
     "operator": "Comparação",
@@ -244,7 +245,9 @@
     "expectedValue": "Valor esperado",
     "nameserver": "Servidor de nomes",
     "degradedIsFailure": "Tratar degradado como falha",
-    "maxResponseMs": "Falhar se mais lento que (ms)"
+    "maxResponseMs": "Falhar se mais lento que (ms)",
+    "eventLogCollectionNoSource": "Eventos de Aplicativo de nível Informação e Aviso são coletados apenas de {{providers}}. Eventos de outras origens só acionam esta regra no nível Erro ou Crítico.",
+    "eventLogCollectionSourceNotCollected": "O agente não coleta eventos de Aplicativo de nível Informação ou Aviso de \"{{source}}\", então esta regra só corresponderá aos eventos de Erro ou Crítico dessa origem. Provedores coletados: {{providers}}."
   },
   "operators": {
     "gt": "maior que",
@@ -268,6 +271,7 @@
     "system": "Sistema"
   },
   "eventLevels": {
+    "info": "Informação",
     "warning": "Aviso",
     "error": "Erro",
     "critical": "Crítico"
@@ -359,7 +363,7 @@
   "legacy": {
     "title": "Regras de alerta legadas",
     "description": "Regras de alerta independentes que não são gerenciadas por um monitor. Converta-as para reunir respostas, entrega e escalonamento em um só lugar.",
-    "empty": "Nenhuma regra legada.",
+    "empty": "Nenhuma regra de alerta independente precisa de conversão.",
     "columns": {
       "name": "Nome",
       "template": "Modelo",
@@ -535,6 +539,7 @@
       "more": "Carregar mais",
       "empty": "Nenhum histórico de conversão.",
       "system": "Sistema",
+      "unknownUser": "Usuário desconhecido",
       "reverted": "Revertido",
       "deadline": "Desfazer fica indisponível após a aposentadoria de alertas legados remover o avaliador de origem."
     },
@@ -643,6 +648,9 @@
           "policy_not_applied": "A política de hora não foi aplicada",
           "policy_conflict_gpo": "A Política de Grupo controla as configurações de hora"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Mínimo de dias desatualizada"
       }
     }
   },

@@ -43,6 +43,7 @@ Each line is one charge on the contract. Lines can resolve their quantity in dif
 | Per device role | Counts the customer's devices whose role is in the line's set (for example switch + router + firewall, or workstation + server) at billing time × unit price |
 | Per device group | Counts the members of one device group at billing time × unit price. Static groups bill their current members; dynamic groups are evaluated from their filter when the estimate or invoice is computed |
 | Per seat | Counts the customer's seats/users at billing time × unit price |
+| Block hours | A prepaid bank of support hours for each billing period at a flat price. Technician time draws it down; hours beyond it bill at an overage rate. See [Block hours](#block-hours) |
 | Manual | A fixed quantity you set × unit price |
 
 Per-device and per-device-role lines can be scoped to a specific **site** so you bill only the devices at that location. A per-device-group line is not site-scoped: make the group itself site-bound instead. Per-seat lines always bill the organization's whole active-user count and cannot be site-scoped. A line can link to a [catalog item](/features/product-catalog/), which prefills its description and price.
@@ -56,7 +57,7 @@ Any line that counts something — per device, per device role, per device group
 - **Bill extras.** A second, customer-visible line is added to the invoice for the units above the included quantity, at the overage price you set, directly under the line it belongs to. It is an ordinary line: it follows the base line's tax treatment, it counts toward margin, and you can edit or remove it on a draft invoice.
 - **Flag extras for review.** Nothing extra is invoiced. The excess is reported on the contract estimate, on the result of a manual **Generate now**, and in the nightly billing log, so somebody can decide whether to raise the included quantity or add a line.
 
-The overage price must be valid in the contract's currency (a yen contract cannot have a ¥12.50 rate), and an overage price of zero is allowed — the extras are itemised on the customer's invoice at no charge. An included quantity must be a whole number greater than zero, and cannot go on a flat or manual line. While any line carries an overage price, the contract's currency cannot be restamped: clear the allowance (or the lines) first, because an overage price you typed by hand cannot be re-derived from a price book.
+The overage price must be valid in the contract's currency (a yen contract cannot have a ¥12.50 rate), and an overage price of zero is allowed — the extras are itemised on the customer's invoice at no charge. An included quantity must be a whole number greater than zero (a Block hours line takes fractional hours), and cannot go on a flat or manual line. While any line carries an overage price, the contract's currency cannot be restamped: clear the allowance (or the lines) first, because an overage price you typed by hand cannot be re-derived from a price book.
 
 Dynamic groups on a contract are evaluated live when the estimate or invoice is computed, not from the member list cached on the Device Groups page, so a device that changed since the group was last refreshed is still billed correctly. The one exception is a filter condition that tests membership in *another* group, which reads that group's cached list. A group billed by a draft, active or paused contract cannot be deleted until the line is removed; a group deleted after a contract ended stays on that contract's lines by name.
 
@@ -98,6 +99,39 @@ A contract line scoped to a site records the site's name as well as its id. If t
 The refusal currently surfaces as the raw message from the server, naming the internal line id and the deleted site — technical-looking, but it tells you exactly which line to fix.
 
 A line whose site was deleted *before* this behavior shipped cannot be recovered because its site name was never recorded. It stays organization-wide until a technician re-scopes it.
+
+### Block hours
+
+A **Block hours** line sells a prepaid bank of support hours for each billing period -- for example "10 hours a month for a flat price". Your technicians' time draws the bank down, and hours beyond it bill at an overage rate you set on the line.
+
+| Setting | Meaning |
+|---------|---------|
+| Included hours | Hours in the block each period. Fractions are allowed (for example 7.5) |
+| Overage rate | Price per hour beyond the block, in the contract's currency. Required, and overage is always billed on an invoice |
+| Rollover | **None**: unused hours expire when the period ends. **Carry forward**: unused hours join the next period, optionally capped at a number of hours |
+| Alert at | Optional percentage (1 to 100). Your team is notified once when the open period's usage reaches it |
+
+A customer can have **one live block at a time**, across all of their contracts, drafts included. To draft next term's contract with a block, retire the current block first.
+
+**What draws the block down.** Billable time entries for the customer that have ended inside the period and have not been billed yet. Approval is not required, so unapproved time draws down too (the contract page shows how much of the used hours is still unapproved). Each entry's hours are rounded to two decimals and then added, so three 20-minute entries count as 0.99 hours. Non-billable and no-charge time never draws down, and time with no hourly rate still does, because the unit is hours. Time already marked as included by its work type does not draw the block down. Time stamped in a different currency than the contract still draws hours -- no money is converted -- and is flagged on the contract page.
+
+**When a period closes.** After a period has ended, the next invoice run closes it: the entries it drew are marked as covered by the contract, the period's figures are frozen, and any overage is added to the invoice as a line that names the period, for example "Support hours -- hours over block, 2026-08-01 -- 2026-09-01". A closed period is never recalculated. Once an entry has been drawn by a block it can no longer be edited or deleted.
+
+**Advance billing runs one period behind.** On a contract billed in advance, the block fee is invoiced at the start of the period, but that period's overage lands on the *following* invoice, because the hours had not been worked when the first invoice was cut. On a contract billed in arrears the fee and the overage appear together on the same invoice.
+
+**Rollover.** Unused hours (the period's included hours plus anything carried in, minus the hours used) carry forward under **Carry forward**, up to the cap if you set one. Carried hours do not expire separately, and the first period of a block carries nothing in.
+
+**Held entries on ad-hoc invoices.** While a period is open, the time it will draw is reserved for the block. A hand-built invoice or a ticket invoice leaves those entries out and reports how many hours were held, so the customer is not charged ad hoc for hours the block already covers.
+
+**Entries made after a period closed.** A closed period never reopens. Time that was entered for work done in a period that has already closed is not drawn from the block; it bills ad hoc as usual, and the contract page shows how many hours were entered after close.
+
+**Retire or delete.** Removing a block line that has closed periods (or a claimed period) *retires* it instead of deleting it: it stops billing its fee, keeps its history, and any period it had already billed still closes. A block that never billed anything is simply deleted. Cancelling or expiring a contract retires its block. When a contract ends, the final period is closed by a daily sweep and any overage is put on a **draft** invoice that is never issued automatically, so someone reviews it first.
+
+**Moving time between customers.** Moving a ticket or a device to another organization is refused (`HOUR_BLOCK_DRAWN_TIME`) while it holds time a block has already drawn. The message names how many entries are affected.
+
+**Alerts.** With **Alert at** set, your team gets an in-app notification (event `contract.hour_block_threshold`) the first time the open period's usage reaches the percentage -- once per period and threshold, however many times the daily check runs. Recipients are the users who can read contracts and have access to the customer, or the contract's creator if none do. Changing the percentage mid-period can notify once more for the new level.
+
+**Customer visibility.** The customer can see their balance in the portal. See [Support hours](/features/portal/#support-hours-block-hours).
 
 ## Managing the Lifecycle
 

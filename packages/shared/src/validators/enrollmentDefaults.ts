@@ -3,6 +3,23 @@ import { z } from 'zod';
 export const MAX_ENROLLMENT_TTL_MINUTES = 525_600; // 365 days
 export const MAX_ENROLLMENT_DEVICE_COUNT = 1000;
 
+/**
+ * Lifetime of the credential embedded in a downloaded installer (the
+ * installer bootstrap token, or the child enrollment key in the legacy macOS
+ * zip), in minutes.
+ *
+ * Default 7 days; never more than 30 days, whatever the source: the
+ * INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES env var, an admin's pick, or an
+ * installer link's remaining lifetime. A downloaded installer that is never
+ * run should not stay able to enroll a device for months. Installer links and
+ * enrollment keys are separate objects and keep MAX_ENROLLMENT_TTL_MINUTES.
+ *
+ * Shared so the Add Device modal's installer picker offers exactly what the
+ * installer routes accept (they 400 an explicit ttlMinutes above the maximum).
+ */
+export const DEFAULT_BOOTSTRAP_TOKEN_TTL_MINUTES = 10_080; // 7 days
+export const MAX_BOOTSTRAP_TOKEN_TTL_MINUTES = 43_200; // 30 days
+
 /** Selectable TTLs, in minutes. Mirrors the Add Device modal's option set. */
 export const ENROLLMENT_TTL_OPTIONS = [60, 1440, 10080, 43200, 129600, 525600] as const;
 

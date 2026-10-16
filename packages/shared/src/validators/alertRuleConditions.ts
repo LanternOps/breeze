@@ -61,7 +61,7 @@ const offlineConditionSchema = z.object({
 const eventLogConditionSchema = z.object({
   type: z.literal('event_log'),
   category: z.enum(['security', 'hardware', 'application', 'system']),
-  level: z.enum(['warning', 'error', 'critical']),
+  level: z.enum(['info', 'warning', 'error', 'critical']),
   sourcePattern: z.string().max(500).optional(),
   messagePattern: z.string().max(500).optional(),
   countThreshold: z.number().int().min(1).max(10000).default(1),

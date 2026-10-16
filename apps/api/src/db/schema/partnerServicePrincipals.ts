@@ -102,6 +102,12 @@ export const partnerServicePrincipalKeys = pgTable('partner_service_principal_ke
     { onDelete: 'set null' },
   ),
   createdBy: uuid('created_by').notNull().references(() => users.id),
+  // The principal owner's users.credential_epoch / users.mfa_epoch when this
+  // key was issued. The key stops authenticating once either moves (password
+  // change/reset, invite acceptance, admin status change, MFA factor change),
+  // the same binding human API keys carry (api_keys.creator_*_epoch).
+  ownerCredentialEpoch: integer('owner_credential_epoch').notNull(),
+  ownerMfaEpoch: integer('owner_mfa_epoch').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   keyHashUnique: unique('partner_service_principal_keys_key_hash_unique').on(table.keyHash),

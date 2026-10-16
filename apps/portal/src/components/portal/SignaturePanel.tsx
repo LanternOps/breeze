@@ -20,6 +20,11 @@ interface SignaturePanelProps {
   /** The agreements the signer confirms (contract blocks, then T&C), each named
    *  and linked to its collapsed row below. Empty = the generic "terms". */
   agreements?: { label: string; href: string }[];
+  /** Overrides the "Accept & sign" button label — e.g. "Sign & pay deposit $X"
+   *  when signing goes straight on to payment (#8231). */
+  acceptLabel?: string;
+  /** One line under the intro saying what happens after signing (payment). */
+  afterSignNote?: string;
 }
 
 /**
@@ -35,7 +40,7 @@ interface SignaturePanelProps {
  * backing out of the prompt still declined the proposal irreversibly. The
  * confirm block below is the only path to onDecline().
  */
-export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreements = [] }: SignaturePanelProps) {
+export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreements = [], acceptLabel, afterSignNote }: SignaturePanelProps) {
   const [name, setName] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [touched, setTouched] = useState(false);
@@ -71,6 +76,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreem
       <h3 className="text-sm font-semibold text-foreground">Accept &amp; sign</h3>
       <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
         Type your full legal name to sign and accept this proposal.
+        {afterSignNote ? ` ${afterSignNote}` : ''}
       </p>
 
       <div className="mt-4 space-y-1.5">
@@ -212,7 +218,7 @@ export function SignaturePanel({ onAccept, onDecline, busy, testIdPrefix, agreem
             disabled={busy}
             className={cn(BTN_PRIMARY, !canSign && 'opacity-50')}
           >
-            {busy ? 'Signing' : 'Accept & sign'}
+            {busy ? 'Signing' : (acceptLabel ?? 'Accept & sign')}
           </button>
           <button
             type="button"

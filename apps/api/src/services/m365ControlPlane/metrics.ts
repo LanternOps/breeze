@@ -236,6 +236,8 @@ export const M365_CUSTOMER_GRAPH_ACTIONS_EVENTS = [
   'm365.customer_graph_actions.admin_identity_verified',
   // #7913 W03 confirm-tenant interstitial, appended last.
   'm365.customer_graph_actions.tenant_confirmed',
+  // #8745 actions manifest upgrade consent, appended last.
+  'm365.customer_graph_actions.upgrade_consent_initiated',
 ] as const;
 
 export type M365CustomerGraphActionsEvent = typeof M365_CUSTOMER_GRAPH_ACTIONS_EVENTS[number];

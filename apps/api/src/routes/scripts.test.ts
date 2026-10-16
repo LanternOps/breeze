@@ -3638,6 +3638,25 @@ describe('scripts routes', () => {
       expect(scriptVersionsH.cuts).toEqual([]);
     });
 
+    // #8590 — `null` = clear the mapping, absent = leave it alone.
+    it('writes an explicit null exitCodeSeverityMapping (clears the mapping)', async () => {
+      const { set } = mockUpdate({ exitCodeSeverityMapping: { '1': 'high' } });
+      expect((await put({ exitCodeSeverityMapping: null })).status).toBe(200);
+      expect(set.mock.calls[0]![0]).toHaveProperty('exitCodeSeverityMapping', null);
+    });
+
+    it('leaves exitCodeSeverityMapping untouched when the field is absent', async () => {
+      const { set } = mockUpdate({ exitCodeSeverityMapping: { '1': 'high' } });
+      expect((await put({ description: 'd' })).status).toBe(200);
+      expect(set.mock.calls[0]![0]).not.toHaveProperty('exitCodeSeverityMapping');
+    });
+
+    it('sets exitCodeSeverityMapping when a mapping is supplied', async () => {
+      const { set } = mockUpdate({});
+      expect((await put({ exitCodeSeverityMapping: { '2': 'critical', '0': null } })).status).toBe(200);
+      expect(set.mock.calls[0]![0]).toHaveProperty('exitCodeSeverityMapping', { '2': 'critical', '0': null });
+    });
+
     it('returns the post-cut version number in the response body', async () => {
       mockUpdate({});
       const res = await put({ content: 'echo bye' });

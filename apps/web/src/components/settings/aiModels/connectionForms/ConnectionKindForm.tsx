@@ -12,6 +12,10 @@ export function ConnectionKindForm(props: {
   kind: AddableConnectionKind;
   connection: AiConnectionDto | null;
   onDraftChange: (d: KindDraft) => void;
+  /** A server refusal of the draft's Base URL, already localised (#7803). */
+  baseUrlError?: string | null;
+  /** Locks the fields while the drawer is saving. */
+  disabled?: boolean;
 }) {
   const { onDraftChange } = props;
   switch (props.kind) {
@@ -21,6 +25,8 @@ export function ConnectionKindForm(props: {
       return (
         <OpenAiCompatibleConnectionForm
           connection={props.connection}
+          baseUrlError={props.baseUrlError}
+          disabled={props.disabled}
           onChange={(draft) => onDraftChange({ kind: 'openai_compatible', draft })}
         />
       );

@@ -1,0 +1,1 @@
+[{"vmid":"200","name":"dns-cache","status":"running","cpus":1.5,"maxmem":536870912,"uptime":86400,"type":"lxc"},{"vmid":"201","name":"mail-relay","status":"stopped","cpus":1,"maxmem":1073741824,"uptime":0,"type":"lxc"},{"vmid":"9001","name":"debian-template","status":"stopped","cpus":1,"maxmem":536870912,"template":"1","type":"lxc"}]

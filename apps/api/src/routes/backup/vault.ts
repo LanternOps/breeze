@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { optionalJsonValidator, zValidator } from '../../lib/validation';
 import { z } from 'zod';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, getTableColumns } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, localVaults } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { queueCommandForExecution, CommandTypes } from '../../services/commandQueue';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from '../../services/vaultDeviceCommands';
 import { resolveScopedOrgId } from './helpers';
 import {
   vaultCreateSchema,
@@ -40,6 +41,38 @@ async function resolveSiteAllowedDeviceIds(orgId: string, perms: UserPermissions
 function isEmptySiteCeiling(permissions: UserPermissions | undefined): boolean {
   const allowedSiteIds = permissions?.allowedSiteIds;
   return allowedSiteIds !== undefined && (!Array.isArray(allowedSiteIds) || allowedSiteIds.length === 0);
+}
+
+type DeviceConfigOutcome = { status: 'queued' } | { status: 'failed'; error: string };
+
+/**
+ * Push the device's vault configuration (#8385) after a vault row changed.
+ * The row is already saved, so a failed push is reported in the response
+ * (`deviceConfig`) for the UI to surface, not turned into an error status
+ * that would invite a retry and a duplicate vault.
+ */
+async function pushDeviceVaultConfig(
+  orgId: string,
+  deviceId: string,
+  userId: string | undefined,
+): Promise<DeviceConfigOutcome> {
+  try {
+    const payload = await buildVaultConfigurePayload(deviceId, orgId);
+    const result = await queueCommandForExecution(
+      deviceId,
+      CommandTypes.VAULT_CONFIGURE,
+      payload,
+      { userId, expectedOrgId: orgId },
+    );
+    if ('error' in result && result.error) {
+      console.error(`[Vault] vault_configure for device ${deviceId} was not queued: ${result.error}`);
+      return { status: 'failed', error: result.error };
+    }
+    return { status: 'queued' };
+  } catch (err) {
+    console.error(`[Vault] Failed to queue vault_configure for device ${deviceId}:`, err);
+    return { status: 'failed', error: 'Failed to send the vault configuration to the device' };
+  }
 }
 
 async function updateVaultWithinCurrentSite(
@@ -122,11 +155,21 @@ vaultRoutes.get('/', requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIO
   }
 
   const rows = await db
-    .select()
+    .select({
+      ...getTableColumns(localVaults),
+      deviceHostname: devices.hostname,
+      deviceDisplayName: devices.displayName,
+    })
     .from(localVaults)
+    .leftJoin(devices, eq(devices.id, localVaults.deviceId))
     .where(and(...conditions));
 
-  return c.json({ data: rows.map(toVaultResponse) });
+  return c.json({
+    data: rows.map(({ deviceHostname, deviceDisplayName, ...row }) => ({
+      ...toVaultResponse(row),
+      deviceName: deviceDisplayName ?? deviceHostname ?? null,
+    })),
+  });
 });
 
 // POST /vault — create vault config
@@ -177,7 +220,9 @@ vaultRoutes.post(
     },
   });
 
-  return c.json(toVaultResponse(row), 201);
+  const deviceConfig = await pushDeviceVaultConfig(orgId, row.deviceId, auth.user?.id);
+
+  return c.json({ ...toVaultResponse(row), deviceConfig }, 201);
 });
 
 // PATCH /vault/:id — update vault config
@@ -221,7 +266,9 @@ vaultRoutes.patch(
       details: { changedFields: Object.keys(payload) },
     });
 
-    return c.json(toVaultResponse(row));
+    const deviceConfig = await pushDeviceVaultConfig(orgId, row.deviceId, auth.user?.id);
+
+    return c.json({ ...toVaultResponse(row), deviceConfig });
   }
 );
 
@@ -262,7 +309,9 @@ vaultRoutes.delete(
     resourceId: row.id,
   });
 
-  return c.json({ deleted: true, id: row.id });
+  const deviceConfig = await pushDeviceVaultConfig(orgId, row.deviceId, auth.user?.id);
+
+  return c.json({ deleted: true, id: row.id, deviceConfig });
 });
 
 // POST /vault/:id/sync — trigger manual sync
@@ -309,6 +358,13 @@ vaultRoutes.post(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
+    // The helper requires a snapshot id. The UI's Sync button names none, so
+    // default to the device's newest file-backup snapshot (#8385).
+    const snapshotId = payload.snapshotId ?? await resolveLatestVaultSyncSnapshotId(vault.deviceId, orgId);
+    if (!snapshotId) {
+      return c.json({ error: 'No backup snapshot to sync yet: run a file backup on this device first' }, 400);
+    }
+
     // Update sync status to pending. The predicate repeats org_id and the
     // device_id we just authorized: the vault was read in a separate statement
     // above, so `id` alone would be a check-then-act window.
@@ -316,7 +372,7 @@ vaultRoutes.post(
       .update(localVaults)
       .set({
         lastSyncStatus: 'pending',
-        lastSyncSnapshotId: payload.snapshotId ?? null,
+        lastSyncSnapshotId: snapshotId,
         updatedAt: new Date(),
       })
       .where(and(
@@ -330,7 +386,9 @@ vaultRoutes.post(
       const result = await queueCommandForExecution(
         vault.deviceId,
         CommandTypes.VAULT_SYNC,
-        { vaultId: vault.id, snapshotId: payload.snapshotId },
+        // vaultPath lets the helper refuse a sync aimed at a vault other
+        // than the one it is configured for.
+        { vaultId: vault.id, vaultPath: vault.vaultPath, snapshotId },
         { userId: auth.user?.id, expectedOrgId: orgId }
       );
       if ('error' in result) {
@@ -355,14 +413,14 @@ vaultRoutes.post(
       action: 'backup.vault.sync',
       resourceType: 'local_vault',
       resourceId: vault.id,
-      details: { deviceId: vault.deviceId, snapshotId: payload.snapshotId },
+      details: { deviceId: vault.deviceId, snapshotId },
     });
 
     return c.json({
       id: vault.id,
       status: 'pending',
       deviceId: vault.deviceId,
-      snapshotId: payload.snapshotId ?? null,
+      snapshotId,
     });
   }
 );

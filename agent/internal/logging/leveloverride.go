@@ -68,6 +68,9 @@ type LevelOverrideStatus struct {
 	ExpiresAt    time.Time
 	Persisted    bool
 	PersistError string
+	// Raised is true when the override ships more than the base level
+	// (e.g. debug/info over a warn base), i.e. the server actually raised it.
+	Raised bool
 }
 
 // validShipLevel reports whether s is one of the level names the command
@@ -221,10 +224,12 @@ func ApplyShipperLevelOverride(level string, d time.Duration) (LevelOverrideStat
 	expiresAt := now.Add(d)
 	s.setLevelOverride(parseLevel(level), expiresAt, now)
 
+	base := s.baseLevelName()
 	st := LevelOverrideStatus{
 		Level:     level,
-		BaseLevel: s.baseLevelName(),
+		BaseLevel: base,
 		ExpiresAt: expiresAt,
+		Raised:    parseLevel(level) < parseLevel(base),
 	}
 	if s.overridePath == "" {
 		st.PersistError = "no override path configured"

@@ -11,7 +11,8 @@ import { deviceCommands } from '../../db/schema';
 import {
   pamAgentResultV2Schema,
   recordPamActuationResult,
-  type PamActuationResultClassification,
+  toV1PamResultClassification,
+  type PamActuationResultClassificationV1,
 } from '../../services/pamActuationResult';
 import { consumePamReconciliationRateLimit } from '../../services/pamReconciliationRateLimit';
 
@@ -29,7 +30,7 @@ const pamObservationParamSchema = z.object({
 
 export type PamResultAcknowledgement = {
   protocolVersion: 1;
-  classification: PamActuationResultClassification;
+  classification: PamActuationResultClassificationV1;
 };
 
 export const pamObservationRoutes = new Hono();
@@ -89,7 +90,7 @@ pamObservationRoutes.post(
     });
     const acknowledgement: PamResultAcknowledgement = {
       protocolVersion: 1,
-      classification,
+      classification: toV1PamResultClassification(classification),
     };
     return c.json(acknowledgement);
   },

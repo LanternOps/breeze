@@ -57,6 +57,8 @@ function grantScriptsExecute() {
 
 describe('DeviceScriptHistory status labels (#5318)', () => {
   beforeEach(() => {
+    // These suites exercise the chronological table (#7413 made per-script latest the default).
+    window.location.hash = '#scripts/view=all';
     vi.clearAllMocks();
     grantScriptsExecute();
   });
@@ -87,6 +89,8 @@ describe('DeviceScriptHistory status labels (#5318)', () => {
 
 describe('DeviceScriptHistory Stop action (#5318)', () => {
   beforeEach(() => {
+    // These suites exercise the chronological table (#7413 made per-script latest the default).
+    window.location.hash = '#scripts/view=all';
     vi.clearAllMocks();
     grantScriptsExecute();
   });

@@ -1271,6 +1271,39 @@ describe('validateConfig', () => {
     warnSpy.mockRestore();
   });
 
+  it('warns at boot, naming the variable, when INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES exceeds 30 days', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withEnv({
+      ...validEnv,
+      INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: '129600',
+    }, () => {
+      validateConfig();
+      const ttlWarnings = warnSpy.mock.calls
+        .map((args) => String(args[0]))
+        .filter((line) => line.includes('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES'));
+      expect(ttlWarnings).toHaveLength(1);
+      expect(ttlWarnings[0]).toContain('43200');
+    });
+    warnSpy.mockRestore();
+  });
+
+  it.each(['43200', '10080', '', 'forever'])(
+    'does not warn about INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES=%j',
+    (value) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES: value,
+      }, () => {
+        validateConfig();
+        expect(
+          warnSpy.mock.calls.some((args) => String(args[0]).includes('INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES')),
+        ).toBe(false);
+      });
+      warnSpy.mockRestore();
+    },
+  );
+
   it('rejects short AGENT_ENROLLMENT_SECRET in production when configured', () => {
     withEnv({
       ...validEnv,
@@ -1614,6 +1647,28 @@ describe('validateConfig', () => {
       withEnv({ ...validEnv, NODE_ENV: 'production', CORS_ALLOWED_ORIGINS: 'https://app.breeze.io', TRUST_PROXY_HEADERS: 'false' }, () => {
         const config = validateConfig();
         expect(config.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID).toBe('false');
+      });
+    });
+  });
+
+  // ---- #8616 heartbeat retain-state kill switch. Default on; 'false' makes
+  // the heartbeat answer every agent with the legacy payload.
+  describe('HEARTBEAT_RETAIN_STATE_ENABLED', () => {
+    it('defaults to true when unset', () => {
+      withEnv(validEnv, () => {
+        expect(validateConfig().HEARTBEAT_RETAIN_STATE_ENABLED).toBe('true');
+      });
+    });
+
+    it('accepts an explicit false', () => {
+      withEnv({ ...validEnv, HEARTBEAT_RETAIN_STATE_ENABLED: 'false' }, () => {
+        expect(validateConfig().HEARTBEAT_RETAIN_STATE_ENABLED).toBe('false');
+      });
+    });
+
+    it('boot-refuses an invalid value instead of silently staying on', () => {
+      withEnv({ ...validEnv, HEARTBEAT_RETAIN_STATE_ENABLED: 'off' }, () => {
+        expect(() => validateConfig()).toThrow('HEARTBEAT_RETAIN_STATE_ENABLED');
       });
     });
   });
@@ -3876,5 +3931,51 @@ describe('execution-plane env (W01): BREEZE_REGION / BREEZE_AI_WORKSPACE_ENABLED
         });
       },
     );
+  });
+
+  it('refuses boot when TUNNEL_ORIGIN_TEMPLATE shares the app registrable domain', () => {
+    withEnv({ ...validEnv, PUBLIC_APP_URL: 'https://us.breeze-app.test', TUNNEL_ORIGIN_TEMPLATE: 'https://{id}.tunnel.breeze-app.test' }, () => {
+      expect(() => validateConfig()).toThrow(/TUNNEL_ORIGIN_TEMPLATE/);
+    });
+  });
+
+  it('boots with a tunnel template on a separate registrable domain', () => {
+    withEnv({
+      ...validEnv, PUBLIC_APP_URL: 'https://us.breeze-app.test',
+      TUNNEL_ORIGIN_TEMPLATE: 'https://{id}.us.breezetunnel.test', TUNNEL_FRAME_ANCESTOR: 'https://us.breeze-app.test',
+    }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+});
+
+// #7640: compose maps these as `${VAR:-}`, so the key is always injected, as ''
+// when the operator left it unset. '' must behave exactly like "not set".
+describe('empty-string compose passthrough (#7640)', () => {
+  it('treats empty PARTNER_HOOKS_URL, MCP_LLM_PROVIDER and MCP_LLM_BASE_URL as unset', () => {
+    withEnv({ ...validEnv, PARTNER_HOOKS_URL: '', MCP_LLM_PROVIDER: '', MCP_LLM_BASE_URL: '' }, () => {
+      const config = validateConfig();
+      expect(config.PARTNER_HOOKS_URL).toBeUndefined();
+      expect(config.MCP_LLM_PROVIDER).toBe('anthropic');
+      expect(config.MCP_LLM_BASE_URL).toBeUndefined();
+    });
+  });
+
+  it('still refuses a malformed PARTNER_HOOKS_URL / MCP_LLM_BASE_URL / MCP_LLM_PROVIDER', () => {
+    withEnv({ ...validEnv, PARTNER_HOOKS_URL: 'not-a-url' }, () => {
+      expect(() => validateConfig()).toThrow(/PARTNER_HOOKS_URL/);
+    });
+    withEnv({ ...validEnv, MCP_LLM_BASE_URL: 'not-a-url' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_LLM_BASE_URL/);
+    });
+    withEnv({ ...validEnv, MCP_LLM_PROVIDER: 'bogus' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_LLM_PROVIDER/);
+    });
+  });
+
+  it('still requires MCP_LLM_BASE_URL when provider is openai-compatible and the base URL is empty', () => {
+    withEnv({ ...validEnv, IS_HOSTED: 'false', MCP_LLM_PROVIDER: 'openai-compatible', MCP_LLM_BASE_URL: '', MCP_LLM_MODEL: 'm' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_LLM_BASE_URL is required/);
+    });
   });
 });

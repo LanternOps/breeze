@@ -23,6 +23,7 @@ const devices: DeviceStats = {
   offline: 15,
   byStatus: { online: 25, offline: 15 },
   migrationRequiredCount: 0,
+  logShippingFailingCount: 0,
 };
 
 describe('AlertsFeed title placeholders', () => {

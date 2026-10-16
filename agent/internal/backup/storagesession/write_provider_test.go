@@ -3,6 +3,7 @@ package storagesession
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -486,28 +487,83 @@ func TestWriteProviderIdentity(t *testing.T) {
 	var _ providers.ContextDownloader = p
 }
 
+// TestWriteProviderRestartsStalledUploadOnFreshURL runs on the fake idle
+// clock (#8500). With a real 100ms watchdog, a retry that took longer than
+// 100ms on a loaded -race runner was itself cut off as a stall, so the resolve
+// count came up 3 instead of 2. The watchdog now fires only when the test
+// advances virtual time, and it advances once, after storage has received the
+// whole first PUT body (so the client's progress reset for it has landed).
+// The retry is held on purpose for longer than the idle window: a regression
+// to wall-clock timing fails here every run instead of flaking.
 func TestWriteProviderRestartsStalledUploadOnFreshURL(t *testing.T) {
+	const (
+		idle      = 100 * time.Millisecond
+		slowRetry = 300 * time.Millisecond // longer than idle
+	)
+	clock := installFakeIdleClock(t)
 	b := newFakeWriteBackend(t)
-	var stalled atomic.Bool
+	var puts atomic.Int32
+	firstSeen := make(chan struct{})
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	b.set(func(b *fakeWriteBackend) {
 		b.storageHook = func(w http.ResponseWriter, r *http.Request) bool {
-			if r.Method == http.MethodPut && stalled.CompareAndSwap(false, true) {
-				select {
-				case <-r.Context().Done():
-				case <-release:
-				}
+			if r.Method != http.MethodPut {
+				return false
+			}
+			switch puts.Add(1) {
+			case 1:
+				// Take the whole body first: the client touches the idle
+				// timer as it reads each chunk, before it sends it, so
+				// once storage holds every byte that touch has happened.
+				_, _ = io.Copy(io.Discard, r.Body)
+				close(firstSeen)
+				blockUntilCancelled(r, release)
 				return true
+			case 2:
+				select { // the retry is slow; on the fake clock that is fine
+				case <-time.After(slowRetry):
+				case <-r.Context().Done():
+					return true
+				}
 			}
 			return false
 		}
 	})
-	p := newTestWriteProvider(t, b, Options{StorageIdleTimeout: 100 * time.Millisecond})
+	p := newTestWriteProvider(t, b, Options{StorageIdleTimeout: idle})
 	data := []byte("payload")
-	d, err := p.UploadWithDigest(context.Background(), writeTempData(t, data), objKey("files/a"))
-	if err != nil || d.SHA256 != digestHex(data) {
-		t.Fatalf("upload after a stall: %+v %v", d, err)
+	src := writeTempData(t, data)
+	type result struct {
+		d   providers.UploadDigest
+		err error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		d, err := p.UploadWithDigest(context.Background(), src, objKey("files/a"))
+		resCh <- result{d, err}
+	}()
+
+	select {
+	case <-firstSeen:
+	case res := <-resCh:
+		t.Fatalf("upload returned before the first PUT reached storage: %+v %v", res.d, res.err)
+	case <-time.After(30 * time.Second): // hang guard only
+		t.Fatal("timed out waiting for the first PUT to reach storage")
+	}
+	clock.Advance(idle)
+
+	var res result
+	select {
+	case res = <-resCh:
+	case <-time.After(30 * time.Second): // hang guard only
+		t.Fatal("timed out waiting for the upload to return")
+	}
+	if res.err != nil || res.d.SHA256 != digestHex(data) {
+		t.Fatalf("upload after a stall: %+v %v", res.d, res.err)
+	}
+	// Two PUTs proves the slow retry was actually made (and was not cut off).
+	if got := puts.Load(); got != 2 {
+		t.Fatalf("storage PUTs = %d, want 2 (the stalled one, then the slow retry)", got)
 	}
 	if n := len(b.callsFor("objects:resolve")); n != 2 {
 		t.Fatalf("resolve calls = %d, want a fresh URL after the stall", n)

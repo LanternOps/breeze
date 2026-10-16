@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
-import { db, withSystemDbAccessContext } from '../../db';
+import { db, withSystemDbAccessContext, getCurrentDbAccessContext, withDbTransaction } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   devices,
@@ -47,6 +47,7 @@ import { queueCommandForExecution } from '../../services/commandQueue';
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
   claimFilesystemScanGeneration,
+  clearFilesystemScanGeneration,
   setFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
@@ -59,22 +60,31 @@ import {
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import {
   resolvePatchConfigPolicyForDevice,
+  patchExclusiveWindowsUpdateFromPolicySet,
   buildRoleOsFilterConditions,
   matchesRoleOsFilter,
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { hierarchyFor, type DeviceHierarchyOpts } from '../../services/deviceHierarchy';
+import { applicableCandidates, candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../../services/devicePolicySet';
 import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
-import { policyOwnershipCondition, withDevicePartnerPolicyVisibility } from '../../services/configPolicyOwnership';
+import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
 import { HARDWARE_MONITORING_DEFAULTS, hardwareMonitoringInlineSettingsSchema, type HardwareMonitoringInlineSettings } from '@breeze/shared';
 import {
   buildResolvedTimeSyncConfigUpdate,
   type TimeSyncConfigUpdate,
 } from '../../services/timeSync/configUpdate';
-import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
+import {
+  buildResolvedWorkloadInventoryConfigUpdate,
+  type WorkloadInventoryConfigUpdate,
+} from '../../services/workloads/configUpdate';
+import { loadLegacyDirectConnection, type LegacyDirectConnection } from '../../services/m365DirectGraph';
+import { peekUserGroupMembershipCached, resolveUserGroupMembershipCached, type GroupMembershipResult } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
 import { orgAgentUpdateConfigCache } from '../../services/agentOrgSettingsCache';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
+import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
+import { recordFilesystemAutoTriggerSkipped, type FilesystemAutoTrigger } from '../../services/filesystemAnalysisPolicyMetrics';
 import { getBinaryEdition } from '../../services/binaryEdition';
 import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secretRedaction';
 import { CloudflareMtlsService, parseIssuedLeafCertificate } from '../../services/cloudflareMtls';
@@ -275,6 +285,8 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     case 'f_secure':
     case 'fsecure':
       return 'withsecure';
+    case 'unknown':
+      return 'unknown';
     default:
       return 'other';
   }
@@ -530,9 +542,18 @@ export async function upsertSecurityStatusForDevice(
   // it is the evidence behind the derived `realTimeProtection` boolean. See
   // #3641 / #3593.
   const preferredProduct = avProducts.find((p) => p.realTimeProtection) ?? avProducts[0];
-  const provider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
   const avProductsValue = payload.avProducts ?? null;
   const realTimeProtection = payload.realTimeProtection ?? preferredProduct?.realTimeProtection ?? null;
+  // #8538: the agent marshals provider:"other" as its default even when every
+  // applicable AV source failed — the failure is signalled only by omitting
+  // realTimeProtection (#7965). "other" with an unknown protection reading is
+  // therefore "not collected", not an unmapped product (those carry a real
+  // true/false reading). Stored as 'unknown'.
+  const normalizedProvider = normalizeProvider(payload.provider ?? preferredProduct?.provider);
+  const provider: SecurityProviderValue =
+    normalizedProvider === 'other' && typeof payload.provider === 'string' && realTimeProtection === null
+      ? 'unknown'
+      : normalizedProvider;
   const threatCount = payload.threatCount ?? 0;
 
   await db
@@ -1588,11 +1609,47 @@ export function getFilesystemThresholdScanPath(osType: unknown): string {
   return osRootScanPath(osType);
 }
 
+const FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS = 60 * 60 * 1000;
+const filesystemPolicySkipLoggedAt = new Map<string, number>();
+// A refused threshold scan writes no snapshot/command row, so the DB cooldown
+// never engages for that device. Remember the refusal briefly so a locked-down
+// device at >= threshold does not repeat the cooldown selects and policy lookup
+// on every heartbeat.
+const FILESYSTEM_POLICY_DENY_TTL_MS = 5 * 60 * 1000;
+const filesystemThresholdDeniedUntil = new Map<string, number>();
+
+/**
+ * The automatic triggers (disk-threshold scan, auto-resume continuation) must
+ * honour the same per-device remote-tools policy the REST route and AI tools
+ * enforce (#8509). Fail-closed via `checkDeviceRemoteToolsPolicy`. A refusal
+ * is counted and logged at most once an hour per device+trigger; not Sentry.
+ */
+async function automaticFilesystemScanAllowed(
+  deviceId: string,
+  trigger: FilesystemAutoTrigger,
+): Promise<boolean> {
+  const decision = await checkDeviceRemoteToolsPolicy(deviceId);
+  if (decision.allowed) return true;
+  recordFilesystemAutoTriggerSkipped(trigger);
+  const key = `${deviceId}:${trigger}`;
+  const now = Date.now();
+  if (now - (filesystemPolicySkipLoggedAt.get(key) ?? 0) >= FILESYSTEM_POLICY_SKIP_LOG_INTERVAL_MS) {
+    filesystemPolicySkipLoggedAt.set(key, now);
+    console.warn(
+      `[agents/helpers] skipping automatic filesystem_analysis (${trigger}) for device ${deviceId}: ${decision.reason}`
+    );
+  }
+  return false;
+}
+
 export async function maybeQueueThresholdFilesystemAnalysis(
   device: Pick<typeof devices.$inferSelect, 'id' | 'osType' | 'orgId'>,
   diskPercent: number
 ): Promise<{ queued: boolean; path?: string; thresholdPercent?: number }> {
   if (!Number.isFinite(diskPercent) || diskPercent < filesystemDiskThresholdPercent) {
+    return { queued: false };
+  }
+  if ((filesystemThresholdDeniedUntil.get(device.id) ?? 0) > Date.now()) {
     return { queued: false };
   }
   // A device parked in a holding org receives lifecycle removal only.
@@ -1634,6 +1691,14 @@ export async function maybeQueueThresholdFilesystemAnalysis(
     return { queued: false };
   }
 
+  // Last, so an allowed device looks the policy up at most once per cooldown;
+  // a refused one is remembered for FILESYSTEM_POLICY_DENY_TTL_MS.
+  if (!(await automaticFilesystemScanAllowed(device.id, 'threshold'))) {
+    filesystemThresholdDeniedUntil.set(device.id, Date.now() + FILESYSTEM_POLICY_DENY_TTL_MS);
+    return { queued: false };
+  }
+  filesystemThresholdDeniedUntil.delete(device.id);
+
   const path = getFilesystemThresholdScanPath(device.osType);
   const [thresholdCommand] = await db.insert(deviceCommands).values({
     deviceId: device.id,
@@ -1667,12 +1732,42 @@ export async function maybeQueueThresholdFilesystemAnalysis(
   };
 }
 
+/**
+ * #8509: the agent refused this scan because another was already running.
+ * Producers register a command as its volume's scan generation when they queue
+ * it, so a refused command left as the generation would make the RUNNING
+ * scan's result look superseded and be dropped. Release it — conditionally, so
+ * a newer producer's registration is never cleared. The running scan then
+ * claims through the NULL-generation branch of claimFilesystemScanGeneration.
+ */
+async function releaseRefusedFilesystemScanGeneration(
+  command: typeof deviceCommands.$inferSelect,
+): Promise<void> {
+  const [deviceRow] = await db
+    .select({ osType: devices.osType })
+    .from(devices)
+    .where(eq(devices.id, command.deviceId))
+    .limit(1);
+  if (!deviceRow) {
+    console.warn(
+      `[agents/helpers] filesystem_analysis command ${command.id} refused as scan_in_progress but device ${command.deviceId} has no devices row; scan generation not released`
+    );
+    return;
+  }
+  const payload = isObject(command.payload) ? command.payload : {};
+  const scanPath = normalizeScanPath(deviceRow.osType, asString(payload.path) ?? osRootScanPath(deviceRow.osType));
+  await clearFilesystemScanGeneration(command.deviceId, scanPath, command.id);
+}
+
 export async function handleFilesystemAnalysisCommandResult(
   command: typeof deviceCommands.$inferSelect,
   resultData: z.infer<typeof commandResultSchema>,
   orgId: string
 ): Promise<void> {
   if (resultData.status !== 'completed') {
+    if (resultData.status === 'failed' && resultData.errorCode === 'scan_in_progress') {
+      await releaseRefusedFilesystemScanGeneration(command);
+    }
     return;
   }
 
@@ -1835,6 +1930,12 @@ export async function handleFilesystemAnalysisCommandResult(
     return;
   }
 
+  // An operator who turned remote tools off stops the chain at its next step
+  // (no retroactive cancel of a scan already running on the device).
+  if (!(await automaticFilesystemScanAllowed(command.deviceId, 'auto_resume'))) {
+    return;
+  }
+
   const nextPayload: Record<string, unknown> = {
     ...(isObject(payload) ? payload : {}),
     path: scanPath,
@@ -1926,8 +2027,46 @@ const LEVEL_PRIORITY: Record<string, number> = {
   partner: 1,
 };
 
-async function resolveDeviceEventLogSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<EventLogSettings> {
+/** #8142: event_log's own rules (raw partner; SQL role/OS here, matchesRoleOsFilter in the ranking). */
+const EVENT_LOG_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
+
+type EventLogRankRow = {
+  level: string; assignmentPriority: number; roleFilter: readonly string[] | null; osFilter: readonly string[] | null;
+  retentionDays: number; maxEventsPerCycle: number; collectCategories: string[]; minimumLevel: string;
+  collectionIntervalMinutes: number; rateLimitPerHour: number;
+};
+
+function eventLogSettingsFromRows(rows: EventLogRankRow[], device: { deviceRole: string; osType: string }): EventLogSettings {
+  const eligibleRows = rows.filter((r) => matchesRoleOsFilter(r, device));
+  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
+  eligibleRows.sort(compareLevelThenPriority);
+  const winner = eligibleRows[0];
+  if (!winner) return EVENT_LOG_DEFAULTS;
+  return {
+    retentionDays: winner.retentionDays,
+    maxEventsPerCycle: winner.maxEventsPerCycle,
+    collectCategories: winner.collectCategories as EventLogCategory[],
+    minimumLevel: winner.minimumLevel as EventLogLevel,
+    collectionIntervalMinutes: winner.collectionIntervalMinutes,
+    rateLimitPerHour: winner.rateLimitPerHour,
+  };
+}
+
+async function resolveDeviceEventLogSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<EventLogSettings> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    return eventLogSettingsFromRows(candidatesWithLink(set, 'event_log', EVENT_LOG_APPLICABILITY).flatMap(({ candidate, link }) =>
+      link.eventLog
+        ? [{
+          level: candidate.level, assignmentPriority: candidate.priority,
+          roleFilter: candidate.roleFilter, osFilter: candidate.osFilter,
+          retentionDays: link.eventLog.retentionDays, maxEventsPerCycle: link.eventLog.maxEventsPerCycle,
+          collectCategories: link.eventLog.collectCategories, minimumLevel: link.eventLog.minimumLevel,
+          collectionIntervalMinutes: link.eventLog.collectionIntervalMinutes, rateLimitPerHour: link.eventLog.rateLimitPerHour,
+        }]
+        : []), set.hierarchy);
+  }
   // 1. Load device
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
@@ -2004,32 +2143,10 @@ async function resolveDeviceEventLogSettings(deviceId: string, opts?: DeviceHier
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
       ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  // Filter by deviceRole and osType using canonical predicate
-  const eligibleRows = rows.filter((r) =>
-    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
-  );
-
-  if (eligibleRows.length === 0) return EVENT_LOG_DEFAULTS;
-
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  eligibleRows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = eligibleRows[0];
-  if (!winner) return EVENT_LOG_DEFAULTS;
-  return {
-    retentionDays: winner.retentionDays,
-    maxEventsPerCycle: winner.maxEventsPerCycle,
-    collectCategories: winner.collectCategories as EventLogCategory[],
-    minimumLevel: winner.minimumLevel as EventLogLevel,
-    collectionIntervalMinutes: winner.collectionIntervalMinutes,
-    rateLimitPerHour: winner.rateLimitPerHour,
-  };
+  return eventLogSettingsFromRows(rows, device);
 }
 
 const EVENT_LOG_CACHE_TTL_SECONDS = 120; // 2 minutes
@@ -2038,9 +2155,10 @@ const EVENT_LOG_CACHE_TTL_SECONDS = 120; // 2 minutes
  * Resolve event_log policy settings for a device via full hierarchy.
  * Uses Redis cache with 2-min TTL. Falls back to defaults if no policy found.
  */
-export async function getDeviceEventLogSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<EventLogSettings> {
+export async function getDeviceEventLogSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<EventLogSettings> {
   // Validate before the cache short-circuit: a foreign hierarchy is a bug even on a hit.
   hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `eventlog:settings:device:${deviceId}`;
 
@@ -2076,7 +2194,7 @@ export async function getDeviceEventLogSettings(deviceId: string, opts?: DeviceH
  * Returns agent-facing settings, including defaults when no policy is assigned.
  * This ensures stale non-default agent settings get reset after policy removal.
  */
-export async function buildEventLogConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{
+export async function buildEventLogConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<{
   max_events_per_cycle: number;
   collect_categories: string[];
   minimum_level: string;
@@ -2094,21 +2212,52 @@ export async function buildEventLogConfigUpdate(deviceId: string, opts?: DeviceH
 
 type HardwareMonitoringPolicyView = { enabled: boolean; source: 'default' | 'policy'; policyName?: string };
 
+const HARDWARE_MONITORING_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
+
+type HardwareMonitoringRankRow = {
+  policyName: string; level: string; assignmentPriority: number; roleFilter: readonly string[] | null; osFilter: readonly string[] | null;
+  enabled: boolean; pollIntervalMinutes: number; diskHealthIntervalMinutes: number;
+};
+
+function hardwareMonitoringFromRows(
+  rows: HardwareMonitoringRankRow[],
+  device: { deviceRole: string; osType: string },
+): { settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView } {
+  const eligible = rows.filter((r) => matchesRoleOsFilter(r, device));
+  eligible.sort(compareLevelThenPriority);
+  const winner = eligible[0];
+  if (!winner) {
+    return { settings: { ...HARDWARE_MONITORING_DEFAULTS }, policy: { enabled: HARDWARE_MONITORING_DEFAULTS.enabled, source: 'default' } };
+  }
+  return {
+    settings: hardwareMonitoringInlineSettingsSchema.parse(winner),
+    policy: { enabled: winner.enabled, source: 'policy', policyName: winner.policyName },
+  };
+}
+
 /**
  * Resolve hardware-monitoring collection settings for a device via the full
  * assignment hierarchy (device → device_group → site → org → partner),
  * mirroring `resolveDeviceEventLogSettings`. Also returns provenance
  * (`policy`/`default` + policy name) for Task 13's AI/read surfaces.
  *
- * Uses `withDevicePartnerPolicyVisibility` to temporarily widen visibility to
- * the device's own partner on this transaction only — the settings table is
- * reached through `configuration_policies`, whose RLS predicate is
- * `breeze_has_org_access(org_id) OR breeze_has_partner_access(partner_id)`, and
- * an org-scoped caller's context does not carry its own partner id in
- * `accessiblePartnerIds`.
+ * Reads in the caller's own context; partner-wide rows are granted by the *_partner_wide_select branches.
  */
-async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{ settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView }> {
+async function resolveHardwareMonitoring(deviceId: string, opts?: DevicePolicySetOpts): Promise<{ settings: HardwareMonitoringInlineSettings; policy: HardwareMonitoringPolicyView }> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    return hardwareMonitoringFromRows(candidatesWithLink(set, 'hardware_monitoring', HARDWARE_MONITORING_APPLICABILITY).flatMap(({ candidate, link }) =>
+      link.hardwareMonitoring
+        ? [{
+          policyName: candidate.policyName, level: candidate.level, assignmentPriority: candidate.priority,
+          roleFilter: candidate.roleFilter, osFilter: candidate.osFilter,
+          enabled: link.hardwareMonitoring.enabled,
+          pollIntervalMinutes: link.hardwareMonitoring.pollIntervalMinutes,
+          diskHealthIntervalMinutes: link.hardwareMonitoring.diskHealthIntervalMinutes,
+        }]
+        : []), set.hierarchy);
+  }
   const fallback = { settings: { ...HARDWARE_MONITORING_DEFAULTS }, policy: { enabled: HARDWARE_MONITORING_DEFAULTS.enabled, source: 'default' as const } };
 
   const [device] = passed
@@ -2157,8 +2306,10 @@ async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarch
     );
   }
 
-  const rows = await withDevicePartnerPolicyVisibility(db, org?.partnerId ?? null, async (executor) =>
-    executor
+  // #8142: config_policy_hardware_monitoring_settings now carries the
+  // SELECT-only partner-wide branch (2026-12-21-110000), so this reads in the
+  // caller's own context — no breeze.accessible_partner_ids widening.
+  const rows = await db
       .select({
         policyName: configurationPolicies.name,
         level: configPolicyAssignments.level,
@@ -2182,26 +2333,12 @@ async function resolveHardwareMonitoring(deviceId: string, opts?: DeviceHierarch
         or(...targetConditions),
         ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
       ))
-  );
+      .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  const eligible = rows.filter((r) =>
-    matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
-  );
-  eligible.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = eligible[0];
-  if (!winner) return fallback;
-  return {
-    settings: hardwareMonitoringInlineSettingsSchema.parse(winner),
-    policy: { enabled: winner.enabled, source: 'policy', policyName: winner.policyName },
-  };
+  return hardwareMonitoringFromRows(rows, device);
 }
 
-export async function resolveDeviceHardwareMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HardwareMonitoringInlineSettings> {
+export async function resolveDeviceHardwareMonitoringSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<HardwareMonitoringInlineSettings> {
   return (await resolveHardwareMonitoring(deviceId, opts)).settings;
 }
 
@@ -2215,8 +2352,9 @@ export const HARDWARE_MONITORING_CACHE_TTL_SECONDS = 120;
  * Resolve hardware-monitoring settings for a device with a 2-min Redis cache,
  * matching `getDeviceEventLogSettings`.
  */
-export async function getDeviceHardwareMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HardwareMonitoringInlineSettings> {
+export async function getDeviceHardwareMonitoringSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<HardwareMonitoringInlineSettings> {
   hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `hwmon:settings:device:${deviceId}`;
 
@@ -2246,7 +2384,7 @@ export async function getDeviceHardwareMonitoringSettings(deviceId: string, opts
  * Build hardware_monitoring config update payload for heartbeat response.
  * Returns agent-facing settings, including defaults when no policy is assigned.
  */
-export async function buildHardwareMonitoringConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<{
+export async function buildHardwareMonitoringConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<{
   enabled: boolean;
   poll_interval_minutes: number;
   disk_health_interval_minutes: number;
@@ -2267,9 +2405,23 @@ export async function buildHardwareMonitoringConfigUpdate(deviceId: string, opts
  */
 export async function buildTimeSyncConfigUpdate(
   deviceId: string,
-  opts?: DeviceHierarchyOpts,
+  opts?: DevicePolicySetOpts,
 ): Promise<TimeSyncConfigUpdate> {
   return buildResolvedTimeSyncConfigUpdate(deviceId, opts);
+}
+
+/**
+ * Build workload_inventory_settings config update payload for heartbeat
+ * response (workload inventory spec §7.2). Explicit defaults (enabled: false)
+ * are sent when no policy is assigned, so removing a policy turns enumeration
+ * off; a resolver error throws so the heartbeat omits the key and the agent
+ * keeps its previous settings.
+ */
+export async function buildWorkloadInventoryConfigUpdate(
+  deviceId: string,
+  opts?: DeviceHierarchyOpts,
+): Promise<WorkloadInventoryConfigUpdate> {
+  return buildResolvedWorkloadInventoryConfigUpdate(deviceId, opts);
 }
 
 /**
@@ -2417,7 +2569,7 @@ type MonitorDerivedWatchesResult =
   | { kind: 'device_missing' }
   | { kind: 'resolved'; watches: MonitoringWatchConfig[] };
 
-async function resolveMonitorDerivedWatches(deviceId: string, opts?: DeviceHierarchyOpts): Promise<MonitorDerivedWatchesResult> {
+async function resolveMonitorDerivedWatches(deviceId: string, opts?: DevicePolicySetOpts): Promise<MonitorDerivedWatchesResult> {
   const resolution = await resolveMonitorsForDevice(deviceId, undefined, opts);
   if (resolution.kind === 'device_missing') return { kind: 'device_missing' };
   const effective = resolution.monitors;
@@ -2511,7 +2663,7 @@ type DeviceMonitoringResolution =
   | { kind: 'none_applies'; settings: MonitoringConfigUpdate }
   | { kind: 'resolved'; settings: MonitoringConfigUpdate };
 
-async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<DeviceMonitoringResolution> {
+async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<DeviceMonitoringResolution> {
   // W05d: monitors alone supply watches; the monitors link supplies the interval.
   const policyResult = await resolvePolicyCheckInterval(deviceId, opts);
   const monitorResult = await resolveMonitorDerivedWatches(deviceId, opts);
@@ -2567,8 +2719,59 @@ type PolicyCheckIntervalResult =
   | { kind: 'no_policy' }
   | { kind: 'resolved'; settings: { check_interval_seconds: number } };
 
-async function resolvePolicyCheckInterval(deviceId: string, opts?: DeviceHierarchyOpts): Promise<PolicyCheckIntervalResult> {
+/** #8142: check-interval's own rules (raw partner; SQL role/OS, then matchesRoleOsFilter). */
+const CHECK_INTERVAL_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'sql' };
+
+type CheckIntervalAssignment = { policyId: string; parentPolicyId: string | null; level: string; assignmentPriority: number };
+
+/**
+ * Field-level interval inheritance (unchanged): read the RAW `monitors` links of
+ * each assigned policy and its immediate parent, in the caller's context.
+ */
+async function checkIntervalFromAssignments(assignments: CheckIntervalAssignment[]): Promise<PolicyCheckIntervalResult> {
+  if (assignments.length === 0) return { kind: 'no_policy' };
+  const policyIds = [...new Set(assignments.flatMap((r) =>
+    r.parentPolicyId ? [r.policyId, r.parentPolicyId] : [r.policyId]
+  ))];
+  const settingsRows = await db
+    .select({
+      policyId: configPolicyFeatureLinks.configPolicyId,
+      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
+    })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
+    .where(and(
+      inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
+      eq(configPolicyFeatureLinks.featureType, 'monitors'),
+    ));
+  const intervals = new Map(settingsRows.map((r) => [r.policyId, r.checkIntervalSeconds]));
+  const eligibleRows = assignments.flatMap((r) => {
+    const checkIntervalSeconds = intervals.get(r.policyId)
+      ?? (r.parentPolicyId ? intervals.get(r.parentPolicyId) : undefined);
+    return checkIntervalSeconds === undefined ? [] : [{ ...r, checkIntervalSeconds }];
+  });
+  if (eligibleRows.length === 0) return { kind: 'no_policy' };
+  eligibleRows.sort(compareLevelThenPriority);
+  const winner = eligibleRows[0];
+  if (!winner) return { kind: 'no_policy' };
+  return { kind: 'resolved', settings: { check_interval_seconds: winner.checkIntervalSeconds } };
+}
+
+async function resolvePolicyCheckInterval(deviceId: string, opts?: DevicePolicySetOpts): Promise<PolicyCheckIntervalResult> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    if (!set.hierarchy.org) return { kind: 'device_missing' };
+    const applicable = applicableCandidates(set, CHECK_INTERVAL_APPLICABILITY)
+      .filter((c) => matchesRoleOsFilter(c, set.hierarchy));
+    // #8142 — exact, statement-free "no interval": the effective view carries a
+    // `monitors` row for policy P iff P or P's parent has a raw `monitors` link,
+    // and the raw read below can only return rows for such links.
+    if (!applicable.some((c) => c.links.monitors)) return { kind: 'no_policy' };
+    return checkIntervalFromAssignments(applicable.map((c) => ({
+      policyId: c.policyId, parentPolicyId: c.parentPolicyId, level: c.level, assignmentPriority: c.priority,
+    })));
+  }
   // 1. Load device
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
@@ -2645,60 +2848,62 @@ async function resolvePolicyCheckInterval(deviceId: string, opts?: DeviceHierarc
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
       ...buildRoleOsFilterConditions({ deviceRole: device.deviceRole, osType: device.osType }),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
   const assignments = rows.filter((r) =>
     matchesRoleOsFilter(r, { deviceRole: device.deviceRole, osType: device.osType })
   );
-  if (assignments.length === 0) return { kind: 'no_policy' };
-
-  // Interval inheritance is field-level: a child's attachment link must not
-  // hide its parent's explicit interval. Parents need not be active/assigned.
-  // Read only these policies and their immediate parents, in this DB context.
-  const policyIds = [...new Set(assignments.flatMap((r) =>
-    r.parentPolicyId ? [r.policyId, r.parentPolicyId] : [r.policyId]
-  ))];
-  const settingsRows = await db
-    .select({
-      policyId: configPolicyFeatureLinks.configPolicyId,
-      checkIntervalSeconds: configPolicyMonitoringSettings.checkIntervalSeconds,
-    })
-    .from(configPolicyFeatureLinks)
-    .innerJoin(configPolicyMonitoringSettings, eq(configPolicyMonitoringSettings.featureLinkId, configPolicyFeatureLinks.id))
-    .where(and(
-      inArray(configPolicyFeatureLinks.configPolicyId, policyIds),
-      eq(configPolicyFeatureLinks.featureType, 'monitors'),
-    ));
-  const intervals = new Map(settingsRows.map((r) => [r.policyId, r.checkIntervalSeconds]));
-  const eligibleRows = assignments.flatMap((r) => {
-    const checkIntervalSeconds = intervals.get(r.policyId)
-      ?? (r.parentPolicyId ? intervals.get(r.parentPolicyId) : undefined);
-    return checkIntervalSeconds === undefined ? [] : [{ ...r, checkIntervalSeconds }];
-  });
-  if (eligibleRows.length === 0) return { kind: 'no_policy' };
-
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  eligibleRows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = eligibleRows[0];
-  if (!winner) return { kind: 'no_policy' };
-
-  return {
-    kind: 'resolved',
-    settings: { check_interval_seconds: winner.checkIntervalSeconds },
-  };
+  return checkIntervalFromAssignments(assignments);
 }
 
 const MONITORING_CACHE_TTL_SECONDS = 120; // 2 minutes
 
-export async function buildMonitoringConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<MonitoringConfigUpdate | null> {
-  hierarchyFor(deviceId, opts);
+const monitoringSettingsCacheKey = (deviceId: string) => `monitoring:settings:device:${deviceId}`;
+
+/**
+ * #8287: the device's CURRENT watch set for DISPLAY filtering from a user
+ * request (summary, status, tab-counts). Same resolver the agent heartbeat
+ * uses, but:
+ *  - runs in the CALLER'S OWN DB context — no system escalation (#2417) and no
+ *    second pooled connection under the request transaction (#1105). Partner-
+ *    wide policies/monitors are legible because their tables carry the
+ *    SELECT-only `org_id IS NULL AND partner_id = breeze_current_partner_id()`
+ *    branch, fed by `currentPartnerId` from `buildDbAccessContext`;
+ *  - never writes `monitoring:settings:device:*` (only reads it), so a
+ *    user-scoped answer can never poison the cache the agent heartbeat reads.
+ *
+ * Returns null — "unknown, do not filter" — when:
+ *  - the device vanished mid-resolution;
+ *  - there is no ambient context, or a non-system context has no
+ *    `currentPartnerId` (e.g. organization-scope SSO sessions mint
+ *    `partnerId: null`). There, partner-wide rows are invisible and the
+ *    resolver would answer a TRUNCATED set (often `watches: []`), which would
+ *    hide live alerts. Failing open shows possibly-stale rows instead.
+ */
+export async function resolveMonitoringConfigForDisplay(deviceId: string): Promise<MonitoringConfigUpdate | null> {
   const redis = getRedis();
-  const cacheKey = `monitoring:settings:device:${deviceId}`;
+  if (redis) {
+    try {
+      const cached = await redis.get(monitoringSettingsCacheKey(deviceId));
+      if (cached) return JSON.parse(cached) as MonitoringConfigUpdate;
+    } catch (cacheErr) {
+      console.warn(`[monitoring] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    }
+  }
+  const ctx = getCurrentDbAccessContext();
+  if (!ctx || (ctx.scope !== 'system' && !ctx.currentPartnerId)) return null;
+  // Savepoint: a SQL error here is caught upstream (fail open), but on the bare
+  // request transaction it would abort/poison the caller's commit (25P02).
+  const resolution = await withDbTransaction(() => resolveDeviceMonitoringSettings(deviceId));
+  return resolution.kind === 'unresolved' ? null : resolution.settings;
+}
+
+export async function buildMonitoringConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<MonitoringConfigUpdate | null> {
+  hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
+  const redis = getRedis();
+  const cacheKey = monitoringSettingsCacheKey(deviceId);
 
   // Try cache first
   if (redis) {
@@ -2720,6 +2925,7 @@ export async function buildMonitoringConfigUpdate(deviceId: string, opts?: Devic
   // Only a `resolved` result is cached. `none_applies` is not, so a policy
   // assigned to a device that had none activates on the very next heartbeat
   // instead of waiting out the TTL (the same reason null was never cached).
+  // #8142: a device with no monitors link now answers none_applies with zero statements from the beat's policy set, so this stays uncached (see the W03 plan's decision).
   if (redis && resolution.kind === 'resolved') {
     try {
       await redis.set(cacheKey, JSON.stringify(resolution.settings), 'EX', MONITORING_CACHE_TTL_SECONDS);
@@ -3181,13 +3387,45 @@ export async function resolveOrgPamFallback(orgId: string): Promise<PamSettings>
   return PAM_DEFAULTS;
 }
 
-export interface PamConfigUpdateOptions extends DeviceHierarchyOpts {
+export interface PamConfigUpdateOptions extends DevicePolicySetOpts {
   /** Source of the org grandfather flag; defaults to resolveOrgPamFallback. */
   loadOrgPamFallback?: (orgId: string) => Promise<PamSettings>;
+  /**
+   * #8616: resolve without writing the per-device Redis entry. The heartbeat
+   * sets it when its own hierarchy load failed: the resolver then reads
+   * without the beat's hierarchy and may return defaults for a device it
+   * cannot see, which must not be served to later beats as a decision.
+   */
+  skipCacheWrite?: boolean;
+}
+
+/** #8142: PAM's own rules (raw partner, no role/OS filter). */
+const PAM_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'none' };
+
+/** Level DESC, then assignment priority ASC. */
+function compareLevelThenPriority(a: { level: string; assignmentPriority: number }, b: { level: string; assignmentPriority: number }): number {
+  const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+  if (levelDiff !== 0) return levelDiff;
+  return a.assignmentPriority - b.assignmentPriority;
+}
+
+/** The winning PAM policy's settings, or null when no policy decides (the caller applies the org fallback). */
+function pamSettingsFromRows(rows: ReadonlyArray<{ level: string; assignmentPriority: number; inlineSettings: unknown }>): PamSettings | null {
+  if (rows.length === 0) return null;
+  const winner = [...rows].sort(compareLevelThenPriority)[0];
+  if (!winner?.inlineSettings) return null;
+  return parsePamSettings(winner.inlineSettings);
 }
 
 async function resolveDevicePamSettings(deviceId: string, opts?: PamConfigUpdateOptions): Promise<PamSettings> {
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    const orgFallbackFromSet = opts?.loadOrgPamFallback ?? resolveOrgPamFallback;
+    return pamSettingsFromRows(candidatesWithLink(set, 'pam', PAM_APPLICABILITY).map(({ candidate, link }) => ({
+      level: candidate.level, assignmentPriority: candidate.priority, inlineSettings: link.inlineSettings,
+    }))) ?? orgFallbackFromSet(set.hierarchy.orgId);
+  }
   // 1. Load device
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId }]
@@ -3251,21 +3489,10 @@ async function resolveDevicePamSettings(deviceId: string, opts?: PamConfigUpdate
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  if (rows.length === 0) return orgFallback(device.orgId);
-
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = rows[0];
-  if (!winner?.inlineSettings) return orgFallback(device.orgId);
-
-  return parsePamSettings(winner.inlineSettings);
+  return pamSettingsFromRows(rows) ?? orgFallback(device.orgId);
 }
 
 const PAM_CACHE_TTL_SECONDS = 120;
@@ -3278,6 +3505,7 @@ const PAM_CACHE_TTL_SECONDS = 120;
  */
 export async function buildPamConfigUpdate(deviceId: string, opts?: PamConfigUpdateOptions): Promise<PamSettings> {
   hierarchyFor(deviceId, opts);
+  policySetFor(deviceId, opts);
   const redis = getRedis();
   const cacheKey = `pam:settings:device:${deviceId}`;
 
@@ -3292,7 +3520,7 @@ export async function buildPamConfigUpdate(deviceId: string, opts?: PamConfigUpd
 
   const settings = await resolveDevicePamSettings(deviceId, opts);
 
-  if (redis) {
+  if (redis && !opts?.skipCacheWrite) {
     try {
       await redis.set(cacheKey, JSON.stringify(settings), 'EX', PAM_CACHE_TTL_SECONDS);
     } catch (cacheErr) {
@@ -3330,7 +3558,10 @@ export interface PatchSourceSettings {
  * resolves the device timezone (a device/org/site join plus a partner-axis
  * `partners` read) that this flag never used.
  */
-export async function buildPatchSourceConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<PatchSourceSettings> {
+export async function buildPatchSourceConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<PatchSourceSettings> {
+  hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) return { exclusiveWindowsUpdate: patchExclusiveWindowsUpdateFromPolicySet(set) };
   const patch = await resolvePatchConfigPolicyForDevice(deviceId, opts);
   return { exclusiveWindowsUpdate: patch?.settings.exclusiveWindowsUpdate ?? false };
 }
@@ -3362,7 +3593,7 @@ export interface WarrantySettings {
  * consent, or one naming superseded terms, delivers `false` (contract D2/D3).
  * Collection never runs on an acceptance we cannot point at.
  */
-export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<WarrantySettings> {
+export async function buildWarrantyConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<WarrantySettings> {
   const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId, opts);
   return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
 }
@@ -3393,9 +3624,60 @@ export interface OnedriveConfigUpdate {
   }>;
 }
 
-async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<OnedriveConfigUpdate | null> {
+/** #8142: OneDrive's own rules — ORG-ONLY ownership (ORG_SCOPED_ONLY_FEATURE_TYPES), raw partner target, no role/OS. */
+const ONEDRIVE_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOnly', partnerTarget: 'partner', roleOs: 'none' };
+
+type OnedriveLibraryRow = typeof configPolicyOnedriveLibraries.$inferSelect;
+type OnedriveWinnerRow = {
+  level: string; assignmentPriority: number; settingsId: string;
+  silentAccountConfig: boolean; filesOnDemand: boolean; kfmSilentOptIn: boolean; kfmFolders: unknown;
+  kfmBlockOptOut: boolean; tenantAssociationId: string | null; restartOnChange: boolean;
+};
+
+export interface OnedriveUpnLookup {
+  readonly upn: string;
+  /** The membership-cache result captured in the DB phase; null = a miss the Graph phase resolves. */
+  readonly cached: GroupMembershipResult | null;
+}
+
+/**
+ * Everything the OneDrive build needs from the database (#8142). Built inside
+ * the heartbeat's policy context; `finishOnedriveHelperConfig` turns it into the
+ * wire payload AFTER that context commits, with no DB access (#1105: no pooled
+ * connection is ever held across a Graph call).
+ */
+export interface OnedriveConfigPlan {
+  readonly deviceId: string;
+  readonly orgId: string;
+  readonly base: Readonly<OnedriveConfigUpdate['base']>;
+  readonly libs: readonly OnedriveLibraryRow[];
+  /** One per deduplicated reported UPN, in report order; empty when nothing needs Graph tagging. */
+  readonly upnLookups: readonly OnedriveUpnLookup[];
+  /** Loaded only when some lookup missed: the org's active legacy-direct connection, or null. */
+  readonly connection: LegacyDirectConnection | null;
+}
+
+function onedriveWinnerFromRows(rows: OnedriveWinnerRow[]): OnedriveWinnerRow | null {
+  return [...rows].sort(compareLevelThenPriority)[0] ?? null;
+}
+
+async function selectOnedriveWinner(deviceId: string, opts?: DevicePolicySetOpts): Promise<{ orgId: string; winner: OnedriveWinnerRow } | null> {
   const passed = hierarchyFor(deviceId, opts);
-  // 1. Load device
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    const winner = onedriveWinnerFromRows(candidatesWithLink(set, 'onedrive_helper', ONEDRIVE_APPLICABILITY).flatMap(({ candidate, link }) =>
+      link.onedrive
+        ? [{
+          level: candidate.level, assignmentPriority: candidate.priority, settingsId: link.onedrive.id,
+          silentAccountConfig: link.onedrive.silentAccountConfig, filesOnDemand: link.onedrive.filesOnDemand,
+          kfmSilentOptIn: link.onedrive.kfmSilentOptIn, kfmFolders: link.onedrive.kfmFolders,
+          kfmBlockOptOut: link.onedrive.kfmBlockOptOut, tenantAssociationId: link.onedrive.tenantAssociationId,
+          restartOnChange: link.onedrive.restartOnChange,
+        }]
+        : []));
+    return winner ? { orgId: set.hierarchy.orgId, winner } : null;
+  }
+  // ---- read path: the former resolveDeviceOnedriveSettings steps 1–6, plus ORDER BY.
   const [device] = passed
     ? [{ orgId: passed.orgId, siteId: passed.siteId }]
     : await db
@@ -3403,10 +3685,8 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       .from(devices)
       .where(eq(devices.id, deviceId))
       .limit(1);
-
   if (!device) return null;
 
-  // 2. Load org (for partnerId)
   const [org] = passed
     ? (passed.org ? [{ partnerId: passed.org.partnerId }] : [])
     : await db
@@ -3415,7 +3695,6 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       .where(eq(organizations.id, device.orgId))
       .limit(1);
 
-  // 3. Load device group memberships
   const groupIds = passed
     ? [...passed.groupIds]
     : (await db
@@ -3423,7 +3702,6 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       .from(deviceGroupMemberships)
       .where(eq(deviceGroupMemberships.deviceId, deviceId))).map((r) => r.groupId);
 
-  // 4. Build target match conditions (closest-level-wins hierarchy)
   const targetConditions = [
     and(eq(configPolicyAssignments.level, 'device'), eq(configPolicyAssignments.targetId, deviceId)),
     and(eq(configPolicyAssignments.level, 'site'), eq(configPolicyAssignments.targetId, device.siteId)),
@@ -3440,8 +3718,6 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
     );
   }
 
-  // 5. Single query: assignments → active policies → onedrive_helper feature link → settings
-  //
   // DELIBERATELY org-only, unlike the sibling resolvers fixed for #2930.
   // `onedrive_helper` is the sole member of ORG_SCOPED_ONLY_FEATURE_TYPES
   // (packages/shared/src/constants/configFeatureTypes.ts): its settings carry
@@ -3449,8 +3725,6 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
   // org to anchor to, and featureLinks.ts rejects the link with a 400 at write
   // time. A partner-owned row therefore cannot exist here — adding the
   // dual-axis predicate would be dead code that implies support we don't have.
-  // Supporting partner-wide OneDrive is a schema/product change, not a resolver
-  // fix.
   const rows = await db
     .select({
       level: configPolicyAssignments.level,
@@ -3475,19 +3749,18 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       eq(configurationPolicies.status, 'active'),
       eq(configurationPolicies.orgId, device.orgId),
       or(...targetConditions),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  if (rows.length === 0) return null;
+  const winner = onedriveWinnerFromRows(rows);
+  return winner ? { orgId: device.orgId, winner } : null;
+}
 
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = rows[0];
-  if (!winner) return null;
+/** DB phase (#8142). Issues only DB reads; never calls Graph. */
+export async function loadOnedriveHelperConfigPlan(deviceId: string, opts?: DevicePolicySetOpts): Promise<OnedriveConfigPlan | null> {
+  const selected = await selectOnedriveWinner(deviceId, opts);
+  if (!selected) return null;
+  const { orgId, winner } = selected;
 
   // 7. Load enabled libraries for the winning settings row, in sort order
   const libs = await db
@@ -3507,7 +3780,7 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
       .limit(1)
     : [];
 
-  // Phase 4: tag enabled graph_group libraries with the reported UPNs whose
+  // Phase 4: graph_group libraries are tagged with the reported UPNs whose
   // transitive Entra membership includes the rule's groupId. Fail closed:
   // no UPNs / no groupId / Graph error → no tag → the agent never mounts it.
   const graphRules = libs.filter((l) => l.targetingMode === 'graph_group' && l.groupId);
@@ -3533,12 +3806,40 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
     seenUpns.add(key);
     return true;
   });
+
+  const tagging = graphRules.length > 0 && upns.length > 0;
+  const upnLookups: OnedriveUpnLookup[] = tagging
+    ? upns.map((upn) => ({ upn, cached: peekUserGroupMembershipCached(orgId, upn) }))
+    : [];
+  const connection = upnLookups.some((l) => l.cached === null) ? await loadLegacyDirectConnection(orgId) : null;
+
+  return {
+    deviceId,
+    orgId,
+    base: {
+      silentAccountConfig: winner.silentAccountConfig,
+      filesOnDemand: winner.filesOnDemand,
+      kfmSilentOptIn: winner.kfmSilentOptIn,
+      kfmFolders: (winner.kfmFolders as string[]) ?? [],
+      kfmBlockOptOut: winner.kfmBlockOptOut,
+      tenantAssociationId: winner.tenantAssociationId,
+      restartOnChange: winner.restartOnChange,
+    },
+    libs,
+    upnLookups,
+    connection,
+  };
+}
+
+/** Graph phase (#8142). No DB access: captured hits are reused, misses use the preloaded connection. */
+export async function finishOnedriveHelperConfig(plan: OnedriveConfigPlan): Promise<OnedriveConfigUpdate> {
   // Group ids are GUIDs from two sources (Graph responses vs. the stored rule,
   // which future entry paths may brace/uppercase) — normalize both sides so a
   // formatting mismatch can't silently fail-close the library forever.
   const normalizeGuid = (g: string) => g.replace(/^\{|\}$/g, '').toLowerCase();
+  const graphRules = plan.libs.filter((l) => l.targetingMode === 'graph_group' && l.groupId);
   const allowedByLib = new Map<string, string[]>();
-  if (graphRules.length > 0 && upns.length > 0) {
+  if (graphRules.length > 0 && plan.upnLookups.length > 0) {
     // Aggregate deadline: per-call timeouts bound each round-trip, but 16 UPNs
     // × (token + up to 5 membership pages) can still sum past the agent's
     // heartbeat client timeout — which would drop the WHOLE response including
@@ -3553,23 +3854,25 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
     // cap stays small on purpose: these calls share one org's Graph token and
     // rate limit, so widening it trades a burst of 429s for the latency win.
     const TAGGING_CONCURRENCY = 4;
-    const memberships = new Array<Set<string> | null>(upns.length).fill(null);
+    const memberships = new Array<Set<string> | null>(plan.upnLookups.length).fill(null);
     let nextIndex = 0;
     let budgetExhausted = false;
 
     const worker = async () => {
       for (;;) {
         const i = nextIndex++;
-        if (i >= upns.length) return;
+        if (i >= plan.upnLookups.length) return;
         if (Date.now() > taggingDeadline) {
           budgetExhausted = true;
           return;
         }
-        const res = await resolveUserGroupMembershipCached(device.orgId, upns[i]!);
+        const lookup = plan.upnLookups[i]!;
+        const res = lookup.cached
+          ?? await resolveUserGroupMembershipCached(plan.orgId, lookup.upn, { connection: plan.connection });
         if (res.kind !== 'ok') {
           // Deliberately no UPN in the log line — it's end-user PII; the code +
           // deviceId is enough to triage.
-          console.warn(`[agents] graph_group tagging: membership lookup failed for device ${deviceId}: ${res.code}`);
+          console.warn(`[agents] graph_group tagging: membership lookup failed for device ${plan.deviceId}: ${res.code}`);
           continue;
         }
         memberships[i] = new Set(res.data.groupIds.map(normalizeGuid));
@@ -3577,22 +3880,22 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
     };
 
     await Promise.all(
-      Array.from({ length: Math.min(TAGGING_CONCURRENCY, upns.length) }, () => worker()),
+      Array.from({ length: Math.min(TAGGING_CONCURRENCY, plan.upnLookups.length) }, () => worker()),
     );
 
     if (budgetExhausted) {
-      console.warn(`[agents] graph_group tagging: time budget exhausted for device ${deviceId}; remaining UPNs untagged this cycle`);
+      console.warn(`[agents] graph_group tagging: time budget exhausted for device ${plan.deviceId}; remaining UPNs untagged this cycle`);
     }
 
     // Applied in the original UPN order (not completion order) so allowedUpns
     // is deterministic for a given input regardless of how the pool interleaved.
-    for (let i = 0; i < upns.length; i++) {
+    for (let i = 0; i < plan.upnLookups.length; i++) {
       const groupIds = memberships[i];
       if (!groupIds) continue;
       for (const rule of graphRules) {
         if (rule.groupId && groupIds.has(normalizeGuid(rule.groupId))) {
           const arr = allowedByLib.get(rule.id) ?? [];
-          arr.push(upns[i]!);
+          arr.push(plan.upnLookups[i]!.upn);
           allowedByLib.set(rule.id, arr);
         }
       }
@@ -3600,16 +3903,8 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
   }
 
   return {
-    base: {
-      silentAccountConfig: winner.silentAccountConfig,
-      filesOnDemand: winner.filesOnDemand,
-      kfmSilentOptIn: winner.kfmSilentOptIn,
-      kfmFolders: (winner.kfmFolders as string[]) ?? [],
-      kfmBlockOptOut: winner.kfmBlockOptOut,
-      tenantAssociationId: winner.tenantAssociationId,
-      restartOnChange: winner.restartOnChange,
-    },
-    libraries: libs.map((l) => ({
+    base: plan.base,
+    libraries: plan.libs.map((l) => ({
       libraryId: l.libraryId,
       displayName: l.displayName,
       siteUrl: l.siteUrl,
@@ -3622,8 +3917,10 @@ async function resolveDeviceOnedriveSettings(deviceId: string, opts?: DeviceHier
   };
 }
 
-export async function buildOnedriveHelperConfigUpdate(deviceId: string, opts?: DeviceHierarchyOpts): Promise<OnedriveConfigUpdate | null> {
-  return resolveDeviceOnedriveSettings(deviceId, opts);
+/** Both phases back to back, for every non-heartbeat caller (unchanged contract). */
+export async function buildOnedriveHelperConfigUpdate(deviceId: string, opts?: DevicePolicySetOpts): Promise<OnedriveConfigUpdate | null> {
+  const plan = await loadOnedriveHelperConfigPlan(deviceId, opts);
+  return plan ? finishOnedriveHelperConfig(plan) : null;
 }
 
 // Roles that dynamic-group filters and attribute-targeted automations most

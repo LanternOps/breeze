@@ -23,6 +23,7 @@ import C2CConnectionWizard from './C2CConnectionWizard';
 import C2CRestoreDialog from './C2CRestoreDialog';
 import AlphaBadge from '../shared/AlphaBadge';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 type C2CTab = 'connections' | 'configs' | 'jobs' | 'items';
 
@@ -145,14 +146,14 @@ function C2CDashboardInner() {
       const url = new URL(window.location.href);
       url.searchParams.delete('c2c_connected');
       url.searchParams.delete('connectionId');
-      window.history.replaceState({}, '', url.pathname);
+      replaceUrl(url.pathname);
     }
     const c2cError = params.get('c2c_error');
     if (c2cError) {
       setConsentError(decodeURIComponent(c2cError));
       const url = new URL(window.location.href);
       url.searchParams.delete('c2c_error');
-      window.history.replaceState({}, '', url.pathname);
+      replaceUrl(url.pathname);
     }
   }, [stableT]);
 

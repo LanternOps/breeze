@@ -6,18 +6,114 @@ import (
 )
 
 func (h *Heartbeat) legacyContextGateway(name, family string) string {
+	snapshot := h.freshNetworkContextSnapshot()
+	if snapshot == nil {
+		return ""
+	}
+	return unambiguousLegacyGateway(*snapshot, name, family)
+}
+
+// legacyContextDNSServers returns the resolvers configured for the named
+// adapter, or nil when that is unknown (network context disabled, stale, or
+// the snapshot cannot attribute resolvers to this adapter).
+func (h *Heartbeat) legacyContextDNSServers(name string) []string {
+	snapshot := h.freshNetworkContextSnapshot()
+	if snapshot == nil {
+		return nil
+	}
+	return legacyResolverAddresses(*snapshot, name)
+}
+
+// freshNetworkContextSnapshot returns a copy of the latest snapshot when
+// network context is enabled and the capture is under 10 minutes old.
+func (h *Heartbeat) freshNetworkContextSnapshot() *networkcontext.Snapshot {
 	h.networkContextMu.Lock()
 	manager := h.networkContext
 	h.networkContextMu.Unlock()
 	if manager == nil {
-		return ""
+		return nil
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if !manager.enabled || manager.latestSnapshot == nil || time.Since(manager.captured) > 10*time.Minute {
-		return ""
+		return nil
 	}
-	return unambiguousLegacyGateway(*manager.latestSnapshot, name, family)
+	snapshot := *manager.latestSnapshot
+	return &snapshot
+}
+
+// maxLegacyDNSServers matches the API's dnsServers schema (.max(8)); the
+// WebSocket ingest path rejects the whole payload above that.
+const maxLegacyDNSServers = 8
+
+// windowsPlaceholderResolvers are the deprecated site-local DNS addresses
+// Windows reports on every IPv6-enabled adapter that has no IPv6 resolver
+// configured. They are not configured servers; counting them would hide an
+// adapter that has no resolver at all (#5803).
+var windowsPlaceholderResolvers = map[string]bool{
+	"fec0:0:0:ffff::1": true,
+	"fec0:0:0:ffff::2": true,
+	"fec0:0:0:ffff::3": true,
+}
+
+// legacyResolverAddresses maps the snapshot's resolver rows onto one adapter
+// name for the IP-history wire shape. Rows scoped to the adapter and unscoped
+// (system-wide, e.g. resolv.conf) rows both apply; OS order is preserved
+// because it is the resolver preference order. Returns nil when unknown and a
+// non-nil empty slice when the adapter positively has no resolver.
+//
+// An empty list is a claim that the adapter has no resolver, so every
+// degraded read is "unknown" rather than "empty": an incomplete manifest or
+// interface inventory, any resolver section that is not Complete, except the
+// resolv.conf fallback (always Partial with split_dns_unavailable, and
+// otherwise whole), and any truncated section.
+func legacyResolverAddresses(snapshot networkcontext.Snapshot, name string) []string {
+	if snapshot.ContextManifest.Outcome != networkcontext.Complete || len(snapshot.ContextManifest.Contexts) != 1 || len(snapshot.Resolvers) == 0 {
+		return nil
+	}
+	for _, s := range snapshot.Resolvers {
+		whole := s.Outcome == networkcontext.Complete ||
+			(s.Outcome == networkcontext.Partial && s.ReasonCode == "split_dns_unavailable")
+		if !whole || s.OmittedRowCount > 0 {
+			return nil
+		}
+	}
+	iface := ""
+	for _, s := range snapshot.Interfaces {
+		if s.Outcome != networkcontext.Complete {
+			return nil
+		}
+		for _, r := range s.Rows {
+			if r.Name != name {
+				continue
+			}
+			if iface != "" && iface != r.InterfaceKey {
+				return nil
+			}
+			iface = r.InterfaceKey
+		}
+	}
+	if iface == "" {
+		return nil
+	}
+	out := []string{}
+	seen := map[string]bool{}
+	for _, s := range snapshot.Resolvers {
+		for _, r := range s.Rows {
+			if r.InterfaceKey != nil && *r.InterfaceKey != iface {
+				continue
+			}
+			if windowsPlaceholderResolvers[r.Address] || r.Address == "" || seen[r.Address] {
+				continue
+			}
+			seen[r.Address] = true
+			out = append(out, r.Address)
+			if len(out) == maxLegacyDNSServers {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 // Legacy inventory has no table, context or ECMP fields. Populate a gateway

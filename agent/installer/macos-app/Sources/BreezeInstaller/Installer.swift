@@ -27,6 +27,18 @@ struct Installer {
         return "'\(escaped)'"
     }
 
+    /// The .pkg installs breeze-agent to /Library/Breeze/bin or /usr/local/bin
+    /// (agent/installer/macos/install-location.sh, #7211), so enroll with the
+    /// binary it actually installed (#8778). Same rule as choose_bin_dir there:
+    /// an agent already in /Library/Breeze/bin stays there, so it wins over a
+    /// leftover /usr/local/bin copy. `enrollArgs` is already shell-escaped.
+    static func privilegedCommand(pkgPath: String, enrollArgs: String) -> String {
+        let trusted = "/Library/Breeze/bin/breeze-agent"
+        let pick = "if [ -f \(trusted) ] && [ ! -L \(trusted) ] && [ -x \(trusted) ]; "
+            + "then B=\(trusted); else B=/usr/local/bin/breeze-agent; fi"
+        return "/usr/sbin/installer -pkg \(Installer.shellEscape(pkgPath)) -target / && \(pick) && \"$B\" enroll \(enrollArgs)"
+    }
+
     func run(
         pkgPath: String,
         serverUrl: String,
@@ -42,11 +54,8 @@ struct Installer {
         if let secret = enrollmentSecret, !secret.isEmpty {
             enrollArgs += ["--enrollment-secret", Installer.shellEscape(secret)]
         }
-        if let site = siteId, !site.isEmpty {
-            enrollArgs += ["--site-id", Installer.shellEscape(site)]
-        }
         let enrollCmd = enrollArgs.joined(separator: " ")
-        let command = "/usr/sbin/installer -pkg \(Installer.shellEscape(pkgPath)) -target / && /usr/local/bin/breeze-agent enroll \(enrollCmd)"
+        let command = Installer.privilegedCommand(pkgPath: pkgPath, enrollArgs: enrollCmd)
         let prompt = "Breeze needs to install the agent and configure system services."
 
         do {

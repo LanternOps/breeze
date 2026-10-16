@@ -115,18 +115,14 @@ func serviceInstallCmd() *cobra.Command {
 			}
 
 			if exePath != watchdogBinaryPath {
-				data, err := os.ReadFile(exePath)
-				if err != nil {
-					return fmt.Errorf("failed to read binary: %w", err)
-				}
-				if err := os.WriteFile(watchdogBinaryPath, data, 0755); err != nil {
+				if err := installBinaryAtomically(exePath, watchdogBinaryPath); err != nil {
 					return fmt.Errorf("failed to copy binary to %s: %w", watchdogBinaryPath, err)
 				}
 				fmt.Printf("Binary installed to %s\n", watchdogBinaryPath)
 			}
 
 			// Write systemd unit file.
-			if err := os.WriteFile(watchdogUnitDst, []byte(currentWatchdogUnit()), 0644); err != nil {
+			if err := writeFileAtomically(watchdogUnitDst, []byte(currentWatchdogUnit()), 0o644); err != nil {
 				return fmt.Errorf("failed to write unit file: %w", err)
 			}
 			fmt.Printf("Systemd unit installed to %s\n", watchdogUnitDst)

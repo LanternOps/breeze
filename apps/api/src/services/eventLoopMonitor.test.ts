@@ -8,6 +8,7 @@ import {
   getEventLoopLagStats,
   getEventLoopStarvationThresholdMs,
   readEventLoopLag,
+  readEventLoopLagSamplesSince,
   startEventLoopMonitor,
   stopEventLoopMonitor,
   __setEventLoopMonitorForTests,
@@ -519,5 +520,26 @@ describe('module singleton', () => {
 
     process.env.EVENT_LOOP_STARVATION_WARN_MS = '0';
     expect(getEventLoopStarvationThresholdMs()).toBe(1_000);
+  });
+});
+
+describe('samplesSince (W08)', () => {
+  it('returns each completed sample strictly after the cursor, oldest first', () => {
+    const { monitor, histogram, setNow } = makeMonitor();
+    setNow(10_000);
+    monitor.start();
+    histogram.setLagMs(50); setNow(11_000); monitor.sampleNow();
+    histogram.setLagMs(300); setNow(12_000); monitor.sampleNow();
+
+    expect(monitor.samplesSince(0).map((s) => s.maxLagMs)).toEqual([50, 300]);
+    expect(monitor.samplesSince(11_000).map((s) => s.maxLagMs)).toEqual([300]);
+    expect(monitor.samplesSince(12_000)).toEqual([]);
+    monitor.stop();
+    expect(monitor.samplesSince(0)).toEqual([]);
+  });
+
+  it('readEventLoopLagSamplesSince is empty when no monitor runs', () => {
+    __setEventLoopMonitorForTests(null);
+    expect(readEventLoopLagSamplesSince(0)).toEqual([]);
   });
 });

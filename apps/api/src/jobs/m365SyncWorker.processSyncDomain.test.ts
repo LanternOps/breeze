@@ -16,10 +16,11 @@ const { mocks } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('bullmq', () => ({
+vi.mock('bullmq', async (importOriginal) => ({
+  // Real Job so tests can drive processSyncDomain with a Job.fromJSON-built job (#8351).
+  Job: (await importOriginal<typeof import('bullmq')>()).Job,
   Queue: class { getJobCounts = vi.fn(); add = vi.fn(); getRepeatableJobs = vi.fn(async () => []); removeRepeatableByKey = vi.fn(); getJob = vi.fn(async () => null); close = vi.fn(); },
   Worker: class { on = vi.fn(); close = vi.fn(); },
-  Job: class {},
   UnrecoverableError: class UnrecoverableError extends Error {},
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
@@ -41,6 +42,7 @@ vi.mock('../services/m365Sync/metrics', () => ({
 }));
 
 import { UnrecoverableError } from 'bullmq';
+import { makeRealJob } from './__helpers__/realBullJob';
 import { M365SyncRetryableError, processSyncDomain } from './m365SyncWorker';
 
 const VALID_DATA: M365SyncJobData = {
@@ -53,8 +55,9 @@ const VALID_DATA: M365SyncJobData = {
   priority: 10,
 };
 
+/** A real Job; `attemptsMade` is 0-based inside the processor — attempt N runs with N - 1 (#8351). */
 function makeJob(data: unknown, attemptsMade: number, attempts = 3): Job<M365SyncQueueJobData> {
-  return { data, attemptsMade, opts: { attempts } } as unknown as Job<M365SyncQueueJobData>;
+  return makeRealJob(data, { attemptsMade, attempts }) as unknown as Job<M365SyncQueueJobData>;
 }
 
 describe('processSyncDomain', () => {
@@ -76,22 +79,24 @@ describe('processSyncDomain', () => {
     expect(mocks.run).not.toHaveBeenCalled();
   });
 
-  it('isFinalAttempt is false one attempt short of the limit, true exactly AT it', async () => {
-    await processSyncDomain(makeJob(VALID_DATA, 2, 3));
+  it('isFinalAttempt is false before the last attempt, true on it (0-based attemptsMade)', async () => {
+    await processSyncDomain(makeJob(VALID_DATA, 0, 3));
+    expect(mocks.run).toHaveBeenLastCalledWith(VALID_DATA, { isFinalAttempt: false });
+    await processSyncDomain(makeJob(VALID_DATA, 1, 3));
     expect(mocks.run).toHaveBeenLastCalledWith(VALID_DATA, { isFinalAttempt: false });
 
-    await processSyncDomain(makeJob(VALID_DATA, 3, 3));
+    await processSyncDomain(makeJob(VALID_DATA, 2, 3));
     expect(mocks.run).toHaveBeenLastCalledWith(VALID_DATA, { isFinalAttempt: true });
   });
 
   it('throttled on a NON-final attempt throws M365SyncRetryableError so BullMQ retries', async () => {
     mocks.run.mockResolvedValue('throttled');
-    await expect(processSyncDomain(makeJob(VALID_DATA, 1, 3))).rejects.toThrow(M365SyncRetryableError);
+    await expect(processSyncDomain(makeJob(VALID_DATA, 0, 3))).rejects.toThrow(M365SyncRetryableError);
   });
 
   it('throttled on the FINAL attempt returns normally — runSyncDomain already recorded it terminally', async () => {
     mocks.run.mockResolvedValue('throttled');
-    await expect(processSyncDomain(makeJob(VALID_DATA, 3, 3))).resolves.toBe('throttled');
+    await expect(processSyncDomain(makeJob(VALID_DATA, 2, 3))).resolves.toBe('throttled');
   });
 
   it('a non-throttled outcome never throws, even on a non-final attempt', async () => {

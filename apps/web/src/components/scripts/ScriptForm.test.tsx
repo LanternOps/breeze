@@ -354,6 +354,26 @@ describe('ScriptForm unknown-variable notice', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
   });
 
+  it('submits exitCodeSeverityMapping: null after every severity row is removed (#8590)', async () => {
+    const onSubmit = vi.fn();
+    render(
+      <ScriptForm
+        onSubmit={onSubmit}
+        defaultValues={{
+          ...draft,
+          content: 'exit 1',
+          exitCodeSeverityMapping: [{ exitCode: '1', severity: 'high' }],
+        }}
+      />
+    );
+
+    fireEvent.click(await screen.findByTitle(/remove/i));
+    fireEvent.click(screen.getByRole('button', { name: /save (script|changes)/i }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0]![0]).toHaveProperty('exitCodeSeverityMapping', null);
+  });
+
   it('does not warn on ${{var.x}} or on a {{org.name}} token from another namespace', async () => {
     render(
       <ScriptForm

@@ -747,9 +747,17 @@ describe('resolveSender — live partner-axis visibility (spec §8.3, §14)', ()
 
   it('returns the platform lane for a stream with no identity', async () => {
     const resolved = await withDbAccessContext(SYSTEM_CTX, () =>
+      // Bare EMAIL_FROM: the partner name becomes the display name (§8.3).
+      resolveSender({ purpose: 'invoice.sent', partnerId: f.partnerA, partnerName: 'Acme MSP', defaultFrom: 'no-reply@2breeze.app' }),
+    );
+    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP" <no-reply@2breeze.app>', reason: 'no_identity' });
+  });
+
+  it('keeps an operator-named EMAIL_FROM unchanged on the platform lane', async () => {
+    const resolved = await withDbAccessContext(SYSTEM_CTX, () =>
       resolveSender({ purpose: 'invoice.sent', partnerId: f.partnerA, partnerName: 'Acme MSP', defaultFrom: 'Breeze <no-reply@2breeze.app>' }),
     );
-    expect(resolved).toEqual({ lane: 'platform', from: '"Acme MSP via Breeze" <no-reply@2breeze.app>', reason: 'no_identity' });
+    expect(resolved).toEqual({ lane: 'platform', from: 'Breeze <no-reply@2breeze.app>', reason: 'no_identity' });
   });
 
   it('returns the platform lane once the domain stops being sendable (the kill switch)', async () => {

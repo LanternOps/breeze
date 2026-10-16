@@ -53,4 +53,25 @@ describe('edr provider schema', () => {
       expect(fkNames.some((n) => n.endsWith('_breeze_device_org_fk')), getTableName(table)).toBe(false);
     }
   });
+
+  it('W03: connection actions switch defaults off; tenant denial columns exist', () => {
+    const c = getTableColumns(edrConnections).actionsEnabled;
+    expect(c, 'edr_connections.actions_enabled missing').toBeDefined();
+    expect(c.notNull).toBe(true);
+    expect(c.default).toBe(false);
+    expect(getTableColumns(edrTenants).unsupportedActions.notNull).toBe(true);
+    expect(getTableColumns(edrTenants).unsupportedActionsAt.notNull).toBe(false);
+  });
+
+  it('W03: in-flight action identity is unique per target + action (partial)', () => {
+    const inflight = getTableConfig(edrActions).indexes.filter((i) => i.config.name?.startsWith('edr_actions_inflight_'));
+    expect(inflight.map((i) => i.config.name).sort()).toEqual([
+      'edr_actions_inflight_detection_uniq',
+      'edr_actions_inflight_endpoint_uniq',
+    ]);
+    for (const i of inflight) {
+      expect(i.config.unique, i.config.name).toBe(true);
+      expect(i.config.where, i.config.name).toBeDefined();
+    }
+  });
 });

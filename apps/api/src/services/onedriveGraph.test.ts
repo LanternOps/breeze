@@ -17,6 +17,7 @@ import {
   listSharePointLibraries,
   resolveUserGroupMembership,
   resolveUserGroupMembershipCached,
+  peekUserGroupMembershipCached,
   buildTenantAutoMountValue,
 } from './onedriveGraph';
 
@@ -256,6 +257,21 @@ describe('resolveUserGroupMembership', () => {
 describe('resolveUserGroupMembershipCached', () => {
   beforeEach(() => { vi.clearAllMocks(); clearGroupMembershipCache(); });
 
+  it('peek returns null on a miss and the cached result on a hit, without I/O (#8142)', async () => {
+    expect(peekUserGroupMembershipCached('org-1', 'u@contoso.com')).toBeNull();
+    (graphFetch as any).mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } });
+    const a = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect(peekUserGroupMembershipCached('org-1', 'U@contoso.com')).toEqual(a);
+    expect(graphFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes a supplied connection through to getToken (#8142)', async () => {
+    (graphFetch as any).mockResolvedValueOnce({ kind: 'ok', data: { value: [] } });
+    const connection = { orgId: 'org-1' } as never;
+    await resolveUserGroupMembershipCached('org-1', 'v@contoso.com', { connection });
+    expect(getToken).toHaveBeenCalledWith('org-1', { connection });
+  });
+
   it('second call within TTL hits the cache (no second Graph call)', async () => {
     (graphFetch as any).mockResolvedValueOnce({ kind: 'ok', data: { value: [{ id: 'g-1' }] } });
     const a = await resolveUserGroupMembershipCached('org-1', 'User@Contoso.com');
@@ -345,6 +361,15 @@ describe('resolveUserGroupMembershipCached negative caching', () => {
     const b = await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
     expect((b as any).data.groupIds).toEqual(['g-1']);
     expect(graphFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT cache connection_org_mismatch — a mis-supplied connection is retried and re-reported (#8142)', async () => {
+    (getToken as any)
+      .mockResolvedValueOnce({ kind: 'error', code: 'connection_org_mismatch', message: 'x' })
+      .mockResolvedValueOnce({ kind: 'error', code: 'connection_org_mismatch', message: 'x' });
+    await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    await resolveUserGroupMembershipCached('org-1', 'u@contoso.com');
+    expect(getToken).toHaveBeenCalledTimes(2);
   });
 
   it('does NOT cache not_found — a just-provisioned user can resolve promptly', async () => {

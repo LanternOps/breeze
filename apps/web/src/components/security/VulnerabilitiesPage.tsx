@@ -27,6 +27,7 @@ import {
   DataCard,
   CardField,
 } from "../shared/ResponsiveTable";
+import { replaceUrl } from '../../lib/replaceUrl';
 type Threat = {
   id: string;
   deviceId: string;
@@ -305,11 +306,7 @@ export default function VulnerabilitiesPage() {
             onChange={(e) => {
               const value = e.target.value;
               setSeverity(value);
-              window.history.replaceState(
-                null,
-                "",
-                value ? `#severity=${value}` : window.location.pathname,
-              );
+              replaceUrl(value ? `#severity=${value}` : window.location.pathname);
             }}
             className="h-10"
           >

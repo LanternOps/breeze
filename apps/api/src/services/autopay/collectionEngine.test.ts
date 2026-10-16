@@ -10,7 +10,7 @@ const { client, h } = vi.hoisted(() => ({ client: vi.fn(), h: {
   reads: [] as { table: unknown; where?: SQL; lock?: string }[],
   beforeRead: vi.fn(),
   balance: '100.00', reserved: '0.00', ordinal: 0,
-  method: vi.fn(), gate: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
+  method: vi.fn(), gate: vi.fn(), partnerLive: vi.fn(), readiness: vi.fn(), settings: vi.fn(),
   retrieve: vi.fn(), create: vi.fn(), notice: vi.fn(), staff: vi.fn(), notCharged: vi.fn(),
   piRetrieve: vi.fn(), confirm: vi.fn(), cancel: vi.fn(), settle: vi.fn(), attemptNotice: vi.fn(), attention: vi.fn(), methodNotice: vi.fn(),
   capture: vi.fn(), unusable: vi.fn(), provenance: vi.fn(), accountProvenance:vi.fn(), revocation: vi.fn(), persist: false, mappingError: false,
@@ -26,7 +26,7 @@ vi.mock('./paymentNotices', () => ({ enqueueAttemptNotice: h.attemptNotice, noti
   noticeDedupeKey: (id: string, kind: string) => `${id}:${kind}:1` }));
 vi.mock('./notChargedNotice', async importOriginal => ({ ...await importOriginal<typeof import('./notChargedNotice')>(), noticeChargeNotMade: h.notCharged }));
 vi.mock('./paymentMethods', () => ({ getAutopayMethod: h.method, markPaymentMethodUnusable: h.unusable }));
-vi.mock('./autopayGate', () => ({ isAutopayEnabledForPartner: h.gate }));
+vi.mock('./autopayGate', () => ({ isAutopayEnabledForPartner: h.gate, hasLiveAutopayPartner: h.partnerLive }));
 vi.mock('./stripeCapabilities', () => ({ getAutopayStripeReadiness: h.readiness }));
 vi.mock('./billingPaymentSettings', () => ({ resolveBillingPaymentSettings: h.settings }));
 vi.mock('./chargingNotice', () => ({ enqueueAutopayNotice: h.notice }));
@@ -135,7 +135,7 @@ beforeEach(() => {
   h.method.mockImplementation(async () => ({ ...method }));
   h.provenance.mockResolvedValue([invoice.orgId]);
   h.accountProvenance.mockResolvedValue({stripeAccountId:'acct_test',stripeCustomerId:'cus_test',methodType:'card'});
-  h.revocation.mockResolvedValue({ charged: 0, blocked: 0, stillPending: 0 }); h.gate.mockResolvedValue(true);
+  h.revocation.mockResolvedValue({ charged: 0, blocked: 0, stillPending: 0 }); h.gate.mockResolvedValue(true); h.partnerLive.mockResolvedValue(true);
   h.readiness.mockResolvedValue({ ready: true, stripeAccountId: 'acct_test', accountCountry: 'US' });
   h.settings.mockResolvedValue({ cardFeeBps: { value: 300 }, achFeeAmount: { value: '0.00' }, feeAttested: true,
     autopayCap: { value: { enabled: false } } });

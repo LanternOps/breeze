@@ -8,7 +8,6 @@
 
 import { DelayedError, Queue, Worker, Job } from 'bullmq';
 import { z } from 'zod';
-import { policyAppRuleSchema } from '@breeze/shared/validators';
 import * as dbModule from '../db';
 import {
   patchJobs,
@@ -22,6 +21,7 @@ import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import {
+  coerceAppRuleList,
   type CategoryRule,
   type PolicyAppRule,
   type PolicyAutoApproveConfig,
@@ -43,6 +43,12 @@ import {
   type PatchDeviceTerminal,
 } from '../services/patchJobFinalizer';
 import { captureException } from '../services/sentry';
+import {
+  buildRestorePointRequest,
+  discardRestorePointRequest,
+  linkRestorePointCommand,
+  restorePointPayloadField,
+} from '../services/restorePointRequest';
 import { attachWorkerObservability } from './workerObservability';
 
 // Strict shape for patches.policyAutoApprove as stored in the job JSONB.
@@ -87,6 +93,31 @@ export function parseJobCategoryList(value: unknown): string[] | null | undefine
   if (!Array.isArray(value)) return null;
   if (value.some((v) => typeof v !== 'string')) return null;
   return (value as string[]).filter((v) => v.length > 0);
+}
+
+/**
+ * Parse an app-rule list from a job snapshot key (`apps` — policy rules — or
+ * `ringAppRules` — ring rules, #8184). Absent → undefined (a job from before
+ * that key existed). Present but not an array → undefined, loudly; the caller
+ * decides the posture (`apps`: run without them, as it always has;
+ * `ringAppRules`: skip the device). Entries go through `coerceAppRuleList`: malformed but
+ * identifiable rules become `block` (dropping a restriction would widen
+ * install scope); entries with no usable identity are dropped, loudly.
+ */
+export function parseJobAppRules(
+  value: unknown,
+  patchJobId: string,
+  key: 'apps' | 'ringAppRules'
+): PolicyAppRule[] | undefined {
+  if (value === undefined) return undefined;
+  const rules = coerceAppRuleList(value, `[PatchJobExecutor] Job ${patchJobId} (patches.${key})`);
+  if (rules === null) {
+    const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.${key}; ignoring those app rules`;
+    console.warn(`${message}:`, JSON.stringify(value));
+    captureException(new Error(message));
+    return undefined;
+  }
+  return rules;
 }
 
 const { db } = dbModule;
@@ -1090,7 +1121,7 @@ async function prepareDeviceExecution(
   }
 
   const [device] = await db
-    .select({ id: devices.id })
+    .select({ id: devices.id, osType: devices.osType })
     .from(devices)
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, patchJob.orgId)))
     .limit(1);
@@ -1112,6 +1143,7 @@ async function prepareDeviceExecution(
     sources?: unknown;
     policyAutoApprove?: unknown;
     apps?: unknown;
+    ringAppRules?: unknown;
   };
   const targets = patchJob.targets as {
     deployment?: { rebootPolicy?: string; offlineBehavior?: string };
@@ -1158,60 +1190,17 @@ async function prepareDeviceExecution(
     }
   }
 
-  // Malformed-but-identifiable rules coerce to 'block' rather than being
-  // dropped — dropping a block rule would silently widen install scope; only
-  // rules whose identity (source + packageId) is unusable are dropped, loudly.
-  let jobApps: PolicyAppRule[] | undefined;
-  if (patchesConfig?.apps !== undefined) {
-    if (!Array.isArray(patchesConfig.apps)) {
-      const message = `[PatchJobExecutor] Job ${patchJobId} has malformed patches.apps; ignoring app rules`;
-      console.warn(`${message}:`, JSON.stringify(patchesConfig.apps));
-      captureException(new Error(message));
-    } else {
-      const valid: PolicyAppRule[] = [];
-      for (const entry of patchesConfig.apps) {
-        const parsed = policyAppRuleSchema.safeParse(entry);
-        if (parsed.success) {
-          // Strip displayName and any other extra fields before handing to the evaluator.
-          const { source, packageId, action, pinnedVersion } = parsed.data;
-          if (action === 'pin' && pinnedVersion) {
-            valid.push({ source, packageId, action: 'pin', pinnedVersion });
-          } else {
-            // action === 'block' (pin without pinnedVersion is rejected by the schema).
-            valid.push({ source, packageId, action: 'block' });
-          }
-          continue;
-        }
-
-        const e = entry as { source?: unknown; packageId?: unknown } | null;
-        const identifiable =
-          e !== null &&
-          typeof e === 'object' &&
-          typeof e.source === 'string' &&
-          e.source.length > 0 &&
-          typeof e.packageId === 'string' &&
-          e.packageId.length > 0;
-
-        if (identifiable) {
-          // Fail closed: the admin intended to restrict this app; a malformed
-          // restriction (e.g. pin without a version) becomes an outright block.
-          console.warn(
-            `[PatchJobExecutor] Job ${patchJobId} coercing malformed app rule to block (fail-closed):`,
-            JSON.stringify(entry)
-          );
-          valid.push({
-            source: e.source as string,
-            packageId: e.packageId as string,
-            action: 'block',
-          });
-        } else {
-          const message = `[PatchJobExecutor] Job ${patchJobId} dropping malformed app rule with unusable identity`;
-          console.warn(`${message}:`, JSON.stringify(entry));
-          captureException(new Error(message));
-        }
-      }
-      jobApps = valid;
-    }
+  // App rules from the policy (`apps`) and from the ring (`ringAppRules`,
+  // #8184) are parsed identically and both enforced by the evaluator.
+  const jobApps = parseJobAppRules(patchesConfig?.apps, patchJobId, 'apps');
+  const jobRingAppRules = parseJobAppRules(patchesConfig?.ringAppRules, patchJobId, 'ringAppRules');
+  // A present-but-unparseable `ringAppRules` skips the device rather than
+  // running it with no ring restrictions. The key is new, so no legacy
+  // snapshot can carry a bad value; `apps` keeps its historical
+  // ignore-and-run posture (parseJobAppRules already reported both).
+  if (patchesConfig?.ringAppRules !== undefined && jobRingAppRules === undefined) {
+    await markDeviceSkipped(patchJobId, deviceId, 'invalid_patch_app_rules');
+    return { kind: 'skipped', skipped: true, reason: 'Invalid ring app rules' };
   }
 
   // Ring category include/exclude filters (#2117). Mirror the sources posture:
@@ -1294,6 +1283,7 @@ async function prepareDeviceExecution(
     sources: jobSources,
     policyAutoApprove,
     apps: jobApps,
+    ringAppRules: jobRingAppRules,
   };
 
   // If we have a ringId, load deferralDays and partnerId from the ring.
@@ -1329,15 +1319,51 @@ async function prepareDeviceExecution(
 
   // 3. Send install_patches command
   const patchIds = approvedPatches.map((p) => p.patchId);
-  const patchRecords = await db
-    .select({
-      id: patches.id,
-      source: patches.source,
-      externalId: patches.externalId,
-      title: patches.title,
-    })
-    .from(patches)
-    .where(inArray(patches.id, patchIds));
+
+  // #4609 W05: the System Restore checkpoint decision is made HERE, when the
+  // concrete per-device command is created. Null (no policy, non-Windows)
+  // leaves the payload exactly as it was before the feature. A resolution
+  // failure fails this device visibly rather than dispatching an install the
+  // policy may have wanted protected.
+  let restorePoint;
+  try {
+    restorePoint = await buildRestorePointRequest({
+      deviceId,
+      orgId,
+      osType: device.osType,
+      trigger: 'patch',
+      label: `install ${patchIds.length} update${patchIds.length === 1 ? '' : 's'}`,
+      patchJobId,
+    });
+  } catch (err) {
+    console.error(
+      `[PatchJobExecutor] System Restore checkpoint policy resolution failed for device ${deviceId}:`,
+      err instanceof Error ? err.message : err,
+    );
+    captureException(err);
+    await markDeviceSkipped(patchJobId, deviceId, 'error_resolving_restore_point');
+    return { kind: 'error', error: 'Failed to resolve the System Restore checkpoint policy' };
+  }
+
+  let patchRecords;
+  try {
+    patchRecords = await db
+      .select({
+        id: patches.id,
+        source: patches.source,
+        externalId: patches.externalId,
+        title: patches.title,
+        // Only alongside a stamped block: the agent's definitions-only skip
+        // (W07) needs it, and without a block the payload stays byte-identical.
+        ...(restorePoint ? { category: patches.category } : {}),
+      })
+      .from(patches)
+      .where(inArray(patches.id, patchIds));
+  } catch (err) {
+    // No command can exist yet, so the requested row would be a false record.
+    await discardRestorePointRequest(restorePoint);
+    throw err;
+  }
 
   // Enqueue through the single dispatch seam so offline devices can wait for delivery.
   // `patchJobId` is now in the payload: it is what lets a result arriving days
@@ -1357,12 +1383,14 @@ async function prepareDeviceExecution(
   const res = await dispatchDeviceCommand({
     deviceId,
     type: 'install_patches',
-    payload: { patchJobId, patchIds, patches: patchRecords },
+    payload: { patchJobId, patchIds, patches: patchRecords, ...restorePointPayloadField(restorePoint) },
     expectedOrgId: patchJob.orgId,
     offlinePolicy: offline.policy,
   });
 
   if (!res.ok) {
+    // No command exists, so nothing was asked of the agent.
+    await discardRestorePointRequest(restorePoint);
     // An offline device with `offlineBehavior: 'skip'` is still recorded
     // skipped, with the seam's own code as the reason. A stale-deadline
     // fallback gets its own reason so it is not mistaken for a configured skip.
@@ -1378,9 +1406,12 @@ async function prepareDeviceExecution(
 
   const commandId = res.command?.id;
   if (!commandId) {
+    await discardRestorePointRequest(restorePoint);
     await markDeviceSkipped(patchJobId, deviceId, 'command_creation_failed');
     return { kind: 'error', error: 'Failed to create command' };
   }
+
+  await linkRestorePointCommand(restorePoint, commandId);
 
   if (res.delivery === 'queued_offline') {
     await recordDeviceQueued(patchJobId, deviceId, approvedPatches);

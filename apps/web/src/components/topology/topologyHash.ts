@@ -2,6 +2,7 @@ import type { TopologyView } from '@breeze/shared';
 export type TopologyNavigation = { siteId?: string; view: TopologyView; selection?: { kind: 'node' | 'edge'; id: string }; search: string; runIds?: string[];
   /** Canonical port whose history is open (M3 Task 11). */ interfaceId?: string;
   /** Site operations section (monitoring policies, recent changes) is open. */ operations?: boolean;
+  /** Undeclared networks stay on the map although the site declares networks (site location W1). */ showOtherNetworks?: boolean;
   /** M4: the open "Explain this" investigation (an AI session id; re-read under current access, never trusted). */ investigationId?: string;
   /** M4: the accepted run of an approved AI-proposed diagnostic, resumed by id (never re-POSTed). */ aiRunId?: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -18,6 +19,7 @@ export function parseTopologyHash(raw: string): TopologyNavigation | undefined {
       else if (key === 'runs' && value.split(',').length <= 2 && value.split(',').every((id) => uuid.test(id))) result.runIds = value.split(',');
       else if (key === 'iface' && uuid.test(value)) result.interfaceId = value;
       else if (key === 'ops' && value === '1') result.operations = true;
+      else if (key === 'others' && value === '1') result.showOtherNetworks = true;
       else if (key === 'explain' && uuid.test(value)) result.investigationId = value;
       else if (key === 'airun' && uuid.test(value)) result.aiRunId = value;
       else if (key === 'search' && value.length <= 200) result.search = value;
@@ -27,11 +29,16 @@ export function parseTopologyHash(raw: string): TopologyNavigation | undefined {
   } catch { return undefined; }
 }
 export function writeTopologyHash(value: TopologyNavigation) {
-  window.location.hash = ['topology', ...(value.siteId ? ['site', value.siteId] : []), 'view', value.view,
+  window.location.hash = formatTopologyHash(value);
+}
+/** The hash for a navigation, without the leading `#`. */
+export function formatTopologyHash(value: TopologyNavigation): string {
+  return ['topology', ...(value.siteId ? ['site', value.siteId] : []), 'view', value.view,
     ...(value.selection ? [value.selection.kind, encodeURIComponent(value.selection.id)] : []),
     ...(value.runIds?.length ? ['runs', value.runIds.join(',')] : []),
     ...(value.interfaceId ? ['iface', value.interfaceId] : []),
     ...(value.operations ? ['ops', '1'] : []),
+    ...(value.showOtherNetworks ? ['others', '1'] : []),
     ...(value.investigationId ? ['explain', value.investigationId] : []),
     ...(value.aiRunId ? ['airun', value.aiRunId] : []),
     ...(value.search ? ['search', encodeURIComponent(value.search)] : [])].join('/');

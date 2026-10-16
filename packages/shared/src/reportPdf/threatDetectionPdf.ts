@@ -206,6 +206,19 @@ export function renderThreatDetectionReport(
     { value: measured(agents?.devicesWithoutAgent), label: 'Managed devices with no detection agent', unmeasured: agents?.devicesWithoutAgent == null },
     { value: measured(agents?.agentsOffline), label: 'Detection agents not reporting in', unmeasured: agents?.agentsOffline == null },
   ], y + 2);
+  // EDR provider framework (#8164): printed only when the snapshot carries it,
+  // so a no-EDR (or legacy) snapshot renders exactly as before. The vendor is
+  // never named — this is a customer-facing artifact.
+  if (agents?.edrEndpoints != null) {
+    y = drawProse(
+      doc,
+      chrome,
+      `Managed endpoint protection: ${agents.edrEndpoints} endpoint${agents.edrEndpoints === 1 ? '' : 's'} reporting to a protection console`,
+      y - 4,
+      8.4,
+      C.muted,
+    );
+  }
 
   // --- Detections -------------------------------------------------------------
   y = chrome.drawSectionHeading(doc, 'Detections in this period', y + 2);
@@ -217,6 +230,16 @@ export function renderThreatDetectionReport(
   ], y + 2);
   y = drawProse(doc, chrome, `By severity — ${bucketLine(incidents?.bySeverity)}`, y, 8.4, C.muted);
   y = drawProse(doc, chrome, `By status — ${bucketLine(incidents?.byStatus)}`, y, 8.4, C.muted);
+  if (summary.edrDetections) {
+    y = drawProse(
+      doc,
+      chrome,
+      `Managed endpoint protection detections open now: ${summary.edrDetections.open}   ·   ${bucketLine(summary.edrDetections.bySeverity)}`,
+      y,
+      8.4,
+      C.muted,
+    );
+  }
 
   // --- The detections themselves ----------------------------------------------
   if (rows.length > 0) {

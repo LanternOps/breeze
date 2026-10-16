@@ -1,0 +1,1 @@
+[{"vmid":100,"name":"web-frontend","status":"running","cpus":4,"maxmem":8589934592,"uptime":3600,"mem":123,"netin":5,"tags":"prod;web","lock":""},{"vmid":101,"name":"db-replica","status":"stopped","cpus":2,"maxmem":4294967296,"uptime":0},{"vmid":9000,"name":"ubuntu-template","status":"stopped","cpus":2,"maxmem":2147483648,"uptime":0,"template":1}]

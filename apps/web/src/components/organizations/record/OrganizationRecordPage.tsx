@@ -32,6 +32,7 @@ import OrgBillingTab from './OrgBillingTab';
 import OrgDevicesTab from './OrgDevicesTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
+import SendMessageDialog from '@/components/endpointMessages/SendMessageDialog';
 import OrgReportHistory from './OrgReportHistory';
 import OrgServiceTab from './OrgServiceTab';
 import OrgDocumentsTab from './OrgDocumentsTab';
@@ -87,6 +88,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   const [summary, setSummary] = useState<OrgSummary | null>(null);
   const [summaryFailed, setSummaryFailed] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [sendMessageOpen, setSendMessageOpen] = useState(false);
   const [modal, setModal] = useState<'archive' | 'merge' | null>(null);
   // #6850: a suspended/churned org's GET 404s, and — unlike an archived org —
   // it never rides in `GET /orgs/organizations` for partner scope
@@ -360,7 +362,9 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         onOpenSettings={() => void navigateTo(`/settings/organizations/${orgId}`)}
         onArchive={archived ? undefined : () => setModal('archive')}
         onMerge={archived || !canMerge ? undefined : () => setModal('merge')}
+        onSendMessage={() => setSendMessageOpen(true)}
       />
+      <SendMessageDialog open={sendMessageOpen} onClose={() => setSendMessageOpen(false)} targets={{ orgId }} />
 
       {archived && (
         <>
@@ -409,7 +413,14 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         <ArchiveOrgModal
           org={modalOrg}
           onClose={() => setModal(null)}
-          onArchived={() => void loadOrg()}
+          onArchived={() => {
+            void loadOrg();
+            // Header org switcher reads the global store; refresh so it drops the archived org (#8371).
+            useOrgStore
+              .getState()
+              .fetchOrganizations()
+              .catch((storeErr: unknown) => console.warn('[OrganizationRecordPage] org store refresh failed after archive', storeErr));
+          }}
           onDoneClose={() => setModal(null)}
         />
       )}

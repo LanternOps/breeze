@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ sets: [] as Record<string, unknown>[], returning: [] as unknown[][], savepoints: 0, throwOnUpdate: false }));
+const h = vi.hoisted(() => ({ sets: [] as Record<string, unknown>[], returning: [] as unknown[][], savepoints: 0, throwOnUpdate: false, hasContext: true }));
 vi.mock('../../db', () => {
   const update = vi.fn(() => ({
     set: (s: Record<string, unknown>) => {
@@ -10,7 +10,7 @@ vi.mock('../../db', () => {
   }));
   return {
     db: { update },
-    hasDbAccessContext: () => true,
+    hasDbAccessContext: () => h.hasContext,
     withDbTransaction: async (fn: () => unknown) => { h.savepoints += 1; return fn(); },
   };
 });
@@ -36,7 +36,7 @@ describe('terminalVerdict', () => {
 });
 
 describe('advanceOutcomesForTerminalExecution', () => {
-  beforeEach(() => { h.sets.length = 0; h.returning.length = 0; h.savepoints = 0; h.throwOnUpdate = false; });
+  beforeEach(() => { h.sets.length = 0; h.returning.length = 0; h.savepoints = 0; h.throwOnUpdate = false; h.hasContext = true; });
 
   it('a successful run moves pending → awaiting_recovery with a 24h recovery deadline, inside a savepoint', async () => {
     h.returning.push([{ id: 'o-1' }]);
@@ -60,6 +60,33 @@ describe('advanceOutcomesForTerminalExecution', () => {
     h.returning.push([{ id: 'o-1' }]);
     await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'failed', neverDelivered: true });
     expect(h.sets[0]).toMatchObject({ state: 'inconclusive', stateReason: 'script_never_delivered' });
+    expect(h.sets[0]!.countedAt).toBeInstanceOf(Date);
+    expect(h.sets[0]!.recountRequestedAt).toBeInstanceOf(Date);
+  });
+
+  it('with no ambient DB context writes on the bare db directly, with no savepoint (contextless branch)', async () => {
+    h.hasContext = false;
+    h.returning.push([{ id: 'o-1' }]);
+    await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'completed' })).resolves.toBe(1);
+    expect(h.sets[0]).toMatchObject({ state: 'awaiting_recovery' });
+    expect(h.savepoints).toBe(0);
+  });
+
+  it('contextless branch also swallows a failed update', async () => {
+    h.hasContext = false;
+    h.throwOnUpdate = true;
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'failed' })).resolves.toBe(0);
+    expect(err).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+  });
+
+  it('a cancelled run is terminal + counted with a deferred recount and no recovery deadline (non-awaiting branch)', async () => {
+    h.returning.push([{ id: 'o-1' }]);
+    await advanceOutcomesForTerminalExecution({ executionId: 'e-1', status: 'cancelled' });
+    expect(h.sets[0]).toMatchObject({ state: 'cancelled', stateReason: 'script_cancelled' });
+    expect(h.sets[0]).not.toHaveProperty('deadlineAt');
+    expect(h.sets[0]!.terminalAt).toBeInstanceOf(Date);
     expect(h.sets[0]!.countedAt).toBeInstanceOf(Date);
     expect(h.sets[0]!.recountRequestedAt).toBeInstanceOf(Date);
   });

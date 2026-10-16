@@ -106,6 +106,10 @@ function stylesheet(c: ReturnType<typeof palette>): cytoscape.StylesheetJson {
       'min-zoomed-font-size': 6, events: 'no' } },
     { selector: 'node[presence="offline"]', style: { opacity: 0.6 } },
     { selector: 'node[?stale]', style: { 'border-style': 'dashed' } },
+    // A visitor (assigned to another site): neutral, dashed, never a health colour (site location W2).
+    { selector: 'node[?visiting]', style: { 'border-style': 'dashed', 'border-color': c.muted, 'background-color': c.mutedBg } },
+    // A visitor with a wrong-site suggestion (site location W3): solid primary border, still never a health colour.
+    { selector: 'node[?suggested]', style: { 'border-style': 'solid', 'border-color': c.primary, 'border-width': 1.5 } },
     { selector: 'node[?unverified]', style: { 'border-style': 'dashed', 'background-color': c.mutedBg } },
     // Neighbour-cache placement (#7816): distinct from an address match, still neutral — never a health colour.
     { selector: 'node[?corroborated]', style: { 'border-style': 'dotted', 'border-width': 1.5 } },
@@ -203,7 +207,10 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
   }, [render]);
 
   useEffect(() => {
-    const renderer = cytoscape({ container: container.current, elements: [], minZoom: 0.1, maxZoom: 2.5, wheelSensitivity: 0.2, style: stylesheet(palette()) });
+    // `layout: null`: Cytoscape otherwise runs a grid layout at construction. It places nothing here (no elements
+    // yet; the render effect sets every position) and it throws from GridLayout.run when the container cannot be
+    // measured (NaN size, e.g. a container no longer in the document), which an org switch on a site link hit (#8113).
+    const renderer = cytoscape({ container: container.current, elements: [], layout: { name: 'null' }, minZoom: 0.1, maxZoom: 2.5, wheelSensitivity: 0.2, style: stylesheet(palette()) });
     cy.current = renderer;
     const themeObserver = new MutationObserver(() => renderer.style(stylesheet(palette())));
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
@@ -346,17 +353,22 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
     const labelOf = new Map(render.nodes.map((node) => [node.id, node.label]));
     const family = fontFamily();
     const badgeLabel = t('grouped.sharedIpBadge'), badgeW = badgeWidth(badgeLabel, family);
+    const visitingLabel = t('grouped.crossSite.visitingBadge'), visitingW = badgeWidth(visitingLabel, family);
+    const suggestedLabel = t('grouped.crossSite.suggestedBadge'), suggestedW = badgeWidth(suggestedLabel, family);
+    /** The compact pill closing a tile's second line: "Visiting" for a visitor, "Shared IP" for tiles that report one address. */
+    const markerOf = (node: RenderNode) => node.suggested ? { label: suggestedLabel, width: suggestedW } : node.visiting ? { label: visitingLabel, width: visitingW }
+      : node.sharedWith > 0 ? { label: badgeLabel, width: badgeW } : null;
     renderer.batch(() => {
       // Parents first so children can reference them.
       const ordered = [...render.nodes].sort((a, b) => Number(!!a.parent) - Number(!!b.parent));
       const nodes: cytoscape.ElementDefinition[] = ordered.map((node) => {
         const width = sizes.get(node.id)?.width ?? 208, height = sizes.get(node.id)?.height ?? 60;
         const card = node.kind === 'group' || node.kind === 'unidentified';
-        return { group: 'nodes', data: { id: node.id, display: display(node, width, family, node.sharedWith > 0 ? badgeW + 6 : 0), tooltip: node.note ?? undefined, chip: !node.parent && !card && node.kind !== 'outside', kind: node.kind, width, height,
+        return { group: 'nodes', data: { id: node.id, display: display(node, width, family, markerOf(node) ? markerOf(node)!.width + 6 : 0), tooltip: node.note ?? undefined, chip: !node.parent && !card && node.kind !== 'outside', kind: node.kind, width, height,
           textWidth: card ? '4000px' : `${Math.max(80, width - TEXT_INSET - TEXT_END)}px`, textShift: card || node.kind === 'outside' ? 0 : TEXT_INSET - width,
           icon: card || node.kind === 'outside' ? 'none' : glyphTileUri(node.glyph), presence: node.presence ?? undefined, member: !!node.parent,
           health: node.health ?? undefined, stale: node.stale, unverified: node.unverified, corroborated: node.corroborated, networkClass: node.networkClass ?? undefined,
-          presentation: node.id.startsWith('presentation:'), titleShift: 0, ...(node.parent ? { parent: node.parent } : {}) },
+          visiting: !!node.visiting, suggested: !!node.suggested, presentation: node.id.startsWith('presentation:'), titleShift: 0, ...(node.parent ? { parent: node.parent } : {}) },
           ...(card ? {} : { position: points.get(node.id) ?? { x: 0, y: 0 } }) };
       });
       // Section headers follow the packed members; they are drawing only (never persisted or selected).
@@ -376,15 +388,15 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
         relationshipIds: edge.relationshipIds, toCard: edge.style !== 'route' && (cards.has(edge.source) || cards.has(edge.target)),
         ...(edge.label ? { label: edge.label } : {}), ...(edge.sourceEnd ? { sourceEnd: edge.sourceEnd } : {}), ...(edge.targetEnd ? { targetEnd: edge.targetEnd } : {}) } }));
       // Shared-IP markers close the address line; the full sentence is the tile's tooltip and in the inspector.
-      const badges: cytoscape.ElementDefinition[] = render.nodes.filter((node) => node.sharedWith > 0 && points.has(node.id)).map((node) => {
-        const point = points.get(node.id)!, width = sizes.get(node.id)?.width ?? 208;
+      const badges: cytoscape.ElementDefinition[] = render.nodes.filter((node) => markerOf(node) && points.has(node.id)).map((node) => {
+        const point = points.get(node.id)!, width = sizes.get(node.id)?.width ?? 208, marker = markerOf(node)!;
         // Right after the address text (clipped to leave the marker room), not floating at the tile's edge.
-        const detail = detailLine(node, width, family, badgeW + 6);
+        const detail = detailLine(node, width, family, marker.width + 6);
         const textEnd = measureContext ? (measureContext.font = `500 12px ${family}`, measureContext.measureText(detail).width) : detail.length * 6.5;
-        return { group: 'nodes', selectable: false, data: { id: `badge:${node.id}`, kind: 'badge', presentation: true, member: false, display: badgeLabel, width: badgeW, height: BADGE_HEIGHT,
-          textShift: 0, textWidth: `${badgeW + 40}px`, icon: 'none', ...(node.parent ? { parent: node.parent } : {}) },
+        return { group: 'nodes', selectable: false, data: { id: `badge:${node.id}`, kind: 'badge', presentation: true, member: false, display: marker.label, width: marker.width, height: BADGE_HEIGHT,
+          textShift: 0, textWidth: `${marker.width + 40}px`, icon: 'none', ...(node.parent ? { parent: node.parent } : {}) },
           // Address line centre: two 12px lines at 1.35 line height, centred in the tile.
-          position: { x: point.x - width / 2 + TEXT_INSET + textEnd + 6 + badgeW / 2, y: point.y + 8 } };
+          position: { x: point.x - width / 2 + TEXT_INSET + textEnd + 6 + marker.width / 2, y: point.y + 8 } };
       });
       // One invisible anchor per card, placed over its summary panel by the sync loop (never persisted or laid out).
       const anchors: cytoscape.ElementDefinition[] = [...cards].map((card) => {
@@ -412,6 +424,8 @@ export default function TopologyCanvas({ render, positions, boxes, selection, ed
         if (element.position) existing.position(element.position);
       }
       renderer.nodes().ungrabify(); if (editable) renderer.nodes('[kind!="section"][kind!="badge"]').grabify();
+      // A visitor is presentation only: it can neither be pinned nor dragged out of its card.
+      renderer.nodes('[?visiting]').ungrabify();
       renderer.elements().unselect();
       if (selection) {
         const target = selection.kind === 'edge' ? renderer.edges().filter((edge) => (edge.data('relationshipIds') as string[] | undefined)?.includes(selection.id) ?? edge.id() === selection.id)

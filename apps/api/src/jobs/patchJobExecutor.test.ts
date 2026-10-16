@@ -785,6 +785,132 @@ describe('patch job executor queueing', () => {
     );
   });
 
+  // #8184 W01: ring app rules ride in patches.ringAppRules, parsed with the
+  // same fail-closed coercion as patches.apps and threaded separately.
+  async function runDeviceJobWithPatches(patches: Record<string, unknown>) {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches,
+        targets: { deviceIds: ['device-1'] },
+      }]) as any)
+      .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any)
+      .mockImplementationOnce(() => createSelectChain([]) as any);
+    vi.mocked(db.insert).mockImplementationOnce(() => ({
+      values: vi.fn(() => Promise.resolve()),
+    }) as any);
+    vi.mocked(db.update).mockImplementationOnce(() => ({
+      set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    }) as any);
+    vi.mocked(resolveApprovedPatchesForDevice).mockResolvedValueOnce([]);
+
+    createPatchJobDeviceWorker();
+    await shared.processorRefs['patch-job-devices']({
+      data: { type: 'execute-patch-job-device', patchJobId: 'job-1', deviceId: 'device-1', orgId: 'org-1' },
+    });
+  }
+
+  it('threads ringAppRules to the evaluator alongside apps (#8184)', async () => {
+    await runDeviceJobWithPatches({
+      ringId: null,
+      autoApprove: {},
+      apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }],
+      ringAppRules: [
+        { source: 'third_party', packageId: 'Mozilla.Firefox', displayName: 'Firefox', action: 'block' },
+        { source: 'third_party', packageId: 'Zoom.Zoom', action: 'pin', pinnedVersion: '6.0' },
+      ],
+    });
+
+    expect(resolveApprovedPatchesForDevice).toHaveBeenCalledWith(
+      'device-1',
+      'org-1',
+      expect.objectContaining({
+        apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }],
+        ringAppRules: [
+          { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+          { source: 'third_party', packageId: 'Zoom.Zoom', action: 'pin', pinnedVersion: '6.0' },
+        ],
+      }),
+    );
+  });
+
+  it('leaves ringAppRules undefined without a warning when the key is absent (pre-#8184 job)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await runDeviceJobWithPatches({ ringId: null, autoApprove: {}, apps: [] });
+
+    expect(resolveApprovedPatchesForDevice).toHaveBeenCalledWith(
+      'device-1',
+      'org-1',
+      expect.objectContaining({ ringAppRules: undefined, apps: [] }),
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('skips the device on a present-but-non-array ringAppRules (fail closed — no legacy snapshot carries a bad one)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => createSelectChain([{
+        id: 'job-1',
+        orgId: 'org-1',
+        status: 'running',
+        patches: {
+          ringId: null,
+          autoApprove: {},
+          apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }],
+          ringAppRules: 'nope',
+        },
+        targets: { deviceIds: ['device-1'] },
+      }]) as any)
+      .mockImplementationOnce(() => createSelectChain([{ id: 'device-1' }]) as any)
+      // checkAndFinalizeJob select (called by markDeviceSkipped)
+      .mockImplementationOnce(() => createSelectChain([]) as any);
+    const valuesMock = vi.fn(() => Promise.resolve());
+    vi.mocked(db.insert).mockImplementationOnce(() => ({ values: valuesMock }) as any);
+    vi.mocked(db.update).mockImplementationOnce(() => ({
+      set: vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) })),
+    }) as any);
+
+    createPatchJobDeviceWorker();
+    const result = await shared.processorRefs['patch-job-devices']({
+      data: { type: 'execute-patch-job-device', patchJobId: 'job-1', deviceId: 'device-1', orgId: 'org-1' },
+    });
+
+    expect(resolveApprovedPatchesForDevice).not.toHaveBeenCalled();
+    expect(result).toEqual({ kind: 'skipped', skipped: true, reason: 'Invalid ring app rules' });
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'skipped', deviceId: 'device-1' }));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('malformed patches.ringAppRules'),
+      expect.any(String),
+    );
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error));
+    warnSpy.mockRestore();
+  });
+
+  it('coerces an identifiable malformed ringAppRules entry to block', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await runDeviceJobWithPatches({
+      ringId: null,
+      autoApprove: {},
+      ringAppRules: [{ source: 'third_party', packageId: 'C.D', action: 'pin' }],
+    });
+
+    expect(resolveApprovedPatchesForDevice).toHaveBeenCalledWith(
+      'device-1',
+      'org-1',
+      expect.objectContaining({ ringAppRules: [{ source: 'third_party', packageId: 'C.D', action: 'block' }] }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('coercing malformed app rule to block (fail-closed)'),
+      expect.any(String),
+    );
+    expect(captureException).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
   it('skips malformed sources with a warning instead of widening the filter', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 

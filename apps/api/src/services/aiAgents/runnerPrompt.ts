@@ -1373,7 +1373,7 @@ export function buildFleetDesignTaskPrompt(ctx: AgentRunPromptContext): string {
 
   lines.push('## Health & findings');
   for (const f of e.health.fleetFindings) lines.push(`finding: ${f.title} (${f.kind}, ${f.deviceCount} device(s))`);
-  for (const r of e.health.reliabilityWorst) lines.push(`reliability ${r.deviceId}: ${r.score}${r.trend ? ` (${r.trend})` : ''}`);
+  for (const r of e.health.reliabilityWorst) lines.push(`reliability ${r.deviceId}: ${r.score}${r.trend ? ` (${r.trend})` : ''}${r.provisional ? ' (provisional — recent fix/reimage)' : ''}`);
   if (e.health.vulnerability) {
     lines.push(`vulnerabilities: ${e.health.vulnerability.critical} critical, ${e.health.vulnerability.high} high, ${e.health.vulnerability.devicesAffected} device(s) affected`);
   }

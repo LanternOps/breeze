@@ -27,7 +27,7 @@ import { isNotChargedReason, noticeChargeNotMade, type DeferralEndReason } from 
 import { resolveBillingEmail } from '../invoicePdf';
 import { lockInvoiceForCollection } from './reservation';
 import { getAutopayMethod, markPaymentMethodUnusable } from './paymentMethods';
-import { isAutopayEnabledForPartner } from './autopayGate';
+import { hasLiveAutopayPartner, isAutopayEnabledForPartner } from './autopayGate';
 import { getAutopayStripeReadiness } from './stripeCapabilities';
 import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { quoteProcessingFee } from './processingFee';
@@ -208,6 +208,26 @@ export async function reserveCollection(input: CollectionInput)
       methodId:method.id,methodType:method.type,principal,currency:invoice.currencyCode,quote:lawfulQuote,
     });
     if (!quote) return refuse('consent_required');
+    if (schedule) {
+      // The cap the client accepted, and a lower current MSP cap, are checked here,
+      // before any PaymentIntent exists, so an over-cap invoice is refused with nothing
+      // created at Stripe. Same rule as the pre-confirm check in beforeConfirm, which
+      // stays as the second guard for a cap lowered between reservation and confirm.
+      // Like an excluded contract above, the schedule ends here for every caller (the
+      // scheduler and Charge now alike) and the client is told the announced charge
+      // will not happen. Unscheduled (on-session) payments carry their own per-invoice
+      // authorization and are not autopay.
+      const acceptedCap = await acceptedAutopayCap(db, { orgId: invoice.orgId, enrollmentId: enrollment.id,
+        generation: enrollment.generation, methodId: method.id });
+      const capReason = acceptedCap ? autopayCapReason({ current: settings.autopayCap.value, accepted: acceptedCap,
+        total: invoice.total, currency: invoice.currencyCode }) : 'consent_required';
+      if (capReason) {
+        await db.update(invoiceAutopaySchedules).set({ state: 'cancelled', stateReason: capReason, nextAttemptAt: null })
+          .where(eq(invoiceAutopaySchedules.id, schedule.id));
+        await noticeChargeNotMade(db, { invoiceId: invoice.id, scheduleId: schedule.id, reason: capReason });
+        return refuse(capReason);
+      }
+    }
     if (terms && (terms.methodType !== method.type || terms.noticeLeadDays !== noticeLeadDays(method)
       || terms.methodId !== method.id || terms.accountHolderType !== method.accountHolderType
       || collectionFeePolicyChanged(terms, {cardFeeBps:settings.cardFeeBps.value,achFeeAmount:settings.achFeeAmount.value}, quote)
@@ -692,6 +712,16 @@ export async function resumeCollectionAttempt(attemptId: string, cancelOnly = fa
     if (record.attempt.failureCode === 'provider_create_unknown'
       || Date.now() - record.attempt.createdAt.getTime() >= 23 * 3_600_000) {
       await quarantineUnknownCreate(attemptId); return;
+    }
+    // No new PaymentIntent for a partner that is not active. A cancel-only caller (a client or
+    // MSP control) releases the reservation now through the lost-create recovery. Otherwise the
+    // reservation waits: it resumes once the partner is active again, and the recovery above
+    // releases it once it is too old to resume. (The rollout flag is checked at confirmation.)
+    if (!await withSystemDbAccessContext(() => hasLiveAutopayPartner(db, record.invoice.partnerId))) {
+      if (cancelOnly) { await quarantineUnknownCreate(attemptId); return; }
+      console.warn('[autopay] Reservation held: partner is not active', {
+        attemptId, invoiceId: record.invoice.id, orgId: record.invoice.orgId, partnerId: record.invoice.partnerId });
+      return;
     }
     const data = await loadAttempt(attemptId);
     const capture = data.attempt.initiatedBy === 'client_on_session'

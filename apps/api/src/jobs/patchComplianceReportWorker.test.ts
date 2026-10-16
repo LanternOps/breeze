@@ -38,6 +38,7 @@ const dbCtx = await vi.hoisted(async () => {
 vi.mock('node:fs/promises', () => ({
   mkdir: vi.fn(),
   writeFile: vi.fn(),
+  unlink: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -140,8 +141,17 @@ vi.mock('../services/siteScope', () => ({
 
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: vi.fn() }));
 
+// W06 image term — the real SQL is covered by
+// services/workloads/imageCompliance.integration.test.ts. Default: no
+// workload rows, so the report must be exactly what it was before.
+const imageTermsMock = vi.hoisted(() => vi.fn(async () => new Map()));
+vi.mock('../services/workloads/imageCompliance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/workloads/imageCompliance')>()),
+  containerImageComplianceTerms: imageTermsMock,
+}));
+
 import { db, withSystemDbAccessContext } from '../db';
-import { writeFile } from 'node:fs/promises';
+import { unlink, writeFile } from 'node:fs/promises';
 import {
   enqueuePatchComplianceReport,
   formatComplianceCsv,
@@ -315,6 +325,46 @@ describe('patch compliance report worker authority', () => {
     expect(writeFile).not.toHaveBeenCalled();
   });
 
+  it('removes the file it just wrote when the report row was deleted during generation', async () => {
+    installSelects();
+    let updateCall = 0;
+    vi.mocked(db.update).mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        state.updateSets.push(values);
+        const call = updateCall++;
+        return {
+          where: vi.fn(() => ({
+            // First update is the claim; the second is the completion write,
+            // which finds no row because the org was erased meanwhile.
+            returning: vi.fn(async () => (call === 0 ? [{ id: REPORT_ID }] : [])),
+          })),
+        };
+      }),
+    }) as never);
+
+    await expect(processPatchComplianceReportJob({
+      type: 'generate-compliance-report',
+      reportId: REPORT_ID,
+    })).resolves.toBeNull();
+
+    expect(writeFile).toHaveBeenCalledOnce();
+    const written = vi.mocked(writeFile).mock.calls[0]![0];
+    expect(String(written)).toMatch(new RegExp(`${REPORT_ID}\\.csv$`));
+    expect(unlink).toHaveBeenCalledWith(written);
+  });
+
+  it('keeps the file when the completion write finds the row', async () => {
+    installSelects();
+
+    await processPatchComplianceReportJob({
+      type: 'generate-compliance-report',
+      reportId: REPORT_ID,
+    });
+
+    expect(writeFile).toHaveBeenCalledOnce();
+    expect(unlink).not.toHaveBeenCalled();
+  });
+
   it('runs the Redis-down inline fallback in a fresh system context, not the request transaction', async () => {
     state.redisAvailable = false;
     installSelects();
@@ -385,6 +435,68 @@ describe('patch compliance report worker authority', () => {
       name: 'generate-compliance-report',
       data: { type: 'generate-compliance-report', reportId: REPORT_ID },
     }]);
+  });
+});
+
+describe('patch compliance report container image term (W06)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.update).mockReset();
+    imageTermsMock.mockResolvedValue(new Map());
+    state.report = report();
+    state.claimRows = [{ id: REPORT_ID }];
+    state.statusRows = [{ status: 'installed', count: 2 }, { status: 'pending', count: 1 }, { status: 'failed', count: 1 }];
+    state.live = { ok: true, authority: { scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [SITE_A, SITE_B] } } };
+    state.inArrayCalls = [];
+    state.updateSets = [];
+    state.redisAvailable = false;
+    state.queueAdds = [];
+    state.queueAddError = null;
+    state.updateScopes = [];
+    vi.mocked(db.update).mockImplementation(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        state.updateSets.push(values);
+        return { where: vi.fn(() => ({ returning: vi.fn(async () => state.claimRows) })) };
+      }),
+    }) as never);
+  });
+
+  const run = async () => {
+    installSelects();
+    await processPatchComplianceReportJob({ type: 'generate-compliance-report', reportId: REPORT_ID });
+    return String(vi.mocked(writeFile).mock.calls[0]![1]).split('\n');
+  };
+
+  it('writes the same CSV as before when the org has no workload rows', async () => {
+    const lines = await run();
+    expect(imageTermsMock).toHaveBeenCalledWith({ orgIds: [ORG_ID], siteIds: [SITE_A] });
+    // installed / total, total including the failed row
+    expect(lines).toContain('"compliance_percent","50"');
+    expect(lines.at(-1)).toBe('"compliance_percent","50"');
+    expect(lines.join('\n')).not.toContain('images');
+  });
+
+  it('folds stale and current images in and appends the image rows', async () => {
+    imageTermsMock.mockResolvedValue(new Map([
+      ['d1', { stale: 1, current: 1, unknown: 3 }],
+      ['d2', { stale: 1, current: 0, unknown: 0 }],
+    ]));
+    const lines = await run();
+    // (2 installed + 1 current) / (4 total + 2 stale + 1 current)
+    expect(lines).toContain('"compliance_percent","43"');
+    expect(lines.slice(-3)).toEqual(['"stale_images","2"', '"current_images","1"', '"images_not_checked","3"']);
+    expect(lines).toContain('"total","4"');
+    expect(state.updateSets.at(-1)).toEqual(expect.objectContaining({ rowCount: 4 }));
+  });
+
+  it('a severity-filtered report excludes the term', async () => {
+    state.report = report({ severity: 'critical' });
+    imageTermsMock.mockResolvedValue(new Map([['d1', { stale: 9, current: 0, unknown: 0 }]]));
+    const lines = await run();
+    expect(imageTermsMock).not.toHaveBeenCalled();
+    expect(lines).toContain('"compliance_percent","50"');
+    expect(lines.join('\n')).not.toContain('images');
   });
 });
 

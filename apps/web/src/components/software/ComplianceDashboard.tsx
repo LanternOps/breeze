@@ -22,6 +22,7 @@ import { runAction, ActionError } from "@/lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { replaceUrl } from '../../lib/replaceUrl';
 type Policy = {
   id: string;
   name: string;
@@ -273,7 +274,7 @@ export default function ComplianceDashboard({
       setModalMode("create");
       // Clean up the URL
       if (typeof window !== "undefined")
-        window.history.replaceState({}, "", window.location.pathname);
+        replaceUrl(window.location.pathname);
     }
   }, [prefill]);
   const handleCreate = () => {

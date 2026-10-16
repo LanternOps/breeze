@@ -891,6 +891,7 @@
       "empty": "No audit logs found.",
       "viewDetails": "View details",
       "errors": {
+        "export": "Failed to export audit logs",
         "fetch": "Failed to fetch audit logs",
         "load": "Failed to load audit logs"
       },

@@ -5,7 +5,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockRow = { tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'client-1', clientSecret: 'enc-secret' };
 let selectRows: unknown[] = [mockRow];
 let wherePredicate: unknown;
+const dbContexts = vi.hoisted(() => [] as string[]);
 vi.mock('../db', () => ({
+  withSystemDbAccessContext: async (fn: () => Promise<unknown>, label?: string) => { dbContexts.push(label ?? 'system'); return fn(); },
   db: {
     select: vi.fn(() => ({
       from: vi.fn(() => ({
@@ -26,6 +28,8 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((column: unknown, value: unknown) => `${String(column)}=${String(value)}`),
   and: vi.fn((...conditions: unknown[]) => conditions),
 }));
+const captureExceptionMock = vi.hoisted(() => vi.fn());
+vi.mock('./sentry', () => ({ captureException: captureExceptionMock }));
 vi.mock('./secretCrypto', () => ({ decryptForColumn: vi.fn(() => 'plaintext-secret') }));
 vi.mock('./c2cM365', () => ({
   acquireClientCredentialsToken: vi.fn(async () => ({ accessToken: 'TOKEN-123', expiresIn: 3600 })),
@@ -38,6 +42,7 @@ import {
   getToken,
   hasDirectM365Connection,
   invokeDirect,
+  readMailboxesDirect,
 } from './m365DirectGraph';
 import { acquireClientCredentialsToken } from './c2cM365';
 import { decryptForColumn } from './secretCrypto';
@@ -60,6 +65,75 @@ beforeEach(() => {
   clearTokenCache();
   selectRows = [mockRow];
   wherePredicate = undefined;
+  dbContexts.length = 0;
+});
+
+describe('readMailboxesDirect (#6354 W03)', () => {
+  const userId = '22222222-2222-4222-8222-222222222222';
+  const orgRow = { ...mockRow, orgId: 'org-1' };
+
+  it('projects the four mailbox fields by object id, never extra Graph fields', async () => {
+    selectRows = [orgRow];
+    const resource = { id: userId, userPrincipalName: 'alex@example.com', mail: null,
+      proxyAddresses: ['SMTP:alias@example.com'], passwordProfile: { password: 'secret' }, displayName: 'Alex' };
+    const fetch = mockFetch(200, resource);
+    const result = await readMailboxesDirect('org-1', { userId, expectedTenantId: mockRow.tenantId });
+    expect(result).toEqual({ kind: 'ok', data: { id: userId, userPrincipalName: 'alex@example.com', mail: null, proxyAddresses: ['SMTP:alias@example.com'] } });
+    const url = new URL(String(fetch.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe(`/v1.0/users/${userId}`);
+    expect(url.searchParams.get('$select')).toBe('id,userPrincipalName,mail,proxyAddresses');
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'GET' });
+    // The only DB read ran in its own short system scope, before any I/O.
+    expect(dbContexts).toEqual(['callerVerification.mailboxes.directConnection']);
+  });
+
+  it('leaves a missing alias list missing rather than inventing an empty one', async () => {
+    selectRows = [orgRow];
+    mockFetch(200, { id: userId, userPrincipalName: 'alex@example.com', mail: null });
+    expect(await readMailboxesDirect('org-1', { userId, expectedTenantId: mockRow.tenantId }))
+      .toEqual({ kind: 'ok', data: { id: userId, userPrincipalName: 'alex@example.com', mail: null } });
+  });
+
+  it('rejects a different connection tenant before token or Graph access', async () => {
+    selectRows = [orgRow];
+    const fetch = mockFetch(200, {});
+    const result = await readMailboxesDirect('org-1', { userId, expectedTenantId: '33333333-3333-4333-8333-333333333333' });
+    expect(result).toMatchObject({ kind: 'error', code: 'tenant_mismatch' });
+    expect(acquireClientCredentialsToken).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a UPN', { userId: 'alex@example.com', expectedTenantId: mockRow.tenantId }],
+    ['a non-GUID tenant', { userId, expectedTenantId: 'contoso.onmicrosoft.com' }],
+  ])('refuses %s before any DB or network access', async (_label, input) => {
+    const fetch = mockFetch(200, {});
+    expect(await readMailboxesDirect('org-1', input)).toMatchObject({ kind: 'error', code: 'bad_request' });
+    expect(dbContexts).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('reports a missing connection without a network call', async () => {
+    selectRows = [];
+    const fetch = mockFetch(200, {});
+    expect(await readMailboxesDirect('org-1', { userId, expectedTenantId: mockRow.tenantId })).toMatchObject({ kind: 'error', code: 'no_connection' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a Graph failure instead of an empty result', async () => {
+    selectRows = [orgRow];
+    mockFetch(403, { error: { message: 'Insufficient privileges' } });
+    expect(await readMailboxesDirect('org-1', { userId, expectedTenantId: mockRow.tenantId })).toMatchObject({ kind: 'error', code: 'forbidden' });
+  });
+});
+
+describe('token cache tenant binding (#6354 W03)', () => {
+  it('does not reuse a cached token after the connection tenant changes', async () => {
+    await getToken('org-1');
+    selectRows = [{ ...mockRow, tenantId: '33333333-3333-4333-8333-333333333333' }];
+    await getToken('org-1');
+    expect(acquireClientCredentialsToken).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('m365DirectGraph legacy connection selection', () => {
@@ -250,4 +324,40 @@ describe('getToken cache bound', () => {
     await getToken(`org-${TOKEN_CACHE_MAX + overflow - 1}`);
     expect((acquireClientCredentialsToken as any).mock.calls.length).toBe(callsAfterRefetch);
   }, 20_000);
+});
+
+describe('getToken with a supplied connection (#8142)', () => {
+  it('uses the supplied row and issues no DB read', async () => {
+    const { db } = await import('../db');
+    vi.mocked(db.select).mockClear();
+    const result = await getToken('org-1', { connection: { ...mockRow, orgId: 'org-1' } as never });
+    expect(result).toEqual({ token: 'TOKEN-123' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('supplied null means "no connection", still without a DB read', async () => {
+    const { db } = await import('../db');
+    vi.mocked(db.select).mockClear();
+    expect(await getToken('org-1', { connection: null })).toMatchObject({ kind: 'error', code: 'no_connection' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses a supplied row that belongs to another org with a distinct, loud, non-cacheable error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    captureExceptionMock.mockClear();
+    const result = await getToken('org-1', { connection: { ...mockRow, orgId: 'org-2' } as never });
+    expect(result).toMatchObject({ kind: 'error', code: 'connection_org_mismatch' });
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(String(errSpy.mock.calls[0]![0])).toContain('org-1');
+    expect(String(errSpy.mock.calls[0]![0])).toContain('org-2');
+    expect(captureExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureExceptionMock.mock.calls[0]![2]).toMatchObject({ requestedOrgId: 'org-1', connectionOrgId: 'org-2' });
+    errSpy.mockRestore();
+  });
+
+  it('a supplied null is still plain no_connection and is not reported', async () => {
+    captureExceptionMock.mockClear();
+    expect(await getToken('org-1', { connection: null })).toMatchObject({ code: 'no_connection' });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
 });

@@ -91,3 +91,20 @@ describe('Workspace admin authorization matrix', () => {
     });
   }
 });
+
+describe('adminGate — content/settings exemption is an exact path match (#3474)', () => {
+  const WRITE_ONLY = ['workspace:write'];
+
+  it('exempts the real settings path (write-only suffices)', async () => {
+    expect((await request(appFor(WRITE_ONLY), 'PUT', '/content/settings')).status).toBe(204);
+  });
+
+  it('exempts it under a host mount prefix and with a trailing slash', async () => {
+    expect((await request(appFor(WRITE_ONLY), 'PUT', '/api/v1/ext/workspace/content/settings')).status).toBe(204);
+    expect((await request(appFor(WRITE_ONLY), 'PUT', '/content/settings/')).status).toBe(204);
+  });
+
+  it('does NOT exempt a different content path that merely ends in /content/settings', async () => {
+    expect((await request(appFor(WRITE_ONLY), 'POST', '/content/ingest-run/content/settings')).status).toBe(403);
+  });
+});

@@ -36,7 +36,7 @@ import {
   actionIntents, aiAgentGraduation, aiAgentRuns, aiAgents, aiToolExecutions, devices, organizations,
   reportRuns, reports, ticketDrafts, type AiAgentRow,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
 import { policyDecideEnabled } from '../config/env';
 import { runSiteScopeCondition } from '../services/aiAgentRunSiteScope';
 import {
@@ -143,9 +143,10 @@ export { runSiteScopeCondition };
 
 /**
  * A path id that is not a uuid must never reach a query. Postgres raises
- * 22P02 on the cast, and because the request runs inside one
- * withDbAccessContext transaction that error poisons it — the COMMIT then
- * 500s on what is really a 404.
+ * 22P02 on the cast, and because the request normally runs inside one
+ * withDbAccessContext transaction (self-managed routes such as POST /:id/runs
+ * hold none) that error poisons it — the COMMIT then 500s on what is really a
+ * 404.
  */
 function uuidParam(c: Context, name: string): string | null {
   const parsed = UUID.safeParse(c.req.param(name));
@@ -2069,19 +2070,34 @@ aiAgentsRoutes.post(
     const id = uuidParam(c, 'id');
     if (!id) return c.json({ error: 'Agent not found' }, 404);
 
-    const agent = await getAgent(auth, id);
-    if (!agent) return c.json({ error: 'Agent not found' }, 404);
-
     const { deviceId } = c.req.valid('json');
-    const access = await verifyDeviceAccess(deviceId, auth);
-    if ('error' in access) return c.json({ error: access.error }, 404);
+
+    // #7943 — self-managed DB context (SELF_MANAGED_DB_CONTEXT_ROUTES): no
+    // request transaction is held. `createAndEnqueueAgentRun` opens its own
+    // system transaction(s) and enqueues after they commit; under the ambient
+    // request transaction every manual run pinned a second pooled connection
+    // for the whole admission (#2417 / #6671). So the phases are sequential,
+    // never nested: both authorization reads run in ONE short caller-scoped
+    // context (dbAccessContextFromAuth: the same tenant scope the request
+    // transaction carried — a foreign agent or device is simply not found;
+    // only the user id is withheld for ai_agent / service-principal callers),
+    // it commits, and only then does admission run with nothing held.
+    const authz = await withAuthDbAccessContext(auth, async () => {
+      const agent = await getAgent(auth, id);
+      if (!agent) return { error: 'Agent not found' } as const;
+      const access = await verifyDeviceAccess(deviceId, auth);
+      if ('error' in access) return { error: access.error } as const;
+      return { agent, device: access.device } as const;
+    });
+    if ('error' in authz) return c.json({ error: authz.error }, 404);
+    const { agent, device } = authz;
 
     // Every outcome below is audited: `createAndEnqueueAgentRun` writes no audit
     // row of its own, so this closure is the only record of which human asked
     // for autonomous work on this device — including when the answer was "no".
     const auditTrigger = (result: 'success' | 'failure', details: Record<string, unknown>) => {
       writeRouteAudit(c, {
-        orgId: access.device.orgId,
+        orgId: device.orgId,
         action: 'ai_agent.run.manual_trigger',
         resourceType: 'ai_agent',
         resourceId: agent.id,
@@ -2109,7 +2125,7 @@ aiAgentsRoutes.post(
     // Runs belong to the device's organization, never the agent's: a visible
     // partner-wide agent has no orgId of its own.
     const result = await createAndEnqueueAgentRun({
-      orgId: access.device.orgId,
+      orgId: device.orgId,
       kind: agent.kind,
       triggerKind: 'manual',
       deviceId,

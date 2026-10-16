@@ -208,6 +208,10 @@ these two specs and only these two. Point it at the stack's own base URL (e.g.
 `PUBLIC_APP_URL=http://localhost:<webPort>` from `.breeze-stack.json`) and
 restart `api`.
 
+`wt-stack up` pins this for you (`WEBAUTHN_ORIGIN`/`WEBAUTHN_RP_ID`, #6443), and the
+`portal-dev-e2e` CI job runs both specs (#5786) with `E2E_MACOS_DEVICE_ID` set to the
+seeded macOS fixture device — the operator spec silently skips without it, and needs `AI_OPERATOR_TASKS_ENABLED` + `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` (set in the job .env).
+
 Note also that the register-and-refresh ceremony ROTATES the refresh token,
 which revokes the JTI the page's session store is holding — the browser session
 that performs it is unusable afterwards ("Your session expired"). Enrol the key

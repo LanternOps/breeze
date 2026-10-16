@@ -147,5 +147,18 @@
       "private_keys": "Clés privées (SSH, GnuPG, TLS)",
       "session_tokens": "Jetons de session et identifiants cloud enregistrés"
     }
+  },
+  "operatorPlan": {
+    "title": "Plan de la tâche de l’opérateur IA",
+    "summary_one": "{{count}} effet, révision {{revision}} du plan",
+    "summary_other": "{{count}} effets, révision {{revision}} du plan",
+    "groupBreeze": "Appareils Breeze",
+    "groupM365": "Microsoft 365",
+    "groupGoogle": "Google Workspace",
+    "effectOrdinal": "Étape {{ordinal}}",
+    "targetLine": "{{targetLabel}} ({{principalLabel}})",
+    "orderNote": "Les effets s’exécutent dans cet ordre. La connexion est désactivée en dernier, de sorte qu’un arrêt anticipé ne laisse jamais de messages sans acheminement.",
+    "empty": "Ce plan ne contient aucun effet.",
+    "invalid": "Ce plan n’a pas pu être affiché en entier. Ne l’approuvez pas."
   }
 }

@@ -5,10 +5,11 @@ import { CheckCircle, Settings2, HardDriveDownload } from 'lucide-react';
 import AlertList, { type Alert } from './AlertList';
 import AlertDetails, { type StatusChange, type NotificationHistory } from './AlertDetails';
 import SuppressAlertDialog from './SuppressAlertDialog';
+import { useAlertActions } from './useAlertActions';
 import AlertsSummary from './AlertsSummary';
 import AlertsTabStrip from './AlertsTabStrip';
 import type { AlertSeverity } from './alertConfig';
-import { fetchWithAuth, AuthSessionExpiredError } from '../../stores/auth';
+import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { fillDevicePlaceholders, type FilterConditionGroup } from '@breeze/shared';
@@ -82,13 +83,11 @@ export default function AlertsPage() {
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [selectedAlertHistory, setSelectedAlertHistory] = useState<StatusChange[]>([]);
   const [selectedAlertNotifications, setSelectedAlertNotifications] = useState<NotificationHistory[]>([]);
-  const [submitting, setSubmitting] = useState(false);
-  const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [severityFilter, setSeverityFilter] = useState<AlertSeverity | null>(null);
   const [deviceFilter, setDeviceFilter] = useState<FilterConditionGroup | null>(null);
 
   const [pendingBulk, setPendingBulk] = useState<{ action: string; alerts: Alert[] } | null>(null);
-  const [suppressTarget, setSuppressTarget] = useState<Alert | null>(null);
   // Bulk suppress needs a duration picker (the endpoint requires `until`), so it
   // can't go through the simple Confirm bar like bulk ack/resolve.
   const [bulkSuppressTarget, setBulkSuppressTarget] = useState<Alert[] | null>(null);
@@ -231,150 +230,40 @@ export default function AlertsPage() {
     setSelectedAlertNotifications([]);
   };
 
-  const handleAcknowledge = async (alert: Alert) => {
-    // setSubmitting/setSubmittingId drive the in-flight spinner + disabled state
-    // (row spinner in AlertList, disabled Ack button in AlertDetails). The
-    // acknowledge round-trip can be slow, so this feedback must show the whole
-    // time the request is in flight — not just after it returns (#1300).
-    setSubmitting(true);
-    setSubmittingId(alert.id);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/alerts/${alert.id}/acknowledge`, { method: 'POST' }),
-        errorFallback: t('alertsPage.failedToAcknowledgeAlert'),
-        successMessage: t('alertsPage.alertAcknowledged'),
-        onUnauthorized: () => void navigateTo('/login', { replace: true })
-      });
+  const patchAlert = useCallback((id: string, patch: Record<string, unknown>) => {
+    setAlerts(prev => prev.map(a => (a.id === id ? ({ ...a, ...patch } as Alert) : a)));
+  }, []);
 
-      setAlerts(prev => prev.map(a =>
-        a.id === alert.id ? { ...a, status: 'acknowledged' as const, acknowledgedAt: new Date().toISOString() } : a
-      ));
-
+  const {
+    submitting: actionSubmitting,
+    submittingId,
+    suppressTarget,
+    acknowledge: handleAcknowledge,
+    resolve: handleResolve,
+    requestSuppress: handleSuppress,
+    cancelSuppress,
+    confirmSuppress: performSuppress,
+  } = useAlertActions<Alert>({
+    refresh: fetchAlerts,
+    patchAlert,
+    onAcknowledged: async (alert) => {
       if (detailOpen && selectedAlert?.id === alert.id) {
         await fetchAlertDetails(alert.id);
         setSelectedAlert(prev =>
           prev ? { ...prev, status: 'acknowledged', acknowledgedAt: new Date().toISOString() } : null
         );
       }
-
-      fetchAlerts();
-    } catch (err) {
-      // runAction already toasted any ActionError (and 401 → login redirect).
-      if (!(err instanceof ActionError)) {
-        showToast({ message: t('alertsPage.failedToAcknowledgeAlert'), type: 'error' });
-      }
-    } finally {
-      setSubmitting(false);
-      setSubmittingId(null);
-    }
-  };
-
-  const handleResolve = async (alert: Alert, note: string) => {
-    setSubmitting(true);
-    setSubmittingId(alert.id);
-    try {
-      await runAction({
-        request: () => fetchWithAuth(`/alerts/${alert.id}/resolve`, {
-          method: 'POST',
-          body: JSON.stringify({ note })
-        }),
-        errorFallback: t('alertsPage.failedToResolveAlert'),
-        successMessage: t('alertsPage.alertResolved'),
-        onUnauthorized: () => void navigateTo('/login', { replace: true })
-      });
-
-      setAlerts(prev => prev.map(a =>
-        a.id === alert.id ? { ...a, status: 'resolved' as const, resolvedAt: new Date().toISOString() } : a
-      ));
-
-      handleCloseDetail();
-      fetchAlerts();
-    } catch (err) {
-      if (!(err instanceof ActionError)) {
-        showToast({ message: t('alertsPage.failedToResolveAlert'), type: 'error' });
-        return;
-      }
-      // 409 = another technician (or the auto-resolve sweep) won the
-      // compare-and-swap; the alert IS resolved, this request just didn't do it
-      // (#4094). runAction already toasted the server's reason. Refresh so the
-      // row stops showing a stale open status — otherwise the list keeps
-      // offering Resolve on an alert that is already finished.
-      if (err.status === 409) {
-        handleCloseDetail();
-        fetchAlerts();
-      }
-    } finally {
-      setSubmitting(false);
-      setSubmittingId(null);
-    }
-  };
-
-  // One-click Suppress opens the duration picker; the picker resolves the chosen
-  // window (or "Forever") — performSuppress runs on confirm.
-  const handleSuppress = (alert: Alert) => {
-    setSuppressTarget(alert);
-  };
-
-  // `until === null` means indefinite ("Forever") suppression — send no `until`.
-  const performSuppress = async (alert: Alert, until: Date | null) => {
-    setSuppressTarget(null);
-
-    // Optimistic update with undo
-    const previousStatus = alert.status;
-    setAlerts(prev => prev.map(a =>
-      a.id === alert.id ? { ...a, status: 'suppressed' as const } : a
-    ));
-    if (detailOpen && selectedAlert?.id === alert.id) {
-      handleCloseDetail();
-    }
-
-    const revert = () => setAlerts(prev => prev.map(a =>
-      a.id === alert.id ? { ...a, status: previousStatus } : a
-    ));
-
-    showToast({
-      message: t('alertsPage.alertSuppressed', { title: alert.title }),
-      type: 'undo',
-      onUndo: revert,
-      duration: 5000,
-    });
-
-    // Fire the actual request.
-    try {
-      // runaction-exempt: optimistic-with-undo handler — it shows its outcome
-      // inline (the optimistic row mutation + the undo toast above, and an
-      // explicit revert + error toast on failure below). Routing through
-      // runAction would double-toast and fight the optimistic flow.
-      const response = await fetchWithAuth(`/alerts/${alert.id}/suppress`, {
-        method: 'POST',
-        body: JSON.stringify(until ? { until: until.toISOString() } : {}),
-      });
-      if (!response.ok) {
-        // Surface the server's specific reason (e.g. "Cannot suppress a resolved
-        // alert" when someone resolved it while the picker was open) rather than
-        // a generic message.
-        const body = await response.json().catch(() => null);
-        revert();
-        console.error('[alerts] suppress failed', alert.id, response.status);
-        showToast({ message: body?.error ?? t('alertsPage.failedToSuppressAlert'), type: 'error' });
-      } else {
-        fetchAlerts();
-      }
-    } catch (err) {
-      // fetchWithAuth already redirects to /login on session expiry — don't
-      // toast over the navigation (mirrors the runAction onUnauthorized path).
-      if (err instanceof AuthSessionExpiredError) return;
-      // Network/abort/timeout: revert and show a clean message (the raw
-      // AbortError/TypeError text is browser jargon, not user-facing copy).
-      revert();
-      console.error('[alerts] suppress failed', alert.id, err);
-      showToast({ message: t('alertsPage.failedToSuppressAlert'), type: 'error' });
-    }
-  };
+    },
+    onResolveSettled: handleCloseDetail,
+    onSuppressStarted: (alert) => {
+      if (detailOpen && selectedAlert?.id === alert.id) handleCloseDetail();
+    },
+  });
+  const submitting = actionSubmitting || bulkSubmitting;
 
   const executeBulkAction = async (action: string, selectedAlerts: Alert[], until?: Date | null) => {
     if (deviceFilterBlocked || selectedAlerts.length === 0 || selectedAlerts.some(a => !filteredAlerts.some(row => row.id === a.id))) return;
-    setSubmitting(true);
+    setBulkSubmitting(true);
     try {
       // The bulk endpoint returns HTTP 200 with per-alert counts even when
       // nothing changed (e.g. every selected alert was already resolved, so
@@ -419,7 +308,7 @@ export default function AlertsPage() {
         showToast({ message: t('alertsPage.failedBulkAction', { action }), type: 'error' });
       }
     } finally {
-      setSubmitting(false);
+      setBulkSubmitting(false);
       setPendingBulk(null);
       setBulkSuppressTarget(null);
     }
@@ -660,7 +549,7 @@ export default function AlertsPage() {
       {suppressTarget && (
         <SuppressAlertDialog
           alertTitle={suppressTarget.title}
-          onCancel={() => setSuppressTarget(null)}
+          onCancel={cancelSuppress}
           onConfirm={(until) => void performSuppress(suppressTarget, until)}
         />
       )}

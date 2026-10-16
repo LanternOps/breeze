@@ -435,6 +435,26 @@ export async function assignUserToPartner(
   return assignment;
 }
 
+/**
+ * A user's current session epochs (what their access token would carry as
+ * `aep` / `mep`) and credential epoch. Fixtures that issue partner service
+ * principal keys pass the session pair as `actorSessionEpochs`, and fixtures
+ * that insert key rows directly stamp the owner's credential / MFA epochs.
+ */
+export async function userEpochs(userId: string): Promise<{
+  authEpoch: number;
+  mfaEpoch: number;
+  credentialEpoch: number;
+}> {
+  const [row] = await getTestDb()
+    .select({ authEpoch: users.authEpoch, mfaEpoch: users.mfaEpoch, credentialEpoch: users.credentialEpoch })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  if (!row) throw new Error(`userEpochs: user ${userId} not found`);
+  return row;
+}
+
 export async function assignUserToOrganization(
   userId: string,
   orgId: string,

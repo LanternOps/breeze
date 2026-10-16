@@ -200,6 +200,10 @@
       "ready_one": "Pronto · {{ready}}/{{total}} dispositivo",
       "ready_other": "Pronto · {{ready}}/{{total}} dispositivi"
     },
+    "target": {
+      "version": "Aggiorna a {{version}}",
+      "latest": "Aggiorna all'ultima versione"
+    },
     "hasMore": "Sono mostrati i primi 500 gruppi per rischio — restringi i filtri per vedere gli altri.",
     "devices_one": "{{count}} dispositivo",
     "devices_other": "{{count}} dispositivi",

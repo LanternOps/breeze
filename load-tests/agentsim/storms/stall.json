@@ -1,0 +1,14 @@
+{
+  "name": "stall",
+  "description": "Stall (the W1e lever): freeze the api container for 20 s, then resume it. Every timer fires late on resume, request prologue deadlines expire and abandoned pool permits must be reclaimed. Sockets stay open at the TCP level while frozen.",
+  "events": [
+    {
+      "name": "stall",
+      "at": "3m",
+      "hold": "20s",
+      "recovery": "3m",
+      "start": [{ "exec": ["docker", "pause", "${STORM_API}"] }],
+      "end": [{ "exec": ["docker", "unpause", "${STORM_API}"] }]
+    }
+  ]
+}

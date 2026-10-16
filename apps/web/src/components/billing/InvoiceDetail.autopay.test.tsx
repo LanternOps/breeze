@@ -1,6 +1,7 @@
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-const h=vi.hoisted(()=>({fetch:vi.fn(),toast:vi.fn(),can:vi.fn(()=>true)}));
+const h=vi.hoisted(()=>({fetch:vi.fn(),toast:vi.fn(),can:vi.fn(()=>true),mint:vi.fn()}));
+vi.mock('../../lib/mfaStepUp',()=>({mintStepUpGrant:h.mint}));
 vi.mock('../../stores/auth',()=>({fetchWithAuth:h.fetch,useAuthStore:Object.assign((s:any)=>s({user:{permissions:[{resource:'*',action:'*'}]}}),{getState:()=>({tokens:null})})}));
 vi.mock('../../lib/permissions',()=>({usePermissions:()=>({can:h.can})}));
 vi.mock('../shared/Toast',()=>({showToast:h.toast}));
@@ -153,4 +154,43 @@ it('an excluded invoice states "Excluded by provider" once', () => {
   render(<InvoiceDetail detail={{ ...detail, autopay: { ...autopay, state: 'excluded_by_msp', reason: 'exclude', collectOn: null, excluded: true } }} onChanged={() => {}} />);
   expect(screen.getByTestId('autopay-invoice-panel').textContent!.split('Excluded by provider').length - 1).toBe(1);
   expect(screen.getByTestId('autopay-invoice-panel')).not.toHaveTextContent('Charge on or around');
+});
+
+it('Charge now asks for a second-factor confirmation and resubmits with the grant',async()=>{
+ const stepUp={error:'Step-up required',code:'STEP_UP_REQUIRED',stepUp:{operation:'autopay_charge_now',resource:{invoiceId:'inv'}}};
+ h.mint.mockResolvedValue('grant-9');
+ h.fetch.mockImplementation(async (url:string,opts?:RequestInit)=>{
+  if(url==='/users/me')return {ok:true,status:200,json:async()=>({mfaEnabled:true,mfaMethod:'totp'})};
+  if(url==='/auth/passkeys')return {ok:true,status:200,json:async()=>([])};
+  if(opts?.method==='POST')return opts.body
+   ?{ok:true,status:200,json:async()=>({data:{outcome:'created'}})}
+   :{ok:false,status:403,json:async()=>stepUp};
+  return {ok:true,status:200,json:async()=>({data:[]})};
+ });
+ const changed=vi.fn();render(<InvoiceDetail detail={{...detail,autopay:{...autopay,canChargeNow:true}}} onChanged={changed}/>);
+ fireEvent.click(screen.getByTestId('autopay-charge-now'));fireEvent.click(screen.getByTestId('autopay-charge-confirm'));
+ fireEvent.change(await screen.findByTestId('billing-stepup-code'),{target:{value:'654321'}});
+ // The step-up answer is a prompt, not a failure.
+ expect(h.toast).not.toHaveBeenCalledWith(expect.objectContaining({type:'error'}));
+ expect(changed).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByTestId('billing-stepup-confirm'));
+ await waitFor(()=>expect(changed).toHaveBeenCalledOnce());
+ expect(h.mint).toHaveBeenCalledWith({operation:'autopay_charge_now',resource:{invoiceId:'inv'},reauth:{method:'totp',code:'654321'}});
+ expect(h.fetch).toHaveBeenCalledWith('/invoices/inv/autopay/charge-now',{method:'POST',body:JSON.stringify({stepUpGrant:'grant-9'})});
+ expect(h.toast).toHaveBeenCalledWith(expect.objectContaining({type:'success',message:'Payment attempt started'}));
+});
+it('Charge now cancelled at the confirmation charges nothing and reports nothing',async()=>{
+ h.fetch.mockImplementation(async (url:string,opts?:RequestInit)=>{
+  if(url==='/users/me')return {ok:true,status:200,json:async()=>({mfaEnabled:true,mfaMethod:'totp'})};
+  if(url==='/auth/passkeys')return {ok:true,status:200,json:async()=>([])};
+  if(opts?.method==='POST')return {ok:false,status:403,json:async()=>({code:'STEP_UP_REQUIRED',stepUp:{operation:'autopay_charge_now',resource:{invoiceId:'inv'}}})};
+  return {ok:true,status:200,json:async()=>({data:[]})};
+ });
+ const changed=vi.fn();render(<InvoiceDetail detail={{...detail,autopay:{...autopay,canChargeNow:true}}} onChanged={changed}/>);
+ fireEvent.click(screen.getByTestId('autopay-charge-now'));fireEvent.click(screen.getByTestId('autopay-charge-confirm'));
+ fireEvent.click(await screen.findByTestId('billing-stepup-cancel'));
+ await waitFor(()=>expect(screen.queryByTestId('billing-stepup')).toBeNull());
+ expect(h.mint).not.toHaveBeenCalled();expect(changed).not.toHaveBeenCalled();
+ expect(h.toast).not.toHaveBeenCalled();
+ expect(screen.getByTestId('autopay-charge-now')).not.toBeDisabled();
 });

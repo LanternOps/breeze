@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
+import { hierarchyFor } from '../deviceHierarchy';
+import type { DevicePolicySetOpts } from '../devicePolicySet';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, sites } from '../../db/schema';
@@ -49,7 +50,7 @@ export function canonicalTimeSyncJson(value: JsonValue): string {
  */
 export async function buildResolvedTimeSyncConfigUpdate(
   deviceId: string,
-  opts?: DeviceHierarchyOpts,
+  opts?: DevicePolicySetOpts,
 ): Promise<TimeSyncConfigUpdate> {
   const passed = hierarchyFor(deviceId, opts);
   const resolved = await getDeviceTimeSyncSettings(deviceId, opts);

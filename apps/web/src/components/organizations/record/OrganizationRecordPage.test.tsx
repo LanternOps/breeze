@@ -260,6 +260,24 @@ describe('OrganizationRecordPage — happy path', () => {
   });
 });
 
+describe('OrganizationRecordPage — archive (#8371)', () => {
+  it('refreshes the global org store after archiving so the header switcher drops the org', async () => {
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      '/archive': () => json({ status: 'offboarding', purgeAt: null }, 202),
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json(ORG_BODY),
+    });
+    const storeFetch = vi.spyOn(useOrgStore.getState(), 'fetchOrganizations').mockResolvedValue(undefined);
+    useOrgStore.setState({ fetchOrganizations: storeFetch });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await userEvent.click(await screen.findByTestId('org-record-more'));
+    await userEvent.click(await screen.findByTestId('org-record-archive'));
+    storeFetch.mockClear();
+    await userEvent.click(await screen.findByTestId('org-archive-submit'));
+    await waitFor(() => expect(storeFetch).toHaveBeenCalledTimes(1));
+  });
+});
+
 describe('OrganizationRecordPage — lifecycle states', () => {
   it('refuses the page for an org-scoped sign-in instead of firing a request that 403s', async () => {
     seedAuth(ORG_TOKEN);

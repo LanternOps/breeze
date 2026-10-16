@@ -54,6 +54,8 @@ vi.mock('../db/schema', () => ({
   users: { id: 'id', partnerId: 'partner_id', status: 'status', email: 'email' },
   mobileDevices: { userId: 'user_id', fcmToken: 'fcm_token', apnsToken: 'apns_token', platform: 'platform', status: 'status', notificationsEnabled: 'notifications_enabled', quietHours: 'quiet_hours' },
   ticketPushPreferences: { userId: 'user_id', assignedEnabled: 'assigned_enabled', slaScope: 'sla_scope', pushoverUserKeyEncrypted: 'pushover_user_key_encrypted' },
+  ticketApprovalRequests: { id: 'id' },
+  portalBranding: { orgId: 'org_id', enableTickets: 'enable_tickets' },
   ticketStatusEnum: { enumValues: ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed'] },
   ticketSourceEnum: { enumValues: ['portal', 'email', 'alert', 'manual', 'api', 'ai'] }
 }));
@@ -357,9 +359,10 @@ describe('handleTicketEvent', () => {
       actorUserId: 'u-1', eventId: 'evt-html-4', payload: { from: 'open', to: 'resolved' },
     });
 
-    const arg = sendEmailMock.mock.calls[0]![0] as { html: string };
+    const arg = sendEmailMock.mock.calls[0]![0] as { html: string; partnerName?: string | null };
     expect(arg.html).toContain('<!doctype html>');
     expect(arg.html).toContain('Replaced NIC');
+    expect(arg.partnerName).toBe('Acme');
   });
 
   it('autoresponse customer email uses layout', async () => {
@@ -478,8 +481,9 @@ describe('handleTicketEvent', () => {
     } as never);
 
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
-    const arg = sendEmailMock.mock.calls[0]![0] as { to: string; subject: string; replyTo?: string; headers?: Record<string, string> };
+    const arg = sendEmailMock.mock.calls[0]![0] as { to: string; subject: string; replyTo?: string; headers?: Record<string, string>; partnerName?: string | null };
     expect(arg.to).toBe('jane@x.com');
+    expect(arg.partnerName).toBe('Acme MSP');
     expect(arg.subject).toBe('[T-2026-0001] We received your request: printer down');
     expect(arg.replyTo).toBe('acme@tickets.example.com');
     expect(arg.headers!['Auto-Submitted']).toBe('auto-replied');
@@ -718,6 +722,28 @@ describe('handleTicketEvent', () => {
     expect(selectMock).not.toHaveBeenCalled();
     expect(push.createNotification).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('ticket.approval_requested / approval_decided route to the approval arms (#4617 W04), never "unhandled"', async () => {
+    // Behaviour lives in ticketNotifyWorker.approval.test.ts (real schema tables);
+    // here only the routing: an invisible request retries, a missing decided one drops.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      selectMock.mockResolvedValue([]);
+      await expect(handleTicketEvent({
+        type: 'ticket.approval_requested', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: null,
+        eventId: 'evt-apr-1', payload: { requestId: 'r-1', trigger: 'budget', revision: 1, created: true },
+      })).rejects.toThrow(/likely uncommitted/);
+      await handleTicketEvent({
+        type: 'ticket.approval_decided', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: null,
+        eventId: 'evt-apr-2', payload: { requestId: 'r-1', trigger: 'budget', status: 'expired' },
+      });
+      expect(push.createNotification).not.toHaveBeenCalled();
+      expect(sendEmailMock).not.toHaveBeenCalled();
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('Unhandled event type'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('ticket.status_changed to pending sends no email', async () => {

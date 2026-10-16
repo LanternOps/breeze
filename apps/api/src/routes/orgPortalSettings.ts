@@ -7,7 +7,7 @@ import { organizations, portalBranding } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
-import { updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
+import { ERROR_CODES, updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
 import {
   PORTAL_VISIBILITY_FLAG_KEYS,
   onPortalFlagsChanged,
@@ -52,8 +52,14 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableLifecycle: false,
   enableHardwareHealth: false,
   enableHardwareInventory: false,
+  enablePerformanceMetrics: false,
+  enableSoftwareInventory: false,
   enableNetworkVisibility: false,
+  enableEdrVisibility: false, // EDR framework W02: strict, fail-closed, inside "Enable all"
   enableNetworkAlerts: false,
+  enableHourBlock: false, // block hours (W04): fail-closed, never in "Enable all"
+  enablePatchDetail: false, // visibility W05: sensitive, fail-closed, never in "Enable all"
+  enableVulnerabilityDetail: false, // visibility W06: sensitive, fail-closed, never in "Enable all"
   chromeAccent: null,
   supportEmail: null,
   supportPhone: null,
@@ -78,8 +84,14 @@ type PortalSettingsRow = {
   enableLifecycle: boolean;
   enableHardwareHealth: boolean;
   enableHardwareInventory: boolean;
+  enablePerformanceMetrics: boolean;
+  enableSoftwareInventory: boolean;
   enableNetworkVisibility: boolean;
+  enableEdrVisibility: boolean;
   enableNetworkAlerts: boolean;
+  enableHourBlock: boolean;
+  enablePatchDetail: boolean;
+  enableVulnerabilityDetail: boolean;
   chromeAccent: string | null;
   supportEmail: string | null;
   supportPhone: string | null;
@@ -112,8 +124,14 @@ const portalSettingsColumns = () => ({
   enableLifecycle: portalBranding.enableLifecycle,
   enableHardwareHealth: portalBranding.enableHardwareHealth,
   enableHardwareInventory: portalBranding.enableHardwareInventory,
+  enablePerformanceMetrics: portalBranding.enablePerformanceMetrics,
+  enableSoftwareInventory: portalBranding.enableSoftwareInventory,
   enableNetworkVisibility: portalBranding.enableNetworkVisibility,
+  enableEdrVisibility: portalBranding.enableEdrVisibility,
   enableNetworkAlerts: portalBranding.enableNetworkAlerts,
+  enableHourBlock: portalBranding.enableHourBlock,
+  enablePatchDetail: portalBranding.enablePatchDetail,
+  enableVulnerabilityDetail: portalBranding.enableVulnerabilityDetail,
   chromeAccent: portalBranding.chromeAccent,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
@@ -141,8 +159,14 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableLifecycle: row.enableLifecycle,
     enableHardwareHealth: row.enableHardwareHealth,
     enableHardwareInventory: row.enableHardwareInventory,
+    enablePerformanceMetrics: row.enablePerformanceMetrics,
+    enableSoftwareInventory: row.enableSoftwareInventory,
     enableNetworkVisibility: row.enableNetworkVisibility,
+    enableEdrVisibility: row.enableEdrVisibility,
     enableNetworkAlerts: row.enableNetworkAlerts,
+    enableHourBlock: row.enableHourBlock,
+    enablePatchDetail: row.enablePatchDetail,
+    enableVulnerabilityDetail: row.enableVulnerabilityDetail,
     chromeAccent: row.chromeAccent,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,
@@ -156,7 +180,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   const orgRows = await db
     .select({ id: organizations.id })
@@ -164,7 +188,7 @@ async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> 
     .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
     .limit(1);
   if (!orgRows[0]) {
-    return c.json({ error: 'Organization not found' }, 404);
+    return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   return { id };
 }
@@ -200,7 +224,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
     async (c) => {
       const body = c.req.valid('json');
       if (Object.keys(body).length === 0) {
-        return c.json({ error: 'No updates provided' }, 400);
+        return c.json({ error: 'No updates provided', code: ERROR_CODES.NO_UPDATES_PROVIDED }, 400);
       }
       const org = await resolveAccessibleOrg(c);
       if (org instanceof Response) return org;
@@ -251,7 +275,10 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
             enableLifecycle: row.enableLifecycle,
             enableHardwareHealth: row.enableHardwareHealth,
             enableHardwareInventory: row.enableHardwareInventory,
-            enableNetworkVisibility: row.enableNetworkVisibility
+            enablePerformanceMetrics: row.enablePerformanceMetrics,
+            enableSoftwareInventory: row.enableSoftwareInventory,
+            enableNetworkVisibility: row.enableNetworkVisibility,
+            enableEdrVisibility: row.enableEdrVisibility
           }
         });
       }

@@ -82,6 +82,13 @@ import {
   reserveOperation,
 } from '../aiOperator/operationService';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
+import {
+  checkPlanEffectMembershipSystem,
+  checkToolCeiling,
+  loadTaskAgentToolAllowlists,
+  type PlanMembershipResult,
+} from '../aiOperator/planApproval';
+import { isSecretBearingTool } from './secretBearingTools';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -274,6 +281,17 @@ export interface CreateActionIntentInput {
    * own `ai_agent_runs.task_id` matches.
    */
   task?: ActionIntentTaskContext;
+  /**
+   * Recipe Library E4 (#6169, spec §6.4): present ONLY on a child effect
+   * minted under an already-APPROVED plan (`services/aiOperator/planApproval.ts`).
+   * It is what lets a non-agent principal carry `task` context: the
+   * run-linkage proof an agent intent gets is replaced by a stronger,
+   * row-backed one — plan membership at the task's live revision, the
+   * operation identity derived from the approved slot, the allowlist ceiling,
+   * and the minting user being the plan's approver. Requires `task`.
+   * TRUSTED, INTERNAL-ONLY, like `task`.
+   */
+  planApproval?: { approvalId: string; ordinal: number };
   /**
    * AI script authoring (spec §4.5): the proposal's reviewed risk tier, when
    * the caller has already loaded it. Absent, `createActionIntent` loads it
@@ -1185,7 +1203,10 @@ export async function createActionIntent(
   // intent that a task it does not own is then obliged to reconcile.
   let taskContext: ActionIntentTaskContext | null = null;
   if (input.task !== undefined) {
-    if (auth.principal.kind !== 'ai_agent') {
+    // E4 (#6169): a human principal may carry task context ONLY together with
+    // a plan approval, whose checks below are strictly stronger than the
+    // run-linkage check an agent intent gets (plan D-E4-2).
+    if (auth.principal.kind !== 'ai_agent' && !input.planApproval) {
       throw new ActionIntentError(
         `task context is only valid for the ai_agent principal (got principal '${auth.principal.kind}')`,
         'task_context_not_allowed',
@@ -1347,6 +1368,40 @@ export async function createActionIntent(
       orgId: prepared.orgId,
       reason: prepared.label,
       actionLabel: prepared.label,
+    };
+  }
+
+  // #8600 (device-group targets W03): `run_script { groupId }` is resolved
+  // to concrete device ids HERE, so the approved set is the executed set. It
+  // must run before everything below that reads `input.input`: the guardrail
+  // check, the agent-policy re-check and scope assertion, the argument digest
+  // and idempotency key, the effect digest and the approver resolution. The
+  // stored arguments hold `deviceIds` only. The group id, count and a short
+  // hash of the ids are display material for the approver (reason, label and
+  // target summary), never arguments. Every intent path funnels through this
+  // function, so chat, the agent run loop and the promote route all get it.
+  // Loaded on demand (like the topology block above): the resolver's schema
+  // imports are irrelevant to every other intent.
+  let runScriptGroupNote: string | null = null;
+  if (!externalTool && input.toolName === 'run_script' && input.input.groupId !== undefined && input.input.groupId !== null) {
+    const { normalizeRunScriptGroupTarget, RunScriptGroupTargetError } = await import('./runScriptGroupTarget');
+    const groupOrg = resolveWritableToolOrgId(auth, input.orgId);
+    if (!groupOrg.orgId) {
+      throw new ActionIntentError(groupOrg.error ?? 'Organization context required', 'org_resolution_failed');
+    }
+    let normalized: Awaited<ReturnType<typeof normalizeRunScriptGroupTarget>>;
+    try {
+      normalized = await normalizeRunScriptGroupTarget(auth, input.input, groupOrg.orgId);
+    } catch (err) {
+      if (err instanceof RunScriptGroupTargetError) throw new ActionIntentError(err.message, err.code);
+      throw err;
+    }
+    runScriptGroupNote = `group ${normalized.group.groupId} -> ${normalized.group.count} device(s), ids sha256 ${normalized.group.idsHash}`;
+    input = {
+      ...input,
+      input: normalized.args,
+      reason: input.reason ? `${input.reason}. ${normalized.note}` : normalized.note,
+      ...(input.actionLabel ? { actionLabel: `${input.actionLabel}. ${normalized.note}` } : {}),
     };
   }
 
@@ -1694,6 +1749,68 @@ export async function createActionIntent(
 
   const canonical = canonicalizeArguments(input.input);
   const argumentDigest = computeArgumentDigest(canonical);
+
+  // -------------------------------------------------------------------------
+  // Recipe Library E4 (#6169) — PLAN APPROVAL and the AGENT TOOL-ALLOWLIST
+  // CEILING (spec §6.4; risk §11 "Plan approval becomes a four-eyes
+  // bypass"). Fail-fast at mint, before anything is written; the release path
+  // (revalidateRelease.ts) re-runs the same predicate and ceiling, because a
+  // gate checked in one place cannot revoke.
+  // -------------------------------------------------------------------------
+  let planApprovalDecision: Extract<PlanMembershipResult, { ok: true }> | null = null;
+  if (input.planApproval !== undefined) {
+    if (!taskContext || auth.principal.kind === 'ai_agent') {
+      throw new ActionIntentError(
+        'planApproval requires task context and a human principal (the plan\'s approver)',
+        'plan_approval_invalid',
+      );
+    }
+    // Spec §6.4: secret-bearing effects never ride a plan in this wave.
+    if (isSecretBearingTool(input.toolName)) {
+      throw new ActionIntentError(
+        `${input.toolName} mints a credential and cannot be dispatched under a plan approval`,
+        'plan_approval_invalid',
+      );
+    }
+    const membership = await checkPlanEffectMembershipSystem({
+      orgId,
+      taskId: taskContext.taskId,
+      ordinal: input.planApproval.ordinal,
+      toolName: input.toolName,
+      argumentDigest,
+      taskStepKey: taskContext.taskStepKey,
+      operationKey: taskContext.operationKey,
+      approvalId: input.planApproval.approvalId,
+    });
+    if (!membership.ok) {
+      throw new ActionIntentError(
+        `plan approval does not authorize this effect: ${membership.refusal} (${membership.detail})`,
+        'plan_approval_invalid',
+      );
+    }
+    // The child executes under the APPROVER's live authority (D-E4-2); it may
+    // only be minted AS them, so the release-time actor rebuild, RBAC re-check
+    // and site ceiling land on the person who signed the plan.
+    if (membership.approverUserId !== requesterId) {
+      throw new ActionIntentError(
+        'a plan-approved effect must be minted as the plan\'s approver',
+        'plan_approval_invalid',
+      );
+    }
+    const ceiling = checkToolCeiling(
+      await loadTaskAgentToolAllowlists(orgId, taskContext.taskId),
+      input.toolName,
+      input.input,
+    );
+    if (!ceiling.ok) {
+      throw new ActionIntentError(
+        `${input.toolName} is outside the admitting agent's tool allowlist for this task: ${ceiling.detail}`,
+        'tool_not_in_agent_allowlist',
+      );
+    }
+    planApprovalDecision = membership;
+  }
+  const planGranted = planApprovalDecision !== null;
   // Agent default key is RUN-scoped (run id, not the synthetic agent user
   // id): two runs of the same agent proposing identical arguments must
   // yield DISTINCT intents — an intent is immutably attributed to one run,
@@ -1730,7 +1847,9 @@ export async function createActionIntent(
   // argument keys it carries (values are on the card's argument JSON).
   const targetSummary = externalTool
     ? `${input.toolName} (external tool from ${externalTool.sourceName})`
-    : buildTargetSummary(input.toolName, input.input);
+    : runScriptGroupNote
+      ? `${buildTargetSummary(input.toolName, input.input)} [${runScriptGroupNote}]`
+      : buildTargetSummary(input.toolName, input.input);
   const impactSummary = externalTool
     ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
         Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
@@ -2011,7 +2130,7 @@ export async function createActionIntent(
         ? (input.input as { proposalId?: unknown }).proposalId
         : undefined;
       let scriptLaneDecision: ScriptReviewerDecision | null = null;
-      if (!autonomyGranted && typeof proposalIdArg === 'string') {
+      if (!autonomyGranted && !planGranted && typeof proposalIdArg === 'string') {
         const proposal = await loadProposalForRelease(db, proposalIdArg, orgId);
         const review = proposal ? await latestCompletedReview(db, proposal.id) : null;
         scriptLaneDecision = proposal
@@ -2146,6 +2265,21 @@ export async function createActionIntent(
               decidedByUserId: null,
               releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
               scriptReviewerEvidence: scriptLaneDecision.evidence,
+            }
+            : {}),
+          // E4 (#6169): the plan WAS the approval. Approved at creation like
+          // the two lanes above, but decided BY a human — the plan's approver
+          // — whose decision is carried by the operator_plan intent. The
+          // release path admits it only while plan membership still holds
+          // (`decided_via` alone authorizes nothing).
+          ...(planApprovalDecision
+            ? {
+              status: 'approved' as const,
+              decidedVia: 'plan_approval',
+              decidedAt: new Date(),
+              decidedByUserId: planApprovalDecision.approverUserId,
+              decidedAssuranceLevel: planApprovalDecision.approvedAssuranceLevel as never,
+              releaseBy: new Date(Date.now() + RELEASE_LEASE_MS),
             }
             : {}),
           result: autonomyResult ?? scriptLaneRefusalResult,
@@ -2333,7 +2467,7 @@ export async function createActionIntent(
       // human fan-out entirely, same as the (not-yet-reachable-here)
       // policy-authorized case would — no approval_requests rows, no
       // approver notification.
-      if (!autonomyGranted && !scriptLaneGranted && decisionState === 'human_required') {
+      if (!autonomyGranted && !scriptLaneGranted && !planGranted && decisionState === 'human_required') {
         ({ approvalRequestIds, requesterApprovalRequestId, fanOutUserIds, finalIntent } =
           await runHumanFanout({
             db,
@@ -2386,7 +2520,7 @@ export async function createActionIntent(
       // above (`consumeProposalForIntent`), which throws — rolling this whole
       // transaction back — on a lost race, so an approved lane intent can
       // never commit without owning its proposal.
-      if (autonomyGranted || scriptLaneGranted) {
+      if (autonomyGranted || scriptLaneGranted || planGranted) {
         await db.insert(intentOutbox).values({
           intentId: inserted.id,
           eventType: 'intent_approved',

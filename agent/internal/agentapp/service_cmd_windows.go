@@ -34,7 +34,12 @@ func init() {
 	serviceCmd.AddCommand(serviceUninstallCmd)
 	serviceCmd.AddCommand(serviceStartCmd)
 	serviceCmd.AddCommand(serviceStopCmd)
-	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation")
+	serviceInstallCmd.Flags().BoolVar(&noWatchdog, "no-watchdog", false, "Skip automatic watchdog installation and remember the choice (the running agent will not install it either)")
+	serviceInstallCmd.Flags().BoolVar(&watchdogOptIn, "watchdog", false, watchdogOptInUsage)
+	serviceInstallCmd.Flags().BoolVar(&strictWatchdog, "strict-watchdog", false, strictWatchdogUsage)
+	// An install error, or a --strict-watchdog exit 78, returns an error from
+	// RunE; usage text would bury it in a scripted lane's log.
+	serviceInstallCmd.SilenceUsage = true
 }
 
 var serviceInstallCmd = &cobra.Command{
@@ -72,6 +77,19 @@ var serviceInstallCmd = &cobra.Command{
 				return fmt.Errorf("the agent config folder %s cannot be used: %w", config.MachineConfigDir(), err)
 			}
 		}
+		// Persist --no-watchdog / --watchdog (or honour a standing opt-out)
+		// before any install side effect: a failed marker write aborts here.
+		// On a fresh host the machine config folder may not exist yet; it is
+		// created with the agent's own private descriptor only when the
+		// opt-out marker must be written.
+		skipWatchdog, err := applyWatchdogFlags(defaultWatchdogFlagDeps(func() error {
+			_, err := config.PrepareMainAgentLockDir()
+			return err
+		}), noWatchdog, watchdogOptIn)
+		if err != nil {
+			return err
+		}
+
 		existingCfg, cfgErr := config.Load(cfgFile)
 		agentID := ""
 		if existingCfg != nil {
@@ -122,7 +140,8 @@ var serviceInstallCmd = &cobra.Command{
 			}
 		}
 
-		if !noWatchdog {
+		var watchdogExit error
+		if !skipWatchdog {
 			serverURL := persistedServerURLForInstall()
 			err := bootstrapWatchdog(bootstrapOptions{
 				agentPath: serviceExePath,
@@ -139,23 +158,25 @@ var serviceInstallCmd = &cobra.Command{
 						"  1. Re-run `breeze-agent.exe service install` (will retry the download).\n"+
 						"  2. Download %s manually, place it next to breeze-agent.exe,\n"+
 						"     then run `breeze-watchdog.exe service install`.\n"+
-						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
+						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n"+
+						watchdogSelfHealHint,
 					err, outcome.Summary(windowsServiceName),
 					watchdogManualDownloadURL(version, runtime.GOOS, runtime.GOARCH, serverURL))
 			}
+			watchdogExit = reportWatchdogBootstrap(err, strictWatchdog, os.Stdout)
 		}
 
 		// Reported last, and as a non-zero exit: the service is registered but
 		// not running, and the watchdog still needed installing first so it can
 		// recover the host. Exiting 0 here is what let the Linux half of this
-		// bug go unnoticed until devices showed Offline.
+		// bug go unnoticed until devices showed Offline. The install error wins
+		// over the watchdog outcome (--strict-watchdog → 78).
 		if installErr != nil {
 			fmt.Fprintf(os.Stderr,
 				"\nRecover with: breeze-agent.exe service start\n"+
 					"and check the Windows event log for the service start failure.\n")
-			return installErr
 		}
-		return nil
+		return installExitError(installErr, watchdogExit)
 	},
 }
 

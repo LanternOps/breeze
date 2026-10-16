@@ -161,6 +161,20 @@ export const TERMINAL_PAYLOAD_STRIP_KEYS: readonly string[] = [
 ].sort();
 
 /**
+ * Keys erased at terminal state for ONE command type only. Endpoint messages
+ * (`notify_user`, #8741) carry technician-authored `title`/`body`; those must
+ * not outlive delivery in this RLS-free, unbounded-retention table, but
+ * `title`/`body` are ordinary forensic fields on other command types, so they
+ * are NOT in the global list above and `notify_user` is deliberately NOT in
+ * SENSITIVE_PAYLOAD_FIELDS (that would also encrypt the fields at enqueue).
+ * `messageId`, `batchId`, `severity`, `expiresAt` survive: the message-events
+ * route uses `messageId` as its proof that a message was sent to the device.
+ */
+export const TYPE_SCOPED_TERMINAL_STRIP_KEYS: Readonly<Record<string, readonly string[]>> = {
+  [CommandTypes.NOTIFY_USER]: ['title', 'body'],
+};
+
+/**
  * The `.set({...})` fragment every terminal `device_commands` update must
  * spread, so credential material stops living in an unbounded-retention,
  * RLS-free table the moment the command stops being deliverable.
@@ -180,12 +194,19 @@ export function terminalPayloadErasureSet(): { payload: SQL } {
   // never sql.raw string interpolation, even for module-owned identifiers.
   // The explicit ::text cast is required: `jsonb - anyelement` is ambiguous
   // between the text and integer overloads for an untyped placeholder.
-  const stripped = TERMINAL_PAYLOAD_STRIP_KEYS.reduce<SQL>(
-    (expr, key) => sql`${expr} - ${key}::text`,
-    sql`${deviceCommands.payload}`,
+  const subtract = (base: SQL, keys: readonly string[]): SQL =>
+    keys.reduce<SQL>((expr, key) => sql`${expr} - ${key}::text`, base);
+  const stripped = subtract(sql`${deviceCommands.payload}`, TERMINAL_PAYLOAD_STRIP_KEYS);
+  // Type-scoped branches: only rows of that command type lose the extra keys.
+  // Built with nested template fragments (not sql.join) so every caller's
+  // `sql`-template-only drizzle mock keeps working.
+  const caseExpr = Object.entries(TYPE_SCOPED_TERMINAL_STRIP_KEYS).reduce<SQL>(
+    (expr, [type, keys]) =>
+      sql`${expr} WHEN ${deviceCommands.type} = ${type} THEN ${subtract(stripped, keys)}`,
+    sql`CASE WHEN ${deviceCommands.payload} IS NULL THEN NULL`,
   );
   return {
-    payload: sql`CASE WHEN ${deviceCommands.payload} IS NULL THEN NULL ELSE ${stripped} END`,
+    payload: sql`${caseExpr} ELSE ${stripped} END`,
   };
 }
 

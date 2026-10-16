@@ -1,0 +1,304 @@
+import './setup';
+import { randomUUID } from 'node:crypto';
+import { eq, sql } from 'drizzle-orm';
+import { describe, expect, it } from 'vitest';
+import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { deviceReliability, deviceReliabilityHistory, devices } from '../../db/schema';
+import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { getTestDb } from './setup';
+import {
+  clearReliabilityBaseline, createReliabilityBaseline, listReliabilityBaselines,
+} from '../../services/reliabilityBaselines';
+import {
+  computeAndPersistDeviceReliability, getDeviceReliability, getDeviceReliabilityHistory, getDeviceReliabilityOffenders,
+  listReliabilityDevices, persistDeviceReliability, scoreDeviceReliabilityAsOf,
+} from '../../services/reliabilityScoring';
+
+const DAY = 86_400_000;
+const system: DbAccessContext = { scope: 'system', orgId: null, accessibleOrgIds: null, accessiblePartnerIds: null };
+const asSystem = <T>(fn: () => Promise<T>) => withDbAccessContext(system, fn);
+
+async function deviceWithCrashHistory() {
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner!.id });
+  const site = await createSite({ orgId: org!.id });
+  const [device] = await getTestDb().insert(devices).values({
+    orgId: org!.id, siteId: site!.id, agentId: randomUUID(), hostname: 'rb-int', osType: 'windows',
+    osVersion: '11', architecture: 'x64', agentVersion: '1.0.0', deviceRole: 'workstation',
+    enrolledAt: new Date(Date.now() - 120 * DAY),
+  }).returning();
+  // 40 daily samples; a BSOD on each of days 25..20 ago.
+  const now = Date.now();
+  await getTestDb().insert(deviceReliabilityHistory).values(Array.from({ length: 40 }, (_, i) => {
+    const collectedAt = new Date(now - (39 - i) * DAY);
+    const daysAgo = 39 - i;
+    return {
+      deviceId: device!.id, orgId: org!.id, collectedAt, uptimeSeconds: 3600,
+      bootTime: new Date(collectedAt.getTime() - 3_600_000),
+      crashEvents: daysAgo >= 20 && daysAgo <= 25 ? [{ type: 'bsod' as const, timestamp: new Date(collectedAt.getTime() - 60_000).toISOString() }] : [],
+    };
+  }));
+  return { partnerId: partner!.id, orgId: org!.id, device: { id: device!.id, orgId: org!.id, deviceRole: 'workstation', enrolledAt: new Date(now - 120 * DAY) } };
+}
+
+describe('reliability baselines (real DB)', () => {
+  it('a marker after the crashes lifts the score and freezes the before snapshot', async () => {
+    const { device } = await deviceWithCrashHistory();
+    await asSystem(() => computeAndPersistDeviceReliability(device.id));
+    const [before] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect(before!.crashCount30d).toBeGreaterThan(0);
+
+    const marker = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'remediated', baselineAt: new Date(Date.now() - 10 * DAY), note: 'Updated storage driver',
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    expect(marker!.beforeSnapshot!.counts30d.crashes).toBeGreaterThan(0);
+    expect(marker!.beforeSnapshot!.reliabilityScore).toBe(before!.reliabilityScore);
+
+    const [after] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect(after!.crashCount30d).toBe(0);
+    expect(after!.reliabilityScore).toBeGreaterThan(before!.reliabilityScore);
+    expect((after!.details as any).baseline).toMatchObject({ id: marker!.id, provisional: true });
+  });
+
+  it('clearing the marker restores the unmarked score; clearing twice is reported', async () => {
+    const { device } = await deviceWithCrashHistory();
+    await asSystem(() => computeAndPersistDeviceReliability(device.id));
+    const [unmarked] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    const marker = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'reimaged', baselineAt: new Date(Date.now() - 10 * DAY), note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    expect(await asSystem(() => clearReliabilityBaseline({ deviceId: device.id, baselineId: marker!.id, clearedBy: null }))).toBe('cleared');
+    expect(await asSystem(() => clearReliabilityBaseline({ deviceId: device.id, baselineId: marker!.id, clearedBy: null }))).toBe('already_cleared');
+    expect(await asSystem(() => clearReliabilityBaseline({ deviceId: device.id, baselineId: randomUUID(), clearedBy: null }))).toBe('not_found');
+    const [restored] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect(restored!.reliabilityScore).toBe(unmarked!.reliabilityScore);
+    expect((restored!.details as any).baseline).toBeUndefined();
+  });
+
+  it("a marker cannot be cleared through another device's URL", async () => {
+    const a = await deviceWithCrashHistory();
+    const b = await deviceWithCrashHistory();
+    const markerB = await asSystem(() => createReliabilityBaseline({
+      device: b.device, reason: 'reimaged', baselineAt: new Date(Date.now() - 10 * DAY), note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: false,
+    }));
+    expect(await asSystem(() => clearReliabilityBaseline({ deviceId: a.device.id, baselineId: markerB!.id, clearedBy: null }))).toBe('not_found');
+    const listB = await asSystem(() => listReliabilityBaselines(b.device.id));
+    expect(listB.find((m) => m.id === markerB!.id)).toMatchObject({ active: true, clearedAt: null });
+  });
+
+  it('an inline recompute blocked by a long-held score row lock gives up in bounded time and the marker still commits', async () => {
+    const { device } = await deviceWithCrashHistory();
+    await asSystem(() => computeAndPersistDeviceReliability(device.id));
+
+    // Stand-in for the nightly compute-org job: one long transaction holding the
+    // device's device_reliability row lock.
+    let releaseHolder!: () => void;
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+    let locked!: () => void;
+    const lockedSignal = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = asSystem(async () => {
+      await db.execute(sql`SELECT 1 FROM device_reliability WHERE device_id = ${device.id} FOR UPDATE`);
+      locked();
+      await holderGate;
+    });
+    await Promise.race([lockedSignal, holder]);
+
+    try {
+      const started = Date.now();
+      const marker = await asSystem(() => createReliabilityBaseline({
+        device, reason: 'reimaged', baselineAt: new Date(Date.now() - 10 * DAY), note: null,
+        source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+      }));
+      // Bounded by the 2s savepoint lock_timeout, not by the holder.
+      expect(Date.now() - started).toBeLessThan(8_000);
+      // The lock timeout rolled back only the recompute savepoint: the marker
+      // and the follow-up list read in the same transaction both succeeded.
+      expect(marker).toMatchObject({ active: true });
+      const list = await asSystem(() => listReliabilityBaselines(device.id));
+      expect(list.find((m) => m.id === marker!.id)).toMatchObject({ active: true });
+    } finally {
+      releaseHolder();
+      await holder;
+    }
+  });
+
+  it('a backdated marker earlier than the active one is listed but not effective, with the correct predecessor snapshot', async () => {
+    const { device } = await deviceWithCrashHistory();
+    const later = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'reimaged', baselineAt: new Date(Date.now() - 5 * DAY), note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    const earlier = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'hardware_replaced', baselineAt: new Date(Date.now() - 15 * DAY), note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    const list = await asSystem(() => listReliabilityBaselines(device.id));
+    expect(list.find((m) => m.id === later!.id)!.active).toBe(true);
+    expect(list.find((m) => m.id === earlier!.id)!.active).toBe(false);
+    // Earlier marker's "before" is scored as of 15d ago with no predecessor → it sees the crashes.
+    expect(earlier!.beforeSnapshot!.counts30d.crashes).toBeGreaterThan(0);
+    const [row] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect((row!.details as any).baseline.id).toBe(later!.id);
+  });
+
+  it('a second marker at the same instant takes a predecessor strictly before it (no zero-day snapshot)', async () => {
+    const { device } = await deviceWithCrashHistory();
+    const at = new Date(Date.now() - 10 * DAY);
+    const first = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'reimaged', baselineAt: at, note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    const second = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'hardware_replaced', baselineAt: new Date(at.getTime()), note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    // Both snapshots are scored as of T with NO predecessor, so both see the crashes 20-25d ago.
+    expect(second!.beforeSnapshot!.asOf).toBe(at.toISOString());
+    expect(second!.beforeSnapshot!.counts30d.crashes).toBeGreaterThan(0);
+    expect(second!.beforeSnapshot).toEqual(first!.beforeSnapshot);
+  });
+
+  it('compare-and-set skips a stale run that scored against the previous marker', async () => {
+    const { device } = await deviceWithCrashHistory();
+    await asSystem(() => computeAndPersistDeviceReliability(device.id));
+    // A "worker" run computes with no marker…
+    const stale = await asSystem(() => scoreDeviceReliabilityAsOf(device, new Date(), null));
+    // …a marker lands and recomputes…
+    const marker = await asSystem(() => createReliabilityBaseline({
+      device, reason: 'reimaged', baselineAt: new Date(Date.now() - 10 * DAY), note: null,
+      source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+    }));
+    // …then the stale run tries to persist: it must be skipped.
+    await asSystem(() => persistDeviceReliability(device, stale.values, null));
+    const [row] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect((row!.details as any).baseline.id).toBe(marker!.id);
+    expect(row!.crashCount30d).toBe(0);
+  });
+
+  it('an automatic marker is idempotent per recovery, even after it was cleared', async () => {
+    const { device } = await deviceWithCrashHistory();
+    const recoveryId = randomUUID();
+    const input = {
+      device, reason: 'reimaged' as const, baselineAt: new Date(Date.now() - DAY), note: null,
+      source: 'bare_metal_recovery' as const, sourceRef: recoveryId, createdBy: null, recompute: false,
+    };
+    const first = await asSystem(() => createReliabilityBaseline(input));
+    expect(first).not.toBeNull();
+    await asSystem(() => clearReliabilityBaseline({ deviceId: device.id, baselineId: first!.id, clearedBy: null }));
+    expect(await asSystem(() => createReliabilityBaseline(input))).toBeNull();
+  });
+
+  it('a worker upsert that blocks on the marker transaction re-scores against the committed marker', async () => {
+    const { device } = await deviceWithCrashHistory();
+    await asSystem(() => computeAndPersistDeviceReliability(device.id));
+
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let markerWritten!: () => void;
+    const markerWrittenSignal = new Promise<void>((resolve) => { markerWritten = resolve; });
+
+    // Tx A: the marker route. Inserts the marker and upserts the marker-aware row,
+    // so it holds that row's lock until the gate opens and it commits.
+    let aPid = 0;
+    const txA = asSystem(async () => {
+      const created = await createReliabilityBaseline({
+        device, reason: 'reimaged', baselineAt: new Date(Date.now() - 10 * DAY), note: null,
+        source: 'manual', sourceRef: null, createdBy: null, recompute: true,
+      });
+      const [me] = await db.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`);
+      aPid = Number(me!.pid);
+      markerWritten();
+      await gate;
+      return created;
+    });
+    await Promise.race([markerWrittenSignal, txA]);
+    expect(aPid).toBeGreaterThan(0);
+
+    // Tx B: the worker. Its first read cannot see A's uncommitted marker, so it
+    // scores stale and its upsert blocks on A's row lock.
+    let bSettled = false;
+    const txB = asSystem(() => computeAndPersistDeviceReliability(device.id)).finally(() => { bSettled = true; });
+    txB.catch(() => undefined);
+
+    // Poll (separate connection) until some backend is blocked by tx A, so the
+    // race is proven exercised rather than assumed from a fixed sleep.
+    const deadline = Date.now() + 10_000;
+    let blocked = false;
+    while (!blocked) {
+      const rows = await getTestDb().execute<{ waiting: number }>(sql`
+        SELECT count(*)::int AS waiting FROM pg_catalog.pg_stat_activity
+        WHERE datname = current_database() AND ${aPid}::int = ANY(pg_catalog.pg_blocking_pids(pid))`);
+      blocked = (rows[0]?.waiting ?? 0) > 0;
+      if (blocked) break;
+      if (bSettled || Date.now() > deadline) {
+        releaseGate();
+        await Promise.allSettled([txA, txB]);
+        throw new Error(`worker tx B never blocked on marker tx A (pid ${aPid}) ${bSettled ? 'before it settled' : 'within 10s'}; the race was not exercised`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    releaseGate();
+
+    const [marker] = await Promise.all([txA, txB]);
+    const [row] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect((row!.details as any).baseline?.id).toBe(marker!.id);
+    expect(row!.crashCount30d).toBe(0);
+  });
+
+  it('create, list and clear work under an organization-scoped (request-path) context', async () => {
+    const { partnerId, orgId, device } = await deviceWithCrashHistory();
+    const user = await createUser({ partnerId, orgId, name: 'Baseline Tech', email: `bl-${randomUUID()}@example.com` });
+    await asSystem(() => computeAndPersistDeviceReliability(device.id));
+    const orgCtx: DbAccessContext = {
+      scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], currentPartnerId: partnerId,
+    };
+    const asOrg = <T>(fn: () => Promise<T>) => withDbAccessContext(orgCtx, fn);
+
+    const marker = await asOrg(() => createReliabilityBaseline({
+      device, reason: 'remediated', baselineAt: new Date(Date.now() - 10 * DAY), note: 'Updated storage driver',
+      source: 'manual', sourceRef: null, createdBy: user.id, recompute: true,
+    }));
+    expect(marker!.createdBy!.name).toBe('Baseline Tech');
+    // The inline recompute ran under org RLS and persisted the marker-aware row.
+    const [marked] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect((marked!.details as any).baseline?.id).toBe(marker!.id);
+    const list = await asOrg(() => listReliabilityBaselines(device.id));
+    expect(list.find((m) => m.id === marker!.id)).toMatchObject({ active: true });
+    expect(await asOrg(() => clearReliabilityBaseline({ deviceId: device.id, baselineId: marker!.id, clearedBy: user.id }))).toBe('cleared');
+    const [row] = await asSystem(() => db.select().from(deviceReliability).where(eq(deviceReliability.deviceId, device.id)));
+    expect((row!.details as any).baseline).toBeUndefined();
+  });
+
+  it('detail exposes baseline + provisional; offenders, history and list respect the marker', async () => {
+    const { device, orgId } = await deviceWithCrashHistory();
+    // One service failure before the marker (15d ago) and one after it (3d ago).
+    const failureAt = (daysAgo: number) => new Date(Date.now() - daysAgo * DAY - 30 * 60_000);
+    await getTestDb().insert(deviceReliabilityHistory).values([15, 3].map((daysAgo) => ({
+      deviceId: device.id, orgId, collectedAt: new Date(failureAt(daysAgo).getTime() + 60_000), uptimeSeconds: 3600,
+      bootTime: new Date(failureAt(daysAgo).getTime() - 3_600_000),
+      serviceFailures: [{ serviceName: `svc-${daysAgo}d`, timestamp: failureAt(daysAgo).toISOString(), recovered: true }],
+    })));
+    const unmarked = await asSystem(() => getDeviceReliabilityOffenders(device.id, 30, 5));
+    expect(unmarked.services.map((o) => o.label).sort()).toEqual(['svc-15d', 'svc-3d']);
+
+    const marker = await asSystem(() => createReliabilityBaseline({ device, reason: 'reimaged',
+      baselineAt: new Date(Date.now() - 10 * DAY), note: null, source: 'manual', sourceRef: null, createdBy: null, recompute: true }));
+    const detail = await asSystem(() => getDeviceReliability(device.id));
+    expect(detail!.provisional).toBe(true);
+    expect(detail!.baseline).toMatchObject({ id: marker!.id, reason: 'reimaged' });
+    const listed = await asSystem(() => listReliabilityDevices({ orgId, limit: 10 }));
+    expect(listed.rows.find((r) => r.deviceId === device.id)!.provisional).toBe(true);
+    const offenders = await asSystem(() => getDeviceReliabilityOffenders(device.id, 30, 5));
+    expect(offenders.services.map((o) => o.label)).toEqual(['svc-3d']);
+    expect(offenders.hardware).toHaveLength(0);
+    expect(offenders.hangs).toHaveLength(0);
+
+    const history = await asSystem(() => getDeviceReliabilityHistory(device.id, 30));
+    const baselineDay = new Date(Date.now() - 10 * DAY).toISOString().slice(0, 10);
+    expect(history.some((p) => p.beforeBaseline)).toBe(true);
+    for (const p of history) expect(p.beforeBaseline).toBe(p.date < baselineDay);
+  });
+});

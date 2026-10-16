@@ -6,7 +6,6 @@ import { jobsRoutes } from './jobs';
 import { snapshotsRoutes } from './snapshots';
 import { reconcileRoutes } from './reconcile';
 import { restoreRoutes } from './restore';
-import { restoreConfirmationRoutes } from './restoreConfirmations';
 import { dashboardRoutes } from './dashboard';
 import { backupHealthRoutes } from './health';
 import { backupVerificationRoutes } from './verification';
@@ -42,7 +41,6 @@ backupRoutes.route('/', jobsRoutes);
 backupRoutes.route('/', snapshotsRoutes);
 backupRoutes.route('/', reconcileRoutes);
 backupRoutes.route('/', restoreRoutes);
-backupRoutes.route('/', restoreConfirmationRoutes);
 backupRoutes.route('/', dashboardRoutes);
 // GET /backup/health/devices. Mounted AFTER dashboardRoutes and BEFORE
 // backupVerificationRoutes is irrelevant for correctness — '/health/devices'

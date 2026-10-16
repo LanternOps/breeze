@@ -10,6 +10,8 @@ vi.mock('../../db',()=>{
   runAfterDbContextExit:vi.fn(),hasDbAccessContext:()=>false};
 });
 vi.mock('../partnerStripe',()=>({getPartnerStripeClient:m.client}));
+const gate=vi.hoisted(()=>({partnerLive:vi.fn(async()=>true)}));
+vi.mock('./autopayGate',()=>({hasLiveAutopayPartner:gate.partnerLive}));
 vi.mock('./paymentMethods',()=>({enqueueRejectedAutopayMethod:vi.fn(),detachPaymentMethodPostCommit:vi.fn(),getAutopayMethod:vi.fn(async()=>null)}));
 vi.mock('./noticeOutbox',()=>({enqueueBillingNotice:m.enqueue}));
 vi.mock('./linkTokens',()=>({mintBillingLinkToken:m.mint,buildBillingLinkUrl:()=> 'https://portal.example.test/portal/autopay/token/stop'}));
@@ -106,8 +108,9 @@ describe('completion fences',()=>{
   expect((await completeAutopaySetup(attempt().partnerId,{setupIntentId:'seti_one'})).outcome).toBe('activated');
   expect(m.writes).toEqual([]);expect(m.mint).not.toHaveBeenCalled();
  });
- it.each(['paused','cancelled','new generation','superseded','disconnected','deleted org','changed customer'])('fences %s without persisting a method',async condition=>{
+ it.each(['paused','cancelled','new generation','superseded','disconnected','deleted org','inactive partner','changed customer'])('fences %s without persisting a method',async condition=>{
   queueAuthority();
+  if(condition==='inactive partner')gate.partnerLive.mockResolvedValueOnce(false);
   if(condition==='paused'||condition==='cancelled')Object.assign(m.rows[3]![0]!,{status:condition});
   if(condition==='new generation')Object.assign(m.rows[3]![0]!,{generation:4});
   if(condition==='superseded')m.rows[5]=[{id:'newer-attempt'}];

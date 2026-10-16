@@ -563,9 +563,9 @@ describe('vm restore routes — rebuild engine', () => {
         stepUpGrant: '66666666-6666-4666-8666-666666666666',
         confirmUnattestedRestore: undefined,
         // Read in the request context: the engine's org-scoped transaction
-        // cannot see a partner-level technician's user row.
+        // cannot see a partner-level technician's user row. With a grant to
+        // consume, the factor state is not read up front.
         userEpochs: { authEpoch: 1, mfaEpoch: 2 },
-        userMfaProtected: false,
         // The rebuild host runs the command.
         executingDeviceId: HOST_ID,
       });
@@ -575,7 +575,7 @@ describe('vm restore routes — rebuild engine', () => {
 
     it('records a confirmed rebuild\'s authorization bound to the recovery, in the same transaction', async () => {
       mockHappyPath();
-      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'typed' });
+      integrityGate.check.mockResolvedValueOnce({ ok: true, authorizationReason: 'unattested_legacy', confirmationMethod: 'mfa' });
       const res = await app.request('/backup/restore/as-vm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
@@ -587,10 +587,12 @@ describe('vm restore routes — rebuild engine', () => {
         expect.objectContaining({ snapshotDbId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, commandType: 'bare_metal_rebuild' }),
         'unattested_legacy',
         { recoveryId: RECOVERY_ID },
-        { inCurrentTransaction: true, confirmationMethod: 'typed' },
+        { inCurrentTransaction: true, confirmationMethod: 'mfa' },
       );
-      // The factor state is read in the request context, not the engine's org-scoped transaction.
+      // Without a grant, the factor state is read in the request context, not
+      // the engine's org-scoped transaction; the epochs are not needed.
       expect(integrityGate.check).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userMfaProtected: false }));
+      expect(integrityGate.check.mock.calls[0]?.[1]).not.toHaveProperty('userEpochs');
     });
   });
 

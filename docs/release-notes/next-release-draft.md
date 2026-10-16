@@ -8,7 +8,7 @@ Add an entry the moment you introduce something an operator or self-hoster would
 notice — a new env var, a new log line, a new metric, a changed default, a
 behaviour change. A commit subject weeks later will not carry it.
 
-Last release: **v0.121.0** (2026-10-03).
+Last release: **v0.122.1** (2026-10-12). v0.122.0 was tagged but never released.
 
 ---
 
@@ -16,20 +16,15 @@ Last release: **v0.121.0** (2026-10-03).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
-- **Database migrations take brief exclusive locks on busy tables.** The
-  `2026-12-13-110000/110100/110200` migrations redefine foreign keys on child
-  tables of `users`, `devices`, `alerts`, `tickets`, `roles` and others. Each
-  swap briefly takes an ACCESS EXCLUSIVE lock on the child **and** the parent
-  table, and waits at most 5 s for it (`lock_timeout`). If a long-running
-  reader holds one of those tables (a large report, a `pg_dump`/backup window),
-  the migration stops, the API fails to boot with a lock-timeout error, and it
-  re-applies cleanly on the next restart. Avoid deploying this release during a
-  database backup window. No data is rewritten; the new constraints are
-  validated afterwards without blocking writes.
-- **Deleting a role that an access review covered now returns 409** ("Role is
-  referenced by access reviews") instead of a server error, so review evidence
-  is kept. Deleting a notification channel keeps the alert delivery history it
-  produced (shown without a channel name), and deleting a maintenance window
-  removes all of its occurrences.
-- **Restores now require a v0.120.0 or later backup helper.** Restores that write, import or boot a backup (file, SQL Server, Hyper-V, restore as VM, instant boot, bare-metal recovery and rebuild) are refused for devices whose backup helper does not check restores against snapshot attestations, with "Update the Breeze agent on this device, then try again." Recovery media and recovery tools older than v0.120.0 are refused at code exchange and authentication. Verification and test restore are unchanged. Update agents and rebuild recovery media before upgrading the server.
-- **Backups without an attestation restore after a two-factor confirmation.** Snapshots taken before attestations existed are labelled "Not verified"; restoring one requires a technician's two-factor confirmation (an explicit confirmation when `ENABLE_2FA=false`; a technician without a second factor types the device name instead), recorded in the new `backup_restore_authorizations` table and the audit log (`backup.restore.unattested_override`). AI tools and DR plans refuse such snapshots. New migration: `2026-12-17-170000-backup-restore-authorizations.sql`. `breeze_backup_restore_integrity_total` gains `status="override"` and `status="refused"`.
+- **System Protection (#4609):** deploy the API and web first; there are no new environment variables. The migrations below run automatically on API start. Nothing changes on devices until an agent release that supports System Protection ships.
+
+## Features / API
+
+- **Windows System Restore: policy-controlled System Protection and per-action reporting (#4609, #4751).** A new **System Protection** policy tab (also available on partner-wide "All orgs" policies) sets whether Breeze requests a System Restore checkpoint before patch installs, scripts and software installs. The server resolves the setting per device, records every request in a new per-device attempts ledger, and shows the outcome as a badge on patch history, script execution details and software deployments, plus a **System Restore** tab on Windows devices. **The agent side is not in this release.** Checkpoint creation and reporting by the agent roll out with a future agent release, so until devices run it every attempt reads **Awaiting the device** and no outcome is reported. Patch installs keep their existing best-effort behavior (a command with no System Protection setting is treated the legacy way: patch installs requested, scripts and software installs not). Turning patch checkpoints *off* cannot be enforced on a device until its agent reports support, and the policy tab says so. Scripts and software installs take no checkpoint until you opt in **and** an agent release that supports it is deployed. System Restore is not a backup. Separately, the native Windows call used for restore points had the wrong struct layout (the SDK header declares both structs under `#pragma pack(1)`); the corrected layout is in the agent code and takes effect with the agent release that includes it. Docs: Configuration Policies > System Protection (includes the support matrix; only Windows 11 25H2 and Server 2022 are verified so far, Windows 10 and Server 2025 are tracked in #8265).
+
+- **Mobile: arrival suggestions (#8209, W2).** With the partner's *Location suggestions* setting on (off by default) and the technician's own opt-in, the app suggests starting a timer when opened at a pinned client site. Foreground only; the phone's position is compared on the device and never sent. Adds the `expo-location` dependency and iOS/Android location permission strings, so it ships with the next **mobile app build** (not an API/web deploy). Technicians with the *Set site location* permission can pin a site from the phone. Docs: Mobile app > Arrival suggestions.
+
+## Migrations
+
+- `2026-12-24-110000-system-protection-feature-type.sql` adds the `system_protection` value to the `config_feature_type` enum. Idempotent (re-running is a no-op), but Postgres cannot drop an enum value, so this one is effectively one-way.
+- `2026-12-24-160000-device-restore-point-attempts.sql` creates the `device_restore_point_attempts` table (RLS enabled and forced, org-cascade and export registered). Additive.

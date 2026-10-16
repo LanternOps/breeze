@@ -123,6 +123,10 @@ export const callerVerifications = pgTable('caller_verifications', {
   decoyValues: char('decoy_values', { length: 2 }).array().notNull(),
   reverseCode: char('reverse_code', { length: 4 }).notNull(),
   challengeTokenHash: char('challenge_token_hash', { length: 64 }),
+  // W03 link tier (migration 2026-12-25-110000): encrypted retry material for
+  // post-commit SMS/email delivery and the immutable on-screen candidate order.
+  sealedLinkToken: text('sealed_link_token'),
+  challengeChoices: char('challenge_choices', { length: 2 }).array(),
   destinationId: uuid('destination_id'),
   destinationRedacted: varchar('destination_redacted', { length: 64 }),
   workstationDeviceRef: uuid('workstation_device_ref'),
@@ -173,6 +177,7 @@ export const callerVerifications = pgTable('caller_verifications', {
   check('cv_tier_chk', sql`${t.tier} BETWEEN 0 AND 3`),
   check('cv_attempt_chk', sql`${t.attemptNo} > 0`),
   check('cv_choices_chk', sql`${t.matchValue} ~ '^[0-9]{2}$' AND cardinality(${t.decoyValues})=2 AND array_position(${t.decoyValues},NULL) IS NULL AND ${t.decoyValues}[1] ~ '^[0-9]{2}$' AND ${t.decoyValues}[2] ~ '^[0-9]{2}$' AND ${t.matchValue} <> ALL(${t.decoyValues}) AND ${t.decoyValues}[1] <> ${t.decoyValues}[2] AND ${t.reverseCode} ~ '^[0-9]{4}$'`),
+  check('cv_link_choices_chk', sql`${t.challengeChoices} IS NULL OR (cardinality(${t.challengeChoices})=3 AND array_position(${t.challengeChoices},NULL) IS NULL AND ${t.challengeChoices}[1] <> ${t.challengeChoices}[2] AND ${t.challengeChoices}[1] <> ${t.challengeChoices}[3] AND ${t.challengeChoices}[2] <> ${t.challengeChoices}[3] AND ${t.challengeChoices} @> ARRAY[${t.matchValue}] AND ${t.challengeChoices} @> ${t.decoyValues})`),
   check('cv_admin_chk', sql`${t.method} <> 'administrative_stepup' OR (${t.actionScope}='disable_user' AND ${t.reason} IS NOT NULL AND length(btrim(${t.reason})) >= 20 AND ${t.stepupSessionId} IS NOT NULL AND ${t.stepupAuthEpoch} IS NOT NULL AND ${t.stepupMfaEpoch} IS NOT NULL AND ${t.stepupVerifiedAt} IS NOT NULL)`),
 ]);
 

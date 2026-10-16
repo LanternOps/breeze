@@ -19,7 +19,6 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   // a read) moved to hooks/useAdvancedFilterIds.ts — no mutating calls remain.
   // DevicePatchStatusTab.tsx migrated to runAction (patch scan/install) — now in TARGET_GLOBS.
   'apps/web/src/components/devices/DeviceSecurityTab.tsx',
-  'apps/web/src/components/devices/DeviceSettingsModal.tsx',
   // DeviceWarrantyCard.tsx migrated to runAction (#1723) — now in TARGET_GLOBS.
   'apps/web/src/components/alerts/AlertCorrelationView.tsx',
   // AlertRulesPage.tsx removed (#3988): the page it backed has been a 301 to

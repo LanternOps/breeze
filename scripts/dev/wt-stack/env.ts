@@ -128,6 +128,22 @@ function nativeDockerPlatform(worktreePath: string, arch: string): string | null
   return pinned ? null : 'linux/arm64';
 }
 
+/**
+ * #8718 — opt-in fixed host port for caddy. The worktree override publishes
+ * caddy as `${BREEZE_WT_CADDY_PORT:-0}:80`; unset keeps the random port. A
+ * `docker restart` re-allocates a random port, so a storm scenario that
+ * restarts caddy (`socket-drop`) strands every client holding `baseUrl`.
+ */
+export function caddyPortPin(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.BREEZE_WT_CADDY_PORT?.trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(`BREEZE_WT_CADDY_PORT must be an integer 1-65535, got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
 export function writeEnvStack(worktreePath: string, opts: { arch?: string } = {}): string {
   const p = envStackPath(worktreePath);
   // Carry runtime keys across a re-`up` so an unchanged stack is not recreated
@@ -141,8 +157,10 @@ export function writeEnvStack(worktreePath: string, opts: { arch?: string } = {}
   if (blankMail) {
     console.log('[wt-stack] outbound mail disabled (RESEND_API_KEY/MAILGUN_API_KEY/SMTP_HOST blanked; set BREEZE_WT_STACK_LIVE_MAIL=1 to keep them)');
   }
+  const caddyPin = caddyPortPin();
   const body = [
     ...Object.entries(DEV_ENV).map(([k, v]) => `${k}=${v}`),
+    ...(caddyPin !== null ? [`BREEZE_WT_CADDY_PORT=${caddyPin}`] : []),
     ...(blankMail ? NO_LIVE_MAIL_KEYS.map((k) => `${k}=`) : []),
     ...(platform ? [`DOCKER_PLATFORM=${platform}`] : []),
     ...kept,

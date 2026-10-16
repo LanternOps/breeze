@@ -9,9 +9,12 @@ export async function readAutopay<T>(path: string): Promise<T> {
   if (!response.ok) throw new Error(i18n.t('billing:autopay.error'));
   return response.json() as Promise<T>;
 }
-/** `success` names what changed (e.g. "Automatic payments paused."); the default is generic. */
-export function mutateAutopay<T>(path: string, body: unknown, method = 'POST', success?: string): Promise<T> {
+/** `success` names what changed (e.g. "Automatic payments paused."); the default is generic.
+ * `suppressErrorToast` lets a caller handle an expected answer (a step-up request) itself. */
+export function mutateAutopay<T>(path: string, body: unknown, method = 'POST', success?: string,
+  suppressErrorToast?: (status: number, code: string | undefined) => boolean): Promise<T> {
   return runAction<T>({ request: () => fetchWithAuth(path, { method, body: JSON.stringify(body) }),
+    ...(suppressErrorToast ? { suppressErrorToast } : {}),
     errorFallback: i18n.t('billing:autopay.error'), successMessage: data => {
       // Skipped requests are explained per organization in the caller's result.
       // A partial or all-skipped response must not produce a success toast.

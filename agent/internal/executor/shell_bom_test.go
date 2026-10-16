@@ -25,6 +25,12 @@ func TestWriteScriptFileUTF8BOM(t *testing.T) {
 		{"bash no BOM", ScriptTypeBash, "#!/bin/bash\necho hi\n", false},
 		{"python no BOM", ScriptTypePython, "print('hi')\n", false},
 		{"cmd no BOM", ScriptTypeCMD, "@echo off\r\necho hi\r\n", false},
+		// #3581: a script saved from a Windows editor arrives with a BOM. For
+		// bash the BOM hides the shebang and runs as a garbage first command,
+		// so it is stripped (the mirror image of the .ps1 BOM-add).
+		{"bash leading BOM stripped", ScriptTypeBash, utf8BOM + "#!/bin/bash\necho hi\n", false},
+		{"bash leading BOM stripped with CRLF", ScriptTypeBash, utf8BOM + "#!/bin/bash\r\necho hi\r\n", false},
+		{"python leading BOM stripped", ScriptTypePython, utf8BOM + "print('hi')\n", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -40,9 +46,17 @@ func TestWriteScriptFileUTF8BOM(t *testing.T) {
 			if strings.HasPrefix(got, utf8BOM+utf8BOM) {
 				t.Fatalf("BOM doubled: %q", got)
 			}
-			// Original content must survive intact after the optional BOM.
-			if !strings.HasSuffix(got, strings.TrimPrefix(tt.content, utf8BOM)) {
+			// Original content must survive intact after the optional BOM
+			// (bash/python content is additionally CRLF-normalized).
+			want := strings.TrimPrefix(tt.content, utf8BOM)
+			if tt.scriptType == ScriptTypeBash || tt.scriptType == ScriptTypePython {
+				want = strings.ReplaceAll(want, "\r\n", "\n")
+			}
+			if !strings.HasSuffix(got, want) {
 				t.Fatalf("content mangled: %q", got)
+			}
+			if tt.scriptType == ScriptTypeBash && !strings.HasPrefix(got, "#!") {
+				t.Fatalf("bash shebang not first bytes: %q", got)
 			}
 		})
 	}

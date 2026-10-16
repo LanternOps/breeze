@@ -340,6 +340,31 @@ describe('#2822 — resolvePatchPolicyReference', () => {
     expect(resolution.classification).toBe('valid_ring');
     expect(resolution.valid).toBe(true);
     expect(resolution.ringId).toBe(fx.ringId);
+    // #8184: a freshly created ring carries the column default.
+    expect(resolution.appRules).toEqual([]);
+  });
+
+  runDb('#8184: an org-scoped caller reads the ring app_rules column, normalised for the evaluator', async () => {
+    await withSystemDbAccessContext(() =>
+      db.update(patchPolicies)
+        .set({
+          appRules: [
+            { source: 'third_party', packageId: 'Mozilla.Firefox', displayName: 'Firefox', action: 'block' },
+            { source: 'custom', packageId: 'acme.tool', action: 'pin', pinnedVersion: '1.2.3' },
+          ],
+        })
+        .where(eq(patchPolicies.id, fx.ringId)),
+    );
+
+    const resolution = await withDbAccessContext(orgContext(fx.orgId, fx.partnerId), () =>
+      resolvePatchPolicyReference(fx.partnerId, fx.ringId),
+    );
+
+    expect(resolution.classification).toBe('valid_ring');
+    expect(resolution.appRules).toEqual([
+      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+      { source: 'custom', packageId: 'acme.tool', action: 'pin', pinnedVersion: '1.2.3' },
+    ]);
   });
 
   runDb('a ring belonging to ANOTHER partner is still rejected — neither the escape nor the own-partner branch widened reach', async () => {

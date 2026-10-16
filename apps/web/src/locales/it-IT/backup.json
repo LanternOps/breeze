@@ -720,7 +720,9 @@
     "vaultType": "Tipo vault",
     "retentionCount": "Conteggio conservazione",
     "numberOfSnapshotsToKeepInTheVault": "Numero di snapshot da conservare nel vault (1-100).",
-    "cancel": "Annulla"
+    "cancel": "Annulla",
+    "failedToSave": "Impossibile salvare il vault. Riprova.",
+    "deviceConfigNotSent": "Vault salvato, ma la sua configurazione non è stata inviata al dispositivo: {{error}}"
   },
   "vaultDashboard": {
     "loadingVaults": "Caricamento vault...",
@@ -742,7 +744,12 @@
     "actions": "Azioni",
     "sync": "Sincronizza",
     "edit": "Modifica",
-    "deactivate": "Disattiva"
+    "deactivate": "Disattiva",
+    "inactive": "Inattivo",
+    "syncStarted": "Sincronizzazione del vault avviata",
+    "failedToSync": "Impossibile avviare la sincronizzazione del vault. Riprova.",
+    "failedToDeactivate": "Impossibile disattivare il vault. Riprova.",
+    "deviceConfigNotSent": "Vault salvato, ma la sua configurazione non è stata inviata al dispositivo: {{error}}"
   },
   "dRDashboard": {
     "loadingDisasterRecovery": "Caricamento disaster recovery...",
@@ -993,6 +1000,8 @@
     "codeExpires": "Scade alle {{time}}",
     "overdueNotice": "Nessun check-in ancora — controlla la console di ripristino.",
     "fileIndexPreparing": "Preparazione dell'indice dei file per i riferimenti tra snapshot…",
+    "snapshotsLoadFailed": "Impossibile caricare gli snapshot. Ricarica la pagina per riprovare.",
+    "noSnapshots": "Nessuno snapshot ripristinabile bare-metal per ora. È necessario un backup completo della macchina contrassegnato come ripristinabile bare-metal.",
     "statusFailed": "Ripristino non riuscito",
     "statusRefused": "Ripristino rifiutato",
     "status": {
@@ -1002,7 +1011,8 @@
       "restoring": "Ripristino in corso",
       "validated": "Convalidato",
       "rebooted": "Riavviato",
-      "checked_in": "Check-in effettuato"
+      "checked_in": "Check-in effettuato",
+      "completed": "Completato"
     }
   },
   "backupHealth": {
@@ -1112,11 +1122,13 @@
     "introProducerOnly": "Questo backup è stato archiviato dove solo il dispositivo originale può verificarne l'integrità. Il ripristino su un altro dispositivo richiede la tua conferma.",
     "twoFactor": "Conferma con l'autenticazione a due fattori per continuare.",
     "confirmOnly": "Conferma per continuare. Il ripristino viene registrato nel registro di controllo.",
-    "typedIntro": "Questo backup è stato creato prima che esistessero i controlli di integrità. Digita il nome del dispositivo per confermare. Il ripristino viene registrato nel registro di controllo.",
-    "typedLabel": "Digita {{phrase}} per confermare",
     "code": "Codice di autenticazione",
     "passkey": "Ti verrà chiesto di usare la tua passkey.",
-    "noFactor": "Configura l'autenticazione a due fattori nel tuo profilo, quindi riprova.",
+    "enrollIntro": "Per confermare questo ripristino serve un secondo fattore e il tuo account non ne ha ancora uno. Configura un'app di autenticazione o una passkey nel tuo profilo, quindi riprova.",
+    "enrollIntroSmsOnly": "Per confermare questo ripristino serve un'app di autenticazione o una passkey. Il tuo account ha solo codici via SMS; aggiungine una nel tuo profilo.",
+    "enrollLink": "Configura l'autenticazione a due fattori",
+    "enrollStillRequired": "Il tuo account non ha ancora un secondo fattore. Configurane uno, quindi riprova.",
+    "enrollStillRequiredSmsOnly": "Il tuo account non ha ancora un'app di autenticazione né una passkey.",
     "confirm": "Conferma e ripristina",
     "cancel": "Annulla",
     "failed": "La verifica non è stata accettata. Riprova.",

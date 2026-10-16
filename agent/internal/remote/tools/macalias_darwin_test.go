@@ -206,7 +206,7 @@ func TestAliasChainCycleTerminates(t *testing.T) {
 	}
 }
 
-// SR5-01: alias resolution deliberately escapes the listed directory, so the
+// Alias resolution deliberately escapes the listed directory, so the
 // credential-store deny-list has to be re-applied against the target. An alias
 // pointing at a secret must not be resolved, must not disclose its target, and
 // must not be readable through the alias.

@@ -20,6 +20,7 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import { bumpApprovalGeneration } from './approvalGeneration';
 import {
   ringAutoApproveSchema,
+  ringAppRulesSchema,
   mergeRingAutoApproveWrite,
   backupProfileSelectionsSchema,
 } from '@breeze/shared/validators';
@@ -30,6 +31,7 @@ import {
   AI_AUTO_INSTALL_REFUSAL_MESSAGE,
   remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
+import { managedSoftwarePolicyRefusal } from './securityAgents/managedSoftwarePolicyGuard';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { validateS3Details } from '../routes/backup/schemas';
 import {
@@ -88,6 +90,19 @@ function validateRingAutoApprove(
 }
 
 /**
+ * Validate the ring's per-app block/pin rules through the same shared schema
+ * the REST route uses (#8184): max 200, unique canonical keys, pin needs a
+ * version. Returns the parsed rules or an error string.
+ */
+function validateRingAppRules(raw: unknown): { value: unknown[] } | { error: string } {
+  const parsed = ringAppRulesSchema.safeParse(raw);
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? 'Invalid appRules configuration.' };
+  }
+  return { value: parsed.data };
+}
+
+/**
  * manage_backup_configs used to write `providerConfig` straight to the DB,
  * bypassing the REST routes' S3 endpoint validation entirely (the one
  * remaining save-time hole in Sentry BREEZE-P). Route s3 configs through the
@@ -98,12 +113,19 @@ function validateRingAutoApprove(
  * coercion of its own.
  */
 function resolveS3ProviderConfig(
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  opts: { storedPrefix?: unknown } = {},
 ): { value: Record<string, unknown> } | { error: string } {
   const details: Record<string, unknown> = { ...raw };
-  const { error, region, endpoint } = validateS3Details(details);
+  const { error, region, endpoint, prefix, keepStoredPrefix } = validateS3Details(details, opts);
   if (error) return { error };
   if (region) details.region = region;
+  // #7081: persist the normalized key prefix; none is an absent key. An
+  // unchanged stored prefix is left as it is (see validateS3Details).
+  if (!keepStoredPrefix) {
+    if (prefix) details.prefix = prefix;
+    else delete details.prefix;
+  }
   if (endpoint) {
     details.endpoint = endpoint;
   } else {
@@ -226,6 +248,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           gracePeriodHours: { type: 'number', description: 'Hours after deadline before reboot is forced (default: 4)' },
           categories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to include (e.g. ["critical","important","security"])' },
           excludeCategories: { type: 'array', items: { type: 'string' }, description: 'Patch categories to exclude' },
+          appRules: { type: 'array', items: { type: 'object' }, description: 'Per-app rules [{source:"third_party"|"custom",packageId,action:"block"|"pin",pinnedVersion (pin only),displayName?}]. Max 200, unique; update replaces.' },
           autoApprove: { type: 'object', description: "enabled, severities, deferralDays, thirdPartyApps, thirdPartyDeferralDays. Enabled needs severities or thirdPartyApps; omitted third-party fields persist." },
           enabled: { type: 'boolean', description: 'Whether ring is active (for update)' },
           limit: { type: 'number', description: 'Max results for list (default 25, max 100)' },
@@ -307,6 +330,13 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           autoApprove = validated.value;
         }
 
+        let appRules: unknown[] = [];
+        if (input.appRules != null) {
+          const validated = validateRingAppRules(input.appRules);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          appRules = validated.value;
+        }
+
         const rows = await db.insert(patchPolicies).values({
           partnerId,
           kind: 'ring',
@@ -318,6 +348,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           categories: (input.categories as string[]) ?? [],
           excludeCategories: (input.excludeCategories as string[]) ?? [],
           autoApprove,
+          appRules,
           createdBy: auth.user.id,
         }).returning();
         const ring = rows[0];
@@ -357,6 +388,11 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           const validated = validateRingAutoApprove(input.autoApprove, existing.autoApprove);
           if ('error' in validated) return JSON.stringify({ error: validated.error });
           updates.autoApprove = validated.value;
+        }
+        if (input.appRules != null) {
+          const validated = validateRingAppRules(input.appRules);
+          if ('error' in validated) return JSON.stringify({ error: validated.error });
+          updates.appRules = validated.value;
         }
         if (typeof input.enabled === 'boolean') updates.enabled = input.enabled;
 
@@ -528,6 +564,10 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
         if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
           return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
         }
+
+        // #6960: a generated (security_agents) policy is owned by its config policy.
+        const managed = await managedSoftwarePolicyRefusal(existing);
+        if (managed) return JSON.stringify(managed);
 
         // Contract-A D4: AI callers may never arm software installation.
         if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
@@ -1104,7 +1144,7 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
           const mergedProviderConfig = preserveSecretFields(incomingProviderConfig, existingProviderConfig) as Record<string, unknown>;
 
           if (targetProvider === 's3') {
-            const resolved = resolveS3ProviderConfig(mergedProviderConfig);
+            const resolved = resolveS3ProviderConfig(mergedProviderConfig, { storedPrefix: existingProviderConfig.prefix });
             if ('error' in resolved) return JSON.stringify({ error: resolved.error });
             updates.providerConfig = resolved.value;
           } else {

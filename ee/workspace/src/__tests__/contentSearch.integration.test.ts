@@ -29,6 +29,8 @@ interface SeedFile {
   sourceOverride?: string;
   /** Content chunks (workspace_content_chunks). Defaults to a single chunk of `text`. */
   chunks?: string[];
+  /** Content row is blocked_dlp (no text); entities carry origin 'llm'. */
+  blockedDlp?: boolean;
 }
 
 // A chunk longer than the 700-char passage byte cap, matching "easement".
@@ -88,6 +90,19 @@ const SEED: SeedFile[] = [
     entities: [{ type: 'apn', value: '057-071-012' }], sourceOverride: 'hidden',
     chunks: ['GRANT OF EASEMENT for the Henderson Road Water Main Replacement — this hidden passage must never surface.'],
   },
+  // #3474: a file that later transitioned to blocked_dlp keeps its llm-origin
+  // entities (the blocked-branch purge only deletes regex-origin). The entity
+  // arm must not surface it as a metadata hit.
+  {
+    key: 'blocked', rel: 'Projects/2019-112 Quail Hollow Estates ROS/blocked-file.md',
+    entities: [{ type: 'apn', value: '888-777-666' }], blockedDlp: true,
+  },
+  // Same shape, but the NAME carries the entity string so the filename arm
+  // still returns it — exercises the matched_entities hydration guard.
+  {
+    key: 'blockedNamed', rel: 'Projects/2019-112 Quail Hollow Estates ROS/999-111-222-blocked.md',
+    entities: [{ type: 'apn', value: '999-111-222' }], blockedDlp: true,
+  },
 ];
 
 async function asOrg<T>(fn: (svc: ReturnType<typeof createContentSearchService>) => Promise<T>): Promise<T> {
@@ -130,6 +145,10 @@ beforeAll(async () => {
         (id, org_id, source_id, rel_path, parent_path, name, is_dir, ext, size, mtime, deleted_at)
         VALUES (${id}, ${org}, ${srcId}, ${f.rel}, ${parent}, ${name}, false, ${ext}, 500, now(),
                 ${f.tombstoned ? admin`now()` : null})`;
+    if (f.blockedDlp) {
+      await admin`INSERT INTO workspace_file_content (org_id, file_index_id, status, extracted_text, source_size, source_mtime)
+                  VALUES (${org}, ${id}, 'blocked_dlp', NULL, 500, now())`;
+    }
     if (f.text) {
       await admin`INSERT INTO workspace_file_content (org_id, file_index_id, status, extracted_text, source_size, source_mtime)
                   VALUES (${org}, ${id}, 'extracted', ${f.text}, 500, now())`;
@@ -143,7 +162,7 @@ beforeAll(async () => {
     }
     for (const e of f.entities ?? []) {
       await admin`INSERT INTO workspace_content_entities (org_id, file_index_id, entity_type, value_norm, origin)
-                  VALUES (${org}, ${id}, ${e.type}, ${e.value}, 'regex')`;
+                  VALUES (${org}, ${id}, ${e.type}, ${e.value}, ${f.blockedDlp ? 'llm' : 'regex'})`;
     }
     if (f.enrichment) {
       await admin`INSERT INTO workspace_file_enrichment ${admin({
@@ -232,6 +251,22 @@ describe('hybrid content search (RRF, real DB)', () => {
 
     const limited = await asOrg((svc) => svc.search(org, DEVICE, { q: 'the', limit: 2 }));
     expect(limited.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('blocked_dlp files (#3474)', () => {
+  it('does not surface a blocked_dlp file through an llm-origin entity hit', async () => {
+    const results = await asOrg((svc) => svc.search(org, DEVICE, { q: '888-777-666' }));
+    expect(results.map((r) => r.id)).not.toContain(ids.blocked);
+  });
+
+  it('never reports llm-origin entities of a blocked_dlp file as matched, even when the file surfaces via another arm', async () => {
+    // The filename arm can still return the blocked file (file-index
+    // metadata); its matched_entities hydration must not leak the entity.
+    const results = await asOrg((svc) => svc.search(org, DEVICE, { q: '999-111-222' }));
+    const hit = results.find((r) => r.id === ids.blockedNamed);
+    expect(hit, 'positive control: blocked file must surface via the filename arm').toBeDefined();
+    expect(hit!.matchedEntities ?? []).toEqual([]);
   });
 });
 

@@ -46,10 +46,6 @@ import {
   notificationChannels,
 } from '../db/schema/alerts';
 import {
-  configurationPolicies,
-  configPolicyFeatureLinks,
-} from '../db/schema/configurationPolicies';
-import {
   listEffectiveServiceMonitors,
   SERVICE_MONITOR_LIST_DEVICE_CAP,
 } from './monitors/listServiceMonitors';
@@ -59,11 +55,6 @@ import {
   EFFECTIVE_PATCH_CATEGORY_SQL,
   EFFECTIVE_PATCH_SEVERITY_SQL,
 } from './patchSeverityOverlay';
-import {
-  addFeatureLink,
-  updateFeatureLink,
-  policyAccessCondition,
-} from './configurationPolicy';
 import {
   reports,
   reportRuns,
@@ -1112,8 +1103,6 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           deferUntil: { type: 'string', description: 'ISO date to defer until (for defer)' },
           notes: { type: 'string', description: 'Approval/decline notes' },
           configPolicyId: { type: 'string', description: 'Configuration policy UUID to attach patch settings to (for setup_auto_approval). If omitted, creates a new policy.' },
-          autoApprove: { type: 'boolean', description: 'Enable auto-approval of patches (for setup_auto_approval)' },
-          autoApproveSeverities: { type: 'array', items: { type: 'string', enum: ['critical', 'important', 'moderate', 'low'] }, description: 'Which severities to auto-approve (for setup_auto_approval)' },
           scheduleFrequency: { type: 'string', enum: ['daily', 'weekly', 'monthly'], description: 'Patch scan frequency (for setup_auto_approval, default: weekly)' },
           scheduleTime: { type: 'string', description: 'Time to run scans in HH:MM format (for setup_auto_approval, default: 02:00)' },
           rebootPolicy: { type: 'string', enum: ['if_required', 'always', 'never'], description: 'Reboot policy after patching (for setup_auto_approval, default: if_required)' },
@@ -1159,7 +1148,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
       if (action === 'setup_auto_approval') {
         return JSON.stringify({
-          error: 'Action "setup_auto_approval" is disabled. Patch policies must be managed through configuration policies. Use manage_policy_feature_link with featureType "patch" to configure auto-approval rules on a policy.',
+          error: 'Action "setup_auto_approval" is disabled. Auto-approval and per-app block/pin rules are configured on an Update Ring with manage_update_rings. Link the ring to a configuration policy with manage_policy_feature_link (featureType "patch", featurePolicyId = the ring id).',
         });
       }
 
@@ -1614,116 +1603,6 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           until: until.toISOString(),
           history,
           showing: history.length,
-        });
-      }
-
-      if (action === 'setup_auto_approval') {
-        // NOTE: this whole action is currently unreachable (see the disabled
-        // early-return above) — defense-in-depth, kept correct so the block is
-        // not a trap if the gate is ever lifted (same convention as the
-        // canManagePartnerWidePolicies check a few lines below). This path
-        // inserts an org configuration_policies row + feature link, which is
-        // exactly the org-wide governance object this contract protects.
-        if (!canMutateOrgWideGovernance(auth)) {
-          return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
-        }
-        if (!orgId) return JSON.stringify({ error: 'Organization context required' });
-
-        const patchSettings = {
-          sources: Array.isArray(input.sources) ? input.sources as string[] : ['os'],
-          autoApprove: typeof input.autoApprove === 'boolean' ? input.autoApprove : true,
-          autoApproveSeverities: Array.isArray(input.autoApproveSeverities) ? input.autoApproveSeverities as string[] : ['critical', 'important'],
-          scheduleFrequency: typeof input.scheduleFrequency === 'string' ? input.scheduleFrequency : 'weekly',
-          scheduleTime: typeof input.scheduleTime === 'string' ? input.scheduleTime : '02:00',
-          rebootPolicy: typeof input.rebootPolicy === 'string' ? input.rebootPolicy : 'if_required',
-        };
-
-        const configPolicyId = input.configPolicyId as string | undefined;
-
-        if (configPolicyId) {
-          // Check if policy exists and user has access.
-          //
-          // NOTE: this whole action is currently unreachable — `setup_auto_approval`
-          // early-returns as disabled above (patch policies are managed through
-          // configuration policies). The two fixes below are defense-in-depth,
-          // kept correct so the block is not a trap if the gate is ever lifted
-          // — configuration policies own these writes.
-          //
-          // `policyAccessCondition`, not a bare org-equality (#3493): a
-          // partner-wide policy stores `org_id NULL`, so the org form would tell
-          // the partner-scoped tech who AUTHORED the policy it "was not found".
-          const policyConditions: SQL[] = [eq(configurationPolicies.id, configPolicyId)];
-          const oc = policyAccessCondition(auth);
-          if (oc) policyConditions.push(oc);
-          const [policy] = await db.select().from(configurationPolicies).where(and(...policyConditions)).limit(1);
-          if (!policy) return JSON.stringify({ error: 'Configuration policy not found or access denied' });
-
-          // Making a partner-wide policy REACHABLE is not the same as making it
-          // writable. Everything below mutates the policy's patch feature link,
-          // which lands on every org the policy covers — so it takes the same
-          // capability the HTTP feature-link route requires
-          // (routes/configurationPolicies/featureLinks.ts).
-          if (policy.orgId === null && !canManagePartnerWidePolicies(auth)) {
-            return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
-          }
-
-          // Check if patch feature link already exists
-          const existingLinks = await db.select()
-            .from(configPolicyFeatureLinks)
-            .where(and(
-              eq(configPolicyFeatureLinks.configPolicyId, configPolicyId),
-              eq(configPolicyFeatureLinks.featureType, 'patch'),
-            )).limit(1);
-
-          if (existingLinks.length > 0) {
-            // Update existing feature link
-            const updated = await updateFeatureLink(existingLinks[0]!.id, { inlineSettings: patchSettings }, configPolicyId);
-            if (!updated) return JSON.stringify({ error: 'Failed to update patch settings — the feature link may have been deleted. Try again.' });
-            return JSON.stringify({
-              success: true,
-              message: `Patch auto-approval settings updated on policy "${policy.name}"`,
-              configPolicyId,
-              featureLinkId: existingLinks[0]!.id,
-              settings: patchSettings,
-            });
-          }
-
-          // Add new patch feature link. addFeatureLink returns null (instead of
-          // throwing) on a duplicate; existingLinks was just checked above so
-          // this is effectively unreachable outside a race, but guard anyway.
-          const link = await addFeatureLink(configPolicyId, 'patch', null, patchSettings);
-          if (!link) return JSON.stringify({ error: 'Patch feature link already exists on this policy' });
-          return JSON.stringify({
-            success: true,
-            message: `Patch auto-approval configured on policy "${policy.name}"`,
-            configPolicyId,
-            featureLinkId: link.id,
-            settings: patchSettings,
-          });
-        }
-
-        // No configPolicyId — create a new config policy with patch settings
-        const [newPolicy] = await db.insert(configurationPolicies).values({
-          orgId,
-          name: `Patch Auto-Approval Policy`,
-          description: `Auto-approve ${patchSettings.autoApproveSeverities.join(', ')} patches on a ${patchSettings.scheduleFrequency} schedule`,
-          status: 'active',
-          createdBy: auth.user.id,
-        }).returning();
-
-        if (!newPolicy) return JSON.stringify({ error: 'Failed to create configuration policy' });
-
-        // newPolicy.id is freshly generated above, so a duplicate feature-link
-        // conflict is not realistically reachable; guard for type-safety only.
-        const link = await addFeatureLink(newPolicy.id, 'patch', null, patchSettings);
-        if (!link) return JSON.stringify({ error: 'Failed to configure patch auto-approval on the new policy' });
-        return JSON.stringify({
-          success: true,
-          message: `Created new policy "${newPolicy.name}" with patch auto-approval`,
-          configPolicyId: newPolicy.id,
-          featureLinkId: link.id,
-          settings: patchSettings,
-          hint: 'Use apply_configuration_policy to assign this policy to an organization, site, or device group.',
         });
       }
 

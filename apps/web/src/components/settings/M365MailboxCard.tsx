@@ -7,6 +7,7 @@ import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 interface MailboxConnectionDTO {
   id: string;
@@ -17,6 +18,12 @@ interface MailboxConnectionDTO {
   lastPolledAt: string | null;
   lastMessageAt: string | null;
   verificationError: string | null;
+  /**
+   * Consecutive transient poll failures while still connected (#8308), parsed
+   * from the API's `transientPollFailures: { count, lastAt } | null` (null when
+   * healthy, and for Gmail rows). 0 when the API sends null.
+   */
+  transientPollFailureCount: number;
   /** Pending row whose consent attempt can no longer complete (#6936). */
   consentExpired: boolean;
 }
@@ -71,8 +78,20 @@ function parseMailboxConnection(value: unknown): MailboxConnectionDTO | null {
     lastPolledAt: value.lastPolledAt,
     lastMessageAt: value.lastMessageAt,
     verificationError,
+    transientPollFailureCount: parseTransientPollFailures(value.transientPollFailures),
     consentExpired,
   };
+}
+
+/** Show the "polls keep failing" note from this many failed sweeps in a row
+ * (about four and a half minutes at the 90 s sweep interval), so a single blip
+ * stays quiet. */
+const TRANSIENT_FAILURE_NOTICE_THRESHOLD = 3;
+
+function parseTransientPollFailures(value: unknown): number {
+  if (!isRecord(value)) return 0;
+  const count = value.count;
+  return typeof count === 'number' && Number.isInteger(count) && count > 0 ? count : 0;
 }
 
 const APP_ID_PLACEHOLDER = '<Breeze Ticketing app id>';
@@ -163,7 +182,7 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
     params.delete('ticketMailbox');
     params.delete('reason');
     const qs = params.toString();
-    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
+    replaceUrl(window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash);
   }, [t]);
 
   const startConsent = useCallback(
@@ -272,6 +291,11 @@ function M365MailboxCardContent({ canAdminMailbox }: { canAdminMailbox: boolean 
               {c.status === 'reauth_required' ? (
                 <p className="text-xs text-destructive">
                   {t('m365Mailbox.reauthRequired')}
+                </p>
+              ) : null}
+              {c.status === 'connected' && c.transientPollFailureCount >= TRANSIENT_FAILURE_NOTICE_THRESHOLD ? (
+                <p className="text-xs text-destructive" data-testid="m365-poll-failing">
+                  {t('m365Mailbox.pollFailing', { failures: c.transientPollFailureCount })}
                 </p>
               ) : null}
               {c.status === 'error' && c.verificationError ? (

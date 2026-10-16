@@ -15,6 +15,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
+import { bullmqJobId } from '../services/bullmqUtils';
 
 /**
  * The ONE place that talks to the email-domain provider (spec §2). Request
@@ -117,7 +118,7 @@ export async function enqueueTestSend(domainId: string, userId: string): Promise
 /**
  * Evaluate one partner against the auto-suspension thresholds (spec §9.3).
  *
- * `jobId = autosuspend:<partnerId>` so a burst of bounce events for the same
+ * `jobId = autosuspend-<partnerId>` so a burst of bounce events for the same
  * partner — which is exactly the shape a deliverability problem takes — collapses
  * into ONE in-flight evaluation instead of N identical reads and N identical
  * kill-switch decisions. The prefix keeps the id space disjoint from
@@ -133,7 +134,7 @@ export async function enqueueAutoSuspendEvaluation(partnerId: string): Promise<v
     AUTO_SUSPEND_JOB,
     { partnerId },
     {
-      jobId: `autosuspend:${partnerId}`,
+      jobId: bullmqJobId('autosuspend', partnerId),
       attempts: 3,
       backoff: { type: 'exponential', delay: 30_000 },
       removeOnComplete: true,

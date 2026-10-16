@@ -71,3 +71,9 @@ it('names an invoice issued before the updated authorization', () => {
 it('an excluded contract refusal has its own explanation', () => {
   expect(chargeNowFailureKey({ outcome: 'canceled', code: 'excluded_contract', error: 'excluded_contract' })).toBe('autopay.chargeRefused.excluded_contract');
 });
+
+it('does not report a charge result as unknown when the step-up could not be checked (nothing was attempted)', async () => {
+  const { chargeNowResultUnknown } = await import('./autopayReason');
+  expect(chargeNowResultUnknown({ status: 503, body: { code: 'STEP_UP_UNAVAILABLE' } })).toBe(false);
+  expect(chargeNowResultUnknown({ status: 503, body: { error: 'x' } })).toBe(true);
+});

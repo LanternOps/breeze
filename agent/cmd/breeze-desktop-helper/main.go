@@ -1,24 +1,19 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"runtime"
 	"syscall"
-	"time"
 
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
-	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/secmem"
-	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/userhelper"
 	"github.com/spf13/cobra"
 )
@@ -26,6 +21,7 @@ import (
 var version = "0.5.0"
 var contextFlag string
 var probePrompt bool
+var probeSCK bool
 
 var log = logging.L("desktop-helper")
 
@@ -39,15 +35,33 @@ var rootCmd = &cobra.Command{
 var probeCmd = &cobra.Command{
 	Use:   "probe",
 	Short: "Probe the local macOS desktop capture path for the selected context",
+	Long: `Probe the local macOS desktop capture path for the selected context.
+
+The probe captures once, through CoreGraphics, and does not call
+ScreenCaptureKit unless --sck is given: on macOS 15+ a ScreenCaptureKit call
+can raise the system's screen-recording consent dialog (#8058).
+
+macOS charges the probe's capture to the process that launched it (Terminal,
+or breeze-agent from a Breeze script or remote terminal), not to the launchd
+desktop helper, so its permission results do not reflect the helper's grants.
+The authoritative source is the agent log line "TCC permissions received".`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runProbe()
+		// Logs to stderr so stdout stays the JSON report.
+		logging.Init("text", "info", os.Stderr)
+		return runProbeTo(cmd.OutOrStdout(), cmd.ErrOrStderr(), probeOptions{
+			allowPrompt: probePrompt,
+			capture:     true,
+			allowSCK:    probeSCK,
+		}, runtime.GOOS)
 	},
 }
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&contextFlag, "context", ipc.DesktopContextUserSession, "Desktop context: 'user_session' or 'login_window'")
 	probeCmd.Flags().BoolVar(&probePrompt, "prompt", false, "Allow the probe to trigger macOS permission prompts")
+	probeCmd.Flags().BoolVar(&probeSCK, "sck", false, "Also try ScreenCaptureKit, once (macOS 14+). May raise the macOS screen-recording consent dialog")
 	rootCmd.AddCommand(probeCmd)
+	rootCmd.AddCommand(newCaptureBackendCmd())
 }
 
 func main() {
@@ -130,7 +144,10 @@ func runDesktopHelper() {
 	// written.
 	logging.EmitLogFileOutcome(log, logPath, openErr, mkdirErr, homeErr)
 
-	startupProbe := collectProbeOutput(false, true)
+	// A permission check like any other: one CoreGraphics capture, never
+	// ScreenCaptureKit (#8058). It used to run ScreenCaptureKit twice on
+	// every helper start.
+	startupProbe := collectProbeOutput(probeOptions{capture: true})
 	attrs := []any{
 		"context", startupProbe.Context,
 		"processUser", startupProbe.ProcessUser,
@@ -140,6 +157,16 @@ func runDesktopHelper() {
 	}
 	if startupProbe.CaptureError != "" {
 		attrs = append(attrs, "captureError", startupProbe.CaptureError)
+	}
+	if v := startupProbe.ScreenCaptureKitVerdict; v != nil {
+		if v.Present {
+			attrs = append(attrs, "sckVerdict", v.Reason, "sckVerdictApplies", v.Applies)
+		}
+		if v.Error != "" {
+			// Unreadable or refused: sessions will try ScreenCaptureKit, so
+			// the macOS consent dialog can come back (#8058).
+			attrs = append(attrs, "sckVerdictError", v.Error)
+		}
 	}
 	if startupProbe.TCC != nil {
 		remoteDesktop := "unknown"
@@ -201,61 +228,4 @@ func desktopHelperRole() ipc.HelperRole {
 		return ipc.HelperRoleUser
 	}
 	return ipc.HelperRoleSystem
-}
-
-type probeOutput struct {
-	Timestamp      time.Time                       `json:"timestamp"`
-	Context        string                          `json:"context"`
-	ProcessUser    string                          `json:"processUser,omitempty"`
-	Sessions       []sessionbroker.DetectedSession `json:"sessions,omitempty"`
-	TCC            *ipc.TCCStatus                  `json:"tcc,omitempty"`
-	CaptureGranted bool                            `json:"captureGranted"`
-	CaptureError   string                          `json:"captureError,omitempty"`
-}
-
-func runProbe() error {
-	logging.Init("text", "info", os.Stdout)
-
-	out := collectProbeOutput(probePrompt, true)
-
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(out)
-}
-
-func collectProbeOutput(allowPrompt bool, allowCaptureProbe bool) probeOutput {
-	out := probeOutput{
-		Timestamp: time.Now().UTC(),
-		Context:   contextFlag,
-	}
-
-	if cu, err := user.Current(); err == nil {
-		out.ProcessUser = cu.Username
-	}
-
-	if detector := sessionbroker.NewSessionDetector(); detector != nil {
-		sessions, err := detector.ListSessions()
-		if err != nil {
-			out.CaptureError = fmt.Sprintf("session detection failed: %v", err)
-		} else {
-			out.Sessions = sessions
-		}
-	}
-
-	out.TCC = userhelper.ProbeTCCPermissions(contextFlag, allowPrompt, allowCaptureProbe)
-
-	if allowCaptureProbe {
-		granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
-			DesktopContext: contextFlag,
-		})
-		out.CaptureGranted = granted
-		if err != nil {
-			if out.CaptureError != "" {
-				out.CaptureError += "; "
-			}
-			out.CaptureError += err.Error()
-		}
-	}
-
-	return out
 }

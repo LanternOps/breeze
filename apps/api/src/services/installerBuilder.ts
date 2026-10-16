@@ -18,7 +18,6 @@ import {
 import {
   fetchVerifiedGithubReleaseArtifact,
   probeSafeReleaseArtifact,
-  verifyGithubReleaseArtifactBuffer,
   verifyReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
   type VerifiedReleaseArtifact,
@@ -257,10 +256,30 @@ sudo installer -pkg "$TMPPKG" -target /
 # Build enrollment command
 ENROLL_ARGS=("$ENROLLMENT_KEY" --server "$SERVER_URL")
 [ -n "$ENROLLMENT_SECRET" ] && ENROLL_ARGS+=(--enrollment-secret "$ENROLLMENT_SECRET")
-[ -n "$SITE_ID" ] && ENROLL_ARGS+=(--site-id "$SITE_ID")
+
+# The .pkg installs the agent to /Library/Breeze/bin or /usr/local/bin
+# (agent/installer/macos/install-location.sh, #7211); enroll with the binary it
+# actually installed (#8778). Mirrors choose_bin_dir there: an agent already in
+# the trusted dir stays there, so it wins over a leftover /usr/local/bin copy.
+MACOS_TRUSTED_BIN_DIR="/Library/Breeze/bin"
+MACOS_LEGACY_BIN_DIR="/usr/local/bin"
+resolve_macos_agent_bin() {
+  local p
+  for p in "$MACOS_TRUSTED_BIN_DIR/breeze-agent" "$MACOS_LEGACY_BIN_DIR/breeze-agent"; do
+    if [[ -f "$p" && ! -L "$p" && -x "$p" ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+AGENT_BIN="$(resolve_macos_agent_bin)" || {
+  echo "Error: the package installed, but no breeze-agent was found in /Library/Breeze/bin or /usr/local/bin."
+  exit 1
+}
 
 echo "Enrolling agent..."
-sudo /usr/local/bin/breeze-agent enroll "\${ENROLL_ARGS[@]}"
+sudo "$AGENT_BIN" enroll "\${ENROLL_ARGS[@]}"
 
 # Restart the service so it picks up the new enrollment config. Surface a failure
 # rather than swallowing it — a silent kickstart failure leaves an enrolled
@@ -647,8 +666,10 @@ export function __resetRegularMsiCache(): void {
 // expired) so the cache's expiry keeps rolling forward and never lapses
 // between ticks.
 function refreshRegularMsiCache(): Promise<Buffer> {
-  const value = fetchRegularMsiUncached().catch((err) => {
-    regularMsiCache = null;
+  const value: Promise<Buffer> = fetchRegularMsiUncached().catch((err) => {
+    // Only clear our own entry: a slow failing refresh must not wipe a newer
+    // entry a later refresh (e.g. the next warmer tick) has already stored.
+    if (regularMsiCache?.value === value) regularMsiCache = null;
     throw err;
   });
   regularMsiCache = { expiresAt: Date.now() + REGULAR_MSI_CACHE_MS, value };
@@ -723,36 +744,54 @@ export function __stopRegularMsiCacheWarmer(): void {
   }
 }
 
+const REGULAR_MSI_ASSET_NAME = 'breeze-agent.msi';
+const MAX_REGULAR_MSI_BYTES = 128 * 1024 * 1024;
+
+// Every source verifies the MSI against the Ed25519-signed release manifest
+// and refuses to serve on any failure, including a missing manifest public key
+// (#7976). The MSI is embedded into every Windows installer zip and served by
+// the public /s/:code and /i/:shortCode routes, so a replaced file on the
+// binaries volume, or an unverified GitHub download, must never be handed out.
 async function fetchRegularMsiUncached(): Promise<Buffer> {
+  // No expectedPlatformTrust on either source: the public self-host release
+  // ships this MSI unsigned (platformTrust "none") by default, while a hosted
+  // build or a BYO-re-signed repo ships it Authenticode-signed. Both are
+  // legitimate for their edition; the edition-aware accept/reject decision
+  // lives in assertDistributableReleaseAsset (releaseAssetTrust.ts), which
+  // runs on every manifest-verified asset.
   if (getBinarySource() === 'github') {
-    const url = getGithubRegularMsiUrl();
-    const resp = await fetch(url, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(REGULAR_MSI_FETCH_TIMEOUT_MS),
-    });
-    if (!resp.ok) throw new Error(`Failed to fetch regular MSI: ${resp.status}`);
-    const buffer = Buffer.from(await resp.arrayBuffer());
-    // No expectedPlatformTrust here: the public self-host release ships this
-    // MSI unsigned (platformTrust "none") by default, while a BYO-re-signed
-    // repo still ships it Authenticode-signed. Both are legitimate for
-    // edition "self-host" — the edition-aware accept/reject decision lives in
-    // assertDistributableReleaseAsset (releaseAssetTrust.ts), which
-    // verifyGithubReleaseArtifactBuffer runs on every manifest-verified asset.
-    const verified = await verifyGithubReleaseArtifactBuffer({
-      assetName: 'breeze-agent.msi',
-      assetBuffer: buffer,
+    // fetchVerifiedGithubReleaseArtifact throws when no manifest key is
+    // configured; verifyGithubReleaseArtifactBuffer (used here before #7976)
+    // soft-passed outside production and served the MSI unverified.
+    const result = await fetchVerifiedGithubReleaseArtifact({
+      assetName: REGULAR_MSI_ASSET_NAME,
+      assetUrl: getGithubRegularMsiUrl(),
       manifestUrl: getGithubReleaseArtifactManifestUrl(),
       signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
       expectedRepository: getGithubReleaseRepository(),
       expectedRelease: getGithubExpectedReleaseTag(),
+      maxAssetBytes: MAX_REGULAR_MSI_BYTES,
+      // One bound across the manifest, signature and MSI fetches: callers run
+      // this under a held DB transaction (see the cache comment above).
+      signal: AbortSignal.timeout(REGULAR_MSI_FETCH_TIMEOUT_MS),
     });
-    if (verified) {
-      assertGithubFetchableEdition({ assetName: 'breeze-agent.msi', edition: verified.edition });
-    }
-    return buffer;
+    assertGithubFetchableEdition({
+      assetName: REGULAR_MSI_ASSET_NAME,
+      edition: result.verified.edition,
+    });
+    return result.buffer;
   }
-  const binaryDir = resolve(process.env.AGENT_BINARY_DIR || './agent/bin');
-  return readFile(join(binaryDir, 'breeze-agent.msi'));
+
+  // Local source: the signed manifest pair staged at the binaries volume root
+  // is the trust anchor, with edition pinned to BINARY_EDITION — the same
+  // contract as the locally staged macOS pkg. Read from disk only, as before.
+  const result = await fetchVerifiedLocalArtifact({
+    assetName: REGULAR_MSI_ASSET_NAME,
+    diskPath: join(binaryStoreDir('agent'), REGULAR_MSI_ASSET_NAME),
+    expectedPlatformTrust: '',
+    requireMacosPublisher: false,
+  });
+  return result.buffer;
 }
 
 /**
@@ -857,9 +896,10 @@ export async function probeMacosInstallerApp(): Promise<boolean> {
 }
 
 /**
- * Serves the static, CI-signed MSI with the bootstrap token embedded in the
- * download filename — the Windows analogue of the macOS renamed-app zip. The
- * MSI bytes are never modified, so the Authenticode signature stays intact and
+ * Serves the static release MSI (unsigned in the public self-host release;
+ * Authenticode-signed only when a BYO-signing repo re-signed it) with the
+ * bootstrap token embedded in the download filename — the Windows analogue of the macOS renamed-app zip. The
+ * MSI bytes are never modified, so any Authenticode signature stays intact and
  * every customer shares one file hash (SmartScreen reputation accrues).
  *
  * The token is wrapped in PARENTHESES, not square brackets. At install time the

@@ -102,7 +102,7 @@ describe('ChangeSiteModal', () => {
       `/devices/${device.id}`,
       expect.objectContaining({
         method: 'PATCH',
-        body: JSON.stringify({ siteId: 'site-b' }),
+        body: JSON.stringify({ siteId: 'site-b', expectedSiteId: 'site-a' }),
       })
     );
   });
@@ -124,6 +124,36 @@ describe('ChangeSiteModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /move device/i }));
 
     expect(await screen.findByText(/target site not found/i)).toBeInTheDocument();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('shows the policy-implication note naming the device', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [SITE_A, SITE_B] }));
+    render(<ChangeSiteModal device={{ ...device, hostname: 'PC-1' }} isOpen onClose={vi.fn()} onSaved={vi.fn()} />);
+    expect(
+      await screen.findByText(
+        /Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to PC-1\. Breeze will not move it back automatically\./,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('on 409 device_site_changed shows the moved-by-someone-else message and stays open', async () => {
+    fetchWithAuthMock
+      .mockResolvedValueOnce(makeJsonResponse({ data: [SITE_A, SITE_B] }))
+      .mockResolvedValueOnce(
+        makeJsonResponse({ error: 'device_site_changed', currentSiteId: 'site-b' }, false, 409),
+      );
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    render(<ChangeSiteModal device={device} isOpen onClose={onClose} onSaved={onSaved} />);
+
+    fireEvent.change(await screen.findByLabelText(/new site/i), { target: { value: 'site-b' } });
+    fireEvent.click(screen.getByRole('button', { name: /move device/i }));
+
+    expect(
+      await screen.findByText(/This device was moved by someone else — reload to see its current site/),
+    ).toBeInTheDocument();
     expect(onSaved).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -170,6 +200,20 @@ describe('ChangeSiteModal — generalised subject + submit (network assets)', ()
       expect(onClose).toHaveBeenCalledTimes(1);
     });
     // Only the site listing went through fetchWithAuth; the write is the caller's.
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not show the device policy note and never sends expectedSiteId', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [SITE_A, SITE_B] }));
+    const submit = vi.fn().mockResolvedValue({});
+    render(
+      <ChangeSiteModal subject={subject} submit={submit} isOpen onClose={vi.fn()} onSaved={vi.fn()} />
+    );
+    fireEvent.change(await screen.findByLabelText(/new site/i), { target: { value: 'site-b' } });
+    fireEvent.click(screen.getByRole('button', { name: /move device/i }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('site-b', 'Branch'));
+    expect(submit.mock.calls[0]).toHaveLength(2);
+    expect(screen.queryByText(/configuration policies, maintenance windows/i)).not.toBeInTheDocument();
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
   });
 

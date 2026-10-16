@@ -70,8 +70,7 @@ A single Go binary (~8 MB) that runs as a system service:
 PostgreSQL 16 with Drizzle ORM for type-safe schema management:
 
 - 30+ tables covering devices, users, organizations, alerts, scripts, audit logs
-- Migrations via `pnpm db:migrate`
-- Schema push for development via `pnpm db:push`
+- Hand-written SQL migrations in `apps/api/migrations/`, applied with `pnpm db:migrate`
 - Seed script with default roles, permissions, and alert templates
 
 ### Job Queue (BullMQ + Redis)

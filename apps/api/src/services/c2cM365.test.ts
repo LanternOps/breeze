@@ -98,6 +98,27 @@ describe('acquireClientCredentialsToken', () => {
     );
     expect(call[1]).toMatchObject({ redirect: 'error' });
   });
+
+  // #8299: the mailbox poller needs the token endpoint's HTTP status to tell a
+  // transient outage from a consent problem. The user-facing message is unchanged.
+  it.each([
+    [401, 'Authentication failed — the app may not have consent for this tenant'],
+    [400, 'Token acquisition failed (HTTP 400)'],
+    [503, 'Token acquisition failed (HTTP 503)'],
+  ])('carries HTTP %i on the thrown error with the sanitized message', async (status, message) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce({ ok: false, status, text: async () => 'aad body' });
+
+    const err = await acquireClientCredentialsToken({
+      tenantId: '11111111-1111-1111-1111-111111111111' as M365TenantId,
+      clientId: 'client',
+      clientSecret: 'secret',
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe(message);
+    expect((err as Error & { status?: number }).status).toBe(status);
+  });
 });
 
 describe('testGraphAccess', () => {

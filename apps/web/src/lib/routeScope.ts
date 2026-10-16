@@ -174,6 +174,8 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // Public Quick Support landing page. The one-time code in the URL is the only
   // credential — an end user reaching it has no Breeze account at all.
   { pattern: /^\/quick$/, kind: 'auth' },
+  // Public caller-verification card. The URL token is the only credential.
+  { pattern: /^\/verify\/[^/]+$/, kind: 'auth' },
 ];
 
 function normalize(pathname: string): string {

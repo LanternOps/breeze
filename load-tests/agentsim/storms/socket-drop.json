@@ -1,0 +1,12 @@
+{
+  "name": "socket-drop",
+  "description": "Drop every socket, server side: restart the reverse proxy, which cuts every agent WebSocket and every HTTP keep-alive (and any in-flight request) at once. The API process keeps running.",
+  "events": [
+    {
+      "name": "socket-drop",
+      "at": "3m",
+      "recovery": "3m",
+      "start": [{ "exec": ["docker", "restart", "${STORM_CADDY}"] }]
+    }
+  ]
+}

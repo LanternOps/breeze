@@ -11,7 +11,7 @@ const siteIdSchema = z.string().min(1).max(300).regex(/^[A-Za-z0-9.,_-]+$/);
 const pageSize = (max: number) => z.number().int().min(1).max(max).optional();
 
 export const M365_INTERACTIVE_READ_ACTION_IDS = [
-  'm365.user.list', 'm365.user.get', 'm365.signins.list',
+  'm365.user.list', 'm365.user.get', 'm365.user.mailboxes', 'm365.signins.list',
   'm365.intune.device.list', 'm365.intune.device.get',
   'm365.group.list', 'm365.group.get', 'm365.group.members.list',
   'm365.org.get', 'm365.org.skus.list',
@@ -55,6 +55,9 @@ export const M365_SYNC_CONTINUATION_MAX_CHARS = 4096;
 export const M365_READ_ACTION_FIELDS: Record<M365ReadActionId, readonly string[]> = {
   'm365.user.list': ['id', 'userPrincipalName', 'displayName', 'mail', 'accountEnabled', 'jobTitle', 'department', 'createdDateTime'],
   'm365.user.get': ['id', 'userPrincipalName', 'displayName', 'mail', 'accountEnabled', 'jobTitle', 'department', 'createdDateTime', 'assignedLicenses', 'usageLocation', 'onPremisesSyncEnabled'],
+  // Caller verification (#6354 W03): the target's canonical mailbox set, by
+  // object id only. Not exposed as an AI tool; read by the release gate.
+  'm365.user.mailboxes': ['id', 'userPrincipalName', 'mail', 'proxyAddresses'],
   'm365.signins.list': ['id', 'createdDateTime', 'userPrincipalName', 'userId', 'appDisplayName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus', 'isInteractive', 'status', 'location', 'deviceDetail'],
   'm365.intune.device.list': ['id', 'deviceName', 'operatingSystem', 'osVersion', 'complianceState', 'lastSyncDateTime', 'userPrincipalName', 'managedDeviceOwnerType', 'enrolledDateTime'],
   'm365.intune.device.get': ['id', 'deviceName', 'operatingSystem', 'osVersion', 'complianceState', 'lastSyncDateTime', 'userPrincipalName', 'managedDeviceOwnerType', 'enrolledDateTime', 'model', 'manufacturer', 'serialNumber', 'azureADDeviceId', 'jailBroken', 'managementAgent'],
@@ -135,6 +138,10 @@ const INTERACTIVE_BRANCHES = [
   z.object({
     type: z.literal('m365.user.get'),
     userIdOrUpn: userIdOrUpnSchema,
+  }).strict(),
+  z.object({
+    type: z.literal('m365.user.mailboxes'),
+    userId: guidSchema,
   }).strict(),
   z.object({
     type: z.literal('m365.signins.list'),

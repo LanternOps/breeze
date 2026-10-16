@@ -29,7 +29,11 @@ import { requireMfa } from '../../middleware/auth';
 import { enqueueTenantErasure } from '../../jobs/tenantErasure';
 import { createAuditLog } from '../../services/auditService';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { hasActiveBackupLegalHold, LEGAL_HOLD_ACTIVE_MESSAGE } from '../../services/tenantCascade';
+import {
+  hasActiveBackupLegalHold,
+  LEGAL_HOLD_ACTIVE_MESSAGE,
+} from '../../services/tenantCascade';
+import { EVIDENCE_HOLD_DEFERRED_ACTION, findEvidenceHold } from '../../services/orgEvidenceHold';
 
 export const tenantErasureRoutes = new Hono();
 
@@ -103,12 +107,43 @@ tenantErasureRoutes.post(
       );
     }
 
+    // A merged-away org kept under an evidence hold (PAM ownership epochs) is
+    // erased like any other, but SCOPED (#8746): cascadeDeleteOrg keeps its
+    // PAM evidence and its organizations row until the hold is released.
+    // Recorded here so the admin's request shows what was deferred, and
+    // returned so the caller is not told the org is gone.
+    const evidenceHold = await withSystemDbAccessContext(() => findEvidenceHold(orgId));
+
     const enqueued = await enqueueTenantErasure({
       orgId,
       performedBy: auth.user.id,
       performedByEmail: auth.user.email,
       source: 'platform_admin',
     });
+
+    // Written after the enqueue so it never claims an erasure that failed to queue.
+    if (evidenceHold) {
+      await createAuditLog({
+        orgId: null,
+        actorType: 'user',
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+        action: EVIDENCE_HOLD_DEFERRED_ACTION,
+        resourceType: 'organization',
+        resourceId: orgId,
+        resourceName: org.name,
+        details: {
+          stage: 'admin_request',
+          survivorOrgId: evidenceHold.survivorOrgId,
+          mergeEventId: evidenceHold.mergeEventId,
+          holdReason: evidenceHold.reason,
+          note: 'erasure proceeds for everything except the privileged-access evidence and the organization row the hold retains',
+        },
+        ipAddress: getTrustedClientIpOrUndefined(c),
+        userAgent: c.req.header('user-agent'),
+        result: 'success',
+      });
+    }
 
     // Audit the enqueue event explicitly. The cascade worker will write
     // its own `tenant.erasure.started` + `tenant.erasure.completed`
@@ -125,6 +160,7 @@ tenantErasureRoutes.post(
       details: {
         jobId: enqueued.id,
         partnerId: org.partnerId,
+        ...(evidenceHold ? { evidenceHoldScoped: true } : {}),
       },
       ipAddress: getTrustedClientIpOrUndefined(c),
       userAgent: c.req.header('user-agent'),
@@ -138,6 +174,9 @@ tenantErasureRoutes.post(
         orgId,
         orgName: org.name,
         partnerId: org.partnerId,
+        ...(evidenceHold
+          ? { evidenceHold: { retained: true as const, survivorOrgId: evidenceHold.survivorOrgId } }
+          : {}),
       },
       202,
     );

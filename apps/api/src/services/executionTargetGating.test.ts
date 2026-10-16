@@ -1,5 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { partitionGroupsByExecutionFieldProvenance, warningsForRefusedExecutionGroups } from './executionTargetGating';
+import {
+  inlineFilterHasExecutionRefusedFields,
+  partitionGroupsByExecutionFieldProvenance,
+  warningsForRefusedExecutionGroups,
+} from './executionTargetGating';
+
+describe('log-shipping health filter as an execution target (#8611)', () => {
+  it('refuses a dynamic group keyed on logShippingFailing', () => {
+    const result = partitionGroupsByExecutionFieldProvenance([
+      { id: 'ls', filterFieldsUsed: ['logShippingFailing', 'osType'] },
+    ]);
+    expect(result.allowedGroupIds).toEqual([]);
+    expect(result.refusedGroups).toEqual([{ id: 'ls', refusedFields: ['logShippingFailing'] }]);
+  });
+
+  it('refuses an inline filter (script / automation target) keyed on logShippingFailing', () => {
+    expect(
+      inlineFilterHasExecutionRefusedFields({
+        operator: 'AND',
+        conditions: [{ field: 'logShippingFailing', operator: 'equals', value: 'yes' }],
+      }),
+    ).toEqual(['logShippingFailing']);
+  });
+});
 
 describe('partitionGroupsByExecutionFieldProvenance (denylist option)', () => {
   it('splits groups into allowed vs refused by their stored filterFieldsUsed', () => {

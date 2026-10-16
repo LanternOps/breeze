@@ -720,7 +720,9 @@
     "vaultType": "Type de voûte",
     "retentionCount": "Nombre de rétentions",
     "numberOfSnapshotsToKeepInTheVault": "Nombre d’instantanés à conserver dans le coffre (1 à 100).",
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "failedToSave": "Impossible d'enregistrer le coffre. Veuillez réessayer.",
+    "deviceConfigNotSent": "Coffre enregistré, mais sa configuration n'a pas pu être envoyée à l'appareil : {{error}}"
   },
   "vaultDashboard": {
     "loadingVaults": "Chargement des coffres...",
@@ -742,7 +744,12 @@
     "actions": "Actions",
     "sync": "Synchroniser",
     "edit": "Modifier",
-    "deactivate": "Désactiver"
+    "deactivate": "Désactiver",
+    "inactive": "Inactif",
+    "syncStarted": "Synchronisation du coffre démarrée",
+    "failedToSync": "Impossible de démarrer la synchronisation du coffre. Veuillez réessayer.",
+    "failedToDeactivate": "Impossible de désactiver le coffre. Veuillez réessayer.",
+    "deviceConfigNotSent": "Coffre enregistré, mais sa configuration n'a pas pu être envoyée à l'appareil : {{error}}"
   },
   "dRDashboard": {
     "loadingDisasterRecovery": "Chargement de la récupération après sinistre...",
@@ -993,6 +1000,8 @@
     "codeExpires": "Expire à {{time}}",
     "overdueNotice": "Aucune confirmation pour l'instant — consultez la console de récupération.",
     "fileIndexPreparing": "Préparation de l'index des fichiers pour les références inter-instantanés…",
+    "snapshotsLoadFailed": "Impossible de charger les instantanés. Rechargez la page pour réessayer.",
+    "noSnapshots": "Aucun instantané restaurable en bare-metal pour l'instant. Une sauvegarde complète de la machine marquée restaurable en bare-metal est requise.",
     "statusFailed": "Échec de la récupération",
     "statusRefused": "Récupération refusée",
     "status": {
@@ -1002,7 +1011,8 @@
       "restoring": "Restauration en cours",
       "validated": "Validée",
       "rebooted": "Redémarrée",
-      "checked_in": "Confirmée"
+      "checked_in": "Confirmée",
+      "completed": "Terminé"
     }
   },
   "backupHealth": {
@@ -1112,11 +1122,13 @@
     "introProducerOnly": "Cette sauvegarde a été stockée à un emplacement où seul l'appareil d'origine peut vérifier son intégrité. La restaurer sur un autre appareil nécessite votre confirmation.",
     "twoFactor": "Confirmez avec l'authentification à deux facteurs pour continuer.",
     "confirmOnly": "Confirmez pour continuer. La restauration est consignée dans le journal d'audit.",
-    "typedIntro": "Cette sauvegarde a été créée avant l'existence des contrôles d'intégrité. Saisissez le nom de l'appareil pour confirmer. La restauration est consignée dans le journal d'audit.",
-    "typedLabel": "Saisissez {{phrase}} pour confirmer",
     "code": "Code d'authentification",
     "passkey": "Il vous sera demandé d'utiliser votre clé d'accès.",
-    "noFactor": "Configurez l'authentification à deux facteurs dans votre profil, puis réessayez.",
+    "enrollIntro": "La confirmation de cette restauration nécessite un second facteur, et votre compte n'en a pas encore. Configurez une application d'authentification ou une clé d'accès dans votre profil, puis réessayez.",
+    "enrollIntroSmsOnly": "La confirmation de cette restauration nécessite une application d'authentification ou une clé d'accès. Votre compte n'a que des codes par SMS ; ajoutez-en une dans votre profil.",
+    "enrollLink": "Configurer l'authentification à deux facteurs",
+    "enrollStillRequired": "Votre compte n'a toujours pas de second facteur. Configurez-en un, puis réessayez.",
+    "enrollStillRequiredSmsOnly": "Votre compte n'a toujours pas d'application d'authentification ni de clé d'accès.",
     "confirm": "Confirmer et restaurer",
     "cancel": "Annuler",
     "failed": "La vérification n'a pas été acceptée. Réessayez.",

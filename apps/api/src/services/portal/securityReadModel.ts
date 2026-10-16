@@ -4,11 +4,12 @@ import type {
   SecurityOverviewDto,
   ThreatSourceCounts,
 } from '@breeze/shared';
-import { and, asc, desc, eq, gte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
   deviceVulnerabilities,
+  edrDetections,
   huntressIncidents,
   securityPostureOrgSnapshots,
   securityStatus,
@@ -17,7 +18,8 @@ import {
 } from '../../db/schema';
 import { prettySecurityProvider } from '../securityComplianceReportProducts';
 import { getSecurityPostureTrend } from '../securityPosture';
-import { classifyDeviceProtection } from './protection';
+import { edrEndpointLinkedSql, edrEndpointProtectedSql, isEdrVisibilityEnabled } from './edrVisibility';
+import { PORTAL_EDR_LABEL, classifyDeviceProtection } from './protection';
 import { vulnerabilitySeverityForFindings } from './vulnerabilityCatalog';
 
 function scoreBand(
@@ -85,6 +87,7 @@ export async function securityScoreTile(orgId: string, now: Date) {
 }
 
 export async function devicesProtectedTile(orgId: string, now: Date) {
+  const edrVisible = await isEdrVisibilityEnabled(orgId);
   const rows = await db
     .select({
       id: devices.id,
@@ -100,6 +103,7 @@ export async function devicesProtectedTile(orgId: string, now: Date) {
         where ha.org_id = ${orgId}
           and ha.device_id = ${devices.id}
       )`,
+      ...(edrVisible ? { hasEdrEndpoint: edrEndpointProtectedSql(orgId) } : {}),
     })
     .from(devices)
     .leftJoin(
@@ -134,6 +138,7 @@ export async function devicesProtectedTile(orgId: string, now: Date) {
         : null,
       hasS1Agent: row.hasS1Agent,
       hasHuntressAgent: row.hasHuntressAgent,
+      hasEdrEndpoint: edrVisible && row.hasEdrEndpoint === true,
     })] += 1;
   }
 
@@ -148,21 +153,24 @@ export async function devicesProtectedTile(orgId: string, now: Date) {
 // ---- W05 - security overview + devices ----
 const WEEK_MS = 7 * 86_400_000;
 
-const sourceCounts = (): ThreatSourceCounts => ({
+// The `edr` key exists only when the org's enableEdrVisibility flag is on, so a
+// portal with the flag off serializes byte-identically to before EDR existed.
+const sourceCounts = (edrVisible: boolean): ThreatSourceCounts => ({
   native: 0,
   sentinelOne: 0,
   huntress: 0,
+  ...(edrVisible ? { edr: 0 } : {}),
 });
 
-function emptyWeeks(now: Date) {
+function emptyWeeks(now: Date, edrVisible: boolean) {
   const first = new Date(now.getTime() - 8 * WEEK_MS);
   return Array.from({ length: 8 }, (_, index) => ({
     weekStart: new Date(first.getTime() + index * WEEK_MS)
       .toISOString().slice(0, 10),
     detected: 0,
     resolved: 0,
-    detectedBySource: sourceCounts(),
-    resolvedBySource: sourceCounts(),
+    detectedBySource: sourceCounts(edrVisible),
+    resolvedBySource: sourceCounts(edrVisible),
   }));
 }
 
@@ -172,8 +180,9 @@ export async function securityOverview(
 ): Promise<SecurityOverviewDto> {
   const days = Math.min(90, Math.max(1, args.days));
   const threatSince = new Date(args.now.getTime() - 8 * WEEK_MS);
+  const edrVisible = await isEdrVisibilityEnabled(orgId);
 
-  const [trend, nativeRows, s1Rows, huntressRows, findingRows] =
+  const [trend, nativeRows, s1Rows, huntressRows, findingRows, edrRows] =
     await Promise.all([
       getSecurityPostureTrend({ orgId, days }),
       db.select({
@@ -213,6 +222,22 @@ export async function securityOverview(
         eq(deviceVulnerabilities.orgId, orgId),
         eq(deviceVulnerabilities.status, 'open'),
       )),
+      // Tombstoned rows (detached_at set by a tenant remap) belong to no
+      // customer anymore and are excluded. Skipped entirely when the flag is
+      // off: zero EDR influence.
+      edrVisible
+        ? db.select({
+            detectedAt: edrDetections.detectedAt,
+            resolvedAt: edrDetections.resolvedAt,
+          }).from(edrDetections).where(and(
+            eq(edrDetections.orgId, orgId),
+            isNull(edrDetections.detachedAt),
+            or(
+              gte(edrDetections.detectedAt, threatSince),
+              gte(edrDetections.resolvedAt, threatSince),
+            ),
+          ))
+        : Promise.resolve([] as Array<{ detectedAt: Date | null; resolvedAt: Date | null }>),
     ]);
 
   const scoreHistory = trend.map((point) => ({
@@ -220,7 +245,7 @@ export async function securityOverview(
     score: Number(point.overall),
   }));
   const score = scoreHistory.at(-1)?.score ?? null;
-  const weeks = emptyWeeks(args.now);
+  const weeks = emptyWeeks(args.now, edrVisible);
   const addEvents = (
     source: keyof ThreatSourceCounts,
     rows: Array<{ detectedAt: Date | null; resolvedAt: Date | null }>,
@@ -236,15 +261,17 @@ export async function securityOverview(
         );
         if (index < 0 || index > 7) continue;
         weeks[index]![kind] += 1;
-        weeks[index]![kind === 'detected'
+        const bySource = weeks[index]![kind === 'detected'
           ? 'detectedBySource'
-          : 'resolvedBySource'][source] += 1;
+          : 'resolvedBySource'];
+        bySource[source] = (bySource[source] ?? 0) + 1;
       }
     }
   };
   addEvents('native', nativeRows);
   addEvents('sentinelOne', s1Rows);
   addEvents('huntress', huntressRows);
+  if (edrVisible) addEvents('edr', edrRows);
 
   let catalog = new Map<string, { severity: string; isKev: boolean }>();
   try {
@@ -277,7 +304,7 @@ export async function securityOverview(
   return {
     dataStatus:
       trend.length || nativeRows.length || s1Rows.length ||
-      huntressRows.length || findingRows.length
+      huntressRows.length || findingRows.length || edrRows.length
         ? 'ok'
         : 'no_data',
     asOf: args.now.toISOString(),
@@ -323,6 +350,7 @@ export async function securityDevicesPage(
   },
 ): Promise<SecurityDevicesDto> {
   const offset = (args.page - 1) * args.limit;
+  const edrVisible = await isEdrVisibilityEnabled(orgId);
   const hasS1Agent = sql<boolean>`exists (
     select 1 from s1_agents s1
     where s1.org_id = ${orgId} and s1.device_id = ${devices.id}
@@ -331,10 +359,15 @@ export async function securityDevicesPage(
     select 1 from huntress_agents ha
     where ha.org_id = ${orgId} and ha.device_id = ${devices.id}
   )`;
+  const hasEdrEndpoint = edrEndpointProtectedSql(orgId);
+  const protectedByAgent = edrVisible
+    ? sql`${hasS1Agent} or ${hasHuntressAgent} or ${hasEdrEndpoint}`
+    : sql`${hasS1Agent} or ${hasHuntressAgent}`;
   const protectionOrder = sql`case
-    when ${hasS1Agent} or ${hasHuntressAgent} then 'protected'
+    when ${protectedByAgent} then 'protected'
     when ${securityStatus.id} is null then 'unknown'
-    when ${securityStatus.provider} <> 'other'
+    when ${securityStatus.realTimeProtection} is null then 'unknown'
+    when ${securityStatus.provider} not in ('other', 'unknown')
       and ${securityStatus.realTimeProtection} = true then 'protected'
     else 'unprotected'
   end`;
@@ -359,6 +392,9 @@ export async function securityDevicesPage(
       securityUpdatedAt: securityStatus.updatedAt,
       hasS1Agent,
       hasHuntressAgent,
+      ...(edrVisible
+        ? { hasEdrEndpoint, hasEdrLinked: edrEndpointLinkedSql(orgId) }
+        : {}),
       pendingCriticalPatches: sql<number>`(
         select count(*)::int
         from device_patches dp
@@ -401,12 +437,15 @@ export async function securityDevicesPage(
         : null,
       hasS1Agent: row.hasS1Agent,
       hasHuntressAgent: row.hasHuntressAgent,
+      hasEdrEndpoint: edrVisible && row.hasEdrEndpoint === true,
     }),
     avProducts: [...new Set([
       ...(row.hasS1Agent ? ['SentinelOne'] : []),
       ...(row.hasHuntressAgent ? ['Huntress'] : []),
+      // Generic label only: never the provider key, vendor or product name.
+      ...(edrVisible && row.hasEdrLinked === true ? [PORTAL_EDR_LABEL] : []),
       ...avProductNames(row.avProducts),
-      ...(row.provider && row.provider !== 'other'
+      ...(row.provider && row.provider !== 'other' && row.provider !== 'unknown'
         ? [prettySecurityProvider(row.provider)]
         : []),
     ])],

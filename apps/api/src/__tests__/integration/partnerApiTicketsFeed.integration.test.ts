@@ -16,7 +16,7 @@ import {
 } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import { addTicketComment, deleteTicketComment, editTicketComment, moveTicketOrg, restoreTicket, softDeleteTicket } from '../../services/ticketService';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { createOrganization, createPartner, createUser, userEpochs } from './db-utils';
 import { getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -62,6 +62,7 @@ async function seed() {
     partnerId: partner.id,
     name: 'Tickets feed key',
     actorId: user.id,
+    actorSessionEpochs: await userEpochs(user.id),
   });
   return { partner, org, user, principal, rawKey };
 }

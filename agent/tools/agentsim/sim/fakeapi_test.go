@@ -38,6 +38,16 @@ type fakeAPI struct {
 	pingEvery   time.Duration
 	nextAgent   int
 	nextCommand int
+	// holdHeartbeat, when set, blocks every heartbeat until it is closed.
+	holdHeartbeat chan struct{}
+	// /metrics/scrape: 401 unless "Bearer scrapeToken", else scrapeBody.
+	scrapeToken, scrapeBody string
+}
+
+func (f *fakeAPI) setScrape(token, body string) {
+	f.mu.Lock()
+	f.scrapeToken, f.scrapeBody = token, body
+	f.mu.Unlock()
 }
 
 type fakeSocket struct {
@@ -78,6 +88,18 @@ func pathSegment(path string, i int) string {
 }
 
 func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/metrics/scrape" { // not agent traffic: never counted
+		f.mu.Lock()
+		tok, body := f.scrapeToken, f.scrapeBody
+		f.mu.Unlock()
+		if tok == "" || r.Header.Get("Authorization") != "Bearer "+tok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = io.WriteString(w, body)
+		return
+	}
 	route := RouteKey(r.Method, r.URL.Path)
 	f.mu.Lock()
 	f.counts[route]++
@@ -171,6 +193,12 @@ func (f *fakeAPI) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentID := pathSegment(r.URL.Path, 3)
+	f.mu.Lock()
+	hold := f.holdHeartbeat
+	f.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
 	f.mu.Lock()
 	cmds := f.pending[agentID]
 	delete(f.pending, agentID)
@@ -294,6 +322,11 @@ func (f *fakeAPI) pongs() int                   { f.mu.Lock(); defer f.mu.Unlock
 func (f *fakeAPI) setRejectWS(v bool)           { f.mu.Lock(); f.rejectWS = v; f.mu.Unlock() }
 func (f *fakeAPI) setPingEvery(d time.Duration) { f.mu.Lock(); f.pingEvery = d; f.mu.Unlock() }
 func (f *fakeAPI) setEnroll429(n int)           { f.mu.Lock(); f.enroll429 = n; f.mu.Unlock() }
+func (f *fakeAPI) setHoldHeartbeat(c chan struct{}) {
+	f.mu.Lock()
+	f.holdHeartbeat = c
+	f.mu.Unlock()
+}
 func (f *fakeAPI) socketFor(agentID string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()

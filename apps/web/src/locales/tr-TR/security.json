@@ -198,13 +198,85 @@
     "running": "Çalışıyor",
     "threatsDetectedCount": "{{count}} tehditler",
     "unknownProvider": "Bilinmeyen Sağlayıcı",
-    "unknownVendor": "Bilinmeyen satıcı"
+    "unknownVendor": "Bilinmeyen satıcı",
+    "unknown": "Bilinmiyor"
   },
   "securityEdrPage": {
     "endpointDetectionAndAmpResponse": "Uç Nokta Tespiti ve Yanıtı",
     "huntressIncidents": "Huntress Olaylar",
     "sentineloneThreats": "SentinelOne Tehditleri",
     "threatsAndIncidentsAcrossYourFleetFrom": "Filonuz genelinde SentinelOne ve Huntress kaynaklı tehditler ve olaylar."
+  },
+  "securityOtherEdr": {
+    "tabLabel": "Diğer EDR",
+    "statusError": "Diğer EDR sağlayıcıları denetlenemedi.",
+    "title": "Diğer EDR algılamaları",
+    "loading": "Algılamalar yükleniyor...",
+    "showing": "{{total}} kayıttan {{from}}-{{to}} gösteriliyor",
+    "refresh": "Yenile",
+    "filters": {
+      "severity": "Önem derecesi",
+      "status": "Durum",
+      "provider": "Sağlayıcı",
+      "allSeverities": "Tüm önem dereceleri",
+      "allProviders": "Tüm sağlayıcılar",
+      "openDefault": "Açık (varsayılan)",
+      "allStatuses": "Tüm durumlar"
+    },
+    "severities": {
+      "critical": "Kritik",
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi",
+      "unknown": "Bilinmiyor"
+    },
+    "statuses": {
+      "open": "Açık",
+      "in_progress": "Devam ediyor",
+      "mitigated": "Hafifletildi",
+      "resolved": "Çözüldü",
+      "false_positive": "Yanlış pozitif",
+      "dismissed": "Reddedildi",
+      "unknown": "Bilinmiyor"
+    },
+    "connectionStatuses": {
+      "connected": "Bağlı",
+      "error": "Hata",
+      "reauth_required": "Yeniden kimlik doğrulama gerekli"
+    },
+    "tenants": {
+      "stale": "Eski kiracılar",
+      "failed": "Başarısız kiracılar",
+      "pending": "Bekleyen kiracılar",
+      "unmapped": "Eşlenmemiş kiracılar"
+    },
+    "openDetections": "Açık algılamalar",
+    "endpoints": "Uç noktalar",
+    "linkedEndpoints": "Bağlı uç noktalar",
+    "unhealthyEndpoints": "Sağlıksız uç noktalar",
+    "lastDetectionSync": "Son algılama eşitlemesi",
+    "never": "Hiçbir zaman",
+    "coverageHeading": "Kapsam bilgisi",
+    "emptyPartial": "Hiç algılama döndürülmedi. Kapsam eksik - yukarıdaki notlara bakın.",
+    "empty": "Filtrelerinizle eşleşen algılama yok.",
+    "table": {
+      "provider": "Sağlayıcı",
+      "detection": "Algılama",
+      "severity": "Önem derecesi",
+      "status": "Durum",
+      "device": "Cihaz",
+      "detected": "Algılanma",
+      "actions": "İşlemler"
+    },
+    "unnamedDetection": "Algılama",
+    "detached": "Ayrılmış",
+    "promoteToIncident": "Olaya yükselt",
+    "promoted": "Yükseltildi",
+    "alreadyPromoted": "Zaten yükseltildi",
+    "promoteFailed": "Olay oluşturulamadı",
+    "previous": "Önceki",
+    "next": "Sonraki"
   },
   "securityEdrSummaryPanel": {
     "edrStatusUnavailable": "EDR durumu yüklenemedi. Tekrar denemek için yenileyin.",
@@ -285,7 +357,8 @@
     "totalDevices": "Toplam Cihaz Sayısı",
     "windows": "Windows",
     "statusFilterLabel": "Güvenlik duvarı durumu",
-    "osFilterLabel": "İşletim sistemi"
+    "osFilterLabel": "İşletim sistemi",
+    "unknown": "Bilinmiyor"
   },
   "securityHuntressIncidentList": {
     "actions": "Eylemler",
@@ -534,7 +607,8 @@
     "updated": "Güncellendi {{time}}",
     "viewDetails": "Ayrıntıları görüntüle",
     "vulnerabilities": "Güvenlik Açıkları",
-    "weakAdmins": "Zayıf yöneticiler"
+    "weakAdmins": "Zayıf yöneticiler",
+    "unknown": "Bilinmiyor"
   },
   "securitySecurityPageHeader": {
     "refresh": "Yenile",

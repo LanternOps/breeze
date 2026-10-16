@@ -1,0 +1,18 @@
+# BuildKit reads <Dockerfile>.dockerignore in preference to the root .dockerignore.
+# The root file is written for the release images and excludes agent/, scripts/, docs and
+# tests; the scanner needs all of those. Exclude only what the build recreates.
+node_modules
+**/node_modules
+dist
+**/dist
+.astro
+**/.astro
+**/.tsbuild
+.turbo
+coverage
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example

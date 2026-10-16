@@ -1,4 +1,5 @@
 import { getSafeNext } from './authNext';
+import { seedRouterHistoryState } from './replaceUrl';
 
 interface NavigateOptions {
   replace?: boolean;
@@ -59,6 +60,13 @@ export async function navigateTo(path: string, options: NavigateOptions = {}): P
   const onSwap = () => { swapped = true; };
   document.addEventListener('astro:after-swap', onSwap, { once: true });
   try {
+    // A hash assignment elsewhere may have left history.state null, which makes
+    // the router throw on `history: 'replace'` (#8331).
+    try {
+      seedRouterHistoryState();
+    } catch {
+      // Best-effort: if history is unwritable the router's own navigate decides.
+    }
     const { navigate } = await import('astro:transitions/client');
     await navigate(safePath, {
       history: options.replace ? 'replace' : 'auto'

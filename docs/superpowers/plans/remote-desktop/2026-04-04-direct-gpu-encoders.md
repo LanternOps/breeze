@@ -955,7 +955,7 @@ cd agent
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X main.version=dev-nvenc-amf" -o bin/breeze-agent-dev ./cmd/breeze-agent
 ```
 
-- [ ] **Step 2: Deploy to Kit (AMD RX 590) and verify AMF**
+- [ ] **Step 2: Deploy to lab-hyperv-host (AMD RX 590) and verify AMF**
 
 Push via dev-push. Connect desktop. Check logs for:
 ```
@@ -993,7 +993,7 @@ After all tasks, verify the encoder priority works correctly:
 | Machine | Expected encoder | Fallback |
 |---|---|---|
 | NVIDIA GPU | NVENC direct | MFT → OpenH264 |
-| AMD GPU (Kit) | AMF direct | MFT → OpenH264 |
+| AMD GPU (lab-hyperv-host) | AMF direct | MFT → OpenH264 |
 | Intel iGPU | MFT (Quick Sync) | OpenH264 |
 | No GPU / headless | OpenH264 | — |
 

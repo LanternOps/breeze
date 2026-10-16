@@ -1,6 +1,7 @@
 import { monitorsInheritanceSchema, type MonitorsInheritance } from '@breeze/shared';
-import { hierarchyFor, type DeviceHierarchyOpts } from '../deviceHierarchy';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { hierarchyFor } from '../deviceHierarchy';
+import { applicableCandidates, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from '../devicePolicySet';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { devices, deviceGroupMemberships } from '../../db/schema/devices';
 import { organizations } from '../../db/schema/orgs';
@@ -171,6 +172,84 @@ export function selectContributingAttachments(args: {
   return out;
 }
 
+/** #8142: monitors' own rules — raw partner for ownership, NO partner-level target for quick_support / unassigned_pool, SQL role/OS only. */
+const MONITOR_APPLICABILITY: ApplicabilityRule = {
+  ownership: 'orgOrPartner', partnerTarget: 'partnerUnlessQuickSupportOrUnassignedPool', roleOs: 'sql',
+};
+
+/** Cumulative/replace attachment resolution over the RAW links of each assigned policy and its parent (unchanged). */
+async function monitorsFromAssignments(assignments: AssignmentRow[], executor: DbExecutor): Promise<MonitorResolution> {
+  if (assignments.length === 0) return { kind: 'resolved', monitors: [] };
+
+  const policyIds = new Set<string>();
+  for (const a of assignments) {
+    policyIds.add(a.policyId);
+    if (a.parentPolicyId) policyIds.add(a.parentPolicyId);
+  }
+
+  const attachmentRows = await executor
+    .select({
+      configPolicyId: configPolicyFeatureLinks.configPolicyId,
+      monitorId: configPolicyMonitors.monitorId,
+      enabled: configPolicyMonitors.enabled,
+      overrides: configPolicyMonitors.overrides,
+      inlineSettings: configPolicyFeatureLinks.inlineSettings,
+    })
+    .from(configPolicyFeatureLinks)
+    .innerJoin(
+      configPolicyMonitors,
+      eq(configPolicyMonitors.featureLinkId, configPolicyFeatureLinks.id),
+    )
+    .where(
+      and(
+        inArray(configPolicyFeatureLinks.configPolicyId, [...policyIds]),
+        eq(configPolicyFeatureLinks.featureType, 'monitors'),
+      ),
+    );
+
+  const byPolicy = new Map<string, AttachmentRow[]>();
+  const inheritanceByPolicy = new Map<string, MonitorsInheritance>();
+  for (const row of attachmentRows) {
+    const list = byPolicy.get(row.configPolicyId) ?? [];
+    list.push({ configPolicyId: row.configPolicyId, monitorId: row.monitorId, enabled: row.enabled, overrides: row.overrides ?? null });
+    byPolicy.set(row.configPolicyId, list);
+    if (!inheritanceByPolicy.has(row.configPolicyId)) {
+      const parsed = monitorsInheritanceSchema.safeParse((row.inlineSettings as { inheritance?: unknown } | null)?.inheritance);
+      inheritanceByPolicy.set(row.configPolicyId, parsed.success ? parsed.data : 'cumulative');
+    }
+  }
+
+  const replaceLinks = await executor
+    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
+    .from(configPolicyFeatureLinks)
+    .where(and(
+      inArray(configPolicyFeatureLinks.configPolicyId, [...policyIds]),
+      eq(configPolicyFeatureLinks.featureType, 'monitors'),
+      sql`${configPolicyFeatureLinks.inlineSettings} ->> 'inheritance' = 'replace'`,
+    ));
+  for (const r of replaceLinks) inheritanceByPolicy.set(r.configPolicyId, 'replace');
+
+  const candidates = new Map<string, MonitorCandidate[]>();
+  for (const candidate of selectContributingAttachments({ assignments, byPolicy, inheritanceByPolicy })) {
+    const list = candidates.get(candidate.monitorId) ?? [];
+    list.push(candidate);
+    candidates.set(candidate.monitorId, list);
+  }
+
+  const monitors = [...candidates.values()].map((list) => {
+    const winner = pickWinner(list);
+    return {
+      monitorId: winner.monitorId,
+      enabled: winner.enabled,
+      overrides: winner.overrides,
+      sourcePolicyId: winner.sourcePolicyId,
+      sourceLevel: winner.sourceLevel,
+      inheritedFromParent: winner.inheritedFromParent,
+    };
+  });
+  return { kind: 'resolved', monitors };
+}
+
 /**
  * Every monitor that applies to this device, winner-per-monitor.
  *
@@ -181,10 +260,20 @@ export function selectContributingAttachments(args: {
 export async function resolveMonitorsForDevice(
   deviceId: string,
   executor: DbExecutor = db,
-  opts?: DeviceHierarchyOpts,
+  opts?: DevicePolicySetOpts,
 ): Promise<MonitorResolution> {
   // #8053 W1a-1: the heartbeat passes its hierarchy; other callers read below.
   const passed = hierarchyFor(deviceId, opts);
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    if (!set.hierarchy.org) return { kind: 'device_missing' };
+    const applicable = applicableCandidates(set, MONITOR_APPLICABILITY);
+    // Exact, statement-free: no effective monitors link => no attachment rows.
+    if (!applicable.some((c) => c.links.monitors)) return { kind: 'resolved', monitors: [] };
+    return monitorsFromAssignments(applicable.map((c) => ({
+      policyId: c.policyId, parentPolicyId: c.parentPolicyId, level: c.level, priority: c.priority, createdAt: c.assignmentCreatedAt,
+    })), executor);
+  }
   const [device] = passed
     ? [{ id: passed.deviceId, orgId: passed.orgId, siteId: passed.siteId, deviceRole: passed.deviceRole, osType: passed.osType }]
     : await executor
@@ -278,77 +367,10 @@ export async function resolveMonitorsForDevice(
     .where(and(
       sql`(${sql.join(targetConditions, sql` OR `)})`,
       ...buildRoleOsFilterConditions(device),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  if (assignments.length === 0) return { kind: 'resolved', monitors: [] };
-
-  const policyIds = new Set<string>();
-  for (const a of assignments) {
-    policyIds.add(a.policyId);
-    if (a.parentPolicyId) policyIds.add(a.parentPolicyId);
-  }
-
-  const attachmentRows = await executor
-    .select({
-      configPolicyId: configPolicyFeatureLinks.configPolicyId,
-      monitorId: configPolicyMonitors.monitorId,
-      enabled: configPolicyMonitors.enabled,
-      overrides: configPolicyMonitors.overrides,
-      inlineSettings: configPolicyFeatureLinks.inlineSettings,
-    })
-    .from(configPolicyFeatureLinks)
-    .innerJoin(
-      configPolicyMonitors,
-      eq(configPolicyMonitors.featureLinkId, configPolicyFeatureLinks.id),
-    )
-    .where(
-      and(
-        inArray(configPolicyFeatureLinks.configPolicyId, [...policyIds]),
-        eq(configPolicyFeatureLinks.featureType, 'monitors'),
-      ),
-    );
-
-  const byPolicy = new Map<string, AttachmentRow[]>();
-  const inheritanceByPolicy = new Map<string, MonitorsInheritance>();
-  for (const row of attachmentRows) {
-    const list = byPolicy.get(row.configPolicyId) ?? [];
-    list.push({ configPolicyId: row.configPolicyId, monitorId: row.monitorId, enabled: row.enabled, overrides: row.overrides ?? null });
-    byPolicy.set(row.configPolicyId, list);
-    if (!inheritanceByPolicy.has(row.configPolicyId)) {
-      const parsed = monitorsInheritanceSchema.safeParse((row.inlineSettings as { inheritance?: unknown } | null)?.inheritance);
-      inheritanceByPolicy.set(row.configPolicyId, parsed.success ? parsed.data : 'cumulative');
-    }
-  }
-
-  const replaceLinks = await executor
-    .select({ configPolicyId: configPolicyFeatureLinks.configPolicyId })
-    .from(configPolicyFeatureLinks)
-    .where(and(
-      inArray(configPolicyFeatureLinks.configPolicyId, [...policyIds]),
-      eq(configPolicyFeatureLinks.featureType, 'monitors'),
-      sql`${configPolicyFeatureLinks.inlineSettings} ->> 'inheritance' = 'replace'`,
-    ));
-  for (const r of replaceLinks) inheritanceByPolicy.set(r.configPolicyId, 'replace');
-
-  const candidates = new Map<string, MonitorCandidate[]>();
-  for (const candidate of selectContributingAttachments({ assignments, byPolicy, inheritanceByPolicy })) {
-    const list = candidates.get(candidate.monitorId) ?? [];
-    list.push(candidate);
-    candidates.set(candidate.monitorId, list);
-  }
-
-  const monitors = [...candidates.values()].map((list) => {
-    const winner = pickWinner(list);
-    return {
-      monitorId: winner.monitorId,
-      enabled: winner.enabled,
-      overrides: winner.overrides,
-      sourcePolicyId: winner.sourcePolicyId,
-      sourceLevel: winner.sourceLevel,
-      inheritedFromParent: winner.inheritedFromParent,
-    };
-  });
-  return { kind: 'resolved', monitors };
+  return monitorsFromAssignments(assignments, executor);
 }
 
 export async function resolveMonitorOverrideForDevice(

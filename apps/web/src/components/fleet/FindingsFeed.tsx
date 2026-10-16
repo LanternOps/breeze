@@ -14,6 +14,7 @@ import {
 } from './findingLabels';
 import FindingDrawer from './FindingDrawer';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 /** The three mutually exclusive status views the feed offers. `active` is the
  *  default and matches the API's own default (open + acknowledged). */
@@ -50,7 +51,7 @@ function parseHashId(raw: string): string | null | undefined {
  *  leaves one and re-fires hashchange). */
 function clearHash(): void {
   if (typeof window === 'undefined') return;
-  window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  replaceUrl(window.location.pathname + window.location.search);
 }
 
 // ─── Component ──────────────────────────────────────────────────────────

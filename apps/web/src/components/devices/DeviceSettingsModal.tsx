@@ -5,7 +5,7 @@ import type { Device } from './DeviceList';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '@/lib/fetchAllSites';
-import { extractApiError } from '@/lib/apiError';
+import { runAction, ActionError } from '@/lib/runAction';
 import UninstallStateBadge from './UninstallStateBadge';
 
 type Site = {
@@ -77,7 +77,10 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
       const effectiveName = displayName.trim() || undefined;
       const originalName = device.displayName || undefined;
       if (effectiveName !== originalName) body.displayName = effectiveName ?? null;
-      if (siteId !== device.siteId) body.siteId = siteId;
+      if (siteId !== device.siteId) {
+        body.siteId = siteId;
+        body.expectedSiteId = device.siteId;
+      }
       const tagsChanged = JSON.stringify(tags) !== JSON.stringify(device.tags ?? []);
       if (tagsChanged) body.tags = tags;
       const originalPurchase = device.purchaseDate ?? '';
@@ -88,20 +91,25 @@ export default function DeviceSettingsModal({ device, isOpen, onClose, onSaved, 
         return;
       }
 
-      const res = await fetchWithAuth(`/devices/${device.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/devices/${device.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          }),
+        errorFallback: t('deviceSettingsModal.errors.saveSettings'),
+        successMessage: t('deviceSettingsModal.saved'),
+        friendly: (code) =>
+          code === 'device_site_changed' ? t('deviceSettingsModal.errors.siteChanged') : undefined,
       });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('deviceSettingsModal.errors.saveSettings')));
-      }
 
       onSaved();
       onClose();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return; // let auth redirect handle it
+      // ActionError was already toasted by runAction; keep the message inline
+      // too so the open modal shows what failed.
       setError(err instanceof Error ? err.message : t('deviceSettingsModal.errors.saveSettings'));
     } finally {
       setSaving(false);

@@ -2,6 +2,7 @@ import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNot
 import { db } from '../db';
 import { sqlValue } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
+import { PG_UUID_REGEX } from '../utils/uuid';
 import { devices, deviceCustomFieldValues, deviceHardware, deviceHardwareHealth, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
 import type {
   FilterOperator,
@@ -16,6 +17,7 @@ import type {
   FilterPreviewDevice
 } from '@breeze/shared/types/filters';
 import { DEVICE_FUNCTION_KEYS } from '@breeze/shared/validators';
+import { logShippingFailingPredicate } from './logShippingFailingPredicate';
 export type {
   FilterOperator,
   FilterFieldCategory,
@@ -88,6 +90,10 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
     enumValues: [...DEVICE_FUNCTION_KEYS] },
   { key: 'lastUser', label: 'Last User', category: 'core', type: 'string', operators: OPERATORS_BY_TYPE.string },
   { key: 'isHeadless', label: 'Headless', category: 'core', type: 'boolean', operators: OPERATORS_BY_TYPE.boolean },
+  // Workload host inventory (#8193): denormalised from device_workload_runtimes
+  // by the agent-report ingest; devices.hosts_workloads / devices.workload_runtimes.
+  { key: 'hostsWorkloads', label: 'Hosts Workloads', category: 'core', type: 'boolean', operators: OPERATORS_BY_TYPE.boolean, description: 'Device is a container/VM host (Docker, Podman, Hyper-V, Proxmox, containerd)' },
+  { key: 'workloadRuntimes', label: 'Workload Runtimes', category: 'core', type: 'array', operators: OPERATORS_BY_TYPE.array, description: 'Workload runtimes detected on the device (docker, podman, hyperv, proxmox, containerd)' },
   { key: 'uptimeSeconds', label: 'Uptime (seconds)', category: 'core', type: 'number', operators: OPERATORS_BY_TYPE.number },
   { key: 'watchdogStatus', label: 'Watchdog Status', category: 'core', type: 'enum', operators: OPERATORS_BY_TYPE.enum, enumValues: ['connected', 'failover', 'offline'] },
   { key: 'quarantinedAt', label: 'Quarantined At', category: 'core', type: 'datetime', operators: OPERATORS_BY_TYPE.datetime },
@@ -128,6 +134,9 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'patches.pending', label: 'Has Pending Patches', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has at least one pending patch' },
   { key: 'alerts.critical', label: 'Has Critical Alerts', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device has an active critical alert' },
   { key: 'system.rebootRequired', label: 'Reboot Required', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Device OS reports a reboot is pending' },
+  // #8611: online device whose log shipping has been failing for >= 30 min
+  // (same verdict as deriveLogShipping; see logShippingFailingPredicate).
+  { key: 'logShippingFailing', label: 'Log Shipping Failing', category: 'core', type: 'boolean', operators: ['equals', 'notEquals'], description: 'Online device whose log shipping has been failing for at least 30 minutes' },
 
   // Hierarchy fields
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
@@ -211,8 +220,10 @@ export function getAllFilterableFields(): FilterFieldDefinition[] {
 // | hardware.*/network.*           | agent-reported inventory/network facts                          | allowed           |
 // | metrics.*                      | agent-reported metrics                                          | allowed           |
 // | software.installed/notInstalled | agent inventory scan (`software_inventory`) — self-reported; the agent supplies every entry (same shape as custom.*), unlike an OS/hardware fact the device cannot simply choose to misreport | refused |
+// | hostsWorkloads/workloadRuntimes | agent-reported workload runtime detection (`devices.hosts_workloads` / `workload_runtimes`, denormalised from the agent's workload inventory report); the device supplies every value, so a fabricated "docker host" claim must not decide execution targeting | refused |
 // | status/watchdogStatus/isHeadless/uptimeSeconds/lastSeenIp | agent-reported device state         | allowed           |
 // | patches.pending/alerts.critical/system.rebootRequired | derived server-side signals, not a raw agent string | allowed |
+// | logShippingFailing             | derived from the agent's own heartbeat `logShipping` report (`devices.log_shipping_*`, #8607); the device chooses what it reports, so it can opt itself in or out of the set at will | refused |
 //
 // A per-group acknowledged override (letting an admin explicitly accept a
 // self-reported field for one specific group) is intentionally NOT built
@@ -248,6 +259,12 @@ const EXECUTION_REFUSED_AGENT_FIELDS: ReadonlySet<string> = new Set([
   // custom.* value does).
   'software.installed',
   'software.notInstalled',
+  // agent-reported workload runtime detection (#8193) — fabricable by the device.
+  'hostsWorkloads',
+  'workloadRuntimes',
+  // agent-reported log-shipping health (#8611): an observational signal the
+  // device's own heartbeat drives — never an execution-targeting key.
+  'logShippingFailing',
 ]);
 
 export function isAgentReportedFilterField(fieldKey: string): boolean {
@@ -444,6 +461,19 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     return negate ? sql`NOT (${inner})` : inner;
   }
 
+  // #8611: same yes/no polarity as the virtual booleans above, over a
+  // devices-only predicate shared with /devices/stats. The positive form is
+  // emitted bare so the partial index devices_log_shipping_failing_idx stays
+  // usable; the negative is COALESCEd because the predicate is NULL (not
+  // false) on rows that break the stored-state invariants, and "not failing"
+  // must still include them.
+  if (field === 'logShippingFailing') {
+    const inner = logShippingFailingPredicate();
+    const negative = value === false || value === 'no' || value === 'false';
+    const negate = (operator === 'notEquals') !== negative;
+    return negate ? sql`NOT COALESCE(${inner}, false)` : inner;
+  }
+
   const fieldInfo = getColumnForField(field);
 
   // Installed-software predicates use an EXISTS subquery against
@@ -495,6 +525,25 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   if (fieldInfo.computed) {
     return applyOperator(fieldInfo.computed, operator, value);
   }
+  // Array semantics for the workload runtime array: the scalar fallback for
+  // `contains` is ILIKE (errors on varchar[]), and a bare JS array interpolated
+  // into sql`` becomes a row tuple, not an array, so build ARRAY[...] explicitly.
+  if (field === 'workloadRuntimes' && (operator === 'contains' || operator === 'hasAny' || operator === 'hasAll')) {
+    const items = (Array.isArray(value) ? value : [value]).map((v) => sql`${String(v)}`);
+    // An empty selection (a just-added chip) is no constraint, as for software.installed.
+    if (items.length === 0) return sql`TRUE`;
+    const arr = sql`ARRAY[${sql.join(items, sql`, `)}]::varchar[]`;
+    return operator === 'hasAny'
+      ? sql`${devices.workloadRuntimes} && ${arr}`
+      : sql`${devices.workloadRuntimes} @> ${arr}`;
+  }
+  // The generic isEmpty/isNotEmpty compare against '{}'::text[], which has no
+  // operator for a varchar[] column (Postgres 42883).
+  if (field === 'workloadRuntimes' && (operator === 'isEmpty' || operator === 'isNotEmpty')) {
+    return operator === 'isEmpty'
+      ? sql`cardinality(${devices.workloadRuntimes}) = 0`
+      : sql`cardinality(${devices.workloadRuntimes}) > 0`;
+  }
   if (fieldInfo.table === 'devices') {
     const col = devices[fieldInfo.column as keyof typeof devices];
     if (!col) {
@@ -529,16 +578,30 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     return applyOperator(latest, operator, value);
   }
   if (fieldInfo.table === 'groups') {
-    // Membership test against device_group_memberships.
-    if (operator === 'equals') {
-      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ${sqlValue(value)})`;
-    }
-    if (operator === 'in' && Array.isArray(value)) {
-      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} = ANY(${value}))`;
+    // Membership test against device_group_memberships. group_id is a uuid
+    // column, so a value that is not a UUID (a group NAME saved into a filter,
+    // #8760) can match no row: drop it here rather than let Postgres raise
+    // 22P02 and fail the whole filter.
+    const ids = (Array.isArray(value) ? value : [value])
+      .filter((v): v is string => typeof v === 'string' && PG_UUID_REGEX.test(v));
+    if (operator === 'equals' || (operator === 'in' && Array.isArray(value))) {
+      if (ids.length === 0) return sql`FALSE`;
+      // Explicit IN list, not `= ANY(${value})`: postgres.js binds a JS array
+      // as a row tuple, so a one-element list reached Postgres as a bare string
+      // and failed with "malformed array literal" (#8760). Same reason as the
+      // `in` case in applyOperator below.
+      const items = ids.map((id) => sqlValue(id));
+      return sql`EXISTS (SELECT 1 FROM ${deviceGroupMemberships} WHERE ${deviceGroupMemberships.deviceId} = ${devices.id} AND ${deviceGroupMemberships.groupId} IN (${sql.join(items, sql`, `)}))`;
     }
     throw new Error(`Unsupported operator for groupId: ${operator}`);
   }
   throw new Error(`Unsupported table: ${fieldInfo.table}`);
+}
+
+function sqlTextArray(values: readonly unknown[]): SQL {
+  return values.length === 0
+    ? sql`ARRAY[]::text[]`
+    : sql`ARRAY[${sql.join(values.map((v) => sql`${sqlValue(v)}::text`), sql`, `)}]::text[]`;
 }
 
 // Build a SQL predicate applying an operator to a column expression. The
@@ -599,14 +662,18 @@ function applyOperator(columnRef: SQL<unknown>, operator: FilterOperator, value:
         return sql`${columnRef} NOT IN (${sql.join(items, sql`, `)})`;
       }
       throw new Error('Value must be array for "notIn" operator');
+    // A bare `${value}` here bound the JS array as a row tuple `($1, $2)`, and
+    // Postgres 500'd with "operator does not exist: text[] && record" (#8760
+    // review). Bind a real text[] built from one parameter per element, the
+    // same pattern as sqlUuidArray.
     case 'hasAny':
       if (Array.isArray(value)) {
-        return sql`${columnRef} && ${value}`;
+        return sql`${columnRef} && ${sqlTextArray(value)}`;
       }
       throw new Error('Value must be array for "hasAny" operator');
     case 'hasAll':
       if (Array.isArray(value)) {
-        return sql`${columnRef} @> ${value}`;
+        return sql`${columnRef} @> ${sqlTextArray(value)}`;
       }
       throw new Error('Value must be array for "hasAll" operator');
     case 'isEmpty':

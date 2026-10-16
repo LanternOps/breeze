@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { edrProviderLabel } from '@/lib/edrProviders';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -12,7 +13,10 @@ import { useStableT } from '@/lib/i18n/useStableT';
 type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
 type IncidentStatus = 'detected' | 'analyzing' | 'contained' | 'recovering' | 'closed';
 type IncidentKind = 'tracked' | 'finding';
-type IncidentSource = 'breeze' | 'huntress' | 's1';
+// Built-ins plus any EDR-framework provider key (e.g. 'bitdefender'). Never index
+// the maps below directly: use sourceLabel()/sourceBadgeClass() so an unknown key
+// cannot render blank.
+type IncidentSource = 'breeze' | 'huntress' | 's1' | (string & {});
 type FeedFilter = '' | IncidentKind;
 
 interface IncidentFeedRow {
@@ -42,17 +46,27 @@ const severityColors: Record<IncidentSeverity, string> = {
   p4: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300',
 };
 
-const sourceLabels: Record<IncidentSource, string> = {
+const sourceLabels: Record<string, string> = {
   breeze: 'Breeze',
   huntress: 'Huntress',
   s1: 'SentinelOne',
 };
 
-const sourceBadge: Record<IncidentSource, string> = {
+const sourceBadge: Record<string, string> = {
   breeze: 'bg-gray-100 text-gray-800 dark:bg-gray-700/40 dark:text-gray-200',
   huntress: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300',
   s1: 'bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300',
 };
+
+const fallbackSourceBadge = 'bg-slate-100 text-slate-800 dark:bg-slate-700/40 dark:text-slate-200';
+
+function hasOwn(map: Record<string, string>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(map, key);
+}
+
+function sourceBadgeClass(source: IncidentSource): string {
+  return hasOwn(sourceBadge, source) ? sourceBadge[source] : fallbackSourceBadge;
+}
 
 const statusColors: Record<IncidentStatus, string> = {
   detected: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300',
@@ -67,6 +81,11 @@ const fallbackStatusBadge = 'bg-gray-100 text-gray-800 dark:bg-gray-700/40 dark:
 export default function IncidentsPage() {
   const { t } = useTranslation('common');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
+  // Known built-in, else the EDR framework's provider label, else a translated generic.
+  const sourceLabel = (source: IncidentSource): string =>
+    (hasOwn(sourceLabels, source) ? sourceLabels[source] : null) ??
+    edrProviderLabel(source) ??
+    t('longTail.incidents.IncidentsPage.genericEdrProvider');
   const [rows, setRows] = useState<IncidentFeedRow[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 25, total: 0 });
   const [loading, setLoading] = useState(true);
@@ -214,8 +233,8 @@ export default function IncidentsPage() {
                     >
                       <td className="px-4 py-3 font-medium text-foreground">{row.title}</td>
                       <td className="px-4 py-3">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${sourceBadge[row.source]}`}>
-                          {sourceLabels[row.source]}
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${sourceBadgeClass(row.source)}`}>
+                          {sourceLabel(row.source)}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -243,7 +262,7 @@ export default function IncidentsPage() {
                                 className="text-xs text-primary hover:underline"
                                 onClick={(e) => e.stopPropagation()}
                               >
-                                {t('longTail.incidents.IncidentsPage.viewInSource', { source: sourceLabels[row.source] })}
+                                {t('longTail.incidents.IncidentsPage.viewInSource', { source: sourceLabel(row.source) })}
                               </a>
                             ) : (
                               <span className="text-xs text-muted-foreground">{t('longTail.incidents.IncidentsPage.promoteFromEdr')}</span>

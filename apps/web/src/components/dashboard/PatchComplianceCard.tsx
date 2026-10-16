@@ -67,6 +67,11 @@ export default function PatchComplianceCard({
               total: data.totalDevices,
             })}
           </p>
+          {(data.containerImages?.unknown ?? 0) > 0 && (
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {t('dashboard.patch.imagesNotChecked', { count: data.containerImages!.unknown })}
+            </p>
+          )}
 
           <div className="mt-3">
             <SegmentedBar

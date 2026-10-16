@@ -40,7 +40,7 @@ const REQUESTER_ID = '8400e6c1-c39f-4cf1-8d51-e6d6ce6d5f1e';
 function queuedCommand(overrides: Record<string, unknown> = {}) {
   return {
     id: 'cmd-1',
-    type: 'reboot',
+    type: 'software_install',
     createdAt: '2026-09-01T00:00:00.000Z',
     deliverBy: '2026-09-08T00:00:00.000Z',
     createdBy: REQUESTER_ID,
@@ -64,7 +64,7 @@ describe('DeviceQueuedActions', () => {
     expect(section).toBeTruthy();
     const rows = screen.getAllByTestId('queued-action-row');
     expect(rows).toHaveLength(1);
-    expect(rows[0].textContent).toContain('Reboot');
+    expect(rows[0].textContent).toContain('Software Install');
     // `createdBy` is a bare user id with no name join on this endpoint — the
     // row must NEVER print the raw UUID (meaningless to an operator); it can
     // only say a human (vs. system) requested it.
@@ -222,5 +222,159 @@ describe('DeviceQueuedActions', () => {
     await waitFor(() => expect(screen.queryByTestId('device-queued-actions')).toBeNull());
     // GET list (initial) + POST cancel + GET list (reload after 409).
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+  });
+
+  // #8296 — a reboot/shutdown is held while any delivered command is still
+  // running on the device. The hold used to be invisible.
+  describe('power command held behind a running command', () => {
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+    function sentCommand(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'cmd-sent',
+        type: 'install_patches',
+        createdAt: minutesAgo(43),
+        executedAt: minutesAgo(42),
+        deliverBy: null,
+        createdBy: REQUESTER_ID,
+        ...overrides,
+      };
+    }
+
+    function routeFetch(opts: {
+      pending: unknown[];
+      sent: unknown[];
+      onMarkFailed?: () => Response;
+    }) {
+      let marked = false;
+      fetchWithAuthMock.mockImplementation(async (input: string, init?: RequestInit) => {
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        if (url.endsWith('/commands/cmd-sent/mark-failed') && method === 'POST') {
+          marked = true;
+          return opts.onMarkFailed ? opts.onMarkFailed() : jsonResponse({ id: 'cmd-sent', status: 'failed' });
+        }
+        if (url.includes('status=sent')) return jsonResponse({ data: marked ? [] : opts.sent });
+        return jsonResponse({ data: opts.pending });
+      });
+    }
+
+    it('names the running command and its age, with a Mark failed action', async () => {
+      routeFetch({ pending: [queuedCommand({ type: 'reboot' })], sent: [sentCommand()] });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      const banner = await screen.findByTestId('power-hold-banner');
+      expect(banner.textContent).toContain('Reboot');
+      expect(banner.textContent).toContain('Install Patches');
+      expect(banner.textContent).toContain('42 min');
+      expect(screen.getByTestId('power-hold-mark-failed')).toBeTruthy();
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/devices/${deviceId}/commands?status=sent&limit=50`,
+      );
+    });
+
+    it('Mark failed posts through runAction, toasts, and reloads so the banner clears', async () => {
+      routeFetch({ pending: [queuedCommand({ type: 'reboot' })], sent: [sentCommand()] });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+      fireEvent.click(await screen.findByTestId('power-hold-mark-failed'));
+
+      await waitFor(() => expect(screen.queryByTestId('power-hold-banner')).toBeNull());
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/devices/${deviceId}/commands/cmd-sent/mark-failed`,
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      // The held reboot itself is still queued — it goes out on the next claim.
+      expect(screen.getByTestId('queued-action-row').textContent).toContain('Reboot');
+    });
+
+    it('a failed Mark failed (409) toasts the error and reloads', async () => {
+      routeFetch({
+        pending: [queuedCommand({ type: 'reboot' })],
+        sent: [sentCommand()],
+        onMarkFailed: () => jsonResponse({ error: 'Command is not running', code: 'NOT_SENT' }, 409),
+      });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+      fireEvent.click(await screen.findByTestId('power-hold-mark-failed'));
+
+      await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      await waitFor(() => expect(screen.queryByTestId('power-hold-banner')).toBeNull());
+    });
+
+    it('under ten minutes, says when it can be marked failed instead of offering the button', async () => {
+      routeFetch({
+        pending: [queuedCommand({ type: 'shutdown' })],
+        sent: [sentCommand({ executedAt: minutesAgo(3) })],
+      });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      const banner = await screen.findByTestId('power-hold-banner');
+      expect(banner.textContent).toContain('Shutdown');
+      expect(screen.queryByTestId('power-hold-mark-failed')).toBeNull();
+      expect(banner.textContent).toMatch(/7 min/);
+    });
+
+    it('ignores running commands for a different target role (the barrier counts only the same role)', async () => {
+      routeFetch({
+        pending: [queuedCommand({ type: 'reboot', targetRole: 'agent' })],
+        sent: [sentCommand({ targetRole: 'backup' })],
+      });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      await screen.findByTestId('queued-action-row');
+      expect(screen.queryByTestId('power-hold-banner')).toBeNull();
+    });
+
+    it('offers Mark failed at exactly ten minutes', async () => {
+      routeFetch({
+        pending: [queuedCommand({ type: 'reboot' })],
+        sent: [sentCommand({ executedAt: minutesAgo(10) })],
+      });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      await screen.findByTestId('power-hold-banner');
+      expect(screen.getByTestId('power-hold-mark-failed')).toBeTruthy();
+    });
+
+    it('a failed running-commands load hides the banner but keeps the queued list (no error state)', async () => {
+      fetchWithAuthMock.mockImplementation(async (input: string) => {
+        if (String(input).includes('status=sent')) return jsonResponse({ error: 'boom' }, 500);
+        return jsonResponse({ data: [queuedCommand({ type: 'reboot' })] });
+      });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      const row = await screen.findByTestId('queued-action-row');
+      expect(row.textContent).toContain('Reboot');
+      expect(screen.queryByTestId('power-hold-banner')).toBeNull();
+      expect(screen.queryByTestId('queued-actions-retry')).toBeNull();
+    });
+
+    it('shows no banner when nothing is running on the device', async () => {
+      routeFetch({ pending: [queuedCommand({ type: 'reboot' })], sent: [] });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      await screen.findByTestId('queued-action-row');
+      expect(screen.queryByTestId('power-hold-banner')).toBeNull();
+    });
+
+    it('does not look for running commands when no power command is queued', async () => {
+      routeFetch({ pending: [queuedCommand()], sent: [sentCommand()] });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      await screen.findByTestId('queued-action-row');
+      expect(screen.queryByTestId('power-hold-banner')).toBeNull();
+      expect(fetchWithAuthMock).not.toHaveBeenCalledWith(
+        `/devices/${deviceId}/commands?status=sent&limit=50`,
+      );
+    });
   });
 });

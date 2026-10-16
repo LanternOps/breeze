@@ -1799,4 +1799,54 @@ describe('ApprovalsInbox — expiry roll-up (sweep G2-10)', () => {
 
     expect(screen.getByTestId('approval-expiry-approval-1')).toHaveTextContent('Expires in 89 min');
   });
+
+  // Mount assertion: a card only its own suite renders is not shipped. The
+  // plan must be on screen INLINE (no toggle) so an approver cannot sign a
+  // multi-effect identity plan without the list being visible.
+  const PLAN_ARGS = {
+    taskId: '00000000-0000-4000-8000-0000000000a1',
+    planRevision: 2,
+    effectSetDigest: 'a'.repeat(64),
+    effects: [
+      { ordinal: 0, provider: 'm365', toolName: 'm365_set_auto_reply', targetLabel: 'Dana Ruiz', principalLabel: 'dana@customer.example', rendering: 'Set an auto-reply' },
+      { ordinal: 1, provider: 'google', toolName: 'google_set_forwarding', targetLabel: 'Dana Ruiz', principalLabel: 'dana@customer.example', rendering: 'Forward Gmail' },
+      { ordinal: 2, provider: 'google', toolName: 'google_suspend_user', targetLabel: 'Dana Ruiz', principalLabel: 'dana@customer.example', rendering: 'Suspend account' },
+    ],
+  };
+
+  it('renders the operator plan card INSIDE the inbox for an operator_plan approval', async () => {
+    routeFetch([{ ...pendingApproval, actionToolName: 'operator_plan', actionArguments: PLAN_ARGS }]);
+    render(<ApprovalsInbox />);
+
+    expect(await screen.findByTestId(`approval-operator-plan-${pendingApproval.id}`)).toBeInTheDocument();
+    expect(screen.getAllByTestId(/^operator-plan-effect-/)).toHaveLength(3);
+  });
+
+  it('enables Approve for a valid operator_plan', async () => {
+    routeFetch([{ ...pendingApproval, actionToolName: 'operator_plan', actionArguments: PLAN_ARGS }]);
+    render(<ApprovalsInbox />);
+
+    expect(await screen.findByTestId(`approval-approve-${pendingApproval.id}`)).toBeEnabled();
+  });
+
+  it.each([
+    ['missing arguments', null],
+    ['malformed effects', { effects: 'nope' }],
+    ['a malformed entry', { effects: [{ ordinal: 0 }] }],
+    ['zero effects', { effects: [] }],
+  ])('disables Approve (deny stays enabled) for an unreadable operator_plan: %s', async (_name, args) => {
+    routeFetch([{ ...pendingApproval, actionToolName: 'operator_plan', actionArguments: args }]);
+    render(<ApprovalsInbox />);
+
+    expect(await screen.findByTestId(`approval-approve-${pendingApproval.id}`)).toBeDisabled();
+    expect(screen.getByTestId(`approval-deny-${pendingApproval.id}`)).toBeEnabled();
+  });
+
+  it('does NOT render the operator plan card for any other tool', async () => {
+    routeFetch([{ ...pendingApproval, actionToolName: 'run_script' }]);
+    render(<ApprovalsInbox />);
+
+    await screen.findByTestId(`approval-row-${pendingApproval.id}`);
+    expect(screen.queryByTestId(/^approval-operator-plan-/)).toBeNull();
+  });
 });

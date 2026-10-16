@@ -34,15 +34,22 @@ cp .env.example .env
 #   AGENT_ENROLLMENT_SECRET: openssl rand -hex 32
 #   APP_ENCRYPTION_KEY: openssl rand -hex 32
 
-# Start infrastructure (Postgres, Redis, MinIO)
-docker compose up -d
+# Start infrastructure (Postgres and Redis)
+# The base compose file requires digest-pinned BREEZE_*_IMAGE_REF values and
+# .env.example ships placeholders for them, so local dev layers the dev override on
+# top. Same invocation as docs/guides/DEVELOPER_GUIDE.md.
+docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up -d postgres redis
 
 # Set up the database
-pnpm db:push
+pnpm db:migrate
 pnpm db:seed
 
-# Start dev servers
-pnpm dev
+# Start dev servers (api + web + portal)
+pnpm dev:app
+
+# `pnpm dev` runs every package's dev task, including the Office add-ins. Those need the
+# Windows or macOS certificate store (office-addin-dev-certs), so on Linux/WSL they skip
+# themselves with a message rather than failing the run.
 
 # When you're done: stop the infrastructure (nothing stops it for you).
 # Add -v to also drop the database volumes.
@@ -72,7 +79,10 @@ make build-all # Cross-platform builds
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feat/my-feature`)
-3. Make your changes
+3. Make your changes, **with tests**. New functionality ships with automated
+   tests that cover it, in the same PR. A bug fix adds a test that fails
+   without the fix. Tests sit alongside the source they cover (Vitest for
+   TypeScript, Go `testing` for the agent); see `docs/agents/testing.md`.
 4. Mirror the CI gate locally before pushing.
 
    **Security gates** (`.github/workflows/security.yml` + the `security-audit`
@@ -93,7 +103,9 @@ make build-all # Cross-platform builds
    ```bash
    pnpm install --frozen-lockfile
    pnpm lint                                                 # CI: Lint
-   pnpm exec tsc --build apps/api/tsconfig.tests.json        # CI: Type Check
+   # tsc on apps/api exceeds Node's default heap; CI's Type Check job sets the same value.
+   NODE_OPTIONS=--max-old-space-size=12288 \
+     pnpm exec tsc --build apps/api/tsconfig.tests.json      # CI: Type Check
    pnpm --filter=@breeze/web exec astro check                # CI: Type Check
    pnpm test --filter=@breeze/api                            # CI: Test API
    pnpm test --filter=@breeze/web                            # CI: Test Web

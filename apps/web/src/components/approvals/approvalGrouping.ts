@@ -82,6 +82,9 @@ export function isGroupable(approval: PendingApproval): boolean {
     approval.origin === 'ai_agent' &&
     approval.approvalScope === 'supervised' &&
     approval.orgId !== null &&
+    // An operator_plan is a multi-effect identity plan the approver must read
+    // on its own card; a batch "Approve all" would sign it unseen.
+    approval.actionToolName !== 'operator_plan' &&
     // A CRITICAL card can never be batched. The batch route deliberately does
     // not plumb `reauthVerified` (batchDecide.ts), so the L4 ladder a critical
     // card has to clear is unsatisfiable in a batch and the whole set 401s

@@ -7,6 +7,7 @@ import {
   ALERT_RESOLUTION_REASONS,
   FIX_KINDS,
   FIX_MEMORY_STATUSES,
+  FIX_OUTCOME_ACTIVE_STATES,
   FIX_OUTCOME_STATES,
   FIX_VOTES,
   REMEDIATION_SUGGESTION_ORIGINS,
@@ -34,6 +35,35 @@ const REASON_SQL = readFileSync(
   'utf8',
 );
 
+/** Single-quoted members of the first `state IN (...)` list inside `fragment`. */
+function stateInLiterals(fragment: string): string[] {
+  const m = /state\s+IN\s*\(([^)]*)\)/i.exec(fragment);
+  expect(m, 'state IN (...) list not found').not.toBeNull();
+  return m![1]!.split(',').map((r) => r.trim().replace(/^'|'$/g, '')).filter(Boolean);
+}
+
+/** The CHECK constraint body (up to the closing of its own statement) by name. */
+function constraintBody(sql: string, name: string): string {
+  const start = sql.indexOf(`CONSTRAINT ${name}`);
+  expect(start, `${name} not found`).toBeGreaterThanOrEqual(0);
+  const rest = sql.slice(start);
+  // Constraint ends at the next top-level `,\n  CONSTRAINT` or the table's `);`.
+  const end = rest.search(/,\s*\n\s*CONSTRAINT|\n\);/);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/** The full CREATE INDEX statement (to its `;`) by name. */
+function indexStatement(sql: string, name: string): string {
+  const start = sql.indexOf(`INDEX IF NOT EXISTS ${name}`);
+  expect(start, `${name} not found`).toBeGreaterThanOrEqual(0);
+  return sql.slice(start, sql.indexOf(';', start));
+}
+
+/** Single-column inline FK column names in a CREATE TABLE block (NOT NULL or nullable). */
+function inlineFkColumns(block: string): string[] {
+  return [...block.matchAll(/^\s+(\w+)\s+uuid(?:\s+NOT NULL)?\s+REFERENCES\s/gm)].map((m) => m[1]!);
+}
+
 describe('fix memory schema contract', () => {
   describe('CHECK constraints match @breeze/shared literals exactly', () => {
     it('fix_outcomes_state_chk', () => {
@@ -56,6 +86,28 @@ describe('fix memory schema contract', () => {
     });
   });
 
+  describe('active-state list is pinned to FIX_OUTCOME_ACTIVE_STATES', () => {
+    const expected = [...FIX_OUTCOME_ACTIVE_STATES].sort();
+    it('terminal-shape CHECK (terminal_at IS NULL <=> active)', () => {
+      const body = constraintBody(TABLES_SQL, 'fix_outcomes_terminal_shape_chk');
+      expect(stateInLiterals(body).sort()).toEqual(expected);
+    });
+    it('fix_outcomes_active_idx partial predicate', () => {
+      const stmt = indexStatement(TABLES_SQL, 'fix_outcomes_active_idx');
+      expect(stmt).toMatch(/ON fix_outcomes \(state, deadline_at\)/);
+      expect(stateInLiterals(stmt).sort()).toEqual(expected);
+    });
+    it('the helper discriminates: a dropped member is detected', () => {
+      const mutated = "CHECK ((terminal_at IS NULL) = (state IN ('pending', 'holding')))";
+      expect(stateInLiterals(mutated).sort()).not.toEqual(expected);
+    });
+    it('constraintBody does not bleed into the next constraint', () => {
+      const body = constraintBody(TABLES_SQL, 'fix_outcomes_terminal_shape_chk');
+      expect(body).not.toContain('fix_outcomes_counted_shape_chk');
+      expect(body).not.toContain("'verified'");
+    });
+  });
+
   it('ships the XOR owner check, the partner-wide SELECT branch and the deferrable composite FK in the same migration', () => {
     expect(TABLES_SQL).toMatch(/fix_memory_one_owner_chk\s+CHECK\s*\(\s*\(org_id IS NULL\)\s*<>\s*\(partner_id IS NULL\)\s*\)/);
     expect(TABLES_SQL).toMatch(/CREATE POLICY fix_memory_partner_wide_select[\s\S]*FOR SELECT[\s\S]*org_id IS NULL AND partner_id = public\.breeze_current_partner_id\(\)/);
@@ -67,11 +119,20 @@ describe('fix memory schema contract', () => {
   it('every single-column FK on fix_outcomes has an index led by that column (M4: ON DELETE SET NULL scans)', () => {
     const table = TABLES_SQL.slice(TABLES_SQL.indexOf('CREATE TABLE IF NOT EXISTS fix_outcomes'), TABLES_SQL.indexOf('CREATE TABLE IF NOT EXISTS fix_memory'));
     const block = table.slice(0, table.indexOf(');\n'));
-    const fkColumns = [...block.matchAll(/^\s+(\w+)\s+uuid\s+REFERENCES\s/gm)].map((m) => m[1]!);
+    const fkColumns = inlineFkColumns(block);
     expect(fkColumns).toEqual(expect.arrayContaining(['anomaly_episode_id', 'script_id', 'script_version_id', 'playbook_id', 'voted_by']));
     const leading = new Set([...table.matchAll(/ON fix_outcomes \((\w+)/g)].map((m) => m[1]!));
     const unindexed = fkColumns.filter((c) => !leading.has(c));
     expect(unindexed).toEqual([]);
+  });
+
+  it('inline-FK detection also sees NOT NULL FKs (the old regex skipped e.g. partner_id)', () => {
+    const synthetic = [
+      '  partner_id uuid NOT NULL REFERENCES partners(id) ON DELETE CASCADE,',
+      '  script_id uuid REFERENCES scripts(id) ON DELETE SET NULL,',
+      '  device_id uuid NOT NULL,',
+    ].join('\n');
+    expect(inlineFkColumns(synthetic)).toEqual(['partner_id', 'script_id']);
   });
 
   it('Drizzle exposes every migration column', () => {
@@ -88,7 +149,7 @@ describe('fix memory schema contract', () => {
       'fixIdentity', 'scriptId', 'scriptVersionId', 'builtinAction', 'playbookId', 'instructionsRef',
       'attempts', 'verifiedCount', 'failedCount', 'recurredCount', 'upVotes', 'downVotes',
       'rollingSuccessRate', 'consecutiveFailures', 'consecutiveVerified', 'recentOutcomes', 'status',
-      'retiredBy', 'retiredAt', 'lastVerifiedAt', 'staleSince', 'rebuildPendingOrgIds', 'createdAt', 'updatedAt',
+      'retiredBy', 'retiredAt', 'lastVerifiedAt', 'staleSince', 'rebuildPendingOrgIds', 'rebuildAttemptedAt', 'createdAt', 'updatedAt',
     ]) expect(fixMemory, `fixMemory.${key}`).toHaveProperty(key);
   });
 });

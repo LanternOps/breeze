@@ -24,6 +24,7 @@ import {
   continueCustomerGraphActionsConsent,
   disconnectCustomerGraphActionsConnection,
   initiateCustomerGraphActionsConsent,
+  initiateCustomerGraphActionsUpgradeConsent,
   listCustomerGraphActionsConnections,
   readPendingCustomerGraphActionsTenantConfirmation,
   retestCustomerGraphActionsConnection,
@@ -383,6 +384,63 @@ m365CustomerGraphActionsRoutes.post(
         actorEmail: auth.user.email,
       });
       return c.json({ connection: toConnectionDto(connection) });
+    } catch (error) {
+      return lifecycleFailure(c, error);
+    }
+  },
+);
+
+/**
+ * Starts a manifest upgrade on an existing actions connection — the actions
+ * twin of the read route (m365CustomerGraphRead.ts, spec §2.2). Unlike
+ * `/connections/consent`, it does not move the connection to pending-consent:
+ * writes keep running on the grants the customer already approved for the
+ * whole Microsoft round trip, including if the administrator abandons it.
+ */
+m365CustomerGraphActionsRoutes.post(
+  '/connections/:id/upgrade-consent',
+  requireOrgsWrite,
+  requireMfa(),
+  zValidator('param', idParam),
+  async (c) => {
+    // Org-wide governance: Customer Graph Actions is the organization's WRITE
+    // consent to its whole Entra tenant — granting, upgrading, retesting or
+    // severing it has no per-site slice to narrow a site-restricted caller to.
+    // `organizations:write` + MFA are not enough (services/siteCeilingAccess.ts,
+    // contract-site-ceiling-gate).
+    if (!canMutateOrgWideGovernance(c.get('auth'))) {
+      return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
+    }
+    const resolved = mutationOrg(c);
+    if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+    const { id } = c.req.valid('param');
+    try {
+      const correlationId = randomUUID();
+      const initiated = await initiateCustomerGraphActionsUpgradeConsent({
+        connectionId: id,
+        orgId: resolved.orgId,
+        auth: c.get('auth'),
+      });
+      // Identity-first (#7910): the service returns the identity-phase
+      // binding (tenant pinned to the bound tenant for an upgrade); the route
+      // only signs it into the actions-scoped cookie.
+      c.header('Set-Cookie', buildM365ActionsConsentBindingCookie(initiated.binding), { append: true });
+      const auth = c.get('auth');
+      recordM365CustomerGraphActionsEvent(c, {
+        event: 'm365.customer_graph_actions.upgrade_consent_initiated',
+        orgId: resolved.orgId,
+        connectionId: initiated.connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: initiated.connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'initiated',
+        correlationId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      });
+      // Key kept for the web cards (they validate only the Microsoft host).
+      return c.json({ adminConsentUrl: initiated.authorizationUrl });
     } catch (error) {
       return lifecycleFailure(c, error);
     }

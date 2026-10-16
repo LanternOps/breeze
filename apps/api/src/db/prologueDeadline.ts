@@ -35,16 +35,18 @@
  * request nobody is waiting for.
  *
  * WHAT EXPIRY PROVES, AND WHAT IT DOES NOT. It proves the prologue missed its
- * wall-clock budget, nothing more. This timer is a plain `setTimeout`, so it
- * expires just as readily when the main thread is too busy to run the socket
- * callbacks as when the connection is genuinely wedged — the exact ambiguity
+ * wall-clock budget, nothing more. This timer is lag-tolerant but still a
+ * timer, so it expires just as readily when the main thread is too busy to run
+ * the socket callbacks as when the connection is genuinely wedged — the exact ambiguity
  * `services/postgresConnectTimeout.ts` exists to resolve for `connect_timeout`
- * (#3022). That is why the recovery it triggers does not trust the timer's
- * verdict: `reclaimWedgedBackends` re-derives wedged-ness from
- * `pg_stat_activity` across two snapshots and terminates nothing the database
- * itself does not still show as stuck. Under event-loop starvation the timer
- * fires, the sweep finds nothing, and the only cost is a typed error — not a
- * terminated backend.
+ * (#3022). That is why the deferred recovery (`abandonedSlotReclaim.ts`) does
+ * not trust the timer's verdict. Under starvation the abandoned transaction
+ * usually settles on its own (the late statement completes, the opener's abort
+ * check throws, the driver rolls back) and no reclaim pass is ever requested;
+ * the only cost is a typed error. If the permit is still held one prologue
+ * budget plus ~1 s later and a pass IS requested, `reclaimWedgedBackends`
+ * re-derives wedged-ness from `pg_stat_activity` across two snapshots and
+ * terminates nothing the database itself does not still show as stuck.
  *
  * WHY THE ERROR NEEDS THE RACE. Throwing from inside the transaction callback is
  * NOT enough to free the slot or even to reach the caller: postgres.js's
@@ -55,15 +57,29 @@
  * the transaction abandons no caller work. The abandoned promise stays
  * subscribed by the race, so its eventual `CONNECTION_CLOSED` rejection (once
  * the reclaimer terminates the backend) is handled, not unhandled.
+ *
+ * #8143 ADDITIONS. Both clocks are lag-tolerant (`lagTolerantTimeout.ts`): a
+ * timer that fires at least 1 s late gets one grace period, and every expiry
+ * carries `timer: 'late' | 'on-time'`. `acquisition.signal` aborts at acquire
+ * expiry (after the caller is rejected) so a request waiting in the admission
+ * gate leaves the queue and never reaches the driver. The acquire default is
+ * 10 s so one opener's default budgets stay under the agent's 30 s HTTP
+ * timeout (see getDbPoolAcquireTimeoutMs for what that does not cover).
  */
 
+import {
+  armLagTolerantTimeout,
+  type LagTolerantTimeoutHandle,
+  type TimerLateness,
+} from './lagTolerantTimeout';
+
 /**
- * Shared parsing for the two deadline knobs: default 15s, garbage or negative
- * falls back to the default, 0 is an explicit and honoured "off".
+ * Shared parsing for the deadline knobs: garbage or negative falls back to the
+ * knob's default, 0 is an explicit and honoured "off".
  */
-function readDeadlineKnobMs(name: string): number {
+function readDeadlineKnobMs(name: string, fallbackMs: number): number {
   const raw = Number.parseInt(process.env[name] ?? '', 10);
-  if (!Number.isFinite(raw) || raw < 0) return 15_000;
+  if (!Number.isFinite(raw) || raw < 0) return fallbackMs;
   // A sub-second budget would turn ordinary cross-AZ latency into a fault, so
   // anything positive below the floor is treated as a misconfiguration and
   // clamped rather than honoured. 0 remains an explicit, honoured "off".
@@ -73,45 +89,58 @@ function readDeadlineKnobMs(name: string): number {
 
 /** Env knob, alongside `DB_POOL_MAX` / `DB_POOL_HEALTH_*`. 0 disables the bound. */
 export function getDbAccessContextPrologueTimeoutMs(): number {
-  return readDeadlineKnobMs('DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS');
+  return readDeadlineKnobMs('DB_ACCESS_CONTEXT_PROLOGUE_TIMEOUT_MS', 15_000);
 }
 
 /**
- * #8229 — bound on waiting for a pooled connection (plus `BEGIN`) when a
- * context opener checks one out. Same parsing rules as the prologue knob.
- * 0 disables it and restores postgres.js's unbounded queue.
+ * #8229 — bound on waiting for a pooled connection (admission gate + driver
+ * queue + `BEGIN`). 0 disables it. Default 10 s (#8143): acquire 10 + prologue
+ * 15 + two 2 s graces = 29 s, under the agent's 30 s HTTP timeout. That bound
+ * is per opener, i.e. for a request that opens ONE context. A nested escalation
+ * (withResolvedDbAccessContext / runOutsideDbContext opening its own
+ * transaction) runs a second acquire + prologue budget, so such a request can
+ * exceed 30 s in the worst case.
  */
 export function getDbPoolAcquireTimeoutMs(): number {
-  return readDeadlineKnobMs('DB_POOL_ACQUIRE_TIMEOUT_MS');
+  return readDeadlineKnobMs('DB_POOL_ACQUIRE_TIMEOUT_MS', 10_000);
 }
 
+const lateSuffix = (timer: TimerLateness): string =>
+  timer === 'late' ? '; the timer fired late, so the event loop was stalled' : '';
+
 /**
- * The typed error the caller sees. Distinct from any driver error on purpose:
- * a `CONNECTION_CLOSED` surfaced from the abandoned transaction would tell an
- * operator the database dropped us, when what actually happened is that our own
- * prologue budget expired and we tore the connection down deliberately.
+ * The typed error the caller sees when the prologue budget expires. Distinct
+ * from any driver error on purpose: a `CONNECTION_CLOSED` surfaced from the
+ * abandoned transaction would tell an operator the database dropped us, when
+ * what actually happened is that our own prologue budget expired and we tore
+ * the connection down deliberately.
  */
 export class DbAccessContextPrologueTimeoutError extends Error {
   readonly elapsedMs: number;
   readonly timeoutMs: number;
   readonly contextLabel: string;
+  readonly timer: TimerLateness;
 
   constructor(input: {
     contextLabel: string;
     elapsedMs: number;
     timeoutMs: number;
+    timer?: TimerLateness;
     cause?: unknown;
   }) {
+    const timer = input.timer ?? 'on-time';
     super(
       `RLS GUC prologue for ${input.contextLabel} did not complete within ${input.timeoutMs}ms `
-        + `(elapsed ${input.elapsedMs}ms). The pooled connection was abandoned and a reclamation `
-        + 'pass was requested; see [db-wedged-backend] logs (#6048).',
+        + `(elapsed ${input.elapsedMs}ms${lateSuffix(timer)}). The transaction was abandoned and will roll back; `
+        + 'if its pool permit is still held one more prologue budget plus ~1 s later, a wedged-backend reclamation '
+        + 'pass is requested (see [db-pool-admission] and [db-wedged-backend] logs) (#6048, #8143).',
       input.cause === undefined ? undefined : { cause: input.cause },
     );
     this.name = 'DbAccessContextPrologueTimeoutError';
     this.elapsedMs = input.elapsedMs;
     this.timeoutMs = input.timeoutMs;
     this.contextLabel = input.contextLabel;
+    this.timer = timer;
   }
 }
 
@@ -149,18 +178,22 @@ export class DbPoolAcquireTimeoutError extends Error {
   readonly elapsedMs: number;
   readonly timeoutMs: number;
   readonly contextLabel: string;
+  readonly timer: TimerLateness;
 
-  constructor(input: { contextLabel: string; elapsedMs: number; timeoutMs: number }) {
+  constructor(input: { contextLabel: string; elapsedMs: number; timeoutMs: number; timer?: TimerLateness }) {
+    const timer = input.timer ?? 'on-time';
     super(
       `Timed out waiting for a pooled database connection for ${input.contextLabel} after `
-        + `${input.timeoutMs}ms (elapsed ${input.elapsedMs}ms). Every pool slot was busy (or the `
+        + `${input.timeoutMs}ms (elapsed ${input.elapsedMs}ms${lateSuffix(timer)}). Every pool slot was busy (or the `
         + 'event loop was starved); this is saturation, not a wedged prologue, so no reclamation '
-        + 'was requested. A connection handed over late will be released unused (#8229).',
+        + 'was requested. A request still waiting for a permit never reaches the driver; a connection '
+        + 'handed over late is released unused (#8229, #8143).',
     );
     this.name = 'DbPoolAcquireTimeoutError';
     this.elapsedMs = input.elapsedMs;
     this.timeoutMs = input.timeoutMs;
     this.contextLabel = input.contextLabel;
+    this.timer = timer;
   }
 }
 
@@ -202,6 +235,8 @@ export interface PrologueDeadlineExpiry {
   contextLabel: string;
   elapsedMs: number;
   timeoutMs: number;
+  /** 'late' when the timer callback ran at least 1 s after its due time. */
+  timer: TimerLateness;
 }
 
 export interface WithPrologueDeadlineDeps {
@@ -212,6 +247,27 @@ export interface WithPrologueDeadlineDeps {
    */
   onExpired?: (expiry: PrologueDeadlineExpiry) => void;
   now?: () => number;
+  /** Lag grace for a late timer; defaults to getDbTimerLagGraceMs(). */
+  graceMs?: number;
+}
+
+export type DeadlineClock = 'acquire' | 'prologue';
+
+const expiryTotals: Record<DeadlineClock, Record<TimerLateness, number>> = {
+  acquire: { late: 0, 'on-time': 0 },
+  prologue: { late: 0, 'on-time': 0 },
+};
+
+/** Expiries in this process, per clock and timer lateness. Monotonic. */
+export function getDeadlineExpiryTotals(): Record<DeadlineClock, Record<TimerLateness, number>> {
+  return { acquire: { ...expiryTotals.acquire }, prologue: { ...expiryTotals.prologue } };
+}
+
+export function __resetDeadlineExpiryTotalsForTests(): void {
+  for (const clock of ['acquire', 'prologue'] as const) {
+    expiryTotals[clock].late = 0;
+    expiryTotals[clock]['on-time'] = 0;
+  }
 }
 
 /**
@@ -248,10 +304,20 @@ export interface PoolAcquisition {
    * that throw is what releases a late connection. Idempotent otherwise.
    */
   acquired(): PrologueDeadline;
+  /**
+   * Aborts at acquire expiry (#8143), after the caller has been rejected. The
+   * admission gate listens to it so a request still waiting for a permit leaves
+   * the queue instead of later spending a connection on BEGIN + ROLLBACK.
+   * Never aborts after acquired().
+   */
+  readonly signal: AbortSignal;
 }
+
+const NEVER_ABORTED: AbortSignal = new AbortController().signal;
 
 const UNBOUNDED_ACQUISITION: PoolAcquisition = {
   acquired: () => UNBOUNDED_DEADLINE,
+  signal: NEVER_ABORTED,
 };
 
 export interface WithAcquireAndPrologueDeadlineDeps extends WithPrologueDeadlineDeps {
@@ -267,15 +333,16 @@ export interface WithAcquireAndPrologueDeadlineDeps extends WithPrologueDeadline
 }
 
 /**
- * Run a pooled-connection opener under two consecutive, independent budgets
- * (#8229):
+ * Run a pooled-connection opener under two consecutive, independent,
+ * lag-tolerant budgets (#8229, #8143):
  *
  * 1. ACQUIRE — from now until `work` calls `acquisition.acquired()`. Expiry
  *    calls `onAcquireExpired` (reporting only), then rejects with
- *    {@link DbPoolAcquireTimeoutError}. `onExpired` is NOT called: nothing is
- *    wedged, so no reclamation pass is requested.
+ *    {@link DbPoolAcquireTimeoutError}, then aborts `acquisition.signal`.
+ *    `onExpired` is NOT called: nothing is wedged, so no reclamation pass is
+ *    requested.
  * 2. PROLOGUE — from `acquired()` until the returned deadline is disarmed.
- *    Expiry behaves exactly as it always has (#6048): `onExpired` first, then
+ *    Expiry calls `onExpired` first, then rejects with
  *    {@link DbAccessContextPrologueTimeoutError}, `elapsedMs` measured from
  *    acquisition.
  *
@@ -293,49 +360,54 @@ export async function withAcquireAndPrologueDeadline<T>(
   if (acquireTimeoutMs <= 0 && prologueTimeoutMs <= 0) return work(UNBOUNDED_ACQUISITION);
 
   const now = deps.now ?? Date.now;
-  const calledAt = now();
-  let acquireTimer: ReturnType<typeof setTimeout> | undefined;
-  let prologueTimer: ReturnType<typeof setTimeout> | undefined;
+  let acquireHandle: LagTolerantTimeoutHandle | undefined;
+  let prologueHandle: LagTolerantTimeoutHandle | undefined;
   let acquireExpired = false;
   let prologueAborted = false;
   let deadline: PrologueDeadline | undefined;
+  const acquireAbort = new AbortController();
 
   let fail!: (err: Error) => void;
   const expiry = new Promise<never>((_resolve, reject) => {
     fail = reject;
   });
 
-  const stopAcquireClock = () => {
-    if (acquireTimer !== undefined) {
-      clearTimeout(acquireTimer);
-      acquireTimer = undefined;
-    }
+  const stopAcquireClock = (): void => {
+    acquireHandle?.cancel();
+    acquireHandle = undefined;
   };
-  const disarmPrologue = () => {
-    if (prologueTimer !== undefined) {
-      clearTimeout(prologueTimer);
-      prologueTimer = undefined;
-    }
+  const disarmPrologue = (): void => {
+    prologueHandle?.cancel();
+    prologueHandle = undefined;
   };
 
   if (acquireTimeoutMs > 0) {
-    acquireTimer = setTimeout(() => {
-      acquireTimer = undefined;
-      acquireExpired = true;
-      const elapsedMs = now() - calledAt;
-      // Guarded: a reporting fault must not replace the caller's real error.
-      try {
-        deps.onAcquireExpired?.({ contextLabel, elapsedMs, timeoutMs: acquireTimeoutMs });
-      } catch (reportErr) {
-        console.warn('[db-pool-acquire] expiry handler failed:', reportErr);
-      }
-      fail(new DbPoolAcquireTimeoutError({ contextLabel, elapsedMs, timeoutMs: acquireTimeoutMs }));
-    }, acquireTimeoutMs);
-    // Never the reason the process stays alive.
-    acquireTimer.unref?.();
+    acquireHandle = armLagTolerantTimeout({
+      timeoutMs: acquireTimeoutMs,
+      graceMs: deps.graceMs,
+      now,
+      onFire: ({ elapsedMs, late }) => {
+        acquireHandle = undefined;
+        acquireExpired = true;
+        const timer: TimerLateness = late ? 'late' : 'on-time';
+        expiryTotals.acquire[timer] += 1;
+        // Guarded: a reporting fault must not replace the caller's real error.
+        try {
+          deps.onAcquireExpired?.({ contextLabel, elapsedMs, timeoutMs: acquireTimeoutMs, timer });
+        } catch (reportErr) {
+          console.warn('[db-pool-acquire] expiry handler failed:', reportErr);
+        }
+        // Reject the caller BEFORE aborting the signal: a gate waiter that
+        // leaves the queue rejects `work` with its own error, and that must
+        // never win the race below.
+        fail(new DbPoolAcquireTimeoutError({ contextLabel, elapsedMs, timeoutMs: acquireTimeoutMs, timer }));
+        acquireAbort.abort();
+      },
+    });
   }
 
   const acquisition: PoolAcquisition = {
+    signal: acquireAbort.signal,
     acquired() {
       // The caller has already been told we gave up. Refuse the connection so
       // the driver rolls back and returns it to the pool.
@@ -347,7 +419,6 @@ export async function withAcquireAndPrologueDeadline<T>(
         return deadline;
       }
 
-      const acquiredAt = now();
       deadline = {
         get aborted() {
           return prologueAborted;
@@ -357,34 +428,41 @@ export async function withAcquireAndPrologueDeadline<T>(
         },
         disarm: disarmPrologue,
       };
-      prologueTimer = setTimeout(() => {
-        prologueTimer = undefined;
-        prologueAborted = true;
-        const elapsedMs = now() - acquiredAt;
-        // Reported BEFORE the throw, and never awaited: recovery is best-effort
-        // and single-flight, and making the caller wait for it would hand the
-        // deadline's whole purpose back. Guarded because a reporting fault must
-        // not replace the caller's real error.
-        try {
-          deps.onExpired?.({ contextLabel, elapsedMs, timeoutMs: prologueTimeoutMs });
-        } catch (reportErr) {
-          console.warn('[db-prologue-deadline] expiry handler failed:', reportErr);
-        }
-        fail(new DbAccessContextPrologueTimeoutError({
-          contextLabel,
-          elapsedMs,
-          timeoutMs: prologueTimeoutMs,
-        }));
-      }, prologueTimeoutMs);
-      prologueTimer.unref?.();
+      prologueHandle = armLagTolerantTimeout({
+        timeoutMs: prologueTimeoutMs,
+        graceMs: deps.graceMs,
+        now,
+        onFire: ({ elapsedMs, late }) => {
+          prologueHandle = undefined;
+          prologueAborted = true;
+          const timer: TimerLateness = late ? 'late' : 'on-time';
+          expiryTotals.prologue[timer] += 1;
+          // Reported BEFORE the throw, and never awaited: recovery is best-effort
+          // and single-flight, and making the caller wait for it would hand the
+          // deadline's whole purpose back. Guarded because a reporting fault must
+          // not replace the caller's real error.
+          try {
+            deps.onExpired?.({ contextLabel, elapsedMs, timeoutMs: prologueTimeoutMs, timer });
+          } catch (reportErr) {
+            console.warn('[db-prologue-deadline] expiry handler failed:', reportErr);
+          }
+          fail(new DbAccessContextPrologueTimeoutError({
+            contextLabel,
+            elapsedMs,
+            timeoutMs: prologueTimeoutMs,
+            timer,
+          }));
+        },
+      });
       return deadline;
     },
   };
 
   try {
     // The race keeps the abandoned `work` promise subscribed, so its eventual
-    // rejection (CONNECTION_CLOSED after a reclaim, or DbPoolAcquireAbortedError
-    // when a late connection is refused) is handled, not unhandled.
+    // rejection (CONNECTION_CLOSED after a reclaim, DbPoolAcquireAbortedError
+    // when a late connection is refused, or a gate waiter's cancellation) is
+    // handled, not unhandled.
     return await Promise.race([work(acquisition), expiry]);
   } finally {
     stopAcquireClock();
