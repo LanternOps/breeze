@@ -12,8 +12,11 @@ export type AlertRefreshTrigger = 'focus' | 'foreground' | 'turn_done';
 export const ALERT_REFRESH_MIN_GAP_MS = 1500;
 
 export function shouldRefreshAlerts(
-  _trigger: AlertRefreshTrigger,
+  trigger: AlertRefreshTrigger,
   msSinceLastFetch: number,
 ): boolean {
+  // A finished chat turn may have just changed alerts, so it is never swallowed
+  // by a focus/foreground fetch that landed moments earlier.
+  if (trigger === 'turn_done') return true;
   return msSinceLastFetch >= ALERT_REFRESH_MIN_GAP_MS;
 }
