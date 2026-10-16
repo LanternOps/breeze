@@ -392,8 +392,11 @@ export function requestEdrEndpointAction(
 }
 
 /** Register the vendor push (webhook) for a connection. 409 codes: public_url_unset | public_url_not_https | connection_inactive; 502 vendor_error. */
-export function enableEdrPush(id: string, opts: EdrActionOptions) {
-  return mutate<{ data: EdrConnection }>(`/edr/connections/${id}/push`, 'POST', opts);
+/** `replaceExisting` only after the user confirmed taking over a push destination the console already uses (409 push_conflict). */
+export function enableEdrPush(id: string, opts: EdrActionOptions, o: { replaceExisting?: boolean } = {}) {
+  return mutate<{ data: EdrConnection }>(
+    `/edr/connections/${id}/push`, 'POST', opts, o.replaceExisting ? { replaceExisting: true } : undefined,
+  );
 }
 
 export function disableEdrPush(id: string, opts: EdrActionOptions<{ data: EdrConnection; warnings?: string[] }>) {

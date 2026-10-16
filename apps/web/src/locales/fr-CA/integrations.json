@@ -1412,11 +1412,15 @@
     "pushHelp": "{{provider}} avise Breeze des nouveaux événements, ce qui déclenche une synchronisation plus tôt que le calendrier habituel. Les synchronisations planifiées continuent.",
     "pushOnToast": "Événements push activés",
     "pushOffToast": "Événements push désactivés",
+    "pushReplaceTitle": "Remplacer la destination push existante?",
+    "pushReplaceMessage": "{{provider}} envoie déjà les événements push vers une autre destination (par exemple un SIEM). La remplacer par Breeze interrompt ce flux.",
+    "pushReplaceConfirm": "Remplacer et activer",
     "pushError": "Impossible de modifier les événements push.",
     "pushErrors": {
       "public_url_unset": "Définissez l’URL publique du serveur avant d’activer les événements push.",
       "public_url_not_https": "Les événements push exigent une URL publique HTTPS.",
-      "connection_inactive": "Activez la connexion avant d’activer les événements push."
+      "connection_inactive": "Activez la connexion avant d’activer les événements push.",
+      "push_state_changed": "Les paramètres push ont changé pendant l’activation. Actualisez et réessayez."
     },
     "pushTest": "Envoyer un événement de test",
     "pushTestQueuedToast": "Événement de test demandé",

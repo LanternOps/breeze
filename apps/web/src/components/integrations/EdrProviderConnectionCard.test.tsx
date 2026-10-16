@@ -92,6 +92,20 @@ describe('EdrProviderConnectionCard response-action / push switches', () => {
     await waitFor(() => expect(changed).toHaveBeenCalled());
   });
 
+  it('review: a 409 push_conflict asks before replacing the existing push destination, then retries with replaceExisting', async () => {
+    fetchMock.mockResolvedValueOnce(res({ error: 'x', code: 'push_conflict' }, 409));
+    mount(conn());
+    fireEvent.click(screen.getByTestId('edr-connection-push-enabled'));
+    const confirm = await screen.findByTestId('edr-connection-push-replace-confirm');
+    // No error toast for the conflict itself: the dialog explains it.
+    expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(calls('POST')).toHaveLength(1);
+    expect((calls('POST')[0]![1] as RequestInit).body).toBeUndefined();
+    fireEvent.click(confirm);
+    await waitFor(() => expect(calls('POST')).toHaveLength(2));
+    expect(JSON.parse(String((calls('POST')[1]![1] as RequestInit).body))).toEqual({ replaceExisting: true });
+  });
+
   it('maps a 409 public_url_unset to a specific error toast', async () => {
     fetchMock.mockResolvedValue(res({ error: 'x', code: 'public_url_unset' }, 409));
     mount(conn());

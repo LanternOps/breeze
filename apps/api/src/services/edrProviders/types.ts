@@ -191,10 +191,21 @@ export interface EdrProviderAdapter {
    * schedule a read sync. Called only by `routes/webhooks/edr.ts`.
    */
   verifyWebhook?(req: RawWebhookRequest, secret: string): EdrWebhookVerdict;
-  /** W03 PR-B. Register Breeze's webhook URL + shared secret with the vendor console. */
-  registerPush?(ctx: EdrAdapterContext, o: { url: string; secret: string; vendorTenantIds: string[] }): Promise<void>;
-  /** W03 PR-B. Turn vendor push off for this console. */
-  unregisterPush?(ctx: EdrAdapterContext): Promise<void>;
+  /**
+   * W03 PR-B. Register Breeze's webhook URL + shared secret with the vendor
+   * console. A console has ONE push destination: when it already points
+   * somewhere else (a SIEM, say) this throws `code: 'push_conflict'` unless
+   * `replaceExisting` is set.
+   */
+  registerPush?(
+    ctx: EdrAdapterContext,
+    o: { url: string; secret: string; vendorTenantIds: string[]; replaceExisting?: boolean },
+  ): Promise<void>;
+  /**
+   * W03 PR-B. Turn vendor push off, but only while it still points at `url`
+   * (Breeze's webhook): never disables a destination someone else configured.
+   */
+  unregisterPush?(ctx: EdrAdapterContext, o: { url: string | null }): Promise<{ changed: boolean }>;
   /** W03 PR-B. Ask the vendor to send one test event to the registered URL. */
   sendTestPush?(ctx: EdrAdapterContext): Promise<void>;
   // Declared now, implemented later (types only — no framework code calls them):

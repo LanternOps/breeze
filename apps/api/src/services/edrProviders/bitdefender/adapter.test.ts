@@ -56,20 +56,43 @@ describe('push (W03 PR-B)', () => {
     expect(typeof adapter.verifyWebhook).toBe('function');
   });
 
-  it('registerPush enables vendor push with the url, secret and mapped companies', async () => {
-    const { ctx, calls } = makeCtx({ 'push.setPushEventSettings': rpc(true) });
-    await adapter.registerPush!(ctx, { url: 'https://breeze.example.test/api/v1/webhooks/edr/x', secret: 'sek', vendorTenantIds: [C1, C2] });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.params).toMatchObject({
-      status: 1, serviceSettings: { url: 'https://breeze.example.test/api/v1/webhooks/edr/x', authorization: 'sek' },
+  const OURS = 'https://breeze.example.test/api/v1/webhooks/edr/x';
+  const settings = (status: number, url: string | null) => rpc({ status, serviceType: 'jsonRPC', serviceSettings: url ? { url } : {} });
+
+  it('registerPush enables vendor push with the url, secret and mapped companies (console had no push)', async () => {
+    const { ctx, calls } = makeCtx({ 'push.getPushEventSettings': settings(0, null), 'push.setPushEventSettings': rpc(true) });
+    await adapter.registerPush!(ctx, { url: OURS, secret: 'sek', vendorTenantIds: [C1, C2] });
+    expect(calls.map((c) => c.key)).toEqual(['push.getPushEventSettings', 'push.setPushEventSettings']);
+    expect(calls[1]!.params).toMatchObject({
+      status: 1, serviceSettings: { url: OURS, authorization: 'sek' },
       subscribeToCompanies: [C1, C2],
     });
   });
 
-  it('unregisterPush disables vendor push', async () => {
-    const { ctx, calls } = makeCtx({ 'push.setPushEventSettings': rpc(true) });
-    await adapter.unregisterPush!(ctx);
-    expect(calls[0]!.params).toEqual({ status: 0 });
+  it('review: registerPush refuses to overwrite push that already goes elsewhere (e.g. a SIEM) unless told to replace it', async () => {
+    const { ctx, count } = makeCtx({ 'push.getPushEventSettings': settings(1, 'https://siem.example.test/ingest'), 'push.setPushEventSettings': rpc(true) });
+    await expect(adapter.registerPush!(ctx, { url: OURS, secret: 's', vendorTenantIds: [] }))
+      .rejects.toMatchObject({ code: 'push_conflict' });
+    expect(count('push.setPushEventSettings')).toBe(0);
+    await adapter.registerPush!(ctx, { url: OURS, secret: 's', vendorTenantIds: [], replaceExisting: true });
+    expect(count('push.setPushEventSettings')).toBe(1);
+  });
+
+  it('review: re-registering over our own URL is not a conflict', async () => {
+    const { ctx, count } = makeCtx({ 'push.getPushEventSettings': settings(1, OURS), 'push.setPushEventSettings': rpc(true) });
+    await adapter.registerPush!(ctx, { url: OURS, secret: 's', vendorTenantIds: [] });
+    expect(count('push.setPushEventSettings')).toBe(1);
+  });
+
+  it('unregisterPush disables vendor push only while it still points at Breeze', async () => {
+    const ours = makeCtx({ 'push.getPushEventSettings': settings(1, OURS), 'push.setPushEventSettings': rpc(true) });
+    expect(await adapter.unregisterPush!(ours.ctx, { url: OURS })).toEqual({ changed: true });
+    expect(ours.calls.at(-1)!.params).toEqual({ status: 0 });
+    for (const [status, url] of [[1, 'https://siem.example.test/ingest'], [0, OURS], [1, null]] as const) {
+      const other = makeCtx({ 'push.getPushEventSettings': settings(status, url), 'push.setPushEventSettings': rpc(true) });
+      expect(await adapter.unregisterPush!(other.ctx, { url: OURS }), `${status} ${url}`).toEqual({ changed: false });
+      expect(other.count('push.setPushEventSettings')).toBe(0);
+    }
   });
 
   it('sendTestPush calls sendTestPushEvent', async () => {
@@ -79,7 +102,7 @@ describe('push (W03 PR-B)', () => {
   });
 
   it('a vendor refusal surfaces as a typed error', async () => {
-    const { ctx } = makeCtx({ 'push.setPushEventSettings': ok('error-invalid-params-32602.json') });
+    const { ctx } = makeCtx({ 'push.getPushEventSettings': settings(0, null), 'push.setPushEventSettings': ok('error-invalid-params-32602.json') });
     await expect(adapter.registerPush!(ctx, { url: 'https://x.example.test/h', secret: 's', vendorTenantIds: [] }))
       .rejects.toBeInstanceOf(EdrProviderRequestError);
   });

@@ -1412,11 +1412,15 @@
     "pushHelp": "{{provider}} notifies Breeze about new events, which triggers a sync sooner than the regular schedule. Scheduled syncs keep running.",
     "pushOnToast": "Push events enabled",
     "pushOffToast": "Push events disabled",
+    "pushReplaceTitle": "Replace the existing push destination?",
+    "pushReplaceMessage": "{{provider}} already sends push events to another destination (for example a SIEM). Replacing it with Breeze stops that feed.",
+    "pushReplaceConfirm": "Replace and enable",
     "pushError": "Could not change push events.",
     "pushErrors": {
       "public_url_unset": "Set the server public URL before enabling push events.",
       "public_url_not_https": "Push events need an HTTPS public URL.",
-      "connection_inactive": "Activate the connection before enabling push events."
+      "connection_inactive": "Activate the connection before enabling push events.",
+      "push_state_changed": "Push settings changed while enabling. Refresh and try again."
     },
     "pushTest": "Send test event",
     "pushTestQueuedToast": "Test event requested",

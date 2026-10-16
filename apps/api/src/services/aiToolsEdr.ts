@@ -293,6 +293,7 @@ export function registerEdrTools(aiTools: Map<string, AiTool>): void {
 
 /** At most this many connections per call (the route syncs one; the tool is rate limited too). */
 const SYNC_MAX_CONNECTIONS = 20;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * `sync_edr_data` (#8167 W03 PR-B, Tier 2). The same gate as
@@ -303,8 +304,13 @@ const SYNC_MAX_CONNECTIONS = 20;
 async function syncEdrData(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
   const gate = requireEdrPartnerAdmin(auth);
   if (isGateFailure(gate)) return JSON.stringify({ error: gate.error });
+  // Route parity: POST /edr/connections/:id/sync is behind requireMfa().
+  if (!hasSatisfiedMfa(auth)) return JSON.stringify({ error: 'MFA required' });
   const connectionId = typeof input.connectionId === 'string' && input.connectionId ? input.connectionId : undefined;
   const orgId = typeof input.orgId === 'string' && input.orgId ? input.orgId : undefined;
+  if ((connectionId && !UUID_RE.test(connectionId)) || (orgId && !UUID_RE.test(orgId))) {
+    return JSON.stringify({ error: 'connectionId and orgId must be UUIDs' });
+  }
   if (orgId && !auth.canAccessOrg(orgId)) return JSON.stringify({ error: 'Access to this organization denied' });
 
   const rows = await withAuthDbAccessContext(auth, async () => {

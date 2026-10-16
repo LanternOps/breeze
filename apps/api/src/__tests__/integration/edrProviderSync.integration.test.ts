@@ -9,7 +9,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 
 // ---- vendor seam ---------------------------------------------------------------
@@ -761,6 +761,8 @@ describe('edr sync — device lifecycle on sync-created links', () => {
 });
 
 describe('edr push hints — durable marker against Postgres (W03 PR-B)', () => {
+  // A hook left armed by a case whose fetch path did not fire must not leak.
+  beforeEach(() => { midFetch.hook = null; });
   const rerunId = (id: string) => `edr-detections-${id}-rerun`;
   const marker = async (id: string) => (await adminRows<{ m: string | null }>(sql`
     SELECT pending_hint_at::text AS m FROM edr_connections WHERE id = ${id}::uuid`))[0]!.m;

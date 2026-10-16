@@ -15,6 +15,9 @@ const s = vi.hoisted(() => ({
   updates: [] as Array<{ set: Record<string, unknown>; depth: number }>,
   vendorDepths: [] as number[],
   order: [] as string[],
+  selectWheres: [] as unknown[],
+  /** Per-update `.returning()` rows, consumed in order (default: one row). */
+  updateReturning: [] as Array<Array<{ id: string }>>,
 }));
 
 const ID = '33333333-3333-4333-8333-333333333333';
@@ -26,7 +29,7 @@ vi.mock('../../db', async () => {
     let table: unknown = null;
     const c: Record<string, unknown> = {};
     c.from = vi.fn((t: unknown) => { table = t; return c; });
-    c.where = vi.fn(() => c);
+    c.where = vi.fn((cond: unknown) => { s.selectWheres.push(cond); return c; });
     c.limit = vi.fn(() => c);
     (c as { then: unknown }).then = (res: (v: unknown) => unknown) => {
       const rows = table === schema.edrTenants ? s.tenants : s.connection ? [s.connection] : [];
@@ -39,7 +42,8 @@ vi.mock('../../db', async () => {
       s.updates.push({ set: v, depth: s.depth });
       s.order.push('db:update');
       const done = Promise.resolve([{ id: ID }]);
-      return { where: vi.fn(() => Object.assign(done, { returning: vi.fn(async () => [{ id: ID }]) })) };
+      const rows = s.updateReturning.length > 0 ? s.updateReturning.shift()! : [{ id: ID }];
+      return { where: vi.fn(() => Object.assign(done, { returning: vi.fn(async () => rows) })) };
     }),
   }));
   return {
@@ -65,7 +69,7 @@ vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 
 const v = vi.hoisted(() => ({
   registerPush: vi.fn(async () => {}),
-  unregisterPush: vi.fn(async () => {}),
+  unregisterPush: vi.fn(async (..._a: unknown[]): Promise<{ changed: boolean }> => ({ changed: true })),
   sendTestPush: vi.fn(async () => {}),
 }));
 const track = (name: keyof typeof v) => async (...a: unknown[]) => {
@@ -93,9 +97,16 @@ vi.mock('../../services/edrProviders/context', () => ({
   buildEdrAdapterContext: vi.fn(() => ({ ctx: true })),
 }));
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { requireMfa, requirePermission } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { EdrProviderRequestError } from '../../services/edrProviders/types';
 import { edrConnectionPushRoutes, publicApiBase } from './connectionPush';
+
+// Captured at import, before beforeEach clears mock history.
+const GATE_PERMISSION_CALLS = vi.mocked(requirePermission).mock.calls.map((c) => [...c]);
+const GATE_MFA_CALLS = vi.mocked(requireMfa).mock.calls.length;
 
 const row = (over: Record<string, unknown> = {}) => ({
   id: ID, partnerId: PARTNER_ID, provider: 'bitdefender', name: 'GZ', baseUrl: 'https://cloud.gravityzone.bitdefender.com/api',
@@ -110,13 +121,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   s.auth = { scope: 'partner', orgId: null, partnerId: PARTNER_ID, partnerOrgAccess: 'all' };
   s.gates = { permission: false, mfa: false };
-  s.depth = 0; s.updates = []; s.vendorDepths = []; s.order = [];
+  s.depth = 0; s.updates = []; s.vendorDepths = []; s.order = []; s.selectWheres = []; s.updateReturning = [];
   s.connection = row();
   s.tenants = [{ vendorTenantId: 'c1' }, { vendorTenantId: 'c2' }];
   process.env.PUBLIC_API_URL = 'https://breeze.example.test';
   delete process.env.BREEZE_SERVER;
   v.registerPush.mockResolvedValue(undefined);
-  v.unregisterPush.mockResolvedValue(undefined);
+  v.unregisterPush.mockResolvedValue({ changed: true });
   v.sendTestPush.mockResolvedValue(undefined);
   app = new Hono();
   app.use('*', async (c, next) => {
@@ -186,6 +197,19 @@ describe('gates (all three routes)', () => {
   it.each(routes)('%s %s: bad id -> 400', async (m, p) => {
     expect((await call(m, p.replace(ID, 'nope'))).status).toBe(400);
   });
+
+  it('review: each route attaches ORGS_WRITE (organizations.write) and MFA', () => {
+    expect(GATE_PERMISSION_CALLS).toEqual([['organizations', 'write'], ['organizations', 'write'], ['organizations', 'write']]);
+    expect(GATE_MFA_CALLS).toBe(3);
+  });
+
+  it.each(routes)('review: %s %s loads the connection scoped to the CALLER\'s partner id', async (m, p) => {
+    s.connection = row({ pushEnabled: true, webhookSecretEncrypted: 'x' });
+    await call(m, p);
+    const first = new PgDialect().sqlToQuery(s.selectWheres[0] as SQL);
+    expect(first.sql).toMatch(/"partner_id" = \$\d/);
+    expect(first.params).toEqual(expect.arrayContaining([ID, PARTNER_ID]));
+  });
 });
 
 describe('POST /edr/connections/:id/push', () => {
@@ -201,6 +225,7 @@ describe('POST /edr/connections/:id/push', () => {
     // 2. vendor registration: env base URL, the SAME plaintext secret, mapped tenants
     expect(v.registerPush).toHaveBeenCalledWith({ ctx: true }, {
       url: `https://breeze.example.test/api/v1/webhooks/edr/${ID}`, secret: secretPlain, vendorTenantIds: ['c1', 'c2'],
+      replaceExisting: false,
     });
     expect(s.vendorDepths).toEqual([0]);
     // 3. enabled only after the vendor accepted
@@ -247,6 +272,41 @@ describe('POST /edr/connections/:id/push', () => {
     expect(s.order).toEqual([]);
   });
 
+  it('review: push already pointing elsewhere -> 409 push_conflict, push stays off; replaceExisting:true goes through', async () => {
+    v.registerPush.mockRejectedValueOnce(new EdrProviderRequestError('GravityZone push events already go to another destination', {
+      code: 'push_conflict', reauth: false, scope: 'connection',
+    }));
+    let res = await call('POST');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'push_conflict' });
+    expect(s.updates.some((u) => u.set.pushEnabled === true)).toBe(false);
+    expect((v.registerPush.mock.calls[0] as unknown[])[1]).toMatchObject({ replaceExisting: false });
+
+    res = await app.request(`/edr/connections/${ID}/push`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ replaceExisting: true }),
+    });
+    expect(res.status).toBe(200);
+    expect((v.registerPush.mock.calls[1] as unknown[])[1]).toMatchObject({ replaceExisting: true });
+  });
+
+  it('review: the enabling CAS matching no row (secret rotated / push turned off meanwhile) -> 409, failure audit, not success', async () => {
+    s.updateReturning = [[{ id: ID }], []];
+    const res = await call('POST');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'push_state_changed' });
+    const audit = vi.mocked(writeRouteAudit).mock.calls.at(-1)![1] as { action: string; result?: string };
+    expect(audit).toMatchObject({ action: 'edr.connection.push_enabled', result: 'failure' });
+  });
+
+  it('review: a non-vendor failure (e.g. stored credentials do not decrypt) is a logged 500, not a fake vendor rejection', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    v.registerPush.mockRejectedValueOnce(new TypeError('boom'));
+    const res = await call('POST');
+    expect(res.status).toBe(500);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
   it('409 for an inactive connection; 400 for an adapter without push', async () => {
     s.connection = row({ isActive: false });
     let res = await call('POST');
@@ -269,6 +329,16 @@ describe('DELETE /edr/connections/:id/push', () => {
     expect(s.vendorDepths).toEqual([0]);
     expect(await res.json()).toMatchObject({ warnings: [] });
     expect(audits()).toContain('edr.connection.push_disabled');
+  });
+
+  it('review: passes our webhook URL so the vendor push is only turned off while it still points at Breeze', async () => {
+    s.connection = row({ pushEnabled: true, webhookSecretEncrypted: 'x' });
+    v.unregisterPush.mockResolvedValueOnce({ changed: false } as never);
+    const res = await call('DELETE');
+    expect(v.unregisterPush).toHaveBeenCalledWith({ ctx: true }, { url: `https://breeze.example.test/api/v1/webhooks/edr/${ID}` });
+    const body = await res.json() as { warnings: string[] };
+    expect(body.warnings).toHaveLength(1);
+    expect(s.updates[0]!.set).toMatchObject({ webhookSecretEncrypted: null, pushEnabled: false });
   });
 
   it('still clears the secret when the vendor call fails, and reports a warning', async () => {
@@ -299,8 +369,17 @@ describe('POST /edr/connections/:id/push/test', () => {
     expect(await res.json()).toMatchObject({ code: 'push_not_enabled' });
     expect(v.sendTestPush).not.toHaveBeenCalled();
     s.connection = row({ pushEnabled: true, webhookSecretEncrypted: 'x' });
-    v.sendTestPush.mockRejectedValue(new Error('down'));
+    v.sendTestPush.mockRejectedValue(new EdrProviderRequestError('GravityZone push.sendTestPushEvent failed', {
+      code: 'vendor_error', reauth: false, scope: 'operation',
+    }));
     res = await call('POST', `/edr/connections/${ID}/push/test`);
     expect(res.status).toBe(502);
+    // A non-vendor failure is a logged 500.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    v.sendTestPush.mockRejectedValue(new Error('down'));
+    res = await call('POST', `/edr/connections/${ID}/push/test`);
+    expect(res.status).toBe(500);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
   });
 });

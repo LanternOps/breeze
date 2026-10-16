@@ -135,6 +135,7 @@ export default function EdrProviderConnectionCard({
   const [baseUrl, setBaseUrl] = useState("");
   const [busy, setBusy] = useState<null | "test" | "sync" | "save" | "delete" | "actions" | "push" | "pushTest">(null);
   const [confirmActions, setConfirmActions] = useState(false);
+  const [confirmReplacePush, setConfirmReplacePush] = useState(false);
   const [testSent, setTestSent] = useState(false);
 
   const providerLabel = edrProviderLabel(connection.provider) ?? provider?.label ?? connection.provider;
@@ -239,19 +240,29 @@ export default function EdrProviderConnectionCard({
     }
   };
 
-  const setPush = async (next: boolean) => {
+  const setPush = async (next: boolean, replaceExisting = false) => {
     setBusy("push");
     const errorFallback = t("edrProviders.pushError");
     try {
       if (next) {
-        await enableEdrPush(connection.id, {
-          errorFallback,
-          successMessage: t("edrProviders.pushOnToast"),
-          friendly: (code) =>
-            ["public_url_unset", "public_url_not_https", "connection_inactive"].includes(code)
-              ? t(/* i18n-dynamic */ `edrProviders.pushErrors.${code}`)
-              : undefined,
-        });
+        try {
+          await enableEdrPush(connection.id, {
+            errorFallback,
+            successMessage: t("edrProviders.pushOnToast"),
+            // The console already pushes elsewhere: the dialog explains it instead of a toast.
+            suppressErrorToast: (status, code) => status === 409 && code === "push_conflict",
+            friendly: (code) =>
+              ["public_url_unset", "public_url_not_https", "connection_inactive", "push_state_changed"].includes(code)
+                ? t(/* i18n-dynamic */ `edrProviders.pushErrors.${code}`)
+                : undefined,
+          }, { replaceExisting });
+        } catch (err) {
+          if (err instanceof ActionError && err.status === 409 && err.code === "push_conflict") {
+            setConfirmReplacePush(true);
+            return;
+          }
+          throw err;
+        }
       } else {
         const result = await disableEdrPush(connection.id, {
           errorFallback,
@@ -521,6 +532,20 @@ export default function EdrProviderConnectionCard({
             variant="warning"
             isLoading={busy === "actions"}
             confirmTestId="edr-connection-actions-confirm"
+          />
+          <ConfirmDialog
+            open={confirmReplacePush}
+            onClose={() => busy === null && setConfirmReplacePush(false)}
+            onConfirm={() => {
+              setConfirmReplacePush(false);
+              void setPush(true, true);
+            }}
+            title={t("edrProviders.pushReplaceTitle")}
+            message={t("edrProviders.pushReplaceMessage", { provider: providerLabel })}
+            confirmLabel={t("edrProviders.pushReplaceConfirm")}
+            variant="warning"
+            isLoading={busy === "push"}
+            confirmTestId="edr-connection-push-replace-confirm"
           />
 
           {!editingCredentials && fields.length > 0 && (

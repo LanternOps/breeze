@@ -29,6 +29,7 @@ vi.mock('../middleware/auth', async () => {
   const actual = await vi.importActual<typeof import('../middleware/auth')>('../middleware/auth');
   return {
     ...actual,
+    hasSatisfiedMfa: vi.fn((a: { token?: { mfa?: boolean } }) => a.token?.mfa === true),
     withAuthDbAccessContext: vi.fn(async (_a: unknown, fn: () => Promise<unknown>) => {
       h.depth += 1;
       try { return await fn(); } finally { h.depth -= 1; }
@@ -109,6 +110,19 @@ describe('sync_edr_data — gates', () => {
     const out = await run({}, auth({ partnerOrgAccess: 'selected' }));
     expect(out.error).toBeDefined();
     expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('review: a session without satisfied MFA is refused (route parity: requireMfa)', async () => {
+    const out = await run({}, auth({ token: { mfa: false } }));
+    expect(out.error).toMatch(/MFA/);
+    expect(h.enqueue).not.toHaveBeenCalled();
+    expect(h.selectCalls).toBe(0);
+  });
+
+  it('review: non-uuid ids return a structured error instead of a database error', async () => {
+    expect((await run({ connectionId: 'nope' })).error).toBeDefined();
+    expect((await run({ orgId: 'nope' })).error).toBeDefined();
+    expect(h.selectCalls).toBe(0);
   });
 
   it('an orgId the caller cannot access is refused', async () => {

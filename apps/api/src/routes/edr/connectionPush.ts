@@ -8,6 +8,7 @@ import { edrConnections, edrTenants } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope, withAuthDbAccessContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { captureException } from '../../services/sentry';
 import { decryptEdrSecret, encryptEdrSecret } from '../../services/edrProviders/credentials';
 import { getEdrProvider } from '../../services/edrProviders/registry';
 import { buildEdrAdapterContext } from '../../services/edrProviders/context';
@@ -97,10 +98,23 @@ function contextFor(adapter: EdrProviderAdapter, row: PushRow) {
   return buildEdrAdapterContext(adapter, { creds, baseUrl: row.baseUrl, region: row.region, vendorRootId: row.vendorRootId });
 }
 
-/** Vendor errors are already key-scrubbed by the client; anything else gets a generic line. */
-function vendorMessage(error: unknown, label: string): string {
-  return error instanceof EdrProviderRequestError ? error.message : `${label} did not accept the request`;
+/**
+ * A vendor answer (already key-scrubbed by the client) vs anything else — a
+ * credentials decrypt failure, a context bug — which is logged and reported as
+ * a server error rather than dressed up as a vendor rejection.
+ */
+function classifyPushError(error: unknown, label: string, op: string, connectionId: string):
+  { vendor: true; code: string; message: string } | { vendor: false; message: string } {
+  if (error instanceof EdrProviderRequestError) return { vendor: true, code: error.code, message: error.message };
+  console.error(`[edrPush] ${op} failed for ${connectionId} before a vendor answer:`, error);
+  captureException(error instanceof Error ? error : new Error(String(error)));
+  return { vendor: false, message: `Could not reach ${label}: an internal error occurred` };
 }
+
+const pushBodySchema = z.object({
+  /** Take over a push destination the console already sends elsewhere (after the UI confirmed it). */
+  replaceExisting: z.boolean().optional(),
+}).strict();
 
 // POST /edr/connections/:id/push  (self-managed)
 edrConnectionPushRoutes.post(
@@ -126,6 +140,20 @@ edrConnectionPushRoutes.post(
     }
     const base = publicApiBase();
     if (!base.ok) return c.json({ error: base.error, code: base.code }, 409);
+    // Optional JSON body; an empty body means { replaceExisting: false }.
+    const rawBody = await c.req.text();
+    let replaceExisting = false;
+    if (rawBody.trim()) {
+      let parsedJson: unknown;
+      try {
+        parsedJson = JSON.parse(rawBody);
+      } catch {
+        return c.json({ error: 'Invalid JSON body' }, 400);
+      }
+      const parsed = pushBodySchema.safeParse(parsedJson);
+      if (!parsed.success) return c.json({ error: 'Invalid request body' }, 400);
+      replaceExisting = parsed.data.replaceExisting === true;
+    }
 
     const secret = randomBytes(32).toString('base64url');
     const sealed = encryptEdrSecret('connection_webhook_secret', row.id, secret);
@@ -148,32 +176,59 @@ edrConnectionPushRoutes.post(
         url: `${base.base}/api/v1/webhooks/edr/${row.id}`,
         secret,
         vendorTenantIds,
+        replaceExisting,
       }));
     } catch (error) {
-      const message = vendorMessage(error, adapter.label);
+      const failure = classifyPushError(error, adapter.label, 'register', row.id);
+      const conflict = failure.vendor && failure.code === 'push_conflict';
       writeRouteAudit(c, {
         orgId: null,
         action: 'edr.connection.push_enabled',
         resourceType: 'edr_connection',
         resourceId: row.id,
-        details: { partnerId: gate.partnerId, error: message },
+        details: { partnerId: gate.partnerId, error: failure.message },
         result: 'failure',
       });
-      return c.json({ error: message, code: 'vendor_error' }, 502);
+      if (conflict) {
+        return c.json({
+          error: `${adapter.label} already sends push events to another destination. Replacing it stops that feed.`,
+          code: 'push_conflict',
+        }, 409);
+      }
+      return failure.vendor
+        ? c.json({ error: failure.message, code: 'vendor_error' }, 502)
+        : c.json({ error: failure.message, code: 'internal_error' }, 500);
     }
 
-    // 3. Enabled only now, and only if nobody rotated the secret in between.
-    const updated = await withAuthDbAccessContext(auth, async () => {
-      await db
+    // 3. Enabled only now, and only if nobody rotated or cleared the secret in between.
+    const result = await withAuthDbAccessContext(auth, async () => {
+      const enabled = await db
         .update(edrConnections)
         .set({ pushEnabled: true, pushRegisteredAt: new Date(), updatedAt: new Date() })
         .where(and(
           eq(edrConnections.id, row.id),
           eq(edrConnections.partnerId, gate.partnerId),
           eq(edrConnections.webhookSecretEncrypted, sealed),
-        ));
-      return loadPublic(row.id, gate.partnerId);
+        ))
+        .returning({ id: edrConnections.id });
+      return { enabled: enabled.length > 0, data: await loadPublic(row.id, gate.partnerId) };
     });
+    if (!result.enabled) {
+      writeRouteAudit(c, {
+        orgId: null,
+        action: 'edr.connection.push_enabled',
+        resourceType: 'edr_connection',
+        resourceId: row.id,
+        details: { partnerId: gate.partnerId, error: 'push settings changed while registering' },
+        result: 'failure',
+      });
+      return c.json({
+        error: 'Push settings changed while this request was registering. Refresh and try again.',
+        code: 'push_state_changed',
+        data: result.data,
+      }, 409);
+    }
+    const updated = result.data;
 
     writeRouteAudit(c, {
       orgId: null,
@@ -212,10 +267,16 @@ edrConnectionPushRoutes.delete(
     const warnings: string[] = [];
     const adapter = adapterOrNull(row.provider);
     if (adapter?.unregisterPush) {
+      const base = publicApiBase();
+      const url = base.ok ? `${base.base}/api/v1/webhooks/edr/${row.id}` : null;
       try {
-        await runOutsideDbContext(() => adapter.unregisterPush!(contextFor(adapter, row)));
+        const { changed } = await runOutsideDbContext(() => adapter.unregisterPush!(contextFor(adapter, row), { url }));
+        if (!changed) {
+          warnings.push(`${adapter.label} push settings were left unchanged: they are already off or point to another destination. Breeze no longer accepts its push events.`);
+        }
       } catch (error) {
-        warnings.push(`${vendorMessage(error, adapter.label)}. Breeze no longer accepts its push events; turn push off in the vendor console too.`);
+        const failure = classifyPushError(error, adapter.label, 'unregister', row.id);
+        warnings.push(`${failure.message}. Breeze no longer accepts its push events; turn push off in the vendor console too.`);
       }
     }
 
@@ -253,7 +314,10 @@ edrConnectionPushRoutes.post(
     try {
       await runOutsideDbContext(() => adapter.sendTestPush!(contextFor(adapter, row)));
     } catch (error) {
-      return c.json({ error: vendorMessage(error, adapter.label), code: 'vendor_error' }, 502);
+      const failure = classifyPushError(error, adapter.label, 'test', row.id);
+      return failure.vendor
+        ? c.json({ error: failure.message, code: 'vendor_error' }, 502)
+        : c.json({ error: failure.message, code: 'internal_error' }, 500);
     }
     writeRouteAudit(c, {
       orgId: null,

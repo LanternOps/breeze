@@ -55,7 +55,7 @@ const SECRET = 'q9Hk3bQ0V4m2Zc8pXw7tYr1uNs6aLd5eFg0hJiKoMlP';
 const FIXTURE = readFileSync(
   join(__dirname, '../../services/edrProviders/bitdefender/__fixtures__/push-event-add-events.json'), 'utf8',
 );
-const ACTIVE = { id: ID, provider: 'bitdefender', isActive: true, pushEnabled: true, webhookSecretEncrypted: 'sealed' };
+const ACTIVE = { id: ID, provider: 'bitdefender', isActive: true, status: 'connected', pushEnabled: true, webhookSecretEncrypted: 'sealed' };
 
 function post(path: string, o: { auth?: string | null; body?: string } = {}) {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -125,6 +125,24 @@ describe('POST /webhooks/edr/:connectionId — handler order', () => {
     m.decryptEdrSecret.mockReturnValue({ not: 'a string' });
     expect((await post(`/edr/${ID}`)).status).toBe(403);
     expectNothingRecorded();
+  });
+
+  it('review: an undecryptable stored secret is logged (row id only) so a broken push is diagnosable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    m.decryptEdrSecret.mockImplementation(() => { throw new Error('bad aad'); });
+    expect((await post(`/edr/${ID}`)).status).toBe(403);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).toContain(ID);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET);
+    warn.mockRestore();
+  });
+
+  it('review: a reauth_required connection records the hint but queues no sync (sync-all skips it; no dead-key vendor calls)', async () => {
+    m.row = { ...ACTIVE, status: 'reauth_required' };
+    const res = await post(`/edr/${ID}`);
+    expect(res.status).toBe(202);
+    expect(m.recordEdrHint).toHaveBeenCalledTimes(1);
+    expect(m.enqueueEdrSync).not.toHaveBeenCalled();
   });
 
   it('5b. the secret is decrypted with the row-bound spec and the ROW id', async () => {

@@ -76,6 +76,7 @@ edrWebhookRoutes.post('/edr/:connectionId', async (c) => {
       id: edrConnections.id,
       provider: edrConnections.provider,
       isActive: edrConnections.isActive,
+      status: edrConnections.status,
       pushEnabled: edrConnections.pushEnabled,
       webhookSecretEncrypted: edrConnections.webhookSecretEncrypted,
     })
@@ -89,9 +90,12 @@ edrWebhookRoutes.post('/edr/:connectionId', async (c) => {
   let secret: string;
   try {
     const plain = decryptEdrSecret('connection_webhook_secret', row.id, row.webhookSecretEncrypted);
-    if (typeof plain !== 'string' || plain.length === 0) return c.json({ error: 'Forbidden' }, 403);
+    if (typeof plain !== 'string' || plain.length === 0) throw new Error('stored webhook secret is not a string');
     secret = plain;
-  } catch {
+  } catch (error) {
+    // Server-side breakage (key rotation, AAD mismatch): every push fails until
+    // push is re-enabled. Row id + message only; bounded by the per-connection limit.
+    console.warn(`[edrWebhook] stored push secret for ${row.id} could not be read:`, error instanceof Error ? error.message : 'unknown error');
     return c.json({ error: 'Forbidden' }, 403);
   }
 
@@ -107,6 +111,10 @@ edrWebhookRoutes.post('/edr/:connectionId', async (c) => {
     return c.json({ error: 'Temporarily unavailable' }, 503);
   }
   if (!recorded) return c.json(NOT_FOUND, 404);
+  // A connection whose key was rejected is not polled (sync-all skips it until
+  // "Sync now" after a credentials update); a push must not bypass that with a
+  // stream of dead-key vendor calls. The marker is kept for when it recovers.
+  if (row.status === 'reauth_required') return c.json({ accepted: true }, 202);
 
   try {
     await runOutsideDbContext(() => enqueueEdrSync(row.id, 'detections'));

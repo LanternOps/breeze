@@ -311,13 +311,27 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
   verifyWebhook: verifyGravityZoneWebhook,
 
   async registerPush(ctx, o): Promise<void> {
-    await clientFor(ctx).setPushEventSettings({
+    const client = clientFor(ctx);
+    // The console has one push destination; setPushEventSettings replaces it.
+    // Never silently take over a feed an MSP already sends elsewhere.
+    const current = await client.getPushEventSettings();
+    if (!o.replaceExisting && current.enabled && current.url && current.url !== o.url) {
+      throw new EdrProviderRequestError('GravityZone push events already go to another destination', {
+        code: 'push_conflict', reauth: false, scope: 'connection',
+      });
+    }
+    await client.setPushEventSettings({
       enabled: true, url: o.url, authorization: o.secret, companyIds: o.vendorTenantIds,
     });
   },
 
-  async unregisterPush(ctx): Promise<void> {
-    await clientFor(ctx).setPushEventSettings({ enabled: false });
+  async unregisterPush(ctx, o): Promise<{ changed: boolean }> {
+    const client = clientFor(ctx);
+    const current = await client.getPushEventSettings();
+    // Only switch off a destination that is still ours; an unreadable URL is not proof.
+    if (!current.enabled || !o.url || current.url !== o.url) return { changed: false };
+    await client.setPushEventSettings({ enabled: false });
+    return { changed: true };
   },
 
   async sendTestPush(ctx): Promise<void> {

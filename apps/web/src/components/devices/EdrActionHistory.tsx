@@ -21,8 +21,10 @@ export default function EdrActionHistory({ deviceId, refreshKey = 0 }: Props) {
     try {
       const next = await fetchEdrActions({ deviceId, limit: LIMIT });
       if (!cancelled.current) setRows(next.slice(0, LIMIT));
-    } catch {
-      // Keep whatever we had: a transient failure must not blank the ledger.
+    } catch (err) {
+      // Keep whatever we had: a transient failure must not blank the ledger
+      // (the 15 s poll retries while a row is open). Logged, not toasted.
+      console.warn("[EdrActionHistory] failed to load response-action history", err);
     }
   };
 
