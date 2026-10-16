@@ -23,6 +23,7 @@ import * as userNotificationsModule from '../../services/userNotifications';
 import { createNotification, markNotificationsReadByDedupeKeyPrefix } from '../../services/userNotifications';
 import { applyActions } from '../../services/connectionHealth/store';
 import { deliverPendingNotices, noticeDedupeKeys } from '../../services/connectionHealth/notifier';
+import { setConnectionHealthMetricsRecorder } from '../../services/connectionHealth/metrics';
 import type { HealthObservation } from '../../services/connectionHealth/types';
 
 const OPENED_AT = new Date('2026-10-15T11:00:00.000Z');
@@ -98,7 +99,7 @@ describe('deliverPendingNotices', () => {
 
   it('opened → one notice per recipient, owner gets owner_fix_href, ids recorded, outbox cleared', async () => {
     const result = await deliverPendingNotices(NOW);
-    expect(result).toEqual({ delivered: 1, failed: 0 });
+    expect(result).toEqual({ delivered: 1, failed: 0, zeroRecipients: 0 });
     const all = await notes();
     expect(all.map((n) => [n.userId, n.link, n.type, n.priority]).sort()).toEqual([
       [o1, '/account/connected-apps', 'integration', 'high'],
@@ -158,7 +159,7 @@ describe('deliverPendingNotices', () => {
   it('does not recreate a deleted notice on a later run', async () => {
     await deliverPendingNotices(NOW);
     await asSystem(() => db.delete(userNotifications).where(eq(userNotifications.userId, u1)));
-    expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 0, failed: 0 }); // outbox already empty
+    expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 0, failed: 0, zeroRecipients: 0 }); // outbox already empty
     expect(await notesFor(u1)).toHaveLength(0);
     expect(await notesFor(o1)).toHaveLength(1);
   });
@@ -171,14 +172,14 @@ describe('deliverPendingNotices', () => {
       .mockRejectedValueOnce(new Error('db blip'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const result = await deliverPendingNotices(NOW);
-    expect(result).toEqual({ delivered: 0, failed: 1 });
+    expect(result).toEqual({ delivered: 0, failed: 1, zeroRecipients: 0 });
     expect(spy).toHaveBeenCalledTimes(2);
     const inc = await incident();
     expect(inc.pendingNotice).toBe('opened');
     expect(inc.notifiedUserIds).toEqual([]);
     expect(await notes()).toHaveLength(0); // the partial delivery rolled back
     spy.mockRestore();
-    expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 1, failed: 0 });
+    expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 1, failed: 0, zeroRecipients: 0 });
     expect(await notes()).toHaveLength(2);
     expect((await incident()).pendingNotice).toBeNull();
   });
@@ -188,11 +189,11 @@ describe('deliverPendingNotices', () => {
     vi.spyOn(userNotificationsModule, 'createNotification').mockRejectedValueOnce(new Error('db blip'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const result = await deliverPendingNotices(NOW);
-    expect(result).toEqual({ delivered: 1, failed: 1 });
+    expect(result).toEqual({ delivered: 1, failed: 1, zeroRecipients: 0 });
     const pending = (await incidents()).map((r) => r.pendingNotice).sort();
     expect(pending).toEqual(['opened', null].sort());
     vi.restoreAllMocks();
-    expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 1, failed: 0 });
+    expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 1, failed: 0, zeroRecipients: 0 });
     expect((await incidents()).every((r) => r.pendingNotice === null)).toBe(true);
     // Two incidents × (u1, o1), one notice each.
     expect(await notes()).toHaveLength(4);
@@ -204,7 +205,14 @@ describe('deliverPendingNotices', () => {
       db.update(connectionHealthIncidents).set({ ownerUserId: null, repairPermission: 'nobody:has' }),
     );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 1, failed: 0 });
+    const counted: string[] = [];
+    setConnectionHealthMetricsRecorder({ onZeroRecipientIncident: (k) => counted.push(k) });
+    try {
+      expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 1, failed: 0, zeroRecipients: 1 });
+    } finally {
+      setConnectionHealthMetricsRecorder(null);
+    }
+    expect(counted).toEqual(['oauth_grant']);
     expect(warn.mock.calls.some((c) => String(c[0]).includes('connection_health_zero_recipients'))).toBe(true);
     expect((await incident()).pendingNotice).toBeNull();
     expect(await notes()).toHaveLength(0);
@@ -212,37 +220,41 @@ describe('deliverPendingNotices', () => {
 
   it('respects the limit', async () => {
     await openIncident({ sourceId: 'grant-2' });
-    expect(await deliverPendingNotices(NOW, { limit: 1 })).toEqual({ delivered: 1, failed: 0 });
+    expect(await deliverPendingNotices(NOW, { limit: 1 })).toEqual({ delivered: 1, failed: 0, zeroRecipients: 0 });
     expect((await incidents()).filter((r) => r.pendingNotice !== null)).toHaveLength(1);
   });
 
   describe('single-slot outbox overwritten before delivery', () => {
-    it('resolved then reopened before delivery: old notices read, one unread new notice each, ids replaced', async () => {
+    it('resolved then reopened before delivery: the resolve is cancelled and the episode notices stay unread', async () => {
       await deliverPendingNotices(NOW); // episode 1 delivered to u1 + o1
       await asSystem(() => applyActions([{ type: 'resolve', incidentId, resolution: 'recovered' }], RESOLVED_AT));
       expect((await incident()).pendingNotice).toBe('resolved');
-      // Reopen overwrites 'resolved' before the notifier ran. The owner is gone this
-      // episode, so the recipients shrink to u1: notified_user_ids must be replaced.
+      // A flap inside the reopen window is the same episode (W2): nothing new is
+      // queued and the undelivered 'resolved' is cancelled.
       await asSystem(() =>
-        applyActions([{ type: 'reopen', incidentId, obs: obs({ ownerUserId: null, observedAt: REOPENED_AT }) }], REOPENED_AT),
+        applyActions([{ type: 'reopen', incidentId, obs: obs({ observedAt: REOPENED_AT }), escalated: false }], REOPENED_AT),
       );
       const reopened = await incident();
-      expect(reopened.pendingNotice).toBe('opened');
+      expect(reopened).toMatchObject({ pendingNotice: null, openedAt: OPENED_AT, flapCount: 1 });
       expect([...reopened.notifiedUserIds].sort()).toEqual([o1, u1].sort());
 
-      expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 1, failed: 0 });
-
-      const oldKey = noticeDedupeKeys(incidentId, OPENED_AT).opened;
-      const newKey = noticeDedupeKeys(incidentId, REOPENED_AT).opened;
+      expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 0, failed: 0, zeroRecipients: 0 });
+      const key = noticeDedupeKeys(incidentId, OPENED_AT).opened;
       const all = await notes();
-      expect(all.filter((n) => n.dedupeKey === oldKey).map((n) => [n.userId, n.read]).sort()).toEqual(
-        [[o1, true], [u1, true]].sort(),
+      expect(all.map((n) => [n.userId, n.dedupeKey, n.read]).sort()).toEqual([[o1, key, false], [u1, key, false]].sort());
+    });
+
+    it('a flap after the resolve was delivered sends no new notice (spec goal 3)', async () => {
+      await deliverPendingNotices(NOW);
+      await asSystem(() => applyActions([{ type: 'resolve', incidentId, resolution: 'recovered' }], RESOLVED_AT));
+      await deliverPendingNotices(NOW); // marks the episode read, clears recipients
+      await asSystem(() =>
+        applyActions([{ type: 'reopen', incidentId, obs: obs({ observedAt: REOPENED_AT }), escalated: false }], REOPENED_AT),
       );
-      const unread = all.filter((n) => !n.read);
-      expect(unread.map((n) => [n.userId, n.dedupeKey])).toEqual([[u1, newKey]]);
-      const inc = await incident();
-      expect(inc.pendingNotice).toBeNull();
-      expect(inc.notifiedUserIds).toEqual([u1]);
+      expect(await deliverPendingNotices(NOW)).toEqual({ delivered: 0, failed: 0, zeroRecipients: 0 });
+      const all = await notes();
+      expect(all).toHaveLength(2);
+      expect(all.every((n) => n.read)).toBe(true);
     });
 
     it('escalated overwriting an undelivered opened → exactly one notice, the permanent key', async () => {
@@ -262,12 +274,12 @@ describe('deliverPendingNotices', () => {
       expect([...(await incident()).notifiedUserIds].sort()).toEqual([o1, u1].sort());
     });
 
-    it('resolved → reopened → escalated before delivery: old episode read, only the permanent notice unread', async () => {
+    it('resolved → reopened → escalated before delivery: the episode keeps its notice and gains the permanent one', async () => {
       await deliverPendingNotices(NOW);
       await asSystem(() => applyActions([{ type: 'resolve', incidentId, resolution: 'recovered' }], RESOLVED_AT));
       await asSystem(() =>
         applyActions(
-          [{ type: 'reopen', incidentId, obs: obs({ severity: 'transient', observedAt: REOPENED_AT }) }],
+          [{ type: 'reopen', incidentId, obs: obs({ severity: 'transient', observedAt: REOPENED_AT }), escalated: false }],
           REOPENED_AT,
         ),
       );
@@ -275,16 +287,32 @@ describe('deliverPendingNotices', () => {
         applyActions([{ type: 'update', incidentId, obs: obs({ observedAt: NOW }), escalated: true }], NOW),
       );
       await deliverPendingNotices(NOW);
-      const permanent = noticeDedupeKeys(incidentId, REOPENED_AT).permanent;
+      const { opened, permanent } = noticeDedupeKeys(incidentId, OPENED_AT);
       const unread = (await notes()).filter((n) => !n.read);
-      expect(unread.map((n) => [n.userId, n.dedupeKey]).sort()).toEqual([[o1, permanent], [u1, permanent]].sort());
+      expect(unread.map((n) => [n.userId, n.dedupeKey]).sort()).toEqual(
+        [[o1, opened], [o1, permanent], [u1, opened], [u1, permanent]].sort(),
+      );
+    });
+
+    it('an escalating reopen queues the permanent notice for the same episode', async () => {
+      await deliverPendingNotices(NOW);
+      await asSystem(() => applyActions([{ type: 'resolve', incidentId, resolution: 'recovered' }], RESOLVED_AT));
+      await deliverPendingNotices(NOW);
+      await asSystem(() =>
+        applyActions([{ type: 'reopen', incidentId, obs: obs({ severity: 'permanent', observedAt: REOPENED_AT }), escalated: true }], REOPENED_AT),
+      );
+      expect((await incident()).pendingNotice).toBe('escalated');
+      await deliverPendingNotices(NOW);
+      const { permanent } = noticeDedupeKeys(incidentId, OPENED_AT);
+      expect((await notes()).filter((n) => !n.read).map((n) => [n.userId, n.dedupeKey]).sort())
+        .toEqual([[o1, permanent], [u1, permanent]].sort());
     });
 
     it('resolved → reopened → resolved before delivery: every episode notice ends up read', async () => {
       await deliverPendingNotices(NOW);
       await asSystem(() => applyActions([{ type: 'resolve', incidentId, resolution: 'recovered' }], RESOLVED_AT));
       await asSystem(() =>
-        applyActions([{ type: 'reopen', incidentId, obs: obs({ observedAt: REOPENED_AT }) }], REOPENED_AT),
+        applyActions([{ type: 'reopen', incidentId, obs: obs({ observedAt: REOPENED_AT }), escalated: false }], REOPENED_AT),
       );
       await asSystem(() => applyActions([{ type: 'resolve', incidentId, resolution: 'recovered' }], NOW));
       expect((await incident()).pendingNotice).toBe('resolved');

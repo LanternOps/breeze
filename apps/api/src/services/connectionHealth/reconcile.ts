@@ -3,19 +3,22 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
 import { sendOpsAlert } from '../opsAlerts';
 import { getRedis } from '../redis';
-import { deliverPendingNotices } from './notifier';
+import { deliverPendingNotices, type DeliveryCounts } from './notifier';
 import { HEALTH_SOURCES } from './sources';
 import { applyActions, deleteExpiredResolved, hasIncidentsForKind, loadTracked } from './store';
 import { planTransitions } from './transitions';
-import type { HealthSource } from './types';
+import { reopenWindowMs, type HealthSource } from './types';
 
 // The connection health reconciler (spec 2026-10-15 §1.2, §1.3, §8). One run:
 // every due kind in its own system transaction, then the notice outbox, then
-// retention. Redis only remembers cadence, the seed flag and failure streaks;
-// when it is missing or erroring, every kind is due and none seeds. A seed run
-// opens incidents without notifying, so it needs two proofs that the kind is
-// new: no Redis seeded key AND no incident rows for the kind (checked inside
-// the kind's transaction). Losing the key alone never makes a run silent.
+// retention. Redis only remembers cadence, the seed flag and failure streaks.
+// A seed run opens incidents without notifying; it happens only when the kind
+// has no incident rows at all (checked inside the kind's transaction, and
+// retention always keeps each kind's newest row). Redis decides only whether to
+// check: a present seeded key means never seed; an absent key, or Redis missing
+// or erroring, means the rows decide, so a first deploy during a Redis outage
+// seeds silently instead of notifying a whole backlog at once. When Redis is
+// missing every kind is due.
 // Each kind's transaction first takes a per-kind advisory lock; a run that
 // cannot get it skips the kind instead of racing another run on it.
 
@@ -47,7 +50,7 @@ export type ReconcileDeps = {
   redis: ReconcileRedis | null;
   budgetMs: number;
   runKind: (source: HealthSource, now: Date, seed: boolean) => Promise<KindCounts | typeof KIND_LOCKED>;
-  deliver: (now: Date) => Promise<{ delivered: number; failed: number }>;
+  deliver: (now: Date) => Promise<DeliveryCounts>;
   retention: (now: Date) => Promise<number>;
   alert: (msg: { title: string; body: string }) => Promise<boolean>;
 };
@@ -84,9 +87,10 @@ export async function runKindInSystemScope(
     if (!(await tryLockKind(source.kind))) return KIND_LOCKED;
     await tightenStatementTimeout(db, KIND_STATEMENT_TIMEOUT_MS);
     const seed = seedCandidate && !(await hasIncidentsForKind(source.kind));
-    const tracked = await loadTracked(source.kind, now);
+    const windowMs = reopenWindowMs(source.intervalMinutes);
+    const tracked = await loadTracked(source.kind, now, windowMs);
     const observations = await source.observe(now, tracked.map((t) => t.sourceId));
-    const actions = planTransitions({ observations, tracked, now, seed });
+    const actions = planTransitions({ observations, tracked, now, seed, reopenWindowMs: windowMs });
     const counts = await applyActions(actions, now);
     return { ...counts, observations: observations.length, seeded: seed };
   }, `connectionHealth.reconcile.${source.kind}`));
@@ -119,24 +123,29 @@ async function tryRedis<T>(op: string, fn: () => Promise<T>, fallback: T): Promi
   }
 }
 
-/** Due and seed candidate, decided from Redis. Unreadable Redis → due, and no seed. */
+type KindState = { due: boolean; seed: boolean; lastOk: number };
+
+/**
+ * Due, seed candidate and last success, from Redis. Unreadable Redis → due, a
+ * seed candidate (the kind's incident rows decide), and lastOk 0 (runs first).
+ */
 async function readKindState(
   redis: ReconcileDeps['redis'],
   source: HealthSource,
   now: Date,
-): Promise<{ due: boolean; seed: boolean }> {
-  if (!redis) return { due: true, seed: false };
+): Promise<KindState> {
+  if (!redis) return { due: true, seed: true, lastOk: 0 };
   try {
     const [lastOkRaw, seeded] = await Promise.all([
       redis.get(key(source.kind, 'last-ok')),
       redis.get(key(source.kind, 'seeded')),
     ]);
-    const lastOk = Number(lastOkRaw ?? 0);
+    const lastOk = Number(lastOkRaw ?? 0) || 0;
     const due = !(lastOk > 0 && now.getTime() - lastOk < source.intervalMinutes * 60_000 - DUE_SLACK_MS);
-    return { due, seed: seeded === null };
+    return { due, seed: seeded === null, lastOk };
   } catch (err) {
     console.warn(JSON.stringify({ event: 'connection_health_redis_error', op: 'read-kind-state', kind: source.kind, error: errorMessage(err) }));
-    return { due: true, seed: false };
+    return { due: true, seed: true, lastOk: 0 };
   }
 }
 
@@ -167,24 +176,33 @@ async function recordFailure(d: ReconcileDeps, kind: string, message: string) {
 
 export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Promise<{
   kinds: KindResult[];
-  notices: { delivered: number; failed: number };
+  notices: DeliveryCounts;
   retained: number;
 }> {
   const d = resolveDeps(overrides);
   const started = d.now();
   const kinds: KindResult[] = [];
 
-  for (const source of d.sources) {
+  // Read every kind's state up front, then run the due ones oldest last success
+  // first (never-run first; registry order breaks ties), so when the budget
+  // runs out it is the most recently observed kinds that wait (spec §1.3).
+  const states = await Promise.all(d.sources.map(async (source) => ({
+    source,
+    state: await readKindState(d.redis, source, started),
+  })));
+  const due = states.filter((k) => k.state.due);
+  due.sort((a, b) => a.state.lastOk - b.state.lastOk);
+  for (const k of states) {
+    if (!k.state.due) kinds.push({ kind: k.source.kind, status: 'skipped_not_due', durationMs: 0 });
+  }
+
+  for (const { source, state } of due) {
     const t0 = d.now();
     if (t0.getTime() - started.getTime() >= d.budgetMs) {
       kinds.push({ kind: source.kind, status: 'skipped_budget', durationMs: 0 });
       continue;
     }
-    const { due, seed } = await readKindState(d.redis, source, t0);
-    if (!due) {
-      kinds.push({ kind: source.kind, status: 'skipped_not_due', durationMs: 0 });
-      continue;
-    }
+    const { seed } = state;
     try {
       const counts = await d.runKind(source, t0, seed);
       if (counts === KIND_LOCKED) {
@@ -204,7 +222,7 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
   // After every kind committed, outside any DB context (both helpers open their own).
   // A failure in either still lets the other run, then fails the job without a heartbeat.
   const failures: Array<{ step: string; err: unknown }> = [];
-  let notices = { delivered: 0, failed: 0 };
+  let notices: DeliveryCounts = { delivered: 0, failed: 0, zeroRecipients: 0 };
   let retained = 0;
   try {
     notices = await d.deliver(d.now());

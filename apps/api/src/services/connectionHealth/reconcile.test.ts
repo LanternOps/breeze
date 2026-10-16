@@ -103,22 +103,22 @@ describe('runReconcile', () => {
     expect(runKind).toHaveBeenCalledTimes(2);
   });
 
-  it('treats every kind as due and never seeds without Redis', async () => {
+  it('without Redis every kind is due and a seed candidate: the incident rows decide (no first-deploy burst)', async () => {
     const runKind = vi.fn().mockResolvedValue(okCounts);
     await runReconcile({ sources: [src('a', 60)], redis: null, runKind, now: () => T0, ...noops });
     await runReconcile({ sources: [src('a', 60)], redis: null, runKind, now: () => plusMin(T0, 1), ...noops });
     expect(runKind).toHaveBeenCalledTimes(2);
-    expect(runKind.mock.calls.every((c) => c[2] === false)).toBe(true);
+    expect(runKind.mock.calls.every((c) => c[2] === true)).toBe(true);
   });
 
-  it('treats a kind as due and never seeds when Redis reads throw', async () => {
+  it('treats a kind as due and a seed candidate when Redis reads throw', async () => {
     const redis = fakeRedis();
     redis.get.mockRejectedValue(new Error('ECONNRESET'));
     redis.set.mockRejectedValue(new Error('ECONNRESET'));
     redis.del.mockRejectedValue(new Error('ECONNRESET'));
     const runKind = vi.fn().mockResolvedValue(okCounts);
     const r = await runReconcile({ sources: [src('a', 60)], redis, runKind, now: () => T0, ...noops });
-    expect(runKind).toHaveBeenCalledWith(expect.objectContaining({ kind: 'a' }), T0, false);
+    expect(runKind).toHaveBeenCalledWith(expect.objectContaining({ kind: 'a' }), T0, true);
     expect(r.kinds[0]!.status).toBe('ok');
   });
 
@@ -173,6 +173,25 @@ describe('runReconcile', () => {
     const r = await runReconcile({ sources: [src('a', 15), src('b', 15), src('c', 15)], redis: fakeRedis(), runKind, now, budgetMs: 60_000, ...noops });
     expect(r.kinds.map((k) => k.status)).toEqual(['ok', 'ok', 'skipped_budget']);
     expect(runKind).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs due kinds oldest last-ok first, so a tight budget cannot starve the same kinds every run', async () => {
+    const redis = fakeRedis();
+    redis.store.set('connection-health:kind:a:last-ok', String(plusMin(T0, -30).getTime()));
+    redis.store.set('connection-health:kind:c:last-ok', String(plusMin(T0, -60).getTime()));
+    let t = T0.getTime();
+    const runKind = vi.fn(async () => { t += 40_000; return okCounts; });
+    const r = await runReconcile({ sources: [src('a', 15), src('b', 15), src('c', 15)], redis, runKind, now: () => new Date(t), budgetMs: 60_000, ...noops });
+    expect(runKind.mock.calls.map((c) => (c[0] as HealthSource).kind)).toEqual(['b', 'c']);
+    expect(r.kinds.map((k) => [k.kind, k.status])).toEqual([['b', 'ok'], ['c', 'ok'], ['a', 'skipped_budget']]);
+  });
+
+  it('reports zero-recipient notices in the run result', async () => {
+    const r = await runReconcile({
+      sources: [], redis: null, now: () => T0, retention: async () => 0, alert: async () => true,
+      deliver: async () => ({ delivered: 2, failed: 0, zeroRecipients: 1 }),
+    });
+    expect(r.notices).toEqual({ delivered: 2, failed: 0, zeroRecipients: 1 });
   });
 
   it('delivers notices and runs retention after kinds, and writes the heartbeat', async () => {
@@ -258,9 +277,9 @@ describe('runKindInSystemScope', () => {
     expect(r).toEqual({ opened: 1, resolved: 2, pending: 3, observations: 1, seeded: true });
     expect(calls).toEqual(['outside', 'system:connectionHealth.reconcile.oauth_grant', 'lock', 'tighten:5000', 'has-rows', 'load', 'observe', 'plan', 'apply']);
     expect(hasIncidentsMock).toHaveBeenCalledWith('oauth_grant');
-    expect(loadTrackedMock).toHaveBeenCalledWith('oauth_grant', T0);
+    expect(loadTrackedMock).toHaveBeenCalledWith('oauth_grant', T0, 60 * 60 * 1000);
     expect(source.observe).toHaveBeenCalledWith(T0, ['s1']);
-    expect(planMock).toHaveBeenCalledWith({ observations: [observation], tracked, now: T0, seed: true });
+    expect(planMock).toHaveBeenCalledWith({ observations: [observation], tracked, now: T0, seed: true, reopenWindowMs: 60 * 60 * 1000 });
     expect(applyActionsMock).toHaveBeenCalledWith([{ type: 'deletePending', incidentId: 'i1' }], T0);
   });
 

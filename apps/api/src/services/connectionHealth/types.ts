@@ -70,8 +70,18 @@ export type TransitionAction =
   | { type: 'update'; incidentId: string; obs: HealthObservation; escalated: boolean }
   | { type: 'healthyTick'; incidentId: string; healthyStreak: number }
   | { type: 'resolve'; incidentId: string; resolution: 'recovered' | 'retired' }
-  | { type: 'reopen'; incidentId: string; obs: HealthObservation }
+  /** Same episode: keeps opened_at; notifies only when it escalates (spec §1.2, W2). */
+  | { type: 'reopen'; incidentId: string; obs: HealthObservation; escalated: boolean }
   | { type: 'deletePending'; incidentId: string };
 
 export const REOPEN_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Reopen window for a source (spec §1.2, amended W2): at least an hour, and at
+ * least two observation intervals plus 5 minutes of schedule jitter, so a flap
+ * on an hourly source is still a reopen of the same episode.
+ */
+export function reopenWindowMs(intervalMinutes: number): number {
+  return Math.max(REOPEN_WINDOW_MS, (2 * intervalMinutes + 5) * 60_000);
+}
 export const HEALTHY_TO_RESOLVE = 2;

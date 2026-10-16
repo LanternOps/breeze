@@ -67,7 +67,7 @@ function obs(over: Partial<HealthObservation> = {}): HealthObservation {
 
 // Production deps except the clock and Redis; the shared test Redis stands in for getRedis().
 const reconcile = (now: Date, extra: Parameters<typeof runReconcile>[0] = {}) =>
-  runReconcile({ redis: getTestRedis(), now: () => now, ...extra });
+  runReconcile({ redis: getTestRedis(), now: () => now, sources: [oauthGrantSource], ...extra });
 
 describe('runReconcile (end to end)', () => {
   beforeEach(async () => {
@@ -93,7 +93,7 @@ describe('runReconcile (end to end)', () => {
 
     const first = await reconcile(T0);
     expect(first.kinds).toEqual([expect.objectContaining({ kind: 'oauth_grant', status: 'ok', opened: 1, observations: 1 })]);
-    expect(first.notices).toEqual({ delivered: 1, failed: 0 });
+    expect(first.notices).toEqual({ delivered: 1, failed: 0, zeroRecipients: 0 });
     const opened = await noticesFor([u1, o1]);
     expect(opened.map((n) => [n.userId, n.link, n.read]).sort()).toEqual([
       [o1, '/account/connected-apps', false],
@@ -188,10 +188,10 @@ describe('runReconcile (end to end)', () => {
     expect(await redis.get('connection-health:kind:oauth_grant:failures')).toBeNull();
   });
 
-  it('without Redis it never seeds: the first run notifies', async () => {
-    const r = await runReconcile({ redis: null, now: () => T0 });
-    expect(r.kinds[0]).toMatchObject({ status: 'ok', opened: 1 });
-    expect(await noticesFor([u1, o1])).toHaveLength(2);
+  it('without Redis a kind with no incident rows seeds silently (no first-deploy burst)', async () => {
+    const r = await runReconcile({ redis: null, now: () => T0, sources: [oauthGrantSource] });
+    expect(r.kinds[0]).toMatchObject({ status: 'ok', opened: 1, seeded: true });
+    expect(await noticesFor([u1, o1])).toHaveLength(0);
   });
 
   it('a kind failing part-way through applying rolls back whole; incidents untouched and other kinds still run', async () => {

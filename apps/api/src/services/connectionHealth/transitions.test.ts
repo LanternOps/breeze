@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { planTransitions } from './transitions';
+import { reopenWindowMs } from './types';
 import type { HealthObservation, TrackedIncident } from './types';
 
 const NOW = new Date('2026-10-15T12:00:00Z');
@@ -15,6 +16,8 @@ const open = (over: Partial<TrackedIncident> = {}): TrackedIncident => ({
   id: 'i1', sourceId: 's1', severity: 'transient', openedAt: new Date('2026-10-15T10:00:00Z'),
   resolvedAt: null, healthyStreak: 0, ...over,
 });
+const planW = (o: HealthObservation[], t: TrackedIncident[], reopenWindowMs: number) =>
+  planTransitions({ observations: o, tracked: t, now: NOW, seed: false, reopenWindowMs });
 const plan = (o: HealthObservation[], t: TrackedIncident[], seed = false) =>
   planTransitions({ observations: o, tracked: t, now: NOW, seed });
 
@@ -71,17 +74,37 @@ describe('planTransitions', () => {
   });
   it('reopens an incident resolved inside the 60-minute window instead of creating one', () => {
     const resolved = open({ resolvedAt: new Date('2026-10-15T11:30:00Z') });
-    expect(plan([obs()], [resolved])).toEqual([{ type: 'reopen', incidentId: 'i1', obs: obs() }]);
+    expect(plan([obs()], [resolved])).toEqual([{ type: 'reopen', incidentId: 'i1', obs: obs(), escalated: false }]);
   });
   it('reopens at exactly the 60-minute boundary (inclusive)', () => {
     const resolved = open({ resolvedAt: new Date(NOW.getTime() - 60 * 60 * 1000) });
-    expect(plan([obs()], [resolved])).toEqual([{ type: 'reopen', incidentId: 'i1', obs: obs() }]);
+    expect(plan([obs()], [resolved])).toEqual([{ type: 'reopen', incidentId: 'i1', obs: obs(), escalated: false }]);
   });
   it('opens a new incident when the resolved row is outside the reopen window', () => {
     const resolved = open({ resolvedAt: new Date(NOW.getTime() - 61 * 60 * 1000) });
     const p = obs({ severity: 'permanent' });
     expect(plan([p], [resolved])).toEqual([{ type: 'insertOpen', obs: p, notify: true }]);
     expect(plan([obs()], [resolved])).toEqual([{ type: 'insertPending', obs: obs() }]);
+  });
+  it('a reopen that escalates transient → permanent is flagged (W2 flap debounce)', () => {
+    const resolved = open({ resolvedAt: new Date('2026-10-15T11:30:00Z') });
+    expect(plan([obs({ severity: 'permanent' })], [resolved])).toEqual([
+      { type: 'reopen', incidentId: 'i1', obs: obs({ severity: 'permanent' }), escalated: true },
+    ]);
+    expect(plan([obs()], [open({ severity: 'permanent', resolvedAt: new Date('2026-10-15T11:30:00Z') })])[0])
+      .toMatchObject({ type: 'reopen', escalated: false });
+  });
+  it('an hourly source reopens a flap 90 minutes after resolving', () => {
+    const resolved = open({ resolvedAt: new Date(NOW.getTime() - 90 * 60 * 1000) });
+    expect(planW([obs()], [resolved], reopenWindowMs(60))).toEqual([
+      { type: 'reopen', incidentId: 'i1', obs: obs(), escalated: false },
+    ]);
+    expect(planW([obs()], [resolved], reopenWindowMs(15))).toEqual([{ type: 'insertPending', obs: obs() }]);
+  });
+  it('reopenWindowMs: at least an hour, else two intervals plus 5 minutes of jitter', () => {
+    expect(reopenWindowMs(15)).toBe(60 * 60 * 1000);
+    expect(reopenWindowMs(30)).toBe(65 * 60 * 1000);
+    expect(reopenWindowMs(60)).toBe(125 * 60 * 1000);
   });
   it('ignores a recently resolved incident that stays healthy or is missing', () => {
     const resolved = open({ resolvedAt: new Date('2026-10-15T11:30:00Z') });
