@@ -206,42 +206,49 @@ export async function presignSnapshotObjectGet(args: {
   return (getSignedUrl as any)(client, new GetObjectCommand({ Bucket: bucket, Key: args.key }), { expiresIn });
 }
 
+/**
+ * A recorded `storagePrefix` is a snapshot's FULL root, `[<base>/]snapshots/<id>`
+ * (Hyper-V/MSSQL helpers in agent/cmd/breeze-backup/exec_hyperv.go, reconcile
+ * adoption in backupSnapshotReconcile.ts). The logical key already carries
+ * `snapshots/<id>/`, so only the `<base>` in front of that marker relocates
+ * it. A value that does not name this snapshot's root is not a usable
+ * relocation and leaves the key verbatim.
+ */
+function keyUnderRecordedRoot(normalizedRemotePath: string, storagePrefix: string | null, snapshotId: string | null): string {
+  if (!storagePrefix || !snapshotId) return normalizedRemotePath;
+  const marker = `snapshots/${snapshotId}`;
+  const normalizedStoragePrefix = storagePrefix.replace(/^s3:\/\/[^/]+\//, '').replace(/^\/+|\/+$/g, '');
+  const markerIndex = normalizedStoragePrefix.lastIndexOf(marker);
+  if (markerIndex < 0) return normalizedRemotePath;
+  const basePrefix = normalizedStoragePrefix.slice(0, markerIndex).replace(/\/+$/g, '');
+  return basePrefix ? `${basePrefix}/${normalizedRemotePath}` : normalizedRemotePath;
+}
+
 function deriveRemoteStorageKey(
   normalizedRemotePath: string,
   snapshotMetadata: Record<string, unknown>,
-  originStoragePrefixOverride?: string | null
+  origin?: { snapshotId: string; storagePrefix: string | null } | null
 ) {
   // W09 (#6464) Task 6: an external reference is served from the ORIGIN
   // snapshot's own verified storage prefix, never the token snapshot's —
   // origin.originStoragePrefix was captured and verified by
-  // hydrateSnapshotFileIndex (Task 4) at index-build time.
-  if (originStoragePrefixOverride) {
-    return `${originStoragePrefixOverride.replace(/^\/+|\/+$/g, '')}/${normalizedRemotePath}`;
+  // hydrateSnapshotFileIndex (Task 4) at index-build time. It is a verbatim
+  // copy of the origin's metadata.storagePrefix, so it is the origin's full
+  // root and is resolved against the origin's id (#8665: prepending it
+  // doubled the key to snapshots/<o>/snapshots/<o>/...).
+  if (origin?.storagePrefix) {
+    return keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId);
   }
-  const storagePrefix = getStringValue(snapshotMetadata, 'storagePrefix');
-  if (storagePrefix) {
-    const marker = snapshotMetadata.snapshotId && typeof snapshotMetadata.snapshotId === 'string'
-      ? `snapshots/${snapshotMetadata.snapshotId}`
-      : null;
-    if (marker) {
-      const normalizedStoragePrefix = storagePrefix.replace(/^s3:\/\/[^/]+\//, '').replace(/^\/+|\/+$/g, '');
-      const markerIndex = normalizedStoragePrefix.lastIndexOf(marker);
-      if (markerIndex >= 0) {
-        const basePrefix = normalizedStoragePrefix.slice(0, markerIndex).replace(/\/+$/g, '');
-        return basePrefix ? `${basePrefix}/${normalizedRemotePath}` : normalizedRemotePath;
-      }
-    }
-  }
-
   // #6398: the destination's configured `prefix` is deliberately NOT applied.
   // The agent's storage providers never apply it — every snapshot object is
   // written at `snapshots/<id>/...` verbatim — so presigning
   // `<prefix>/snapshots/...` 404'd every token-mode recovery (bmr-recover,
   // bare-metal / Restore-as-VM rebuild, DR) on a prefixed destination. GC
   // (backupSnapshotStorage.ts backupSnapshotRootPrefix) already relies on the
-  // same fact. Only a per-snapshot recorded storagePrefix (above) relocates a
+  // same fact. Only a per-snapshot recorded storagePrefix relocates a
   // snapshot's keys.
-  return normalizedRemotePath;
+  const snapshotId = typeof snapshotMetadata.snapshotId === 'string' ? snapshotMetadata.snapshotId : null;
+  return keyUnderRecordedRoot(normalizedRemotePath, getStringValue(snapshotMetadata, 'storagePrefix'), snapshotId);
 }
 
 export async function getAuthenticatedRecoveryDownloadTarget(
@@ -331,7 +338,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     return { unavailable: true, reason: 'Requested path is outside the allowed snapshot scope.' } as const;
   }
 
-  let originStoragePrefix: string | null = null;
+  let origin: { snapshotId: string; storagePrefix: string | null } | null = null;
   if (scope.kind === 'external') {
     if (!hasMembershipCapability(tokenRow.negotiatedCapabilities)) {
       return {
@@ -354,7 +361,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
         reason: 'Requested path references an object this recovery is not authorized to read.',
       } as const;
     }
-    originStoragePrefix = authorization.originStoragePrefix;
+    origin = { snapshotId: scope.originSnapshotId, storagePrefix: authorization.originStoragePrefix };
   }
   const normalizedRemotePath = scope.key;
 
@@ -381,7 +388,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     let key: string | null;
     if (keyRoot.layout === 'legacy_flat') {
       // Unchanged for every snapshot written before key roots were recorded.
-      key = deriveRemoteStorageKey(normalizedRemotePath, snapshotMetadata, originStoragePrefix);
+      key = deriveRemoteStorageKey(normalizedRemotePath, snapshotMetadata, origin);
     } else {
       // A recorded root is the only source of the physical key (I1):
       // metadata.storagePrefix and origin_storage_prefix are never read. An
@@ -440,7 +447,7 @@ export async function getAuthenticatedRecoveryDownloadTarget(
 
     const filePath = ensureContainedLocalPath(
       rootPath,
-      originStoragePrefix ? `${originStoragePrefix}/${normalizedRemotePath}` : normalizedRemotePath
+      origin ? keyUnderRecordedRoot(normalizedRemotePath, origin.storagePrefix, origin.snapshotId) : normalizedRemotePath
     );
     const fileInfo = await stat(filePath);
     const fileName = normalizedRemotePath.split('/').pop() || 'recovery-object';
