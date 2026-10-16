@@ -9,11 +9,11 @@ Strings to grep:
 - DEBUG `ech dial attempt` (fields `attempt`: plain / ech / plain-fallback, `result` or `error`)
 - DEBUG `ech config fetch failed`, `ech one-shot config fetch failed`
 
-Health strings (`control_plane` component):
+Health strings (`control_plane` component). Agent log shows status `degraded`; the v1 device health observation / API maps that to `state: "warning"`:
 
 - healthy: `reachable via encrypted client hello`
-- warning: `control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)`
-- warning: `encrypted client hello unavailable; retrying later`
+- degraded / `warning`: `control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)`
+- degraded / `warning`: `encrypted client hello unavailable; retrying later`
 
 ## 1. Local filter simulation (no ECH expected)
 
@@ -26,8 +26,8 @@ Preconditions: a lab host with a built agent, enrolled against a lab server. A l
 
 Expected:
 
-- After two failed dials (more than 30 s apart, within 10 min) the WARN filter line appears, then `ech mode changed ... to ech`.
-- `control_plane` is `warning` with the filter reason in the device health.
+- After two failed dials (more than 30 s apart, within 10 min) the INFO `ech mode changed ... to ech` line appears first, then the WARN filter line (the transition is logged before the warning).
+- `control_plane`: agent log status `degraded`; device health observation / API `state: "warning"`, with the filter reason.
 - A DoH lookup finds no `ech=` record for this name, so `ech-cache.json` in the agent data dir never appears, and each failure is one fetch only; after 3 failures `ech mode changed ... to cooldown`, health reason becomes the cooldown string once the 10 min signature window passes. No DoH spin between dials.
 
 Rollback: restore `server_url`, stop the listener, restart the agent (mode is in memory; restart is plain).
@@ -68,7 +68,7 @@ Preconditions: a self-hosted lab edge whose name has no HTTPS record with `ech=`
 
 Expected:
 
-- `control_plane` goes `warning` with the filter reason once the signature is seen twice.
+- `control_plane` goes `degraded` in the agent log (`state: "warning"` in the device health observation / API) with the filter reason once the signature is seen twice.
 - `ech-cache.json` never appears.
 - No DoH spin: one fetch per failure; three consecutive failures (including fetch failures) move the host to cooldown for 1 h, plain only, with `ech mode changed ... to cooldown`.
 
