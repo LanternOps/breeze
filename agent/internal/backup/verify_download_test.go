@@ -52,6 +52,9 @@ type scriptedDownloadProvider struct {
 	// SHRINKING the destination file one byte at a time without ever
 	// delivering more: size changes, but no new data arrives.
 	manifestShrinkAfterFirstChunk bool
+	// onStall, when set, runs as a stalled object's download begins, before
+	// it blocks. Tests use it to end a manual time budget at that exact point.
+	onStall func()
 
 	inflight  atomic.Int32
 	peak      atomic.Int32
@@ -141,6 +144,9 @@ func (p *scriptedDownloadProvider) download(ctx context.Context, remotePath, loc
 		done = ctx.Done()
 	}
 	if p.stall[remotePath] {
+		if p.onStall != nil {
+			p.onStall()
+		}
 		select {
 		case <-done:
 			return fmt.Errorf("read body: %w", ctx.Err())
@@ -239,6 +245,54 @@ func runWithWatchdog(t *testing.T, limit time.Duration, fn func()) {
 	}
 }
 
+// manualBudget stands in for the run's wall-clock TimeBudget: the run's
+// context ends only when the test calls expire, with the same
+// errVerifyTimeBudget cause the real deadline attaches. Racing a 300 ms
+// deadline against the downloads let a loaded -race runner reach the
+// deadline before the first file finished (#8765); with a manual budget the
+// test decides exactly how far the run gets.
+//
+// The run sees ctx.Err() == context.Canceled instead of DeadlineExceeded;
+// the verify paths key only on ctx.Err() != nil and context.Cause, so both
+// take the same branch.
+type manualBudget struct {
+	mu        sync.Mutex
+	requested time.Duration
+	cancel    context.CancelCauseFunc
+	cause     error
+}
+
+func useManualBudgetForTest(t *testing.T) *manualBudget {
+	t.Helper()
+	b := &manualBudget{}
+	orig := budgetContext
+	budgetContext = func(parent context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancelCause(parent)
+		b.mu.Lock()
+		b.requested, b.cancel, b.cause = d, cancel, cause
+		b.mu.Unlock()
+		return ctx, func() { cancel(context.Canceled) }
+	}
+	t.Cleanup(func() { budgetContext = orig })
+	return b
+}
+
+// expire ends the run's budget. It is a no-op if no budgeted run has started,
+// which leaves the run blocked and the test's watchdog to report it.
+func (b *manualBudget) expire() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.cancel != nil {
+		b.cancel(b.cause)
+	}
+}
+
+func (b *manualBudget) requestedBudget() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.requested
+}
+
 // A single object whose download stalls mid-body must fail THAT file once
 // its per-file deadline passes, and the run must carry on with the rest.
 func TestVerifyIntegrity_StalledDownloadFailsOnlyThatFile(t *testing.T) {
@@ -327,15 +381,22 @@ func TestTestRestore_DownloadsConcurrently(t *testing.T) {
 func TestVerifyIntegrity_TimeBudgetReturnsPartialCounts(t *testing.T) {
 	defer setVerifyConcurrencyForTest(1)()
 	defer setDownloadTimeoutFloorForTest(time.Hour)()
-	// Files 0-2 are fine; file 3 stalls past the budget; 4-5 never start.
+	// Files 0-2 are fine; the budget runs out as file 3 starts (it stalls
+	// until cancelled); 4-5 never start. One worker, so 0-2 have finished
+	// by the time 3 begins.
 	p := newScriptedDownloadProvider(t, "verify-budget", 6, 3)
+	budget := useManualBudgetForTest(t)
+	p.onStall = budget.expire
 
 	var result *VerifyResult
 	var err error
 	runWithWatchdog(t, 10*time.Second, func() {
 		result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-budget",
-			VerifyOptions{TimeBudget: 300 * time.Millisecond})
+			VerifyOptions{TimeBudget: time.Minute})
 	})
+	if got := budget.requestedBudget(); got != time.Minute {
+		t.Fatalf("run budget = %v, want the TimeBudget option (1m)", got)
+	}
 	if err != nil {
 		t.Fatalf("budget exhaustion must not be an error (it discards the counts), got %v", err)
 	}
@@ -371,14 +432,21 @@ func TestVerifyIntegrity_TimeBudgetWithNothingCheckedIsFailed(t *testing.T) {
 func TestTestRestore_TimeBudgetReturnsPartialCountsAndCleansUp(t *testing.T) {
 	defer setVerifyConcurrencyForTest(1)()
 	defer setDownloadTimeoutFloorForTest(time.Hour)()
+	// Files 0-1 restore; the budget runs out as file 2 starts; 3-4 never
+	// start (#8765: no wall-clock race with the restores).
 	p := newScriptedDownloadProvider(t, "restore-budget", 5, 2)
+	budget := useManualBudgetForTest(t)
+	p.onStall = budget.expire
 
 	var result *TestRestoreResult
 	var err error
 	runWithWatchdog(t, 10*time.Second, func() {
 		result, err = TestRestoreWithOptions(context.Background(), p, "restore-budget", t.TempDir(),
-			VerifyOptions{TimeBudget: 300 * time.Millisecond})
+			VerifyOptions{TimeBudget: time.Minute})
 	})
+	if got := budget.requestedBudget(); got != time.Minute {
+		t.Fatalf("run budget = %v, want the TimeBudget option (1m)", got)
+	}
 	if err != nil {
 		t.Fatalf("budget exhaustion must not be an error, got %v", err)
 	}
