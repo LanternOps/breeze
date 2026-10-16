@@ -246,15 +246,19 @@ func runWithWatchdog(t *testing.T, limit time.Duration, fn func()) {
 }
 
 // manualBudget stands in for the run's wall-clock TimeBudget: the run's
-// context ends only when the test calls expire, with the same
+// context ends only when the test calls expire, and then with the same
 // errVerifyTimeBudget cause the real deadline attaches. Racing a 300 ms
 // deadline against the downloads let a loaded -race runner reach the
 // deadline before the first file finished (#8765); with a manual budget the
 // test decides exactly how far the run gets.
 //
-// The run sees ctx.Err() == context.Canceled instead of DeadlineExceeded;
-// the verify paths key only on ctx.Err() != nil and context.Cause, so both
-// take the same branch.
+// The run sees ctx.Err() == context.Canceled instead of DeadlineExceeded.
+// The verify and test-restore paths (verify.go, verify_download.go,
+// integrity) only test ctx.Err() != nil and context.Cause(runCtx), never the
+// error value, so both end in the same branch.
+//
+// useManualBudgetForTest swaps the package-level budgetContext, so a test
+// that calls it must not run in parallel with other tests in this package.
 type manualBudget struct {
 	mu        sync.Mutex
 	requested time.Duration
@@ -291,6 +295,13 @@ func (b *manualBudget) requestedBudget() time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.requested
+}
+
+// startedObjects is how many object downloads (manifest excluded) began.
+func (p *scriptedDownloadProvider) startedObjects() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.started)
 }
 
 // A single object whose download stalls mid-body must fail THAT file once
@@ -403,6 +414,9 @@ func TestVerifyIntegrity_TimeBudgetReturnsPartialCounts(t *testing.T) {
 	if result.FilesVerified != 3 || result.FilesFailed != 0 {
 		t.Fatalf("verified=%d failed=%d, want 3/0", result.FilesVerified, result.FilesFailed)
 	}
+	if got := p.startedObjects(); got != 4 {
+		t.Fatalf("started %d downloads, want 4 (files after the budget ran out must never start)", got)
+	}
 	if result.FilesUnchecked != 3 {
 		t.Fatalf("filesUnchecked = %d, want 3 (the stalled file and the two never started)", result.FilesUnchecked)
 	}
@@ -417,10 +431,18 @@ func TestVerifyIntegrity_TimeBudgetReturnsPartialCounts(t *testing.T) {
 func TestVerifyIntegrity_TimeBudgetWithNothingCheckedIsFailed(t *testing.T) {
 	defer setVerifyConcurrencyForTest(1)()
 	defer setDownloadTimeoutFloorForTest(time.Hour)()
+	// The budget runs out as file 0 starts. A wall-clock budget could
+	// instead run out during the manifest download, a different outcome.
 	p := newScriptedDownloadProvider(t, "verify-budget-zero", 3, 0)
+	budget := useManualBudgetForTest(t)
+	p.onStall = budget.expire
 
-	result, err := VerifyIntegrityWithOptions(context.Background(), p, "verify-budget-zero",
-		VerifyOptions{TimeBudget: 200 * time.Millisecond})
+	var result *VerifyResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-budget-zero",
+			VerifyOptions{TimeBudget: time.Minute})
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -452,6 +474,9 @@ func TestTestRestore_TimeBudgetReturnsPartialCountsAndCleansUp(t *testing.T) {
 	}
 	if result.FilesVerified != 2 || result.FilesFailed != 0 || result.FilesUnchecked != 3 {
 		t.Fatalf("verified=%d failed=%d unchecked=%d, want 2/0/3", result.FilesVerified, result.FilesFailed, result.FilesUnchecked)
+	}
+	if got := p.startedObjects(); got != 3 {
+		t.Fatalf("started %d downloads, want 3 (files after the budget ran out must never start)", got)
 	}
 	if result.Status != "partial" || !strings.Contains(result.Error, "time budget") {
 		t.Fatalf("status=%q error=%q, want partial with a time-budget reason", result.Status, result.Error)
@@ -600,15 +625,23 @@ func TestTestRestore_CaseCollidingEntriesBothVerify(t *testing.T) {
 func TestVerifyIntegrity_ProgressUnderBudgetCountsOnlyFinishedFiles(t *testing.T) {
 	defer setVerifyConcurrencyForTest(2)()
 	defer setDownloadTimeoutFloorForTest(time.Hour)()
+	// The budget runs out as the first stalled file starts, never during the
+	// manifest download (which would leave nothing unchecked).
 	p := newScriptedDownloadProvider(t, "verify-progress-budget", 8, 3, 4)
+	budget := useManualBudgetForTest(t)
+	p.onStall = budget.expire
 
 	var calls, last int
-	result, err := VerifyIntegrityWithOptions(context.Background(), p, "verify-progress-budget", VerifyOptions{
-		TimeBudget: 300 * time.Millisecond,
-		Progress: func(done, total int) {
-			calls++
-			last = done
-		},
+	var result *VerifyResult
+	var err error
+	runWithWatchdog(t, 10*time.Second, func() {
+		result, err = VerifyIntegrityWithOptions(context.Background(), p, "verify-progress-budget", VerifyOptions{
+			TimeBudget: time.Minute,
+			Progress: func(done, total int) {
+				calls++
+				last = done
+			},
+		})
 	})
 	if err != nil {
 		t.Fatal(err)
