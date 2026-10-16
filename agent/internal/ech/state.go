@@ -45,6 +45,12 @@ type hostState struct {
 	// lastPlainSuccessAt is the last successful plain handshake. Health uses
 	// it to tell a stale filter signature from a filter still in the path.
 	lastPlainSuccessAt time.Time
+	// lastECHAcceptedAt is the last ECH-accepted handshake.
+	lastECHAcceptedAt time.Time
+	// lastSuccessECH reports that the most recent successful handshake was
+	// ECH-accepted (wire truth for echActive). A flag rather than comparing
+	// the two times: successes can share a timestamp.
+	lastSuccessECH bool
 }
 
 func newHostState() *hostState {
@@ -88,6 +94,14 @@ func (s *hostState) NoteSignature(now time.Time) (engaged bool) {
 // NoteECHSuccess resets the consecutive ECH failure counter.
 func (s *hostState) NoteECHSuccess() { s.echFailures = 0 }
 
+// NoteECHAcceptedAt records an ECH-accepted handshake at now: the most recent
+// successful dial is ECH, and the failure counter resets.
+func (s *hostState) NoteECHAcceptedAt(now time.Time) {
+	s.lastECHAcceptedAt = now
+	s.lastSuccessECH = true
+	s.NoteECHSuccess()
+}
+
 // NoteECHFailure counts a failed ECH dial; it returns true when the failure
 // limit is reached and the host enters ModeCooldown. No-op outside ModeECH.
 func (s *hostState) NoteECHFailure(now time.Time) (cooled bool) {
@@ -109,6 +123,7 @@ func (s *hostState) NoteECHFailure(now time.Time) (cooled bool) {
 // ModePlain and ModeCooldown keep their mode.
 func (s *hostState) NotePlainSuccessAt(now time.Time) {
 	s.lastPlainSuccessAt = now
+	s.lastSuccessECH = false
 	s.NotePlainSuccess()
 }
 
@@ -129,3 +144,10 @@ func (s *hostState) LastSignatureAt() time.Time { return s.lastSignatureAt }
 // LastPlainSuccessAt returns the last successful plain handshake, or the zero
 // time.
 func (s *hostState) LastPlainSuccessAt() time.Time { return s.lastPlainSuccessAt }
+
+// LastECHAcceptedAt returns the last ECH-accepted handshake, or the zero time.
+func (s *hostState) LastECHAcceptedAt() time.Time { return s.lastECHAcceptedAt }
+
+// ECHOnWire reports whether the most recent successful handshake was
+// ECH-accepted. False before any success.
+func (s *hostState) ECHOnWire() bool { return s.lastSuccessECH }

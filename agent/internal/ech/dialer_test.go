@@ -384,7 +384,7 @@ func TestDial_SignatureThresholdThenECH(t *testing.T) {
 	if !tc.ConnectionState().ECHAccepted {
 		t.Fatal("third dial: ECHAccepted = false")
 	}
-	want := HostStatus{Mode: ModeECH, ECHActive: true, FilterSignatureSeenAt: dialT0.Add(2 * time.Minute)}
+	want := HostStatus{Mode: ModeECH, ECHActive: true, FilterSignatureSeenAt: dialT0.Add(2 * time.Minute), LastECHAcceptedAt: dialT0.Add(2 * time.Minute)}
 	if got := d.Status(dialHost); got != want {
 		t.Fatalf("Status = %+v, want %+v", got, want)
 	}
@@ -1095,5 +1095,117 @@ func TestDial_StaleRefreshFailureNotCounted(t *testing.T) {
 	}
 	if n := echFailures(d, dialHost); n != 1 {
 		t.Fatalf("echFailures = %d, want 1 (failed refresh of a cached list is not counted)", n)
+	}
+}
+
+// echActive is wire truth (#8869 lab): true only while the most recent
+// successful dial to the host was ECH-accepted, independent of the mode and
+// of the switches.
+func TestStatus_ECHActiveIsLastSuccessfulDial(t *testing.T) {
+	list, key := newECHConfigList(t, "public.test")
+	echAddr, pool := startTLSServer(t, []string{dialHost, "public.test"}, []tls.EncryptedClientHelloKey{key}, okHandler())
+	hole := startBlackhole(t)
+	rig := newRig(echAddr)
+	clock := &fakeClock{t: dialT0}
+	d := newTestDialer(t, rig, listResolver(t, list), clock, func(o *Options) { o.HandshakeTimeout = time.Second })
+	d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+
+	// In ech mode, before any accepted handshake: not active.
+	d.ForceModeForTest(dialHost, ModeECH, dialT0)
+	if st := d.Status(dialHost); st.ECHActive || st.Mode != ModeECH {
+		t.Fatalf("ech mode, no dial yet: Status = %+v, want Mode ech, ECHActive false", st)
+	}
+
+	// After an accepted ECH dial: active, with the time recorded.
+	clock.Set(dialT0.Add(time.Minute))
+	if !mustDial(t, d, baseCfg(pool)).ConnectionState().ECHAccepted {
+		t.Fatal("ECHAccepted = false")
+	}
+	st := d.Status(dialHost)
+	if !st.ECHActive {
+		t.Fatalf("after accepted ECH dial: Status = %+v, want ECHActive", st)
+	}
+	if !st.LastECHAcceptedAt.Equal(dialT0.Add(time.Minute)) {
+		t.Fatalf("LastECHAcceptedAt = %v, want %v", st.LastECHAcceptedAt, dialT0.Add(time.Minute))
+	}
+
+	// A later dial whose ECH attempt is blackholed and whose plain fallback
+	// succeeds: the wire is plain now.
+	clock.Set(dialT0.Add(2 * time.Minute))
+	rig.setTarget(hole)
+	rig.thenTarget(echAddr)
+	tc, err := dialTLS(t, d, baseCfg(pool), nil)
+	if err != nil {
+		t.Fatalf("fallback dial: %v", err)
+	}
+	if tc.ConnectionState().ECHAccepted {
+		t.Fatal("fallback dial: ECHAccepted = true")
+	}
+	if st := d.Status(dialHost); st.ECHActive {
+		t.Fatalf("after plain-fallback success: Status = %+v, want ECHActive false", st)
+	}
+}
+
+// A frozen clock must not confuse the order: the last success kind wins even
+// when both successes share a timestamp.
+func TestStatus_ECHActiveFrozenClockTie(t *testing.T) {
+	list, key := newECHConfigList(t, "public.test")
+	addr, pool := startTLSServer(t, []string{dialHost, "public.test"}, []tls.EncryptedClientHelloKey{key}, okHandler())
+	rig := newRig(addr)
+	d := newTestDialer(t, rig, listResolver(t, list), &fakeClock{t: dialT0})
+	d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+
+	// plain success, then ECH accepted, at the same instant.
+	mustDial(t, d, baseCfg(pool))
+	forceMode(d, dialHost, ModeECH)
+	if !mustDial(t, d, baseCfg(pool)).ConnectionState().ECHAccepted {
+		t.Fatal("ECHAccepted = false")
+	}
+	if !d.Status(dialHost).ECHActive {
+		t.Fatal("ECH accepted after plain at the same instant: ECHActive = false")
+	}
+	// ECH accepted, then plain (switch off) at the same instant.
+	d.SetServerEnabled(false)
+	mustDial(t, d, baseCfg(pool))
+	if d.Status(dialHost).ECHActive {
+		t.Fatal("plain after ECH at the same instant: ECHActive = true")
+	}
+}
+
+// The kill switch (or a local opt-out) does not tear down a live ECH
+// connection, so ECHActive stays true until a plain dial succeeds; Disabled
+// names which switch is off.
+func TestStatus_SwitchOffKeepsECHActiveAndNamesSwitch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		off  func(d *Dialer)
+		want DisabledBy
+	}{
+		{"server switch off", func(d *Dialer) { d.SetServerEnabled(false) }, DisabledByServer},
+		{"local opt-out", func(d *Dialer) { d.SetLocalEnabled(false) }, DisabledByConfig},
+		{"both off: configuration wins", func(d *Dialer) { d.SetServerEnabled(false); d.SetLocalEnabled(false) }, DisabledByConfig},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			list, key := newECHConfigList(t, "public.test")
+			addr, pool := startTLSServer(t, []string{dialHost, "public.test"}, []tls.EncryptedClientHelloKey{key}, okHandler())
+			rig := newRig(addr)
+			d := newTestDialer(t, rig, listResolver(t, list), &fakeClock{t: dialT0})
+			d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+			forceMode(d, dialHost, ModeECH)
+			if !mustDial(t, d, baseCfg(pool)).ConnectionState().ECHAccepted {
+				t.Fatal("ECHAccepted = false")
+			}
+			if st := d.Status(dialHost); st.Disabled != DisabledByNone {
+				t.Fatalf("enabled: Disabled = %v, want none", st.Disabled)
+			}
+			tc.off(d)
+			st := d.Status(dialHost)
+			if !st.ECHActive {
+				t.Fatalf("switch off, no new dial: Status = %+v, want ECHActive (live ECH conn)", st)
+			}
+			if st.Disabled != tc.want {
+				t.Fatalf("Disabled = %v, want %v", st.Disabled, tc.want)
+			}
+		})
 	}
 }

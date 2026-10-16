@@ -14,6 +14,10 @@ Health strings (`control_plane` component). Agent log shows status `degraded`; t
 - healthy: `reachable via encrypted client hello`
 - degraded / `warning`: `control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)`
 - degraded / `warning`: `encrypted client hello unavailable; retrying later`
+- degraded / `warning`: `encrypted client hello disabled by control plane; the next reconnect dials plain` (kill switch off while the live connection is still ECH)
+- degraded / `warning`: `encrypted client hello disabled by configuration; the next reconnect dials plain` (`ech: false` while the live connection is still ECH; rare, since the agent reads `ech` at startup and a restart dials plain)
+
+`echActive` in the heartbeat is wire truth: true only while the most recent successful TLS dial to the control plane was ECH-accepted. It is not the dialer's mode, and it stays true after ECH is switched off until a plain dial succeeds.
 
 ## 1. Local filter simulation (no ECH expected)
 
@@ -26,7 +30,7 @@ Preconditions: a lab host with a built agent, enrolled against a lab server. A l
 
 Expected:
 
-- After two failed dials (more than 30 s apart, within 10 min) the INFO `ech mode changed ... to ech` line appears first, then the WARN filter line (the transition is logged before the warning).
+- The WARN filter line fires on the first filter signature (once per streak). The INFO `ech mode changed ... to ech` line comes with the second signature, at least 30 s later and within 10 min.
 - `control_plane`: agent log status `degraded`; device health observation / API `state: "warning"`, with the filter reason.
 - A DoH lookup finds no `ech=` record for this name, so `ech-cache.json` in the agent data dir never appears, and each failure is one fetch only; after 3 failures `ech mode changed ... to cooldown`, health reason becomes the cooldown string once the 10 min signature window passes. No DoH spin between dials.
 
@@ -44,6 +48,8 @@ Expected:
 - Enrollment succeeds on the first run (one-shot retry with ECH on the first signature).
 - `ech mode changed ... to ech`, `ech dial attempt ... attempt=ech result=accepted`, `ech-cache.json` present in the data dir.
 - Within two heartbeats the device health shows `control_plane` healthy `reachable via encrypted client hello`, and the heartbeat carries `echActive: true`. API metric `breeze_agent_heartbeat_ech_total{active="true"}` increments.
+- `echActive` reflects the last successful dial, not the mode: right after `ech mode changed ... to ech` a heartbeat can still show `echActive` absent (false) until the first `attempt=ech result=accepted`.
+- Once in ECH mode the host stays there even after the filter is gone (ECH keeps succeeding, so no plain dial runs to notice), until an agent restart or a cooldown. Moving the device back behind a filter changes nothing visible until its sockets drop: existing connections stay up and it re-dials only after they close.
 
 Rollback: set `ech: false` in `agent.yaml` and restart (device goes offline on this network, which is the pre-ECH behaviour), or uninstall the agent.
 
@@ -55,8 +61,8 @@ Preconditions: scenario 2 passing, device online over ECH. Access to the lab/sta
 
 0. Precheck: `breeze_agent_heartbeat_ech_total{active="true"}` must be 0 apart from the lab device. The counter has no device label, so compare its increase over the last 15 minutes with the lab PC's own heartbeat count for the same window (`rate(breeze_agent_heartbeat_ech_total{active="true"}[15m])` times 900 should match the lab PC's beats). Any surplus means another device depends on ECH: stop and do not run this scenario.
 1. Set `AGENT_ECH_ENABLED=false` on the api service and recreate it.
-2. Wait for a heartbeat (the agent persists `ech_server_enabled: false`). The live WebSocket must stay up.
-3. Force the socket to drop (restart the API or disconnect the PC's network briefly).
+2. Wait for a heartbeat (the agent persists `ech_server_enabled: false`). The live WebSocket must stay up. The next heartbeat still carries `echActive: true` (the wire is still ECH) and `control_plane` shows `warning` with `encrypted client hello disabled by control plane; the next reconnect dials plain`.
+3. Force the sockets to drop: disconnect the PC's network briefly and reconnect it (or restart the agent). Restarting the API is not enough behind Cloudflare: it drops only the WebSocket, while the heartbeat's HTTP/2 connection terminates at the edge and survives, so heartbeats keep flowing over ECH.
 
 Expected:
 

@@ -131,8 +131,10 @@ type HeartbeatPayload struct {
 	// with no helper version offered. Omitted when there is none, so older
 	// servers (which strip unknown keys) and healthy devices send nothing.
 	HelperInstallIssue string `json:"helperInstallIssue,omitempty"`
-	// ECHActive is true while heartbeats to the control plane go over
-	// Encrypted Client Hello (#8869). FilterSignatureSeenAt is when a network
+	// ECHActive is true while the most recent successful TLS dial to the
+	// control plane was accepted over Encrypted Client Hello (#8869): wire
+	// truth, not the dialer's mode, and it stays true after ECH is switched
+	// off until a plain dial succeeds. FilterSignatureSeenAt is when a network
 	// filter last answered the TLS handshake with plaintext HTTP (RFC 3339
 	// UTC). Both omitempty: a healthy device sends neither, and older servers
 	// strip the unknown keys.
@@ -4669,11 +4671,16 @@ func filterSignatureCurrent(st ech.HostStatus) bool {
 }
 
 // controlPlaneComponent maps a host's ECH state to the control_plane health
-// component. Row order matters: ECH active wins, then a current filter
-// signature (newer than the last plain success) seen within the last 10
-// minutes, then cooldown.
+// component. Row order matters: ECH active with ECH switched off (the live
+// connection is still ECH, but the next reconnect dials plain), then ECH
+// active, then a current filter signature (newer than the last plain success)
+// seen within the last 10 minutes, then cooldown.
 func controlPlaneComponent(st ech.HostStatus) (status health.Status, message string) {
 	switch {
+	case st.ECHActive && st.Disabled == ech.DisabledByConfig:
+		return health.Degraded, "encrypted client hello disabled by configuration; the next reconnect dials plain"
+	case st.ECHActive && st.Disabled == ech.DisabledByServer:
+		return health.Degraded, "encrypted client hello disabled by control plane; the next reconnect dials plain"
 	case st.ECHActive:
 		return health.Healthy, "reachable via encrypted client hello"
 	case filterSignatureCurrent(st) && time.Since(st.FilterSignatureSeenAt) < 10*time.Minute:

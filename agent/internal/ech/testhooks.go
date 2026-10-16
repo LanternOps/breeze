@@ -40,3 +40,11 @@ func (d *Dialer) ForceModeForTest(host string, m Mode, signatureAt time.Time) {
 
 // SharedOneShotForTest reports whether the shared dialer is in one-shot mode.
 func SharedOneShotForTest() bool { return Shared().oneShot.Load() }
+
+// NoteECHAcceptedForTest records an ECH-accepted dial to host at at, as a
+// successful ECH handshake would.
+func (d *Dialer) NoteECHAcceptedForTest(host string, at time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.state(host).NoteECHAcceptedAt(at)
+}

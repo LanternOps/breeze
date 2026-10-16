@@ -210,6 +210,14 @@ func TestControlPlaneComponent_Table(t *testing.T) {
 			health.Degraded, "control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)"},
 		{"cooldown", ech.HostStatus{Mode: ech.ModeCooldown, InCooldown: true, FilterSignatureSeenAt: now.Add(-time.Hour)},
 			health.Degraded, "encrypted client hello unavailable; retrying later"},
+		// Kill switch on a live ECH connection (#8869 lab): the wire is still
+		// ECH, so this is not a filter block; the next reconnect dials plain.
+		{"ech active, server switch off", ech.HostStatus{Mode: ech.ModeECH, ECHActive: true, Disabled: ech.DisabledByServer, FilterSignatureSeenAt: now.Add(-time.Minute)},
+			health.Degraded, "encrypted client hello disabled by control plane; the next reconnect dials plain"},
+		{"ech active, local opt-out", ech.HostStatus{Mode: ech.ModeECH, ECHActive: true, Disabled: ech.DisabledByConfig, FilterSignatureSeenAt: now.Add(-time.Minute)},
+			health.Degraded, "encrypted client hello disabled by configuration; the next reconnect dials plain"},
+		// Switch off and the wire is plain: the switch alone is not news.
+		{"switch off, not ech active", ech.HostStatus{Disabled: ech.DisabledByServer}, health.Healthy, ""},
 		{"plain, nothing seen", ech.HostStatus{}, health.Healthy, ""},
 		{"plain, stale signature", ech.HostStatus{FilterSignatureSeenAt: now.Add(-11 * time.Minute)}, health.Healthy, ""},
 		// A plain handshake after the signature means the host is reachable:
@@ -277,6 +285,7 @@ func TestHeartbeatPayload_ControlPlaneComponentIsV1Shape(t *testing.T) {
 	now := time.Now()
 	rows := []ech.HostStatus{
 		{Mode: ech.ModeECH, ECHActive: true},
+		{Mode: ech.ModeECH, ECHActive: true, Disabled: ech.DisabledByServer},
 		{FilterSignatureSeenAt: now},
 		{Mode: ech.ModeCooldown, InCooldown: true},
 		{},
@@ -376,6 +385,12 @@ func TestSendHeartbeat_PayloadCarriesECHFields(t *testing.T) {
 
 	seen := time.Now().Add(-time.Minute)
 	d.ForceModeForTest("127.0.0.1", ech.ModeECH, seen)
+	// echActive is wire truth: ech mode alone is not enough.
+	m = beat()
+	if _, ok := m["echActive"]; ok {
+		t.Fatalf("echActive present in ech mode before any accepted ECH dial: %v", m["echActive"])
+	}
+	d.NoteECHAcceptedForTest("127.0.0.1", time.Now())
 	m = beat()
 	if m["echActive"] != true {
 		t.Fatalf(`request JSON echActive = %v, want true`, m["echActive"])
@@ -395,6 +410,21 @@ func TestSendHeartbeat_PayloadCarriesECHFields(t *testing.T) {
 	}
 	if cp["state"] != "healthy" || cp["reason"] != "reachable via encrypted client hello" {
 		t.Fatalf("control_plane component = %v", cp)
+	}
+
+	// Kill switch on the live ECH connection (#8869 lab): the wire is still
+	// ECH, so echActive stays true and health says the next reconnect is
+	// plain, not that a filter blocks the control plane.
+	// (applyConfigUpdate → SetServerEnabled is covered by
+	// TestApplyConfigUpdate_ECHEnabledFalsePersistsAndSetsDialer.)
+	d.SetServerEnabled(false)
+	m = beat()
+	if m["echActive"] != true {
+		t.Fatalf(`kill switch on live ECH: echActive = %v, want true`, m["echActive"])
+	}
+	cp = m["healthStatus"].(map[string]any)["components"].(map[string]any)["control_plane"].(map[string]any)
+	if cp["state"] != "warning" || cp["reason"] != "encrypted client hello disabled by control plane; the next reconnect dials plain" {
+		t.Fatalf("kill switch on live ECH: control_plane component = %v", cp)
 	}
 }
 

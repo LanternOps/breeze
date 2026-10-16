@@ -60,13 +60,61 @@ type Dialer struct {
 
 // HostStatus is a snapshot of one host's ECH state for health reporting.
 type HostStatus struct {
-	Mode                  Mode
+	// Mode is how the next dial is made (subject to Disabled).
+	Mode Mode
+	// ECHActive is wire truth: the most recent successful handshake to the
+	// host was ECH-accepted. It is not derived from Mode (a host in ModeECH
+	// whose dial fell back to plain, or that has not completed an ECH
+	// handshake yet, is not active; a one-shot ECH success in ModePlain is)
+	// and not gated on the switches: turning ECH off leaves the live ECH
+	// connection up, so ECHActive stays true until a plain dial succeeds.
 	ECHActive             bool
 	FilterSignatureSeenAt time.Time
 	// LastPlainSuccessAt is the last successful plain handshake. A signature
 	// older than this is stale: the host is reachable without ECH.
 	LastPlainSuccessAt time.Time
-	InCooldown         bool
+	// LastECHAcceptedAt is the last ECH-accepted handshake, or zero.
+	LastECHAcceptedAt time.Time
+	InCooldown        bool
+	// Disabled names the switch that keeps subsequent dials plain, or
+	// DisabledByNone while ECH is enabled.
+	Disabled DisabledBy
+}
+
+// DisabledBy names the switch that turns ECH off for subsequent dials.
+type DisabledBy int
+
+const (
+	// DisabledByNone: ECH is enabled (operator flag and server switch on).
+	DisabledByNone DisabledBy = iota
+	// DisabledByConfig: the operator config key `ech` is false. It wins when
+	// both are off: re-enabling the server switch would not change the device.
+	DisabledByConfig
+	// DisabledByServer: the control-plane kill switch (`ech_enabled: false`).
+	DisabledByServer
+)
+
+func (b DisabledBy) String() string {
+	switch b {
+	case DisabledByNone:
+		return "none"
+	case DisabledByConfig:
+		return "config"
+	case DisabledByServer:
+		return "server"
+	}
+	return "unknown"
+}
+
+// disabledBy reports which switch, if any, keeps subsequent dials plain.
+func (d *Dialer) disabledBy() DisabledBy {
+	switch {
+	case !d.localEnabled.Load():
+		return DisabledByConfig
+	case !d.serverEnabled.Load():
+		return DisabledByServer
+	}
+	return DisabledByNone
 }
 
 // New builds a Dialer from opts, filling defaults.
@@ -158,7 +206,7 @@ func (d *Dialer) Status(host string) HostStatus {
 	st, ok := d.states[host]
 	if !ok {
 		d.mu.Unlock()
-		return HostStatus{}
+		return HostStatus{Disabled: d.disabledBy()}
 	}
 	from := st.mode
 	mode := st.Mode(now)
@@ -167,14 +215,18 @@ func (d *Dialer) Status(host string) HostStatus {
 	}
 	seen := st.LastSignatureAt()
 	plainOK := st.LastPlainSuccessAt()
+	echOK := st.LastECHAcceptedAt()
+	onWire := st.ECHOnWire()
 	d.mu.Unlock()
 	logTransition(host, from, mode)
 	return HostStatus{
 		Mode:                  mode,
-		ECHActive:             mode == ModeECH && d.enabled(),
+		ECHActive:             onWire,
 		FilterSignatureSeenAt: seen,
 		LastPlainSuccessAt:    plainOK,
+		LastECHAcceptedAt:     echOK,
 		InCooldown:            mode == ModeCooldown,
+		Disabled:              d.disabledBy(),
 	}
 }
 
@@ -350,7 +402,8 @@ func (a *attempt) echWith(ctx context.Context, list []byte, allowRetry bool) (*t
 	cfg.EncryptedClientHelloConfigList = list
 	tc, tcpFailed, err := a.handshake(ctx, cfg, a.echBudget)
 	if err == nil {
-		d.update(a.host, func(st *hostState) bool { st.NoteECHSuccess(); return false })
+		now := d.opts.Now()
+		d.update(a.host, func(st *hostState) bool { st.NoteECHAcceptedAt(now); return false })
 		log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "result", "accepted")
 		return tc, false, nil
 	}

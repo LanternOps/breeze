@@ -168,3 +168,27 @@ func TestState_PlainSuccessAtRecordsTimeInEveryMode(t *testing.T) {
 		t.Fatalf("cooldown: last=%v mode=%v, want %v cooldown", c.LastPlainSuccessAt(), c.Mode(later), later)
 	}
 }
+
+func TestState_ECHOnWireFollowsLastSuccess(t *testing.T) {
+	s := newHostState()
+	if s.ECHOnWire() {
+		t.Fatal("fresh state: ECHOnWire = true")
+	}
+	s.mode = ModeECH
+	if s.ECHOnWire() {
+		t.Fatal("ech mode, no success: ECHOnWire = true")
+	}
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	s.NoteECHAcceptedAt(at)
+	if !s.ECHOnWire() || !s.LastECHAcceptedAt().Equal(at) {
+		t.Fatalf("after ECH accepted: ECHOnWire=%v LastECHAcceptedAt=%v", s.ECHOnWire(), s.LastECHAcceptedAt())
+	}
+	s.NotePlainSuccessAt(at)
+	if s.ECHOnWire() {
+		t.Fatal("after plain success at the same instant: ECHOnWire = true")
+	}
+	s.NoteECHAcceptedAt(at)
+	if !s.ECHOnWire() {
+		t.Fatal("after ECH accepted at the same instant: ECHOnWire = false")
+	}
+}

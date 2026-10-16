@@ -257,11 +257,11 @@ The agent is **plain-first**. Nothing changes on a network that does not interfe
 - Three consecutive ECH failures put ECH on a one-hour cooldown (plain only). Mode is kept in memory, so a restart starts plain.
 - `enroll`, `bootstrap` and `support` retry with ECH on the first signature, so a first-run enrollment on a filtered network can succeed.
 
-**How to tell:** the `control_plane` health component shows `warning` with the reason "control plane blocked by a network security filter" when the agent has seen the signature in the last 10 minutes and no plain connection has succeeded since, and `healthy` with "reachable via encrypted client hello" when ECH is carrying the connection. Heartbeats also carry `echActive` and `filterSignatureSeenAt`.
+**How to tell:** the `control_plane` health component shows `warning` with the reason "control plane blocked by a network security filter" when the agent has seen the signature in the last 10 minutes and no plain connection has succeeded since, and `healthy` with "reachable via encrypted client hello" when ECH is carrying the connection. Heartbeats also carry `echActive` (true while the most recent successful connection to the control plane used ECH) and `filterSignatureSeenAt`.
 
 **Opt out locally** by adding `ech: false` to `agent.yaml` and restarting the agent.
 
-**Server kill switch:** set `AGENT_ECH_ENABLED=false` on the API. Agents receive it in their next heartbeat response and dial plain from then on. Live connections are not torn down; the change takes effect on the next dial. Turning `AGENT_ECH_ENABLED` off makes every device that currently depends on ECH dial plain on its next reconnect, so those devices go offline, and turning it back on cannot reach them until they are on an unfiltered network.
+**Server kill switch:** set `AGENT_ECH_ENABLED=false` on the API. Agents receive it in their next heartbeat response and dial plain from then on. Live connections are not torn down; the change takes effect on the next dial. Until then a device still connected over ECH reports `echActive` and a `control_plane` `warning` with the reason "encrypted client hello disabled by control plane; the next reconnect dials plain". Turning `AGENT_ECH_ENABLED` off makes every device that currently depends on ECH dial plain on its next reconnect, so those devices go offline, and turning it back on cannot reach them until they are on an unfiltered network.
 
 <Aside type="caution">
 ECH needs the host to publish an ECH config in DNS. A self-hosted edge without one stays on plain connections, and `control_plane` keeps reporting the filter warning. ECH is also not applied to connections that go through an HTTP proxy (`HTTPS_PROXY`).
