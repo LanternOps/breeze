@@ -12,6 +12,7 @@ import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   getDeviceOrgDenormalizedTables,
   getDeviceOrgMoveDeleteTables,
+  CORE_DEVICE_ORG_MOVE_DELETE_TABLES,
   DEVICE_ORG_DENORMALIZED_TABLES,
   DEVICE_ORG_FK_CASCADE_TABLES,
   DEVICE_SITE_DENORMALIZED_TABLES,
@@ -227,13 +228,21 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
  *     breeze_cascade_device_org_id() trigger restamps it; the loop skips it.
  *   - DELETE: getDeviceOrgMoveDeleteTables(). Its rows name a source-org
  *     entity (topology_device_presence.matched_site_id), so a restamp is
- *     unrepresentable; the loop skips it and the delete loop removes the rows.
+ *     unrepresentable; the loop skips it and the delete loop removes the rows
+ *     (for the topology tables a BEFORE UPDATE trigger on devices normally
+ *     deleted them already; the loop is the fallback).
  * Core move-delete and DB-cascade tables ALSO stay in
  * CORE_DEVICE_ORG_DENORMALIZED_TABLES (the coverage contract above), so the
  * restamp disposition is "denormalized minus the two sub-lists".
  *
  * A table in BOTH sub-lists has two contradictory dispositions, and a table in
  * INTENTIONALLY_NO_ORG_ID (never moved) must not also sit in a move list.
+ *
+ * Limits: scope is read from the Drizzle schema. A device pointer under another
+ * column name (source_device_id, linked_device_id), or a FK declared only in a
+ * migration (ai_sessions.topology_site_id -> sites), is invisible here. A green
+ * run means every Drizzle-visible device table is classified, not that each
+ * classification is right; review the SQL for those.
  */
 describe('device org-move disposition (#8634)', () => {
   const RESTAMP = 'getDeviceOrgDenormalizedTables() restamp loop';
@@ -292,7 +301,7 @@ describe('device org-move disposition (#8634)', () => {
       // no write grant; the composite (device_id, org_id) -> devices(id, org_id)
       // FK is ON UPDATE CASCADE, so the devices row flip restamps it. Same
       // exemption as DB_TRIGGER_MAINTAINED in cascadeDelete.test.ts.
-      'composite device FK ON UPDATE CASCADE (migration-only, not in the Drizzle schema)',
+      'composite (device_id, org_id) FK ON UPDATE CASCADE; the FK is declared only in the migration',
     ],
   ]);
   const DB_MAINTAINED = 'DB_MAINTAINED_ON_MOVE (this test)';
@@ -309,11 +318,18 @@ describe('device org-move disposition (#8634)', () => {
     return found;
   }
 
-  it('sanity: the schema-derived scope includes the known move-delete and DB-cascade tables', () => {
+  it('sanity: the schema-derived scope includes one table per disposition and excludes non-device tables', () => {
     const names = new Set(inScope.map((t) => getTableName(t)));
-    expect(names.has('topology_device_presence')).toBe(true);
-    expect(names.has('agent_health_observations')).toBe(true);
-    expect(names.has('device_metrics')).toBe(true);
+    expect(names.has('device_metrics')).toBe(true); // restamp
+    expect(names.has('agent_health_observations')).toBe(true); // DB cascade
+    expect(names.has('topology_device_presence')).toBe(true); // move-delete
+    expect(names.has('partner_export_device_material_state')).toBe(true); // DB-maintained
+    expect(names.has('ai_agent_runs')).toBe(true); // not moved
+    // Composite-FK site detection works (site_id, org_id) -> sites.
+    expect(referencedTables(tableByName.get('topology_node_bindings')!)).toContain('sites');
+    // devices is the move itself; snmp_metrics.device_id names an snmp_devices row.
+    expect(names.has('devices')).toBe(false);
+    expect(names.has('snmp_metrics')).toBe(false);
   });
 
   it('classifies every device-scoped table with an org_id column or a site FK into exactly one list', () => {
@@ -353,9 +369,11 @@ describe('device org-move disposition (#8634)', () => {
     expect(stale, `Remove these stale DB_MAINTAINED_ON_MOVE entries.`).toEqual([]);
   });
 
+  // Core entries only: extension move-delete tables live in the extension's own
+  // schema, which this test does not import.
   it('only lists move-delete tables that exist and are device-scoped', () => {
     // The delete loop keys on `WHERE device_id = $1`.
-    const stale = [...moveDeleteSet].filter((name) => {
+    const stale = CORE_DEVICE_ORG_MOVE_DELETE_TABLES.filter((name) => {
       const table = tableByName.get(name);
       return !table || !getColumns(table).some((c) => c.name === 'device_id');
     });
@@ -365,9 +383,35 @@ describe('device org-move disposition (#8634)', () => {
     ).toEqual([]);
   });
 
+  it('only deletes tables whose rows name a source-org row through a composite (x, org_id) FK', () => {
+    // A move-delete table discards the device's rows on every org move. That
+    // is only justified when a restamp is unrepresentable: a composite FK that
+    // carries org_id to some row other than the device (a site, a config row)
+    // which stays in the source org. Without one, the table belongs in the
+    // restamp list, and listing it here would silently destroy its data.
+    const unjustified = CORE_DEVICE_ORG_MOVE_DELETE_TABLES.filter((name) => {
+      const table = tableByName.get(name);
+      if (!table) return false; // covered by the stale-entry test above
+      return !getTableConfig(table).foreignKeys.some((fk) => {
+        const ref = fk.reference();
+        const target = getTableName(ref.foreignTable);
+        // Composite only: the plain org_id -> organizations FK every org table
+        // has, and (org_id, partner_id) -> organizations, name no source-org row.
+        return ref.columns.length > 1 && ref.columns.some((c) => c.name === 'org_id')
+          && target !== 'devices' && target !== 'organizations';
+      });
+    });
+    expect(
+      unjustified,
+      `These ${MOVE_DELETE} entries carry no composite (x, org_id) FK to a non-device row, so nothing ` +
+        `makes a restamp unrepresentable and the move would delete their rows for no reason. Move them to ` +
+        `CORE_DEVICE_ORG_DENORMALIZED_TABLES (restamp).\n\nUnjustified: ${unjustified.join(', ')}`,
+    ).toEqual([]);
+  });
+
   /**
    * A restamped row that FKs a site keeps pointing at a SOURCE-org site
-   * unless something moves the site pointer too. Today that is either
+   * unless something moves the site pointer too. That is either
    * DEVICE_SITE_DENORMALIZED_TABLES (the move rewrites site_id to the target
    * site) or a reviewed per-table mechanism listed below. Anything else is a
    * move-delete table.
