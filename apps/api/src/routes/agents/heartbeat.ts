@@ -1197,16 +1197,16 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.updateAttemptCount = null;
   }
 
+  // #8869 — ECH telemetry: counters only (no persistence). Absent = not counted.
+  if (data.echActive !== undefined) recordAgentHeartbeatEch(data.echActive);
+  if (data.filterSignatureSeenAt !== undefined) recordAgentFilterSignatureReport();
+
   // #6925 — persist the agent's Breeze Assist install problem ("enabled but
   // not installed, no server offer", or an abandoned install) so it shows on
   // the device page and device list instead of one agent-side log line.
   // Absent = no problem (the agent omits the field when healthy, and older
   // agents never send it), so a stale value self-clears. Same state-change-only
   // write as #6449 above: steady-state beats add no column write.
-  // #8869 — ECH telemetry: counters only (no persistence). Absent = not counted.
-  if (data.echActive !== undefined) recordAgentHeartbeatEch(data.echActive);
-  if (data.filterSignatureSeenAt !== undefined) recordAgentFilterSignatureReport();
-
   const helperInstallIssue = data.helperInstallIssue ?? null;
   if ((device.helperInstallIssue ?? null) !== helperInstallIssue) {
     deviceUpdates.helperInstallIssue = helperInstallIssue;
@@ -2172,6 +2172,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     backup_server_url: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim(),
   };
 
+  // #8869 — ECH kill switch, ALWAYS sent as true/false (an absent key means
+  // "no change" on the agent, so the explicit value is the only lever).
+  // Takes effect on the agent's next connection; never tears down live
+  // connections.
+  mergedConfigUpdate.ech_enabled = agentEchEnabled();
+
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //
   // An earlier revision omitted the key when unset/false, mirroring
@@ -2206,11 +2212,6 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // value that needs normalizing. The boot-time validator is the real gate;
   // this line stays defensive only to match the read pattern used elsewhere
   // in this function.
-  // #8869 — ECH kill switch, ALWAYS sent as true/false (absent on the agent =
-  // enabled). Takes effect on the agent's next connection; never tears down
-  // live connections.
-  mergedConfigUpdate.ech_enabled = agentEchEnabled();
-
   mergedConfigUpdate.require_manifest_signing_key_id =
     (process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID ?? '').trim().toLowerCase() === 'true';
 

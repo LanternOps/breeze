@@ -1344,10 +1344,14 @@ func (c *Client) SendRevocationLeaseRenewWithNonce(sessionID, nonce string) erro
 
 // newDialer builds the WebSocket dialer. The TLS handshake goes through the
 // shared ECH dialer (plain TLS first-class fallback inside it); gorilla passes
-// no NextProtos and the dialer sets ServerName itself. TLSClientConfig stays
-// set because gorilla ignores it only when NetDialTLSContext is used; proxied
-// dials still read it. HandshakeTimeout bounds TCP + TLS + upgrade, and the
-// ECH dialer caps its attempt so the plain fallback fits in the budget.
+// no NextProtos and the dialer sets ServerName itself. gorilla v1.5.3 uses
+// NetDialTLSContext for every wss dial, even when a Proxy is configured, so it
+// never handshakes with TLSClientConfig; the field is kept only for parity
+// with the HTTP clients and as documentation. No Proxy is set here: one would
+// wrap NetDialTLSContext, and the ECH dialer would then run its TLS handshake
+// with the proxy rather than the control plane. HandshakeTimeout bounds TCP +
+// TLS + upgrade, and the ECH dialer caps its attempt so the plain fallback
+// fits in the budget.
 func (c *Client) newDialer() websocket.Dialer {
 	tlsCfg := c.currentTLSConfig()
 	return websocket.Dialer{

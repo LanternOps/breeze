@@ -49,8 +49,11 @@ Rollback: set `ech: false` in `agent.yaml` and restart (device goes offline on t
 
 ## 3. Kill switch
 
-Preconditions: scenario 2 passing, device online over ECH. Access to the region's API compose env.
+**Run this ONLY before promote, against a lab or staging API, while the lab PC is the only device using ECH.** Never run it on a production region: turning the switch off strands every ECH-dependent customer device on that region (each dials plain on its next reconnect, goes offline behind its filter, and turning the switch back on cannot reach it until it is on an unfiltered network).
 
+Preconditions: scenario 2 passing, device online over ECH. Access to the lab/staging API compose env.
+
+0. Precheck: `breeze_agent_heartbeat_ech_total{active="true"}` must be 0 apart from the lab device. The counter has no device label, so compare its increase over the last 15 minutes with the lab PC's own heartbeat count for the same window (`rate(breeze_agent_heartbeat_ech_total{active="true"}[15m])` times 900 should match the lab PC's beats). Any surplus means another device depends on ECH: stop and do not run this scenario.
 1. Set `AGENT_ECH_ENABLED=false` on the api service and recreate it.
 2. Wait for a heartbeat (the agent persists `ech_server_enabled: false`). The live WebSocket must stay up.
 3. Force the socket to drop (restart the API or disconnect the PC's network briefly).
