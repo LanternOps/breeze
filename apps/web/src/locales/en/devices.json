@@ -4160,6 +4160,42 @@
       "false_positive": "False positive",
       "dismissed": "Dismissed",
       "unknown": "Unknown"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Isolate device",
+        "unisolate": "Release isolation",
+        "scan": "Run scan",
+        "update_agent": "Update agent"
+      },
+      "unavailable": "Not available",
+      "mfaRequired": "Verify with MFA to run response actions",
+      "error": "Could not request the response action.",
+      "requested": "{{action}} requested for {{device}}",
+      "inProgress": "Another response action is already in progress for this device.",
+      "confirming": "Requested — confirming with {{vendor}}",
+      "reasonLabel": "Reason (optional)",
+      "confirm": {
+        "isolate": {
+          "title": "Isolate {{device}}?",
+          "message": "{{vendor}} will isolate {{device}}: the device loses network access except to {{vendor}}. You can release the isolation later."
+        },
+        "unisolate": {
+          "title": "Release isolation on {{device}}?",
+          "message": "{{vendor}} will restore normal network access for {{device}}."
+        }
+      }
+    },
+    "history": {
+      "heading": "Recent response actions",
+      "checking": "Checking",
+      "aiBadge": "AI",
+      "status": {
+        "queued": "Queued",
+        "submitted": "In progress",
+        "succeeded": "Succeeded",
+        "failed": "Failed"
+      }
     }
   },
   "endpointMessages": {

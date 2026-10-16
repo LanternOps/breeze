@@ -10,6 +10,8 @@ import {
   type EdrDetectionDto,
   type EdrEndpoint,
 } from "@/lib/edrProviders";
+import EdrActionButtons from "./EdrActionButtons";
+import EdrActionHistory from "./EdrActionHistory";
 import "@/lib/i18n";
 
 // Same palette as DeviceEdrPanel (copied: importing it would be circular).
@@ -42,6 +44,7 @@ export default function DeviceEdrGenericSection({ deviceId, orgId, timezone }: P
   const [coverage, setCoverage] = useState<EdrCoverage | null>(null);
   const [failed, setFailed] = useState(false);
   const [allDenied, setAllDenied] = useState(false);
+  const [actionTick, setActionTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -160,11 +163,18 @@ export default function DeviceEdrGenericSection({ deviceId, orgId, timezone }: P
                   <dd>{fmt(e.lastSeenAt, timezone)}</dd>
                 </div>
               </dl>
+              <EdrActionButtons
+                endpoint={e}
+                deviceName={e.hostname ?? e.fqdn ?? deviceId}
+                onActionTaken={() => setActionTick((n) => n + 1)}
+              />
               {own.length > 0 && <ul className="mt-3 space-y-2">{own.map(renderDetection)}</ul>}
             </div>
           );
         })}
       </div>
+
+      {endpoints.length > 0 && <EdrActionHistory deviceId={deviceId} refreshKey={actionTick} />}
 
       {looseDetections.length > 0 && (
         <div className="mt-3">
