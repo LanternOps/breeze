@@ -1,18 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { sql, type SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const { state, rowsMock, whereMock } = vi.hoisted(() => ({
+const { state, rowsMock, whereMock, orderByMock } = vi.hoisted(() => ({
   state: { scope: 'partner' as string, permissions: [] as Array<{ resource: string; action: string }> },
   rowsMock: vi.fn(),
   whereMock: vi.fn(),
+  orderByMock: vi.fn(),
 }));
 
 vi.mock('../db', () => {
   const chain: any = {
     from: () => chain,
     where: (w: unknown) => { whereMock(w); return chain; },
-    orderBy: () => chain,
+    orderBy: (...o: unknown[]) => { orderByMock(...o); return chain; },
     limit: () => rowsMock(),
   };
   return { db: { select: () => chain } };
@@ -41,14 +43,17 @@ const ORGS_READ = { resource: 'organizations', action: 'read' };
 function row(over: Record<string, unknown> = {}) {
   return {
     id: 'a', partnerId: 'p-1', orgId: 'o-1', ownerUserId: 'u-secret', sourceKind: 'oauth_grant',
-    sourceId: 's-1', condition: 'token_revoked', severity: 'warning', detail: 'd', displayName: 'Conn',
-    fixHref: '/settings/x', ownerFixHref: '/owner/fix', viewPermission: 'connected_apps:read',
-    repairPermission: 'connected_apps:write', firstFailedAt: new Date('2026-10-01T00:00:00Z'),
+    sourceId: 's-1', condition: 'grant_revoked_reuse', severity: 'permanent', detail: 'd', displayName: 'Conn',
+    fixHref: '/settings/connected-apps', ownerFixHref: '/account/connected-apps', viewPermission: 'connected_apps:read',
+    repairPermission: 'connected_apps:manage', firstFailedAt: new Date('2026-10-01T00:00:00Z'),
     openedAt: new Date('2026-10-01T00:30:00Z'), lastObservedAt: new Date('2026-10-02T00:00:00Z'),
     healthyStreak: 0, flapCount: 0, resolvedAt: null, resolution: null,
     pendingNotice: 'opened', notifiedUserIds: ['u-secret'], ...over,
   };
 }
+
+const lastOrderBySql = () =>
+  new PgDialect().sqlToQuery(sql.join(orderByMock.mock.calls.at(-1)! as SQL[], sql`, `)).sql;
 
 const lastWhereSql = () => {
   const w = whereMock.mock.calls.at(-1)![0];
@@ -120,6 +125,16 @@ describe('GET /connection-health/incidents', () => {
     expect(Math.abs(age - 7 * 24 * 3600 * 1000)).toBeLessThan(60_000);
   });
 
+  it('open orders by opened_at, then id, both descending', async () => {
+    await get();
+    expect(lastOrderBySql()).toBe('"connection_health_incidents"."opened_at" desc, "connection_health_incidents"."id" desc');
+  });
+
+  it('recent orders by resolved_at, then id, both descending', async () => {
+    await get('/connection-health/incidents?status=recent');
+    expect(lastOrderBySql()).toBe('"connection_health_incidents"."resolved_at" desc, "connection_health_incidents"."id" desc');
+  });
+
   it('rejects an unknown status value with 400', async () => {
     expect((await get('/connection-health/incidents?status=all')).status).toBe(400);
     expect(rowsMock).not.toHaveBeenCalled();
@@ -133,7 +148,7 @@ describe('GET /connection-health/incidents', () => {
       'openedAt', 'orgId', 'resolution', 'resolvedAt', 'severity', 'sourceKind',
     ]);
     const text = JSON.stringify(item);
-    for (const secret of ['notifiedUserIds', 'ownerUserId', 'pendingNotice', 'ownerFixHref', 'u-secret', '/owner/fix']) {
+    for (const secret of ['notifiedUserIds', 'ownerUserId', 'pendingNotice', 'ownerFixHref', 'u-secret', '/account/connected-apps']) {
       expect(text).not.toContain(secret);
     }
   });

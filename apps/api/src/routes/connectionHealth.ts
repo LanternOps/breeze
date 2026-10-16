@@ -37,7 +37,11 @@ connectionHealthRoutes.get(
           gt(chi.resolvedAt, new Date(Date.now() - RECENT_MS)),
         );
 
-    const rows = await db.select().from(chi).where(where).orderBy(desc(chi.openedAt)).limit(MAX_ROWS);
+    // id breaks ties, so rows written in the same reconcile keep a stable order.
+    const order = status === 'open'
+      ? [desc(chi.openedAt), desc(chi.id)]
+      : [desc(chi.resolvedAt), desc(chi.id)];
+    const rows = await db.select().from(chi).where(where).orderBy(...order).limit(MAX_ROWS);
 
     const data = rows
       .filter((r) => {
