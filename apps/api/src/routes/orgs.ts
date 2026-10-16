@@ -28,6 +28,11 @@ import { authMiddleware, requireMfa, requirePermission, requireScope, requirePar
 import { markPermissionGate } from '../middleware/permissionGate';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import {
+  clampSessionTimeoutInSettings,
+  sessionTimeoutMinutesSchema,
+  sessionTimeoutSettingsError,
+} from '../services/sessionTimeoutLimits';
 import { getAiApprovalTimeout } from '../services/aiApprovalTimeout';
 import { normalizeAlertThresholds } from '../services/aiBudgetAlerts';
 import { enqueueAiBudgetEvaluationForPartner } from '../jobs/aiBudgetAlertDelivery';
@@ -78,7 +83,8 @@ import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
-import { ERROR_CODES } from '@breeze/shared';
+import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE } from '@breeze/shared';
+import { siteLocationRoutes } from './siteLocation';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
@@ -100,6 +106,7 @@ import { writeOrgImportAudits } from '../services/orgImport/audit';
 import { commitImportRowSchema, importRowSchema } from '../services/orgImport/schemas';
 import { resolveImportPartnerId } from './importScope';
 import { registerOrgContactsRoutes } from './orgContacts';
+import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibilities';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
@@ -242,7 +249,9 @@ const createPartnerSchema = z.object({
   // plan and maxDevices are managed by the billing service (via direct DB writes).
   // They are intentionally excluded from the API schema to prevent self-service changes.
   maxOrganizations: z.number().int().nullable().optional(),
-  settings: z.any().optional(),
+  settings: z.any().optional().refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
+  }),
   billingEmail: z.string().email().optional()
 });
 
@@ -267,6 +276,8 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
   aiForOfficeEnabled: z.boolean().optional(),
   settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
     message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
+  }).refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
   }),
 });
 
@@ -302,7 +313,9 @@ export const createOrganizationSchema = z.object({
   type: z.enum(['customer', 'internal']).optional(),
   status: z.enum(['active', 'suspended', 'trial', 'churned']).optional(),
   // maxDevices is managed by the billing service — excluded from API schema
-  settings: z.any().optional(),
+  settings: z.any().optional().refine((settings) => sessionTimeoutSettingsError(settings) === null, {
+    message: 'security.sessionTimeout must be an integer between 1 and 720 minutes (12 hours)',
+  }),
   contractStart: z.string().nullable().optional(),
   contractEnd: z.string().nullable().optional(),
   billingContact: z.any().optional()
@@ -416,7 +429,17 @@ const createSiteSchema = siteBaseSchema.extend({
   timezone: z.string().refine(isValidIanaTimezone, 'Invalid IANA timezone').default('UTC')
 });
 
-const updateSiteSchema = siteBaseSchema.partial().omit({ orgId: true });
+// Location fields are PATCH-only: create never accepts them (zod strips them), so
+// POST /sites cannot write an unstamped pin. latitude/longitude are a pair.
+const updateSiteSchema = siteBaseSchema
+  .partial()
+  .omit({ orgId: true })
+  .extend(siteLocationFieldsShape)
+  .superRefine((v, ctx) => {
+    if (!siteLocationPairIsConsistent(v)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: SITE_LOCATION_PAIR_MESSAGE, path: ['latitude'] });
+    }
+  });
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -466,6 +489,9 @@ function resolveIncomingSettingsSecrets(
 }
 
 orgRoutes.use('*', authMiddleware);
+
+// Mounted after authMiddleware so the pin route inherits authentication.
+orgRoutes.route('/', siteLocationRoutes);
 
 // GET / - List organizations accessible to the current user
 orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrgRead, async (c) => {
@@ -550,6 +576,10 @@ const partnerPublicColumns = () => ({
   defaultMarkupPercent: partners.defaultMarkupPercent,
   autoTaxHardware: partners.autoTaxHardware,
   invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
+  invoiceLineGrouping: partners.invoiceLineGrouping,
+  invoiceLineShowDate: partners.invoiceLineShowDate,
+  invoiceLineShowNote: partners.invoiceLineShowNote,
+  invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
   catalogAiStyle: partners.catalogAiStyle,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
   serviceManagementMode: partners.serviceManagementMode,
@@ -771,7 +801,7 @@ const partnerSettingsSchema = z.object({
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never
     // persisted as a second source of truth.
     allowedMfaMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
-    sessionTimeout: z.number().int().min(1).optional(),
+    sessionTimeout: sessionTimeoutMinutesSchema.optional(),
     maxSessions: z.number().int().min(1).optional(),
     ipAllowlist: z
       .array(z.string())
@@ -968,6 +998,10 @@ const partnerSettingsSchema = z.object({
   // only the feature block it owns (`ml.anomalies`, `ml.remediation_suggestions`)
   // and must send that block COMPLETE.
   ml: mlSettingsSchema.optional(),
+  // Network Proxy transport (#8155). Partner-only: no org override, since
+  // it chooses how every session of this partner is served. Read by
+  // services/tunnelOriginOptIn.ts. Replaced wholesale (one field).
+  networkProxy: z.object({ dedicatedTunnelOrigin: z.boolean().optional() }).strict().optional(),
 });
 
 const updatePartnerSettingsSchema = z.object({
@@ -1008,7 +1042,8 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
     return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  return c.json(withMaskedSettings(partner));
+  // #6111 — a session timeout stored above the 720-minute ceiling reads back clamped.
+  return c.json(withMaskedSettings({ ...partner, settings: clampSessionTimeoutInSettings(partner.settings) }));
 });
 
 // Candidates for the Inbound email card's default-assignee picker. Gated like
@@ -2571,6 +2606,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
       }
     }
 
+    // #6111 — security.sessionTimeout ceiling (the org settings blob is z.any()).
+    const sessionTimeoutError = sessionTimeoutSettingsError(settingsObj);
+    if (sessionTimeoutError) {
+      return c.json({ error: sessionTimeoutError }, 400);
+    }
+
     // Enforce partner locks on settings categories (after auth check).
     for (const category of ['security', 'notifications', 'eventLogs', 'defaults', 'branding']) {
       if (settingsObj[category] && typeof settingsObj[category] === 'object') {
@@ -2870,6 +2911,8 @@ registerOrgBillingProfileRoutes(orgRoutes);
 registerOrgAuditRetentionSettingsRoutes(orgRoutes);
 // First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts
 registerOrgContactsRoutes(orgRoutes);
+// Read-only who-to-contact resolution (Site / Device) — see routes/orgContactResponsibilities.ts
+registerOrgContactResponsibilitiesRoutes(orgRoutes);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;
@@ -3215,6 +3258,15 @@ orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'),
   // Encrypt secret-bearing fields inside sites.settings before writing —
   // matches the registry walker so UI edits don't regress to plaintext.
   const writeData: Record<string, unknown> = { ...data, updatedAt: new Date() };
+  if (data.latitude !== undefined) {
+    // Coordinates changed through the generic edit path: stamp provenance as
+    // 'manual' (technician pins go through POST /sites/:id/location). Clearing
+    // the pair clears the provenance with it.
+    const pinned = data.latitude !== null;
+    writeData.locationSource = pinned ? 'manual' : null;
+    writeData.locationSetBy = pinned ? auth.user.id : null;
+    writeData.locationSetAt = pinned ? new Date() : null;
+  }
   if (writeData.settings !== undefined) {
     const resolvedSecrets = resolveIncomingSettingsSecrets(writeData.settings, site.settings);
     if (!resolvedSecrets.ok) {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DEFAULT_PATCH_REPORT_STORAGE_PATH } from './patchReportFiles';
 
 // D7: recoveryMediaService.ts / recoveryBootMediaService.ts each build a
 // scratch bundle (a 45-65MB helper binary plus a tarball or ISO) under a
@@ -18,7 +19,7 @@ import { dirname, join } from 'node:path';
 //      under the shared /data volume (AGENT_BINARY_DIR, VIEWER_BINARY_DIR,
 //      BINARY_VERSION_FILE, ...). PATCH_REPORT_STORAGE_PATH is the closest
 //      precedent for "a plain directory under that volume" — compose maps it
-//      to /data/patch-reports and patchComplianceReportWorker.ts falls back
+//      to /data/patch-reports and patchReportFiles.ts falls back
 //      to ./data/patch-reports outside a container — so we derive the root
 //      from it rather than inventing a second convention.
 //   3. os.tmpdir(), as an explicit last resort. In any deployment using the
@@ -32,7 +33,6 @@ import { dirname, join } from 'node:path';
 // (e.g. RECOVERY_MEDIA_WORK_DIR pointing at a read-only mount) still
 // degrades to the next candidate instead of failing the whole resolution.
 
-const DEFAULT_PATCH_REPORT_STORAGE_PATH = './data/patch-reports';
 const STALE_SUBDIR_PREFIXES = ['bmr-bundle-', 'recovery-boot-media-'];
 const STALE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 

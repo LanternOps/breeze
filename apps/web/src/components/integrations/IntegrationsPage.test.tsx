@@ -16,15 +16,19 @@ vi.mock("../../lib/authScope", () => ({
   getJwtClaims: () => ({ scope, orgId: orgState.jwtOrgId, partnerId: "partner-1" }),
   loginPathWithNext: () => "/login",
 }));
-// The QuickBooks sub-tab and panel are gated on
-// `accounting:read`. This suite covers tab/sub-tab wiring, so it holds the
-// grant throughout; the negative branch lives in
-// IntegrationsPage.accountingPermissions.test.tsx.
+// The QuickBooks sub-tab and panel are gated on `accounting:read`, and the
+// Webhooks tab on `webhooks:read`. This suite covers tab/sub-tab wiring, so it
+// holds both grants throughout; the negative branches live in
+// IntegrationsPage.accountingPermissions.test.tsx and
+// IntegrationsPage.webhooksPermissions.test.tsx.
 vi.mock("../../lib/permissions", () => ({
   usePermissions: () => ({
-    permissions: [{ resource: "accounting", action: "read" }],
+    permissions: [
+      { resource: "accounting", action: "read" },
+      { resource: "webhooks", action: "read" },
+    ],
     can: (resource: string, action: string) =>
-      resource === "accounting" && action === "read",
+      (resource === "accounting" || resource === "webhooks") && action === "read",
   }),
 }));
 vi.mock("../../stores/orgStore", () => ({

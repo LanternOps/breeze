@@ -1,5 +1,6 @@
 import { SignJWT, importPKCS8 } from 'jose';
 import { randomUUID } from 'node:crypto';
+import { M365_READ_ACTION_FIELDS, m365ReadActionSchema } from '@breeze/shared/m365';
 import type { DelegantM365ConnectionRow } from '../db/schema/delegant';
 
 interface MintArgs {
@@ -37,7 +38,11 @@ export const __mintPrincipalJwtForTest = mintPrincipalJwt;
 
 export type DelegantToolName =
   | 'get_user' | 'get_user_signin_activity' | 'list_groups'
-  | 'get_group_members' | 'disable_user' | 'reset_user_password';
+  | 'get_group_members' | 'disable_user' | 'reset_user_password'
+  // Caller verification (#6354 W03): OID-only mailbox-set read. The broker
+  // must implement it against its verified connection tenant; until it does,
+  // the unsupported-tool error fails the gate closed.
+  | 'get_user_mailboxes';
 
 export type DelegantErrorCode =
   | 'tool_error' | 'unexpected_pending' | 'bad_request' | 'auth_failed'
@@ -72,6 +77,14 @@ export async function invokeDelegantTool(
   args: DelegantInvokeArgs,
   deps: InvokeDeps,
 ): Promise<DelegantInvokeResult> {
+  if (args.toolName === 'get_user_mailboxes') {
+    // Pinned subject: an object id (never a UPN) on exactly this connection's tenant.
+    const action = m365ReadActionSchema.safeParse({ type: 'm365.user.mailboxes', userId: args.parameters.userId });
+    if (!action.success || typeof args.parameters.expectedTenantId !== 'string'
+      || args.parameters.expectedTenantId !== args.connection.m365TenantId) {
+      return { kind: 'error', code: 'bad_request', message: 'Mailbox subject does not match the connection.' };
+    }
+  }
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.nowSeconds ? deps.nowSeconds() : Math.floor(Date.now() / 1000);
   const requestId = randomUUID();
@@ -115,6 +128,7 @@ export async function invokeDelegantTool(
       redirect: 'error',
     });
     result = await mapResponse(resp);
+    if (args.toolName === 'get_user_mailboxes') result = projectMailboxes(result);
   } catch {
     result = { kind: 'error', code: 'delegant_unreachable', message: 'Could not reach the M365 service.' };
   } finally {
@@ -127,6 +141,20 @@ export async function invokeDelegantTool(
     requestId, durationMs: Date.now() - started, result,
   });
   return result;
+}
+
+/** Only the four mailbox fields ever leave the client; missing keys stay missing. */
+function projectMailboxes(result: DelegantInvokeResult): DelegantInvokeResult {
+  if (result.kind !== 'ok') return result;
+  const raw = result.data;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { kind: 'error', code: 'tool_error', message: 'Unexpected mailbox response.' };
+  }
+  const data = raw as Record<string, unknown>;
+  return {
+    ...result,
+    data: Object.fromEntries(M365_READ_ACTION_FIELDS['m365.user.mailboxes'].filter((key) => key in data).map((key) => [key, data[key]])),
+  };
 }
 
 async function mapResponse(resp: Response): Promise<DelegantInvokeResult> {

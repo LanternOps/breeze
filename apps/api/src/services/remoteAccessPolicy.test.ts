@@ -81,6 +81,28 @@ describe('resolveRemoteAccessForDevice no-policy fallback', () => {
     expect(result.policyId).toBeNull();
   });
 
+  it('reports resolved:true when an effective config was found (no policy is a decision), from a miss and from the cache (#8616)', async () => {
+    const deviceId = `test-device-resolved-${Date.now()}`;
+    vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce({ deviceId, features: {}, inheritanceChain: [] });
+
+    expect((await resolveRemoteAccessForDevice(deviceId)).resolved).toBe(true);
+    const cached = await resolveRemoteAccessForDevice(deviceId);
+    expect(cached.resolved).toBe(true);
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports resolved:false with the defaults when no effective config was found, and does not cache it (#8616)', async () => {
+    const deviceId = `test-device-unresolved-${Date.now()}`;
+    vi.mocked(resolveEffectiveConfig).mockResolvedValueOnce(null as never).mockResolvedValueOnce(null as never);
+
+    const result = await resolveRemoteAccessForDevice(deviceId);
+    expect(result.resolved).toBe(false);
+    // The defaults are still returned for the existing callers (unchanged).
+    expect(result.settings.vncRelay).toBe(true);
+    expect((await resolveRemoteAccessForDevice(deviceId)).resolved).toBe(false);
+    expect(resolveEffectiveConfig).toHaveBeenCalledTimes(2);
+  });
+
   it('bypasses a stale allowed cache entry for live continuation checks', async () => {
     const deviceId = `test-device-policy-transition-${Date.now()}`;
     vi.mocked(resolveEffectiveConfig)

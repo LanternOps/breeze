@@ -110,7 +110,11 @@
     "timeSync": "Sincronizzazione dell’ora",
     "aiModels": "Modelli di IA",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Incidenti",
+    "ticketsServiceRequests": "Richieste di servizio",
+    "ticketsProblems": "Problemi",
+    "ticketsChanges": "Modifiche"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -408,7 +412,9 @@
       "unratedPending": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
       "unratedPending_one": "{{count}} patch non valutata in sospeso (non verrà approvata automaticamente)",
       "unratedPending_other": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
-      "empty": "Nessun dato sulle patch ancora"
+      "empty": "Nessun dato sulle patch ancora",
+      "imagesNotChecked_one": "{{count}} immagine container non verificata",
+      "imagesNotChecked_other": "{{count}} immagini container non verificate"
     },
     "vuln": {
       "title": "Vulnerabilità",
@@ -494,7 +500,9 @@
       "noGroups": "Nessun gruppo di dispositivi disponibile",
       "deviceCount": "{{count}} dispositivi",
       "loadSaved": "Carica filtro salvato:",
-      "select": "Seleziona"
+      "select": "Seleziona",
+      "dynamic": "Dinamico",
+      "refusedGroup": "Non disponibile come destinazione: le regole di questo gruppo si basano su campi che il dispositivo stesso segnala ({{fields}})."
     },
     "preview": {
       "title": "Dispositivi corrispondenti",
@@ -1307,6 +1315,26 @@
           "ticketCreated": {
             "description": "Attivato quando viene creato un ticket.",
             "label": "Ticket creato"
+          },
+          "ticketCommented": {
+            "description": "Attivato quando viene aggiunto un commento o una nota a un ticket.",
+            "label": "Ticket commentato"
+          },
+          "ticketStatusChanged": {
+            "description": "Attivato quando un ticket cambia stato.",
+            "label": "Stato del ticket modificato"
+          },
+          "ticketUpdated": {
+            "description": "Attivato quando vengono modificati i campi di un ticket.",
+            "label": "Ticket aggiornato"
+          },
+          "ticketAssigned": {
+            "description": "Attivato quando un ticket viene assegnato o rimosso dall’assegnazione.",
+            "label": "Ticket assegnato"
+          },
+          "migrationWindowClosed": {
+            "description": "Attivato una volta per organizzazione quando una finestra di migrazione dei ticket si chiude, con i conteggi importati.",
+            "label": "Finestra di migrazione chiusa"
           }
         },
         "fields": {
@@ -1431,6 +1459,7 @@
           "created": "Webhook creato",
           "disabled": "Webhook disabilitato",
           "enabled": "Webhook abilitato",
+          "retryQueued": "Nuovo tentativo di consegna in coda",
           "testQueued": "Consegna di prova in coda",
           "updated": "Webhook aggiornato"
         },
@@ -1688,7 +1717,8 @@
         "deleteEntry": "Elimina voce {{id}}",
         "deleteConfirmTitle": "Eliminare la voce di tempo?",
         "deleteConfirmMessage": "Questa azione rimuove definitivamente la voce di {{duration}} dal ticket {{ticket}}. Non può essere annullata.",
-        "deleteConfirmMessageNoTicket": "Questa azione rimuove definitivamente la voce di {{duration}}. Non può essere annullata."
+        "deleteConfirmMessageNoTicket": "Questa azione rimuove definitivamente la voce di {{duration}}. Non può essere annullata.",
+        "noteInvoiceCue": "I clienti vedono questa nota nella fattura, a meno che le impostazioni di fatturazione non nascondano le note."
       },
       "sourceBadge": {
         "timer": "Timer",
@@ -2175,7 +2205,8 @@
         "viewInSource": "Visualizza in {{source}}",
         "promoteFromEdr": "Promuovi dalla vista EDR.",
         "pagination": "Pagina {{page}} di {{totalPages}} ({{total}} totale)",
-        "previous": "Precedente"
+        "previous": "Precedente",
+        "genericEdrProvider": "Provider EDR"
       },
       "IncidentDetailPage": {
         "errors": {

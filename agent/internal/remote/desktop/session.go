@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"fmt"
+	"github.com/breeze-rmm/agent/internal/ipc"
 	"image"
 	"log/slog"
 	"runtime/debug"
@@ -45,6 +46,19 @@ type Session struct {
 	clipboardSync *clipboard.ClipboardSync
 	cursorDC      *webrtc.DataChannel
 	controlDC     *webrtc.DataChannel
+
+	// viewerChannels maps each viewer data-channel label to the channel now
+	// serving it. A replaced channel's messages are ignored and its late close
+	// does not reset the stream its successor carries. Guarded by mu.
+	viewerChannels map[string]any
+	// inputRAttached is set once the viewer opens a reliable input-r: it
+	// speaks W2b, so it is sent input_epoch announcements. Viewers that never
+	// open it are never sent a control message they predate.
+	inputRAttached atomic.Bool
+	// geometryMu serialises input geometry transitions (monitor switch,
+	// desktop switch): epoch bump, capturer swap, offset commit, announcement.
+	// Lock order: geometryMu, then mu. The input worker never takes it.
+	geometryMu    sync.Mutex
 	audioTrack    *webrtc.TrackLocalStaticSample
 	audioCapturer AudioCapturer
 	audioEnabled  atomic.Bool
@@ -127,6 +141,9 @@ type Session struct {
 
 	// sasHandler is set from SessionManager.OnSASRequest during creation.
 	sasHandler func() error
+
+	// onClipboardSummary is SessionManager.OnClipboardSummary at creation.
+	onClipboardSummary func(sessionID string, summary ipc.ClipboardSummary)
 
 	// displayIndex is the monitor index this session was started on.
 	displayIndex int
@@ -211,6 +228,11 @@ type SessionManager struct {
 	// already returned (called synchronously, earlier in the same call chain),
 	// so the reason is fully committed under s.mu before this ever reads it.
 	OnSessionStopped func(sessionID, reason string)
+
+	// OnClipboardSummary receives a session's clipboard transfer counters
+	// once, at teardown, when there was any clipboard activity. Copied onto
+	// each session at creation, like OnSASRequest.
+	OnClipboardSummary func(sessionID string, summary ipc.ClipboardSummary)
 
 	// OnSessionStarted is the symmetric hook: called when a WebRTC peer
 	// connection reaches Connected, i.e. the viewer is actually watching.
@@ -584,6 +606,9 @@ func (s *Session) LastStopReason() string {
 
 func (s *Session) doCleanup() {
 	s.cleanupOnce.Do(func() {
+		// Before anything else is torn down: nothing this session pressed may
+		// stay pressed on the customer's machine.
+		s.closeInput()
 		if s.audioCapturer != nil {
 			s.audioCapturer.Stop()
 		}
@@ -621,6 +646,10 @@ func (s *Session) doCleanup() {
 				slog.Warn("Failed to release local-input block", "session", s.id, "error", err.Error())
 			}
 		}
+
+		// Last: in helper mode this is an IPC write that can block, and
+		// nothing above may wait on it.
+		s.reportClipboardSummary()
 	})
 }
 

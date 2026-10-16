@@ -108,6 +108,15 @@ export type EventType =
   // alert-lifecycle-only, services/eventSubscribers.ts:185-190).
   | 'backup.provider_device_unhealthy'
   | 'backup.provider_device_recovered'
+  // EDR provider framework (#8164 W02). Published by the post-commit notifier
+  // (services/edrProviders/alerts.ts) after a sync commits. Payloads carry ids,
+  // the provider key and severities only — never vendor-supplied strings.
+  // Webhooks and automations can subscribe; alert rows carry the human title.
+  | 'edr.detection_detected'
+  | 'edr.detection_escalated'
+  | 'edr.endpoint_unhealthy'
+  | 'edr.endpoint_recovered'
+  | 'edr.tenant_stale'
   // Ticket SLA events (Phase 2, ticketSlaWorker)
   | 'ticket.sla_breached'
   // Ticket lifecycle events (#3828 wave-6-3 task 2). Published by
@@ -121,6 +130,16 @@ export type EventType =
   | 'ticket.created'
   | 'ticket.commented'
   | 'ticket.status_changed'
+  // Partner API tickets wave 4: the remaining lifecycle transitions, so an
+  // external PSA/ITSM can mirror field edits and assignment without polling.
+  // Same id-only posture (`changed` is a list of field NAMES, never values).
+  | 'ticket.updated'
+  | 'ticket.assigned'
+  // Ticket migration windows (#8313). The ONLY event an import produces: one
+  // per org in the window, published after the window closes, with the
+  // deterministic eventId `${windowId}:${orgId}` so a retry never duplicates.
+  // Ids and counts only (services/migrationWindows.ts).
+  | 'migration.window_closed'
   // Metric-anomaly incident events (#3828 wave-6-4 task 2). Published by
   // metricAnomalyIncidentPublisher.ts from the metric_anomaly_incidents
   // transactional dispatch marker (never re-published on re-upsert — see
@@ -625,11 +644,21 @@ export const EVENT_TYPES = {
   // External backup provider (feature #6008 W02)
   BACKUP_PROVIDER_DEVICE_UNHEALTHY: 'backup.provider_device_unhealthy' as const,
   BACKUP_PROVIDER_DEVICE_RECOVERED: 'backup.provider_device_recovered' as const,
+  // EDR provider framework (#8164 W02)
+  EDR_DETECTION_DETECTED: 'edr.detection_detected' as const,
+  EDR_DETECTION_ESCALATED: 'edr.detection_escalated' as const,
+  EDR_ENDPOINT_UNHEALTHY: 'edr.endpoint_unhealthy' as const,
+  EDR_ENDPOINT_RECOVERED: 'edr.endpoint_recovered' as const,
+  EDR_TENANT_STALE: 'edr.tenant_stale' as const,
   TICKET_SLA_BREACHED: 'ticket.sla_breached' as const,
   // Ticket lifecycle (#3828 wave-6-3 task 2) — id-only payloads.
   TICKET_CREATED: 'ticket.created' as const,
   TICKET_COMMENTED: 'ticket.commented' as const,
   TICKET_STATUS_CHANGED: 'ticket.status_changed' as const,
+  TICKET_UPDATED: 'ticket.updated' as const,
+  TICKET_ASSIGNED: 'ticket.assigned' as const,
+  // Ticket migration windows (#8313) — ids and counts only.
+  MIGRATION_WINDOW_CLOSED: 'migration.window_closed' as const,
   // Metric-anomaly incidents (#3828 wave-6-4 task 2)
   ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
   // Security

@@ -19,11 +19,11 @@ Moved verbatim from `CLAUDE.md` (2026-10-07). Read before running a scoped test,
 For test-writing conventions (Drizzle mock patterns, table-driven Go tests, validator coverage, and the required coverage checklist), use the **`breeze-testing`** skill.
 
 ## CI Integration
-- All tests run automatically in CI (`.github/workflows/ci.yml`)
+- Test suites run in CI (`.github/workflows/ci.yml`), each in its own job: `test-api`, `test-web`, `test-portal`, `test-viewer`, `test-shared` (`packages/shared` vitest, #8373), `test-agent`, the add-in/M365 suites and `integration-test`. Anything without a job there is not run in CI — check before assuming a suite is covered
 - `test-api`, `test-web`, `test-agent` are **required** jobs on PRs
 - New test files are auto-discovered — no CI config changes needed
 - Go coverage is uploaded as artifact; no threshold enforced yet
-- Integration tests run in the **`integration-test`** job (8 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see `docs/agents/tenancy-rls.md`, last paragraph of the cascade section), not through a skipped integration run
+- Integration tests run in the **`integration-test`** job (16 shards), which **blocks PRs**: it carries no `continue-on-error`, and `ci-success` hard-fails on `needs.integration-test.result`. Do not hand-dispatch CI to get an integration run on a PR that targets `main` — it already ran. The `continue-on-error: ${{ github.event_name == 'pull_request' }}` in `ci.yml` belongs to the separate **`smoke-test`** job (Docker image build + stack boot + endpoint smoke), which is non-blocking on PRs and required on main. A green PR can still redden main, but through a stale base or a stacked branch (see `docs/agents/tenancy-rls.md`, last paragraph of the cascade section), not through a skipped integration run
 
 ## Running Tests Locally
 ```bash

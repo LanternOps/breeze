@@ -1,0 +1,29 @@
+== caddy adapt with the launch env (sanity) ==
+"host":["*.us.breezetunnel.test","*.*.us.breezetunnel.test"]
+== probes (label → upstream|host|X-Breeze-Tunnel-Site|path [status]) ==
+tunnel /                                         api|eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test|1|/ [200]
+tunnel /api/v1/auth/me                           api|eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test|1|/api/v1/auth/me [200]
+tunnel /portal/login                             api|eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test|1|/portal/login [200]
+tunnel / + forged assertion                      api|eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test|1|/ [200]
+tunnel / + forged assertion x2                   api|eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test|1|/ [200]
+tunnel / uppercase host                          api|EEEEEEEE-EEEE-4EEE-8EEE-EEEEEEEEEEEE.US.BREEZETUNNEL.TEST|1|/ [200]
+tunnel / trailing-dot host                       web|eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test.||/ [200]
+tunnel / host:80                                 api|eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test|1|/ [200]
+a.b.<suffix> /                                   api|a.b.us.breezetunnel.test|1|/ [200]
+a.b.c.<suffix> / (3 labels)                      web|a.b.c.us.breezetunnel.test||/ [200]
+bare suffix /                                    web|us.breezetunnel.test||/ [200]
+app /api/v1/health + forged                      api|app.example.test||/api/v1/health [200]
+app / + forged                                   web|app.example.test||/ [200]
+app /portal/login + forged                       portal|app.example.test||/portal/login [200]
+app / + X-Forwarded-Host tunnel                  web|app.example.test||/ [200]
+== TUNNEL_SITE_ADDRESS unset ==
+{"level":"warn","ts":1791787575.8972907,"logger":"caddyfile","msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","file":"/etc/caddy/Caddyfile","line":42}
+"host":["tunnel-disabled.invalid"]
+UNSET: adapt exit 0
+== TUNNEL_SITE_ADDRESS empty ==
+EMPTY: adapt exit 1
+Error: server block without any key is global configuration, and if used, it must be first
+== api ports in deploy/docker-compose.prod.yml ==
+api: no ports/published/expose/network_mode keys (     463 lines rendered)
+services publishing ports in the prod file:
+  none

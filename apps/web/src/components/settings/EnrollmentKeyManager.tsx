@@ -251,9 +251,18 @@ export default function EnrollmentKeyManager() {
     }
   };
 
+  // datetime-local values are local wall-clock time without a zone, which is
+  // exactly how `new Date(value)` parses them. `min` uses the same format.
+  const expiryMin = (() => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  })();
+  const expiryInPast = formExpiresAt !== '' && new Date(formExpiresAt).getTime() <= Date.now();
+
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formSiteId) return;
+    if (!formSiteId || expiryInPast) return;
     setSubmitting(true);
     try {
       const body: Record<string, unknown> = { name: formName, siteId: formSiteId };
@@ -960,10 +969,18 @@ export default function EnrollmentKeyManager() {
                 <label className="text-sm font-medium">{t('enrollmentKeys.expiresAt')}</label>
                 <input
                   type="datetime-local"
+                  data-testid="enrollment-key-expires-at"
                   value={formExpiresAt}
+                  min={expiryMin}
+                  aria-invalid={expiryInPast}
                   onChange={(e) => setFormExpiresAt(e.target.value)}
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
+                {expiryInPast && (
+                  <p role="alert" className="mt-1 text-xs text-destructive">
+                    {t('enrollmentKeys.expiresAtPast')}
+                  </p>
+                )}
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <button
@@ -975,7 +992,7 @@ export default function EnrollmentKeyManager() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || !formName.trim() || !formSiteId || sitesLoading}
+                  disabled={submitting || !formName.trim() || !formSiteId || sitesLoading || expiryInPast}
                   className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {submitting ? t('enrollmentKeys.creating') : t('enrollmentKeys.createKey')}

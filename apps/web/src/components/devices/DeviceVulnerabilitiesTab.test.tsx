@@ -36,8 +36,8 @@ vi.mock('../../lib/api/vulnerabilities', () => ({
 const RESPONSE: DeviceVulnSoftwareResponse = {
   stats: { openTotal: 3, critical: 1, high: 1, medium: 1, low: 0, unscored: 0, kevFindingCount: 1, patchReadyFindingCount: 2 },
   groups: [
-    { groupKey: 'sw:google chrome|', kind: 'software', name: 'Google Chrome', vendor: null, versions: ['126.0'], deviceCount: 1, cveCount: 2, cveIds: ['CVE-1', 'CVE-2'], worstSeverity: 'critical', maxRiskScore: 90, kevCveCount: 1, maxEpss: 0.4, patchReadyFindingCount: 2, patchReadyDeviceCount: 1, tickets: [] },
-    { groupKey: 'os:windows', kind: 'os', name: 'Windows OS updates', vendor: null, versions: [], deviceCount: 1, cveCount: 1, cveIds: ['CVE-3'], worstSeverity: 'high', maxRiskScore: 70, kevCveCount: 0, maxEpss: null, patchReadyFindingCount: 0, patchReadyDeviceCount: 0, tickets: [] },
+    { groupKey: 'sw:google chrome|', kind: 'software', name: 'Google Chrome', vendor: null, versions: ['126.0'], deviceCount: 1, cveCount: 2, cveIds: ['CVE-1', 'CVE-2'], worstSeverity: 'critical', maxRiskScore: 90, kevCveCount: 1, maxEpss: 0.4, patchReadyFindingCount: 2, patchReadyDeviceCount: 1, tickets: [], targetVersion: null },
+    { groupKey: 'os:windows', kind: 'os', name: 'Windows OS updates', vendor: null, versions: [], deviceCount: 1, cveCount: 1, cveIds: ['CVE-3'], worstSeverity: 'high', maxRiskScore: 70, kevCveCount: 0, maxEpss: null, patchReadyFindingCount: 0, patchReadyDeviceCount: 0, tickets: [], targetVersion: null },
   ],
   findings: [
     { id: 'a', deviceId: 'd1', vulnerabilityId: 'v1', cveId: 'CVE-1', cvssScore: 9.1, cvssVector: null, severity: 'critical', knownExploited: true, epssScore: 0.4, riskScore: 90, status: 'open', detectedAt: '2026-06-01T00:00:00.000Z', patchAvailable: true, groupKey: 'sw:google chrome|' },
@@ -57,7 +57,7 @@ const EMPTY_RESPONSE: DeviceVulnSoftwareResponse = {
 const ACCEPTED_RESPONSE: DeviceVulnSoftwareResponse = {
   stats: { openTotal: 0, critical: 0, high: 1, medium: 0, low: 0, unscored: 0, kevFindingCount: 0, patchReadyFindingCount: 0 },
   groups: [
-    { groupKey: 'sw:acme app|', kind: 'software', name: 'Acme App', vendor: null, versions: ['1.0'], deviceCount: 1, cveCount: 1, cveIds: ['CVE-9'], worstSeverity: 'high', maxRiskScore: 70, kevCveCount: 0, maxEpss: null, patchReadyFindingCount: 0, patchReadyDeviceCount: 0, tickets: [] },
+    { groupKey: 'sw:acme app|', kind: 'software', name: 'Acme App', vendor: null, versions: ['1.0'], deviceCount: 1, cveCount: 1, cveIds: ['CVE-9'], worstSeverity: 'high', maxRiskScore: 70, kevCveCount: 0, maxEpss: null, patchReadyFindingCount: 0, patchReadyDeviceCount: 0, tickets: [], targetVersion: null },
   ],
   findings: [
     { id: 'acc1', deviceId: 'd1', vulnerabilityId: 'v9', cveId: 'CVE-9', cvssScore: 7.0, cvssVector: null, severity: 'high', knownExploited: false, epssScore: null, riskScore: 70, status: 'accepted', detectedAt: '2026-06-01T00:00:00.000Z', patchAvailable: true, groupKey: 'sw:acme app|' },

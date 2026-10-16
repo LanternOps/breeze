@@ -24,7 +24,8 @@
         "perDeviceRole": "Per device role",
         "perDeviceGroup": "Per device group",
         "perSeat": "Per seat",
-        "manual": "Manual quantity"
+        "manual": "Manual quantity",
+        "hourBlock": "Block hours"
       },
       "dynamicGroup": "dynamic",
       "deletedGroup": "{{name}} (deleted group)",
@@ -588,6 +589,62 @@
       "warnings": {
         "markupRemoved": "Saved, but some unsupported formatting was removed: {{tags}}. Agreement bodies support headings, bold, italic, underline, lists and links."
       }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Hours included per period",
+        "extraRate": "Price per extra hour",
+        "rolloverMode": "Unused hours at period end",
+        "rolloverExpire": "Expire",
+        "rolloverCarry": "Carry forward",
+        "carryCap": "Carry-forward limit in hours (blank for no limit)",
+        "alertPct": "Alert at % of block used (optional)",
+        "required": "Enter the included hours and the price per extra hour.",
+        "firstPeriod": "Hours count from the first billing period still to be invoiced; on a draft contract this is set when it is activated. Earlier time bills as usual.",
+        "midPeriodEdit": "Changes apply to the current open period ({{start}} – {{end}}) at its close.",
+        "midPeriodEditNoDates": "Changes apply to the current open period at its close.",
+        "onlyOne": "This organization already has an active block. Retire it before adding another."
+      },
+      "row": {
+        "perPeriod": "{{hours}} hours per period",
+        "retiredBadge": "Retired",
+        "startsOn": "Counts from {{date}}"
+      },
+      "errors": {
+        "exists": "This organization already has an active block-hours line. Retire it first, then add the new one.",
+        "locked": "That field can't be changed on a block-hours line."
+      },
+      "retire": {
+        "title": "Retire block hours",
+        "message": "\"{{description}}\" has billing history, so it is retired instead of deleted. No new periods; already-billed periods still settle. Its closed periods stay on the contract.",
+        "confirm": "Retire block",
+        "toast": "Block hours retired"
+      },
+      "detail": {
+        "title": "Block hours",
+        "usage": "{{used}} of {{included}} hours used · {{remaining}} remaining · period ends {{end}}",
+        "carried": "Includes {{hours}} hours carried forward.",
+        "unapproved": "{{hours}} hours of this time are not yet approved.",
+        "foreign": "{{hours}} hours were logged in another currency; they still draw down the block.",
+        "over": "{{hours}} hours over the block → {{amount}} at period close",
+        "advanceNote": "Overage bills on the following invoice.",
+        "arrearsNote": "Overage bills on this period's invoice.",
+        "lateEntry": "{{hours}} hours were entered after their period closed and bill separately.",
+        "startsLater": "Block starts {{date}}.",
+        "extraRate": "Extra hours: {{rate}} each",
+        "loadFailed": "Block usage couldn't be loaded."
+      },
+      "history": {
+        "title": "Closed block periods",
+        "empty": "No block period has closed yet.",
+        "included": "Included",
+        "carriedIn": "Carried in",
+        "used": "Used",
+        "over": "Over",
+        "carriedOut": "Carried out",
+        "loadMore": "Load more",
+        "invoiceRemoved": "Overage invoice removed — hours not billed"
+      }
     }
   },
   "agreements": {
@@ -911,7 +968,8 @@
         "skuOptional": "SKU (optional)",
         "tidyWithAi": "Tidy with AI",
         "unitCost": "Unit cost",
-        "unitPriceForAria": "Unit price for {{item}}"
+        "unitPriceForAria": "Unit price for {{item}}",
+        "partNumberRequiredHint": "Add a part number to include this in the parts order."
       },
       "liveTotals": {
         "annualRecurring": "Annual recurring",
@@ -1148,7 +1206,10 @@
         "tooManyRecipients": "Use at most {{max}} addresses.",
         "zeroTotalWarning": "This quote totals {{zero}} — check that its items are priced before sending.",
         "noBillingContactHint": "No billing contact is saved for this organization — enter an email, or add one in the <orgLink>organization settings</orgLink>.",
-        "revisionWarning": "Sending this replaces {{number}} and disables the link the customer already has."
+        "revisionWarning": "Sending this replaces {{number}} and disables the link the customer already has.",
+        "noPartNumberWarning_one": "{{count}} product line has no part number and won't be added to the parts order.",
+        "noPartNumberWarning_other": "{{count}} product lines have no part number and won't be added to the parts order.",
+        "sendAnyway": "Send anyway"
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposal marked Sent, but no email was delivered — {{orgName}} has no billing contact email. Add one in the organization settings, then resend.",
@@ -1321,7 +1382,9 @@
           "vendor": "Vendor"
         },
         "title": "To be ordered",
-        "unknownVendor": "Other / unknown vendor"
+        "unknownVendor": "Other / unknown vendor",
+        "excluded": "Not in this order (no part number): {{names}}",
+        "untitledLine": "Untitled line"
       },
       "pax8Order": {
         "message_one": "This quote staged a Pax8 order ({{count}} item) awaiting provisioning details",
@@ -1708,7 +1771,8 @@
       "saveNotes": "Could not save notes.",
       "saveTerms": "Could not save terms.",
       "updateLine": "Could not update line.",
-      "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line."
+      "noPriceForCurrency": "No {{currency}} price for this item. Add one in the catalog or enter a manual line.",
+      "saveLineDetail": "Couldn't update how time entries print"
     },
     "fields": {
       "descriptionOptional": "Description (optional)",
@@ -1775,6 +1839,35 @@
     "linesScrollAria": "Invoice lines — scroll sideways for more columns",
     "unsavedField": {
       "lines": "Line items"
+    },
+    "lineDetail": {
+      "default": "Billing default",
+      "grouping": "Layout",
+      "groupingDay": "Group by day",
+      "groupingEntry": "One row per entry",
+      "help": "Overrides your billing default for this draft only.",
+      "hide": "Hide",
+      "show": "Show",
+      "showDate": "Date worked",
+      "showNote": "Technician's note",
+      "showWorkedTime": "Worked vs billed time",
+      "title": "Time entry lines"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} lines will block Issue: their time entries were billed on another invoice. Remove them before issuing:",
+      "billedElsewhere_one": "{{count}} line will block Issue: its time entry was billed on another invoice. Remove it before issuing:",
+      "billedElsewhere_other": "{{count}} lines will block Issue: their time entries were billed on another invoice. Remove them before issuing:",
+      "button": "Refresh from time entries",
+      "drifted": "{{count}} lines left unchanged: their time entries' billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "drifted_one": "{{count}} line left unchanged: its time entry's billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "drifted_other": "{{count}} lines left unchanged: their time entries' billed time no longer matches the quantity. Edit the quantity or assemble a new draft.",
+      "error": "Couldn't refresh from time entries",
+      "help": "Updates notes, dates worked and approval from the source time entries. Quantities, prices and descriptions you edited by hand never change.",
+      "running": "Refreshing…",
+      "skipped": "{{count}} lines skipped: their time entries were billed elsewhere, removed, or are no longer billable on this draft.",
+      "skipped_one": "{{count}} line skipped: its time entry was billed elsewhere, removed, or is no longer billable on this draft.",
+      "skipped_other": "{{count}} lines skipped: their time entries were billed elsewhere, removed, or are no longer billable on this draft.",
+      "summary": "Refreshed: {{refreshed}} · Already current: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2022,6 +2115,7 @@
     "empty": "This invoice doesn’t have any line items yet.",
     "fallbackTitle": "Invoice",
     "issued": "Issued",
+    "laborLine": "Labor",
     "preview": {
       "description": "This is what your customer sees on their invoice.",
       "downloadError": "Could not download the invoice PDF.",
@@ -2118,7 +2212,9 @@
       "sourceAria": "Invoice source",
       "title": "New invoice",
       "to": "To",
-      "working": "Working…"
+      "working": "Working…",
+      "heldForHourBlock_one": "{{count}} time entry ({{hours}} hours) is held for this organization's block hours and will be billed when the block period closes.",
+      "heldForHourBlock_other": "{{count}} time entries ({{hours}} hours) are held for this organization's block hours and will be billed when the block period closes."
     },
     "empty": {
       "description": "Assemble unbilled time and parts into a draft, or start a blank invoice.",
@@ -2286,7 +2382,18 @@
       "invoiceNumberPrefix": "Invoice number prefix",
       "markupHelp": "Default markup over distributor cost, used to pre-fill the sell price when importing catalog items. The resulting gross margin is shown as you import.",
       "paymentTermsDays": "Payment terms (days)",
-      "title": "Billing defaults"
+      "prefixInvalid": "Enter a prefix of 1 to 12 characters.",
+      "taxRateInvalid": "Enter a tax rate from 0 to 100.",
+      "termsDaysInvalid": "Enter a whole number of days from 0 to 365.",
+      "title": "Billing defaults",
+      "lineDetailTitle": "Time entry lines on invoices",
+      "lineDetailHelp": "Choose what customers see for time entries. A draft invoice can override this; the choice is frozen when the invoice is issued.",
+      "lineShowDate": "Show the date worked",
+      "lineShowNote": "Show the technician's note",
+      "lineShowWorkedTime": "Show worked vs billed time",
+      "lineGrouping": "Layout",
+      "lineGroupingEntry": "One row per entry",
+      "lineGroupingDay": "Group by day"
     },
     "loadError": "Billing settings failed to load.",
     "loading": "Loading billing settings…",
@@ -2636,6 +2743,23 @@
       "schedule_inactive": "This invoice is no longer scheduled for automatic payment.",
       "generic": "Automatic payment could not be started. Refresh the invoice to see its current status.",
       "excluded_contract": "This invoice's contract is excluded from automatic payments, so it was not charged. If the client had been told about this payment, they were emailed that it won't happen."
+    },
+    "stepUp": {
+      "heading": "Confirm it's you",
+      "intro": {
+        "autopay_charge_now": "Charging this invoice now needs a fresh second-factor check.",
+        "partner_payment_settings_update": "Changing payment settings needs a fresh second-factor check for these exact values.",
+        "org_payment_settings_update": "Changing this organization's payment settings needs a fresh second-factor check for these exact values.",
+        "autopay_request_recipient": "Sending the authorization request to an address other than the billing contact needs a fresh second-factor check."
+      },
+      "code": "Authenticator code",
+      "passkey": "You will confirm with your passkey.",
+      "noFactor": "Add an authenticator app or passkey to your account first.",
+      "noFactorSmsOnly": "Text-message codes cannot confirm this action. Add an authenticator app or passkey to your account first.",
+      "enrollLink": "Set up a second factor",
+      "confirm": "Confirm",
+      "failed": "Verification failed. Try again.",
+      "unavailable": "Unable to start verification"
     }
   },
   "reminders": {

@@ -62,7 +62,7 @@ Status legend: `[ ]` untested · `[x]` pass · `[!]` fail (file issue + note) ·
 - [x] Refresh: 15m access TTL confirmed; rotation proven (jti + family); **reuse-detection** replay → 401 + family-wide durable kill + audit row.
 - [!] **#2875 (verified, filed, tracking-not-blocker)**: migration 2026-08-06-c's durable `quotes.public_response_*` columns have **no runtime writer** (0 code refs outside schema) — quote single-use is redis-only (`quote-accept-jti-revoked:<jti>`). Behavior correct today; durable authority the schema implies hasn't shipped. Likely intentional forward-prep per migration header.
 
-## SESSION RESULTS — live-agent round (Windows Server 2022 VM 100.101.150.55 over Tailscale)
+## SESSION RESULTS — live-agent round (Windows Server 2022 VM `<lab-windows-test-vm-ip>` over Tailscale)
 
 **Verified PASS:**
 - [x] **Enrollment end-to-end**: UI-minted CLI token + enrollment secret enrolled a real agent (`enroll --force` exit 0); device row created, **online**, heartbeating, agent 0.103.0-qa; inventory populated (135 processes, OS string, hardware).
@@ -95,7 +95,7 @@ Status legend: `[ ]` untested · `[x]` pass · `[!]` fail (file issue + note) ·
 - Minor (not filed separately, noted in #2877): `offboarding_completed` reported `uninstallsCompleted:0` despite a completed uninstall — JS-clock `drainStartedAt` vs DB-clock `created_at` gte with ~2ms skew.
 - **VM left in post-drain residual state** as evidence (agent stopped-but-installed, watchdog running); to reuse: fresh enroll into an active org + `Start-Service BreezeAgent`.
 
-**Rig state for the next session:** wt-stack up at `localhost:32773` (`.breeze-stack.json` has creds); VM .55 agent enrolled against `http://100.95.194.59:32773` (was previously on the backup-testing stack — re-point when done); scratch worktree branches cleaned; PR #2869 (i18n fix) merged.
+**Rig state for the next session:** wt-stack up at `localhost:32773` (`.breeze-stack.json` has creds); VM .55 agent enrolled against `http://<lab-stack-host-ip>:32773` (was previously on the backup-testing stack — re-point when done); scratch worktree branches cleaned; PR #2869 (i18n fix) merged.
 
 ---
 
@@ -258,7 +258,7 @@ All 8 QA-filed issues driven to reviewed PRs, merged (staggered admin-squash, CI
 
 **Merged:** #2884(→#2868) · #2885(→#2874) · #2886(→#2878) · #2887(→#2879) · #2888(→#2875) · #2889(→#2870) · #2890(→#2877) · #2892(→#2871). All issues auto-closed via Closes keywords (verified).
 
-**Live re-verification (VM .70 WIN-IMDR2GAIDMV — .55 was half-dead: tailscale pings but SSH+RDP down, needs console):**
+**Live re-verification (VM .70 lab-windows-server-vm — .55 was half-dead: tailscale pings but SSH+RDP down, needs console):**
 - [x] **Terminal ordering (#2870/#2889)**: `hostname` char-by-char → clean echo, correct output; 33-char rapid burst character-perfect; agent log shows exactly one dispatch+process per commandId (new `term-data-<ms>-<seq>` ids).
 - [x] **Terminal 60s survival (#2871/#2892)**: session responsive at 1m51s+ (old bug killed at exactly 60s); zero orphan_recovery/pong-timeout lines in API logs.
 - [x] **Offboarding deadlock (#2877/#2890)**: suspended→offboarding entry PATCH returned 200 in 0.107s (pre-fix: infinite wedge); self_uninstall queued in the same second (atomic entry).

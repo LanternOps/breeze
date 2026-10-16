@@ -282,6 +282,10 @@ export function createContentSearchService(db: WorkspaceDatabase, deps: ContentS
                   WHERE e.org_id = ${orgId} AND e.file_index_id = fi.id
                     AND (e.entity_type || ':' || e.value_norm) = ANY(${pgArrayLiteral(entityKeys)}::text[])) AS hits
           ${scope}
+          -- Same status guard as the FTS arms: a file that later became
+          -- blocked_dlp keeps llm-origin entities (the blocked-branch purge
+          -- only deletes regex-origin), so require an 'extracted' content row.
+          AND c.id IS NOT NULL
           AND EXISTS (
             SELECT 1 FROM workspace_content_entities e
             WHERE e.org_id = ${orgId} AND e.file_index_id = fi.id
@@ -364,7 +368,7 @@ export function createContentSearchService(db: WorkspaceDatabase, deps: ContentS
                en.declared_project_key, en.declared_project_label,
                (SELECT jsonb_agg(jsonb_build_object('type', e.entity_type, 'value', e.value_norm))
                 FROM workspace_content_entities e
-                WHERE e.org_id = ${orgId} AND e.file_index_id = fi.id
+                WHERE c.id IS NOT NULL AND e.org_id = ${orgId} AND e.file_index_id = fi.id
                   AND (e.entity_type || ':' || e.value_norm) = ANY(${pgArrayLiteral(entityKeys)}::text[])) AS matched_entities
         FROM workspace_file_index fi
         LEFT JOIN workspace_file_content c

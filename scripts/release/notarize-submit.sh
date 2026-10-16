@@ -51,8 +51,10 @@ fi
 # Parsing plain-text submit output; do NOT pass --output-format json without
 # updating both extractors below. Empty status falls through to the failure
 # branch and exits non-zero — the failure is fail-closed by construction.
-submission_id=$(echo "$submit_output" | awk '/^[[:space:]]*id:/ {print $2; exit}')
-status=$(echo "$submit_output" | awk '/^[[:space:]]*status:/ {print $2; exit}')
+# Here-strings, not `echo | awk`: awk exits at the first match, and under
+# pipefail the echo's SIGPIPE (141) would abort the script on large output.
+submission_id=$(awk '/^[[:space:]]*id:/ {print $2; exit}' <<<"$submit_output")
+status=$(awk '/^[[:space:]]*status:/ {print $2; exit}' <<<"$submit_output")
 
 if [ "$status" != "Accepted" ]; then
   echo "::error::Notarization failed for $(basename "$artifact"): status='$status' submission='$submission_id'" >&2

@@ -29,6 +29,7 @@ import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import { useDeviceOptions } from '../../hooks/useDeviceOptions';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 type SoftwareItem = {
   name: string;
@@ -870,7 +871,7 @@ export default function DeviceCompare({ timezone }: DeviceCompareProps = {}) {
     }
     const queryString = params.toString();
     const nextUrl = `${window.location.pathname}${queryString ? `?${queryString}` : ""}`;
-    window.history.replaceState({}, "", nextUrl);
+    replaceUrl(nextUrl);
   }, [selectedIds]);
 
   const handleToggleDevice = (id: string) => {

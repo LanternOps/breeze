@@ -161,7 +161,7 @@ describe('triggerUserRiskRecompute', () => {
       'compute-org',
       expect.objectContaining({ orgId: 'org-1' }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^user-risk-recompute:org-1:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^user-risk-recompute-org-1-[a-z0-9]+$/),
       }),
     );
   });

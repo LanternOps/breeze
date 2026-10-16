@@ -93,6 +93,26 @@ describe('invokeDelegantTool response mapping', () => {
   };
   beforeAll(() => { env.DELEGANT_PRINCIPAL_SIGNING_KEY = privatePem; });
 
+  it('mailbox tool sends pinned parameters and strips extra fields (#6354 W03)', async () => {
+    const userId = '11111111-1111-4111-8111-111111111111';
+    const tenant = '22222222-2222-4222-8222-222222222222';
+    const connection = { ...baseArgs().connection, m365TenantId: tenant };
+    const fetchMock = mockFetchOnce(200, { isError: false, data: { id: userId, userPrincipalName: 'a@example.com', mail: null, proxyAddresses: [], displayName: 'hidden' } });
+    const args = { ...baseArgs(), connection, toolName: 'get_user_mailboxes' as const, parameters: { userId, expectedTenantId: tenant } };
+    const result = await invokeDelegantTool(args, { env, fetchImpl: fetchMock });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ toolName: 'get_user_mailboxes', parameters: { userId, expectedTenantId: tenant } });
+    expect(result).toEqual({ kind: 'ok', data: { id: userId, userPrincipalName: 'a@example.com', mail: null, proxyAddresses: [] } });
+
+    for (const parameters of [{ userId, expectedTenantId: 'other' }, { userId: 'a@example.com', expectedTenantId: tenant }, { userId }]) {
+      fetchMock.mockClear();
+      expect(await invokeDelegantTool({ ...args, parameters }, { env, fetchImpl: fetchMock })).toMatchObject({ kind: 'error', code: 'bad_request' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+
+    const odd = mockFetchOnce(200, { isError: false, data: ['not', 'an', 'object'] });
+    expect(await invokeDelegantTool(args, { env, fetchImpl: odd })).toMatchObject({ kind: 'error', code: 'tool_error' });
+  });
+
   it('maps 200 + {isError:false,data} to ok', async () => {
     const fetchMock = mockFetchOnce(200, { isError: false, data: { id: 'u1' } });
     const res = await invokeDelegantTool(baseArgs(), { env, fetchImpl: fetchMock });

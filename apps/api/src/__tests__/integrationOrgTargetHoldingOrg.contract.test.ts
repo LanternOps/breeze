@@ -38,6 +38,7 @@ const ORG_TARGET_WRITERS: Record<string, string> = {
   'services/pax8SyncService.ts': 'POST /pax8/companies/map (mapPax8Company)',
   'routes/unifi/index.ts': 'PUT /unifi/mappings (the site\'s org)',
   'services/backupProviders/mapping.ts': 'PUT /backup/providers/customers/:id/mapping (remapCustomer) and sync-time auto-mapping',
+  'services/edrProviders/mapping.ts': 'PUT /edr/tenants/:id/mapping (remapEdrTenant) and sync-time auto-mapping',
   'routes/psa.ts': 'POST /psa/connections (organization-owned)',
   'routes/clientAi/admin.ts': 'PUT /client-ai/admin/orgs/:orgId/tenant-mapping',
   'routes/m365.ts': 'POST /m365/connection',

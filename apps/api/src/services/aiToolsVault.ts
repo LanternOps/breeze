@@ -13,6 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
+import { buildVaultConfigurePayload, resolveLatestVaultSyncSnapshotId } from './vaultDeviceCommands';
 import {
   deviceScopeCondition,
   deviceSiteDenied,
@@ -51,6 +52,35 @@ function clampLimit(value: unknown, fallback = 25, max = 100): number {
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+}
+
+type DeviceConfigOutcome = { status: 'queued' } | { status: 'failed'; error: string };
+
+/**
+ * Push the device's vault configuration (#8385) after configure_vault saved a
+ * row. The row is already written, so a failed push is reported in the tool
+ * result rather than thrown into safeHandler's generic error.
+ */
+async function pushDeviceVaultConfig(auth: AuthContext, deviceId: string, orgId: string): Promise<DeviceConfigOutcome> {
+  try {
+    const payload = await buildVaultConfigurePayload(deviceId, orgId);
+    const { error } = await aiQueueCommandForExecution(
+      auth,
+      'configure_vault',
+      deviceId,
+      CommandTypes.VAULT_CONFIGURE,
+      payload,
+      { userId: auth.user?.id, expectedOrgId: orgId },
+    );
+    if (error) {
+      console.error(`[vault:configure_vault] vault_configure for device ${deviceId} was not queued: ${error}`);
+      return { status: 'failed', error };
+    }
+    return { status: 'queued' };
+  } catch (err) {
+    console.error(`[vault:configure_vault] Failed to queue vault_configure for device ${deviceId}:`, err);
+    return { status: 'failed', error: 'Failed to send the vault configuration to the device' };
+  }
 }
 
 // ============================================
@@ -273,6 +303,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           id: localVaults.id,
           orgId: localVaults.orgId,
           deviceId: localVaults.deviceId,
+          vaultPath: localVaults.vaultPath,
           isActive: localVaults.isActive,
         })
         .from(localVaults)
@@ -287,6 +318,15 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: 'Vault not found or access denied' });
       }
 
+      // The helper requires a snapshot id; default to the device's newest
+      // file-backup snapshot (#8385).
+      const snapshotId = typeof input.snapshotId === 'string'
+        ? input.snapshotId
+        : await resolveLatestVaultSyncSnapshotId(vault.deviceId, vault.orgId);
+      if (!snapshotId) {
+        return JSON.stringify({ error: 'No backup snapshot to sync yet: run a file backup on this device first' });
+      }
+
       // Repeat the tenant and device axes the checks above authorized: the
       // vault was read in a separate statement, so `id` alone would leave a
       // check-then-act window.
@@ -294,7 +334,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         .update(localVaults)
         .set({
           lastSyncStatus: 'pending',
-          lastSyncSnapshotId: typeof input.snapshotId === 'string' ? input.snapshotId : null,
+          lastSyncSnapshotId: snapshotId,
           updatedAt: new Date(),
         })
         .where(and(
@@ -308,10 +348,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         'trigger_vault_sync',
         vault.deviceId,
         CommandTypes.VAULT_SYNC,
-        {
-          vaultId: vault.id,
-          snapshotId: typeof input.snapshotId === 'string' ? input.snapshotId : undefined,
-        },
+        { vaultId: vault.id, vaultPath: vault.vaultPath, snapshotId },
         { userId: auth.user?.id, expectedOrgId: vault.orgId }
       );
 
@@ -418,7 +455,8 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           })
           .returning();
 
-        return JSON.stringify({ success: true, vault });
+        const deviceConfig = await pushDeviceVaultConfig(auth, deviceId, device.orgId);
+        return JSON.stringify({ success: true, vault, deviceConfig });
       }
 
       if (action === 'update') {
@@ -456,7 +494,9 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           ))
           .returning();
 
-        return JSON.stringify({ success: true, vault });
+        if (!vault) return JSON.stringify({ error: 'Vault not found or access denied' });
+        const deviceConfig = await pushDeviceVaultConfig(auth, existing.deviceId, existing.orgId);
+        return JSON.stringify({ success: true, vault, deviceConfig });
       }
 
       const orgId = getOrgId(auth);

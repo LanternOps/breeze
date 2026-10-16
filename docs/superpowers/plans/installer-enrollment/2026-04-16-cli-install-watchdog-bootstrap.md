@@ -918,10 +918,10 @@ Expected: both units are `active (running)`. If the bootstrap had to download, y
 
 - [ ] **Step 3: Windows smoke**
 
-On the Windows test VM (Tailscale `100.101.150.55`):
+On the Windows test VM (Tailscale `<lab-windows-test-vm-ip>`):
 ```bash
-scp agent/bin/breeze-agent-windows-amd64.exe administrator@100.101.150.55:breeze-agent.exe
-ssh administrator@100.101.150.55
+scp agent/bin/breeze-agent-windows-amd64.exe administrator@<lab-windows-test-vm-ip>:breeze-agent.exe
+ssh administrator@<lab-windows-test-vm-ip>
 # Then in Powershell:
 .\breeze-agent.exe service install
 sc query BreezeAgent

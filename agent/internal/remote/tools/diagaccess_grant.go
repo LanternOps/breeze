@@ -37,28 +37,28 @@ const diagMaxTokenLifetime = 2 * time.Minute
 // Coded failures. The API maps each code to a distinct condition for the
 // caller (see diagnosticAccess/errors.ts); keep the two lists in step.
 const (
-	DiagErrMalformed         = "E_DIAG_MALFORMED"
-	DiagErrSignature         = "E_DIAG_SIGNATURE"
-	DiagErrExpired           = "E_DIAG_EXPIRED"
-	DiagErrDevice            = "E_DIAG_DEVICE"
-	DiagErrReplay            = "E_DIAG_REPLAY"
-	DiagErrOperation         = "E_DIAG_OPERATION"
-	DiagErrPathMismatch      = "E_DIAG_PATH_MISMATCH"
-	DiagErrPathForm          = "E_DIAG_PATH_FORM"
-	DiagErrOutOfScope        = "E_DIAG_OUT_OF_SCOPE"
-	DiagErrSensitive         = "E_DIAG_SENSITIVE_NOT_GRANTED"
-	DiagErrHardDenied        = "E_DIAG_HARD_DENIED"
-	DiagErrLinkRefused       = "E_DIAG_LINK_REFUSED"
-	DiagErrNotFound          = "E_DIAG_NOT_FOUND"
-	DiagErrPermissionDenied  = "E_DIAG_OS_PERMISSION_DENIED"
-	DiagErrNotAFile          = "E_DIAG_NOT_A_FILE"
-	DiagErrNotADirectory     = "E_DIAG_NOT_A_DIRECTORY"
-	DiagErrIO                = "E_DIAG_IO"
-	DiagErrNotSupported      = "E_DIAG_UNSUPPORTED_PLATFORM"
-	DiagErrWriteNotPermitted = "E_DIAG_WRITE_NOT_PERMITTED"
-	DiagErrCommandMismatch   = "E_DIAG_COMMAND_MISMATCH"
-	DiagErrArgsMismatch      = "E_DIAG_ARGS_MISMATCH"
-	DiagErrEncryption        = "E_DIAG_ENCRYPTION"
+	DiagErrMalformed          = "E_DIAG_MALFORMED"
+	DiagErrSignature          = "E_DIAG_SIGNATURE"
+	DiagErrExpired            = "E_DIAG_EXPIRED"
+	DiagErrDevice             = "E_DIAG_DEVICE"
+	DiagErrReplay             = "E_DIAG_REPLAY"
+	DiagErrOperation          = "E_DIAG_OPERATION"
+	DiagErrPathMismatch       = "E_DIAG_PATH_MISMATCH"
+	DiagErrPathForm           = "E_DIAG_PATH_FORM"
+	DiagErrOutOfScope         = "E_DIAG_OUT_OF_SCOPE"
+	DiagErrCredentialMaterial = "E_DIAG_CREDENTIAL_MATERIAL"
+	DiagErrHardDenied         = "E_DIAG_HARD_DENIED"
+	DiagErrLinkRefused        = "E_DIAG_LINK_REFUSED"
+	DiagErrNotFound           = "E_DIAG_NOT_FOUND"
+	DiagErrPermissionDenied   = "E_DIAG_OS_PERMISSION_DENIED"
+	DiagErrNotAFile           = "E_DIAG_NOT_A_FILE"
+	DiagErrNotADirectory      = "E_DIAG_NOT_A_DIRECTORY"
+	DiagErrIO                 = "E_DIAG_IO"
+	DiagErrNotSupported       = "E_DIAG_UNSUPPORTED_PLATFORM"
+	DiagErrWriteNotPermitted  = "E_DIAG_WRITE_NOT_PERMITTED"
+	DiagErrCommandMismatch    = "E_DIAG_COMMAND_MISMATCH"
+	DiagErrArgsMismatch       = "E_DIAG_ARGS_MISMATCH"
+	DiagErrEncryption         = "E_DIAG_ENCRYPTION"
 )
 
 // DiagError is a coded, user-presentable failure. Error() is "<CODE>: <msg>",
@@ -362,6 +362,14 @@ func VerifyDiagnosticAuthorization(a *DiagnosticAuthorization, env DiagGrantEnv,
 	}
 	if a.Operation != operation {
 		return diagErr(DiagErrOperation, "diagnostic authorization is for %q, not %q", a.Operation, operation)
+	}
+	// Credential material is never grantable. The field stays in the signed
+	// wire format, but an authorization that names any class is refused here
+	// whatever the server intended, so no server-side mistake can reach it.
+	if len(a.SensitiveClasses) > 0 {
+		return diagErr(DiagErrCredentialMaterial,
+			"diagnostic authorization names %s; credential material is never readable through diagnostic access",
+			strings.Join(a.SensitiveClasses, ", "))
 	}
 	if args.CommandID == "" || a.CommandID != args.CommandID {
 		return diagErr(DiagErrCommandMismatch, "diagnostic authorization was issued for a different command")

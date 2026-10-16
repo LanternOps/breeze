@@ -135,6 +135,7 @@ function baseTicket(overrides: Partial<Parameters<typeof assembleTicketContext>[
     description: 'The office printer shows an error light and will not print.',
     status: 'open',
     priority: 'normal',
+    ticketType: 'incident',
     category: 'hardware',
     tags: ['printer'],
     dueDate: null,
@@ -758,7 +759,7 @@ function queueTicketAndComments(ticketRow: Record<string, unknown>, commentRows:
 describe('loadTicketContext — per-loader failure isolation', () => {
   it('a rejected linkedDevice loader still returns the base ticket AND similarResolvedTickets, reported to Sentry', async () => {
     queueTicketAndComments({
-      id: TICKET_ID, subject: 'Printer down', description: null, status: 'open', priority: 'normal',
+      id: TICKET_ID, subject: 'Printer down', description: null, status: 'open', priority: 'normal', ticketType: 'incident',
       category: 'hardware', tags: [], dueDate: null, deviceId: DEVICE_ID, categoryId: CATEGORY_ID,
     });
     // Device lookup succeeds so the alerts statement is actually reached...
@@ -788,7 +789,7 @@ describe('loadTicketContext — per-loader failure isolation', () => {
 
   it('a rejected similarResolvedTickets loader still returns the base ticket AND linkedDevice', async () => {
     queueTicketAndComments({
-      id: TICKET_ID, subject: 'Printer down', description: null, status: 'open', priority: 'normal',
+      id: TICKET_ID, subject: 'Printer down', description: null, status: 'open', priority: 'normal', ticketType: 'incident',
       category: 'hardware', tags: [], dueDate: null, deviceId: DEVICE_ID, categoryId: CATEGORY_ID,
     });
     rowsFor.push({ match: 'FROM devices', rows: [{ id: DEVICE_ID, hostname: 'WS-01', display_name: null, os_type: 'windows' }] });
@@ -817,7 +818,7 @@ describe('loadTicketContext — per-loader failure isolation', () => {
 
   it('never queries devices/alerts when the ticket has no linked device, and never queries tickets/categories when it has no category', async () => {
     queueTicketAndComments({
-      id: TICKET_ID, subject: 'General question', description: null, status: 'open', priority: 'normal',
+      id: TICKET_ID, subject: 'General question', description: null, status: 'open', priority: 'normal', ticketType: 'incident',
       category: null, tags: [], dueDate: null, deviceId: null, categoryId: null,
     });
 
@@ -829,5 +830,28 @@ describe('loadTicketContext — per-loader failure isolation', () => {
     expect(ctx!.similarResolvedTickets).toEqual([]);
     expect(ctx!.similarResolvedTicketsUnavailable).toBeUndefined();
     expect(executed).toHaveLength(0); // no raw-SQL loader was ever invoked
+  });
+});
+
+// #7900 / #8592 W01: the ITIL type rides the context read-only (triage benefits).
+describe('ticketType in the ticket context', () => {
+  it('assembleTicketContext carries ticketType through', () => {
+    const ctx = assembleTicketContext({ ticket: baseTicket({ ticketType: 'problem' }), comments: [] });
+    expect(ctx.ticketType).toBe('problem');
+  });
+
+  it('loadTicketContext selects ticketType from the tickets row', async () => {
+    const { db } = await import('../../db');
+    const selectMock = db.select as unknown as { mock: { calls: unknown[][] } };
+    const before = selectMock.mock.calls.length;
+    queueTicketAndComments({
+      id: TICKET_ID, subject: 'S', description: null, status: 'open', priority: 'normal', ticketType: 'change',
+      category: null, tags: [], dueDate: null, deviceId: null, categoryId: null,
+    });
+    const ctx = await loadTicketContext(TICKET_ID, ORG_ID);
+    expect(ctx?.ticketType).toBe('change');
+    const ticketSelection = selectMock.mock.calls.slice(before).map((c) => c[0])
+      .find((sel) => sel && typeof sel === 'object' && 'subject' in (sel as object));
+    expect(ticketSelection).toHaveProperty('ticketType');
   });
 });

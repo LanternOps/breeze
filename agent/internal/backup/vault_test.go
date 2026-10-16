@@ -115,6 +115,39 @@ func TestVaultSync(t *testing.T) {
 	}
 }
 
+// #8385: on a policy-managed device the backup is written through a
+// payload-built provider, not the vault's startup primary (a LocalProvider over
+// the default backup path). Auto-sync must read the snapshot from where the
+// backup actually wrote it.
+func TestVaultSyncAfterBackupFrom_ReadsTheGivenPrimary(t *testing.T) {
+	writtenDir := t.TempDir()
+	fallbackDir := t.TempDir()
+	vaultDir := t.TempDir()
+
+	snapID := createTestSnapshot(t, writtenDir, time.Now().UTC())
+
+	vm, err := NewVaultManager(VaultConfig{VaultPath: vaultDir, RetentionCount: 5, Enabled: true},
+		providers.NewLocalProvider(fallbackDir))
+	if err != nil {
+		t.Fatalf("failed to create vault manager: %v", err)
+	}
+
+	if _, err := vm.SyncAfterBackup(snapID); err == nil {
+		t.Fatal("control: the startup primary does not hold the snapshot, so a sync through it must fail")
+	}
+
+	result, err := vm.SyncAfterBackupFrom(providers.NewLocalProvider(writtenDir), snapID)
+	if err != nil {
+		t.Fatalf("sync from the backup's own provider failed: %v", err)
+	}
+	if result == nil || !result.ManifestVerified {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(vaultDir, "snapshots", snapID, "manifest.json")); err != nil {
+		t.Fatalf("manifest not copied into the vault: %v", err)
+	}
+}
+
 func TestVaultSync_Idempotent(t *testing.T) {
 	primaryDir := t.TempDir()
 	vaultDir := t.TempDir()

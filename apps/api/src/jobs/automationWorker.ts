@@ -11,6 +11,7 @@ import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, isNull, or } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
+  automationRuns,
   automations,
   configPolicyAutomations,
   configPolicyEffectiveFeatureLinks,
@@ -24,6 +25,7 @@ import {
 import { type BreezeEvent } from '../services/eventBus';
 import {
   type AutomationTrigger,
+  type AutomationTargetDiagnostics,
   type AutomationTriggerContext,
   checkAutomationTargetsWithinSiteScope,
   createAutomationRunRecord,
@@ -529,6 +531,7 @@ async function admitTriggerSchedule(
   // CURRENT target set here, dropping anything outside it, before the run is
   // created. An unrestricted creator (no allowedSiteIds) is unaffected.
   let boundDeviceIds: string[] | undefined;
+  let boundTargetDiagnostics: AutomationTargetDiagnostics | undefined;
   if (automation.createdBy) {
     const perms = await getUserPermissions(automation.createdBy, {
       orgId: automation.orgId ?? undefined,
@@ -552,6 +555,8 @@ async function admitTriggerSchedule(
         // decision above was actually based on.
         const outOfScope = new Set(check.outOfScopeDeviceIds);
         boundDeviceIds = check.targetDeviceIds.filter((id) => !outOfScope.has(id));
+        // #8598 — a broken group target must still fail the run visibly.
+        boundTargetDiagnostics = check.targetDiagnostics;
 
         writeAuditEvent(requestLikeFromSnapshot({}), {
           orgId: automation.orgId ?? null,
@@ -566,7 +571,7 @@ async function admitTriggerSchedule(
           },
         });
 
-        if (boundDeviceIds.length === 0) {
+        if (boundDeviceIds.length === 0 && !boundTargetDiagnostics?.problems.length) {
           return { skipped: 'schedule_targets_all_outside_site_ceiling' };
         }
       }
@@ -585,6 +590,7 @@ async function admitTriggerSchedule(
       scanAt: data.scanAt,
     },
     ...(boundDeviceIds ? { boundDeviceIds } : {}),
+    ...(boundDeviceIds && boundTargetDiagnostics ? { targetDiagnostics: boundTargetDiagnostics } : {}),
     occurrenceKey: `schedule:${data.slotKey}`,
   });
 
@@ -1388,10 +1394,73 @@ async function scheduleAutomationScans(): Promise<void> {
   );
 }
 
+const SCRIPT_TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set(['script.completed', 'script.failed']);
+
+/** The exact `triggeredBy` strings this worker stamps on a run minted by a script terminal event. */
+function isScriptTerminalEventRunTrigger(triggeredBy: string): boolean {
+  for (const type of SCRIPT_TERMINAL_EVENT_TYPES) {
+    if (triggeredBy === `event:${type}` || triggeredBy === `config-policy-event:${type}`) return true;
+  }
+  return false;
+}
+
+/**
+ * #7277 - script->script loop guard for `script.completed` / `script.failed`.
+ *
+ * An automation "on script completed -> run script" would otherwise trigger
+ * itself: its script's completion is the very event it listens for. The event
+ * payload names the automation run that queued the execution
+ * (`automationRunId`); that run says how it started.
+ *
+ *  - The origin run was itself started by a script terminal event: this is the
+ *    second hop of a script-event chain. The event is not fanned out at all,
+ *    which bounds every cycle (self-trigger and A->B->A) at one hop. The cost is
+ *    that a two-step script-event chain stops after its first step.
+ *  - Otherwise the event is delivered, except to the automation whose own run
+ *    queued the script (`originAutomationId`), so a scheduled/alert automation
+ *    that also listens for script events cannot answer its own script.
+ *  - The run cannot be found (automation deleted, run purged): deliver. A run
+ *    that no longer exists cannot be part of a live loop.
+ *
+ * Events with no `automationRunId` (manual, scheduled, API, monitor runs) are
+ * unaffected. A failed lookup throws so the dispatcher retries (see
+ * handleAutomationEvent).
+ */
+async function resolveScriptEventOrigin(
+  event: BreezeEvent<Record<string, unknown>>,
+): Promise<{ drop: boolean; originAutomationId: string | null }> {
+  const none = { drop: false, originAutomationId: null };
+  if (!SCRIPT_TERMINAL_EVENT_TYPES.has(event.type)) return none;
+  const runId = normalizePayload(event.payload).automationRunId;
+  if (typeof runId !== 'string' || runId.length === 0) return none;
+
+  const [run] = await db
+    .select({ automationId: automationRuns.automationId, triggeredBy: automationRuns.triggeredBy })
+    .from(automationRuns)
+    .where(eq(automationRuns.id, runId))
+    .limit(1);
+
+  if (!run) {
+    // Deleted automation (runs cascade) or a retention-purged run. Neither can be
+    // part of a live loop, and dropping would silence every unrelated listener.
+    console.warn(`[AutomationWorker] ${event.type} ${event.id}: originating automation run ${runId} not found; delivering (loop guard cannot apply)`);
+    return none;
+  }
+  if (isScriptTerminalEventRunTrigger(run.triggeredBy)) {
+    console.warn(`[AutomationWorker] ${event.type} ${event.id}: script was queued by a run started by a script event (${run.triggeredBy}); not fanning out (loop guard)`);
+    return { drop: true, originAutomationId: run.automationId ?? null };
+  }
+  return { drop: false, originAutomationId: run.automationId ?? null };
+}
+
 // Exported for the partner-RLS integration suite, which proves the dual-axis
 // fan-out query against real Postgres (the BullMQ queue is mocked there).
 export async function queueEventTriggers(event: BreezeEvent<Record<string, unknown>>): Promise<void> {
   const queue = getAutomationQueue();
+
+  // #7277 - before any fan-out query.
+  const scriptOrigin = await resolveScriptEventOrigin(event);
+  if (scriptOrigin.drop) return;
 
   // --- Legacy standalone automations ---
   // Dual-ownership fan-out (#2133): match the event org's own automations OR
@@ -1434,6 +1503,9 @@ export async function queueEventTriggers(event: BreezeEvent<Record<string, unkno
   const payload = normalizePayload(event.payload);
 
   for (const automation of candidates) {
+    // #7277: never hand an automation the terminal event of its own script.
+    if (scriptOrigin.originAutomationId && automation.id === scriptOrigin.originAutomationId) continue;
+
     let trigger;
     try {
       trigger = normalizeAutomationTrigger(automation.trigger);

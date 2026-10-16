@@ -47,6 +47,7 @@ import {
 import { approvalRoutes } from '../../routes/approvals';
 import { pamRoutes } from '../../routes/pam';
 import { expireSupersededMobileApprovals } from '../../services/pamMobileApprovals';
+import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
 
 const RUN = !!process.env.DATABASE_URL;
 // Superuser connections for the lock holder, the probe and the pg_stat_activity
@@ -128,6 +129,7 @@ async function seedElevation(
         siteId: s.siteId,
         partnerId: s.partnerId,
         deviceId: s.deviceId,
+        deviceEpoch: currentOwnershipEpochSql(s.deviceId),
         flowType: 'uac_intercept',
         subjectUsername: 'CONCURRENCY\\enduser',
         reason: 'install setup.exe',

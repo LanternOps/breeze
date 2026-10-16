@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 import BackupDestinationSection, { emptyConfigForm } from './BackupDestinationSection';
@@ -35,5 +35,42 @@ describe('BackupDestinationSection credential autofill (DBT-5)', () => {
     expect(accessKeyInput).toHaveAttribute('autoComplete', 'off');
     expect(secretKeyInput).toHaveAttribute('type', 'password');
     expect(secretKeyInput).toHaveAttribute('autoComplete', 'new-password');
+  });
+});
+
+// #8152: an org with zero destinations showed the "Backups need a destination
+// first" empty state with no way to act on it — the only "New destination"
+// tile lived inside the grid of existing destinations.
+describe('BackupDestinationSection empty state (#8152)', () => {
+  const baseProps = {
+    configs: [],
+    configsLoading: false,
+    selectedConfigId: '',
+    onSelect: vi.fn(),
+    mode: 'select' as const,
+    onStartCreate: vi.fn(),
+    onCancelForm: vi.fn(),
+    onBeginEdit: vi.fn(),
+    form: { ...emptyConfigForm },
+    onFormChange: vi.fn(),
+    fieldErrors: {},
+    testStatus: 'idle' as const,
+    onTest: vi.fn(),
+  };
+
+  it('offers a create action when the org has no destinations', () => {
+    const onStartCreate = vi.fn();
+    render(<BackupDestinationSection {...baseProps} onStartCreate={onStartCreate} />);
+
+    const button = screen.getByTestId('backup-destination-empty-create');
+    expect(button).toHaveTextContent('New destination');
+    fireEvent.click(button);
+    expect(onStartCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the empty-state create action while the form is open', () => {
+    render(<BackupDestinationSection {...baseProps} mode="create" />);
+
+    expect(screen.queryByTestId('backup-destination-empty-create')).not.toBeInTheDocument();
   });
 });

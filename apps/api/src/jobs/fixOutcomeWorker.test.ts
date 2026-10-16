@@ -4,6 +4,7 @@ const h = vi.hoisted(() => ({
   ids: [] as string[],
   advance: vi.fn(), rebuild: vi.fn(), drift: vi.fn(async () => 2), stale: vi.fn(async () => ['p-1']),
   recountIds: vi.fn(async () => ['o-9']), recompute: vi.fn(async () => undefined), captureException: vi.fn(),
+  stamp: vi.fn(async () => 1),
 }));
 vi.mock('bullmq', () => ({
   Queue: class { add = vi.fn(); getRepeatableJobs = vi.fn(async () => []); removeRepeatableByKey = vi.fn(); close = vi.fn(); },
@@ -19,7 +20,7 @@ vi.mock('../services/outcomeProbes', () => ({ inSystemDbContext: (fn: () => unkn
 vi.mock('../services/fixMemory/outcomeWatcher', () => ({ advanceOutcome: h.advance }));
 vi.mock('../services/fixMemory/store', () => ({
   rebuildFixMemory: h.rebuild, markOwnerDriftStale: h.drift, stalePartnerIds: h.stale,
-  recountRequestedOutcomeIds: h.recountIds, recomputeForOutcome: h.recompute,
+  recountRequestedOutcomeIds: h.recountIds, recomputeForOutcome: h.recompute, stampRebuildAttempt: h.stamp,
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
@@ -57,5 +58,31 @@ describe('runFixOutcomeSweep', () => {
     expect(h.rebuild).toHaveBeenCalledWith({ partnerId: 'p-1' }, expect.any(Date));
     expect(stats).toMatchObject({ drifted: 0, rebuilt: 1 });
     expect(h.captureException).toHaveBeenCalledWith(driftErr);
+  });
+
+  it('stamps each partner\'s rebuild attempt BEFORE rebuilding it, so a failing rebuild still rotates (#7278)', async () => {
+    h.ids = [];
+    h.stale.mockResolvedValueOnce(['p-1', 'p-2']);
+    h.rebuild.mockRejectedValueOnce(new Error('rebuild failed'));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const now = new Date('2026-12-22T00:00:00Z');
+    const stats = await runFixOutcomeSweep(now);
+    err.mockRestore();
+    expect(h.stamp.mock.calls).toEqual([['p-1', now], ['p-2', now]]);
+    expect(h.stamp.mock.invocationCallOrder[0]!).toBeLessThan(h.rebuild.mock.invocationCallOrder[0]!);
+    expect(h.stamp.mock.invocationCallOrder[1]!).toBeLessThan(h.rebuild.mock.invocationCallOrder[1]!);
+    expect(stats.rebuilt).toBe(1);
+  });
+
+  it('a failed attempt stamp is reported and does not skip that partner\'s rebuild', async () => {
+    h.ids = [];
+    const stampErr = new Error('stamp failed');
+    h.stamp.mockRejectedValueOnce(stampErr);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stats = await runFixOutcomeSweep();
+    err.mockRestore();
+    expect(h.rebuild).toHaveBeenCalledWith({ partnerId: 'p-1' }, expect.any(Date));
+    expect(stats.rebuilt).toBe(1);
+    expect(h.captureException).toHaveBeenCalledWith(stampErr);
   });
 });

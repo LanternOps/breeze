@@ -891,6 +891,7 @@
       "empty": "No se encontraron registros de auditoría.",
       "viewDetails": "Ver detalles",
       "errors": {
+        "export": "No se pudieron exportar los registros de auditoría",
         "fetch": "No se pudieron recuperar los registros de auditoría",
         "load": "No se pudieron cargar los registros de auditoría"
       },

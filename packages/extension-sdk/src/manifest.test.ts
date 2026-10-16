@@ -309,6 +309,7 @@ describe('parseExtensionManifestV1', () => {
     'support',
     'ticket-forms',
     'ticket-response-templates',
+    'ticketing',
   ])('safeParse rejects reserved routeNamespace %s', (routeNamespace) => {
     expect(RESERVED_ROUTE_NAMESPACES.has(routeNamespace)).toBe(true);
     const result = safeParseExtensionManifestV1({ ...valid, routeNamespace });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mfaVerifySchema, mfaStepUpSchema, unattestedRestoreStepUpResource } from './schemas';
+import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 
 // SR2-09: mfaVerifySchema must accept a 6-digit TOTP/SMS code OR the
 // `XXXX-XXXX` recovery-code form, and the `method` enum must include
@@ -133,12 +134,15 @@ describe('mfaStepUpSchema operation field', () => {
     ).toThrow();
   });
 
-  // The typed restore confirmation is minted only by POST
-  // /backup/restore-confirmations after the device name was typed.
-  it('rejects backup_unattested_restore_typed — restore-confirmation mint only, never client-requestable', () => {
+  // An unattested restore is confirmed only with a proven second factor
+  // (operation backup_unattested_restore); there is no other grant for it.
+  it('rejects backup_unattested_restore_typed — not a step-up operation', () => {
     expect(() =>
       mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation: 'backup_unattested_restore_typed' })
     ).toThrow();
+    // @ts-expect-error -- not a grant operation, so no grant for it can be minted or consumed
+    const removed: StepUpOperation = 'backup_unattested_restore_typed';
+    expect(removed).toBe('backup_unattested_restore_typed');
   });
 
   // RMM-QA-176 D11 (T12): entering/extending device maintenance mode is a
@@ -190,6 +194,19 @@ describe('mfaStepUpSchema operation field', () => {
       targetDeviceId: '00000000-0000-4000-8000-000000000020',
       commandType: 'backup_verify',
     }).success).toBe(false);
+  });
+
+  it.each([
+    ['autopay_charge_now', { invoiceId: '00000000-0000-4000-8000-000000000010' }],
+    ['partner_payment_settings_update', { partnerId: '00000000-0000-4000-8000-000000000020',
+      settings: { remindersEnabled: true, feeAttestation: { acquirerAndNetworksNotified30DaysAgo: true, doesNotExceedAcceptanceCost: true } } }],
+    ['autopay_request_recipient', { orgIds: ['00000000-0000-4000-8000-000000000030'], recipientOverride: 'accounts@example.test', mode: 'reauthorize' }],
+    ['org_payment_settings_update', { orgId: '00000000-0000-4000-8000-000000000040',
+      settings: { autopayCapEnabled: true, autopayCapAmount: '500.00', autopayCapCurrency: 'USD', reminderRepeatDays: null } }],
+  ] as const)('accepts %s with its resource binding, unchanged', (operation, resource) => {
+    const parsed = mfaStepUpSchema.parse({ method: 'totp', code: '123456', operation, resource });
+    expect(parsed.operation).toBe(operation);
+    expect(parsed.resource).toEqual(resource);
   });
 
   it('accepts device_move_org with a move-org resource binding', () => {

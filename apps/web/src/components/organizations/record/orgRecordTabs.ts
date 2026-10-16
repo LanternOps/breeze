@@ -93,9 +93,13 @@ const MODE_HIDDEN_TABS: Record<ServiceManagementMode, ReadonlySet<OrgRecordTab>>
 
 const TAB_IDS = new Set<string>(ORG_RECORD_TABS);
 
-/** `'#tickets'` / `'tickets'` → `'tickets'`; anything else → undefined. */
+/**
+ * `'#tickets'` / `'tickets'` → `'tickets'`; a nested in-tab deep link such
+ * as `#contacts/<id>/verification` keeps its owning tab; anything else →
+ * undefined.
+ */
 export function tabFromHash(hash: string): OrgRecordTab | undefined {
-  const raw = hash.replace(/^#/, '');
+  const raw = hash.replace(/^#/, '').split('/')[0] ?? '';
   return TAB_IDS.has(raw) ? (raw as OrgRecordTab) : undefined;
 }
 

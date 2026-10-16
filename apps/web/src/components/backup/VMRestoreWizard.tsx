@@ -328,7 +328,7 @@ export default function VMRestoreWizard() {
   // operator confirms it (two-factor when enabled); the server asks for it.
   const unattestedStepUp = useUnattestedRestoreStepUp();
 
-  const submitRestore = useCallback(async (extras: UnattestedRestoreExtras) => {
+  const submitRestore = useCallback(async (extras: UnattestedRestoreExtras): Promise<boolean> => {
     setRestoring(true);
     setRestoreError(undefined);
     setRestoreSuccess(undefined);
@@ -398,12 +398,14 @@ export default function VMRestoreWizard() {
         suppressErrorToast: suppressUnattestedRestoreStepUpToast,
       });
       setRestoreSuccess(successMessage);
+      return true;
     } catch (err) {
       // The confirmation prompt handles a step-up request.
       if (isUnattestedRestoreStepUp(err)) throw err;
       handleActionError(err, 'Failed to start restore');
-      if (err instanceof ActionError && err.status === 401) return;
+      if (err instanceof ActionError && err.status === 401) return false;
       setRestoreError(err instanceof Error ? err.message : 'Failed to start restore');
+      return false;
     } finally {
       setRestoring(false);
     }

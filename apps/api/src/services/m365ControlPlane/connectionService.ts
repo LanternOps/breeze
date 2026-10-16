@@ -238,6 +238,16 @@ export interface ConnectionServiceDeps<
   /** Adapts a profile-specific executor client to the generic retest call. */
   retest: (client: Client, request: RetestRequest) => Promise<RetestResult>;
   /**
+   * When true, a Retest promotes the stored `permission_manifest_version` only
+   * when the observation satisfies the CURRENT manifest — the same predicate
+   * `applyUpgradeFinalizationResult` promotes on (reconciliation complete, no
+   * required grant missing, executor reports the current version). Any other
+   * verified Retest keeps the stored version, so a row a manifest bump left
+   * behind stays `manifest-stale` and upgrade consent stays available (#8661).
+   * Unset keeps the historical "Retest always promotes" behavior.
+   */
+  retestPromotesManifestOnlyWhenSatisfied?: boolean;
+  /**
    * Optional observability hooks. The connection lifecycle itself records
    * nothing today (metrics are emitted by the route handlers), so these are
    * unused by the read surface and reserved for callers that record inline.
@@ -447,6 +457,28 @@ export function createConnectionService<
       status: health.state === 'active' ? 'active' : 'degraded',
       errorCode: lifecycleErrorForHealth(health),
     };
+  }
+
+  /**
+   * Whether a verified, tenant/application-matched Retest may promote the
+   * stored manifest version. Without the opt-in this is unconditionally true
+   * (historical behavior). With it, the predicate is the one
+   * applyUpgradeFinalizationResult promotes on: reconciliation complete, the
+   * executor reports the current manifest, and no required grant is missing.
+   * Unexpected extra grants alone do not block promotion (same as upgrade);
+   * they surface as `grant_unexpected` on the promoted row.
+   */
+  function retestPromotesManifest(result: Extract<RetestResult, { success: true }>): boolean {
+    if (!deps.retestPromotesManifestOnlyWhenSatisfied) return true;
+    if (result.grantReconciliation !== 'complete') return false;
+    if (result.manifestVersion !== deps.manifest.version) return false;
+    return deriveGrantHealth({
+      status: 'active',
+      permissionManifestVersion: deps.manifest.version,
+      observedGrants: result.observedGrants,
+      grantsVerifiedAt: new Date(result.grantsVerifiedAt),
+      lastErrorCode: null,
+    }, deps.manifest).missingGrants.length === 0;
   }
 
   async function distinguishTenantConflict(
@@ -1160,16 +1192,33 @@ export function createConnectionService<
       }
 
       const verifiedAt = new Date(result.verifiedAt);
+      // Which manifest version this Retest leaves on the row. See
+      // ConnectionServiceDeps.retestPromotesManifestOnlyWhenSatisfied: when
+      // set, a Retest that does not satisfy the current manifest keeps the
+      // stored version instead of promoting it.
+      const promoted = retestPromotesManifest(result);
+      const manifestVersion = promoted ? result.manifestVersion : input.permissionManifestVersion;
+      // A kept version that is still behind the code manifest is the state a
+      // manifest bump leaves: the row keeps executing on the grants it already
+      // had, and the upgrade-consent flow (not Retest) is what moves it
+      // forward. So it keeps its lifecycle status and records `manifest_stale`
+      // rather than being degraded to `grant_missing` for roles the customer
+      // has not been asked to approve yet (#8661). A row whose stored version
+      // is already current never takes this branch: revoked grants there still
+      // degrade to `grant_missing` exactly as before.
+      const keepsStaleManifest = !promoted && manifestVersion !== deps.manifest.version;
       const common = {
         displayName: result.organizationDisplayName,
-        permissionManifestVersion: result.manifestVersion,
+        permissionManifestVersion: manifestVersion,
         lastVerifiedAt: verifiedAt,
         updatedAt: new Date(),
       };
       const set = result.grantReconciliation === 'complete'
         ? (() => {
             const grantsVerifiedAt = new Date(result.grantsVerifiedAt);
-            const state = resultState('active', result.manifestVersion, result.observedGrants, grantsVerifiedAt);
+            const state = keepsStaleManifest
+              ? { status: input.status, errorCode: 'manifest_stale' }
+              : resultState('active', manifestVersion, result.observedGrants, grantsVerifiedAt);
             return {
               ...common,
               observedGrants: result.observedGrants,

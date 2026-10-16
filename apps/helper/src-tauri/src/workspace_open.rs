@@ -122,8 +122,10 @@ pub struct OpenWorkspacePathInput {
 #[tauri::command]
 pub async fn open_workspace_path(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     input: OpenWorkspacePathInput,
 ) -> Result<(), String> {
+    crate::ipc::message::deny_message_window(window.label())?;
     let parts = validate_unc(&input.path)?;
     let target = resolve_open_target(&parts, current_platform(), |candidate| {
         std::path::Path::new(candidate).exists()

@@ -1,0 +1,87 @@
+{
+  "schema": "breeze.agentsim.report/v1",
+  "runId": "fixture-run-0001",
+  "startedAt": "2026-10-13T03:16:45Z",
+  "endedAt": "2026-10-13T03:40:05Z",
+  "target": "http://localhost:8080",
+  "config": {
+    "agents": 200,
+    "rampPerSecond": 10,
+    "durationSeconds": 1400,
+    "warmupSeconds": 180,
+    "startMode": "warm",
+    "wsEnabled": true,
+    "agentVersion": "dev-agentsim",
+    "osType": "linux",
+    "cadenceSeconds": { "heartbeat": 60 },
+    "commandsPerMinute": 30,
+    "retry": { "maxRetries": 3, "initialDelaySeconds": 1, "maxDelaySeconds": 30 }
+  },
+  "agents": {
+    "configured": 200,
+    "started": 200,
+    "onlineAtWindowOpen": 200,
+    "enrolledThisRun": 0,
+    "reusedFromStore": 200,
+    "reenrolled": 0,
+    "enrollFailures": 0
+  },
+  "window": {
+    "start": "2026-10-13T03:20:05Z",
+    "end": "2026-10-13T03:40:05Z",
+    "seconds": 1200,
+    "agentMinutes": 4000
+  },
+  "totals": {
+    "requests": 20800,
+    "attempts": 20800,
+    "allRequests": 20800,
+    "requestsPerAgentMinute": 5.2,
+    "expectedRequestsPerAgentMinute": 5.1,
+    "deviationPct": 1.96,
+    "non2xx": 0,
+    "transportErrors": 0
+  },
+  "routes": [
+    {
+      "route": "POST /agents/:id/heartbeat",
+      "requests": 4000,
+      "attempts": 4000,
+      "perAgentMinute": 1,
+      "expectedPerAgentMinute": 1,
+      "latencyMs": { "count": 4000, "p50": 12.0, "p95": 38.2, "p99": 90.1, "max": 140.5 },
+      "status": { "200": 4000 },
+      "statusTotal": { "200": 4000 },
+      "transportErrors": 0
+    },
+    {
+      "route": "GET /workspace/agent/crawl-config",
+      "requests": 1600,
+      "attempts": 1600,
+      "perAgentMinute": 0.4,
+      "expectedPerAgentMinute": 0.4,
+      "latencyMs": { "count": 1600, "p50": 6.0, "p95": 20.0, "p99": 33.0, "max": 60.0 },
+      "status": { "200": 1600 },
+      "statusTotal": { "200": 1600 },
+      "transportErrors": 0
+    }
+  ],
+  "ws": {
+    "connects": 200,
+    "reconnects": 0,
+    "connectFailures": 0,
+    "disconnects": 0,
+    "controlPingsSent": 8000,
+    "controlPongsReceived": 8000,
+    "framesReceived": { "command": 600 },
+    "connectLatencyMs": { "count": 200, "p50": 20, "p95": 60, "p99": 80, "max": 90 }
+  },
+  "commands": {
+    "dispatched": 600,
+    "dispatchFailures": 0,
+    "received": { "refresh_inventory": 600 },
+    "duplicates": 0,
+    "dropped": 0,
+    "resultsSent": { "completed": 600 }
+  }
+}

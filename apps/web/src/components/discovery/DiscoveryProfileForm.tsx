@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
+import { MAX_DISCOVERY_SUBNET_HOSTS, findOversizedDiscoverySubnet } from '@breeze/shared';
 
 export type DiscoverySchedule = {
   cadence: 'hourly' | 'interval' | 'daily' | 'weekly' | 'monthly';
@@ -52,6 +53,15 @@ export type DiscoveryProfileFormValues = {
   /** Edit mode only: move the assets this profile discovered along with the
    *  site change. Always false unless the site was changed AND the user opted in. */
   moveDiscoveredAssets?: boolean;
+  /** #7969: devices.id of the pinned scan agent; '' or absent = automatic. */
+  pinnedDeviceId?: string;
+};
+
+/** A device in the profile's site that can be pinned as the scan agent. */
+export type ScanAgentOption = {
+  id: string;
+  name: string;
+  online: boolean;
 };
 
 type SiteOption = {
@@ -71,6 +81,9 @@ type DiscoveryProfileFormProps = {
    *  (GET /discovery/profiles/:id/movable-assets). Called lazily, once, the
    *  first time the selected site differs from the original. */
   loadMovableAssetCount?: () => Promise<number>;
+  /** #7969: loads the devices in a site that may be pinned as the scan agent.
+   *  The scan-agent picker is shown only when this is supplied. */
+  loadSiteAgents?: (siteId: string) => Promise<ScanAgentOption[]>;
 };
 
 const methodOptions = [
@@ -102,6 +115,13 @@ function validateSubnets(text: string, t: TFunction): string[] {
         errors.push(t('discoveryProfileForm.validation.octet', { value: line }));
       } else if (prefixNum > 32) {
         errors.push(t('discoveryProfileForm.validation.prefix', { value: line }));
+      } else if (findOversizedDiscoverySubnet([line])) {
+        // Same limit the API enforces and the agent applies (see
+        // @breeze/shared discoverySubnetLimit).
+        errors.push(t('discoveryProfileForm.validation.subnetTooLarge', {
+          value: line,
+          limit: MAX_DISCOVERY_SUBNET_HOSTS.toLocaleString(),
+        }));
       }
     } else if (IP_REGEX.test(line)) {
       const octets = line.split('.').map(Number);
@@ -153,7 +173,8 @@ export default function DiscoveryProfileForm({
   submitLabel,
   disabled = false,
   error,
-  loadMovableAssetCount
+  loadMovableAssetCount,
+  loadSiteAgents
 }: DiscoveryProfileFormProps) {
   const { t } = useTranslation('discovery');
   const [formValues, setFormValues] = useState<DiscoveryProfileFormValues>(initialValues ?? defaultValues);
@@ -165,6 +186,9 @@ export default function DiscoveryProfileForm({
   const [movableAssetCount, setMovableAssetCount] = useState<number | null | undefined>(undefined);
   // The count is requested once per edit session, not once per site toggle.
   const movableAssetCountRequested = useRef(false);
+  // Scan-agent picker (#7969): the agents of the currently selected site.
+  const [siteAgents, setSiteAgents] = useState<ScanAgentOption[]>([]);
+  const [siteAgentsError, setSiteAgentsError] = useState(false);
   const isSnmpEnabled = formValues.methods.includes('snmp');
   const resolvedSubmitLabel = submitLabel ?? t('discoveryProfileForm.actions.saveProfile');
   const originalSiteId = initialValues?.siteId;
@@ -179,6 +203,20 @@ export default function DiscoveryProfileForm({
       .then(count => setMovableAssetCount(count))
       .catch(() => setMovableAssetCount(null)); // offer still shown, without a number
   }, [siteChanged, loadMovableAssetCount]);
+
+  useEffect(() => {
+    setSiteAgents([]);
+    setSiteAgentsError(false);
+    if (!loadSiteAgents || !formValues.siteId) return;
+    let cancelled = false;
+    loadSiteAgents(formValues.siteId)
+      .then(agents => { if (!cancelled) setSiteAgents(agents); })
+      .catch(err => {
+        console.error('[DiscoveryProfileForm] Failed to load scan agents', err);
+        if (!cancelled) setSiteAgentsError(true); // Automatic still selectable
+      });
+    return () => { cancelled = true; };
+  }, [loadSiteAgents, formValues.siteId]);
 
   useEffect(() => {
     setSubnetErrors([]);
@@ -262,7 +300,17 @@ export default function DiscoveryProfileForm({
             <label className="text-sm font-medium">{t('common:labels.site')}</label>
             <select
               value={formValues.siteId}
-              onChange={event => setFormValues(prev => ({ ...prev, siteId: event.target.value }))}
+              // A pin is only valid inside its site (#7969): changing the site
+              // clears it so the user re-picks from the new site's agents;
+              // returning to the original site restores the stored pin.
+              onChange={event => {
+                const siteId = event.target.value;
+                setFormValues(prev => ({
+                  ...prev,
+                  siteId,
+                  pinnedDeviceId: siteId === originalSiteId ? (initialValues?.pinnedDeviceId ?? '') : ''
+                }));
+              }}
               data-testid="discovery-profile-site-select"
               className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             >
@@ -323,6 +371,45 @@ export default function DiscoveryProfileForm({
               <option value="monthly">{t('discoveryProfileForm.cadence.monthly')}</option>
             </select>
           </div>
+          {loadSiteAgents && (
+            <div>
+              <label className="text-sm font-medium" htmlFor="discovery-profile-scan-agent">
+                {t('discoveryProfileForm.fields.scanAgent')}
+              </label>
+              <select
+                id="discovery-profile-scan-agent"
+                value={formValues.pinnedDeviceId ?? ''}
+                onChange={event => setFormValues(prev => ({ ...prev, pinnedDeviceId: event.target.value }))}
+                disabled={!formValues.siteId}
+                data-testid="discovery-profile-scan-agent-select"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+              >
+                <option value="">{t('discoveryProfileForm.options.automaticAgent')}</option>
+                {siteAgents.map(agent => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.online
+                      ? agent.name
+                      : t('discoveryProfileForm.options.agentOffline', { name: agent.name })}
+                  </option>
+                ))}
+                {formValues.pinnedDeviceId && !siteAgents.some(agent => agent.id === formValues.pinnedDeviceId) && (
+                  <option value={formValues.pinnedDeviceId}>
+                    {t('discoveryProfileForm.options.pinnedAgentUnlisted')}
+                  </option>
+                )}
+              </select>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {formValues.pinnedDeviceId
+                  ? t('discoveryProfileForm.scanAgentHelp.pinned')
+                  : t('discoveryProfileForm.scanAgentHelp.automatic')}
+              </p>
+              {siteAgentsError && (
+                <p className="mt-1 text-xs text-destructive" data-testid="discovery-profile-scan-agent-error">
+                  {t('discoveryProfileForm.scanAgentHelp.loadError')}
+                </p>
+              )}
+            </div>
+          )}
           <div className="md:col-span-2">
             <label className="text-sm font-medium">{t('discoveryProfileForm.fields.subnets')}</label>
             <textarea
@@ -333,6 +420,9 @@ export default function DiscoveryProfileForm({
             />
             <p className="mt-2 text-xs text-muted-foreground">
               {t('discoveryProfileForm.subnetsHelp')}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('discoveryProfileForm.subnetTopologyNote')}
             </p>
             {subnetErrors.length > 0 && (
               <div className="mt-1 space-y-0.5">

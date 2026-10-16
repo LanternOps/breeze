@@ -41,6 +41,24 @@ const { dbMocks, emitMock, workTypeMocks, cardMocks, sentryMocks } = vi.hoisted(
 
 vi.mock('./billingProfileService', () => ({ loadCardsForOrg: cardMocks.loadCardsForOrg }));
 
+// #4617: the customer-approval gate is stubbed to "not applicable" here — its
+// reads would consume this file's ordered select queue. The gate and the
+// writers' lock order are proven against real Postgres in
+// __tests__/integration/ticketApproval.{requests,writers,decisions}.integration.test.ts
+// and ticketApprovalGate.concurrency.integration.test.ts; the wiring (hold /
+// refuse / release reaching the row) is pinned in timeEntryService.approvalGate.test.ts.
+vi.mock('./ticketApproval/writerGate', () => ({
+  peekEntry: vi.fn(async () => null),  // { id, orgId, ticketId, endedAt, approvalRequestId } in production
+  peekRunningEntry: vi.fn(async () => null),
+  planGatedWrite: vi.fn(async (i: { after: { billingStatus: string } }) => ({
+    kind: 'write', billingStatus: i.after.billingStatus === 'awaiting_approval' ? 'not_billed' : i.after.billingStatus,
+    approvalRequestId: undefined, hold: null, leftRequestId: null, ttlHours: 72,
+  })),
+  settleGatedWrite: vi.fn(async () => []),
+  settleRemovedEntry: vi.fn(async () => []),
+}));
+vi.mock('./ticketEvents', () => ({ emitTicketEvent: vi.fn() }));
+
 vi.mock('./timeEntryEvents', () => ({ emitTimeEntryEvent: emitMock }));
 
 // #6463: the drift guard REPORTS through captureException (handleServiceError
@@ -148,7 +166,7 @@ vi.mock('../db/schema', () => ({
     userId: 'userId', startedAt: 'startedAt', endedAt: 'endedAt',
     durationMinutes: 'durationMinutes', description: 'description',
     isBillable: 'isBillable', hourlyRate: 'hourlyRate', currencyCode: 'currencyCode', billingStatus: 'billingStatus',
-    source: 'source', workTypeId: 'workTypeId',
+    source: 'source', siteId: 'siteId', workTypeId: 'workTypeId',
     billingProfileId: 'billingProfileId', coverage: 'coverage', billingOverridden: 'billingOverridden',
     minimumMinutes: 'minimumMinutes', roundingIncrementMinutes: 'roundingIncrementMinutes',
     billableMinutes: 'billableMinutes',
@@ -163,7 +181,8 @@ vi.mock('../db/schema', () => ({
   },
   tickets: { id: 'id', partnerId: 'partnerId', orgId: 'orgId', categoryId: 'categoryId', internalNumber: 'internalNumber', subject: 'subject' },
   ticketCategories: { id: 'id', partnerId: 'partnerId', defaultWorkTypeId: 'defaultWorkTypeId' },
-  organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode' },
+  organizations: { id: 'id', partnerId: 'partnerId', name: 'name', currencyCode: 'currencyCode', type: 'type', deletedAt: 'deletedAt' },
+  sites: { id: 'id', orgId: 'orgId' },
   partners: { id: 'id', currencyCode: 'currencyCode' },
   users: { id: 'id', name: 'name' },
   ticketComments: {
@@ -178,7 +197,7 @@ import {
   updateTimeEntry, deleteTimeEntry, approveTimeEntries, addTicketPart, updateTicketPart,
   deleteTicketPart,
   getTimesheet, getTicketBillingSummary, listBillables, entryOrgAllowed,
-  resolveAndLockOrgLink, readTimeEntryById, getTicketTimeEntryDefaults
+  resolveAndLockOrgLink, readTimeEntryById, getTicketTimeEntryDefaults, listTimeEntries
 } from './timeEntryService';
 
 describe('entryOrgAllowed (security review #1: time_entries org-axis allowlist)', () => {
@@ -576,6 +595,39 @@ describe('updateTimeEntry — own-vs-all + approval semantics (D5)', () => {
     const setArgs = dbMocks.updateSetArgs.at(-1)!;
     expect(setArgs.ticketId).toBeNull();
     expect(setArgs.orgId).toBeNull();
+  });
+
+  // #8210 review: site_id is a plain FK (time_entries is partner-axis), so the
+  // org/site invariant set at create/start must be kept on relink and detach.
+  it('detaching clears a location site link (no org left to own the site)', async () => {
+    dbMocks.selectResults.push([{ ...baseEntry, ticketId: 't-5', orgId: 'o-5', siteId: 's-5' }]);
+    dbMocks.updateResult = [{ ...baseEntry, ticketId: null, orgId: null, siteId: null }];
+    await updateTimeEntry('te-1', { ticketId: null }, ACTOR);
+    expect(dbMocks.updateSetArgs.at(-1)!.siteId).toBeNull();
+  });
+
+  it('relinking to a ticket in another org clears the site link', async () => {
+    dbMocks.selectResults.push([{ id: 't-9', partnerId: 'p-1', orgId: 'o-9', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-9', orgId: 'o-9' }]);
+    dbMocks.selectResults.push([{ ...baseEntry, orgId: 'o-5', siteId: 's-5' }]);
+    dbMocks.updateResult = [baseEntry];
+    await updateTimeEntry('te-1', { ticketId: 't-9' }, ACTOR);
+    const setArgs = dbMocks.updateSetArgs.at(-1)!;
+    expect(setArgs.orgId).toBe('o-9');
+    expect(setArgs.siteId).toBeNull();
+  });
+
+  it('relinking to a ticket in the same org keeps the site link', async () => {
+    dbMocks.selectResults.push([{ id: 't-9', partnerId: 'p-1', orgId: 'o-5', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-9', orgId: 'o-5' }]);
+    dbMocks.selectResults.push([{ ...baseEntry, orgId: 'o-5', siteId: 's-5' }]);
+    dbMocks.updateResult = [baseEntry];
+    await updateTimeEntry('te-1', { ticketId: 't-9' }, ACTOR);
+    expect(dbMocks.updateSetArgs.at(-1)!).not.toHaveProperty('siteId');
   });
 });
 
@@ -1329,6 +1381,18 @@ describe('query helpers', () => {
     expect(result.totalsByCurrency).toEqual([{ currencyCode: 'JPY', amount: '330.00' }]);
   });
 
+  it('#4617: listBillables exports held time with its status and amount, but never in the billable totals', async () => {
+    const row = (billingStatus: string, minutes: number) => ({
+      date: new Date('2026-06-10T12:00:00Z'), orgName: 'Acme', ticketNumber: 'T-1', description: 'labor', technician: 'Tess',
+      minutes, rate: '100.00', currencyCode: 'USD', billingStatus, isApproved: true,
+    });
+    dbMocks.selectResults.push([row('not_billed', 60), row('awaiting_approval', 30)]);
+    dbMocks.selectResults.push([]);
+    const result = await listBillables(new Date('2026-06-01T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+    expect(result.rows.map((r) => [r.billingStatus, r.amount])).toEqual([['not_billed', '100.00'], ['awaiting_approval', '50.00']]);
+    expect(result.totalsByCurrency).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
+  });
+
   it('listBillables excludes running timers from billable time rows', async () => {
     dbMocks.selectResults.push([]);
     dbMocks.selectResults.push([]);
@@ -1900,6 +1964,219 @@ describe('resolveAndLockOrgLink (W06 #3900)', () => {
       .resolves.toEqual({ orgId: 'o1', currencyCode: 'EUR' });
     // The harness counts .for('share') and .for('update') alike.
     expect(dbMocks.forUpdateCalls).toBe(before + 1);
+  });
+});
+
+describe('location start: orgId / siteId / source (#4186)', () => {
+  const ORG = 'o1';
+  const SITE = 's1';
+  const actor = () => ({ ...ACTOR, recordAuditMutation: vi.fn() });
+  const queueOrgOk = () => {
+    dbMocks.selectResults.push(
+      [{ type: 'customer', deletedAt: null }],   // hidden/deleted guard
+      [{ id: ORG, partnerId: 'p-1' }],           // resolveAndLockOrgLink ownership
+      [{ currencyCode: 'EUR' }],                 // org SHARE lock currency
+    );
+  };
+
+  it('startTimer stamps org, site, currency and source=location for a ticketless visit', async () => {
+    const a = actor();
+    dbMocks.updateResult = [];
+    queueOrgOk();
+    dbMocks.selectResults.push([{ orgId: ORG }]);   // site lookup
+    dbMocks.insertResult = [{ id: 'e1', ticketId: null, isBillable: false, orgId: ORG, source: 'location' }];
+    await startTimer({ orgId: ORG, siteId: SITE, source: 'location' }, a);
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: ORG, siteId: SITE, ticketId: null, source: 'location', currencyCode: 'EUR' });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({ source: 'location' }),
+    }));
+  });
+
+  it("startTimer without orgId/ticketId keeps today's behaviour (org null, site null, source timer)", async () => {
+    dbMocks.updateResult = [];
+    dbMocks.insertResult = [{ id: 'e2', ticketId: null, isBillable: false, orgId: null, source: 'timer' }];
+    await startTimer({}, actor());
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: null, siteId: null, source: 'timer' });
+  });
+
+  it('orgId outside accessibleOrgIds is 403 ORG_DENIED and nothing is inserted', async () => {
+    dbMocks.selectResults.push([{ type: 'customer', deletedAt: null }]);
+    await expect(startTimer({ orgId: ORG }, { ...ACTOR, accessibleOrgIds: ['other'] }))
+      .rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it.each([
+    ['quick_support', null],
+    ['unassigned_pool', null],
+    ['customer', new Date('2026-01-01')],
+  ])('hidden/soft-deleted org (%s, deletedAt %s) is 403 ORG_DENIED', async (type, deletedAt) => {
+    dbMocks.selectResults.push([{ type, deletedAt }]);
+    await expect(startTimer({ orgId: ORG }, actor())).rejects.toMatchObject({ code: 'ORG_DENIED', status: 403 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('siteId in another org is 422 SITE_ORG_MISMATCH', async () => {
+    queueOrgOk();
+    dbMocks.selectResults.push([{ orgId: 'o-other' }]);
+    await expect(startTimer({ orgId: ORG, siteId: SITE }, actor()))
+      .rejects.toMatchObject({ code: 'SITE_ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('an unreadable (RLS-hidden) siteId collapses to SITE_ORG_MISMATCH', async () => {
+    queueOrgOk();
+    dbMocks.selectResults.push([]);
+    await expect(startTimer({ orgId: ORG, siteId: SITE }, actor()))
+      .rejects.toMatchObject({ code: 'SITE_ORG_MISMATCH', status: 422 });
+  });
+
+  it('siteId outside allowedSiteIds is 403 SITE_DENIED (no site read needed)', async () => {
+    queueOrgOk();
+    await expect(startTimer({ orgId: ORG, siteId: SITE }, { ...ACTOR, allowedSiteIds: ['s-other'] }))
+      .rejects.toMatchObject({ code: 'SITE_DENIED', status: 403 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('ticket org wins; a mismatched orgId is 422 ORG_MISMATCH', async () => {
+    dbMocks.selectResults.push([{ id: 't-1', partnerId: 'p-1', orgId: 'o-ticket', categoryId: null }]);
+    dbMocks.selectResults.push([{ partnerId: 'p-1', currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ currencyCode: 'USD' }]);
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-ticket' }]);
+    await expect(startTimer({ ticketId: 't-1', orgId: 'o-different' }, actor()))
+      .rejects.toMatchObject({ code: 'ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry with orgId stamps org currency, site and source=location (offline replay)', async () => {
+    queueOrgOk();
+    dbMocks.selectResults.push([{ orgId: ORG }]);
+    dbMocks.insertResult = [{ id: 'e3', ticketId: null, durationMinutes: 30, isBillable: false, orgId: ORG, source: 'location' }];
+    await createTimeEntry(
+      { orgId: ORG, siteId: SITE, source: 'location', startedAt: new Date('2026-08-29T09:00:00Z'), endedAt: new Date('2026-08-29T09:30:00Z') },
+      actor(),
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: ORG, siteId: SITE, currencyCode: 'EUR', source: 'location' });
+  });
+
+  it('createTimeEntry: hidden org via orgId is 403 ORG_DENIED', async () => {
+    dbMocks.selectResults.push([{ type: 'quick_support', deletedAt: null }]);
+    await expect(createTimeEntry(
+      { orgId: ORG, startedAt: new Date('2026-08-29T09:00:00Z'), endedAt: new Date('2026-08-29T09:30:00Z') },
+      actor(),
+    )).rejects.toMatchObject({ code: 'ORG_DENIED' });
+  });
+
+  it('createTimeEntry: no orgId/siteId leaves org and site null', async () => {
+    dbMocks.insertResult = [{ id: 'e4', ticketId: null, durationMinutes: 30, isBillable: false, orgId: null, source: 'manual' }];
+    await createTimeEntry({ startedAt: new Date('2026-08-29T09:00:00Z'), endedAt: new Date('2026-08-29T09:30:00Z') }, actor());
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: null, siteId: null, source: 'manual' });
+  });
+
+  it('createTimeEntry: provenance.orgLink callers are unchanged (no extra org read)', async () => {
+    dbMocks.insertResult = [{ id: 'e5', ticketId: null, durationMinutes: 38, isBillable: false, orgId: 'o1', source: 'remote_session' }];
+    await createTimeEntry(
+      { startedAt: new Date('2026-08-29T14:02:00Z'), endedAt: new Date('2026-08-29T14:40:00Z') },
+      ACTOR,
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } },
+    );
+    expect(dbMocks.insertedValues[0]).toMatchObject({ source: 'remote_session', orgId: 'o1', siteId: null });
+  });
+});
+
+describe('location link: ticket + site / provenance.orgLink (#4186 review)', () => {
+  const SITE = 's1';
+  const actor = () => ({ ...ACTOR, recordAuditMutation: vi.fn() });
+  const range = { startedAt: new Date('2026-08-29T09:00:00Z'), endedAt: new Date('2026-08-29T09:30:00Z') };
+  // ticket, org (system read), org SHARE barrier, ticket lock row — categoryId null skips the default-work-type read.
+  const queueTicket = (orgId = 'o-ticket') => {
+    dbMocks.selectResults.push(
+      [{ id: 't-1', partnerId: 'p-1', orgId, categoryId: null }],
+      [{ partnerId: 'p-1', currencyCode: 'USD' }],
+      [{ currencyCode: 'USD' }],
+      [{ id: 't-1', orgId }],
+    );
+  };
+  beforeEach(() => {
+    cardMocks.loadCardsForOrg.mockResolvedValue({ assignedCard: null, partnerDefaultCard: mockCard('125.00', 'USD', 'billable') });
+  });
+
+  it('startTimer: ticket + site in another org is 422 SITE_ORG_MISMATCH and inserts nothing', async () => {
+    queueTicket();
+    dbMocks.selectResults.push([{ orgId: 'o-other' }]); // site lookup
+    dbMocks.updateResult = [];
+    await expect(startTimer({ ticketId: 't-1', siteId: SITE }, actor()))
+      .rejects.toMatchObject({ code: 'SITE_ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('startTimer: ticket + site in the ticket org stamps siteId', async () => {
+    queueTicket();
+    dbMocks.selectResults.push([{ orgId: 'o-ticket' }]);
+    dbMocks.updateResult = [];
+    dbMocks.insertResult = [{ id: 'te-s', endedAt: null }];
+    await startTimer({ ticketId: 't-1', siteId: SITE }, actor());
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o-ticket', siteId: SITE, ticketId: 't-1' });
+  });
+
+  it('createTimeEntry: ticket + mismatched orgId is 422 ORG_MISMATCH', async () => {
+    queueTicket();
+    await expect(createTimeEntry({ ticketId: 't-1', orgId: 'o-different', ...range }, actor()))
+      .rejects.toMatchObject({ code: 'ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry: ticket + matching orgId succeeds', async () => {
+    queueTicket();
+    dbMocks.insertResult = [{ id: 'te-m', ticketId: 't-1', durationMinutes: 30, isBillable: true, orgId: 'o-ticket' }];
+    await createTimeEntry({ ticketId: 't-1', orgId: 'o-ticket', ...range }, actor());
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o-ticket', ticketId: 't-1' });
+  });
+
+  it('createTimeEntry: ticket + siteId outside allowedSiteIds is 403 SITE_DENIED', async () => {
+    queueTicket();
+    await expect(createTimeEntry({ ticketId: 't-1', siteId: SITE, ...range }, { ...actor(), allowedSiteIds: ['s-other'] }))
+      .rejects.toMatchObject({ code: 'SITE_DENIED', status: 403 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry: provenance.orgLink + site in another org is 422 SITE_ORG_MISMATCH', async () => {
+    dbMocks.selectResults.push([{ orgId: 'o-other' }]);
+    await expect(createTimeEntry({ siteId: SITE, ...range }, actor(),
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }))
+      .rejects.toMatchObject({ code: 'SITE_ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+
+  it('createTimeEntry: provenance.orgLink + site in the linked org stamps siteId', async () => {
+    dbMocks.selectResults.push([{ orgId: 'o1' }]);
+    dbMocks.insertResult = [{ id: 'e6', ticketId: null, durationMinutes: 30, isBillable: false, orgId: 'o1' }];
+    await createTimeEntry({ siteId: SITE, ...range }, actor(),
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } });
+    expect(dbMocks.insertedValues[0]).toMatchObject({ orgId: 'o1', siteId: SITE });
+  });
+
+  it('createTimeEntry: provenance.orgLink + a differing client orgId is 422 ORG_MISMATCH', async () => {
+    await expect(createTimeEntry({ orgId: 'o-different', ...range }, actor(),
+      { source: 'remote_session', orgLink: { orgId: 'o1', currencyCode: 'EUR' } }))
+      .rejects.toMatchObject({ code: 'ORG_MISMATCH', status: 422 });
+    expect(dbMocks.insertedValues).toHaveLength(0);
+  });
+});
+
+describe('listTimeEntries siteId filter (#4186)', () => {
+  it('adds a siteId condition and selects siteId + source on the rows', async () => {
+    dbMocks.selectResults.push([{ id: 'e1', siteId: 's1', source: 'location' }], [{ count: 1 }]);
+    const out = await listTimeEntries({ siteId: 's1', limit: 50, offset: 0 });
+    expect(out.entries[0]).toMatchObject({ siteId: 's1', source: 'location' });
+    expect(Object.keys(dbMocks.selectArgs[0] ?? {})).toEqual(expect.arrayContaining(['siteId', 'source']));
+    expect(inspect(dbMocks.whereArgs[0], { depth: 8 })).toContain('siteId');
+    expect(inspect(dbMocks.whereArgs[0], { depth: 8 })).toContain('s1');
+  });
+  it('adds no site condition when siteId is absent', async () => {
+    dbMocks.selectResults.push([], [{ count: 0 }]);
+    await listTimeEntries({ limit: 50, offset: 0 });
+    expect(dbMocks.whereArgs[0]).toBeUndefined();
   });
 });
 
@@ -2851,5 +3128,51 @@ describe('billable_minutes CHECK drift is a typed refusal, not an opaque 500 (#6
     const err = await updateTimeEntry('te-1', { endedAt: span.endedAt }, tech).catch((e) => e);
     expect(err.status).toBe(422);
     expect([400, 404, 409, 422]).toContain(err.status);
+  });
+});
+
+describe('block-drawn entries (#8181)', () => {
+  const base = { id: 'te-1', partnerId: 'p-1', orgId: 'o-1', ticketId: 't-1', userId: ACTOR.userId,
+    startedAt: new Date('2026-07-01T09:00:00Z'), endedAt: new Date('2026-07-01T10:00:00Z'),
+    durationMinutes: 60, isApproved: false, currencyCode: 'USD', workTypeId: null, billingProfileId: null,
+    coverage: 'included', isBillable: true, hourlyRate: null, minimumMinutes: null,
+    roundingIncrementMinutes: null, billingOverridden: false };
+  const drawn = { ...base, billingStatus: 'contract', contractLineId: 'line-1' };
+  const included = { ...base, billingStatus: 'contract', contractLineId: null };
+
+  it.each(['startedAt', 'endedAt', 'isBillable', 'hourlyRate', 'billingStatus', 'ticketId', 'workTypeId',
+    'minimumMinutes', 'resetBilling', 'billingOverridden'] as const)(
+    'refuses %s on a block-drawn entry, even for a billing manager', async (field) => {
+      dbMocks.selectResults.push([drawn]);
+      const value = field === 'billingStatus' ? 'not_billed' : field === 'isBillable' ? false
+        : field === 'resetBilling' ? true
+        : field.endsWith('At') ? new Date('2026-07-01T11:00:00Z') : field === 'hourlyRate' ? '1.00' : null;
+      await expect(updateTimeEntry('te-1', { [field]: value } as never, ADMIN))
+        .rejects.toMatchObject({ status: 409, code: 'ENTRY_DRAWN_BY_BLOCK' });
+      expect(dbMocks.updateSetArgs).toHaveLength(0);
+    });
+
+  it('allows a description edit on a block-drawn entry without touching the billing stamp', async () => {
+    dbMocks.selectResults.push([drawn]);
+    dbMocks.updateResult = [{ ...drawn, description: 'clarified' }];
+    await expect(updateTimeEntry('te-1', { description: 'clarified' }, ADMIN)).resolves.toBeDefined();
+    const set = dbMocks.updateSetArgs.at(-1)!;
+    expect(set.description).toBe('clarified');
+    for (const k of ['billingStatus', 'hourlyRate', 'coverage', 'billableMinutes', 'contractLineId']) {
+      expect(set).not.toHaveProperty(k);
+    }
+  });
+
+  it('still lets a billing manager flip a card-included entry (no block line)', async () => {
+    dbMocks.selectResults.push([included]);
+    dbMocks.updateResult = [{ ...included, billingStatus: 'not_billed' }];
+    await expect(updateTimeEntry('te-1', { billingStatus: 'not_billed' }, ADMIN)).resolves.toBeDefined();
+  });
+
+  it('refuses to delete a block-drawn entry before any write', async () => {
+    dbMocks.selectResults.push([drawn]);
+    await expect(deleteTimeEntry('te-1', ADMIN)).rejects.toMatchObject({ status: 409, code: 'ENTRY_DRAWN_BY_BLOCK' });
+    expect(dbMocks.deleteCalls).toBe(0);
+    expect(emitMock).not.toHaveBeenCalled();
   });
 });

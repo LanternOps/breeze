@@ -6,6 +6,7 @@ import { contractCrudRoutes } from './contracts';
 import { contractLifecycleRoutes } from './lifecycle';
 import { contractGenerateRoutes } from './generate';
 import { contractLineRoutes } from './lines';
+import { contractHourPeriodRoutes } from './hourPeriods';
 import { contractBulkRoutes } from './bulk';
 import { contractTemplateRoutes } from './templates';
 import { contractDocumentRoutes } from './documents';
@@ -20,6 +21,7 @@ contractRoutes.route('/', contractReportRoutes);   // /currency-mismatches — l
 contractRoutes.route('/', contractLifecycleRoutes); // /:id/activate, /:id/pause, /:id/resume, /:id/cancel
 contractRoutes.route('/', contractGenerateRoutes);  // /:id/generate
 contractRoutes.route('/', contractLineRoutes);       // /:id/lines, /:id/lines/:lineId
+contractRoutes.route('/', contractHourPeriodRoutes); // /:id/hour-periods (#4547 W03) — before the /:id param matchers
 contractRoutes.route('/', contractPeriodRoutes);     // /:id/periods/:periodId/outcome (#3205 W07)
 contractRoutes.route('/', contractDeliverableRoutes); // /:id/deliverables (#5573 W01)
 contractRoutes.route('/', contractCrudRoutes);       // /, /:id (param matchers last)

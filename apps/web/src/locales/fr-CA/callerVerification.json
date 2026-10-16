@@ -1,0 +1,11 @@
+{ "public": {
+  "title": "Vérifier une demande de soutien", "loading": "Chargement de la demande…", "hello": "Bonjour {{name}}",
+  "request": "{{technician}}, de {{partner}}, souhaite :",
+  "reset_password": "Réinitialiser le mot de passe de {{target}}", "disable_user": "Désactiver le compte de {{target}}",
+  "any": "Confirmer une demande de soutien pour {{target}}", "target": "le compte concerné", "provider": "votre fournisseur de soutien",
+  "reverse": "Code de la demande", "choose": "Touchez le numéro indiqué par votre technicien. Ne lisez jamais un code à voix haute.",
+  "notMe": "Ce n’est pas moi", "caution": "Touchez un numéro seulement si vous êtes au téléphone avec {{technician}} en ce moment. En cas de doute, raccrochez et appelez {{partner}} au numéro que vous avez déjà.",
+  "expires": "Expire dans {{seconds}} secondes", "expired": "Cette demande n’est pas disponible ou a expiré.",
+  "received": "Votre réponse a été reçue.", "failed": "Impossible d’envoyer votre réponse. Veuillez réessayer.",
+  "loadFailed": "Impossible de charger la demande. Veuillez réessayer.", "retry": "Réessayer", "sending": "Envoi en cours…"
+} }

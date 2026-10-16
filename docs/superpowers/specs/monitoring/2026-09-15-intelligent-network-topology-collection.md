@@ -184,6 +184,13 @@ Within one site, a configured network or uniquely corroborated managed network p
 Otherwise, site+prefix grouping is an explicitly inferred presentation grouping; retain each observer's distinct context under it.
 Conflicting gateway identities, simultaneous overlapping interfaces, tunnel contexts, or ambiguous discovery-profile scope split that grouping into labeled candidates.
 An agent's administrative site assignment does not prove its current LAN is the site's LAN; roaming endpoints remain in an observer-local network until evidence supports joining a site group.
+Administrative assignment remains authoritative. Observed presence is a separately authorized inference
+over published `network_member`/`default_route` evidence and neighbour corroboration, matched only
+against prefixes an administrator declared for exactly one site (discovery profile or network
+baseline) and corroborated by that site's own observers; unmatched evidence is not absence. Presence,
+visitor rendering, presence history and assignment dismissals are presentation/read-model state with
+no canonical graph writes; AI/MCP evidence is unchanged (amended 2026-10-03,
+`specs/monitoring/2026-10-03-topology-site-location-design.md`).
 
 A gateway is initially an address/service node keyed by its resolved local network context, family, address, and zone.
 Its label is “Reported gateway”; a virtual gateway address must not be silently renamed as one physical router in an HA pair.

@@ -2,6 +2,8 @@ import type { Context, MiddlewareHandler, Next } from 'hono';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
+// Side-effect import: brings the `tunnelSurface` ContextVariableMap augmentation into scope.
+import './tunnelHostDispatch';
 
 /**
  * Global per-IP rate limiter middleware.
@@ -40,6 +42,15 @@ export interface IsolatedBucket {
   /** Max requests per window for this bucket (independent of the global cap). */
   limit: number;
 }
+
+/**
+ * Tunnel-host requests (Network Proxy host mode) carry arbitrary device paths,
+ * so the path-prefix buckets below can't isolate them: one device admin page
+ * loading 100 subresources would otherwise drain the shared dashboard budget
+ * of every user behind the same IP (plan G7). The per-user/tunnel/agent
+ * budgets that sit on top of this per-IP bucket land in W02.
+ */
+export const TUNNEL_HOST_BUCKET: IsolatedBucket = { prefix: '', name: 'tunnelhost', limit: 1200 };
 
 /**
  * Remote-desktop viewer traffic gets its own bucket (issue #3041).
@@ -150,13 +161,17 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
       return next();
     }
 
+    // Tunnel hosts choose their own path, so path-based skips would let a
+    // device-served `/health` or `/api/v1/agents/x` bypass metering entirely.
+    const tunnelSurface = c.get('tunnelSurface') === true;
+
     // Skip health checks — used by load balancers / k8s probes
-    if (SKIP_PATHS.has(c.req.path)) {
+    if (!tunnelSurface && SKIP_PATHS.has(c.req.path)) {
       return next();
     }
 
     // Skip agent routes — they have dedicated per-agent rate limiting
-    if (skipPrefixes.some(prefix => c.req.path.startsWith(prefix))) {
+    if (!tunnelSurface && skipPrefixes.some(prefix => c.req.path.startsWith(prefix))) {
       return next();
     }
 
@@ -169,7 +184,9 @@ export function globalRateLimit(options?: GlobalRateLimitOptions): MiddlewareHan
 
     // Route into a dedicated bucket when the path has one, so high-volume
     // endpoints can't drain the budget shared by the dashboard and auth.
-    const bucket = isolatedBuckets.find(b => c.req.path.startsWith(b.prefix));
+    const bucket = tunnelSurface
+      ? TUNNEL_HOST_BUCKET
+      : isolatedBuckets.find(b => c.req.path.startsWith(b.prefix));
     const bucketLimit = bucket?.limit ?? limit;
     const bucketKey = bucket ? `global:${bucket.name}:${clientIp}` : `global:${clientIp}`;
 

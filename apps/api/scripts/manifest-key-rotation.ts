@@ -46,10 +46,12 @@ import {
 } from '../src/db/schema/manifestSigningKeys';
 import {
   delegationTimestamp,
+  notifyTrustCachesChanged,
   signManifestKeyDelegation,
   verifyManifestKeyDelegation,
   type ManifestDelegationSignedFields,
 } from '../src/services/manifestSigning';
+import { closeRedis } from '../src/services/redis';
 import { encryptSecret, decryptForColumn } from '../src/services/secretCrypto';
 
 const RAW_KEY_LEN = 32;
@@ -477,6 +479,32 @@ export function createDbRotationStore(): RotationStore {
   };
 }
 
+/**
+ * W05 (#8144): tell running API instances to drop their cached trust keyset
+ * and delegations now, instead of waiting out the 60 s TTL. Runs after the
+ * rotation's transaction committed. The rotation already succeeded, so a
+ * failure here only costs the fast path: it is reported, never thrown.
+ */
+export async function notifyRunningApiInstances(
+  notify: () => Promise<string[]> = notifyTrustCachesChanged,
+  log: (line: string) => void = console.warn,
+): Promise<boolean> {
+  let outcomes: string[];
+  try {
+    outcomes = await notify();
+  } catch (err) {
+    // notifyTrustCachesChanged never throws; a throw here is a bug, so say what it was.
+    log(`[manifest-key-rotation] notify step threw: ${err instanceof Error ? err.message : String(err)}`);
+    outcomes = ['failed'];
+  }
+  const missed = outcomes.find((outcome) => outcome !== 'published');
+  if (missed === undefined) return true;
+  log(
+    `[manifest-key-rotation] Could not notify running API instances (Redis ${missed}); they pick up the new key within 60 s`,
+  );
+  return false;
+}
+
 // ---------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------
@@ -499,6 +527,7 @@ async function main(): Promise<void> {
     console.log(
       `[manifest-key-rotation] Do NOT activate until every non-retired device that checked in over the last 30 days reports epoch ${delegation.epoch}.`,
     );
+    await notifyRunningApiInstances();
     return;
   }
 
@@ -506,6 +535,7 @@ async function main(): Promise<void> {
   console.log(
     `[manifest-key-rotation] Activated epoch ${delegation.epoch}: ${delegation.newKeyId} is now the active signing key; ${delegation.oldKeyId} is retired.`,
   );
+  await notifyRunningApiInstances();
 }
 
 // Only run when executed directly — importing this module (the unit test
@@ -523,6 +553,11 @@ if (invokedDirectly) {
       process.exitCode = 1;
     })
     .finally(async () => {
+      await closeRedis();
       await closeDb();
+      // A Redis client that never connected keeps retrying (its retryStrategy
+      // never gives up) and would hold the event loop open after `quit()` fails.
+      // This is a one-shot CLI: exit once the pools are released.
+      process.exit(process.exitCode ?? 0);
     });
 }

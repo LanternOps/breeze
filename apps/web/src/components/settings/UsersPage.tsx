@@ -8,6 +8,7 @@ import { fetchWithAuth, handleSessionExpired, useAuthStore } from '../../stores/
 import { runAction, handleActionError } from '@/lib/runAction';
 import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
+import { useJwtClaims } from '../../lib/authScope';
 import AccessDenied from '../shared/AccessDenied';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove' | 'resetMfa';
@@ -29,6 +30,13 @@ type Toast = {
 
 export default function UsersPage() {
   const { t } = useTranslation('settings');
+  // #6111 — session idle timeout lives on the Security tab of the partner
+  // (partner scope) or organization (org scope) settings page.
+  const jwt = useJwtClaims();
+  const securityHref =
+    jwt.status === 'resolved' && jwt.claims.scope === 'organization'
+      ? '/settings/organization#security'
+      : '/settings/partner#security';
   const currentUser = useAuthStore((s) => s.user);
   const organizations = useOrgStore((s) => s.organizations);
   const [users, setUsers] = useState<User[]>([]);
@@ -393,6 +401,15 @@ export default function UsersPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t('usersPage.title')}</h1>
         <p className="text-muted-foreground">{t('usersPage.description')}</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          <a
+            href={securityHref}
+            className="underline underline-offset-2 hover:text-foreground"
+            data-testid="users-session-timeout-pointer"
+          >
+            {t('usersPage.sessionTimeoutPointer')}
+          </a>
+        </p>
       </div>
 
       {error && (

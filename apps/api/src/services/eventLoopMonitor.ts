@@ -398,6 +398,17 @@ export class EventLoopLagMonitor {
     };
   }
 
+  /**
+   * W08: completed samples recorded strictly after `afterMs` (this monitor's
+   * clock), oldest first. Lets a periodic consumer read every sample exactly
+   * once — `latest()` carries no timestamp, so polling it at a different
+   * cadence double-counts or skips samples.
+   */
+  samplesSince(afterMs: number): readonly EventLoopLagSample[] {
+    if (!this.histogram) return [];
+    return this.samples.filter((sample) => sample.atMs > afterMs);
+  }
+
   /** Summary of the whole retained window, for the health endpoint. */
   stats(): EventLoopLagStats {
     const starvationThresholdMs = getEventLoopStarvationThresholdMs();
@@ -524,6 +535,11 @@ export function readEventLoopLag(windowMs: number): EventLoopLagReading {
  */
 export function readLatestEventLoopLag(): EventLoopLagReading {
   return monitor?.latest() ?? UNMONITORED_READING;
+}
+
+/** W08: completed lag samples after `afterMs` (Date.now() clock); empty when no monitor runs. */
+export function readEventLoopLagSamplesSince(afterMs: number): readonly EventLoopLagSample[] {
+  return monitor?.samplesSince(afterMs) ?? [];
 }
 
 /** Retained-window summary for health/diagnostic endpoints. */

@@ -1,4 +1,4 @@
-import type { SlaDto } from '@breeze/shared';
+import type { SlaDto, TicketType } from '@breeze/shared';
 import type { TicketStatus } from '@/lib/api';
 import type { MarkTone } from './ui';
 
@@ -50,6 +50,23 @@ export function ticketStatusLabel(status: TicketStatus): string {
     default:
       return String(status);
   }
+}
+
+const TICKET_TYPE_LABELS: Record<TicketType, string> = {
+  incident: 'Incident',
+  service_request: 'Service request',
+  problem: 'Problem',
+  change: 'Change',
+};
+
+/**
+ * The customer-facing label for a ticket's TYPE (#8596), or null when the API
+ * sent none or a value this build does not know — never the raw enum at the
+ * customer. Read-only context like priority: plain text, never a mark.
+ */
+export function ticketTypeLabel(type: TicketType | null | undefined): string | null {
+  if (!type) return null;
+  return Object.prototype.hasOwnProperty.call(TICKET_TYPE_LABELS, type) ? TICKET_TYPE_LABELS[type] : null;
 }
 
 /** A request still needs attention from someone while it is in any of these. */

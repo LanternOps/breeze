@@ -642,6 +642,21 @@ describe('scrubEvent', () => {
     expect(() => scrubEvent({ request: {} } as any)).not.toThrow();
     expect(() => scrubEvent({ request: { headers: {} } } as any)).not.toThrow();
   });
+
+  // W08 (#8147): the scrubber validates a caller-supplied route_template by
+  // building a request-less context. A non-template value must be dropped —
+  // never thrown out of beforeSend (an error reporter must not crash).
+  it.each(['*', '/quotes?token=raw', 'not-a-route', '/quotes/%3Atoken'])(
+    'drops an unsafe route_template tag %j without throwing',
+    async (routeTemplate) => {
+      const { scrubEvent } = await import('./sentry');
+      let out: Record<string, any> | undefined;
+      expect(() => {
+        out = scrubEvent({ tags: { route_template: routeTemplate, pg_code: '42501' } });
+      }).not.toThrow();
+      expect(out?.tags).toEqual({ pg_code: '42501' });
+    },
+  );
 });
 
 describe('scrubTransactionEvent (#3077)', () => {

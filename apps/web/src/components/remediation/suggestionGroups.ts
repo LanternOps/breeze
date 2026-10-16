@@ -8,7 +8,9 @@ export interface ResearchStatusDto { runId: string; depth: 'quick' | 'deep'; sta
 export interface GroupedSuggestions<R> { proven: R[]; provenRecordsOnly: TrackRecordLite[]; ai: R[]; similar: TrackRecordLite[]; legacy: R[] }
 export type ResearchPanelState =
   | { kind: 'idle' } | { kind: 'running'; depth: 'quick' | 'deep' } | { kind: 'failed'; errorCode: string | null }
-  | { kind: 'no_safe_fix' } | { kind: 'done' } | { kind: 'credits'; message: string } | { kind: 'denied'; code: string; message: string };
+  | { kind: 'no_safe_fix' } | { kind: 'done' } | { kind: 'credits'; message: string } | { kind: 'denied'; code: string; message: string }
+  /** The start request itself failed with an HTTP error that carried no denial code. */
+  | { kind: 'request_error'; depth: 'quick' | 'deep' };
 
 /**
  * Denials that mean "out of AI budget" (shown with a link to the usage page). Includes the
@@ -45,8 +47,13 @@ export function groupSuggestions<R extends { origin?: string | null; evidence?: 
   };
 }
 
-export function researchPanelState(status: ResearchStatusDto | null, denial: { code: string; message: string } | null): ResearchPanelState {
+export function researchPanelState(
+  status: ResearchStatusDto | null,
+  denial: { code: string; message: string } | null,
+  requestError: { depth: 'quick' | 'deep' } | null = null,
+): ResearchPanelState {
   if (denial) return CREDIT_DENIALS.has(denial.code) ? { kind: 'credits', message: denial.message } : { kind: 'denied', code: denial.code, message: denial.message };
+  if (requestError) return { kind: 'request_error', depth: requestError.depth };
   if (!status) return { kind: 'idle' };
   if (ACTIVE.has(status.status)) return { kind: 'running', depth: status.depth };
   if (FAILED.has(status.status)) return { kind: 'failed', errorCode: status.errorCode };

@@ -81,3 +81,85 @@ pub fn acquire() -> Acquire {
 pub fn acquire() -> Acquire {
     Acquire::Acquired(InstanceGuard {})
 }
+
+/// Name of the per-session "show your window" event (#8138). Same `Local\`
+/// scoping as the mutex: a launch only ever reaches its own session's helper.
+#[cfg(windows)]
+const SHOW_EVENT_NAME: &str = "Local\\com.breezermm.helper.show-window";
+
+#[cfg(windows)]
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Ask the session's running helper to show its main window. Called by a
+/// manual launch that lost the single-instance race, which then exits.
+/// Best effort: if no helper is listening there is nothing to show.
+#[cfg(windows)]
+pub fn signal_show() {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+
+    let name = wide(SHOW_EVENT_NAME);
+    // SAFETY: `name` is a NUL-terminated UTF-16 buffer that outlives the call.
+    match unsafe { OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(name.as_ptr())) } {
+        Ok(handle) => {
+            // SAFETY: `handle` is a valid event handle we own until CloseHandle.
+            unsafe {
+                if let Err(e) = SetEvent(handle) {
+                    eprintln!("[helper] failed to signal running helper to show: {e}");
+                }
+                let _ = CloseHandle(handle);
+            }
+        }
+        Err(e) => eprintln!("[helper] running helper is not listening for show requests: {e}"),
+    }
+}
+
+/// Run `on_show` each time another launch in this session calls
+/// [`signal_show`]. The event is auto-reset, so each signal fires once; the
+/// listener thread lives for the life of the process.
+#[cfg(windows)]
+pub fn listen_for_show<F>(on_show: F)
+where
+    F: Fn() + Send + 'static,
+{
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
+
+    let name = wide(SHOW_EVENT_NAME);
+    // SAFETY: `name` is a NUL-terminated UTF-16 buffer that outlives the call;
+    // auto-reset (manual_reset = false), initially non-signalled.
+    let handle = match unsafe { CreateEventW(None, false, false, PCWSTR(name.as_ptr())) } {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[helper] show-request event unavailable, manual relaunch will not show the window: {e}");
+            return;
+        }
+    };
+    // HANDLE is a raw pointer; carry it across the thread boundary as an integer.
+    let raw = handle.0 as isize;
+    std::thread::spawn(move || loop {
+        let handle = HANDLE(raw as *mut core::ffi::c_void);
+        // SAFETY: the handle is never closed, so it stays valid for the process.
+        if unsafe { WaitForSingleObject(handle, INFINITE) } != WAIT_OBJECT_0 {
+            eprintln!("[helper] show-request wait failed; manual relaunch will not show the window");
+            return;
+        }
+        on_show();
+    });
+}
+
+/// The single-instance guard is Windows-only, so a second launch never gets
+/// as far as signalling elsewhere. macOS uses `RunEvent::Reopen` instead.
+#[cfg(not(windows))]
+pub fn signal_show() {}
+
+#[cfg(not(windows))]
+pub fn listen_for_show<F>(_on_show: F)
+where
+    F: Fn() + Send + 'static,
+{
+}

@@ -64,6 +64,9 @@ const mocks = vi.hoisted(() => {
 const { dispatchScriptToDevice, waitForCommandResult, contextFlags } = mocks;
 
 vi.mock('./scriptDispatch', () => ({ dispatchScriptToDevice: mocks.dispatchScriptToDevice }));
+// #8600: the group resolver, for the device-group org-equality cases at the end.
+const resolverMocks = vi.hoisted(() => ({ resolveScriptRunTargets: vi.fn() }));
+vi.mock('./scriptRunTargets', () => ({ resolveScriptRunTargets: resolverMocks.resolveScriptRunTargets }));
 vi.mock('./commandQueue', () => ({ waitForCommandResult: mocks.waitForCommandResult }));
 // #3409 PR2 Task 4: the real loadTenantVariableScope issues a
 // .select().from().innerJoin().where() chain this file's db.select mock
@@ -110,7 +113,7 @@ vi.mock('../db', () => ({
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { devices, organizations, scripts } from '../db/schema';
+import { actionIntents, devices, organizations, scripts } from '../db/schema';
 import { registerScriptTools } from './aiToolsScripts';
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { sha256Content } from './scriptVersions';
@@ -794,5 +797,82 @@ describe('run_script expectedContentSha256 content pin', () => {
     await runScriptTool().handler({ scriptId: SCRIPT_ID, deviceIds: [DEVICE_B], expectedContentSha256: sha256Content(row.content) }, makeAuth(), context);
     expect(dispatchScriptToDevice).toHaveBeenCalledTimes(1);
     expect(dispatchScriptToDevice).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'saved', script: row } }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8600 (device-group targets W03): org equality for `run_script { groupId }`
+// ---------------------------------------------------------------------------
+
+describe('run_script { groupId } keeps org equality', () => {
+  const GROUP_ID = '44444444-4444-4444-8444-444444444444';
+  const INTENT_ID = '55555555-5555-4555-8555-555555555555';
+
+  function mockDbWithIntent(scriptRow: any, deviceRow: any, intent: any) {
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        let rows: any[];
+        if (table === scripts) rows = [scriptRow];
+        else if (table === devices) rows = [deviceRow].filter(Boolean);
+        else if (table === actionIntents) rows = [intent].filter(Boolean);
+        else rows = [];
+        return { where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) };
+      }),
+    })) as any);
+  }
+
+  it('a frozen group list still cannot run an org-A script on an org-B device', async () => {
+    mockDbWithIntent(
+      { id: SCRIPT_ID, orgId: ORG_A, partnerId: null, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' },
+      { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' },
+      { id: INTENT_ID, orgId: ORG_A, actionName: 'run_script', status: 'executing', arguments: { scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] } },
+    );
+
+    const out = JSON.parse(await runScriptTool().handler(
+      { scriptId: SCRIPT_ID, groupId: GROUP_ID }, makeAuth(), { actionIntentId: INTENT_ID },
+    ));
+
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(out.results[DEVICE_B].error).toMatch(/not found or access denied/i);
+    expect(resolverMocks.resolveScriptRunTargets).not.toHaveBeenCalled();
+  });
+
+  it('refuses an intent row in an org the caller cannot access', async () => {
+    mockDbWithIntent(
+      { id: SCRIPT_ID, orgId: ORG_B, partnerId: null, language: 'powershell', content: 'echo hi', timeoutSeconds: 60, runAs: 'system' },
+      { id: DEVICE_B, orgId: ORG_B, hostname: 'devB', siteId: null, status: 'online' },
+      { id: INTENT_ID, orgId: ORG_B, actionName: 'run_script', status: 'executing', arguments: { scriptId: SCRIPT_ID, deviceIds: [DEVICE_B] } },
+    );
+    const orgAOnly = { ...makeAuth(), accessibleOrgIds: [ORG_A], canAccessOrg: (id: string) => id === ORG_A } as AuthContext;
+
+    const out = JSON.parse(await runScriptTool().handler(
+      { scriptId: SCRIPT_ID, groupId: GROUP_ID }, orgAOnly, { actionIntentId: INTENT_ID },
+    ));
+
+    expect(out.error).toMatch(/group_target_not_released/);
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+  });
+
+  it('at intent creation, a group outside the caller\'s org access is refused with the same message as a missing group', async () => {
+    const { normalizeRunScriptGroupTarget } = await import('./actionIntents/runScriptGroupTarget');
+    const auth = { ...makeAuth(), accessibleOrgIds: [ORG_A], canAccessOrg: (id: string) => id === ORG_A } as AuthContext;
+    const refusal = async () => normalizeRunScriptGroupTarget(auth, { scriptId: SCRIPT_ID, groupId: GROUP_ID }, ORG_A)
+      .then(() => null, (err: Error & { code: string }) => ({ message: err.message, code: err.code }));
+
+    // Missing group and a group in an org the caller cannot reach: the shared
+    // resolver answers both with GROUP_NOT_FOUND.
+    resolverMocks.resolveScriptRunTargets.mockResolvedValueOnce({
+      ok: false, status: 404, code: 'GROUP_NOT_FOUND', error: 'Device group(s) not found or not accessible: x', groupIds: [GROUP_ID],
+    });
+    const missingOrInaccessible = await refusal();
+    // A group in ANOTHER org the caller can reach, but not the intent's org.
+    resolverMocks.resolveScriptRunTargets.mockResolvedValueOnce({
+      ok: true, deviceIds: [DEVICE_B], warnings: [],
+      resolvedGroups: [{ id: GROUP_ID, orgId: ORG_B, memberCount: 1, refused: false }],
+    });
+    const otherOrg = await refusal();
+
+    expect(missingOrInaccessible).toEqual({ message: expect.stringContaining(GROUP_ID), code: 'group_target_not_found' });
+    expect(otherOrg).toEqual(missingOrInaccessible);
   });
 });

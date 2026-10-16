@@ -21,6 +21,10 @@ describe('tabFromHash', () => {
     // #pax8/<id> style deep links belong to the settings page, not the record.
     expect(tabFromHash('#pax8/abc-123')).toBeUndefined();
   });
+
+  it('keeps the owning tab for a nested in-tab deep link', () => {
+    expect(tabFromHash('#contacts/11111111-1111-4111-8111-111111111111/verification')).toBe('contacts');
+  });
 });
 
 describe('visibleTabs — permissions', () => {

@@ -164,6 +164,52 @@ describe('QuoteDetail — to-be-ordered breakdown', () => {
   });
 });
 
+describe('QuoteDetail — part number required for the parts order (#8232)', () => {
+  it('leaves a hardware line without SKU or part number out of the order', async () => {
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', name: 'Laptop', sku: 'LT-100' }),
+      line({ id: 'l-2', name: 'iPad', description: 'MD3Y4LL/A', itemType: 'hardware', sku: null, partNumber: null }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.getByTestId('quote-order-breakdown-line-l-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('quote-order-breakdown-line-l-2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-order-breakdown-count')).toHaveTextContent('1 item');
+  });
+
+  it('lists product-like lines left out of the order in a footer', async () => {
+    render(<QuoteDetail detail={acceptedDetail([
+      line({ id: 'l-1', name: 'Laptop', sku: 'LT-100' }),
+      line({ id: 'l-2', name: 'iPad', itemType: 'hardware' }),
+      line({ id: 'l-3', name: 'Cable', itemType: null, sourceType: 'manual', unitCost: '4.00' }),
+      line({ id: 'l-4', name: 'Setup labor', itemType: 'service', unitCost: '40.00' }),
+    ])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    const footer = screen.getByTestId('quote-order-breakdown-excluded');
+    expect(footer).toHaveTextContent('Not in this order (no part number): iPad, Cable');
+    expect(footer).not.toHaveTextContent('Setup labor');
+    expect(footer).not.toHaveTextContent('Laptop');
+  });
+
+  it('renders no footer when every product-like line has an identifier', async () => {
+    render(<QuoteDetail detail={acceptedDetail([line({ id: 'l-1', sku: 'LT-100' })])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-order-breakdown')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-order-breakdown-excluded')).not.toBeInTheDocument();
+  });
+
+  it('still shows the left-out note when no line made it into the order', async () => {
+    render(<QuoteDetail detail={acceptedDetail([line({ id: 'l-2', name: 'iPad', itemType: 'hardware' })])} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-order-breakdown-table')).not.toBeInTheDocument();
+    expect(screen.getByTestId('quote-order-breakdown-excluded')).toHaveTextContent('iPad');
+  });
+
+  it('shows no left-out note before the quote is won', async () => {
+    render(<QuoteDetail detail={acceptedDetail([line({ id: 'l-2', name: 'iPad', itemType: 'hardware' })], 'sent')} />);
+    await waitFor(() => expect(screen.getByTestId('quote-detail')).toBeInTheDocument());
+    expect(screen.queryByTestId('quote-order-breakdown-excluded')).not.toBeInTheDocument();
+  });
+});
+
 describe('QuoteDetail — breakdown Pax8 cross-reference badges', () => {
   it('shows "Staged in Pax8" for a line matched to an awaiting_details order', async () => {
     render(<QuoteDetail detail={acceptedDetail(

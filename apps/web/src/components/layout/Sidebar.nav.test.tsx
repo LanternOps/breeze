@@ -104,7 +104,15 @@ describe('navSections structure (#1321, #1324)', () => {
       // nav entry under Billing.
       '/settings/deliverable-templates',
     ]);
-    expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
+    expect(hrefsOf('service-desk')).toEqual([
+      '/tickets',
+      // #7900 W3 — one entry per ticket type (filtered via the hash).
+      '/tickets#type=incident',
+      '/tickets#type=service_request',
+      '/tickets#type=problem',
+      '/tickets#type=change',
+      '/timesheet',
+    ]);
     expect(hrefsOf('fleet-management')).toEqual([
       '/devices/groups',
       // Parked devices awaiting assignment (full partner admins only).

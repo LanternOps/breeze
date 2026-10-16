@@ -283,15 +283,17 @@ describe('generateThreatDetectionReport', () => {
     queueSelects(ORG_ROW, [], ACTIVE_INTEGRATION, [], [], [], [], [], []);
     await generateThreatDetectionReport(ORG_ID, {}, authority('restricted', [SITE_A]), PERIOD_SEP);
     // org, devices, integration, agents, window metrics, unattributable count,
-    // rows, carried-in, earliest
-    expect(whereCalls).toHaveLength(9);
+    // rows, carried-in, earliest, then the two EDR coverage queries (#8164)
+    expect(whereCalls).toHaveLength(11);
     // Every branch except the org lookup, the integration lookup and the
     // unattributable COUNT filters by site itself — including the device count
     // that runs before the source check. The count query is deliberately not
     // site-scoped: it exists to count the rows the site predicate drops, so
     // applying that predicate to it would make it report 0 forever.
     const siteScopedBranches = whereCalls.filter((_, i) => i !== 0 && i !== 2 && i !== 5);
-    expect(siteScopedBranches).toHaveLength(6);
+    // 6 Huntress-path branches + the two EDR coverage branches (#8164), which
+    // push their own site predicate too.
+    expect(siteScopedBranches).toHaveLength(8);
     siteScopedBranches.forEach((call, index) => {
       expect(containsValue(call, SITE_A), `site-scoped branch ${index + 1} lost its filter`).toBe(true);
     });
@@ -367,7 +369,8 @@ describe('generateThreatDetectionReport', () => {
       await generateThreatDetectionReport(ORG_ID, { includeCarriedIn: false }, authority(), PERIOD_SEP),
     );
     expect(s.incidents?.carriedIn).toBeNull();
-    expect(whereCalls).toHaveLength(7);
+    // 7 pre-existing queries + the two EDR coverage queries (#8164)
+    expect(whereCalls).toHaveLength(9);
   });
 
   // STALE_SYNC_MS is 48h, deliberately not 24h, so one missed nightly run does

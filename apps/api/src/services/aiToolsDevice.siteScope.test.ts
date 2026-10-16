@@ -91,6 +91,8 @@ describe('get_device_details — public device projection', () => {
       .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) })
       // #5351 memory modules (slot-ordered)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) })
+      // #8134 physical placement
+      .mockReturnValueOnce(limited([]))
       .mockReturnValueOnce(limited([{ name: 'Allowed site' }]));
 
     const parsed = JSON.parse(await handlerFor('get_device_details')({ deviceId: 'd1' }, makeAuth(['site-A'])));
@@ -112,6 +114,8 @@ describe('get_device_details — public device projection', () => {
       .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([]) }) }) }) })
       // #5351 memory modules (slot-ordered)
       .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }) })
+      // #8134 physical placement
+      .mockReturnValueOnce(limited([]))
       .mockReturnValueOnce(limited([{ name: 'Allowed site' }]));
 
     const parsed = JSON.parse(await handlerFor('get_device_details')({ deviceId: 'd1' }, makeAuth(['site-A'])));

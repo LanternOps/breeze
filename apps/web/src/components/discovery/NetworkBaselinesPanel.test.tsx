@@ -90,3 +90,12 @@ describe('NetworkBaselinesPanel delete confirmation (#3531)', () => {
     expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });
+
+describe('NetworkBaselinesPanel topology note (site location W2)', () => {
+  it('says the subnet also identifies the site\'s networks on the topology map', async () => {
+    routeFetch({ status: 200, payload: { success: true } });
+    render(<NetworkBaselinesPanel currentOrgId="org-1" currentSiteId="site-1" siteOptions={[{ id: 'site-1', name: 'HQ' }]} onViewChanges={vi.fn()} />);
+    await screen.findAllByText('192.0.2.0/24');
+    expect(screen.getByText("Subnets here also identify this site's networks on the topology map.")).toBeInTheDocument();
+  });
+});

@@ -8,8 +8,10 @@
  * telemetry, never billed.
  */
 import type { AiSurface, PromptProfile } from '@breeze/shared';
-import { runOutsideDbContext } from '../../db';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
+  attestUnboundRate,
+  readUnboundRateAttestation,
   creditDebitIdempotencyKey,
   markCreditsDebited,
   recordCreditDebitFailure,
@@ -19,6 +21,7 @@ import {
 } from '../aiBudgetReservations';
 import { checkCostAnomalies, debitBillingCredits } from '../aiCostTracker';
 import { captureException, captureMessage } from '../sentry';
+import { readConnectionOfferingRate } from './connectionOfferingRate';
 import type { BilledUsage, SdkUsageNote, SdkUsageSnapshot, SpeedServed, TurnOutcome } from './invocationUsage';
 import type { NewInvocation } from './invocationLedgerWrite';
 import { getPlatformModelByModelId } from './platformModels';
@@ -60,18 +63,20 @@ function boundModels(binding: TurnBinding): Set<string> {
  * Price each usage row by the model its tokens are attributed to:
  * - the bound model → the bound snapshot; its refusal fallback → that snapshot;
  * - a model this session switched away from (W05 `carriedRates`) → its carried snapshot;
- * - any other key (the CLI's own refusal switch, W05 spike) → that model's
- *   current platform rate when the turn is platform-funded and the registry
- *   prices it (`platformRates`, pre-fetched by settleInvocation and re-checked
- *   inside the settlement transaction), else the bound rate. Never a guess, and
- *   flagged `unboundModel` so the ledger marks it fallbackUsed.
+ * - any other key (the CLI's own refusal switch, W05 spike) → on a
+ *   platform-funded turn, that model's current platform rate when the registry
+ *   prices it (`platformRates`); on a BYOK turn (#7773), the rate of that
+ *   model's enabled, priced offering on the binding's OWN connection
+ *   (`connectionRates`). Both are pre-fetched by settleInvocation and re-checked
+ *   inside the settlement transaction. No such rate → the bound rate. Never a
+ *   guess, and flagged `unboundModel` so the ledger marks it fallbackUsed.
  * Fast is billed only when the provider CONFIRMED it (`speedServed`); the
  * Agent SDK never can, so SDK usage is always standard.
  */
 export function priceUsage(
   binding: TurnBinding,
   usage: BilledUsage[],
-  opts: { platformRates?: ReadonlyMap<string, RateSnapshot> } = {},
+  opts: { platformRates?: ReadonlyMap<string, RateSnapshot>; connectionRates?: ReadonlyMap<string, RateSnapshot> } = {},
 ): PricedUsage[] {
   const rows: BilledUsage[] = usage.length > 0
     ? usage
@@ -91,9 +96,11 @@ export function priceUsage(
     } else {
       unboundModel = true;
       const platform = binding.funding === 'platform' ? opts.platformRates?.get(u.model) : undefined;
-      rate = platform ?? binding.rateSnapshot;
+      const connection = binding.funding === 'partner_key' ? opts.connectionRates?.get(u.model) : undefined;
+      rate = platform ?? connection ?? binding.rateSnapshot;
       console.warn('[settleInvocation] usage for a model the turn did not bind', {
-        bound: binding.wireModel, billed: u.model, rateSource: platform ? 'platform_row' : 'bound_rate',
+        bound: binding.wireModel, billed: u.model,
+        rateSource: platform ? 'platform_row' : connection ? 'connection_offering' : 'bound_rate',
       });
     }
     let appliedSpeed: SpeedServed = 'standard';
@@ -183,11 +190,16 @@ export interface SettledInvocation {
  * The cents settleInvocation will bill for this usage (same rate selection,
  * including the platform-rate lookup for unbound models). For consumers that
  * must quote the turn BEFORE settling it — the Office per-user ledger (#5557
- * ordering) and the `done` event — so every consumer reads one number.
+ * ordering) and the `done` event — so every consumer reads one number. Pass
+ * the turn's reservation: an unbound BYOK key's rate is then the attested
+ * decision settleInvocation will bill (#7773), not a second live read.
  */
-export async function quoteInvocationCents(binding: TurnBinding, usage: BilledUsage[]): Promise<number> {
-  const platformRates = await loadUnboundPlatformRates(binding, usage);
-  return sumCostCents(priceUsage(binding, usage, { platformRates }));
+export async function quoteInvocationCents(
+  binding: TurnBinding,
+  usage: BilledUsage[],
+  reservation?: { orgId: string; reservationId: string },
+): Promise<number> {
+  return sumCostCents(priceUsage(binding, usage, await loadUnboundRates(binding, usage, reservation)));
 }
 
 /**
@@ -299,8 +311,106 @@ async function loadUnboundPlatformRates(binding: TurnBinding, usage: readonly Bi
   return rates;
 }
 
+type ReservationRef = { orgId: string; reservationId: string };
+type ConnectionRateDecision = { rate: RateSnapshot } | { rate: null; reason: string };
+
+/**
+ * #7773: one unbound BYOK key's rate on the binding's own connection, read in
+ * the CALLER's short system context. With a reservation it is a get-or-create
+ * of the turn's pricing decision on that reservation:
+ *   1. an attestation already there (any status: a retry, a quote that ran
+ *      first, or a settled/pending reservation) is the answer, live row unread;
+ *   2. else the live offering is read and the outcome attested — a hit as its
+ *      rate, a miss as null (= the bound rate) — first write wins, and the
+ *      STORED entry is returned (a concurrent writer may have got there first).
+ * The settlement transaction verifies the row against that entry
+ * (assertInvocationsMatchBinding), so the turn-time rate survives a deferred
+ * replay, a reprice/disable/delete after the read, and a repeated settle.
+ */
+async function decideConnectionRate(binding: TurnBinding, model: string, reservation?: ReservationRef): Promise<ConnectionRateDecision> {
+  const connectionId = binding.connectionId;
+  const at = reservation && connectionId ? { ...reservation, connectionId, model } : null;
+  if (at) {
+    const existing = await readUnboundRateAttestation(at);
+    if (existing) return existing.rate ? { rate: existing.rate } : { rate: null, reason: 'attested_bound_rate' };
+  }
+  const read = await readConnectionOfferingRate({
+    partnerId: binding.partnerId, connectionId, connectionKind: binding.connectionKind, model,
+  });
+  if (!at) return read;
+  const stored = await attestUnboundRate({
+    orgId: at.orgId, reservationId: at.reservationId, model,
+    attestation: { connectionId: at.connectionId, offeringId: read.rate ? read.offeringId : null, rate: read.rate },
+  });
+  if (!stored) return read.rate ? { rate: null, reason: 'reservation_not_settleable' } : read;
+  if (stored.rate) return { rate: stored.rate };
+  return read.rate ? { rate: null, reason: 'attested_bound_rate' } : read;
+}
+
+/**
+ * #7773: for a BYOK turn, the rate of each unbound key's enabled, priced
+ * offering on the binding's own connection (decideConnectionRate). Best
+ * effort, like the platform lookup: a miss (or a failed read) bills the bound
+ * rate and is logged with its reason, so a fallback billed at the primary rate
+ * is explainable later. Each key runs in its own short system context, outside
+ * any request transaction. quoteInvocationCents and settleInvocation pass the
+ * same reservation, so the quote and the ledger read one decision.
+ */
+async function loadUnboundConnectionRates(
+  binding: TurnBinding,
+  usage: readonly BilledUsage[],
+  reservation?: ReservationRef,
+): Promise<Map<string, RateSnapshot>> {
+  const rates = new Map<string, RateSnapshot>();
+  if (binding.funding !== 'partner_key') return rates;
+  const bound = boundModels(binding);
+  const carried = new Set((binding.carriedRates ?? []).map((c) => c.wireModel));
+  for (const model of new Set(usage.map((u) => u.model).filter((m) => !bound.has(m) && !carried.has(m)))) {
+    const detail = {
+      eventCode: 'ai_unbound_byok_rate_bound_fallback', model, bound: binding.wireModel,
+      connectionId: binding.connectionId, offeringId: binding.offeringId,
+    };
+    try {
+      const found = await runOutsideDbContext(() => withSystemDbAccessContext(
+        () => decideConnectionRate(binding, model, reservation), 'settleInvocation.connectionRate',
+      ));
+      if (found.rate) rates.set(model, found.rate);
+      else console.warn('[settleInvocation] unbound BYOK model has no enabled priced offering on the connection; billing the bound rate', { ...detail, reason: found.reason });
+    } catch (error) {
+      // Not rethrown: failing here would lose the settlement, which is worse
+      // than the pre-#7773 bound rate. Against a reservation it is reported,
+      // since it may contradict an attestation the quote already wrote.
+      console.error('[settleInvocation] connection rate lookup failed; billing the bound rate', {
+        ...detail, reason: 'lookup_failed', error: safeErrorMessage(error),
+        ...(reservation ? { reservationId: reservation.reservationId } : {}),
+      });
+      if (reservation && shouldReport('ai_unbound_byok_rate_lookup_failed', reservation.orgId)) {
+        captureMessage('AI unbound BYOK rate could not be read or attested; billed the bound rate', {
+          eventCode: 'ai_unbound_byok_rate_lookup_failed',
+          level: 'warning',
+          tags: { org_id: reservation.orgId, ai_reservation_id: reservation.reservationId },
+        });
+      }
+    }
+  }
+  return rates;
+}
+
+async function loadUnboundRates(
+  binding: TurnBinding,
+  usage: readonly BilledUsage[],
+  reservation?: ReservationRef,
+): Promise<{
+  platformRates: Map<string, RateSnapshot>; connectionRates: Map<string, RateSnapshot>;
+}> {
+  return {
+    platformRates: await loadUnboundPlatformRates(binding, usage),
+    connectionRates: await loadUnboundConnectionRates(binding, usage, reservation),
+  };
+}
+
 type ReportedEventCode = 'ai_usage_snapshot_regressed' | 'ai_credit_debit_rejected' | 'ai_credit_debit_retries_exhausted'
-  | 'ai_prompt_variant_mismatch';
+  | 'ai_prompt_variant_mismatch' | 'ai_unbound_byok_rate_lookup_failed';
 const lastReportedAt = new Map<string, number>();
 const MAX_THROTTLE_KEYS = 10_000;
 
@@ -362,8 +472,9 @@ function checkSpendThresholds(orgId: string, sessionId: string | null, costCents
 
 export async function settleInvocation(input: SettleInvocationInput): Promise<SettledInvocation> {
   reportUsageConfidence(input);
-  const platformRates = await loadUnboundPlatformRates(input.binding, input.usage);
-  const priced = priceUsage(input.binding, input.usage, { platformRates });
+  const priced = priceUsage(input.binding, input.usage, await loadUnboundRates(
+    input.binding, input.usage, input.reservationId ? { orgId: input.orgId, reservationId: input.reservationId } : undefined,
+  ));
   const rows = toNewInvocations(input, priced);
   const costCents = sumCostCents(priced);
   const sdkUsage = input.sdkUsage

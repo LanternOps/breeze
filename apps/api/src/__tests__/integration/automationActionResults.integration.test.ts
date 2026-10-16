@@ -87,7 +87,7 @@ describe('automation action results', () => {
     expect(getDeviceOrgDenormalizedTables()).toContain('automation_action_results');
     expect(Object.keys(getTenantExportPolicyRegistry().automation_action_results!.columns).sort()).toEqual([
       'action_index', 'action_type', 'agent_run_id', 'command_id', 'completed_at', 'created_at',
-      'deployment_result_id', 'device_id', 'error', 'id', 'message', 'org_id', 'output', 'run_id',
+      'deployment_result_id', 'device_id', 'error', 'failure_notified_at', 'id', 'message', 'org_id', 'output', 'run_id',
       'script_execution_id', 'status', 'terminal_source', 'trigger_key', 'trigger_kind',
       'trigger_ref_id', 'updated_at',
     ].sort());

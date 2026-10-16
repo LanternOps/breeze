@@ -32,6 +32,8 @@ export interface DiscoveryProfile {
   schedule: DiscoverySchedule | null;
   deepScan: boolean;
   resolveHostnames: boolean;
+  /** #7969: devices.id of the pinned scan agent; null = automatic selection. */
+  pinnedDeviceId?: string | null;
   createdAt: string;
   updatedAt: string;
 }

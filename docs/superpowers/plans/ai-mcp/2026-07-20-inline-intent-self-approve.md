@@ -14,7 +14,7 @@
 - **i18n parity:** every new key added to `apps/web/src/locales/en/ai.json` MUST be added to ALL locales in the same commit: `de-DE`, `es-419`, `fr-FR`, `pt-BR` (CI enforces key parity; a missing key reds main).
 - **`runAction` rule (project CLAUDE.md):** web mutation POSTs must go through `runAction` (`apps/web/src/lib/runAction.ts`) so outcomes are always surfaced.
 - **No new endpoints, no schema/migration changes.** The decide API, WebAuthn registration, and assertion routes all exist. The web calls the existing `/mobile/approvals` mount (the `/mobile` prefix is cosmetic — `mobileDeviceBlockedMiddleware` only acts when the `X-Breeze-Mobile-Device-Id` header is present).
-- **Security invariants that must NOT be weakened:** `file_operations:read` stays Tier 3 (SR5-01 — root-context file reads are exfiltration). The L3 self-approve gate in `approvals.ts` is untouched — the web card *satisfies* it with a WebAuthn proof; it never bypasses it. Multi-approver fan-out still excludes the requester; the inline buttons only appear when the server fanned a row out *to the requester* (sole-operator branch).
+- **Security invariants that must NOT be weakened:** `file_operations:read` stays Tier 3 (privileged-read rule — root-context file reads are privileged). The L3 self-approve gate in `approvals.ts` is untouched — the web card *satisfies* it with a WebAuthn proof; it never skips it. Multi-approver fan-out still excludes the requester; the inline buttons only appear when the server fanned a row out *to the requester* (sole-operator branch).
 - Run API tests with `pnpm test --filter=@breeze/api -- <file>`; web tests with `pnpm test --filter=@breeze/web -- <file>`. Node must be the pinned 22.x (`nvm use` if needed).
 
 ---
@@ -48,10 +48,10 @@ In `apps/api/src/services/aiGuardrails.test.ts`:
 ```
 
 3. Search the file for other assertions pinning these actions to tier 3 (`grep -n "start_timer\|log_time_entry\|'scan'\|'list'" apps/api/src/services/aiGuardrails.test.ts`) and update any that assert tier 3 for the downgraded actions. If `file_operations` read/write assertions exist, leave them at tier 3.
-4. Add a pinning describe block so the SR5-01 boundary is explicit:
+4. Add a pinning describe block so the privileged-read boundary is explicit:
 
 ```ts
-describe('file_operations tier boundary (SR5-01 partial relaxation)', () => {
+describe('file_operations tier boundary (privileged-read rule, partial relaxation)', () => {
   it('list is Tier 2 (auto-execute + audit) — recon only, deliberate downgrade', () => {
     const result = checkGuardrails('file_operations', { action: 'list', deviceId: 'd1', path: '/tmp' });
     expect(result.tier).toBe(2);
@@ -103,7 +103,7 @@ const TIER2_ACTIONS: Record<string, string[]> = {
     'stop_timer'
   ],
   manage_services: ['list'],
-  // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
+  // Privileged-read rule, partial relaxation (2026-07-20): directory LISTING is recon-only —
   // filenames leak far less than contents — so it auto-executes with audit.
   // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
   // unapproved read can exfiltrate any file's contents.
@@ -119,11 +119,11 @@ const TIER2_ACTIONS: Record<string, string[]> = {
 
 (Leave every other entry exactly as it is.)
 
-TIER3_ACTIONS — remove the three downgraded actions and update the SR5-01 comment:
+TIER3_ACTIONS — remove the three downgraded actions and update the privileged-read comment:
 
 ```ts
 const TIER3_ACTIONS: Record<string, string[]> = {
-  // SR5-01: filesystem READ is privileged. The endpoint agent runs as
+  // Privileged-read rule: filesystem READ is privileged. The endpoint agent runs as
   // root/LocalSystem and does not restrict reads to an approved root, so an
   // unapproved read can exfiltrate any file (/etc/shadow, SAM hive, SSH keys).
   // Require interactive approval (Tier 3) for read, same as the mutations.
@@ -159,8 +159,8 @@ git commit -m "feat(ai): downgrade file list, patch scan, ticket timers to Tier 
 
 file_operations:list, manage_patches:scan, and ticket time-tracking no
 longer require interactive approval — they auto-execute with audit
-(Tier 2). file READ/WRITE stay Tier 3 (SR5-01: agent runs as root).
-Partially relaxes SR5-01 for list only, deliberately."
+(Tier 2). file READ/WRITE stay Tier 3 (privileged-read rule: agent runs as root).
+Partially relaxes the privileged-read rule for list only, deliberately."
 ```
 
 ---

@@ -3,6 +3,7 @@ package tools
 import (
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,8 +64,19 @@ func TestSampleProcessCPUPercents_IdleProcessReadsLow(t *testing.T) {
 	}
 }
 
-// A process burning a full core during the window must read meaningfully
-// above zero, proving the sampler reflects *current* usage.
+// A process burning CPU during the window must read the CPU it actually burned
+// in that window, scaled correctly (100% == one core). That a past burst does
+// not leak into the reading is pinned separately by
+// TestSampleProcessCPUPercents_PastBurstDoesNotInflateCurrent.
+//
+// The assertion is relative to ground truth, not an absolute percentage. How
+// much CPU the burners get is up to the scheduler: on a loaded CI runner under
+// -race the process can get as little as a few percent of one core (#8361 saw
+// 12.9% against a 25% floor). An absolute floor tests scheduler fairness, not
+// the sampler. Instead we bracket the sampler call with our own CPU-time reads
+// and require the sampler's figure to agree with what the process really
+// consumed. A sampler that always reports 0 still fails: the bracket proves CPU
+// was burned, so pct must be > 0 and within a factor of the bracket's rate.
 func TestSampleProcessCPUPercents_BusyProcessReadsHigh(t *testing.T) {
 	self, err := process.NewProcess(int32(os.Getpid()))
 	if err != nil {
@@ -72,11 +84,20 @@ func TestSampleProcessCPUPercents_BusyProcessReadsHigh(t *testing.T) {
 	}
 
 	var stop atomic.Bool
-	var burners int
-	// Pin a couple of cores so the reading clears any noise floor.
-	for i := 0; i < 2 && i < runtime.NumCPU(); i++ {
-		burners++
+	// Two burners, even on one core: the sampler goroutine is preempted, not
+	// starved, and the process is still busy.
+	var started, exited sync.WaitGroup
+	// Join the burners on exit so they cannot spin into a later test's window.
+	defer func() {
+		stop.Store(true)
+		exited.Wait()
+	}()
+	for i := 0; i < 2; i++ {
+		started.Add(1)
+		exited.Add(1)
 		go func() {
+			defer exited.Done()
+			started.Done()
 			x := 0
 			for !stop.Load() {
 				x++ // busy loop
@@ -84,15 +105,56 @@ func TestSampleProcessCPUPercents_BusyProcessReadsHigh(t *testing.T) {
 			}
 		}()
 	}
-	defer stop.Store(true)
-	if burners == 0 {
-		t.Skip("single-core environment; cannot create a busy burner")
+	started.Wait()
+
+	readCPUSeconds := func() float64 {
+		t.Helper()
+		ts, err := self.Times()
+		if err != nil {
+			t.Fatalf("Times: %v", err)
+		}
+		return cpuSeconds(ts)
 	}
 
-	got := sampleProcessCPUPercents([]*process.Process{self}, 300*time.Millisecond)
-	pct := got[self.Pid]
-	if pct < 25 {
-		t.Fatalf("busy process reported only %.1f%% CPU, expected clearly active", pct)
+	// Below this much bracketed CPU time the comparison is dominated by
+	// counter granularity (Linux /proc ticks are 10ms), so widen the window
+	// and try again rather than compare noise. At 20ms (two ticks) a one-tick
+	// disagreement between the bracket and the sampler is a 2x swing, which the
+	// 4x bound below absorbs; tighten the bound only if you raise this floor.
+	const minBracketCPUSeconds = 0.020
+
+	var pct, groundPct, bracketCPU float64
+	for _, window := range []time.Duration{300 * time.Millisecond, 600 * time.Millisecond, 1200 * time.Millisecond} {
+		s0, t0 := readCPUSeconds(), time.Now()
+		pct = sampleProcessCPUPercents([]*process.Process{self}, window)[self.Pid]
+		s1, elapsed := readCPUSeconds(), time.Since(t0)
+
+		bracketCPU = s1 - s0
+		groundPct = cpuPercentFromCPUSeconds(s0, s1, elapsed)
+		if bracketCPU >= minBracketCPUSeconds {
+			break
+		}
+	}
+
+	if bracketCPU < minBracketCPUSeconds {
+		// The scheduler gave the process almost nothing (<2% of a core even
+		// over 1.2s). That says nothing about the sampler, and failing here
+		// would bring back the #8361 flake. Skip loudly instead. Whenever the
+		// process does get CPU, the checks below run.
+		t.Skipf("environment starved: two busy burners consumed only %.1fms CPU over a 1.2s window; "+
+			"cannot validate the sampler (sampler read %.1f%%)", bracketCPU*1000, pct)
+	}
+	if pct <= 0 {
+		t.Fatalf("busy process reported %.1f%% CPU, but it burned %.1fms CPU (%.1f%%) during the sample",
+			pct, bracketCPU*1000, groundPct)
+	}
+	// The sampler's window sits inside the bracket, so its reading should be
+	// close to the bracket's rate. The factor-of-4 bounds absorb scheduling
+	// jitter between the two sets of reads without letting a sampler that is
+	// off by an order of magnitude through.
+	if pct < groundPct/4 || pct > groundPct*4 {
+		t.Fatalf("sampler read %.1f%% CPU but the process actually used %.1f%% over the bracketing window",
+			pct, groundPct)
 	}
 }
 

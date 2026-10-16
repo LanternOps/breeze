@@ -740,7 +740,7 @@ async function seedFixture(): Promise<Fixture> {
 
   // helper: org-owned, assigned to group g2 (wins only through groupIds).
   await seedPolicy({ owner: { orgId: org.id, partnerId: null }, featureType: 'helper',
-    inlineSettings: { enabled: true, showTrayIcon: false }, level: 'device_group', targetId: fixture.groupIds[1]! });
+    inlineSettings: { enabled: true, showOpenPortal: false }, level: 'device_group', targetId: fixture.groupIds[1]! });
   // warranty: org-owned, assigned to group g1.
   await seedPolicy({ owner: { orgId: org.id, partnerId: null }, featureType: 'warranty',
     inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'device_group', targetId: fixture.groupIds[0]! });
@@ -819,7 +819,7 @@ describe('policy resolvers: passed hierarchy parity (#8053 W1a-1) — real Postg
     const noGroups: DeviceHierarchy = { ...hierarchy, groupIds: [] };
     const helperOwn = await sys(() => resolveDeviceHelperSettings(f.deviceId));
     const helperNoGroups = await sys(() => resolveDeviceHelperSettings(f.deviceId, { hierarchy: noGroups }));
-    expect(helperOwn).toMatchObject({ enabled: true, showTrayIcon: false });
+    expect(helperOwn).toMatchObject({ enabled: true, showOpenPortal: false });
     expect(helperNoGroups).toBeNull();
 
     const warrantyOwn = await sys(() => resolveEffectiveWarrantyInlineSettings(f.deviceId));

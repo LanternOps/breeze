@@ -70,6 +70,10 @@ const SITE_SCOPE_EXEMPT_HANDLERS: ReadonlySet<string> = new Set<string>([
   // portalAuth, never the request), portal users have no site scope, and the read
   // model filters devices by that orgId.
   'routes/portal/hardwareInventory.ts:GET /hardware-inventory/devices/:deviceId',
+  'routes/portal/performance.ts:GET /performance/devices/:deviceId',
+  // Portal session binds one org; portal users have no technician site scope.
+  'routes/portal/software.ts:GET /software/devices/:deviceId',
+  'routes/portal/patches.ts:GET /patches/devices/:deviceId',
   // -- routes/snmp -----------------------------------------------------------
   // Deprecated SNMP metric/threshold endpoints — every handler is a 4-line
   // stub that returns the deprecation payload (HTTP 410) and never reaches a
@@ -198,6 +202,10 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // `eq(…, device.id)` for the agent authenticated by agentBearerAuthMiddleware.
   // Surfaced by #4019 — the writes sit well past the old 4000-byte window.
   'routes/agents/mtls.ts:POST /renew-cert',
+  // Agent-token route (requireAgentRole + agentAuthMiddleware on '/:id/*'); the
+  // device is the authenticated agent's own (c.get('agent').deviceId, :id is never
+  // read), so no user input selects devices.
+  'routes/agents/messageEvents.ts:POST /:id/message-events',
   // Agent-token security-status ingest (requireAgentRole + agentAuthMiddleware
   // on agentRoutes '/:id/*'). #4340's change-only audit added a pre-read of
   // `securityStatus` keyed on `device.id`, where `device` is resolved from the

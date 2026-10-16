@@ -1,0 +1,3643 @@
+{
+  "chrome-stable-3pc-blocked-http": {
+    "browser": "chrome-stable-3pc-blocked 154.0.8037.58",
+    "scheme": "http",
+    "errors": [
+      "cdp:applied"
+    ],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": "throws:SecurityError",
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": []
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": "throws:SecurityError",
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-chromestable3pcblockedhttpmv4whofw",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "http://s2-chromestable3pcblockedhttpmv4whofw.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "http://s2-chromestable3pcblockedhttpmv4whofw.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss"
+        ]
+      }
+    }
+  },
+  "chrome-stable-3pc-blocked-https": {
+    "browser": "chrome-stable-3pc-blocked 154.0.8037.58",
+    "scheme": "https",
+    "errors": [
+      "cdp:applied"
+    ],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": "throws:SecurityError",
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": []
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": "throws:SecurityError",
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-chromestable3pcblockedhttpsmv4wizjq",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "https://s2-chromestable3pcblockedhttpsmv4wizjq.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "https://s2-chromestable3pcblockedhttpsmv4wizjq.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss"
+        ]
+      }
+    }
+  },
+  "chrome-stable-http": {
+    "browser": "chrome-stable 154.0.8037.58",
+    "scheme": "http",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": [
+          "ctl3p"
+        ]
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-chromestablehttpmv4whea0; tossnp=s2-chromestablehttpmv4whea0",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "http://s2-chromestablehttpmv4whea0.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "http://s2-chromestablehttpmv4whea0.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "chrome-stable-https": {
+    "browser": "chrome-stable 154.0.8037.58",
+    "scheme": "https",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": [
+          "ctl3p"
+        ]
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-chromestablehttpsmv4witjs; tossnp=s2-chromestablehttpsmv4witjs",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "https://s2-chromestablehttpsmv4witjs.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "https://s2-chromestablehttpsmv4witjs.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "chromium-3pc-blocked-http": {
+    "browser": "chromium-3pc-blocked 151.0.7922.34",
+    "scheme": "http",
+    "errors": [
+      "cdp:applied"
+    ],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": [
+          "ctl3p"
+        ]
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-chromium3pcblockedhttpmv4wh98z; tossnp=s2-chromium3pcblockedhttpmv4wh98z",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "http://s2-chromium3pcblockedhttpmv4wh98z.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "http://s2-chromium3pcblockedhttpmv4wh98z.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "chromium-3pc-blocked-https": {
+    "browser": "chromium-3pc-blocked 151.0.7922.34",
+    "scheme": "https",
+    "errors": [
+      "cdp:applied"
+    ],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": [
+          "ctl3p"
+        ]
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-chromium3pcblockedhttpsmv4wiobf; tossnp=s2-chromium3pcblockedhttpsmv4wiobf",
+      "crossTunnelRequests": [
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "https://s2-chromium3pcblockedhttpsmv4wiobf.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "https://s2-chromium3pcblockedhttpsmv4wiobf.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "chromium-http": {
+    "browser": "chromium 151.0.7922.34",
+    "scheme": "http",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": [
+          "ctl3p"
+        ]
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-chromiumhttpmv4wh3w0; tossnp=s2-chromiumhttpmv4wh3w0",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "http://s2-chromiumhttpmv4wh3w0.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "http://s2-chromiumhttpmv4wh3w0.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "chromium-https": {
+    "browser": "chromium 151.0.7922.34",
+    "scheme": "https",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": [
+          "ctl3p"
+        ]
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-chromiumhttpsmv4wij6w; tossnp=s2-chromiumhttpsmv4wij6w",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "https://s2-chromiumhttpsmv4wij6w.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "https://s2-chromiumhttpsmv4wij6w.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "firefox-pw-default-http": {
+    "browser": "firefox-pw-default 153.0",
+    "scheme": "http",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-firefoxpwdefaulthttpmv4whtrm; tossnp=s2-firefoxpwdefaulthttpmv4whtrm",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "http://s2-firefoxpwdefaulthttpmv4whtrm.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "http://s2-firefoxpwdefaulthttpmv4whtrm.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "firefox-pw-default-https": {
+    "browser": "firefox-pw-default 153.0",
+    "scheme": "https",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-firefoxpwdefaulthttpsmv4wj55c; tossnp=s2-firefoxpwdefaulthttpsmv4wj55c",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "https://s2-firefoxpwdefaulthttpsmv4wj55c.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "https://s2-firefoxpwdefaulthttpsmv4wj55c.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "firefox-real-prefs-http": {
+    "browser": "firefox-real-prefs 153.0",
+    "scheme": "http",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": []
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-firefoxrealprefshttpmv4wi0pz; tossnp=s2-firefoxrealprefshttpmv4wi0pz",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "http://s2-firefoxrealprefshttpmv4wi0pz.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "http://s2-firefoxrealprefshttpmv4wi0pz.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "firefox-real-prefs-https": {
+    "browser": "firefox-real-prefs 153.0",
+    "scheme": "https",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": []
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-firefoxrealprefshttpsmv4wjeep; tossnp=s2-firefoxrealprefshttpsmv4wjeep",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "https://s2-firefoxrealprefshttpsmv4wjeep.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "https://s2-firefoxrealprefshttpsmv4wjeep.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "firefox-stock-http": {
+    "browser": "firefox-stock Mozilla Firefox 157.0.1",
+    "scheme": "http",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain",
+          "sp_secure",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": []
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev",
+          "devsess"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-ffstockhttpmv4wjvb1; tossnp=s2-ffstockhttpmv4wjvb1",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": "http://s2-ffstockhttpmv4wjvb1.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "same-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "same-site",
+          "mode": "navigate",
+          "origin": "http://s2-ffstockhttpmv4wjvb1.tunnel.localhost:18080",
+          "bztAttached": true,
+          "cookies": [
+            "__Host-bzt",
+            "ctl3p",
+            "dev",
+            "jsdev",
+            "devsess",
+            "toss",
+            "tossnp"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt",
+          "ctl3p",
+          "dev",
+          "jsdev",
+          "devsess",
+          "toss",
+          "tossnp"
+        ]
+      }
+    }
+  },
+  "webkit-http": {
+    "browser": "webkit 26.5",
+    "scheme": "http",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_plain"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "breeze-tunnel-cookie-blocked",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": []
+      },
+      "root": "not requested",
+      "loginPost": "not requested",
+      "home": "not requested",
+      "rootPage": null,
+      "homeSawDeviceSession": null,
+      "cookieBlockedSignal": true,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": []
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "breeze-tunnel-cookie-blocked",
+      "root": "not requested",
+      "home": "not requested",
+      "rootPage": null
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": []
+      }
+    },
+    "tab": {
+      "result": "timeout",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": []
+      },
+      "root": "not requested",
+      "loginPost": "not requested",
+      "home": "not requested",
+      "rootPage": null
+    },
+    "sibling": {
+      "s1Login": "breeze-tunnel-cookie-blocked",
+      "tossDocCookie": "",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "cross-site",
+          "mode": "no-cors",
+          "origin": "http://s2-webkithttpmv4wi793.tunnel.localhost:18080",
+          "bztAttached": false,
+          "cookies": []
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "cross-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": false,
+          "cookies": []
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "cross-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": false,
+          "cookies": []
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "cross-site",
+          "mode": "navigate",
+          "origin": "http://s2-webkithttpmv4wi793.tunnel.localhost:18080",
+          "bztAttached": false,
+          "cookies": []
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": []
+      }
+    }
+  },
+  "webkit-https": {
+    "browser": "webkit 26.5",
+    "scheme": "https",
+    "errors": [],
+    "secureProbe": {
+      "topLevelApp": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_part",
+          "__Host-sp_host",
+          "sp_none",
+          "sp_plain",
+          "sp_secure"
+        ],
+        "sfsPresent": true
+      },
+      "framedTunnel": {
+        "isSecureContext": true,
+        "cookiesBack": [
+          "sp_part"
+        ],
+        "sfs": "same-origin"
+      },
+      "anySecFetchSiteHeader": true
+    },
+    "iframeBootstrap": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "devsess",
+          "__Host-bzt",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true,
+        "isSecureContext": true
+      },
+      "homeSawDeviceSession": true,
+      "cookieBlockedSignal": false,
+      "sameHostTopLevelAfterward": {
+        "sfs": "cross-site",
+        "cookies": []
+      }
+    },
+    "iframeBootstrapSandboxed": {
+      "result": "home",
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "devsess",
+          "jsdev"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "iframe302": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "root": {
+        "sfs": "cross-site",
+        "cookies": [
+          "__Host-bzt"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt",
+          "dev",
+          "devsess",
+          "jsdev"
+        ]
+      }
+    },
+    "tab": {
+      "result": "home",
+      "enter": {
+        "sfs": "cross-site",
+        "cookies": []
+      },
+      "ping": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "root": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top"
+        ]
+      },
+      "loginPost": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "jsdev"
+        ]
+      },
+      "home": {
+        "sfs": "same-origin",
+        "cookies": [
+          "__Host-bzt-top",
+          "dev",
+          "devsess",
+          "jsdev"
+        ]
+      },
+      "rootPage": {
+        "localStorage": true,
+        "docCookieWrite": true
+      }
+    },
+    "sibling": {
+      "s1Login": "home",
+      "tossDocCookie": "toss=s2-webkithttpsmv4wjmwy",
+      "crossTunnelRequests": [
+        {
+          "method": "POST",
+          "path": "/probe",
+          "sfs": "cross-site",
+          "mode": "no-cors",
+          "origin": "https://s2-webkithttpsmv4wjmwy.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "toss",
+            "__Host-bzt",
+            "dev",
+            "devsess",
+            "jsdev"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/xget",
+          "sfs": "cross-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "toss",
+            "__Host-bzt",
+            "dev",
+            "devsess",
+            "jsdev"
+          ]
+        },
+        {
+          "method": "GET",
+          "path": "/reboot",
+          "sfs": "cross-site",
+          "mode": "no-cors",
+          "origin": null,
+          "bztAttached": true,
+          "cookies": [
+            "toss",
+            "__Host-bzt",
+            "dev",
+            "devsess",
+            "jsdev"
+          ]
+        },
+        {
+          "method": "POST",
+          "path": "/formpost",
+          "sfs": "cross-site",
+          "mode": "navigate",
+          "origin": "https://s2-webkithttpsmv4wjmwy.tunnel.localhost:18443",
+          "bztAttached": true,
+          "cookies": [
+            "toss",
+            "__Host-bzt",
+            "dev",
+            "devsess",
+            "jsdev"
+          ]
+        }
+      ],
+      "s1AfterLoad": {
+        "sfs": "cross-site",
+        "cookies": [
+          "toss",
+          "__Host-bzt",
+          "dev",
+          "devsess",
+          "jsdev"
+        ]
+      }
+    }
+  }
+}

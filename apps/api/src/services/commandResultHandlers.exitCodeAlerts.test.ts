@@ -164,6 +164,43 @@ describe('script result → exit-code alert wiring (#6690)', () => {
     expect(callOrder.indexOf('execution-update')).toBeLessThan(callOrder.indexOf('fix-outcome'));
   });
 
+  it('passes status cancelled to the fix-outcome hook for a PROVEN cancel (cancelConfirmed branch of the ternary)', async () => {
+    updateMock.mockReturnValueOnce(updateReturning([executionRow])); // confirm CAS wins
+    await commandResultHandlers.script!(scriptInput({
+      status: 'completed',
+      exitCode: 0,
+      cancelled: true,
+      cancelledByCommandId: '99999999-9999-4999-8999-999999999999',
+    }));
+    expect(advanceMock).toHaveBeenCalledTimes(1);
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'cancelled' });
+  });
+
+  it('keeps the REAL outcome (not cancelled) for a cancel marker whose confirm CAS misses', async () => {
+    updateMock
+      .mockReturnValueOnce(updateReturning([])) // confirm CAS: not cancelling / wrong command
+      .mockReturnValueOnce(updateReturning([executionRow])); // unconfirmed CAS closes it
+    await commandResultHandlers.script!(scriptInput({
+      status: 'completed',
+      exitCode: 0,
+      cancelled: true,
+      cancelledByCommandId: '99999999-9999-4999-8999-999999999999',
+    }));
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: 'completed' });
+  });
+
+  it.each([
+    ['a non-zero exit code', { status: 'completed', exitCode: 3 }, 'failed'],
+    ['a failed-to-run result', { status: 'failed', exitCode: -1, error: 'killed' }, 'failed'],
+    ['a timeout', { status: 'timeout' }, 'timeout'],
+  ] as const)('passes the failure verdict through for %s', async (_n, result, expected) => {
+    updateMock
+      .mockReturnValueOnce(updateReturning([]))
+      .mockReturnValueOnce(updateReturning([executionRow]));
+    await commandResultHandlers.script!(scriptInput(result));
+    expect(advanceMock).toHaveBeenCalledWith({ executionId: EXECUTION_ID, status: expected });
+  });
+
   it('does not evaluate when no execution row transitioned', async () => {
     updateMock
       .mockReturnValueOnce(updateReturning([])) // cancel-unconfirmed

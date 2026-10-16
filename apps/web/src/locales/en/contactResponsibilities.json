@@ -1,0 +1,22 @@
+{
+  "title": "Responsible contacts",
+  "subtitle": "Resolved for this record. More specific assignments take precedence.",
+  "loading": "Loading responsible contacts…",
+  "loadFailed": "Could not load responsible contacts.",
+  "empty": "No responsible contacts are assigned yet.",
+  "primary": "Primary",
+  "roles": {
+    "billing": "Billing",
+    "technical": "Technical",
+    "escalation": "Escalation",
+    "admin": "Administration",
+    "site": "Local contact",
+    "after_hours": "After hours",
+    "portal": "Portal"
+  },
+  "scope": {
+    "organization": "Entire organization",
+    "site": "This site",
+    "device_group": "Device group"
+  }
+}

@@ -80,6 +80,7 @@ function snapshotRow(overrides: Record<string, unknown> = {}) {
   return {
     id: SNAPSHOT_DB_ID, orgId: ORG_ID, deviceId: DEVICE_ID, snapshotId: 'snap-current',
     jobId: 'job-1', configId: 'config-1', storageIdentity: STORAGE_IDENTITY,
+    keyLayout: 'legacy_flat', keyPrefix: null,
     fileIndexStatus: 'none', fileIndexHydratedAt: null, referencedFiles: 5,
     ...overrides,
   };
@@ -195,7 +196,7 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow({ snapshotId: REAL_MANIFEST_ID })]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: external.length }]))
-      .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, metadata: {} }]));
+      .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
     const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(new Uint8Array(bytes)) };
 
     const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
@@ -247,7 +248,7 @@ describe('hydrateSnapshotFileIndex', () => {
       .mockReturnValueOnce(chainMock([snapshotRow()])) // load snapshot
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }])) // job.referencedFiles
       .mockReturnValueOnce(chainMock([{ // origin live row
-        id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY,
+        id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null,
         metadata: { storagePrefix: null },
       }]));
     const deps = {
@@ -268,7 +269,7 @@ describe('hydrateSnapshotFileIndex', () => {
       .mockReturnValueOnce(chainMock([snapshotRow()])) // pre-claim read: source org
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([{
-        id: 'origin-db-id', orgId: MOVED_ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY,
+        id: 'origin-db-id', orgId: MOVED_ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null,
         metadata: { storagePrefix: null },
       }]));
     // The claim waited out a move and re-evaluated against the moved row.
@@ -296,7 +297,7 @@ describe('hydrateSnapshotFileIndex', () => {
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
       .mockReturnValueOnce(chainMock([])) // no live row
       .mockReturnValueOnce(chainMock([{ // retirement row
-        orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, snapshotId: 'snap-older',
+        orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, snapshotId: 'snap-older', keyLayout: 'legacy_flat', keyPrefix: null,
       }]));
     const deps = {
       fetchManifestBytes: vi.fn().mockResolvedValue(
@@ -341,7 +342,7 @@ describe('hydrateSnapshotFileIndex', () => {
     selectMock
       .mockReturnValueOnce(chainMock([snapshotRow()]))
       .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
-      .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, metadata: {} }]));
+      .mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
     const entries = Array.from({ length: 1500 }, (_, i) => ({
       sourcePath: `/f${i}`, backupPath: `snapshots/snap-older/files/f${i}.gz`, size: 1,
     }));
@@ -361,7 +362,7 @@ describe('hydrateSnapshotFileIndex', () => {
     const hydratedAt = new Date(now.getTime() - 31 * 60 * 1000);
     selectMock.mockReturnValueOnce(chainMock([snapshotRow({ fileIndexStatus: 'hydrating', fileIndexHydratedAt: hydratedAt })]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, metadata: {} }]));
+    selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
     const deps = {
       now: () => now,
       fetchManifestBytes: vi.fn().mockResolvedValue(
@@ -403,7 +404,7 @@ describe('hydrateSnapshotFileIndex', () => {
   it('classifies an unclassified throw after the CAS as provider_error, fails closed, and rethrows to the caller', async () => {
     selectMock.mockReturnValueOnce(chainMock([snapshotRow()]));
     selectMock.mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
-    selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, metadata: {} }]));
+    selectMock.mockReturnValueOnce(chainMock([{ id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, metadata: {} }]));
     // insert during the file-row batch write throws an unclassified error
     insertMock.mockImplementationOnce(() => {
       throw new Error('boom: insert failed');
@@ -599,5 +600,77 @@ describe('readSnapshotFileIndexState', () => {
       .mockReturnValueOnce(chainMock([{ originSnapshotId: 'snap-older' }]));
     const state = await readSnapshotFileIndexState(SNAPSHOT_DB_ID);
     expect(state).toMatchObject({ status: 'complete', manifestSha256: 'abc', externalCount: 3 });
+  });
+});
+
+// #7081: hydration reads the manifest under the snapshot's recorded key root
+// and only verifies an origin whose recorded root is the same one (I4).
+describe('hydrateSnapshotFileIndex key root (#7081)', () => {
+  const PREFIX = 'msp/acme';
+  const prefixedRow = (o: Record<string, unknown> = {}) => snapshotRow({ keyLayout: 'prefixed_flat', keyPrefix: PREFIX, ...o });
+  const externalManifest = () => manifestBytes([
+    { sourcePath: '/a', backupPath: 'snapshots/snap-older/files/a.gz', size: 10 },
+    { sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz', size: 20 },
+  ]);
+  const liveOrigin = (root: Record<string, unknown>) => ({
+    id: 'origin-db-id', orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, metadata: {}, ...root,
+  });
+
+  it('fetches the manifest at the physical key under the recorded root', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([prefixedRow()]))
+      .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(manifestBytes([{ sourcePath: '/b', backupPath: 'snapshots/snap-current/files/b.gz' }])) };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'complete', entryCount: 1 });
+    expect(deps.fetchManifestBytes).toHaveBeenCalledWith(expect.objectContaining({ key: `${PREFIX}/snapshots/snap-current/manifest.json` }));
+  });
+
+  it('accepts a live origin under the same root', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([prefixedRow()]))
+      .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
+      .mockReturnValueOnce(chainMock([liveOrigin({ keyLayout: 'prefixed_flat', keyPrefix: PREFIX })]));
+    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(externalManifest()) };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'complete', originSnapshotIds: ['snap-older'] });
+  });
+
+  it.each([
+    ['a prefixed snapshot, live origin legacy', prefixedRow(), { keyLayout: 'legacy_flat', keyPrefix: null }],
+    ['a prefixed snapshot, live origin under another prefix', prefixedRow(), { keyLayout: 'prefixed_flat', keyPrefix: 'msp/other' }],
+    ['a legacy snapshot, live origin prefixed', snapshotRow(), { keyLayout: 'prefixed_flat', keyPrefix: PREFIX }],
+  ])('fails origin_key_root_mismatch (terminal) for %s, writing no origins', async (_name, own, originRoot) => {
+    selectMock
+      .mockReturnValueOnce(chainMock([own]))
+      .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
+      .mockReturnValueOnce(chainMock([liveOrigin(originRoot)]));
+    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(externalManifest()) };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_key_root_mismatch', retryable: false });
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('fails origin_key_root_mismatch for a retired origin under another root', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([prefixedRow()]))
+      .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]))
+      .mockReturnValueOnce(chainMock([])) // no live row
+      .mockReturnValueOnce(chainMock([{
+        orgId: ORG_ID, deviceId: DEVICE_ID, storageIdentity: STORAGE_IDENTITY, snapshotId: 'snap-older', keyLayout: 'legacy_flat', keyPrefix: null,
+      }]));
+    const deps = { fetchManifestBytes: vi.fn().mockResolvedValue(externalManifest()) };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'origin_key_root_mismatch', retryable: false });
+  });
+
+  it('fails key_root_invalid (terminal) without reading storage when the snapshot\'s own root is unreadable', async () => {
+    selectMock
+      .mockReturnValueOnce(chainMock([prefixedRow({ keyPrefix: 'x/snapshots' })]))
+      .mockReturnValueOnce(chainMock([{ referencedFiles: 5 }]));
+    const deps = { fetchManifestBytes: vi.fn() };
+    const outcome = await hydrateSnapshotFileIndex(SNAPSHOT_DB_ID, { deps });
+    expect(outcome).toMatchObject({ status: 'failed', failure: 'key_root_invalid', retryable: false });
+    expect(deps.fetchManifestBytes).not.toHaveBeenCalled();
   });
 });

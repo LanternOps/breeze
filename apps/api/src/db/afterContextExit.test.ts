@@ -128,3 +128,59 @@ describe('runAfterDbContextExit', () => {
     expect(seen).toEqual([false]);
   });
 });
+
+describe('runAfterDbContextCommit (#7277)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    depth.value = 0;
+    process.env.NODE_ENV = 'test';
+    process.env.DATABASE_URL = 'postgresql://breeze_app:pw@database.example.test:5432/breeze';
+    process.env.DATABASE_URL_APP = 'postgresql://breeze_app:pw@database.example.test:5432/breeze';
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.env = { ...originalEnv };
+  });
+
+  it('runs after the outermost transaction COMMITS, outside any context', async () => {
+    const db = await loadDb();
+    const seen: Array<{ depth: number; context: boolean }> = [];
+    const task = vi.fn(async () => {
+      seen.push({ depth: depth.value, context: db.hasDbAccessContext() });
+    });
+    await db.withSystemDbAccessContext(async () => {
+      await db.withDbTransaction(async () => {
+        db.runAfterDbContextCommit('test.commit', task);
+      });
+      await settle();
+      expect(task).not.toHaveBeenCalled();
+    }, 'afterContextCommit.test');
+    await settle();
+    expect(task).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual([{ depth: 0, context: false }]);
+  });
+
+  it('NEVER runs when the transaction rolls back, while runAfterDbContextExit still does', async () => {
+    const db = await loadDb();
+    const commitOnly = vi.fn(async () => undefined);
+    const either = vi.fn(async () => undefined);
+    await expect(
+      db.withSystemDbAccessContext(async () => {
+        db.runAfterDbContextCommit('test.commit', commitOnly);
+        db.runAfterDbContextExit('test.exit', either);
+        throw new Error('statement failed');
+      }),
+    ).rejects.toThrow('statement failed');
+    await settle();
+    expect(commitOnly).not.toHaveBeenCalled();
+    expect(either).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs promptly when no context is held (autocommit)', async () => {
+    const db = await loadDb();
+    const task = vi.fn(async () => undefined);
+    db.runAfterDbContextCommit('test.none', task);
+    await settle();
+    expect(task).toHaveBeenCalledTimes(1);
+  });
+});

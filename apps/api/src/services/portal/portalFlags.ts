@@ -19,7 +19,11 @@ export const PORTAL_VISIBILITY_FLAG_KEYS = [
   'enableLifecycle',
   'enableHardwareHealth',
   'enableHardwareInventory',
-  'enableNetworkVisibility'
+  'enablePerformanceMetrics',
+  'enableSoftwareInventory',
+  'enableNetworkVisibility',
+  // EDR provider framework W02 (#8166): strict, inside "Enable all".
+  'enableEdrVisibility'
 ] as const;
 
 export type PortalVisibilityFlag = typeof PORTAL_VISIBILITY_FLAG_KEYS[number];

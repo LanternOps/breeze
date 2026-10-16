@@ -86,17 +86,17 @@ This choice keeps the native Windows audit trail intact -- the standard logon ev
 
 A server-side actuation cannot be replayed. The actuator route's proof of approval is the elevation row's status being `approved`. To make that proof one-shot, the same database transaction that queues the agent command performs an atomic compare-and-swap of the row from `approved` to `actuating`, scoped by the device's organization. If the compare-and-swap returns zero rows -- because the row was not approved, or a concurrent request already claimed it -- the actuation is refused with `409`. Every outcome (success, lost race, wrong status) is written to the elevation audit ledger with its cause.
 
-The PAM actuator is additionally **disabled by default in every environment** and is only enabled via an explicit server-side flag once just-in-time credentials and agent-side target re-validation are deployed.
+The legacy explicit actuator endpoint is **disabled by default in every environment** and is enabled with the server-side `PAM_ACTUATOR_ENABLED` flag. Managed PAM v2 uses the policy-driven lifetime flow described below instead.
 
 ### Enablement
 
-PAM actuation on a given device requires three independent gates to all be open at once:
+Managed PAM v2 follows the device's **effective organization policy**. `uac_interception_enabled` on the org's PAM config (or the resolved `pam` config-policy feature link, which takes precedence) must allow the agent to capture UAC events. With no opinion set anywhere, the global default is off.
 
-1. **`PAM_ACTUATOR_ENABLED=true`** on the API server. Off by default; without it the actuator route refuses every request regardless of approval state.
-2. **`pam_enabled`** on the agent. The agent's own config must opt it into the PAM actuation path.
-3. **The org's UAC-interception policy.** `uac_interception_enabled` on the org's PAM config (or the resolved `pam` config-policy feature link, which takes precedence) must allow the agent to capture UAC events for that org in the first place -- with no opinion set anywhere, the global default is off.
+The organization policy is authoritative for dormant elevation-account provisioning. On a normal Windows service agent, an enabled policy provisions the account after verified reconciliation and before admitting elevation requests, even when the local `agent.yaml` has `pam_enabled: false`. Provisioning failures remain retryable; failed reconciliation keeps PAM unavailable.
 
-All three are independently controlled, so a device with the agent flag set but no config-policy link (and no org fallback) still won't intercept anything, and a server with the actuator disabled won't act even on a fully-configured device.
+**`pam_enabled` controls local startup provisioning; it is not a local opt-out from organization PAM policy.** Setting it to `true` alone does not enable UAC interception without an enabled effective policy, and setting it to `false` does not block policy-driven provisioning. Support-mode agents do not provision the account.
+
+`PAM_ACTUATOR_ENABLED` gates the legacy `POST /api/v1/devices/:id/actuate-elevation` endpoint. It is not a kill switch for managed PAM v2. To disable policy-driven UAC interception, disable the effective organization's UAC-interception policy.
 
 ---
 

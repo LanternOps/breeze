@@ -40,6 +40,17 @@ export function useFeatureLink(policyId: string) {
           request: () => fetchWithAuth(url, { method, body: JSON.stringify(body) }),
           parseSuccess: (value) => (value as { data: FeatureLink }).data ?? value as FeatureLink,
           errorFallback: i18n.t('common:states.error'),
+          friendly: (code) => {
+            if (code === 'MONITOR_NOT_ATTACHABLE') {
+              return i18n.t('policies:configurationPolicies.featureTabs.monitorsTab.notAttachable');
+            }
+            // #8187: a patch link write that edits ring-owned approval rules
+            // (most often a Patch tab loaded before the release).
+            if (code === 'APPROVAL_RULES_MOVED_TO_RING') {
+              return i18n.t('policies:configurationPolicies.featureTabs.patchTab.approvalRulesMovedToRing');
+            }
+            return undefined;
+          },
           successMessage: i18n.t('common:states.saved'),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });

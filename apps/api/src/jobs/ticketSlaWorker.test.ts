@@ -10,7 +10,9 @@ const {
   removeRepeatableByKeyMock,
   workerCapture,
   callOrder,
+  expireMock,
 } = vi.hoisted(() => ({
+  expireMock: vi.fn(),
   executeMock: vi.fn(),
   withSystemDbAccessContextMock: vi.fn(),
   emitTicketEventMock: vi.fn(),
@@ -61,7 +63,11 @@ vi.mock('../services/eventBus', () => ({
   getEventBus: vi.fn(() => ({ publish: publishMock })),
 }));
 
-import { sweepTicketSlaBreaches, initializeTicketSlaWorker } from './ticketSlaWorker';
+vi.mock('../services/ticketApproval/decisions', () => ({
+  expireDueApprovalRequests: expireMock,
+}));
+
+import { sweepTicketSlaBreaches, initializeTicketSlaWorker, shutdownTicketSlaWorker } from './ticketSlaWorker';
 
 /**
  * Flattens a drizzle sql`` object to its static SQL text (StringChunks and
@@ -214,6 +220,40 @@ describe('ticketSlaWorker', () => {
       expect(result).toEqual({ breached: 0 });
       expect(emitTicketEventMock).not.toHaveBeenCalled();
       expect(publishMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ticket-approval-expiry (#4617)', () => {
+    const expiredEvent = (requestId: string) => ({
+      type: 'ticket.approval_decided', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1', actorUserId: null,
+      payload: { requestId, trigger: 'budget', status: 'expired' },
+    });
+
+    it('registers a 5-minute repeatable job with a colon-free jobId', async () => {
+      await shutdownTicketSlaWorker(); // module state: re-run registration
+      await initializeTicketSlaWorker();
+      expect(queueAddMock).toHaveBeenCalledWith('ticket-approval-expiry', expect.objectContaining({ type: 'approval-expiry' }),
+        expect.objectContaining({ jobId: 'ticket-approval-expiry', repeat: { every: 5 * 60 * 1000 } }));
+      const jobId = queueAddMock.mock.calls.find((c) => c[0] === 'ticket-approval-expiry')![2].jobId as string;
+      expect(jobId).not.toContain(':');
+    });
+
+    it('runs expireDueApprovalRequests (which opens its own system contexts) and emits one approval_decided per expired row afterwards', async () => {
+      expireMock.mockImplementation(async () => {
+        callOrder.push('expired');
+        return { expired: 2, events: [expiredEvent('r-1'), expiredEvent('r-2')] };
+      });
+      await initializeTicketSlaWorker();
+      const result = await workerCapture.processor!({ data: { type: 'approval-expiry', queuedAt: new Date().toISOString() } });
+      expect(result).toEqual({ expired: 2 });
+      expect(expireMock).toHaveBeenCalledTimes(1);
+      expect(expireMock.mock.calls[0]![0]).toBeInstanceOf(Date);
+      // Not wrapped in a worker-level system context: each request gets its own transaction.
+      expect(withSystemDbAccessContextMock).not.toHaveBeenCalled();
+      expect(executeMock).not.toHaveBeenCalled();
+      expect(emitTicketEventMock).toHaveBeenCalledTimes(2);
+      expect(emitTicketEventMock).toHaveBeenNthCalledWith(1, expiredEvent('r-1'));
+      expect(callOrder.indexOf('emit')).toBeGreaterThan(callOrder.indexOf('expired'));
     });
   });
 });

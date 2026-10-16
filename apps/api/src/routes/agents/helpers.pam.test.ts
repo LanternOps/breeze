@@ -42,6 +42,7 @@ const { dbMock, redisMock, getRedisImpl } = vi.hoisted(() => {
       from: vi.fn(() => chain),
       innerJoin: vi.fn(() => chain),
       where: vi.fn(() => chain),
+      orderBy: vi.fn(() => chain),
       limit: vi.fn(() => Promise.resolve(result)),
       // For the 4th query (no .limit — it's the terminal .where that returns
       // rows directly when awaited). We make `where` thenable.
@@ -432,6 +433,21 @@ describe('buildPamConfigUpdate — Redis cache behavior', () => {
       'EX',
       120,
     );
+  });
+
+  it('skipCacheWrite: cache miss resolves from DB but never writes the device cache (#8616)', async () => {
+    redisMock.get.mockResolvedValue(null);
+    setDbQueue(
+      [{ orgId: ORG_ID, siteId: SITE_ID }],
+      [{ partnerId: PARTNER_ID }],
+      [],
+      [{ level: 'device', assignmentPriority: 1, inlineSettings: { uacInterceptionEnabled: true } }],
+    );
+
+    const result = await buildPamConfigUpdate(DEVICE_ID, { skipCacheWrite: true });
+
+    expect(result.uacInterceptionEnabled).toBe(true);
+    expect(redisMock.set).not.toHaveBeenCalled();
   });
 
   it('redis.get throws → still resolves from DB (fail-open) and returns settings', async () => {

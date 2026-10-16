@@ -2,7 +2,7 @@
 
 ## Overview
 
-Remove the standalone `backupPolicies` table and rewire everything to use the configuration policy system's backup feature links. The config policy system already handles backup assignment for devices like Kit — the standalone system is an orphaned predecessor with no production data.
+Remove the standalone `backupPolicies` table and rewire everything to use the configuration policy system's backup feature links. The config policy system already handles backup assignment for devices like lab-hyperv-host — the standalone system is an orphaned predecessor with no production data.
 
 ## Decisions
 
@@ -219,6 +219,6 @@ COMMENT ON TABLE backup_policies IS 'DEPRECATED: replaced by config_policy_backu
 
 ## Success Criteria
 - Zero references to `backupPolicies` table in any route, worker, or service (except the deprecated schema definition)
-- Kit's Backup tab shows "Policy assigned" with schedule from the "Workstation Backups" config policy
+- lab-hyperv-host's Backup tab shows "Policy assigned" with schedule from the "Workstation Backups" config policy
 - Scheduled backups resolve devices through the config policy hierarchy (org/site/group/device)
 - `siteIds` and `groupIds` assignments actually work (the old system's TODO is resolved for free)

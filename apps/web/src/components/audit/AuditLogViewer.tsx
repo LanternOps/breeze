@@ -19,12 +19,38 @@ import AuditLogDetail, { type AuditLogEntry } from './AuditLogDetail';
 import AuditFilters from './AuditFilters';
 import { navigateTo } from '@/lib/navigation';
 import { formatAuditDetails, useAuditActionFormatter } from '@/lib/auditFormat';
+import { downloadBlob } from '@/lib/downloadBlob';
+import { extractApiError } from '@/lib/apiError';
+import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
+
+/**
+ * `/audit-logs` returns flat entries (string `resource`, JSON-string `details`).
+ * `/audit-logs/search` returns the full shape (object `resource`, object
+ * `details`, no `resourceType`/`changes`). Normalize to the flat shape at the
+ * fetch boundary so the viewer has exactly one entry type.
+ */
+function normalizeAuditEntry(raw: unknown): AuditLogEntry {
+  const e = (raw ?? {}) as Record<string, any>;
+  const res = e.resource;
+  const resourceIsObject = res !== null && typeof res === 'object';
+  const detailsObj = e.details !== null && typeof e.details === 'object' ? e.details : null;
+  return {
+    ...e,
+    resource: resourceIsObject ? String(res.name || res.type || res.id || '') : (res ?? ''),
+    resourceType: e.resourceType ?? (resourceIsObject ? String(res.type ?? '') : ''),
+    details: detailsObj ? JSON.stringify(detailsObj) : (e.details ?? '{}'),
+    ipAddress: e.ipAddress ?? '',
+    userAgent: e.userAgent ?? '',
+    user: { name: '', email: '', role: '', department: '', ...(e.user ?? {}) },
+    changes: e.changes ?? { before: {}, after: detailsObj ?? {} },
+  } as AuditLogEntry;
+}
 
 type SortKey = 'timestamp' | 'user' | 'action' | 'resource' | 'details' | 'ipAddress';
 
@@ -108,6 +134,18 @@ function computeDateRange(filters: ActiveFilters): { from?: string; to?: string 
   }
 }
 
+/** The filter query params shared by the list/search request and the export (#8366). */
+function appendFilterParams(params: URLSearchParams, filters: ActiveFilters | null): void {
+  if (!filters) return;
+  const { from, to } = computeDateRange(filters);
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  if (filters.userEmail) params.set('user', filters.userEmail);
+  if (filters.actions.length > 0) params.set('action', filters.actions.join(','));
+  if (filters.resources.length > 0) params.set('resource', filters.resources.join(','));
+  if (filters.search) params.set('q', filters.search);
+}
+
 function hasActiveFilters(filters: ActiveFilters | null): boolean {
   if (!filters) return false;
   return !!(
@@ -167,15 +205,7 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
       params.set('page', String(page));
       params.set('limit', String(pageSize));
 
-      if (filters) {
-        const { from, to } = computeDateRange(filters);
-        if (from) params.set('from', from);
-        if (to) params.set('to', to);
-        if (filters.userEmail) params.set('user', filters.userEmail);
-        if (filters.actions.length > 0) params.set('action', filters.actions.join(','));
-        if (filters.resources.length > 0) params.set('resource', filters.resources.join(','));
-        if (filters.search) params.set('q', filters.search);
-      }
+      appendFilterParams(params, filters);
 
       // Fast-path: on page 1 with no active filters, skip the slow count(*)
       // and let the API use its LATERAL fast-path. From page 2 onward we
@@ -198,7 +228,8 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
       }
 
       const data = await response.json();
-      setEntries(data.entries || data.data || data.logs || []);
+      const rawEntries: unknown[] = data.entries || data.data || data.logs || [];
+      setEntries(rawEntries.map(normalizeAuditEntry));
       if (data.pagination) {
         // When skipCount=true the API returns -1 sentinels; preserve them so
         // the UI can show "1 of ?" instead of a misleading "1 of 0".
@@ -272,25 +303,37 @@ export default function AuditLogViewer({ timezone, orgId }: AuditLogViewerProps)
   };
 
   const handleExportLogs = async () => {
+    // The export accepts the same filters as the list (date range, user,
+    // action, resource, search) so the file matches what is on screen.
     try {
-      const response = await fetchWithAuth('/audit-logs/export', { orgIdOverride: orgId });
+      // Built inside the try: an unparseable custom date throws in
+      // computeDateRange and must surface as the export-error toast.
+      const params = new URLSearchParams();
+      appendFilterParams(params, activeFilters);
+      if (activeFilters?.userId) params.set('userId', activeFilters.userId);
+      const query = params.toString();
+
+      const response = await fetchWithAuth(`/audit-logs/export${query ? `?${query}` : ''}`, {
+        orgIdOverride: orgId
+      });
 
       if (response.status === 401) {
         void navigateTo('/login', { replace: true });
         return;
       }
 
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `audit-logs-${new Date().toISOString().split('T')[0]}.csv`;
-        a.click();
-        window.URL.revokeObjectURL(url);
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        showToast({
+          type: 'error',
+          message: extractApiError(data, stableT('audit.auditLogViewer.errors.export'))
+        });
+        return;
       }
+
+      downloadBlob(await response.blob(), `audit-logs-${new Date().toISOString().split('T')[0]}.csv`);
     } catch {
-      // Handle error silently or show notification
+      showToast({ type: 'error', message: stableT('audit.auditLogViewer.errors.export') });
     }
   };
 

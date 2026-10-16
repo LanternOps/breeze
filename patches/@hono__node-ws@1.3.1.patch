@@ -1,0 +1,45 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+deleted file mode 100644
+index 0a003f13ac7e4e2ea270bf438bcd9871b611f255..0000000000000000000000000000000000000000
+diff --git a/dist/index.cjs b/dist/index.cjs
+index ae0cb13a440f167fe319b98d8baa4d2ff318779d..1dac668e7847d5ed048f5c473c1bc2e73c48771c 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -95,10 +95,12 @@ const createNodeWebSocket = (init) => {
+ 				const response = await init.app.request(url, { headers }, env);
+ 				const waiter = waiterMap.get(request);
+ 				if (!waiter || waiter.connectionSymbol !== env[CONNECTION_SYMBOL_KEY]) {
+-					socket.end(`HTTP/1.1 ${response.status.toString()} ${node_http.STATUS_CODES[response.status] ?? ""}\r\nConnection: close\r
+-Content-Length: 0\r
+-\r
+-`);
++					// Breeze patch (W08, #8147): forward a validated Retry-After on a
++					// refused upgrade so agents get the delay hint. Digits only - never
++					// copy arbitrary response headers onto the raw socket.
++					const retryAfter = response.headers.get("retry-after");
++					const retryAfterLine = retryAfter && /^\d{1,4}$/.test(retryAfter) ? `Retry-After: ${retryAfter}\r\n` : "";
++					socket.end(`HTTP/1.1 ${response.status.toString()} ${node_http.STATUS_CODES[response.status] ?? ""}\r\nConnection: close\r\n${retryAfterLine}Content-Length: 0\r\n\r\n`);
+ 					waiterMap.delete(request);
+ 					return;
+ 				}
+diff --git a/dist/index.js b/dist/index.js
+index 1831835a5f628804e00bbe8465867035bc885fb9..573f9a6984d8164a34d86ba3196368e53a8ed715 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -69,10 +69,12 @@ const createNodeWebSocket = (init) => {
+ 				const response = await init.app.request(url, { headers }, env);
+ 				const waiter = waiterMap.get(request);
+ 				if (!waiter || waiter.connectionSymbol !== env[CONNECTION_SYMBOL_KEY]) {
+-					socket.end(`HTTP/1.1 ${response.status.toString()} ${STATUS_CODES[response.status] ?? ""}\r\nConnection: close\r
+-Content-Length: 0\r
+-\r
+-`);
++					// Breeze patch (W08, #8147): forward a validated Retry-After on a
++					// refused upgrade so agents get the delay hint. Digits only - never
++					// copy arbitrary response headers onto the raw socket.
++					const retryAfter = response.headers.get("retry-after");
++					const retryAfterLine = retryAfter && /^\d{1,4}$/.test(retryAfter) ? `Retry-After: ${retryAfter}\r\n` : "";
++					socket.end(`HTTP/1.1 ${response.status.toString()} ${STATUS_CODES[response.status] ?? ""}\r\nConnection: close\r\n${retryAfterLine}Content-Length: 0\r\n\r\n`);
+ 					waiterMap.delete(request);
+ 					return;
+ 				}

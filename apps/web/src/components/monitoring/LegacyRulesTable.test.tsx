@@ -56,4 +56,11 @@ describe('LegacyRulesTable (#7206)', () => {
     await waitFor(() => expect(screen.getByTestId('legacy-rules-row-rule-1').textContent)
       .toContain('System-managed rule. Breeze raises this alert itself, so there is nothing to convert.'));
   });
+
+  it('words the empty state as standalone rules so it cannot contradict a non-empty policies list (#6888)', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(json({ data: [] }));
+    render(<LegacyRulesTable />);
+    expect(await screen.findByText(/standalone/i)).toBeTruthy();
+    expect(screen.queryByText('No legacy rules.')).toBeNull();
+  });
 });

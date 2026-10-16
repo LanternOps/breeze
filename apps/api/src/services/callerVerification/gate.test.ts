@@ -112,6 +112,17 @@ it('email mailbox uncertainty refuses while callback needs no mailbox read', asy
   expect(m.mailboxes).not.toHaveBeenCalled();
 });
 
+it('reads the mailbox set attributed to the gate technician (#6354 W03)', async () => {
+  const { currentMailboxReader } = await import('./mailboxReader');
+  let reader: string | undefined;
+  m.mailboxes.mockImplementation(async () => { reader = currentMailboxReader(); return ['other@example.com']; });
+  seed(candidate({ method: 'email' }));
+  await requireCallerVerification(ok).catch(() => undefined);
+  expect(m.mailboxes).toHaveBeenCalledWith({ orgId: input.orgId, target: input.target });
+  expect(reader).toBe(input.technicianUserId);
+  expect(currentMailboxReader()).toBeUndefined();
+});
+
 it('same mailbox aliases and removed methods cannot supply assurance', async () => {
   m.mailboxes.mockResolvedValue(['SMTP:Caller@example.com']);
   seed(candidate({ method: 'email' }));
@@ -158,6 +169,9 @@ it('refuses subject_unmatched when the requester binding was revoked and request
   m.results.length = 0;
   const other = { ...binding, id: '88888888-8888-4888-8888-888888888888' };
   const cross = candidate({ requesterBindingId: other.id, actionScope: 'disable_user' });
-  m.results.push([cross], [], [], [], [cross], [], [other], [{ id: binding.contactId, siteId: 'site', roles: ['admin'] }]);
+  // The contact's legacy roles[] projection is not authoritative. The final
+  // empty result is the canonical Organization-scoped `admin` lookup; a
+  // site-scoped manager therefore cannot authorize this org-level action.
+  m.results.push([cross], [], [], [], [cross], [], [other], [{ id: binding.contactId, siteId: 'site', roles: ['admin'] }], []);
   await expect(requireCallerVerification({ ...ok, action: 'disable_user' })).rejects.toMatchObject({ payload: { reason: 'requester_not_authorized' } });
 });

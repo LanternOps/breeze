@@ -110,6 +110,19 @@ vi.mock('../middleware/auth', () => ({
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
+// The real monitoringActiveWatches runs; only the agent-config resolver it
+// wraps is faked. `null` = "resolution omitted" (fail open, no filtering).
+const { resolveMonitoringConfigForDisplay } = vi.hoisted(() => ({ resolveMonitoringConfigForDisplay: vi.fn() }));
+vi.mock('./agents/helpers', () => ({ resolveMonitoringConfigForDisplay }));
+const loadActiveWatchKeys = {
+  mockResolvedValue: (keys: Set<string> | null) =>
+    resolveMonitoringConfigForDisplay.mockResolvedValue(
+      keys === null
+        ? null
+        : { check_interval_seconds: 60, watches: [...keys].map((k) => { const [t, ...n] = k.split(':'); return { watch_type: t, name: n.join(':') }; }) },
+    ),
+};
+
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
 }));
@@ -146,6 +159,7 @@ describe('monitoring routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    loadActiveWatchKeys.mockResolvedValue(null);
     vi.mocked(db.select).mockReset();
     vi.mocked(db.insert).mockReset();
     vi.mocked(db.update).mockReset();
@@ -338,6 +352,60 @@ describe('monitoring routes', () => {
       expect(body.data).toHaveLength(2);
     });
 
+    it('omits results for watches no longer in the device\'s resolved config (#8287)', async () => {
+      loadActiveWatchKeys.mockResolvedValue(new Set(['service:nginx']));
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { id: 'r1', deviceId: DEVICE_ID, watchType: 'service', name: 'nginx', status: 'running', cpuPercent: null, memoryMb: null, pid: 1, details: null, autoRestartAttempted: false, autoRestartSucceeded: false, timestamp: new Date() },
+                { id: 'r2', deviceId: DEVICE_ID, watchType: 'service', name: 'removed-svc', status: 'not_found', cpuPercent: null, memoryMb: null, pid: null, details: null, autoRestartAttempted: false, autoRestartSucceeded: false, timestamp: new Date() },
+              ]),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/results/${DEVICE_ID}/summary`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((r: any) => r.name)).toEqual(['nginx']);
+    });
+
+    it('returns unfiltered results when the active watch set is unknown (#8287)', async () => {
+      loadActiveWatchKeys.mockResolvedValue(null);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { id: 'r2', deviceId: DEVICE_ID, watchType: 'service', name: 'x', status: 'not_found', cpuPercent: null, memoryMb: null, pid: null, details: null, autoRestartAttempted: false, autoRestartSucceeded: false, timestamp: new Date() },
+              ]),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/results/${DEVICE_ID}/summary`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect((await res.json()).data).toHaveLength(1);
+    });
+
     it('returns 404 for nonexistent device', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -399,6 +467,71 @@ describe('monitoring routes', () => {
   // GET /status/:deviceId
   // ============================================
   describe('GET /monitoring/status/:deviceId', () => {
+    it('ignores stale results for removed watches when computing health (#8287)', async () => {
+      loadActiveWatchKeys.mockResolvedValue(new Set(['service:nginx']));
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]),
+          }),
+        }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                { watchType: 'service', name: 'nginx', status: 'running' },
+                { watchType: 'service', name: 'removed-svc', status: 'not_found' },
+              ]),
+            }),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/monitoring/status/${DEVICE_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      const body = await res.json();
+      expect(body.healthStatus).toBe('healthy');
+      expect(body.totalCount).toBe(1);
+      expect(body.notRunningCount).toBe(0);
+    });
+
+    it('still answers (unfiltered) when the resolver throws (#8287)', async () => {
+      resolveMonitoringConfigForDisplay.mockRejectedValue(new Error('resolver down'));
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]) }) }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ watchType: 'service', name: 'nginx', status: 'stopped' }]),
+        }) }) }),
+      } as any);
+
+      const res = await app.request(`/monitoring/status/${DEVICE_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).totalCount).toBe(1);
+    });
+
+    it('shows no results once the last watch is removed (empty resolved set) (#8287)', async () => {
+      loadActiveWatchKeys.mockResolvedValue(new Set());
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ orgId: ORG_ID }]) }) }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ watchType: 'service', name: 'removed-svc', status: 'not_found' }]),
+        }) }) }),
+      } as any);
+
+      const res = await app.request(`/monitoring/status/${DEVICE_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+
+      const body = await res.json();
+      expect(body.totalCount).toBe(0);
+      expect(body.healthStatus).toBe('unknown');
+    });
+
     it('returns healthy status when all services are running', async () => {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({

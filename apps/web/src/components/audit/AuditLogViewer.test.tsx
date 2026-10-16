@@ -2,10 +2,33 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 import AuditLogViewer from './AuditLogViewer';
+import { fireEvent } from '@testing-library/react';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+// Stand-in for the filter panel: one button applies a known filter set.
+vi.mock('./AuditFilters', () => ({
+  default: ({ onApply }: { onApply: (f: unknown) => void }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onApply({
+          datePreset: '7d',
+          userId: '11111111-1111-4111-8111-111111111111',
+          userEmail: 'dana@example.com',
+          actions: ['login'],
+          resources: ['device'],
+          search: 'abc',
+        })
+      }
+    >
+      apply-test-filters
+    </button>
+  ),
+}));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -15,6 +38,7 @@ const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Res
 describe('AuditLogViewer', () => {
   beforeEach(() => {
     fetchMock.mockReset();
+    vi.mocked(showToast).mockReset();
     fetchMock.mockResolvedValue(jsonResponse({ data: [], pagination: { total: 0, totalPages: 1 } }));
   });
 
@@ -46,6 +70,89 @@ describe('AuditLogViewer', () => {
       const exportCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/audit-logs/export'));
       expect(exportCall).toBeTruthy();
       expect((exportCall![1] as { orgIdOverride?: string })?.orgIdOverride).toBe('org-record-1');
+    });
+  });
+
+  it('renders /audit-logs/search entries (object resource, object details) without crashing', async () => {
+    const searchEntry = {
+      id: 'log-1',
+      timestamp: '2026-10-01T12:00:00.000Z',
+      user: { id: 'u1', name: 'Dana Admin', email: 'dana@example.com', role: 'user' },
+      action: 'device.update',
+      resource: { type: 'device', id: 'dev-1', name: 'WS-FRONTDESK-01' },
+      category: 'device',
+      result: 'success',
+      ipAddress: '10.0.0.1',
+      userAgent: 'test',
+      initiatedBy: null,
+      details: { reason: 'rename' },
+    };
+    fetchMock.mockResolvedValue(jsonResponse({ data: [searchEntry], pagination: { total: 1, totalPages: 1 } }));
+    render(<AuditLogViewer />);
+
+    expect(await screen.findByText('WS-FRONTDESK-01')).toBeTruthy();
+    expect(screen.getByText('Dana Admin')).toBeTruthy();
+  });
+  it('toasts the API error text when the export fails instead of failing silently', async () => {
+    render(<AuditLogViewer />);
+    await screen.findByText(/audit log/i);
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'Export exploded' }, false, 500));
+
+    fireEvent.click(screen.getByRole('button', { name: /export/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Export exploded' })
+      )
+    );
+  });
+
+  it('sends the viewer filters the export API accepts (userId) on the export request', async () => {
+    render(<AuditLogViewer />);
+    await screen.findByText(/audit log/i);
+    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+    fireEvent.click(await screen.findByText('apply-test-filters'));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('user='))).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: /export/i }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/audit-logs/export'));
+      expect(call).toBeTruthy();
+      const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
+      expect(qs.get('userId')).toBe('11111111-1111-4111-8111-111111111111');
+    });
+  });
+
+  it('forwards the same date/user/action/resource/search filters to the export as the list request (#8366)', async () => {
+    render(<AuditLogViewer />);
+    await screen.findByText(/audit log/i);
+    fireEvent.click(screen.getByRole('button', { name: /filters/i }));
+    fireEvent.click(await screen.findByText('apply-test-filters'));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/audit-logs/search'))).toBe(true));
+    const listCall = [...fetchMock.mock.calls].reverse().find(([u]) => String(u).includes('/audit-logs/search'))!;
+    const listQs = new URLSearchParams(String(listCall[0]).split('?')[1] ?? '');
+
+    fireEvent.click(screen.getByRole('button', { name: /export/i }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/audit-logs/export'));
+      expect(call).toBeTruthy();
+      const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
+      for (const key of ['user', 'action', 'resource', 'q']) {
+        expect(listQs.get(key), `list sends ${key}`).toBeTruthy();
+        expect(qs.get(key), `export sends ${key}`).toBe(listQs.get(key));
+      }
+      // The relative "last 7d" window is recomputed at click time, so compare
+      // within a few seconds rather than byte-for-byte.
+      expect(listQs.get('from')).toBeTruthy();
+      expect(qs.get('from')).toBeTruthy();
+      expect(Math.abs(Date.parse(qs.get('from')!) - Date.parse(listQs.get('from')!))).toBeLessThan(10_000);
+      expect(qs.get('to')).toBeTruthy();
+      // Pagination / count hints are list-only.
+      expect(qs.has('page')).toBe(false);
+      expect(qs.has('limit')).toBe(false);
+      expect(qs.has('skipCount')).toBe(false);
     });
   });
 });

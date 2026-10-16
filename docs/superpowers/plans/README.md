@@ -22,6 +22,7 @@ Design specs for these plans live under `../specs/` in the same domain folders.
 | `ai-mcp/` | 27 | AI agent tools & site-scoping, MCP server/OAuth, action-intents, AI-for-Office, ML, M365 graph tools |
 | `backup/` | 8 | Backup & recovery, certification, incremental, key escrow |
 | `billing/` | 26 | Invoicing, quotes, contracts, catalog, payments, and distributor/accounting connectors (Pax8, TD SYNNEX, QuickBooks) |
+| `helper/` | 1 | Assist helper features: endpoint messaging and live chat |
 | `installer-enrollment/` | 11 | MSI/CLI installers, enrollment tokens/keys, macOS installer app, installer downloads, device approval |
 | `integrations/` | 21 | M365 control-plane & partner API, UniFi, EDR vendors, Weavestream, OneDrive helper |
 | `misc/` | 6 | Cross-cutting or one-off work that fits no single domain |

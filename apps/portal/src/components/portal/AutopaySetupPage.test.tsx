@@ -152,7 +152,8 @@ describe('changing an existing method (card-expiring link or portal)', () => {
     // the page says the same invoices stay covered, so the two read as one rule.
     expect(screen.getByText('Payments not yet started, on the same invoices as now')).toBeInTheDocument();
     expect(screen.queryByText(/Issued after you set this up/)).toBeNull();
-    expect(document.title).toBe('Change payment method');
+    // The title is set in an effect, so read it with waitFor rather than racing the commit.
+    await waitFor(() => expect(document.title).toBe('Change payment method'));
   });
   // V2-6: since F-1 the working card keeps paying while a new bank is verified.
   it('choosing a bank on the Change form says the current card keeps paying until it is verified', async () => {

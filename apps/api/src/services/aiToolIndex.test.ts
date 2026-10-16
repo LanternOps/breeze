@@ -138,6 +138,10 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // intended addition. Topology M4 + W01 together measure 6310 bytes (the two
     // growths are additive: each tool adds its name to its domain line).
     // Any further raise needs a prompt-size review, not a bump.
+    // #8167 W03: `edr_endpoint_action (isolate/unisolate/scan)` on the
+    // Integrations line adds 46 bytes (6677 vs the 6656 limit). Paid for by
+    // dropping the patching note's "Approve patches before install." (names no
+    // tool), not by raising the ceiling.
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.5 * 1024);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });

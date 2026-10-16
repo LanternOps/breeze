@@ -225,7 +225,63 @@ func (c *Console) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	for {
+		err := c.runRecovery(ctx, ci, answers, server, token, bs, powerAndHold)
+		if !errors.Is(err, errNewCodeRequired) {
+			return err
+		}
+		server, token, bs, err = c.reconnect(ctx, ci, answers, server)
+		if err != nil {
+			return err
+		}
+	}
+}
 
+// errNewCodeRequired is returned by runRecovery when the operator chose
+// [r]etry after the console posted a terminal status (`refused` or `failed`)
+// for the recovery. Both are terminal server-side, which then rejects every
+// later progress post for it, so re-running the attempt would perform a
+// recovery the server can never record (#7927). Run answers it by
+// exchanging a new recovery code and starting a fresh attempt.
+var errNewCodeRequired = errors.New("the recovery was marked refused or failed; a new recovery code is required")
+
+// reconnect asks for a new recovery code against the server already in use
+// (falling back to the full server prompt if that server can no longer be
+// used) after a terminal status was posted for the previous recovery.
+func (c *Console) reconnect(ctx context.Context, ci bool, answers Answers, server string) (string, string, *bmr.BootstrapResponse, error) {
+	c.IO.Print("Start a new recovery for this device in Breeze and enter its new recovery code.\n")
+	c.codeRejections = 0
+	token, bs, err := c.promptCodeAndExchange(ctx, ci, answers, server)
+	if errors.Is(err, errReenterServer) {
+		return c.connect(ctx, ci, answers)
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	return server, token, bs, nil
+}
+
+// offerTerminalFailureOptions is offerFailureOptions after a terminal status
+// was posted: [r]etry returns errNewCodeRequired instead of re-running the
+// attempt, and [p]oweroff powers the machine off and holds.
+func (c *Console) offerTerminalFailureOptions(ci bool, powerAndHold func(string) error) error {
+	if !ci {
+		c.IO.Print("Retry will ask for a new recovery code.\n")
+	}
+	action, err := c.offerFailureOptions(ci)
+	if err != nil {
+		return err
+	}
+	if action == "poweroff" {
+		return powerAndHold("poweroff")
+	}
+	return errNewCodeRequired
+}
+
+// runRecovery runs one recovery attempt for the exchanged token/bootstrap.
+// It returns errNewCodeRequired when the operator retries after a terminal
+// status was posted; every other return ends Run.
+func (c *Console) runRecovery(ctx context.Context, ci bool, answers Answers, server, token string, bs *bmr.BootstrapResponse, powerAndHold func(string) error) error {
 	// Servers that know the floor refuse too-old media inside the exchange,
 	// before the code is claimed (helper_version_too_old, #5629). This
 	// post-exchange check is the fallback for a server that does not gate
@@ -283,14 +339,7 @@ func (c *Console) Run(ctx context.Context) error {
 			if errors.As(err, &scopeErr) {
 				c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: "refused", Reason: scopeErr.Error()})
 				c.IO.Print("Recovery cannot proceed: %s\n", scopeErr.Error())
-				action, err := c.offerFailureOptions(ci)
-				if err != nil {
-					return err
-				}
-				if action == "poweroff" {
-					return powerAndHold("poweroff")
-				}
-				return scopeErr
+				return c.offerTerminalFailureOptions(ci, powerAndHold)
 			}
 			return fmt.Errorf("verify download scope: %w", err)
 		}
@@ -310,10 +359,11 @@ func (c *Console) Run(ctx context.Context) error {
 		Integrity:         expectation,
 	}
 
-	// refusedPosted records that a terminal `refused` was posted for this
-	// recovery; OVERWRITE is never offered after that, or the disk would be
-	// erased while the server record stays refused.
-	refusedPosted := false
+	// Every branch below that posts a terminal status (`refused`/`failed`)
+	// leaves this attempt through offerTerminalFailureOptions, so the loop
+	// never comes back around for a recovery the server has closed — in
+	// particular OVERWRITE is never offered after `refused` was posted, or
+	// the disk would be erased while the server record stays refused.
 	for {
 		dry := baseOpts
 		dry.DryRun = true
@@ -327,7 +377,7 @@ func (c *Console) Run(ctx context.Context) error {
 			// recovery unrecoverable even if the operator proceeds. It is
 			// posted below only when they decline. The serial/ERASE
 			// confirmation still follows the re-run; CI never auto-overwrites.
-			if plan != nil && plan.RefusalCode == rebuild.RefusalCodeDiskHasWindows && !baseOpts.ForceDisk && !ci && !refusedPosted {
+			if plan != nil && plan.RefusalCode == rebuild.RefusalCodeDiskHasWindows && !baseOpts.ForceDisk && !ci {
 				c.IO.Print("Disk %s already contains a Windows installation. Everything on it will be erased.\n", disk.Path)
 				line, err := c.IO.ReadLine("Type OVERWRITE to erase it, or press Enter for other options: ")
 				if err != nil {
@@ -338,27 +388,14 @@ func (c *Console) Run(ctx context.Context) error {
 					continue
 				}
 			}
-			if !refusedPosted {
-				c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: statusForFailure(plan), Reason: reason})
-				refusedPosted = statusForFailure(plan) == "refused"
-			}
+			c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: statusForFailure(plan), Reason: reason})
 			if plan != nil && plan.RefusalCode == rebuild.RefusalCodeDiskHasWindows {
 				c.IO.Print("Recovery cannot proceed: disk %s already contains a Windows installation. "+
 					"This recovery is now marked refused; to overwrite the disk, start a new recovery and enter its new recovery code.\n", disk.Path)
 			} else {
 				c.IO.Print("Recovery cannot proceed: %s\n", reason)
 			}
-			action, err := c.offerFailureOptions(ci)
-			if err != nil {
-				return err
-			}
-			switch action {
-			case "retry":
-				continue
-			case "poweroff":
-				return powerAndHold("poweroff")
-			}
-			continue
+			return c.offerTerminalFailureOptions(ci, powerAndHold)
 		}
 
 		c.printPlan(disk, plan)
@@ -392,17 +429,7 @@ func (c *Console) Run(ctx context.Context) error {
 			reason := refusalReason(res, runErr)
 			c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: statusForFailure(res), Reason: reason})
 			c.IO.Print("Recovery failed: %s\n", reason)
-			action, err := c.offerFailureOptions(ci)
-			if err != nil {
-				return err
-			}
-			switch action {
-			case "retry":
-				continue
-			case "poweroff":
-				return powerAndHold("poweroff")
-			}
-			continue
+			return c.offerTerminalFailureOptions(ci, powerAndHold)
 		}
 
 		c.postProgress(ctx, server, token, bmr.ProgressUpdate{Status: "validated", Result: res, Warnings: res.Warnings})

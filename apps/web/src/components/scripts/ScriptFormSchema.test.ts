@@ -39,9 +39,10 @@ describe('rowsToMapping / mappingToRows', () => {
     ]);
   });
 
-  it('returns undefined when given no rows', () => {
+  it('returns undefined when the field was never loaded, null when the rows were emptied (#8590)', () => {
     expect(rowsToMapping(undefined)).toBeUndefined();
-    expect(rowsToMapping([])).toBeUndefined();
+    // null = explicit "clear the mapping"; undefined would be dropped by the API
+    expect(rowsToMapping([])).toBeNull();
   });
 
   it('returns an empty array when given no mapping', () => {

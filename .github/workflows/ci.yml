@@ -36,7 +36,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.6'
+  GO_VERSION: '1.26.9'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -203,7 +203,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: pnpm
@@ -281,7 +281,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -373,7 +373,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -426,7 +426,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -557,7 +557,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -585,7 +585,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -627,7 +627,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -687,7 +687,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -770,7 +770,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -806,7 +806,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -838,7 +838,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -974,7 +974,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1012,7 +1012,7 @@ jobs:
 
       - name: Upload native build log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: mobile-ios-build-log
           path: ${{ runner.temp }}/breeze-ios-build.log
@@ -1036,7 +1036,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1071,7 +1071,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1085,6 +1085,39 @@ jobs:
       - name: Run Viewer type check
         working-directory: apps/viewer
         run: pnpm exec tsc --noEmit
+
+  # packages/shared's own vitest suite (the zod validators the API and web
+  # share). The typecheck job only type-checks it; before #8373 the 4.6k tests
+  # ran nowhere in CI, so a red shared test landed silently. App-gated, not
+  # area-gated: any packages/** diff classifies as code+app (and sets every
+  # area), and shared is a dependency of every area.
+  test-shared:
+    name: Test Shared
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run shared tests
+        run: pnpm --filter @breeze/shared exec vitest run
 
   test-office-addin-core:
     name: Test Office Add-in Core
@@ -1103,7 +1136,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1134,7 +1167,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1162,7 +1195,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1193,7 +1226,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1233,7 +1266,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1268,7 +1301,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
 
@@ -1305,7 +1338,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1405,7 +1438,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1428,7 +1461,7 @@ jobs:
           echo "All expected dist artefacts present"
 
       - name: Upload API artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: api-dist
           path: apps/api/dist
@@ -1451,7 +1484,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1485,7 +1518,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1521,7 +1554,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
@@ -1557,7 +1590,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1577,7 +1610,7 @@ jobs:
         run: pnpm --filter @breeze/web run csp:guard
 
       - name: Upload Web artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: web-dist
           path: apps/web/dist
@@ -1600,7 +1633,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1616,7 +1649,7 @@ jobs:
         run: pnpm build --filter=@breeze/portal
 
       - name: Upload Portal artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: portal-dist
           path: apps/portal/dist
@@ -1719,7 +1752,7 @@ jobs:
           bash scripts/security/check-agent-binary-signatures.sh "${bins[@]}"
 
       - name: Upload Agent artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -1727,7 +1760,7 @@ jobs:
 
       - name: Upload user-helper artifact (Windows only)
         if: matrix.goos == 'windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -1842,7 +1875,7 @@ jobs:
         run: agent/scripts/build-edition_test.sh
 
       - name: Upload coverage
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: agent-coverage
           path: agent/coverage.out
@@ -2199,12 +2232,13 @@ jobs:
             'TestDiagnosticHardDeniedEvenIfNamed',
             'TestDiagnosticHardLinkRefused',
             'TestDiagnosticListPagination',
-            'TestDiagnosticListWithholdsUnapprovedSensitiveChildren',
+            'TestDiagnosticListWithholdsCredentialMaterial',
             'TestDiagnosticOutOfScopeAndPrefixSibling',
             'TestDiagnosticPathFormsRejected',
             'TestDiagnosticReadAuthorizedPaginatedAndSealed',
             'TestDiagnosticRecursiveVsFlat',
-            'TestDiagnosticSensitiveClassMustBeExplicit',
+            'TestDiagnosticCredentialMaterialIsNeverReadable',
+            'TestDiagnosticAuthorizationNamingAClassIsRefused',
             'TestDiagnosticTokenFailures',
             'TestDiagnosticTraversalSpellingsRefused',
             'TestDiagWindowsAlternatePathFormsRefused',
@@ -2600,7 +2634,7 @@ jobs:
 
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: recovery-media-e2e-logs
           path: |
@@ -2720,7 +2754,7 @@ jobs:
     runs-on: macos-latest
     needs: [changes]
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2741,7 +2775,7 @@ jobs:
         working-directory: agent
         env:
           CGO_LDFLAGS_ALLOW: '-weak_framework|ScreenCaptureKit'
-        run: CGO_ENABLED=1 go test -race -count=1 ./...
+        run: CGO_ENABLED=1 go test -race -count=1 -timeout 20m ./...
 
   # ─── Windows runtime smoke (#1000) ────────────────────────────────────
   # CI cross-compiles the Windows agent (build-agent matrix) but never RAN
@@ -3164,7 +3198,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -3421,7 +3455,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=ci-smoke-${{ matrix.image }}
 
       - name: Upload smoke image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ci-smoke-image-${{ matrix.image }}
           path: ${{ runner.temp }}/${{ matrix.image }}.tar
@@ -3930,7 +3964,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -4015,7 +4049,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -4044,7 +4078,7 @@ jobs:
 
       - name: Upload Playwright report
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: topology-browser-gate-report
           path: |
@@ -4093,7 +4127,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
 
@@ -4147,6 +4181,11 @@ jobs:
           # tests/ai-agents.spec.ts (#5048) needs the AI agents page enabled;
           # the spec skips itself when GET /ai/agents/tool-catalog is not 200.
           BREEZE_AI_AGENTS_ENABLED=true
+          # #5786 — tests/ai-operator-approve-after-browser-close.spec.ts
+          # delegates through POST /ai/operator/tasks, which 422s unless BOTH
+          # flags are on (default false in docker-compose.yml).
+          AI_OPERATOR_TASKS_ENABLED=true
+          AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED=true
           # This job tests portal hydration and billing UI, not MFA enrollment.
           # Keep the stored forced-MFA flag; suppress only its role component.
           MFA_FORCE_FOR_PARTNER_ADMIN=false
@@ -4256,11 +4295,47 @@ jobs:
       - name: Run the portal hydration specs
         run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/multi-currency.spec.ts tests/portal-visibility.spec.ts tests/ai-agents.spec.ts tests/partner-sending-domains.spec.ts
 
-      - name: Upload Playwright report
+      # Playwright replaces both output directories on each invocation. Upload
+      # this slice before the approval run can erase its failed traces.
+      - name: Upload portal hydration Playwright report
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: portal-dev-e2e-playwright-report
+          path: |
+            e2e-tests/playwright-report
+            e2e-tests/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # #5786 — the two WebAuthn approval specs (real ceremonies via Chrome's
+      # virtual authenticator). A spec no job runs cannot go red; #5273 stayed
+      # stale for weeks that way. What they need from the stack is already
+      # provided: `wt-stack up` pins WEBAUTHN_ORIGIN / WEBAUTHN_RP_ID to caddy's
+      # published port (#6443), so the production-valued PUBLIC_APP_URL RP-ID
+      # trap in e2e-tests/README.md does not apply; both specs self-seed over
+      # `docker exec psql` using pgContainer from .breeze-stack.json; and
+      # `wt-stack test` forwards REDIS_PASSWORD to globalSetup. The operator spec
+      # additionally needs AI_OPERATOR_TASKS_ENABLED and
+      # AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED (set in the .env above).
+      # --workers=1: both specs enrol an approver on the same admin and that
+      # ceremony rotates the refresh token (README), so they must not overlap.
+      # E2E_MACOS_DEVICE_ID is also supplied here: the operator spec
+      # `test.skip`s without it and a skipped spec reports green. It is the
+      # fixed id of the macOS device in e2e-tests/seed-fixtures.sql (pinned by
+      # portalDevE2eWorkflowContract.test.ts). `!cancelled()` so a red hydration
+      # spec above cannot hide these.
+      - name: Run the WebAuthn approval specs
+        if: ${{ !cancelled() }}
+        env:
+          E2E_MACOS_DEVICE_ID: 42fc7de0-48f5-48f2-846b-6dd95924baf9
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/intent-self-approve.spec.ts tests/ai-operator-approve-after-browser-close.spec.ts --workers=1
+
+      - name: Upload WebAuthn approval Playwright report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: portal-dev-e2e-approval-playwright-report
           path: |
             e2e-tests/playwright-report
             e2e-tests/test-results
@@ -4332,7 +4407,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
+    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -4365,6 +4440,7 @@ jobs:
           BUILD_MOBILE_IOS_RESULT: ${{ needs.build-mobile-ios.result }}
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_VIEWER_RESULT: ${{ needs.test-viewer.result }}
+          TEST_SHARED_RESULT: ${{ needs.test-shared.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
           TEST_EXCEL_ADDIN_RESULT: ${{ needs.test-excel-addin.result }}
           TEST_WORD_ADDIN_RESULT: ${{ needs.test-word-addin.result }}
@@ -4378,7 +4454,9 @@ jobs:
           BUILD_WEB_RESULT: ${{ needs.build-web.result }}
           BUILD_PORTAL_RESULT: ${{ needs.build-portal.result }}
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
+          LINT_AGENT_RESULT: ${{ needs.lint-agent.result }}
           TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
+          AGENT_WINDOWS_MANIFEST_GUARD_RESULT: ${{ needs.agent-windows-manifest-guard.result }}
           TEST_AGENT_WINDOWS_RESULT: ${{ needs.test-agent-windows.result }}
           RECOVERY_MEDIA_E2E_RESULT: ${{ needs.recovery-media-e2e.result }}
           WINDOWS_RUNTIME_SMOKE_RESULT: ${{ needs.windows-runtime-smoke.result }}
@@ -4446,6 +4524,7 @@ jobs:
              { [[ "${PORTAL_CHANGED}" != "true" ]] && [[ "${PORTAL_CHANGED}" != "false" ]]; } || \
              { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${TEST_PORTAL_RESULT}" != "skipped" ]]; } || \
              [[ "${TEST_VIEWER_RESULT}" != "success" ]] || \
+             [[ "${TEST_SHARED_RESULT}" != "success" ]] || \
              { [[ "${ADDINS_CHANGED}" == "true" ]] && [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]]; } || \
              { [[ "${ADDINS_CHANGED}" != "true" ]] && [[ "${ADDINS_CHANGED}" != "false" ]]; } || \
              { [[ "${ADDINS_CHANGED}" == "false" ]] && [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]]; } || \
@@ -4480,7 +4559,9 @@ jobs:
              { [[ "${PORTAL_CHANGED}" != "true" ]] && [[ "${PORTAL_CHANGED}" != "false" ]]; } || \
              { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]]; } || \
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
+             [[ "${LINT_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
+             [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "success" ]] || \
              { [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] && ! { [[ "${TEST_AGENT_WINDOWS_RESULT}" == "failure" ]] && [[ "${AGENT_CODE_CHANGED}" == "false" ]]; }; } || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              { [[ "${INTEGRATION_CHANGED}" == "true" ]] && [[ "${INTEGRATION_TEST_RESULT}" != "success" ]]; } || \
@@ -4517,6 +4598,7 @@ jobs:
              [[ "${BUILD_MOBILE_IOS_RESULT}" != "skipped" ]] || \
              [[ "${TEST_PORTAL_RESULT}" != "skipped" ]] || \
              [[ "${TEST_VIEWER_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_SHARED_RESULT}" != "skipped" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]] || \
              [[ "${TEST_EXCEL_ADDIN_RESULT}" != "skipped" ]] || \
              [[ "${TEST_WORD_ADDIN_RESULT}" != "skipped" ]] || \
@@ -4529,7 +4611,9 @@ jobs:
              [[ "${BUILD_WEB_RESULT}" != "skipped" ]] || \
              [[ "${BUILD_PORTAL_RESULT}" != "skipped" ]] || \
              [[ "${BUILD_AGENT_RESULT}" != "skipped" ]] || \
+             [[ "${LINT_AGENT_RESULT}" != "skipped" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "skipped" ]] || \
+             [[ "${AGENT_WINDOWS_MANIFEST_GUARD_RESULT}" != "skipped" ]] || \
              [[ "${TEST_AGENT_WINDOWS_RESULT}" != "skipped" ]] || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "skipped" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "skipped" ]] || \

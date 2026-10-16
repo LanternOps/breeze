@@ -230,6 +230,17 @@ describe('bodyLimitForPath', () => {
     }
   });
 
+  it('allows exactly 2 MiB on workloads without widening sibling paths', () => {
+    expect(bodyLimitForPath('/api/v1/agents/agent-1/workloads')).toEqual({
+      rule: 'agent-workloads',
+      maxSize: 2 * 1024 * 1024,
+      error: 'Request body too large',
+    });
+    for (const suffix of ['workloads/extra', 'workloads-extra', 'warranty-info']) {
+      expect(bodyLimitForPath(`/api/v1/agents/agent-1/${suffix}`).maxSize).toBe(1024 * 1024);
+    }
+  });
+
   // #3517: the rule label is what body-limit telemetry groups on, so it has to
   // stay a closed set AND actually discriminate. A carve-out that reuses another
   // branch's label (or forgets to change 'default') would silently file its 413s
@@ -249,6 +260,7 @@ describe('bodyLimitForPath', () => {
       'agent-ingest': '/api/v1/agents/agent-1/software',
       'agent-hardware-health': '/api/v1/agents/agent-1/hardware-health',
       'agent-time-status': '/api/v1/agents/agent-1/time-status',
+      'agent-workloads': '/api/v1/agents/agent-1/workloads',
     };
     for (const [rule, path] of Object.entries(sampled)) {
       expect({ path, rule: bodyLimitForPath(path).rule }).toEqual({ path, rule });
@@ -367,6 +379,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     paths: ['/api/v1/agents/agent-1/time-status'],
     globalMaxSize: 512 * 1024,
     note: 'Time status route and global gate both enforce 512 KiB.',
+  },
+  'agents/workloads.ts': {
+    paths: ['/api/v1/agents/agent-1/workloads'],
+    globalMaxSize: 2 * MB,
+    note: 'carved out — 2MB workload inventory report (#3834); route and gate agree at 2MB.',
   },
   'agents/logs.ts': {
     paths: ['/api/v1/agents/agent-1/logs'],

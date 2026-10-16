@@ -798,6 +798,46 @@ describe('timeEntryQueue', () => {
 });
 
 
+// ── #8211: an offline site visit whose org/site access was lost ────────────
+describe('create with a revoked org or site', () => {
+  const visit = {
+    kind: 'create' as const,
+    payload: {
+      startedAt: '2026-08-29T10:00:00.000Z',
+      endedAt: '2026-08-29T10:45:00.000Z',
+      orgId: 'o1',
+      siteId: 's1',
+      source: 'location',
+    },
+  };
+
+  it.each(['ORG_DENIED', 'SITE_DENIED'])(
+    'parks a %s 403 and keeps draining the writes behind it',
+    async (code) => {
+      const denied = await enqueue(visit);
+      await enqueue({ kind: 'create', payload: { ...visit.payload, orgId: 'o2', siteId: undefined } });
+      const result = await drain(async (write) => {
+        if (write.id === denied.id) throw Object.assign(new Error('nope'), { status: 403, code });
+      });
+      expect(result.sent).toBe(1);
+      expect(result.remaining).toBe(0);
+      expect(await readNeedsAttention()).toEqual([
+        expect.objectContaining({ code, write: expect.objectContaining(denied) }),
+      ]);
+    }
+  );
+
+  it('still retries a plain permission 403 (a role grant can fix it)', async () => {
+    const w = await enqueue(visit);
+    const result = await drain(async () => {
+      throw Object.assign(new Error('Permission denied'), { status: 403 });
+    });
+    expect(result.remaining).toBe(1);
+    expect(await readNeedsAttention()).toEqual([]);
+    expect(w.id).toBeTruthy();
+  });
+});
+
 // ── W06 (#3900): suggestion writes ─────────────────────────────────────────
 describe('suggestion writes', () => {
   const SIG_A = { kind: 'remote_session', id: 'aaaa1111-0000-4000-8000-000000000001' };

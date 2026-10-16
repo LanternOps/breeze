@@ -254,7 +254,7 @@ No new code. Rebuild and drive the real UI against the still-enrolled VM device:
 - [ ] Playwright MCP / browser at `baseUrl` from `.breeze-stack.json` (admin creds there): log in →
   - Config policy "OneDrive E2E" → OneDrive Helper tab shows the Phase-2-created settings (base toggles + 1 library); toggle something, Save, confirm PATCH succeeds and normalized rows update (psql check)
   - Library picker opens; with no M365 connection on the stack org it must show the connect-first + manual-paste state (the 409 path)
-  - Device `WIN-DHQNR1F8LO2` → OneDrive tab shows live state (signed in, FOD, 3× KFM redirected, mounted + entitled, no drift)
+  - Device `lab-windows-server-vm-2` → OneDrive tab shows live state (signed in, FOD, 3× KFM redirected, mounted + entitled, no drift)
   - `/onedrive` page → tiles `total=1, signedIn=1, kfmProtected=1, withDrift=0`; table row links to the device
 - [ ] Log results in `docs/testing/FEATURE_TEST_LOG.md` (local-only, do not commit)
 

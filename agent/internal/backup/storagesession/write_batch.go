@@ -53,6 +53,11 @@ type batchState struct {
 	downloads  []string
 	downloadIx map[string]int
 	throughput float64 // bytes per second, smoothed
+	// pending holds the requests a batch resolve is fetching right now,
+	// each mapped to a channel closed when that resolve returns. Concurrent
+	// uploads (the snapshot's upload pool) wait on it rather than resolving
+	// an overlapping batch of their own (#8381).
+	pending map[urlCacheKey]chan struct{}
 }
 
 // PrepareUploads implements providers.UploadPlanner: the uploads the caller
@@ -147,8 +152,30 @@ func (p *WriteProvider) resolveWithLookahead(ctx context.Context, req writeReque
 	if req.Method != http.MethodGet {
 		p.markWrote()
 	}
-	if obj := p.takeCached(req); obj != nil {
-		return obj, nil
+	self := cacheKeyOf(req)
+	for {
+		if obj := p.takeCached(req); obj != nil {
+			return obj, nil
+		}
+		p.mu.Lock()
+		wait := p.batch.pending[self]
+		p.mu.Unlock()
+		if wait == nil {
+			// A batch that resolved this URL between the cache miss above
+			// and the pending check has cached it before leaving pending.
+			if obj := p.takeCached(req); obj != nil {
+				return obj, nil
+			}
+			break
+		}
+		// Another caller's batch is resolving this URL: take it from the
+		// cache once that batch lands. If it did not land (an error, a
+		// denial, or it was that caller's own request), resolve it here.
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	batch := []writeRequest{req}
 	switch req.Method {
@@ -157,7 +184,8 @@ func (p *WriteProvider) resolveWithLookahead(ctx context.Context, req writeReque
 	case http.MethodGet:
 		extra = append(extra, p.plannedDownloadsAfter(req.Key)...)
 	}
-	seen := map[urlCacheKey]bool{cacheKeyOf(req): true}
+	seen := map[urlCacheKey]bool{self: true}
+	done := make(chan struct{})
 	p.mu.Lock()
 	for _, r := range extra {
 		if len(batch) >= p.desc.MaxBatch {
@@ -170,16 +198,39 @@ func (p *WriteProvider) resolveWithLookahead(ctx context.Context, req writeReque
 		if obj := p.batch.cache[k]; obj != nil && p.usableLocked(obj, max(k.size, 0)) {
 			continue
 		}
+		if p.batch.pending[k] != nil {
+			continue // another batch in flight is already resolving it
+		}
 		seen[k] = true
 		batch = append(batch, r)
 	}
+	if p.batch.pending == nil {
+		p.batch.pending = map[urlCacheKey]chan struct{}{}
+	}
+	for _, r := range batch {
+		k := cacheKeyOf(r)
+		if p.batch.pending[k] == nil {
+			p.batch.pending[k] = done
+		}
+	}
 	p.mu.Unlock()
+	// Release the waiters on every return: by then the batch's URLs are in
+	// the cache (or the batch failed and each waiter resolves its own).
+	defer func() {
+		p.mu.Lock()
+		for _, r := range batch {
+			if k := cacheKeyOf(r); p.batch.pending[k] == done {
+				delete(p.batch.pending, k)
+			}
+		}
+		p.mu.Unlock()
+		close(done)
+	}()
 
 	resolved, denied, err := p.resolveBatch(ctx, batch)
 	if err != nil {
 		return nil, err
 	}
-	self := cacheKeyOf(req)
 	p.mu.Lock()
 	if p.batch.cache == nil {
 		p.batch.cache = map[urlCacheKey]*resolvedWrite{}

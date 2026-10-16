@@ -13,6 +13,11 @@ import {
   listReliabilityDevices,
   type ReliabilityScoreRange,
 } from '../services/reliabilityScoring';
+import { writeRouteAudit } from '../services/auditEvents';
+import {
+  BASELINE_NOTE_MAX_LENGTH, RELIABILITY_BASELINE_REASONS, isNoteRequired, resolveBaselineAt,
+} from '../services/reliabilityBaselinePolicy';
+import { clearReliabilityBaseline, createReliabilityBaseline, listReliabilityBaselines } from '../services/reliabilityBaselines';
 import { emitDeviceReliabilityFeedback } from '../services/mlFeedbackEmitters';
 import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './devices/helpers';
 
@@ -344,6 +349,103 @@ reliabilityRoutes.post(
       },
     });
   }
+);
+
+const requireDeviceWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+const baselineParamSchema = z.object({ deviceId: z.string().guid(), baselineId: z.string().guid() });
+// Only these three fields are read; source/orgId/actor are server-derived (extra keys are ignored).
+const createBaselineBodySchema = z.object({
+  reason: z.enum(RELIABILITY_BASELINE_REASONS),
+  baselineAt: z.coerce.date().optional(),
+  note: z.string().max(BASELINE_NOTE_MAX_LENGTH).optional(),
+});
+
+async function resolveDevice(c: Parameters<typeof getDeviceWithOrgAndSiteCheck>[0], deviceId: string) {
+  const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, c.get('auth'));
+  if (device === SITE_ACCESS_DENIED) return { error: c.json({ error: 'Access to this site denied' }, 403) } as const;
+  if (!device) return { error: c.json({ error: 'Device not found' }, 404) } as const;
+  return { device } as const;
+}
+
+reliabilityRoutes.get(
+  '/:deviceId/baselines',
+  requireScope('organization', 'partner', 'system'),
+  requireReliabilityRead,
+  zValidator('param', deviceIdParamSchema),
+  async (c) => {
+    const { deviceId } = c.req.valid('param');
+    const resolved = await resolveDevice(c, deviceId);
+    if ('error' in resolved) return resolved.error;
+    return c.json({ baselines: await listReliabilityBaselines(deviceId) });
+  },
+);
+
+reliabilityRoutes.post(
+  '/:deviceId/baselines',
+  requireScope('organization', 'partner', 'system'),
+  requireDeviceWrite,
+  zValidator('param', deviceIdParamSchema),
+  zValidator('json', createBaselineBodySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceId } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const resolved = await resolveDevice(c, deviceId);
+    if ('error' in resolved) return resolved.error;
+    const { device } = resolved;
+
+    const at = resolveBaselineAt(body.baselineAt, new Date());
+    if (!at.ok) {
+      const message = at.error === 'baseline_in_future'
+        ? 'Marker time cannot be in the future.'
+        : 'Marker time cannot be more than 30 days ago.';
+      return c.json({ error: message, code: at.error }, 400);
+    }
+    const note = body.note?.trim() ? body.note.trim() : null;
+    if (isNoteRequired(body.reason, 'manual') && !note) {
+      return c.json({ error: 'Describe the remediation work in the note.', code: 'note_required' }, 400);
+    }
+
+    const baseline = await createReliabilityBaseline({
+      device: { id: device.id, orgId: device.orgId, deviceRole: device.deviceRole ?? null, enrolledAt: device.enrolledAt ?? null },
+      reason: body.reason, baselineAt: at.baselineAt, note,
+      source: 'manual', sourceRef: null, createdBy: auth.user?.id ?? null, recompute: true,
+    });
+    writeRouteAudit(c, {
+      orgId: device.orgId,
+      action: 'device.reliability.baseline_set',
+      resourceType: 'device',
+      resourceId: device.id,
+      resourceName: device.hostname,
+      details: { baselineId: baseline?.id ?? null, reason: body.reason, baselineAt: at.baselineAt.toISOString(), note, source: 'manual' },
+    });
+    return c.json({ baseline, reliability: await getDeviceReliability(deviceId) }, 201);
+  },
+);
+
+reliabilityRoutes.delete(
+  '/:deviceId/baselines/:baselineId',
+  requireScope('organization', 'partner', 'system'),
+  requireDeviceWrite,
+  zValidator('param', baselineParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { deviceId, baselineId } = c.req.valid('param');
+    const resolved = await resolveDevice(c, deviceId);
+    if ('error' in resolved) return resolved.error;
+    const outcome = await clearReliabilityBaseline({ deviceId, baselineId, clearedBy: auth.user?.id ?? null });
+    if (outcome === 'not_found') return c.json({ error: 'Marker not found', code: 'baseline_not_found' }, 404);
+    if (outcome === 'already_cleared') return c.json({ error: 'Marker already cleared', code: 'baseline_already_cleared' }, 409);
+    writeRouteAudit(c, {
+      orgId: resolved.device.orgId,
+      action: 'device.reliability.baseline_cleared',
+      resourceType: 'device',
+      resourceId: deviceId,
+      resourceName: resolved.device.hostname,
+      details: { baselineId },
+    });
+    return c.json({ reliability: await getDeviceReliability(deviceId) });
+  },
 );
 
 reliabilityRoutes.get(

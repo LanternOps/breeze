@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GraphNode, GraphRelationship, GraphResponse, PresentationEdge, PresentationNode } from '@breeze/shared';
 import { compileTopologyRender, type RenderText } from './renderProjection';
+import { groupedGraphFixture } from './groupedGraphFixture';
 
 const health: GraphNode['health'] = { status: 'unknown', coverage: 'unmonitored', scope: 'node', originNodeId: null, resultId: null, freshness: 'unknown', reasons: [{ code: 'x', message: 'x' }] };
 const node = (id: string, kind: GraphNode['kind'], label: string, extra: Partial<GraphNode> = {}): GraphNode => ({ id, kind, role: null, label, bindings: [], lifecycle: 'active',
@@ -22,7 +23,7 @@ function graph(nodes: GraphNode[], relationships: GraphRelationship[], presentat
   return { schemaVersion: 1, siteId: id(999), view: 'overview', asOf: '2026-10-02T00:00:00.000Z', revisions: { graph: '1', health: '1', layout: '0' }, nodes, relationships,
     presentation: { nodes: presentationNodes, edges: presentationEdges }, layout: { algorithm: 'none', version: 0, positions: [] },
     counts: { totalNodes: nodes.length, totalRelationships: relationships.length, visibleNodes: nodes.length, visibleRelationships: relationships.length, omittedNodes: 0, omittedRelationships: 0 },
-    coverage: { state: 'complete', reasons: [] }, frontier: [], permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false } };
+    coverage: { state: 'complete', reasons: [] }, frontier: [], permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false } };
 }
 
 /** One LAN, two observers each with its own canonical subnet + gateway node, one phone matched by address, one link-local net. */
@@ -250,7 +251,8 @@ describe('compileTopologyRender', () => {
     g.presentation.edges.push({ id: P('sd-1'), sourceNodeId: P('net-lan'), targetNodeId: P('net-lan2'), relationshipKind: null, presentationOnly: true, authority: false,
       meaning: 'aggregate', role: 'shared_devices', contributingRelationshipIds: [id(105)], memberCount: 1, frontierToken: 't' });
     const text: RenderText = { devices: (n) => `${n} Geräte`, gatewayFor: (n) => `Gateway für ${n} Geräte`, via: (gw) => `über ${gw}`, gatewaysDiffer: 'Gateways unterschiedlich',
-      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam`, linkVia: (name) => `über ${name}` };
+      agentOffline: 'Agent ist offline', sharedEdge: (n) => `${n} gemeinsam`, linkVia: (name) => `über ${name}`,
+      visiting: (n) => `+${n} zu Besuch`, assignedTo: (site) => `Zugewiesen zu ${site}`, visitorAlt: (site) => `Gerät zu Besuch, zugewiesen zu ${site}`, visitingCard: (prefix) => `Gäste (${prefix})` };
     const render = compileTopologyRender(g, { showAllNetworks: false, text });
     const byId = new Map(render.nodes.map((n) => [n.id, n]));
     expect(byId.get(P('net-lan'))!.detail).toBe('3 Geräte · über 10.1.2.100 · Gateways unterschiedlich');
@@ -278,5 +280,75 @@ describe('compileTopologyRender', () => {
     }
     expect(compileTopologyRender(g, { showAllNetworks: false }).hiddenNetworkCount).toBe(1);
     expect(compileTopologyRender(lan().graph, { showAllNetworks: false }).hiddenDeviceCount).toBe(0);
+  });
+});
+
+describe('compileTopologyRender: site declarations and the roster (site location W1)', () => {
+  const declaredAndStray = () => groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'declared', members: 20 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]);
+
+  it('moves undeclared lan cards to the roster only when the site declares at least one network', () => {
+    const out = compileTopologyRender(declaredAndStray(), { showAllNetworks: false, showOtherNetworks: false });
+    expect(out.siteHasDeclarations).toBe(true);
+    expect(out.nodes.some((n) => n.kind === 'group' && n.label === '10.1.5.0/24')).toBe(false);
+    expect(out.nodes.some((n) => n.kind === 'group' && n.label === '10.1.2.0/24')).toBe(true);
+    expect(out.roster).toEqual([expect.objectContaining({ prefix: '10.1.5.0/24', kind: 'undeclared', gatewayAddresses: ['10.1.5.1'] })]);
+    expect(out.roster[0]!.memberNodeIds).toHaveLength(2);
+    // Its endpoints and its gateway card go with it, because only undeclared networks route through that gateway.
+    expect(out.nodes.some((n) => n.label.startsWith('HOST-1-'))).toBe(false);
+    expect(out.nodes.some((n) => n.kind === 'gateway' && n.label.includes('10.1.5.1'))).toBe(false);
+    expect(out.nodes.some((n) => n.kind === 'gateway' && n.label.includes('10.1.2.1'))).toBe(true);
+    // A network moved to the roster is not a "hidden network" to offer under the show-all toggle.
+    expect(out.hiddenNetworkCount).toBe(0);
+  });
+
+  it('keeps a device that is also drawn in a declared card on the canvas and out of the roster (second NIC on a stray LAN)', () => {
+    const graph = declaredAndStray();
+    const cards = graph.presentation.nodes.filter((node) => node.group?.kind === 'network');
+    const declared = cards.find((card) => card.group!.prefix === '10.1.2.0/24')!;
+    const stray = cards.find((card) => card.group!.prefix === '10.1.5.0/24')!;
+    const dualHomed = declared.group!.members[0]!.nodeId;
+    stray.group!.members.push({ nodeId: dualHomed, placement: 'observed', primary: false, stale: false });
+    const out = compileTopologyRender(graph, { showAllNetworks: false, showOtherNetworks: false });
+    expect(out.nodes.some((n) => n.id === dualHomed)).toBe(true);
+    expect(out.roster[0]!.memberNodeIds).not.toContain(dualHomed);
+    expect(out.roster[0]!.memberNodeIds).toHaveLength(2);
+  });
+
+  it('keeps every card on the canvas when the site declares nothing', () => {
+    const graph = groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'undeclared', members: 20 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]);
+    const out = compileTopologyRender(graph, { showAllNetworks: false, showOtherNetworks: false });
+    expect(out.siteHasDeclarations).toBe(false);
+    expect(out.roster.filter((r) => r.kind === 'undeclared')).toEqual([]);
+    expect(out.nodes.filter((n) => n.kind === 'group').map((n) => n.label).sort()).toEqual(['10.1.2.0/24', '10.1.5.0/24']);
+  });
+
+  it('the toggle puts undeclared cards back on the canvas, and the unidentified group is always listed in the roster', () => {
+    const graph = groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'declared', members: 3 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }], { unidentified: 2 });
+    const off = compileTopologyRender(graph, { showAllNetworks: false, showOtherNetworks: false });
+    const on = compileTopologyRender(graph, { showAllNetworks: false, showOtherNetworks: true });
+    expect(on.nodes.some((n) => n.kind === 'group' && n.label === '10.1.5.0/24')).toBe(true);
+    expect(on.nodes.some((n) => n.kind === 'gateway' && n.label.includes('10.1.5.1'))).toBe(true);
+    expect(on.roster.filter((r) => r.kind === 'undeclared')).toEqual([]);
+    for (const out of [off, on]) {
+      expect(out.nodes.some((n) => n.kind === 'unidentified')).toBe(true);
+      expect(out.roster.filter((r) => r.kind === 'unidentified')).toEqual([expect.objectContaining({ prefix: null })]);
+      expect(out.roster.find((r) => r.kind === 'unidentified')!.memberNodeIds).toHaveLength(2);
+    }
+    expect(off.roster.map((r) => r.kind).sort()).toEqual(['undeclared', 'unidentified']);
+  });
+
+  it('draws a declared network no device reports as an empty card without crashing', () => {
+    const graph = groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'declared', members: 3 }, { prefix: '10.9.9.0/24', declaration: 'declared', members: 0 }]);
+    const out = compileTopologyRender(graph, { showAllNetworks: false });
+    expect(out.siteHasDeclarations).toBe(true);
+    expect(out.nodes.find((n) => n.label === '10.9.9.0/24')).toMatchObject({ memberCount: 0 });
+    expect(out.roster).toEqual([]);
+  });
+
+  it('a site whose only declared network is empty still counts as declaring, so strays move to the roster', () => {
+    const graph = groupedGraphFixture([{ prefix: '10.9.9.0/24', declaration: 'declared', members: 0 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]);
+    const out = compileTopologyRender(graph, { showAllNetworks: false });
+    expect(out.siteHasDeclarations).toBe(true);
+    expect(out.roster).toEqual([expect.objectContaining({ prefix: '10.1.5.0/24', kind: 'undeclared' })]);
   });
 });

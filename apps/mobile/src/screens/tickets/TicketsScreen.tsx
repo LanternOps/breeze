@@ -19,6 +19,7 @@ import {
 import type { TicketSummary } from '../../services/tickets';
 import type { TicketsStackParamList } from '../../navigation/MainNavigator';
 import { relativeTime } from '../../lib/relativeTime';
+import { requestArrivalCheck } from '../time/arrivalTrigger';
 
 import {
   emptyStateCopy,
@@ -103,6 +104,9 @@ export function TicketsScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
+    // #8211: a pull-to-refresh is the technician asking "where am I" — it
+    // bypasses the arrival check's read debounce.
+    requestArrivalCheck(true);
     try {
       await load();
     } finally {

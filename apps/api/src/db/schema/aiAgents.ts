@@ -217,6 +217,8 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   servedFailoverHop: smallint('served_failover_hop'),
   /** W09: why it failed over; restores the ledger provenance on a re-driven run. */
   servedFailoverCause: text('served_failover_cause'),
+  /** #7787: the offering the run was routed to BEFORE its failover (the ledger's failover_from_offering_id). No FK (provenance id). */
+  servedFailoverFromOfferingId: uuid('served_failover_from_offering_id'),
 }, (table) => ({
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.

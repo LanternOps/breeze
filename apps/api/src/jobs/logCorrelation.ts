@@ -263,7 +263,7 @@ export async function enqueueAdHocPatternCorrelationDetection(options: {
       authorityFingerprint: options.authority.fingerprint,
     })),
     slot,
-  ].join(':');
+  ].join('-');
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

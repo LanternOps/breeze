@@ -1,0 +1,22 @@
+{
+  "title": "Sorumlu kişiler",
+  "subtitle": "Bu kayıt için çözümlendi. Daha belirli atamalar öncelikli olur.",
+  "loading": "Sorumlu kişiler yükleniyor…",
+  "loadFailed": "Sorumlu kişiler yüklenemedi.",
+  "empty": "Henüz atanmış bir sorumlu kişi yok.",
+  "primary": "Birincil",
+  "roles": {
+    "billing": "Faturalandırma",
+    "technical": "Teknik",
+    "escalation": "Eskalasyon",
+    "admin": "Yönetim",
+    "site": "Yerel kişi",
+    "after_hours": "Mesai dışı",
+    "portal": "Portal"
+  },
+  "scope": {
+    "organization": "Tüm organizasyon",
+    "site": "Bu site",
+    "device_group": "Cihaz grubu"
+  }
+}

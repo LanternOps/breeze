@@ -106,6 +106,56 @@ func TestPeripheralPolicyV2CanonicalDigestMatchesTypeScriptEscaping(t *testing.T
 	}
 }
 
+// A device in no group: the controller hashes "groupIds":[], so the agent must
+// too. The want value is the digest peripheralEffectivePolicy.test.ts pins for
+// the same envelope.
+func TestPeripheralPolicyV2CanonicalDigestMatchesTypeScriptWithNoGroups(t *testing.T) {
+	const want = "sha256:3b1ab3c2cd68c30491e461bb932357b1d8354c74c758a8bf57f8ed7659244472"
+	for name, groups := range map[string][]string{"empty": {}, "nil": nil} {
+		envelope := PeripheralPolicyEnvelopeV2{
+			SchemaVersion: 2,
+			Phase:         "clear_legacy",
+			Identity: PeripheralPolicyIdentityV2{
+				DeviceID: "00000000-0000-4000-8000-000000000004",
+				OrgID:    "00000000-0000-4000-8000-000000000001",
+				SiteID:   "00000000-0000-4000-8000-000000000003",
+				GroupIDs: groups,
+			},
+			Revision:          1,
+			EffectivePolicies: []PeripheralPolicyV2{},
+		}
+		got, err := DigestPeripheralPolicyEnvelopeV2(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s groups: digest = %q, want TypeScript digest %q", name, got, want)
+		}
+	}
+}
+
+// The end-to-end shape of the bug: an ungrouped device must accept the
+// envelope the controller sends, carrying the controller's digest, instead of
+// rejecting it as malformed_digest.
+func TestValidateEnvelopeV2AcceptsAnUngroupedDevice(t *testing.T) {
+	envelope := PeripheralPolicyEnvelopeV2{
+		SchemaVersion: 2,
+		Phase:         "clear_legacy",
+		Identity: PeripheralPolicyIdentityV2{
+			DeviceID: "00000000-0000-4000-8000-000000000004",
+			OrgID:    "00000000-0000-4000-8000-000000000001",
+			SiteID:   "00000000-0000-4000-8000-000000000003",
+			GroupIDs: []string{},
+		},
+		Revision:          1,
+		EffectivePolicies: []PeripheralPolicyV2{},
+		Digest:            "sha256:3b1ab3c2cd68c30491e461bb932357b1d8354c74c758a8bf57f8ed7659244472",
+	}
+	if reason := validateEnvelopeV2(envelope, envelope.Identity); reason != "" {
+		t.Fatalf("ungrouped device rejected the controller's envelope: %s", reason)
+	}
+}
+
 func TestApplyPeripheralPolicyV2RejectsBeforeActuation(t *testing.T) {
 	policy := PeripheralPolicyV2{PolicyID: "policy-1", Source: "organization", EffectiveClass: "storage", ConfiguredClass: "storage", Action: "block", Priority: 10, Exceptions: []ExceptionRule{}}
 	base := testV2Envelope(t, 2, "enforce", []PeripheralPolicyV2{policy})
@@ -182,6 +232,46 @@ func TestApplyPeripheralPolicyV2RevisionRulesAndRestart(t *testing.T) {
 	conflict := testV2Envelope(t, 7, "enforce", []PeripheralPolicyV2{{PolicyID: "p", Source: "partner", EffectiveClass: "storage", ConfiguredClass: "storage", Action: "allow", Exceptions: []ExceptionRule{}}})
 	if got := ApplyPeripheralPolicyV2(conflict, conflict.Identity, restarted, testV2Deps(&detects, enforcer)); got.ReasonCode != "revision_digest_conflict" {
 		t.Fatalf("revision conflict = %+v", got)
+	}
+}
+
+// #8317 — after a move to another org or site the agent adopts its new
+// identity, and its last-known-good state still carries the old org/site. The
+// next revision for the same device must apply; a state that belongs to a
+// different device must still be refused.
+func TestApplyPeripheralPolicyV2AcceptsTheNextRevisionAfterADeviceMove(t *testing.T) {
+	store := newV2TestStore(t)
+	var detects atomic.Int32
+	enforcer := &v2TestEnforcer{}
+	first := testV2Envelope(t, 5, "enforce", nil)
+	if got := ApplyPeripheralPolicyV2(first, first.Identity, store, testV2Deps(&detects, enforcer)); got.Outcome != "applied" {
+		t.Fatalf("first apply = %+v", got)
+	}
+
+	envelopeFor := func(identity PeripheralPolicyIdentityV2, revision int) PeripheralPolicyEnvelopeV2 {
+		e := testV2Envelope(t, revision, "enforce", nil)
+		e.Identity = identity
+		digest, err := DigestPeripheralPolicyEnvelopeV2(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.Digest = digest
+		return e
+	}
+
+	moved := first.Identity
+	moved.OrgID, moved.SiteID = "org-2", "site-2"
+	if got := ApplyPeripheralPolicyV2(envelopeFor(moved, 6), moved, store, testV2Deps(&detects, enforcer)); got.Outcome != "applied" {
+		t.Fatalf("next revision after the move = %+v", got)
+	}
+	if got := ApplyPeripheralPolicyV2(envelopeFor(moved, 4), moved, store, testV2Deps(&detects, enforcer)); got.ReasonCode != "lower_revision" {
+		t.Fatalf("revision floor not kept across the move = %+v", got)
+	}
+
+	other := moved
+	other.DeviceID = "device-2"
+	if got := ApplyPeripheralPolicyV2(envelopeFor(other, 7), other, store, testV2Deps(&detects, enforcer)); got.ReasonCode != "invalid_payload" {
+		t.Fatalf("another device's last-known-good was accepted = %+v", got)
 	}
 }
 

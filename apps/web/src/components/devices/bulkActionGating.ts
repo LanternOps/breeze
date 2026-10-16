@@ -93,6 +93,7 @@ export const DECOMMISSION_BLOCKED_BULK_ACTIONS: ReadonlySet<string> = new Set([
   'shutdown',
   'lock',
   'run-script',
+  'send-message',
   'decommission',
 ]);
 

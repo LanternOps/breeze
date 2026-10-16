@@ -720,7 +720,9 @@
     "vaultType": "Tipo de bóveda",
     "retentionCount": "Recuento de retención",
     "numberOfSnapshotsToKeepInTheVault": "Número de instantáneas que se guardarán en la bóveda (1-100).",
-    "cancel": "Cancelar"
+    "cancel": "Cancelar",
+    "failedToSave": "No se pudo guardar la bóveda. Inténtalo de nuevo.",
+    "deviceConfigNotSent": "Bóveda guardada, pero no se pudo enviar su configuración al dispositivo: {{error}}"
   },
   "vaultDashboard": {
     "loadingVaults": "Cargando bóvedas...",
@@ -742,7 +744,12 @@
     "actions": "Acciones",
     "sync": "Sincronizar",
     "edit": "Editar",
-    "deactivate": "Desactivar"
+    "deactivate": "Desactivar",
+    "inactive": "Inactivo",
+    "syncStarted": "Sincronización de la bóveda iniciada",
+    "failedToSync": "No se pudo iniciar la sincronización de la bóveda. Inténtalo de nuevo.",
+    "failedToDeactivate": "No se pudo desactivar la bóveda. Inténtalo de nuevo.",
+    "deviceConfigNotSent": "Bóveda guardada, pero no se pudo enviar su configuración al dispositivo: {{error}}"
   },
   "dRDashboard": {
     "loadingDisasterRecovery": "Cargando recuperación ante desastres...",
@@ -993,6 +1000,8 @@
     "codeExpires": "Caduca a las {{time}}",
     "overdueNotice": "Aún sin confirmación — revise la consola de recuperación.",
     "fileIndexPreparing": "Preparando el índice de archivos para referencias entre instantáneas…",
+    "snapshotsLoadFailed": "No se pudieron cargar las instantáneas. Recargue la página para volver a intentarlo.",
+    "noSnapshots": "Aún no hay instantáneas restaurables en bare-metal. Se necesita una copia de seguridad completa del equipo marcada como restaurable en bare-metal.",
     "statusFailed": "La recuperación falló",
     "statusRefused": "Recuperación rechazada",
     "status": {
@@ -1002,7 +1011,8 @@
       "restoring": "Restaurando",
       "validated": "Validada",
       "rebooted": "Reiniciada",
-      "checked_in": "Confirmada"
+      "checked_in": "Confirmada",
+      "completed": "Completado"
     }
   },
   "backupHealth": {
@@ -1112,11 +1122,13 @@
     "introProducerOnly": "Esta copia de seguridad se almacenó donde solo el dispositivo original puede comprobar su integridad. Restaurarla en otro dispositivo requiere su confirmación.",
     "twoFactor": "Confirme con autenticación de dos factores para continuar.",
     "confirmOnly": "Confirme para continuar. La restauración queda registrada en el registro de auditoría.",
-    "typedIntro": "Esta copia de seguridad se creó antes de que existieran las comprobaciones de integridad. Escriba el nombre del dispositivo para confirmar. La restauración queda registrada en el registro de auditoría.",
-    "typedLabel": "Escriba {{phrase}} para confirmar",
     "code": "Código de autenticación",
     "passkey": "Se le pedirá que use su llave de acceso.",
-    "noFactor": "Configure la autenticación de dos factores en su perfil y vuelva a intentarlo.",
+    "enrollIntro": "Para confirmar esta restauración se necesita un segundo factor y su cuenta aún no tiene ninguno. Configure una aplicación de autenticación o una llave de acceso en su perfil y vuelva a intentarlo.",
+    "enrollIntroSmsOnly": "Para confirmar esta restauración se necesita una aplicación de autenticación o una llave de acceso. Su cuenta solo tiene códigos por mensaje de texto; agregue una de ellas en su perfil.",
+    "enrollLink": "Configurar la autenticación de dos factores",
+    "enrollStillRequired": "Su cuenta todavía no tiene un segundo factor. Configure uno y vuelva a intentarlo.",
+    "enrollStillRequiredSmsOnly": "Su cuenta todavía no tiene una aplicación de autenticación ni una llave de acceso.",
     "confirm": "Confirmar y restaurar",
     "cancel": "Cancelar",
     "failed": "No se aceptó la verificación. Vuelva a intentarlo.",

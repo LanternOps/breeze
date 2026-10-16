@@ -139,12 +139,16 @@ export async function acquireClientCredentialsToken(params: {
       tenantId: params.tenantId,
       responseBody: errBody,
     });
-    // Sanitize error — don't leak Azure AD error bodies to users
-    throw new Error(
+    // Sanitize error — don't leak Azure AD error bodies to users. The HTTP
+    // status rides on the error so a poller can tell a transient token-endpoint
+    // outage (5xx/429) from a consent or credential problem (#8299).
+    const tokenErr = new Error(
       res.status === 401
         ? 'Authentication failed — the app may not have consent for this tenant'
         : `Token acquisition failed (HTTP ${res.status})`
     );
+    (tokenErr as Error & { status?: number }).status = res.status;
+    throw tokenErr;
   }
 
   const data = (await res.json()) as Record<string, unknown>;

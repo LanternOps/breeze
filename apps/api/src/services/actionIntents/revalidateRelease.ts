@@ -16,6 +16,12 @@ import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
 import { captureException } from '../sentry';
+import {
+  checkPlanEffectMembershipSystem,
+  checkToolCeiling,
+  loadTaskAgentToolAllowlists,
+} from '../aiOperator/planApproval';
+import { planOrdinalFromOperationKey } from '../aiOperator/operationKey';
 
 /**
  * Shared release-time revalidation for an approved action intent (spec
@@ -285,6 +291,22 @@ export async function revalidateApprovedIntentForRelease(
     return { ok: false, errorCode: 'lane_revoked', details: { reason: laneEvidence.reason } };
   }
 
+  // Recipe Library E4 (#6169) — the PLAN-APPROVAL lane, modelled on the
+  // script lane above: a child effect carries NO approval row of its own and
+  // is admitted only because a stronger, row-backed proof revalidates against
+  // CURRENT state, here, inside release — plan membership at the task's LIVE
+  // revision (a superseded / expired / moved plan refuses), the set re-sealed
+  // from rows, and the operation identity derived from the approved slot.
+  // Unlike the script lane it runs for EVERY plan_approval row, even one that
+  // somehow has an approval row: a row never substitutes for the plan (codex
+  // quorum). `isSystemDecided` is NOT widened — `decided_via` alone
+  // authorizes nothing.
+  const planChildAdmitted = intent.decidedVia === 'plan_approval';
+  if (planChildAdmitted) {
+    const planRefusal = await revalidatePlanApprovedChild(intent);
+    if (planRefusal) return planRefusal;
+  }
+
   // #4442 W04 §3.6 — the ORDINARY brake. The release checks above cover the
   // policy flag, the registry entry and the key authorization but know nothing
   // of SCHEDULES, so flipping `act_mode` off could not revoke an intent that
@@ -301,12 +323,14 @@ export async function revalidateApprovedIntentForRelease(
     return { ok: false, errorCode: 'agent_policy_denied', details: { reason: sweepBrake.reason } };
   }
 
-  const noApprovalRowRequired = !winningApproval
+  // E4: `planChildAdmitted` is only true here if revalidatePlanApprovedChild
+  // above returned no refusal.
+  const noApprovalRowRequired = (!winningApproval && planChildAdmitted) || (!winningApproval
     && isSystemDecided(intent)
     && (intent.decidedVia === 'script_reviewer'
       ? laneEvidence?.ok === true
       : !!intent.requestingAgentRunId
-        && (intent.decidedVia !== 'policy' || intent.policyDecisionState === 'authorized'));
+        && (intent.decidedVia !== 'policy' || intent.policyDecisionState === 'authorized')));
 
   if (!noApprovalRowRequired) {
     // (a) UNCHANGED — the human-approval-row path, byte-identical to every
@@ -501,4 +525,49 @@ async function revalidateExternalToolForActor(
     };
   }
   return { ok: true, auth, tenantTool: loaded.descriptor };
+}
+
+/**
+ * Recipe Library E4 (#6169): the plan-approval arm of release. Returns a
+ * refusal, or null when the child may continue to the ordinary checks (a2
+ * digest recompute, tier, actor rebuild AS THE APPROVER, org, site ceiling,
+ * RBAC) — none of which it skips.
+ */
+async function revalidatePlanApprovedChild(intent: ActionIntent): Promise<IntentReleaseRevalidation | null> {
+  const revoked = (refusal: string, reason: string): IntentReleaseRevalidation =>
+    ({ ok: false, errorCode: 'plan_approval_revoked', details: { refusal, reason } });
+
+  if (!intent.taskId || !intent.taskStepKey || !intent.operationKey) {
+    return revoked('not_task_linked', 'a plan-approved effect must be task-linked');
+  }
+  // Human-shaped, minted and decided as the plan's approver (plan D-E4-2).
+  if (intent.requestingAgentRunId || !intent.requestedByUserId || !intent.decidedByUserId
+    || intent.requestedByUserId !== intent.decidedByUserId) {
+    return revoked('actor_shape', 'a plan-approved effect is minted and decided as the plan approver');
+  }
+  const membership = await checkPlanEffectMembershipSystem({
+    orgId: intent.orgId,
+    taskId: intent.taskId,
+    ordinal: planOrdinalFromOperationKey(intent.operationKey),
+    toolName: intent.actionName,
+    argumentDigest: intent.argumentDigest,
+    taskStepKey: intent.taskStepKey,
+    operationKey: intent.operationKey,
+  });
+  if (!membership.ok) return revoked(membership.refusal, membership.detail);
+  if (membership.approverUserId !== intent.decidedByUserId) {
+    return revoked('approver_mismatch', 'the intent was not decided by the plan approver');
+  }
+  // The ALLOWLIST ceiling, re-run at release. Its mint-time twin fails fast;
+  // this one is what makes a NARROWED agent policy revoke an
+  // approved-but-undispatched effect.
+  const ceiling = checkToolCeiling(
+    await loadTaskAgentToolAllowlists(intent.orgId, intent.taskId),
+    intent.actionName,
+    intent.arguments as Record<string, unknown>,
+  );
+  if (!ceiling.ok) {
+    return { ok: false, errorCode: 'tool_not_in_agent_allowlist', details: { reason: ceiling.detail } };
+  }
+  return null;
 }

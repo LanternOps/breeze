@@ -74,7 +74,7 @@ comment on #4752 (and append a row to the table below).
 | Target | Build | Verdict | Run |
 |---|---|---|---|
 | Windows Server 2022 Standard (Evaluation) 21H2 | 20348.5256 | **System Restore unavailable** — `srclient.dll` not present, `root/default:SystemRestore` is an invalid class. Layout not observable on this SKU. | 2026-10-06, lab VM |
-| Windows 11 Pro 25H2 (physical Dell, `dell70601`) | 26200.8653 | **Layout C (SDK, `pack(1)`) confirmed.** The status buffer had bytes 0–11 written and 12–15 still `cc`. Probe A's point enumerates as `EEZE-PROBE-A-…`. Probe C BEGIN `ret=1 nStatus=0 seq=4`, then END `ret=1 nStatus=0`, and its point enumerates intact as `BREEZE-PROBE-C-…` seq 4. With SR disabled (as found), both calls return `ret=0`, `nStatus=1058` (ERROR_SERVICE_DISABLED). | 2026-10-08, lab box |
+| Windows 11 Pro 25H2 (physical Dell, `lab-windows-11-host`) | 26200.8653 | **Layout C (SDK, `pack(1)`) confirmed.** The status buffer had bytes 0–11 written and 12–15 still `cc`. Probe A's point enumerates as `EEZE-PROBE-A-…`. Probe C BEGIN `ret=1 nStatus=0 seq=4`, then END `ret=1 nStatus=0`, and its point enumerates intact as `BREEZE-PROBE-C-…` seq 4. With SR disabled (as found), both calls return `ret=0`, `nStatus=1058` (ERROR_SERVICE_DISABLED). | 2026-10-08, lab box |
 | Windows 10 22H2 | — | **PENDING** | — |
 | Windows Server 2025 | — | **PENDING** (expected to match Server 2022: no System Restore on Server SKUs) | — |
 

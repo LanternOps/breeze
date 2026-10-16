@@ -1,4 +1,5 @@
 import { CommandTypes } from './commandTypes';
+import { WORKSTATION_TIMEOUT_MAX_MS } from './callerVerification/workstationProtocol';
 
 // ── Timeout tiers (milliseconds) ──────────────────────────────────
 const FIVE_MINUTES = 5 * 60 * 1000;
@@ -168,6 +169,15 @@ const RESTORE_TIMEOUT_TYPES = new Set<string>([
  */
 export const BACKUP_JOB_ABSOLUTE_TIMEOUT_MS = TWENTY_FOUR_HOURS;
 
+/**
+ * #6354 W02 — a `caller_verify` prompt is never on screen longer than
+ * `WORKSTATION_TIMEOUT_MAX_MS` (the helper's own countdown ceiling), and the
+ * verification it serves expires on the same clock. The grace only covers the
+ * result's trip back; a longer budget would hold a dead row for the 30-minute
+ * default (and warn as an unknown type on every command).
+ */
+export const CALLER_VERIFY_TIMEOUT_MS = WORKSTATION_TIMEOUT_MAX_MS + 30_000;
+
 const LONG_TIMEOUT_TYPES = new Set<string>([
   CommandTypes.AGENT_ROLLBACK_V1,
   // #3525: deliberately NOT SHORT_TIMEOUT_TYPES. The generic reaper clocks
@@ -228,6 +238,7 @@ export function getCommandTimeoutMs(
   if (MEDIUM_TIMEOUT_TYPES.has(commandType)) return THIRTY_MINUTES;
   if (RESTORE_TIMEOUT_TYPES.has(commandType)) return WHOLE_MACHINE_RESTORE_TIMEOUT_MS;
   if (commandType === CommandTypes.BACKUP_RUN) return BACKUP_JOB_ABSOLUTE_TIMEOUT_MS;
+  if (commandType === CommandTypes.CALLER_VERIFY) return CALLER_VERIFY_TIMEOUT_MS;
   // Disk Cleanup v2: a native run's real budget is per-selection and lives on
   // the row; this is the ceiling that keeps the reaper from terminalising a
   // command whose run is still inside it.

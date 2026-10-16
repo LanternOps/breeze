@@ -135,3 +135,41 @@ describe('GET /encryption', () => {
     expect(byName['fallback'].volumes[0]).not.toHaveProperty('size');
   });
 });
+
+describe('GET /firewall — unknown firewall state (#8252)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  it('reports an unknown reading as null, not disabled, and counts it separately', async () => {
+    listStatusRowsMock.mockResolvedValue([
+      statusRow({ deviceId: DEV_ESCROWED, deviceName: 'on', firewallEnabled: true }),
+      statusRow({ deviceId: DEV_BARE, deviceName: 'unknown', firewallEnabled: null }),
+      statusRow({ deviceId: '44444444-4444-4444-8444-444444444444', deviceName: 'off', firewallEnabled: false }),
+    ]);
+    const res = await buildApp().request('/firewall');
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    const byName = Object.fromEntries(json.data.map((d: any) => [d.deviceName, d]));
+    expect(byName['unknown'].firewallEnabled).toBeNull();
+    // No profile or rule data is fabricated for a device we know nothing about.
+    expect(byName['unknown'].profiles).toEqual([]);
+    expect(byName['unknown'].rulesCount).toBeNull();
+    expect(byName['off'].firewallEnabled).toBe(false);
+    expect(json.summary).toEqual({ total: 3, enabled: 1, disabled: 1, unknown: 1, coveragePercent: 33 });
+  });
+
+  it('status=disabled does not return unknown devices', async () => {
+    listStatusRowsMock.mockResolvedValue([
+      statusRow({ deviceId: DEV_BARE, deviceName: 'unknown', firewallEnabled: null }),
+      statusRow({ deviceId: DEV_ESCROWED, deviceName: 'off', firewallEnabled: false }),
+    ]);
+    const res = await buildApp().request('/firewall?status=disabled');
+    const json = await res.json();
+    expect(json.data.map((d: any) => d.deviceName)).toEqual(['off']);
+  });
+});

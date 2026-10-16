@@ -110,7 +110,11 @@
     "timeSync": "Time Sync",
     "aiModels": "AI Models",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Incidents",
+    "ticketsServiceRequests": "Service Requests",
+    "ticketsProblems": "Problems",
+    "ticketsChanges": "Changes"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -408,7 +412,9 @@
       "unratedPending": "{{count}} unrated patches pending (won't auto-approve)",
       "unratedPending_one": "{{count}} unrated patch pending (won't auto-approve)",
       "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
-      "empty": "No patch data yet"
+      "empty": "No patch data yet",
+      "imagesNotChecked_one": "{{count}} container image not checked",
+      "imagesNotChecked_other": "{{count}} container images not checked"
     },
     "vuln": {
       "title": "Vulnerabilities",
@@ -494,7 +500,9 @@
       "noGroups": "No device groups available",
       "deviceCount": "{{count}} devices",
       "loadSaved": "Load saved filter:",
-      "select": "Select"
+      "select": "Select",
+      "dynamic": "Dynamic",
+      "refusedGroup": "Unavailable as a target: this group's rules match on fields a device reports about itself ({{fields}})."
     },
     "preview": {
       "title": "Matching Devices",
@@ -1307,6 +1315,26 @@
           "ticketCreated": {
             "description": "Triggered when a ticket is created.",
             "label": "Ticket Created"
+          },
+          "ticketCommented": {
+            "description": "Triggered when a comment or note is added to a ticket.",
+            "label": "Ticket Commented"
+          },
+          "ticketStatusChanged": {
+            "description": "Triggered when a ticket changes status.",
+            "label": "Ticket Status Changed"
+          },
+          "ticketUpdated": {
+            "description": "Triggered when ticket fields are edited.",
+            "label": "Ticket Updated"
+          },
+          "ticketAssigned": {
+            "description": "Triggered when a ticket is assigned or unassigned.",
+            "label": "Ticket Assigned"
+          },
+          "migrationWindowClosed": {
+            "description": "Triggered once per organization when a ticket migration window closes, with the counts it imported.",
+            "label": "Migration Window Closed"
           }
         },
         "fields": {
@@ -1431,6 +1459,7 @@
           "created": "Webhook created",
           "disabled": "Webhook disabled",
           "enabled": "Webhook enabled",
+          "retryQueued": "Delivery retry queued",
           "testQueued": "Test delivery queued",
           "updated": "Webhook updated"
         },
@@ -1688,7 +1717,8 @@
         "deleteEntry": "Delete entry {{id}}",
         "deleteConfirmTitle": "Delete time entry?",
         "deleteConfirmMessage": "This permanently removes the {{duration}} entry on ticket {{ticket}}. It can't be undone.",
-        "deleteConfirmMessageNoTicket": "This permanently removes the {{duration}} entry. It can't be undone."
+        "deleteConfirmMessageNoTicket": "This permanently removes the {{duration}} entry. It can't be undone.",
+        "noteInvoiceCue": "Customers see this note on their invoice unless your billing settings hide notes."
       },
       "sourceBadge": {
         "timer": "Timer",
@@ -2175,7 +2205,8 @@
         "viewInSource": "View in {{source}}",
         "promoteFromEdr": "Promote from the EDR view",
         "pagination": "Page {{page}} of {{totalPages}} ({{total}} total)",
-        "previous": "Previous"
+        "previous": "Previous",
+        "genericEdrProvider": "EDR provider"
       },
       "IncidentDetailPage": {
         "errors": {

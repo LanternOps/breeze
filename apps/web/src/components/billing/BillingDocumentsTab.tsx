@@ -14,6 +14,14 @@ interface BillingDocumentsTabProps {
   setNotifyOnBehalfAcceptance: (v: boolean) => void;
   deviceAppendix: boolean;
   setDeviceAppendix: (v: boolean) => void;
+  lineShowDate: boolean;
+  setLineShowDate: (v: boolean) => void;
+  lineShowNote: boolean;
+  setLineShowNote: (v: boolean) => void;
+  lineShowWorkedTime: boolean;
+  setLineShowWorkedTime: (v: boolean) => void;
+  lineGrouping: 'entry' | 'day';
+  setLineGrouping: (v: 'entry' | 'day') => void;
   footer: string;
   setFooter: (v: string) => void;
   documentTheme: 'classic' | 'condensed';
@@ -57,6 +65,7 @@ interface BillingDocumentsTabProps {
  */
 export default function BillingDocumentsTab({
   autoEmailInvoice, setAutoEmailInvoice, notifyOnBehalfAcceptance, setNotifyOnBehalfAcceptance, deviceAppendix, setDeviceAppendix, footer, setFooter,
+  lineShowDate, setLineShowDate, lineShowNote, setLineShowNote, lineShowWorkedTime, setLineShowWorkedTime, lineGrouping, setLineGrouping,
   documentTheme, setDocumentTheme, documentPageSize, setDocumentPageSize,
   companyName, setCompanyName, phone, setPhone, website, setWebsite, websiteInvalid,
   addr1, setAddr1, addr2, setAddr2, city, setCity, region, setRegion, postal, setPostal,
@@ -120,6 +129,54 @@ export default function BillingDocumentsTab({
             {t('partnerBillingSettings.defaults.deviceAppendixHelp')}
           </p>
         </div>
+        {/* #8604: how time-entry lines print on customer invoices. One home for
+            the partner default; a draft invoice can override each field. */}
+        <fieldset className="mt-4">
+          <legend className="text-sm font-medium">{t('partnerBillingSettings.defaults.lineDetailTitle')}</legend>
+          <p className="mt-1 text-xs text-muted-foreground">{t('partnerBillingSettings.defaults.lineDetailHelp')}</p>
+          <div className="mt-2 space-y-2">
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox" checked={lineShowDate}
+                onChange={(e) => setLineShowDate(e.target.checked)}
+                data-testid="partner-billing-line-show-date"
+                className="h-4 w-4 rounded border"
+              />
+              <span className="text-sm">{t('partnerBillingSettings.defaults.lineShowDate')}</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox" checked={lineShowNote}
+                onChange={(e) => setLineShowNote(e.target.checked)}
+                data-testid="partner-billing-line-show-note"
+                className="h-4 w-4 rounded border"
+              />
+              <span className="text-sm">{t('partnerBillingSettings.defaults.lineShowNote')}</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox" checked={lineShowWorkedTime}
+                onChange={(e) => setLineShowWorkedTime(e.target.checked)}
+                data-testid="partner-billing-line-show-worked-time"
+                className="h-4 w-4 rounded border"
+              />
+              <span className="text-sm">{t('partnerBillingSettings.defaults.lineShowWorkedTime')}</span>
+            </label>
+            <div className="sm:max-w-xs">
+              <label className="text-sm font-medium" htmlFor="pb-line-grouping">{t('partnerBillingSettings.defaults.lineGrouping')}</label>
+              <select
+                id="pb-line-grouping" value={lineGrouping}
+                disabled={!lineShowDate}
+                onChange={(e) => setLineGrouping(e.target.value === 'day' ? 'day' : 'entry')}
+                data-testid="partner-billing-line-grouping"
+                className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm disabled:opacity-60"
+              >
+                <option value="entry">{t('partnerBillingSettings.defaults.lineGroupingEntry')}</option>
+                <option value="day">{t('partnerBillingSettings.defaults.lineGroupingDay')}</option>
+              </select>
+            </div>
+          </div>
+        </fieldset>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
             <label className="text-sm font-medium" htmlFor="pb-document-theme">{t('partnerBillingSettings.defaults.documentTheme')}</label>

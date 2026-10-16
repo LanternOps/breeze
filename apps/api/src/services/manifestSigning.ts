@@ -27,6 +27,7 @@ import {
 } from '../db/schema/manifestSigningKeys';
 import { encryptSecret, decryptForColumn } from './secretCrypto';
 import { HotPathTtlCache } from './hotPathCache';
+import { getClusterCacheBus, type PublishOutcome } from './clusterCacheBus';
 
 export interface ActiveSigningKey {
   keyId: string;
@@ -198,6 +199,17 @@ export async function signBytesWithActiveKey(
   };
 }
 
+/**
+ * The active deployment key's id, or null when this deployment has never
+ * generated one. Unlike ensureActiveSigningKey this never creates a key: an
+ * automatic caller must not be what introduces one, because every agent
+ * TOFU-pins the first deployment key it is sent and then also trusts it for
+ * update manifests (docs/deploy/agent-update-trust-bootstrap.md).
+ */
+export async function getActiveSigningKeyId(): Promise<string | null> {
+  return (await loadActive())?.keyId ?? null;
+}
+
 export async function getActivePublicKeys(): Promise<string[]> {
   const rows = await loadAllActive();
   return rows.map((r) => r.publicKeyB64);
@@ -217,12 +229,13 @@ export async function getActiveTrustKeyset(): Promise<ManifestTrustKey[]> {
 // deployment). Reading them per beat cost two transactions per agent per
 // minute; a 60 s process cache makes that two per process per minute.
 //
-// Staleness is bounded and safe: a newly activated key or delegation reaches
-// the fleet up to one TTL later than before (an agent only learns of it at its
-// next beat anyway), and neither cached value carries the private key column.
-// A key this process generates itself (ensureActiveSigningKey) invalidates at
-// once; keys and delegations written out of band (the rotation CLI) wait out
-// the TTL.
+// Staleness is bounded and safe, and neither cached value carries the private
+// key column. Writers below invalidate every API instance within about 1 s
+// through the cluster bus (W05, #8144): a key this process generates itself
+// (ensureActiveSigningKey, via invalidateManifestTrustCaches, after its insert
+// has committed), and the out-of-process rotation CLI (notifyTrustCachesChanged,
+// after its transaction commits). Writers not listed rely on the TTL; an agent
+// only learns of a change at its next beat anyway.
 //
 // Only the heartbeat uses the cached readers. Enrollment and provisioning keep
 // the uncached ones: they run once per device, so freshness costs nothing there.
@@ -232,6 +245,7 @@ const trustKeysetCache = new HotPathTtlCache<'active', ManifestTrustKey[]>({
   name: 'manifest-trust-keyset',
   ttlMs: MANIFEST_TRUST_CACHE_TTL_MS,
   maxEntries: 1,
+  cluster: true,
 });
 
 /** Cached {@link getActiveTrustKeyset} for the heartbeat hot path (#8053). */
@@ -239,10 +253,28 @@ export async function getActiveTrustKeysetCached(): Promise<ManifestTrustKey[]> 
   return trustKeysetCache.getOrLoad('active', getActiveTrustKeyset);
 }
 
-/** Drop the cached trust keyset and delegations on this process. */
+/**
+ * Drop both trust caches on this process now, and on every API instance once
+ * the surrounding transaction commits (at once when no context is held).
+ * Caller: `ensureActiveSigningKey`, after its insert has committed.
+ */
 export function invalidateManifestTrustCaches(): void {
-  trustKeysetCache.invalidate();
-  delegationRowsCache.invalidate();
+  // Whole cache (key null on the wire): the only key is a fixed literal.
+  trustKeysetCache.invalidateAroundCommit();
+  delegationRowsCache.invalidateAroundCommit();
+}
+
+/**
+ * For a writer in ANOTHER process (the rotation CLI): announce both trust
+ * caches to every API instance. Call only after the write has committed. Never
+ * throws; returns each publish's outcome so the caller can say what happened.
+ */
+export async function notifyTrustCachesChanged(): Promise<PublishOutcome[]> {
+  const bus = getClusterCacheBus();
+  return Promise.all([
+    bus.publish(trustKeysetCache.name, null),
+    bus.publish(delegationRowsCache.name, null),
+  ]);
 }
 
 // =====================================================================
@@ -511,6 +543,7 @@ const delegationRowsCache = new HotPathTtlCache<'unexpired', DelegationRow[]>({
   name: 'manifest-key-delegations',
   ttlMs: MANIFEST_TRUST_CACHE_TTL_MS,
   maxEntries: 1,
+  cluster: true,
 });
 
 /** Cached {@link getActiveManifestKeyDelegations} for the heartbeat hot path (#8053). */

@@ -7,8 +7,9 @@
  * when NO link matches does the legacy organizations.settings.helper.enabled
  * flag apply; otherwise defaults (enabled: false).
  */
-import { hierarchyFor, type DeviceHierarchyOpts } from './deviceHierarchy';
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { hierarchyFor } from './deviceHierarchy';
+import { candidatesWithLink, policySetFor, type ApplicabilityRule, type DevicePolicySetOpts } from './devicePolicySet';
+import { and, asc, eq, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
 import {
   configPolicyAssignments,
@@ -48,14 +49,6 @@ export async function getOrgHelperSettings(orgId: string): Promise<{ enabled: bo
 
 export interface HelperSettings {
   enabled: boolean;
-  /**
-   * Whether Breeze Assist draws its system-tray icon. Independent of
-   * `enabled` — the helper still serves chat, remote-access consent and PAM
-   * dialogs with the icon hidden (#3202). Defaults to true; only an explicit
-   * false hides it (the agent treats an absent field as true so an older
-   * server can never blank a fleet's trays).
-   */
-  showTrayIcon: boolean;
   showOpenPortal: boolean;
   showDeviceInfo: boolean;
   showRequestSupport: boolean;
@@ -67,24 +60,75 @@ export interface HelperSettings {
    * the helper settings (120s) — mode changes land within TTL + heartbeat.
    */
   lifecycleMode?: 'auto' | 'always-on' | 'on-demand';
+  /**
+   * Endpoint messaging rollout flag (#8741), resolved per device. Absent on
+   * entries cached before this field existed; consumers treat absent as off.
+   */
+  endpointMessaging?: { enabled: boolean };
 }
 
 const HELPER_DEFAULTS: HelperSettings = {
   enabled: false,
-  showTrayIcon: true,
   showOpenPortal: true,
   showDeviceInfo: true,
   showRequestSupport: true,
+  endpointMessaging: { enabled: false },
 };
+
+/** #8142: helper's own rules, as the policy set must apply them (raw partner, no role/OS filter). */
+const HELPER_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'none' };
+
+interface HelperRankRow { level: string; assignmentPriority: number; inlineSettings: unknown }
+
+/**
+ * Ranking + mapping shared by the read path and the policy-set path (#8142).
+ * Level DESC, then assignment priority ASC; input order (created_at, id) breaks
+ * any remaining tie. A null winner inline payload means "no policy decides".
+ */
+export function helperSettingsFromRows(rows: readonly HelperRankRow[]): HelperSettings | null {
+  if (rows.length === 0) return null;
+  const sorted = [...rows].sort((a, b) => {
+    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
+    if (levelDiff !== 0) return levelDiff;
+    return a.assignmentPriority - b.assignmentPriority;
+  });
+  const winner = sorted[0];
+  if (!winner?.inlineSettings) return null;
+
+  const s = winner.inlineSettings as Record<string, unknown>;
+  return {
+    enabled: typeof s.enabled === 'boolean' ? s.enabled : HELPER_DEFAULTS.enabled,
+    showOpenPortal: typeof s.showOpenPortal === 'boolean' ? s.showOpenPortal : HELPER_DEFAULTS.showOpenPortal,
+    showDeviceInfo: typeof s.showDeviceInfo === 'boolean' ? s.showDeviceInfo : HELPER_DEFAULTS.showDeviceInfo,
+    showRequestSupport: typeof s.showRequestSupport === 'boolean' ? s.showRequestSupport : HELPER_DEFAULTS.showRequestSupport,
+    portalUrl: typeof s.portalUrl === 'string' && s.portalUrl ? s.portalUrl : undefined,
+    lifecycleMode: s.lifecycleMode === 'auto' || s.lifecycleMode === 'always-on' || s.lifecycleMode === 'on-demand'
+      ? s.lifecycleMode
+      : undefined,
+    endpointMessaging: {
+      enabled: (s.endpointMessaging as { enabled?: unknown } | null | undefined)?.enabled === true,
+    },
+  };
+}
 
 // Resolves the helper feature settings for a device from configuration
 // policies. Returns null when NO helper feature link matched — callers
 // distinguish "no policy" (legacy org fallback applies) from an explicit
 // enabled:false (which must win; see buildHelperConfigUpdate).
-export async function resolveDeviceHelperSettings(deviceId: string, opts?: DeviceHierarchyOpts): Promise<HelperSettings | null> {
+export async function resolveDeviceHelperSettings(deviceId: string, opts?: DevicePolicySetOpts): Promise<HelperSettings | null> {
   // #8053 W1a-1: the heartbeat passes the hierarchy it already loaded; every
   // other caller gets the three reads below, unchanged.
   const passed = hierarchyFor(deviceId, opts);
+
+  // #8142: the heartbeat passes the beat's one-statement policy set.
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    return helperSettingsFromRows(candidatesWithLink(set, 'helper', HELPER_APPLICABILITY).map(({ candidate, link }) => ({
+      level: candidate.level,
+      assignmentPriority: candidate.priority,
+      inlineSettings: link.inlineSettings,
+    })));
+  }
 
   // 1. Load device
   const [device] = passed
@@ -148,32 +192,10 @@ export async function resolveDeviceHelperSettings(deviceId: string, opts?: Devic
       eq(configurationPolicies.status, 'active'),
       policyOwnershipCondition({ orgId: device.orgId, partnerId: org?.partnerId ?? null }),
       or(...targetConditions),
-    ));
+    ))
+    .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  if (rows.length === 0) return null;
-
-  // 6. Sort by level priority DESC, then assignment priority ASC — first match wins
-  rows.sort((a, b) => {
-    const levelDiff = (LEVEL_PRIORITY[b.level] ?? 0) - (LEVEL_PRIORITY[a.level] ?? 0);
-    if (levelDiff !== 0) return levelDiff;
-    return a.assignmentPriority - b.assignmentPriority;
-  });
-
-  const winner = rows[0];
-  if (!winner?.inlineSettings) return null;
-
-  const s = winner.inlineSettings as Record<string, unknown>;
-  return {
-    enabled: typeof s.enabled === 'boolean' ? s.enabled : HELPER_DEFAULTS.enabled,
-    showTrayIcon: typeof s.showTrayIcon === 'boolean' ? s.showTrayIcon : HELPER_DEFAULTS.showTrayIcon,
-    showOpenPortal: typeof s.showOpenPortal === 'boolean' ? s.showOpenPortal : HELPER_DEFAULTS.showOpenPortal,
-    showDeviceInfo: typeof s.showDeviceInfo === 'boolean' ? s.showDeviceInfo : HELPER_DEFAULTS.showDeviceInfo,
-    showRequestSupport: typeof s.showRequestSupport === 'boolean' ? s.showRequestSupport : HELPER_DEFAULTS.showRequestSupport,
-    portalUrl: typeof s.portalUrl === 'string' && s.portalUrl ? s.portalUrl : undefined,
-    lifecycleMode: s.lifecycleMode === 'auto' || s.lifecycleMode === 'always-on' || s.lifecycleMode === 'on-demand'
-      ? s.lifecycleMode
-      : undefined,
-  };
+  return helperSettingsFromRows(rows);
 }
 
 const HELPER_CACHE_TTL_SECONDS = 120;
@@ -185,11 +207,16 @@ const HELPER_CACHE_TTL_SECONDS = 120;
  * Falls back to org-level helperEnabled for backward compatibility,
  * then to defaults if no policy found.
  */
-export interface HelperConfigUpdateOptions extends DeviceHierarchyOpts {
+export interface HelperConfigUpdateOptions extends DevicePolicySetOpts {
   /** The caller already read the Redis entry this beat (and missed). */
   skipCacheRead?: boolean;
   /** Source of the legacy organizations.settings.helper flag; defaults to getOrgHelperSettings. */
   loadOrgHelperSettings?: (orgId: string) => Promise<{ enabled: boolean }>;
+  /**
+   * #8616: resolve without writing the per-device Redis entry (the heartbeat
+   * sets it when its own hierarchy load failed; see PamConfigUpdateOptions).
+   */
+  skipCacheWrite?: boolean;
 }
 
 function helperCacheKey(deviceId: string): string {
@@ -218,6 +245,8 @@ export async function buildHelperConfigUpdate(
   // does its own Redis read first (readCachedHelperSettings) and never reaches this guard on a
   // hit; this covers direct callers of buildHelperConfigUpdate.
   hierarchyFor(deviceId, opts);
+  // Validate before any cache short-circuit: a foreign set is a bug even on a hit.
+  policySetFor(deviceId, opts);
   if (!opts?.skipCacheRead) {
     const cached = await readCachedHelperSettings(deviceId);
     if (cached) return cached;
@@ -241,7 +270,7 @@ export async function buildHelperConfigUpdate(
     settings = { ...HELPER_DEFAULTS, enabled: orgEnabled };
   }
 
-  const redis = getRedis();
+  const redis = opts?.skipCacheWrite ? null : getRedis();
   if (redis) {
     try {
       await redis.set(helperCacheKey(deviceId), JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);

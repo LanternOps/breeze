@@ -91,6 +91,15 @@ describe('markRead', () => {
   });
 });
 
+describe('markRead failures', () => {
+  beforeEach(() => fetchMock.mockReset());
+
+  it('rejects with the HTTP status when Graph refuses the PATCH', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403, headers: new Map(), text: async () => 'denied' });
+    await expect(markRead('tok', 'support@a.com', 'm1')).rejects.toMatchObject({ status: 403 });
+  });
+});
+
 describe('listMessageAttachments (#6688)', () => {
   beforeEach(() => fetchMock.mockReset());
 
@@ -124,6 +133,17 @@ describe('listMessageAttachments (#6688)', () => {
   it('throws with the HTTP status on a non-OK response', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 404, headers: new Map(), text: async () => 'gone' });
     await expect(listMessageAttachments('tok', 'support@a.com', 'm1')).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('refuses an attachments nextLink off the Graph origin instead of sending the token there', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Map(),
+      json: async () => ({ value: [{ id: 'a1' }], '@odata.nextLink': 'https://attacker.example/att-page-2' }),
+    });
+    await expect(listMessageAttachments('tok', 'support@a.com', 'm1')).rejects.toThrow(/not on the Graph origin/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,0 +1,4 @@
+{"id":1,"jsonrpc":"2.0","result":{"page":1,"perPage":100,"pagesCount":1,"total":2,"items":[
+{"id":"6c0000000000000000000001","quarantinedOn":"2026-10-07T07:00:00+00:00","actionStatus":"quarantined","companyId":"5f0a1b2c3d4e5f60718293a1","endpointId":"6a0000000000000000000a02","endpointName":"lnx-beta","threatName":"Eicar-Test-File","canBeRestored":true,"canBeRemoved":true,"details":{"filePath":"/tmp/eicar.com","fileSha256":"275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"}},
+{"id":"6c0000000000000000000002","quarantinedOn":"2026-10-07T07:30:00+00:00","actionStatus":"weird-new-state","companyId":"5f0a1b2c3d4e5f60718293a2","endpointId":"6a0000000000000000000b01","endpointName":"ws-delta","threatName":"Gen:Example","canBeRestored":false,"canBeRemoved":true,"details":{"filePath":"C:\\temp\\x.exe","fileSha256":"0000000000000000000000000000000000000000000000000000000000000000"}}
+]}}

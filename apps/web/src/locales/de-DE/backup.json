@@ -720,7 +720,9 @@
     "vaultType": "Tresortyp",
     "retentionCount": "Aufbewahrungsanzahl",
     "numberOfSnapshotsToKeepInTheVault": "Anzahl der Snapshots, die im Tresor aufbewahrt werden sollen (1–100).",
-    "cancel": "Abbrechen"
+    "cancel": "Abbrechen",
+    "failedToSave": "Der Tresor konnte nicht gespeichert werden. Bitte erneut versuchen.",
+    "deviceConfigNotSent": "Tresor gespeichert, aber die Konfiguration konnte nicht an das Gerät gesendet werden: {{error}}"
   },
   "vaultDashboard": {
     "loadingVaults": "Tresore werden geladen...",
@@ -742,7 +744,12 @@
     "actions": "Aktionen",
     "sync": "Synchronisieren",
     "edit": "Bearbeiten",
-    "deactivate": "Deaktivieren"
+    "deactivate": "Deaktivieren",
+    "inactive": "Inaktiv",
+    "syncStarted": "Tresor-Synchronisierung gestartet",
+    "failedToSync": "Die Tresor-Synchronisierung konnte nicht gestartet werden. Bitte erneut versuchen.",
+    "failedToDeactivate": "Der Tresor konnte nicht deaktiviert werden. Bitte erneut versuchen.",
+    "deviceConfigNotSent": "Tresor gespeichert, aber die Konfiguration konnte nicht an das Gerät gesendet werden: {{error}}"
   },
   "dRDashboard": {
     "loadingDisasterRecovery": "Disaster Recovery wird geladen...",
@@ -993,6 +1000,8 @@
     "codeExpires": "Läuft ab um {{time}}",
     "overdueNotice": "Noch keine Rückmeldung — prüfen Sie die Wiederherstellungskonsole.",
     "fileIndexPreparing": "Dateiindex für snapshot-übergreifende Verweise wird vorbereitet…",
+    "snapshotsLoadFailed": "Snapshots konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "noSnapshots": "Noch keine Snapshots, die sich per Bare-Metal wiederherstellen lassen. Erforderlich ist eine Komplettsicherung des Geräts, die als Bare-Metal-wiederherstellbar markiert ist.",
     "statusFailed": "Wiederherstellung fehlgeschlagen",
     "statusRefused": "Wiederherstellung abgelehnt",
     "status": {
@@ -1002,7 +1011,8 @@
       "restoring": "Wird wiederhergestellt",
       "validated": "Validiert",
       "rebooted": "Neu gestartet",
-      "checked_in": "Angemeldet"
+      "checked_in": "Angemeldet",
+      "completed": "Abgeschlossen"
     }
   },
   "backupHealth": {
@@ -1112,11 +1122,13 @@
     "introProducerOnly": "Diese Sicherung wurde dort gespeichert, wo nur das ursprüngliche Gerät ihre Integrität prüfen kann. Die Wiederherstellung auf ein anderes Gerät erfordert Ihre Bestätigung.",
     "twoFactor": "Bestätigen Sie mit Zwei-Faktor-Authentifizierung, um fortzufahren.",
     "confirmOnly": "Bestätigen Sie, um fortzufahren. Die Wiederherstellung wird im Audit-Protokoll erfasst.",
-    "typedIntro": "Diese Sicherung wurde erstellt, bevor es Integritätsprüfungen gab. Geben Sie zur Bestätigung den Gerätenamen ein. Die Wiederherstellung wird im Audit-Protokoll erfasst.",
-    "typedLabel": "Geben Sie {{phrase}} zur Bestätigung ein",
     "code": "Authentifizierungscode",
     "passkey": "Sie werden aufgefordert, Ihren Passkey zu verwenden.",
-    "noFactor": "Richten Sie in Ihrem Profil die Zwei-Faktor-Authentifizierung ein und versuchen Sie es erneut.",
+    "enrollIntro": "Zum Bestätigen dieser Wiederherstellung ist ein zweiter Faktor erforderlich, und Ihr Konto hat noch keinen. Richten Sie in Ihrem Profil eine Authenticator-App oder einen Passkey ein und versuchen Sie es dann erneut.",
+    "enrollIntroSmsOnly": "Zum Bestätigen dieser Wiederherstellung ist eine Authenticator-App oder ein Passkey erforderlich. Ihr Konto hat nur SMS-Codes; richten Sie eines davon in Ihrem Profil ein.",
+    "enrollLink": "Zwei-Faktor-Authentifizierung einrichten",
+    "enrollStillRequired": "Ihr Konto hat noch immer keinen zweiten Faktor. Richten Sie einen ein und versuchen Sie es dann erneut.",
+    "enrollStillRequiredSmsOnly": "Ihr Konto hat noch immer keine Authenticator-App und keinen Passkey.",
     "confirm": "Bestätigen und wiederherstellen",
     "cancel": "Abbrechen",
     "failed": "Die Überprüfung wurde nicht akzeptiert. Versuchen Sie es erneut.",

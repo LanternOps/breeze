@@ -257,7 +257,11 @@ export default function OrgBillingSettings({ orgId }: Props) {
     if (saving || termsDaysInvalid || paymentSettingsBlockSave) return;
     setSaving(true);
     try {
-      if (canManageAutopay && paymentSettings.view && paymentSettings.reminders) await paymentSettings.save();
+      // Sends the payment-settings PUT only when one of them changed; changing
+      // one asks for a second-factor confirmation first. Closing that
+      // confirmation cancels the whole Save, so nothing is half-saved.
+      if (canManageAutopay && paymentSettings.view && paymentSettings.reminders
+        && await paymentSettings.save() === 'cancelled') return;
       const pct = taxPercent.trim();
       await runAction({
         request: () => fetchWithAuth(`/orgs/${orgId}/billing-settings`, {
@@ -593,6 +597,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
           disabled={saving || paymentSettings.saving || !canManageAutopay} />
         {paymentSettings.view.autopayEnabled && canManageAutopay && <OrgAutopayCard orgId={orgId} />}
       </div>}
+      {paymentSettings.stepUpPrompt}
 
       <div className="flex justify-end">
         <button

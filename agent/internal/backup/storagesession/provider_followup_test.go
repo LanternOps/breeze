@@ -3,6 +3,7 @@ package storagesession
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -240,28 +241,57 @@ func stallingStorage(t *testing.T, st *fakeStorage, key string, data []byte, sta
 	return &served
 }
 
+// The two stall tests below run on the fake idle clock (#8488). With a real
+// 100-150ms watchdog, a retry that was slow to reach the server on a loaded
+// -race runner was cut off before the server counted it, so the request and
+// resolve counts came up short. The watchdog now fires only when the test
+// advances virtual time, and it advances only once the server has seen the
+// attempt and the client has observed everything that attempt will send, so
+// each stalled attempt is one counted request. slowStorageClient delays one
+// request on purpose: a regression to wall-clock timing fails here instead of
+// flaking.
+
+// stallAttemptSeen waits until stalled attempt n (1-based) has reached the
+// server and, when the stall sends headers and a byte first, until the client
+// has observed both (two progress resets per attempt). Advancing before those
+// resets land would let a late reset re-arm the watchdog past the advance.
+func stallAttemptSeen(t *testing.T, clock *fakeIdleClock, served *atomic.Int32, n int, beforeHeaders bool) {
+	t.Helper()
+	waitUntil(t, fmt.Sprintf("stalled attempt %d to reach storage", n), func() bool { return served.Load() >= int32(n) })
+	if !beforeHeaders {
+		clock.waitResets(t, 2*n)
+	}
+}
+
 func TestStalledStorageTransferIsRetriedWithAFreshURL(t *testing.T) {
+	const idle = 150 * time.Millisecond
 	for _, beforeHeaders := range []bool{false, true} {
 		name := "body"
 		if beforeHeaders {
 			name = "headers"
 		}
 		t.Run(name, func(t *testing.T) {
+			clock := installFakeIdleClock(t)
 			st := newFakeStorage(t)
 			cp := newFakeControlPlane(t, st)
 			key := "snapshots/s1/files/stall"
 			data := []byte("complete-object")
 			st.put(key, data)
 			served := stallingStorage(t, st, key, data, 1, beforeHeaders)
-			p := newTestProvider(t, cp, testDescriptor(cp, time.Now()), Options{StorageIdleTimeout: 150 * time.Millisecond})
+			// The retry is slow to reach storage; on the fake clock that
+			// must not cost it its idle window.
+			client, slow := slowStorageClient(st, 2, 300*time.Millisecond)
+			p := newTestProvider(t, cp, testDescriptor(cp, time.Now()), Options{StorageIdleTimeout: idle, StorageClient: client})
 			dst := filepath.Join(t.TempDir(), "o")
-			start := time.Now()
-			if err := p.Download(key, dst); err != nil {
+			errCh := make(chan error, 1)
+			go func() { errCh <- p.Download(key, dst) }()
+
+			stallAttemptSeen(t, clock, served, 1, beforeHeaders)
+			clock.Advance(idle)
+			if err := recvErr(t, errCh); err != nil {
 				t.Fatalf("Download: %v", err)
 			}
-			if elapsed := time.Since(start); elapsed > 10*time.Second {
-				t.Fatalf("stall recovery took %v", elapsed)
-			}
+			slow.requireDelayed(t)
 			if got := readFile(t, dst); got != string(data) {
 				t.Fatalf("content = %q", got)
 			}
@@ -280,17 +310,49 @@ func TestStalledStorageTransferIsRetriedWithAFreshURL(t *testing.T) {
 }
 
 func TestPersistentlyStalledStorageTransferGivesUp(t *testing.T) {
+	const idle = 100 * time.Millisecond
+	clock := installFakeIdleClock(t)
 	st := newFakeStorage(t)
 	cp := newFakeControlPlane(t, st)
 	key := "snapshots/s1/files/stuck"
 	data := []byte("never-finishes")
 	st.put(key, data)
 	served := stallingStorage(t, st, key, data, 1000, false)
-	p := newTestProvider(t, cp, testDescriptor(cp, time.Now()), Options{StorageIdleTimeout: 100 * time.Millisecond})
+	// The last retry is slow to reach storage -- the exact shape of the CI
+	// flake (storage requests = 3, want 4) under a real-time watchdog.
+	client, slow := slowStorageClient(st, 1+maxStallRetries, 300*time.Millisecond)
+	p := newTestProvider(t, cp, testDescriptor(cp, time.Now()), Options{StorageIdleTimeout: idle, StorageClient: client})
 	dst := filepath.Join(t.TempDir(), "o")
-	err := p.Download(key, dst)
+	errCh := make(chan error, 1)
+	go func() { errCh <- p.Download(key, dst) }()
+
+	var err error
+	returned := false
+	for attempt := 1; attempt <= 1+maxStallRetries; attempt++ {
+		// Fail fast if Download gives up before every retry was made.
+		waitUntil(t, fmt.Sprintf("stalled attempt %d to reach storage", attempt), func() bool {
+			select {
+			case err = <-errCh:
+				returned = true
+				return true
+			default:
+				return served.Load() >= int32(attempt)
+			}
+		})
+		if returned {
+			t.Fatalf("Download returned after %d of %d attempts: %v", attempt-1, 1+maxStallRetries, err)
+		}
+		stallAttemptSeen(t, clock, served, attempt, false)
+		clock.Advance(idle)
+	}
+	err = recvErr(t, errCh)
+	slow.requireDelayed(t)
 	if err == nil {
 		t.Fatal("a transfer that never progresses must fail")
+	}
+	var stallErr *storageStallError
+	if !errors.As(err, &stallErr) {
+		t.Fatalf("give-up error = %v, want the stall that exhausted the retries", err)
 	}
 	if errors.Is(err, providers.ErrObjectNotFound) || errors.Is(err, ErrSessionUnavailable) {
 		t.Fatalf("stall error = %v, want a transfer failure, not absence or a lost session", err)
@@ -298,10 +360,15 @@ func TestPersistentlyStalledStorageTransferGivesUp(t *testing.T) {
 	if got := served.Load(); got != int32(1+maxStallRetries) {
 		t.Fatalf("storage requests = %d, want %d", got, 1+maxStallRetries)
 	}
+	// Every stall retry asks for a fresh URL.
+	if got := len(cp.calls()); got != 1+maxStallRetries {
+		t.Fatalf("resolve calls = %d, want %d (one fresh URL per stall retry)", got, 1+maxStallRetries)
+	}
 	if _, statErr := os.Stat(dst); statErr == nil {
 		t.Fatal("stalled download left a partial file")
 	}
-	// The session itself is still usable for other objects.
+	// The session itself is still usable for other objects. The fake clock
+	// is not advanced, so this transfer cannot be cut off.
 	other := "snapshots/s1/files/fine"
 	st.put(other, []byte("ok"))
 	if err := p.Download(other, filepath.Join(t.TempDir(), "f")); err != nil {

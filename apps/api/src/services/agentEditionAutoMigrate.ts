@@ -29,6 +29,14 @@
  *    a target not newer than the installed version (a holdback pin), means no
  *    migration. Pinning an org to its current version therefore acts as the
  *    operator hold for auto-migration too.
+ *  - ONE migration in flight per org (#5016): the first stranded device an org
+ *    presents is its canary, and no other device in that org is claimed until
+ *    the canary has come back reporting the target edition (or has provably
+ *    survived the attempt on its old build). A canary that dispatched and went
+ *    silent holds the whole org — that is the point: in #5016 the gate
+ *    dispatched to all six stranded PCs of one org in the same minute and all
+ *    six went dark together. The check and the claim run under a per-org
+ *    transaction advisory lock so two concurrent heartbeats cannot both pass.
  *  - ONE attempt per device, ever: an atomic claim on
  *    devices.edition_migration_dispatched_at (UPDATE ... WHERE ... IS NULL)
  *    makes concurrent heartbeats race safely, and a dispatched-but-failed MSI
@@ -59,7 +67,7 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { join, resolve } from 'node:path';
-import { and, eq, isNull, ne } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { envFlag } from '../config/env';
 import { devices } from '../db/schema/devices';
@@ -70,6 +78,7 @@ import { compareAgentVersions } from './agentEditionCompat';
 import { dispatchScriptToDevice, type DispatchScriptInput, type DispatchScriptResult } from './scriptDispatch';
 import { deliverDeferredDispatch } from './scriptDeferredDelivery';
 import { captureException, captureMessage } from './sentry';
+import { EDITION_MIGRATION_SETTLE_INTERVAL } from './editionMigrationWindow';
 
 export const EDITION_MIGRATION_SCRIPT_NAME = 'Migrate Agent Edition (Windows)';
 
@@ -102,7 +111,19 @@ const targetCache = new Map<string, { target: string | null; expiresAt: number }
 const HOLD_BACK_REWARN_MS = 60 * 60_000;
 const heldBackByOrg = new Map<string, { deviceIds: Set<string>; lastWarnAt: number }>();
 
+// #5016 — per-org canary hold. Keyed by org + canary device: warned at most
+// hourly per key (every stranded heartbeat in the org would otherwise log), and
+// reported to Sentry once per canary per process — a canary that dispatched
+// and never came back is exactly the "six PCs went silent" failure, and an
+// operator has to go and look at that device.
+const CANARY_HOLD_REWARN_MS = 60 * 60_000;
+const canaryHoldWarnedAt = new Map<string, number>();
+const canaryReported = new Set<string>();
+
+
 export function __resetEditionAutoMigrateStateForTests(): void {
+  canaryHoldWarnedAt.clear();
+  canaryReported.clear();
   failedDevices.clear();
   warnedConditions.clear();
   dispatchCaptured = false;
@@ -237,7 +258,8 @@ export async function maybeDispatchEditionMigration(args: EditionMigrationArgs):
       `[edition-auto-migrate] dispatched "${EDITION_MIGRATION_SCRIPT_NAME}" to device ${device.id} ` +
         `(${device.hostname ?? 'unknown host'}, ${args.reportedAgentVersion} -> ${target}, ` +
         `command ${result.commandId}, delivered=${result.delivered}). ` +
-        'The command is expected to report no result; verify via the device returning online on a hosted build.',
+        'The command reports once the script hands off to its detached second stage; the migration succeeded ' +
+        'when the device returns online on a hosted build.',
     );
     if (!dispatchCaptured) {
       dispatchCaptured = true;
@@ -250,6 +272,88 @@ export async function maybeDispatchEditionMigration(args: EditionMigrationArgs):
   } catch (err) {
     // Informational only: the command is committed and sent or queued.
     captureException(err);
+  }
+}
+
+export type UnresolvedOrgEditionMigration = {
+  id: string;
+  hostname: string | null;
+  editionMigrationDispatchedAt: Date | null;
+  lastSeenAt: Date | null;
+};
+
+/**
+ * #5016 — another device in `orgId` whose automatic edition migration is still
+ * unresolved, if any. Unresolved = dispatched, not decommissioned, not yet
+ * reporting `targetEdition`, and not seen since the settle interval elapsed
+ * (a device heartbeating on its OLD edition well after dispatch survived the
+ * attempt — the dance never reached the uninstall, or aborted before it —
+ * and so no longer holds the org).
+ *
+ * A device that went silent after dispatch stays unresolved forever, holding
+ * the org until an operator deals with it (reinstalls it — it then reports the
+ * target edition — or removes it). The uninstall-intent reaper deliberately
+ * does NOT auto-decommission such a device (offlineDetector.ts), which would
+ * otherwise both hide it and silently release this hold 24h later.
+ */
+export async function findUnresolvedOrgEditionMigration(args: {
+  orgId: string;
+  excludeDeviceId: string;
+  targetEdition: string;
+}): Promise<UnresolvedOrgEditionMigration | null> {
+  const [row] = await db
+    .select({
+      id: devices.id,
+      hostname: devices.hostname,
+      editionMigrationDispatchedAt: devices.editionMigrationDispatchedAt,
+      lastSeenAt: devices.lastSeenAt,
+    })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.orgId, args.orgId),
+        ne(devices.id, args.excludeDeviceId),
+        isNotNull(devices.editionMigrationDispatchedAt),
+        ne(devices.status, 'decommissioned'),
+        or(isNull(devices.agentEdition), ne(devices.agentEdition, args.targetEdition)),
+        or(
+          isNull(devices.lastSeenAt),
+          // last_seen_at is `timestamp` holding UTC wall-clock time, the stamp
+          // is `timestamptz`: read last_seen_at AS UTC explicitly. A raw
+          // comparison casts it through the session TimeZone and shifts the
+          // settle window by the zone offset.
+          sql`(${devices.lastSeenAt} AT TIME ZONE 'UTC') < ${devices.editionMigrationDispatchedAt} + ${EDITION_MIGRATION_SETTLE_INTERVAL}::interval`,
+        ),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+function warnCanaryHold(device: AutoMigrateDevice, canary: UnresolvedOrgEditionMigration): void {
+  const key = `${device.orgId}:${canary.id}`;
+  const now = Date.now();
+  const last = canaryHoldWarnedAt.get(key);
+  if (last === undefined || now - last >= CANARY_HOLD_REWARN_MS) {
+    canaryHoldWarnedAt.set(key, now);
+    const dispatchedAt = canary.editionMigrationDispatchedAt?.toISOString() ?? 'unknown';
+    const lastSeen = canary.lastSeenAt?.toISOString() ?? 'never';
+    console.warn(
+      `[edition-auto-migrate] org ${device.orgId}: holding automatic edition migration for the org's other ` +
+        `stranded devices (latest: ${device.id}${device.hostname ? ` ${device.hostname}` : ''}) — ` +
+        `device ${canary.id}${canary.hostname ? ` ${canary.hostname}` : ''} was dispatched at ${dispatchedAt} ` +
+        `and has not come back on the target edition (last seen ${lastSeen}). Check ` +
+        'C:\\ProgramData\\BreezeMigration\\migration.log on that device; the org resumes once it reports the ' +
+        'target edition or is removed.',
+    );
+  }
+  if (!canaryReported.has(canary.id)) {
+    canaryReported.add(canary.id);
+    captureMessage(
+      `Auto edition migration canary ${canary.id} (org ${device.orgId}) has not come back on the target edition; ` +
+        'holding the rest of the org.',
+      { eventCode: 'agent_edition_auto_migration_canary_unresolved' },
+    );
   }
 }
 
@@ -328,6 +432,26 @@ async function prepareEditionMigration(args: EditionMigrationArgs): Promise<Prep
       return null;
     }
 
+    // #5016 — one migration in flight per org. The advisory lock is held until
+    // this system context commits (the claim below commits with it), so a
+    // concurrent heartbeat from a sibling device waits here and then SEES this
+    // claim in its own in-flight check instead of racing past it.
+    await db.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edition-auto-migrate:${device.orgId}`}, 0))`,
+    );
+    const inFlight = await findUnresolvedOrgEditionMigration({
+      orgId: device.orgId,
+      excludeDeviceId: device.id,
+      targetEdition: getBinaryEdition(),
+    });
+    if (inFlight) {
+      // An ordinary stand-down, like the staged-version hold: no claim burned,
+      // no in-process veto, so this device is picked up on a later heartbeat
+      // once the canary resolves.
+      warnCanaryHold(device, inFlight);
+      return null;
+    }
+
     // Atomic once-per-device claim: whichever concurrent heartbeat wins this
     // UPDATE dispatches; everyone else sees zero rows and stands down.
     // Bound to the org and liveness the decision was made under: a device
@@ -361,6 +485,11 @@ async function prepareEditionMigration(args: EditionMigrationArgs): Promise<Prep
       triggerType: 'policy',
       createdBy: null,
       triggeredBy: null,
+      // The canary release and the reaper exclusion both measure their 2h
+      // window from this claim, so the command must not sit queued past it
+      // (the default script class queues for 168h). 15 min + the 1800s script
+      // budget + stage-2 waits stays inside the window.
+      offlinePolicy: { kind: 'queue', deliverWithinMs: 15 * 60_000 },
       // #7103 — sent by the caller after this context commits.
       deferDelivery: true,
     });

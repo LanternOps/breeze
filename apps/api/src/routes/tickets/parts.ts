@@ -86,8 +86,14 @@ ticketPartsRoutes.get('/:id/time-entries', scopes, readPerm, zValidator('param',
   const auth = c.get('auth');
   const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
   if (!ticket) return c.json({ error: 'Ticket not found', code: ERROR_CODES.NOT_FOUND }, 404);
-  const q = c.req.valid('query');
-  const { entries, total } = await listTimeEntries({ ...q, ticketId: ticket.id });
+  // Scope by the access-checked ticket, never by a caller-supplied `orgId`:
+  // the web client injects the header org selector as `?orgId=`, and when it
+  // differs from the ticket's org the list filtered every entry away while the
+  // ticket-scoped billing summary still counted them. A ticket-linked entry's
+  // org_id always equals its ticket's (time_entries_ticket_org_fk), so pinning
+  // the ticket's org is exact and cannot widen access past the ticket check.
+  const { orgId: _ignoredOrgId, ticketId: _ignoredTicketId, ...q } = c.req.valid('query');
+  const { entries, total } = await listTimeEntries({ ...q, ticketId: ticket.id, orgId: ticket.orgId });
   return c.json({ data: entries, total });
 });
 

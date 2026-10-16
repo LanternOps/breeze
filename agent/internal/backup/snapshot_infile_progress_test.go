@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -134,8 +135,25 @@ func (p *failAfterPartialProvider) Delete(remotePath string) error              
 
 // The reported counters must never go backwards (see startRunKeepalive): a
 // file that fails after part of it was reported must not make bytesDone
-// drop, and an in-file offset may never exceed the file's own size.
+// drop, and an in-file offset may never exceed the file's own size. With
+// several workers (#8381) the good file is in flight alongside the failing
+// one, so the bar shows both files' bytes at once: never less than the
+// failing file's 60, never more than the total.
 func TestSnapshotProgress_InFileBytesNeverGoBackwardsOrOvercount(t *testing.T) {
+	for _, workers := range []int{1, 2} {
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			defer setUploadConcurrencyForTest(workers)()
+			testInFileBytesNeverGoBackwards(t, func(bd int64) bool {
+				if workers == 1 {
+					return bd == 60
+				}
+				return bd >= 60
+			})
+		})
+	}
+}
+
+func testInFileBytesNeverGoBackwards(t *testing.T, partialSeen func(int64) bool) {
 	defer setProgressThrottleForTest(0)()
 	defer setProgressKeepaliveIntervalForTest(time.Hour)()
 	defer setUploadRetryDelayForTest(0)()
@@ -156,7 +174,7 @@ func TestSnapshotProgress_InFileBytesNeverGoBackwardsOrOvercount(t *testing.T) {
 			mu.Lock()
 			seen = append(seen, bd)
 			mu.Unlock()
-			if bd == 60 {
+			if partialSeen(bd) {
 				observedOnce.Do(func() { close(observed) })
 			}
 		}, nil, nil, nil)
@@ -171,7 +189,7 @@ func TestSnapshotProgress_InFileBytesNeverGoBackwardsOrOvercount(t *testing.T) {
 		if bd > 110 {
 			t.Fatalf("bytesDone %d exceeds bytesTotal 110: %v", bd, seen)
 		}
-		if bd == 60 {
+		if partialSeen(bd) {
 			sawPartial = true
 		}
 	}

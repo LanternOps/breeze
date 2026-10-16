@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -100,6 +99,12 @@ type Shipper struct {
 	// flush for the process lifetime.
 	urlErrCount atomic.Int64
 	authMon     AuthSkipper
+	// lastAttempt is the last terminal chunk outcome (shipper_health.go):
+	// one immutable record behind one pointer, so snapshots never tear.
+	lastAttempt atomic.Pointer[attemptRecord]
+	// pendingBatch is the size of the batch shipLoop holds in hand while
+	// shipBatch runs; 0 otherwise. Counted in QueueDepth.
+	pendingBatch atomic.Int32
 }
 
 // ShipperConfig configures the log shipper.
@@ -161,11 +166,11 @@ func NewShipper(cfg ShipperConfig) *Shipper {
 // relative URL that fails forever as a cryptic transport error.
 func (s *Shipper) resolveServerURL() (string, error) {
 	if s.serverURL == nil {
-		return "", errors.New("log shipper: ServerURL provider not set")
+		return "", fmt.Errorf("%w: ServerURL provider not set", errShipURLUnresolved)
 	}
 	serverURL := s.serverURL()
 	if serverURL == "" {
-		return "", errors.New("log shipper: ServerURL provider returned an empty server URL")
+		return "", fmt.Errorf("%w: ServerURL provider returned an empty server URL", errShipURLUnresolved)
 	}
 	return serverURL, nil
 }
@@ -416,7 +421,7 @@ func (s *Shipper) shipLoop() {
 				case entry := <-s.buffer:
 					batch = append(batch, entry)
 					if len(batch) >= defaultMaxBatchSize {
-						s.shipBatch(batch)
+						s.shipHeld(batch)
 						clear(batch)
 						batch = batch[:0]
 					}
@@ -425,14 +430,14 @@ func (s *Shipper) shipLoop() {
 				}
 			}
 			if len(batch) > 0 {
-				s.shipBatch(batch)
+				s.shipHeld(batch)
 			}
 			return
 
 		case entry := <-s.buffer:
 			batch = append(batch, entry)
 			if len(batch) >= defaultMaxBatchSize {
-				s.shipBatch(batch)
+				s.shipHeld(batch)
 				// Release strings and field maps before reusing the backing array.
 				// shipBatch has finished; any re-buffered entries are value copies.
 				clear(batch)
@@ -441,7 +446,7 @@ func (s *Shipper) shipLoop() {
 
 		case <-ticker.C:
 			if len(batch) > 0 {
-				s.shipBatch(batch)
+				s.shipHeld(batch)
 				clear(batch)
 				batch = batch[:0]
 			}
@@ -535,6 +540,7 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 		if s.urlErrCount.Add(1)%10 == 1 {
 			fmt.Fprintf(os.Stderr, "[log-shipper] %v — dropped %d entries (%d total)\n", err, len(entries), dropped)
 		}
+		s.recordShipFailure(sanitizeShipError(err, 0))
 		return false
 	}
 	url := fmt.Sprintf("%s/api/v1/agents/%s/logs", baseURL, s.agentID)
@@ -545,6 +551,7 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] marshal error: %v\n", err)
 		s.droppedCount.Add(int64(len(entries)))
+		s.recordShipFailure(sanitizeShipError(err, 0))
 		return true
 	}
 
@@ -554,11 +561,13 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 	if _, err := gw.Write(payload); err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] gzip write error: %v\n", err)
 		s.droppedCount.Add(int64(len(entries)))
+		s.recordShipFailure(sanitizeShipError(err, 0))
 		return true
 	}
 	if err := gw.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "[log-shipper] gzip close error: %v\n", err)
 		s.droppedCount.Add(int64(len(entries)))
+		s.recordShipFailure(sanitizeShipError(err, 0))
 		return true
 	}
 	compressedBytes := compressed.Bytes()
@@ -584,6 +593,7 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 			cancel()
 			fmt.Fprintf(os.Stderr, "[log-shipper] request build error: %v\n", err)
 			s.droppedCount.Add(int64(len(entries)))
+			s.recordShipFailure(sanitizeShipError(err, 0))
 			return true
 		}
 
@@ -601,6 +611,7 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 			}
 			fmt.Fprintf(os.Stderr, "[log-shipper] HTTP error (giving up after %d attempts): %v\n", shipRetryCount+1, err)
 			s.droppedCount.Add(int64(len(entries)))
+			s.recordShipFailure(sanitizeShipError(err, 0))
 			return false
 		}
 
@@ -620,6 +631,7 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d (giving up after %d attempts): %s\n",
 				resp.StatusCode, shipRetryCount+1, string(body))
 			s.droppedCount.Add(int64(len(entries)))
+			s.recordShipFailure(sanitizeShipError(nil, resp.StatusCode))
 			return false
 		}
 
@@ -636,6 +648,7 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d (giving up after %d attempts): %s\n",
 				resp.StatusCode, shipRetryCount+1, string(body))
 			s.droppedCount.Add(int64(len(entries)))
+			s.recordShipFailure(sanitizeShipError(nil, resp.StatusCode))
 			return false
 		}
 
@@ -647,6 +660,7 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 			fmt.Fprintf(os.Stderr, "[log-shipper] server returned %d for %d entries: %s\n",
 				resp.StatusCode, len(entries), string(body))
 			s.droppedCount.Add(int64(len(entries)))
+			s.recordShipFailure(sanitizeShipError(nil, resp.StatusCode))
 			if resp.StatusCode == http.StatusUnauthorized {
 				// Auth is request-independent: the token won't get healthier
 				// between chunks, so shipping the batch's remaining chunks
@@ -670,6 +684,7 @@ func (s *Shipper) shipChunk(entries []LogEntry) bool {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		cancel()
+		s.recordShipSuccess()
 		if s.authMon != nil {
 			s.authMon.RecordSuccess()
 		}

@@ -62,6 +62,7 @@ import {
   updateContact,
   type UpdateContactInput,
 } from './crud';
+import { reconcileLegacyContactResponsibilities } from './responsibilities';
 import {
   CONTACT_ROLES,
   DEFAULT_CONTACT_IMPORT_SYSTEM,
@@ -875,6 +876,12 @@ async function createImportedContact(
     }).returning({ id: contacts.id });
 
     const contactId = (created as { id: string }).id;
+    await reconcileLegacyContactResponsibilities(db, {
+      contactId,
+      orgId,
+      siteId,
+      roles: r.roles ?? [],
+    });
     for (const kind of ['email', 'mobile'] as const) {
       await recordDestinationChangeWithExecutor(db, { orgId, contactId, kind, value: r[kind], source: 'import', userId: null });
     }

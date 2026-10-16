@@ -3,6 +3,10 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../callerVerification/destinations', () => ({ recordDestinationChangeWithExecutor: vi.fn().mockResolvedValue(undefined) }));
+const responsibilityMocks = vi.hoisted(() => ({
+  reconcileLegacyContactResponsibilities: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('./responsibilities', () => responsibilityMocks);
 
 import {
   ContactValidationError,
@@ -284,8 +288,10 @@ describe('createContact', () => {
 
     expect(orgBlobWrites(calls)).toEqual([billing]);
     const read = compile(billingProjectionRead(calls)!.where);
-    expect(read.sql).toContain('"roles" @>');
-    expect(read.sql).toContain('"site_id" is null');
+    expect(read.sql).toContain('EXISTS');
+    expect(read.sql).toContain('"contact_roles"."role"');
+    expect(read.sql).toContain('"contact_roles"."site_id" IS NULL');
+    expect(read.sql).toContain('"contact_roles"."device_group_id" IS NULL');
     expect(read.sql).not.toContain('"is_primary"');
     // Parent-first: the org is locked before the INSERT.
     expect(lockReads(calls)[0]!.table).toBe(organizations);
@@ -675,6 +681,32 @@ describe('updateContact writes only what the patch names', () => {
     await updateContact(exec, CONTACT, ORG, { title: 'CFO', notes: null }, ACTOR);
     const write = calls.updates.find((u) => u.table === contacts)!;
     expect(Object.keys(write.set).sort()).toEqual(['notes', 'title', 'updatedAt']);
+  });
+
+  it('re-derives canonical responsibilities when a legacy siteId-only patch changes scope', async () => {
+    const stored = { ...PLAIN_ORG_ROW, siteId: null, isPrimary: false, roles: ['admin'] };
+    const updated = { ...stored, siteId: SITE };
+    const { exec } = makeExec([
+      [stored],          // getContact
+      [{ id: SITE }],    // assertSiteInOrg
+      [],                // organization pre-lock
+      [stored],          // locked target re-read
+    ], { updateReturns: [[updated]] });
+    await updateContact(exec, CONTACT, ORG, { siteId: SITE }, ACTOR);
+    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
+      exec,
+      { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
+    );
+  });
+
+  it('adapts an explicit roles patch into the canonical responsibility set using the resulting site pin', async () => {
+    const updated = { ...PLAIN_ORG_ROW, siteId: SITE, roles: ['admin'] };
+    const { exec } = makeExec([[{ ...PLAIN_ORG_ROW, siteId: SITE }]], { updateReturns: [[updated]] });
+    await updateContact(exec, CONTACT, ORG, { roles: ['admin'] }, ACTOR);
+    expect(responsibilityMocks.reconcileLegacyContactResponsibilities).toHaveBeenCalledWith(
+      exec,
+      { contactId: CONTACT, orgId: ORG, siteId: SITE, roles: ['admin'] },
+    );
   });
 
   it('still writes an explicit null, which is a real clear', async () => {

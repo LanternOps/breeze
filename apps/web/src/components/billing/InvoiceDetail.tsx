@@ -1,4 +1,4 @@
-import { autopayReasonKey, chargeBlockedKey, chargeNowAttempted, chargeNowFailureKey, chargeNowResultUnknown, chargeNowSuccessKey } from './autopayReason';
+import { autopayReasonKey, chargeBlockedKey, chargeNowAttempted, chargeNowFailureKey, chargeNowResultUnknown, chargeNowSuccessKey, STEP_UP_UNAVAILABLE } from './autopayReason';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
@@ -9,6 +9,7 @@ import { usePermissions } from '../../lib/permissions';
 import { showToast } from '../shared/Toast';
 import { Dialog } from '../shared/Dialog';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { useBillingStepUp, suppressBillingStepUpToast } from './useBillingStepUp';
 import ChangeCurrencyDialog, { type CurrencyChangeMode } from './ChangeCurrencyDialog';
 import {
   type InvoiceDetail as InvoiceDetailData,
@@ -100,6 +101,8 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
   // quote didn't carry over here).
   const [chargeConfirmOpen, setChargeConfirmOpen] = useState(false);
   const [chargePending, setChargePending] = useState(false);
+  // Charge now needs a second-factor confirmation bound to this invoice.
+  const chargeStepUp = useBillingStepUp();
   async function startAutopayCharge() {
     if (chargePending || !detail.autopay?.canChargeNow || !detail.autopay.chargePreview) return;
     setChargePending(true);
@@ -108,15 +111,22 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     try {
       // The route confirms with Stripe synchronously: a lost or unreadable response can follow
       // money moving, so it is reported as an unknown result, never "try again" (R4).
-      await runAction({ request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay/charge-now`, { method: 'POST' }),
+      const outcome = await chargeStepUp.run(stepUpGrant => runAction({
+        request: () => fetchWithAuth(`/invoices/${invoice.id}/autopay/charge-now`,
+          { method: 'POST', ...(stepUpGrant ? { body: JSON.stringify({ stepUpGrant }) } : {}) }),
         errorFallback: t('autopay.chargeResultUnknown'),
         successMessage: data => t(/* i18n-dynamic */ chargeNowSuccessKey(data)),
         friendly: (_code, _message, body) => {
           const key = chargeNowFailureKey(body);
           return key ? t(/* i18n-dynamic */ key) : undefined;
         },
-        suppressErrorToast: status => status >= 500,
-        onUnauthorized: UNAUTHORIZED });
+        // A 5xx may follow money moving and is reported as an unknown result below, except
+        // when the second-factor check itself could not run (nothing was attempted).
+        suppressErrorToast: (status, code) => (status >= 500 && code !== STEP_UP_UNAVAILABLE)
+          || suppressBillingStepUpToast(status, code),
+        onUnauthorized: UNAUTHORIZED }));
+      // Closed at the confirmation: nothing was charged and nothing needs reloading.
+      if (!outcome.confirmed) return;
       await reloadAfterCharge();
     } catch (error) {
       if (error instanceof ActionError && chargeNowResultUnknown(error)) {
@@ -929,7 +939,7 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
         confirmDisabled={!detail.autopay?.canChargeNow || !detail.autopay.chargePreview || !can('invoices', 'write')}
         confirmTestId="autopay-charge-confirm"
         dialogTestId="autopay-charge-dialog"
-      />
+      >{chargeStepUp.prompt}</ConfirmDialog>
 
       {/* Reverse-a-payment confirm dialog */}
       <ConfirmDialog

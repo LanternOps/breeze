@@ -12,16 +12,16 @@ import { invoices, invoiceLines, invoiceStripePayments, tickets } from '../db/sc
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
-import { toCustomerInvoiceHeader, toCustomerInvoiceLine, markViewed } from '../services/invoiceService';
+import { toCustomerInvoiceHeader, toCustomerInvoiceLine, customerLineDetail, markViewed } from '../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql, invoiceLineTicketCategorySql } from '../services/invoicePdf';
 import { createInvoicePayLink } from '../services/invoiceCheckout';
+import { publicInvoiceCheckoutUrls } from '../services/quoteAcceptCheckout';
 import { isPartnerOnlinePaymentAvailable } from '../services/partnerStripe';
 import { CUSTOMER_SAFE_CURRENCY_UNSUPPORTED_MESSAGE } from '../services/stripeCheckoutErrors';
 import { HeldDbContextForStripeError, settleCheckoutSession } from '../services/stripeSettle';
 import { InvoiceServiceError } from '../services/invoiceTypes';
 import { safeContentDispositionFilename } from '../utils/httpHeaders';
 import { resolveInvoicePresentation } from '../services/invoicePresentation';
-import { portalBase } from '../services/portalUrl';
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { resolveOrgLinkGate, PUBLIC_LINK_ORG_UNAVAILABLE } from '../services/publicLinkOrgGate';
@@ -145,6 +145,8 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       taxable: invoiceLines.taxable,
       lineTotal: invoiceLines.lineTotal,
       workedMinutes: invoiceLines.workedMinutes,
+      sourceType: invoiceLines.sourceType,
+      workDate: invoiceLines.workDate,
     }).from(invoiceLines)
       .leftJoin(tickets, and(
         eq(invoiceLines.ticketId, tickets.id),
@@ -188,7 +190,8 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       collectionInProgress,
       autopayStatus: customerAutopay.status,
       autopayEnrolled: customerAutopay.enrolled,
-      lines: rows.map(toCustomerInvoiceLine),
+      // #8604: toggles applied server-side from the FROZEN columns.
+      lines: rows.map((r) => toCustomerInvoiceLine(r, customerLineDetail(inv), inv.documentLocale ?? 'en')),
       chargeNow,
       // #7509: no Pay CTA unless the partner can actually take online payment.
       payable: PAYABLE.has(inv.status) && Number(inv.balance) > 0
@@ -269,7 +272,6 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
   if (await orgLinkGone(inv)) return c.json(PUBLIC_LINK_ORG_UNAVAILABLE, 410);
   if (await overPublicOpLimit('pay', inv.id, 10)) return c.json({ error: 'Too many requests', code: ERROR_CODES.RATE_LIMITED }, 429);
 
-  const returnBase = `${portalBase()}/invoice/return`;
   try {
     if('methodType' in body && body.methodType==='us_bank_account'){
       const result=body.phase==='setup'
@@ -282,9 +284,9 @@ invoicesPublicRoutes.post('/:token/pay', zValidator('param', tokenParam), zValid
     // The producer owns short committed contexts. Do not hide a caller's held
     // transaction with runOutsideDbContext: its Stripe guard must see it.
     const link = await createInvoicePayLink(inv.id, { userId: null, partnerId: null, accessibleOrgIds: [inv.orgId] }, {
-      successUrl: `${returnBase}?session_id={CHECKOUT_SESSION_ID}`,
-      cancelUrl: `${returnBase}?canceled=1&session_id={CHECKOUT_SESSION_ID}`,
-      idempotencySuffix: '_pub',
+      // Shared with the public quote accept's Sign & pay (#8231): one session
+      // family, so the two never mint competing sessions for the same charge.
+      ...publicInvoiceCheckoutUrls(),
       ...body, ip: getTrustedClientIpOrUndefined(c) ?? null, userAgent: c.req.header('user-agent') ?? null,
     });
     return c.json({ data: { url: link.url } });
