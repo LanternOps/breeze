@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { devices, deviceChangeLog } from '../../db/schema';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { submitChangesSchema } from './schemas';
@@ -11,6 +11,7 @@ import { getRedis } from '../../services/redis';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { envInt } from '../../utils/envInt';
 import { stripNul } from '../../utils/stripNul';
+import { isPgDataException, pgErrorCode } from '../../utils/pgErrors';
 
 // Async gunzip: a synchronous inflate blocks the event loop for every OTHER
 // agent's request for the duration of the decompression.
@@ -142,7 +143,7 @@ changesRoutes.put('/:id/changes', async (c) => {
   }
 
   const seenFingerprints = new Set<string>();
-  const rows = [];
+  const rows: Array<typeof deviceChangeLog.$inferInsert> = [];
   for (const change of data.changes) {
     const fingerprint = computeChangeFingerprint(change);
     if (seenFingerprints.has(fingerprint)) {
@@ -202,23 +203,42 @@ changesRoutes.put('/:id/changes', async (c) => {
     }
   }
 
+  // Each insert runs in its own savepoint (#8301): this route runs inside the
+  // request-long agent transaction, and a failed bare statement would abort
+  // it, so the later chunks and the earlier chunks' already-counted rows would
+  // all be lost at commit. A chunk that fails with a data exception (one row's
+  // VALUES, e.g. text jsonb cannot hold) is retried row by row so only that
+  // row is lost; any other error stops the loop.
+  const insertRows = (batch: typeof rows) => withDbTransaction(() => db
+    .insert(deviceChangeLog)
+    .values(batch)
+    .onConflictDoNothing({
+      target: [deviceChangeLog.deviceId, deviceChangeLog.fingerprint]
+    })
+    .returning({ id: deviceChangeLog.id }));
+
   let inserted = 0;
   let insertFailed = false;
-  try {
-    for (let i = 0; i < rows.length; i += 200) {
-      const batch = rows.slice(i, i + 200);
-      const insertedBatch = await db
-        .insert(deviceChangeLog)
-        .values(batch)
-        .onConflictDoNothing({
-          target: [deviceChangeLog.deviceId, deviceChangeLog.fingerprint]
-        })
-        .returning({ id: deviceChangeLog.id });
-      inserted += insertedBatch.length;
+  for (let i = 0; i < rows.length; i += 200) {
+    const batch = rows.slice(i, i + 200);
+    try {
+      inserted += (await insertRows(batch)).length;
+    } catch (err) {
+      insertFailed = true;
+      console.error(`[Changes] Error inserting rows for device ${device.id}:`, err);
+      if (!isPgDataException(err)) break;
+      for (const row of batch) {
+        try {
+          inserted += (await insertRows([row])).length;
+        } catch (rowErr) {
+          console.error(
+            `[Changes] Dropping one change row for device ${device.id} `
+            + `(${row.changeType} "${row.subject}", ${pgErrorCode(rowErr) ?? 'unknown'}):`,
+            rowErr,
+          );
+        }
+      }
     }
-  } catch (err) {
-    insertFailed = true;
-    console.error(`[Changes] Error inserting rows for device ${device.id}:`, err);
   }
 
   if (insertFailed && inserted === 0 && rows.length > 0) {

@@ -10,11 +10,14 @@ const ORG_ID = '11111111-1111-1111-1111-111111111111';
 // Mocks
 // ---------------------------------------------------------------------------
 
+// `withDbTransaction` is a pass-through so tests can assert that each insert
+// ran inside its own savepoint (#8301).
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
   },
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -52,7 +55,7 @@ vi.mock('../../services/ingestQuota', () => ({
   checkAndConsumeIngestQuota: vi.fn().mockResolvedValue({ allowed: true, rowsUsed: 0, bytesUsed: 0 }),
 }));
 
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { changesRoutes } from './changes';
 
@@ -99,6 +102,27 @@ function mockInsertSuccess(count: number) {
       }),
     }),
   } as any);
+}
+
+/**
+ * Drive every `db.insert(...).values(batch)...returning()` call through `impl`,
+ * which sees the rows of that one statement and decides whether it succeeds.
+ */
+function mockInsertImpl(impl: (batch: Array<Record<string, unknown>>) => Promise<unknown[]>) {
+  const valuesSpy = vi.fn((batch: Array<Record<string, unknown>>) => ({
+    onConflictDoNothing: vi.fn().mockReturnValue({
+      returning: vi.fn(() => impl(batch)),
+    }),
+  }));
+  vi.mocked(db.insert).mockReturnValue({ values: valuesSpy } as any);
+  return valuesSpy;
+}
+
+/** A DrizzleQueryError-shaped failure: generic message, the pg error on `.cause`. */
+function pgFailure(code: string, message = 'pg error'): Error {
+  return Object.assign(new Error('Failed query: insert into "device_change_log" ...'), {
+    cause: Object.assign(new Error(message), { code }),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +224,115 @@ describe('changes routes', () => {
       expect(row.beforeValue).toEqual({ ver: '12' });
       expect(row.details.nested).toEqual([{ key: 'ab' }]);
       expect(row.details.keep).toBe(5);      expect(JSON.stringify(row)).not.toContain('\\u0000');
+    });
+
+    it('persists the #8301 batch: NUL-corrupted service account next to unrelated changes', async () => {
+      mockDeviceFound();
+      const valuesSpy = mockInsertImpl(async (batch) => batch.map((_, i) => ({ id: `c${i}` })));
+
+      // The exact shape from the report: a Windows agent read the service
+      // account as four NULs + "lSystem" (should be "LocalSystem"), shipped in
+      // the same submission as software and startup-entry changes.
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          changes: [
+            makeChangePayload({ subject: 'Google Chrome', afterValue: { version: '141.0' } }),
+            makeChangePayload({
+              changeType: 'startup',
+              subject: 'OneDrive',
+              afterValue: { path: 'C:\\Program Files\\OneDrive.exe' },
+            }),
+            makeChangePayload({
+              changeType: 'service',
+              changeAction: 'modified',
+              subject: 'Google Updater Internal Service (GoogleUpdaterInternalService156.0.8067.0)',
+              beforeValue: { account: '\u0000\u0000\u0000\u0000lSystem' },
+              afterValue: { account: 'LocalSystem' },
+            }),
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true, count: 3 });
+      expect(valuesSpy).toHaveBeenCalledTimes(1);
+      const rows = valuesSpy.mock.calls[0]![0];
+      expect(rows).toHaveLength(3);
+      const service = rows.find((r) => r.changeType === 'service')!;
+      expect(service.beforeValue).toEqual({ account: 'lSystem' });
+      expect(service.afterValue).toEqual({ account: 'LocalSystem' });
+      expect(JSON.stringify(rows)).not.toContain('\\u0000');
+    });
+
+    it('runs each 200-row chunk insert in its own savepoint (#8301)', async () => {
+      mockDeviceFound();
+      mockInsertImpl(async (batch) => batch.map((_, i) => ({ id: `c${i}` })));
+
+      const changes = Array.from({ length: 250 }, (_, i) => makeChangePayload({ subject: `pkg-${i}` }));
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ success: true, count: 250 });
+      // One savepoint per chunk: a failed bare statement would abort the
+      // request-long agent transaction and lose every chunk at commit.
+      expect(withDbTransaction).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries a chunk row by row on a data exception so one bad row does not sink the batch (#8301)', async () => {
+      mockDeviceFound();
+      const valuesSpy = mockInsertImpl(async (batch) => {
+        if (batch.some((r) => r.subject === 'poison')) {
+          throw pgFailure('22P05', 'unsupported Unicode escape sequence');
+        }
+        return batch.map((_, i) => ({ id: `c${i}` }));
+      });
+
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          changes: [
+            makeChangePayload({ subject: 'good-1' }),
+            makeChangePayload({ subject: 'poison' }),
+            makeChangePayload({ subject: 'good-2' }),
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(207);
+      expect(await res.json()).toEqual({ success: true, count: 2, total: 3, partial: true });
+      // One failed chunk statement, then one statement per row.
+      expect(valuesSpy).toHaveBeenCalledTimes(4);
+      expect(valuesSpy.mock.calls.slice(1).map((call) => call[0].map((r) => r.subject))).toEqual([
+        ['good-1'],
+        ['poison'],
+        ['good-2'],
+      ]);
+      // The chunk and every per-row retry each get their own savepoint.
+      expect(withDbTransaction).toHaveBeenCalledTimes(4);
+    });
+
+    it('does not retry row by row, and stops, on a non-data error (#8301)', async () => {
+      mockDeviceFound();
+      const valuesSpy = mockInsertImpl(async () => {
+        throw pgFailure('57014', 'canceling statement due to statement timeout');
+      });
+
+      const changes = Array.from({ length: 250 }, (_, i) => makeChangePayload({ subject: `pkg-${i}` }));
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(valuesSpy).toHaveBeenCalledTimes(1);
     });
 
     it('should return 404 when device not found', async () => {
