@@ -38,6 +38,32 @@ it('keeps its scope hash across the JSON queue boundary', () => {
   const snapshot = snapshotPreviewAccess({ ...auth, allowedSiteIds: undefined });
   expect(previewScopeHash(JSON.parse(JSON.stringify(snapshot)))).toBe(previewScopeHash(snapshot));
 });
+// #6888: authMiddleware loads a partner user's accessibleOrgIds with no ORDER BY,
+// so two requests with identical access can carry the same orgs in different
+// orders. Every preview hash folds in this scope hash, so an order-sensitive
+// hash turns "nothing changed" into a spurious 409 preview_stale on confirm.
+it('hashes set-valued access ceilings independent of their order (#6888)', () => {
+  const partnerContext: DbAccessContext = { scope: 'partner', orgId: null, accessibleOrgIds: ['o1', 'o2', 'o3'], accessiblePartnerIds: ['p'], currentPartnerId: 'p', userId: 'u' };
+  const partnerAuth: AuthContext = { ...auth, scope: 'partner', orgId: null, accessibleOrgIds: ['o1', 'o2', 'o3'], allowedSiteIds: ['s1', 's2'], allowedDeviceIds: ['d1', 'd2'] };
+  mocks.context.mockReturnValue(partnerContext);
+  const first = previewScopeHash(snapshotPreviewAccess(partnerAuth));
+  mocks.context.mockReturnValue({ ...partnerContext, accessibleOrgIds: ['o3', 'o1', 'o2'] });
+  const reordered = previewScopeHash(snapshotPreviewAccess({ ...partnerAuth, accessibleOrgIds: ['o3', 'o1', 'o2'], allowedSiteIds: ['s2', 's1'], allowedDeviceIds: ['d2', 'd1'] }));
+  expect(reordered).toBe(first);
+  // Order-insensitive, not membership-insensitive: a different set still differs.
+  mocks.context.mockReturnValue({ ...partnerContext, accessibleOrgIds: ['o1', 'o2', 'o4'] });
+  expect(previewScopeHash(snapshotPreviewAccess({ ...partnerAuth, accessibleOrgIds: ['o1', 'o2', 'o4'] }))).not.toBe(first);
+  // null (unrestricted) and [] (nothing) stay distinct.
+  mocks.context.mockReturnValue({ ...partnerContext, accessibleOrgIds: null });
+  const unrestricted = previewScopeHash(snapshotPreviewAccess({ ...partnerAuth, accessibleOrgIds: null }));
+  mocks.context.mockReturnValue({ ...partnerContext, accessibleOrgIds: [] });
+  expect(previewScopeHash(snapshotPreviewAccess({ ...partnerAuth, accessibleOrgIds: [] }))).not.toBe(unrestricted);
+  // An absent site ceiling (no restriction) and a null one (fails closed, #6790) stay distinct.
+  mocks.context.mockReturnValue(partnerContext);
+  const { allowedSiteIds: _omit, ...noSiteCeiling } = partnerAuth;
+  expect(previewScopeHash(snapshotPreviewAccess(noSiteCeiling))).not.toBe(
+    previewScopeHash(snapshotPreviewAccess({ ...noSiteCeiling, allowedSiteIds: null as unknown as string[] })));
+});
 it('derives the context from the caller auth when none is ambient (self-managed route / worker)', () => {
   // The conversion entry points are self-managed precisely so their own
   // isolated transaction is the only pooled connection they hold, so there is
