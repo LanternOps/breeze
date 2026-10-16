@@ -1,7 +1,7 @@
 import type { ChatMessage, ToolEvent } from '../../store/aiChatSlice';
 import type { ServerAiMessage } from '../../services/aiChat';
 import { parseTurnModel } from './modelPicker';
-import { applyPlanToolResult, isPlanTool, proposedPlan } from './planState';
+import { applyHistoryStepResult, applyPlanToolResult, isPlanTool, proposedPlan } from './planState';
 import { isTurnComplete } from './turnState';
 
 // `toolInput` is `unknown` on the wire (JSON column) — narrow it the same
@@ -22,6 +22,9 @@ function toolInputRecord(value: unknown): Record<string, unknown> | undefined {
 // (not a catch-up fetch of a reply still in progress).
 export function historyToMessages(rows: ServerAiMessage[], lastTurnModel?: unknown): ChatMessage[] {
   const out: ChatMessage[] = [];
+  // The message holding the latest approved plan; later step results tick it.
+  let planMessage: ChatMessage | null = null;
+  const toolNames = new Map<string, string>();
 
   for (const row of rows) {
     if (row.role === 'system') continue;
@@ -72,6 +75,7 @@ export function historyToMessages(rows: ServerAiMessage[], lastTurnModel?: unkno
         input: toolInputRecord(row.toolInput),
       };
       target.toolEvents.push(evt);
+      toolNames.set(evt.toolUseId, evt.toolName);
       // A plan-first turn: the proposal is the tool input, so the plan card
       // can be rebuilt from history; its decision comes from the tool_result.
       if (isPlanTool(row.toolName)) target.plan = proposedPlan(evt.toolUseId, row.toolInput);
@@ -79,6 +83,10 @@ export function historyToMessages(rows: ServerAiMessage[], lastTurnModel?: unkno
       const matchId = row.toolUseId ?? '';
       if (target.plan && target.plan.toolUseId === matchId) {
         target.plan = applyPlanToolResult(target.plan, row.toolOutput);
+        planMessage = target.plan.status === 'approved' ? target : null;
+      } else if (planMessage && planMessage.role === 'assistant' && planMessage.plan) {
+        const name = row.toolName ?? toolNames.get(matchId);
+        if (name) planMessage.plan = applyHistoryStepResult(planMessage.plan, name);
       }
       const existing = target.toolEvents.find((t) => t.toolUseId === matchId);
       if (existing) {

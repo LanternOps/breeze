@@ -2,6 +2,7 @@ import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
 import {
   applyPlanEvent,
+  applyPlanInput,
   applyPlanToolResult,
   planDecided,
   planGone,
@@ -156,6 +157,13 @@ const aiChatSlice = createSlice({
         msg.plan = proposedPlan(action.payload.toolUseId, undefined);
       }
     },
+    /** Live `tool_use_input` for the plan tool call: brings the plan title. */
+    planInput(state, action: PayloadAction<{ messageId: string; toolUseId: string; input: unknown }>) {
+      const msg = state.messages.find((m) => m.id === action.payload.messageId);
+      if (msg && msg.role === 'assistant') {
+        msg.plan = applyPlanInput(msg.plan, action.payload.toolUseId, action.payload.input);
+      }
+    },
     /**
      * A `plan_*` SSE event. `plan_approval_required` lands on the streaming
      * message; step/complete events follow the plan by id wherever it is.
@@ -304,6 +312,7 @@ export const {
   setInFlightTool,
   appendToolEvent,
   planProposed,
+  planInput,
   planStreamEvent,
   planDecision,
   planNoLongerPending,

@@ -278,6 +278,8 @@ export type AiStreamEvent =
   // `output.status` carries the same value but the tool owns that payload, so
   // it is only a history-replay fallback. See toolIndicatorLogic.ts.
   | { type: 'tool_result'; toolUseId: string; output?: unknown; isError?: boolean; handoff?: string }
+  // Full tool input, published once the block closes (`tool_use_start` carries `{}`).
+  | { type: 'tool_use_input'; toolUseId: string; input?: unknown }
   | { type: 'message_end'; messageId?: string }
   | { type: 'approval_required'; executionId: string; toolName: string; description?: string; approvalRequestId?: string }
   | PlanStreamEvent
@@ -307,6 +309,7 @@ const KNOWN_EVENT_TYPES = new Set([
   'content_delta',
   'tool_use_start',
   'tool_result',
+  'tool_use_input',
   'message_end',
   'approval_required',
   'plan_approval_required',

@@ -216,6 +216,26 @@ describe('historyToMessages action plans', () => {
     expect(decided({ error: 'Failed to create action plan' })).toBe('expired');
   });
 
+  it('derives completed status and step ticks from the step tool results after approval', () => {
+    const rows = (withSecond: boolean) => [
+      row({ id: 'a1', role: 'assistant', content: '' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolInput: input }),
+      row({ id: 't2', role: 'tool_result', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolOutput: { result: 'approved' } }),
+      row({ id: 't3', role: 'tool_use', toolName: 'manage_services', toolUseId: 'tu-1', toolInput: {} }),
+      row({ id: 't4', role: 'tool_result', toolName: 'manage_services', toolUseId: 'tu-1', toolOutput: { ok: true } }),
+      ...(withSecond ? [
+        row({ id: 't5', role: 'tool_use', toolName: 'run_script', toolUseId: 'tu-2', toolInput: {} }),
+        row({ id: 't6', role: 'tool_result', toolName: 'run_script', toolUseId: 'tu-2', toolOutput: { ok: true } }),
+      ] : []),
+    ];
+    const done = historyToMessages(rows(true))[0];
+    expect(done.role === 'assistant' ? done.plan?.status : null).toBe('completed');
+    expect(done.role === 'assistant' ? done.plan?.steps.map((s) => s.status) : null).toEqual(['completed', 'completed']);
+    const partial = historyToMessages(rows(false))[0];
+    expect(partial.role === 'assistant' ? partial.plan?.status : null).toBe('approved');
+    expect(partial.role === 'assistant' ? partial.plan?.steps.map((s) => s.status) : null).toEqual(['completed', 'pending']);
+  });
+
   it('leaves non-plan tool rows without a plan', () => {
     const out = historyToMessages([
       row({ id: 'a1', role: 'assistant', content: '' }),

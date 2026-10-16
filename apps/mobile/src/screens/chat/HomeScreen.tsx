@@ -26,6 +26,7 @@ import {
   planDecision,
   planNoLongerPending,
   planProposed,
+  planInput,
   planStreamEvent,
   reconcileHistory,
   resetChat,
@@ -311,6 +312,9 @@ export function HomeScreen() {
                 },
               }));
               dispatch(setInFlightTool(null));
+              break;
+            case 'tool_use_input':
+              dispatch(planInput({ messageId: assistantId, toolUseId: ev.toolUseId, input: ev.input }));
               break;
             case 'message_end':
               break;

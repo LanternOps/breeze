@@ -7,7 +7,7 @@
  * streamingSessionManager.ts `loadApprovalMode`) and re-reads it before every
  * message. The `approvalMode` field on `POST /ai/sessions` is stored on the
  * row but never consulted by the approval gate, so the phone does not send
- * one. Admins change the mode under Settings → AI Usage on the web; the phone
+ * one. Admins change the mode under Organization settings → AI on the web (AI Usage only displays it); the phone
  * shows it read-only so a technician can tell why a task asks once per step.
  */
 
@@ -34,7 +34,7 @@ export interface ApprovalModeCopy {
   description: string;
 }
 
-const WHERE_TO_CHANGE = 'An admin can change it under AI Usage settings on the web.';
+const WHERE_TO_CHANGE = 'An admin can change it under Organization settings, on the AI tab, on the web.';
 
 export function approvalModeCopy(mode: AiApprovalMode | null): ApprovalModeCopy {
   switch (mode) {
@@ -43,7 +43,7 @@ export function approvalModeCopy(mode: AiApprovalMode | null): ApprovalModeCopy 
         label: 'Approve each step',
         description:
           'Breeze asks before every action it takes. Your organization sets this. '
-          + 'An admin can switch it to plan approval under AI Usage settings on the web, '
+          + 'An admin can switch it to plan approval under Organization settings, on the AI tab, on the web, '
           + 'so a multi-step task needs one approval.',
       };
     case 'action_plan':

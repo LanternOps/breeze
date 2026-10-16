@@ -34,8 +34,9 @@ describe('approvalModeCopy', () => {
   it('per_step names the setting home, so the user knows where the fix lives', () => {
     const copy = approvalModeCopy('per_step');
     expect(copy.label).toBe('Approve each step');
-    expect(copy.description).toMatch(/AI Usage/);
-    expect(copy.description).toMatch(/organization/i);
+    expect(copy.description).toMatch(/Organization settings/);
+    expect(copy.description).toMatch(/AI tab/);
+    expect(copy.description).not.toMatch(/AI Usage/);
   });
 
   it('plan modes say destructive actions still ask separately', () => {
@@ -53,6 +54,7 @@ describe('approvalModeCopy', () => {
   it('unknown mode falls back to a neutral explanation', () => {
     const copy = approvalModeCopy(null);
     expect(copy.label).toBe('Set by your organization');
-    expect(copy.description).toMatch(/AI Usage/);
+    expect(copy.description).toMatch(/Organization settings/);
+    expect(copy.description).not.toMatch(/AI Usage/);
   });
 });

@@ -8,6 +8,8 @@ import {
   parsePlanSteps,
   planCardAction,
   planDecided,
+  applyPlanInput,
+  applyHistoryStepResult,
   planDecisionFailure,
   planDecisionFromToolOutput,
   planGone,
@@ -256,5 +258,48 @@ describe('formatPlanToolName', () => {
     expect(formatPlanToolName('mcp__breeze__manage_services')).toBe('Manage services');
     expect(formatPlanToolName('run_script')).toBe('Run script');
     expect(formatPlanToolName('')).toBe('Step');
+  });
+});
+
+describe('applyPlanInput (live tool_use_input carries the title)', () => {
+  it('fills the title on the stub without disturbing planId or steps', () => {
+    const next = applyPlanInput(awaiting(), 'tu-1', { title: 'Fix printing', steps: STEPS });
+    expect(next?.title).toBe('Fix printing');
+    expect(next?.planId).toBe('plan-1');
+    expect(next?.steps).toEqual(parsePlanSteps(STEPS));
+  });
+
+  it('keeps the title when plan_approval_required arrives afterwards', () => {
+    const stub = applyPlanInput(proposedPlan('tu-1', undefined), 'tu-1', { title: 'Fix printing', steps: STEPS });
+    const next = applyPlanEvent(stub, { type: 'plan_approval_required', planId: 'plan-1', steps: STEPS });
+    expect(next?.title).toBe('Fix printing');
+  });
+
+  it('ignores another tool call and missing titles', () => {
+    const plan = awaiting();
+    expect(applyPlanInput(plan, 'other', { title: 'x' })).toBe(plan);
+    expect(applyPlanInput(plan, 'tu-1', {})).toBe(plan);
+    expect(applyPlanInput(undefined, 'tu-1', { title: 'x' })).toBeUndefined();
+  });
+});
+
+describe('applyHistoryStepResult (history derives progress from later tool results)', () => {
+  const approved = () => awaiting({ status: 'approved' });
+
+  it('ticks steps in order and completes the plan when all ran', () => {
+    const one = applyHistoryStepResult(approved(), 'mcp__breeze__manage_services');
+    expect(one.steps.map((s) => s.status)).toEqual(['completed', 'pending']);
+    expect(one.status).toBe('approved');
+    const two = applyHistoryStepResult(one, 'run_script');
+    expect(two.steps.map((s) => s.status)).toEqual(['completed', 'completed']);
+    expect(two.status).toBe('completed');
+  });
+
+  it('ignores tools that are not the next pending step, and non-approved plans', () => {
+    const plan = approved();
+    expect(applyHistoryStepResult(plan, 'run_script')).toBe(plan);
+    expect(applyHistoryStepResult(plan, 'something_else')).toBe(plan);
+    const rejected = awaiting({ status: 'rejected' });
+    expect(applyHistoryStepResult(rejected, 'manage_services')).toBe(rejected);
   });
 });

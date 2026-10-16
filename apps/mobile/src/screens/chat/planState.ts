@@ -107,6 +107,37 @@ export function proposedPlan(toolUseId: string | null, input: unknown): ChatPlan
   };
 }
 
+/**
+ * Live `tool_use_input` for the plan tool call: `tool_use_start` carries
+ * `input: {}` and `plan_approval_required` carries only the steps, so this is
+ * the only live event that brings the plan title.
+ */
+export function applyPlanInput(plan: ChatPlan | undefined, toolUseId: string, input: unknown): ChatPlan | undefined {
+  if (!plan || plan.toolUseId !== toolUseId) return plan;
+  const title = isRecord(input) && typeof input.title === 'string' ? input.title : '';
+  if (!title || plan.title === title) return plan;
+  return { ...plan, title };
+}
+
+function bareToolName(name: string): string {
+  return name.includes('__') ? name.slice(name.lastIndexOf('__') + 2) : name;
+}
+
+/**
+ * History replay: the saved rows carry no plan progress, but steps run in
+ * order right after approval, so a later tool result matching the next
+ * pending step means that step ran (failures are not persisted, so a tick
+ * means "ran"). When every step has run the plan is `completed`; otherwise it
+ * stays `approved`, because a stopped plan and an interrupted one look the same.
+ */
+export function applyHistoryStepResult(plan: ChatPlan, toolName: string): ChatPlan {
+  if (plan.status !== 'approved') return plan;
+  const next = plan.steps.findIndex((step) => step.status !== 'completed');
+  if (next < 0 || bareToolName(plan.steps[next]!.toolName) !== bareToolName(toolName)) return plan;
+  const steps = plan.steps.map((step, i) => (i === next ? { ...step, status: 'completed' as const } : step));
+  return { ...plan, steps, status: steps.every((s) => s.status === 'completed') ? 'completed' : 'approved' };
+}
+
 /** Statuses a step event may move a plan out of. */
 const RUNNABLE: ReadonlySet<PlanStatus> = new Set(['approved', 'executing']);
 
