@@ -1,7 +1,8 @@
 import './setup';
 
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import { db, withSystemDbAccessContext } from '../../db';
 import {
   backupConfigs,
@@ -210,4 +211,54 @@ runDb('per-root GC: a retirement under a prefixed root is not confirmed swept wh
       .where(eq(backupSnapshotRetirements.snapshotId, 'b9')));
   expect(retirement?.sweptAt).toBeNull();
   expect(s3.keys(bucket)).toEqual(['orgB/snapshots/b9/files/keep-for-now.dat']);
+});
+
+runDb('per-root GC: an erasure-fenced prefixed manifest is read under its fence\'s root and keeps what it references there (#7081)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const bucket = `gc-roots-fence-${unique}`;
+  const identity = normalizeStorageIdentity('s3', s3Config(bucket));
+  const old = new Date(Date.now() - 20 * DAY_MS);
+  const erasedOrgId = randomUUID();
+
+  await withSystemDbAccessContext(async () => {
+    const [partner] = await db.insert(partners).values({
+      name: `Root Partner ${unique}`, slug: `root-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active',
+    }).returning({ id: partners.id });
+    const orgB = await seedOrg(unique, partner!.id, 'b', s3Config(bucket, 'orgB'));
+    await db.insert(backupSnapshotRetirements).values({
+      orgId: orgB.orgId, configId: orgB.configId, deviceId: orgB.deviceId, snapshotId: 'e0', storageIdentity: identity,
+      backupType: 'file', reason: 'expired', retiredAt: new Date(), keyLayout: 'prefixed_flat', keyPrefix: 'orgB',
+    });
+    // An erased org's fenced incremental e1, under the prefixed root, whose
+    // manifest references an object of e0.
+    await db.execute(sql`
+      INSERT INTO backup_erasure_manifests (id, subject_org_id) VALUES (${randomUUID()}, ${erasedOrgId})
+    `);
+    await db.execute(sql`
+      INSERT INTO backup_erasure_targets (manifest_id, subject_org_id, kind, source, storage_identity, provider, snapshot_id, key_layout, key_prefix, state)
+      SELECT id, ${erasedOrgId}, 'snapshot_prefix', 'snapshot', ${identity}, 's3', 'e1', 'prefixed_flat', 'orgB', 'fenced'
+        FROM backup_erasure_manifests WHERE subject_org_id = ${erasedOrgId}
+    `);
+  });
+
+  s3.put(bucket, 'orgB/snapshots/e1/manifest.json', manifest(['snapshots/e1/files/own.dat', 'snapshots/e0/files/shared.dat']), old);
+  s3.put(bucket, 'orgB/snapshots/e1/files/own.dat', 'o', old);
+  s3.put(bucket, 'orgB/snapshots/e0/manifest.json', manifest(['snapshots/e0/files/shared.dat', 'snapshots/e0/files/junk.dat']), old);
+  s3.put(bucket, 'orgB/snapshots/e0/files/shared.dat', 's', old);
+  s3.put(bucket, 'orgB/snapshots/e0/files/junk.dat', 'j', old);
+
+  await sweepUnreferencedBackupObjects();
+
+  expect(s3.keys(bucket)).toEqual([
+    'orgB/snapshots/e0/files/shared.dat',
+    'orgB/snapshots/e1/files/own.dat',
+    'orgB/snapshots/e1/manifest.json',
+  ]);
+  const fetched = s3.callsFor(bucket).flatMap((c) => (c.op === 'get' ? [c.key] : []));
+  expect(fetched).toContain('orgB/snapshots/e1/manifest.json');
+  expect(fetched.some((key) => key.startsWith('snapshots/'))).toBe(false);
+  const refs = await withSystemDbAccessContext(() => db.execute(sql`
+    SELECT state, referenced_keys FROM backup_erasure_fence_refs WHERE storage_identity = ${identity} AND snapshot_id = 'e1'
+  `)) as unknown as Array<{ state: string; referenced_keys: string[] }>;
+  expect(refs).toEqual([{ state: 'resolved', referenced_keys: ['snapshots/e0/files/shared.dat'] }]);
 });

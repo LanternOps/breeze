@@ -32,6 +32,11 @@
  *
  * The scans and the state writes run in short system contexts; no DB context
  * is held across a storage call.
+ *
+ * Every storage key is composed from the reservation's recorded key root
+ * (#7081): `object_key` and `snapshots/<id>/` are logical, and their physical
+ * keys come from `physicalKeyFor`. A reservation whose root this server cannot
+ * read is skipped and logged — never acted on at the bucket root.
  */
 import { Queue, Worker } from 'bullmq';
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
@@ -44,6 +49,7 @@ import {
   backupStorageSessions,
 } from '../db/schema';
 import { recordBackupWriteJanitor } from '../services/backupMetrics';
+import { keyRootId, logicalKeyFrom, physicalKeyFor, snapshotKeyRootOf } from '../services/backupKeyLayout';
 import { resolveBackupWriteCommandDestination } from '../services/backupProviderConfig';
 import { abortMultipartUpload, listMultipartUploads } from '../services/backupStoragePresign';
 import {
@@ -144,11 +150,18 @@ async function abortRecordedUploads(deps: JanitorDeps, summary: JanitorSummary):
         orgId: backupStorageSessionUploads.orgId,
         objectKey: backupStorageSessionUploads.objectKey,
         uploadId: backupStorageSessionUploads.uploadId,
+        reservationSnapshotId: backupStorageSessionUploads.reservationSnapshotId,
         configId: backupStorageSessions.configId,
+        keyLayout: backupSnapshotIdReservations.keyLayout,
+        keyPrefix: backupSnapshotIdReservations.keyPrefix,
       })
       .from(backupStorageSessionUploads)
       .innerJoin(backupStorageSessions, eq(backupStorageSessions.id, backupStorageSessionUploads.sessionId))
       .leftJoin(backupJobs, eq(backupJobs.id, backupStorageSessions.jobId))
+      .leftJoin(
+        backupSnapshotIdReservations,
+        eq(backupSnapshotIdReservations.snapshotId, backupStorageSessionUploads.reservationSnapshotId),
+      )
       .where(and(
         inArray(backupStorageSessionUploads.state, OPEN_UPLOAD_STATES),
         or(
@@ -161,11 +174,27 @@ async function abortRecordedUploads(deps: JanitorDeps, summary: JanitorSummary):
       .limit(BATCH),
   );
   for (const row of rows) {
+    // The upload's physical key is under its reservation's root (#7081). A
+    // missing or unreadable root leaves the row open, logged, rather than
+    // aborting a guessed key (an abort of a key that does not exist would
+    // read as success and strand the real upload). A row with no upload id
+    // makes no storage call, so its root does not matter.
+    const root = row.keyLayout === null ? null : snapshotKeyRootOf({ keyLayout: row.keyLayout, keyPrefix: row.keyPrefix });
+    const physicalKey = root ? physicalKeyFor(root, row.objectKey) : null;
+    if (row.uploadId && physicalKey === null) {
+      summary.failures++;
+      recordBackupWriteJanitor('abort_upload', 'failed');
+      console.warn('[BackupWriteSessionJanitor] not aborting an upload: its reservation\'s key root is missing or unreadable', {
+        uploadRowId: row.id,
+        snapshotId: row.reservationSnapshotId,
+      });
+      continue;
+    }
     try {
-      if (row.uploadId) {
+      if (row.uploadId && physicalKey !== null) {
         const cfg = await destinationFor(row.configId);
         if (!cfg) throw new Error('destination unavailable');
-        await deps.storage.abortMultipart(cfg, row.objectKey, row.uploadId);
+        await deps.storage.abortMultipart(cfg, physicalKey, row.uploadId);
       }
       await withSystemDbAccessContext(() =>
         db.update(backupStorageSessionUploads)
@@ -286,6 +315,8 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
         snapshotId: backupSnapshotIdReservations.snapshotId,
         orgId: backupSnapshotIdReservations.orgId,
         configId: backupSnapshotIdReservations.configId,
+        keyLayout: backupSnapshotIdReservations.keyLayout,
+        keyPrefix: backupSnapshotIdReservations.keyPrefix,
       })
       .from(backupSnapshotIdReservations)
       .where(and(
@@ -302,7 +333,18 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
       .limit(BATCH),
   );
   for (const r of candidates) {
-    const prefix = `snapshots/${r.snapshotId}/`;
+    const root = snapshotKeyRootOf({ keyLayout: r.keyLayout, keyPrefix: r.keyPrefix });
+    if (!root) {
+      summary.failures++;
+      recordBackupWriteJanitor('sweep_prefix', 'failed');
+      console.warn('[BackupWriteSessionJanitor] not sweeping a snapshot prefix: its reservation\'s key root is unreadable', {
+        snapshotId: r.snapshotId,
+      });
+      continue;
+    }
+    // Listed, compared and aborted as physical keys under the reservation's
+    // root; completed uploads are recorded with logical keys.
+    const prefix = physicalKeyFor(root, `snapshots/${r.snapshotId}/`);
     try {
       const completed = await withSystemDbAccessContext(async () => {
         const rows = await db
@@ -318,7 +360,9 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
       if (!cfg) throw new Error('destination unavailable');
       const open = await deps.storage.listMultipart(cfg, prefix);
       for (const u of open) {
-        if (!u.key.startsWith(prefix) || completed.has(`${u.key}\u0000${u.uploadId}`)) continue;
+        if (!u.key.startsWith(prefix)) continue;
+        const logical = logicalKeyFrom(root, u.key);
+        if (logical === null || completed.has(`${logical}\u0000${u.uploadId}`)) continue;
         await deps.storage.abortMultipart(cfg, u.key, u.uploadId);
       }
       await withSystemDbAccessContext(() =>
@@ -333,6 +377,7 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
       recordBackupWriteJanitor('sweep_prefix', 'failed');
       console.warn('[BackupWriteSessionJanitor] could not sweep multipart uploads under a snapshot prefix; will retry', {
         snapshotId: r.snapshotId,
+        keyRoot: keyRootId(root),
         error: err instanceof Error ? err.message : String(err),
       });
     }
