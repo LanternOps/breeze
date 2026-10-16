@@ -233,6 +233,10 @@ export const heartbeatSchema = z.object({
   // absence as "healthy, clear it". A present but malformed value therefore
   // becomes 'unrecognized' rather than undefined: it never rejects the beat,
   // and it never silently clears a real stored issue.
+  // #8869 — Encrypted Client Hello telemetry. Both are informational counters
+  // only (no DB column): a malformed value drops to absent, never a 400.
+  echActive: z.boolean().optional().catch(undefined),
+  filterSignatureSeenAt: z.string().datetime({ offset: true }).optional().catch(undefined),
   helperInstallIssue: z.string().max(50).regex(/^[a-z][a-z0-9_]*$/).optional().catch('unrecognized'),
   // Installed watchdog version, reported by the MAIN agent in its normal
   // heartbeat (#1802) so devices.watchdog_version stays fresh after a watchdog

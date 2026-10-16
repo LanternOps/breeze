@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSettingsDecisionFields, type SettingsDecisionInput } from './heartbeatSettingsDecision';
+import { agentEchEnabled, buildSettingsDecisionFields, type SettingsDecisionInput } from './heartbeatSettingsDecision';
 import type { HelperSettings } from '../../services/helperSettings';
 
 // #8616 — the pure legacy-or-retain builder for the heartbeat's PAM, helper
@@ -177,5 +177,17 @@ describe('buildSettingsDecisionFields — retain mode (protocol 1, kill switch o
       // An empty list is never sent.
       if (retained.size === 0) expect('retainState' in wire).toBe(false);
     }
+  });
+});
+
+describe('agentEchEnabled (#8869)', () => {
+  it.each([
+    [undefined, true],
+    ['true', true],
+    ['TRUE', true],
+    ['', true],
+    ['false', false],
+  ])('AGENT_ECH_ENABLED=%s -> %s', (value, expected) => {
+    expect(agentEchEnabled({ AGENT_ECH_ENABLED: value } as NodeJS.ProcessEnv)).toBe(expected);
   });
 });

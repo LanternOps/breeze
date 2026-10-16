@@ -149,6 +149,7 @@ x-api-env: &api-env
   # #8616 heartbeat retain-state kill switch (default on). 'false' answers
   # every agent with the legacy heartbeat payload, as an older API would.
   HEARTBEAT_RETAIN_STATE_ENABLED: ${HEARTBEAT_RETAIN_STATE_ENABLED:-true}
+  AGENT_ECH_ENABLED: ${AGENT_ECH_ENABLED:-true}
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
   # Optional, but required once M365_GRAPH_ACTIONS_TOOLS_ENABLED=true below —
   # boot refuses to start without it (see that var's comment). Must be set

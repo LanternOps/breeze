@@ -71,6 +71,7 @@ import { DeferredCacheFills } from '../../services/hotPathCache';
 import {
   buildSettingsDecisionFields,
   retainStateKillSwitchEnabled,
+  agentEchEnabled,
   type RemoteManagementDecision,
 } from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
@@ -96,7 +97,12 @@ import {
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
-import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
+import {
+  recordAgentHeartbeat,
+  recordAgentHeartbeatEch,
+  recordAgentFilterSignatureReport,
+  resolveResponseStatus,
+} from '../metrics';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
@@ -1197,6 +1203,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // Absent = no problem (the agent omits the field when healthy, and older
   // agents never send it), so a stale value self-clears. Same state-change-only
   // write as #6449 above: steady-state beats add no column write.
+  // #8869 — ECH telemetry: counters only (no persistence). Absent = not counted.
+  if (data.echActive !== undefined) recordAgentHeartbeatEch(data.echActive);
+  if (data.filterSignatureSeenAt !== undefined) recordAgentFilterSignatureReport();
+
   const helperInstallIssue = data.helperInstallIssue ?? null;
   if ((device.helperInstallIssue ?? null) !== helperInstallIssue) {
     deviceUpdates.helperInstallIssue = helperInstallIssue;
@@ -2196,6 +2206,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // value that needs normalizing. The boot-time validator is the real gate;
   // this line stays defensive only to match the read pattern used elsewhere
   // in this function.
+  // #8869 — ECH kill switch, ALWAYS sent as true/false (absent on the agent =
+  // enabled). Takes effect on the agent's next connection; never tears down
+  // live connections.
+  mergedConfigUpdate.ech_enabled = agentEchEnabled();
+
   mergedConfigUpdate.require_manifest_signing_key_id =
     (process.env.AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID ?? '').trim().toLowerCase() === 'true';
 
