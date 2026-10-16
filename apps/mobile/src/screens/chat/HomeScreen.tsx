@@ -18,6 +18,7 @@ import {
   addUserMessage,
   appendDelta,
   appendToolEvent,
+  assistantMessageStarted,
   clearError,
   discardTurn,
   failAssistantMessage,
@@ -271,7 +272,10 @@ export function HomeScreen() {
         onEvent: (ev: AiStreamEvent) => {
           switch (ev.type) {
             case 'message_start':
-              // Server message id is informational; we already have a local id.
+              // Each model message of the turn gets its own row, as the server
+              // persists it (#8888). Its id is informational; the slice keeps
+              // addressing the turn by `assistantId`.
+              dispatch(assistantMessageStarted({ turnId: assistantId, sentAt: new Date().toISOString() }));
               break;
             case 'content_delta':
               dispatch(appendDelta({ id: assistantId, delta: ev.delta }));

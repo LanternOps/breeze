@@ -3,6 +3,7 @@ import { ScrollView, type NativeScrollEvent, type NativeSyntheticEvent } from 'r
 
 import { spacing } from '../../../theme';
 import type { ChatMessage } from '../../../store/aiChatSlice';
+import { turnIsLive } from '../turnState';
 
 import { UserMessage } from './UserMessage';
 import { AiMessage } from './AiMessage';
@@ -58,13 +59,14 @@ export function ConversationList({ messages, inFlightTool, onRetry, onPlanDecide
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="interactive"
     >
-      {messages.map((m) =>
+      {messages.map((m, i) =>
         m.role === 'user' ? (
           <UserMessage key={m.id} content={m.content} />
         ) : (
           <AiMessage
             key={m.id}
             message={m}
+            turnLive={turnIsLive(messages, i)}
             inFlightTool={m.isStreaming ? inFlightTool : null}
             onRetry={m.failed && onRetry ? () => onRetry(m.id) : undefined}
             onPlanDecide={m.plan && onPlanDecide ? (approved) => onPlanDecide(m.id, approved) : undefined}
