@@ -218,3 +218,4 @@ export * from './autopaySetupAttempts';
 export * from './deviceOwnershipEpochs';
 export * from './assetPhysicalPlacements';
 export * from './serviceCatalogs';
+export * from './connectionHealth';
