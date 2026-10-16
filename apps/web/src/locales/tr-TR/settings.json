@@ -89,7 +89,7 @@
     "levels": {
       "off": {
         "label": "Kapalı",
-        "help": "Yapay zeka cihazlardaki dosyaları asla listelemez veya okumaz. Tanılama erişim istekleri reddedilir."
+        "help": "Yapay zeka cihazlardaki dosya içeriklerini okuyamaz veya klasörlere göz atamaz; tanılama erişim istekleri reddedilir. Disk kullanım özetleri ve kendi kütüphane betikleriniz kullanılabilir kalır."
       },
       "no_user_profiles": {
         "label": "Kullanıcı profili klasörleri hariç",
@@ -109,6 +109,8 @@
     "sourcePartner": "iş ortağı varsayılanı",
     "sourceDefault": "Breeze varsayılanı",
     "abovePartnerCeiling": "Kullanılamaz: iş ortağı varsayılanı daha sıkı.",
+    "aboveCeilingLevel": "Kullanılamaz: iş ortağı varsayılanı daha sıkı.",
+    "retentionAboveCeiling": "İş ortağınız çıktıları en fazla {{days}} gün saklar.",
     "saved": "Yapay zeka veri ilkesi kaydedildi",
     "failedToSave": "Yapay zeka veri ilkesi kaydedilemedi",
     "partnerInheritDefault": "Breeze varsayılanı: {{value}}",

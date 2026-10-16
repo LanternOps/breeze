@@ -89,7 +89,7 @@
     "levels": {
       "off": {
         "label": "Aus",
-        "help": "Die KI listet oder liest niemals Dateien auf Geräten. Anfragen für Diagnosezugriff werden abgelehnt."
+        "help": "Die KI kann keine Dateiinhalte lesen und keine Ordner auf Geräten durchsuchen; Anfragen für Diagnosezugriff werden abgelehnt. Übersichten zur Speichernutzung und Ihre eigenen Bibliotheksskripte bleiben verfügbar."
       },
       "no_user_profiles": {
         "label": "Ohne Benutzerprofilordner",
@@ -109,6 +109,8 @@
     "sourcePartner": "Partner-Standard",
     "sourceDefault": "Breeze-Standard",
     "abovePartnerCeiling": "Nicht verfügbar: Der Partner-Standard ist strenger.",
+    "aboveCeilingLevel": "Nicht verfügbar: Der Partner-Standard ist strenger.",
+    "retentionAboveCeiling": "Ihr Partner bewahrt Ausgaben höchstens {{days}} Tage auf.",
     "saved": "KI-Datenrichtlinie gespeichert",
     "failedToSave": "KI-Datenrichtlinie konnte nicht gespeichert werden",
     "partnerInheritDefault": "Breeze-Standard: {{value}}",

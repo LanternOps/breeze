@@ -7,6 +7,8 @@ vi.mock('@/lib/runAction', async () => {
   const actual = await vi.importActual<typeof import('@/lib/runAction')>('@/lib/runAction');
   return { ...actual, runAction };
 });
+const showToast = vi.hoisted(() => vi.fn());
+vi.mock('../shared/Toast', () => ({ showToast }));
 const fetchWithAuth = vi.hoisted(() => vi.fn());
 const handleSessionExpired = vi.hoisted(() => vi.fn());
 vi.mock('@/stores/auth', () => ({ fetchWithAuth, handleSessionExpired }));
@@ -63,7 +65,7 @@ describe('OrgAiDataPolicyCard', () => {
     render(<OrgAiDataPolicyCard orgId="org-1" />);
     const input = (await screen.findByTestId('org-ai-data-policy-retention')) as HTMLInputElement;
     expect(input.value).toBe('10');
-    fireEvent.change(input, { target: { value: '999' } });
+    fireEvent.change(input, { target: { value: '20' } });
     fireEvent.blur(input);
     await waitFor(() => expect(runAction).toHaveBeenCalledTimes(1));
     await waitFor(() => expect((screen.getByTestId('org-ai-data-policy-retention') as HTMLInputElement).value).toBe('10'));
@@ -78,5 +80,42 @@ describe('OrgAiDataPolicyCard', () => {
       method: 'PUT',
       body: JSON.stringify({ deviceFileReadLevel: 'off' }),
     }));
+  });
+
+  it('refuses a retention above the ceiling client-side: no PUT, toast, input reverts', async () => {
+    currentPolicy = { deviceFileReadLevel: null, toolOutputRetentionDays: 10 };
+    render(<OrgAiDataPolicyCard orgId="org-1" />);
+    const input = (await screen.findByTestId('org-ai-data-policy-retention')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '60' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect((screen.getByTestId('org-ai-data-policy-retention') as HTMLInputElement).value).toBe('10'));
+    expect(runAction).not.toHaveBeenCalled();
+    expect(fetchWithAuth.mock.calls.some(([, init]) => (init as { method?: string } | undefined)?.method === 'PUT')).toBe(false);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringContaining('aiDataPolicy.retentionAboveCeiling') }));
+  });
+
+  it.each([
+    ['toolOutputRetentionDays', 'aiDataPolicy.retentionAboveCeiling'],
+    ['deviceFileReadLevel', 'aiDataPolicy.aboveCeilingLevel'],
+  ])('translates a server 422 above_partner_ceiling (%s) instead of toasting the raw token', async (field, key) => {
+    const actual = await vi.importActual<typeof import('@/lib/runAction')>('@/lib/runAction');
+    runAction.mockImplementation(actual.runAction);
+    currentPolicy = { deviceFileReadLevel: null, toolOutputRetentionDays: 10 };
+    fetchWithAuth.mockImplementation(async (_url: string, init?: { method?: string }) =>
+      init?.method === 'PUT'
+        ? { ok: false, status: 422, json: async () => ({ error: 'above_partner_ceiling', field }) }
+        : getResponse());
+    render(<OrgAiDataPolicyCard orgId="org-1" />);
+    if (field === 'deviceFileReadLevel') {
+      fireEvent.click(await screen.findByTestId('org-ai-data-policy-level-off'));
+    } else {
+      const input = await screen.findByTestId('org-ai-data-policy-retention');
+      fireEvent.change(input, { target: { value: '20' } });
+      fireEvent.blur(input);
+    }
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    const messages = showToast.mock.calls.map(([a]) => (a as { message: string }).message);
+    expect(messages.some((m) => m.startsWith(key))).toBe(true);
+    expect(messages.join(' ')).not.toContain('above_partner_ceiling');
   });
 });

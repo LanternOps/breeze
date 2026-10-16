@@ -89,7 +89,7 @@
     "levels": {
       "off": {
         "label": "Désactivé",
-        "help": "L'IA ne liste ni ne lit jamais les fichiers des appareils. Les demandes d'accès de diagnostic sont refusées."
+        "help": "L'IA ne peut ni lire le contenu des fichiers ni parcourir les dossiers des appareils, et les demandes d'accès de diagnostic sont refusées. Les résumés d'utilisation du disque et vos propres scripts de bibliothèque restent disponibles."
       },
       "no_user_profiles": {
         "label": "Exclut les dossiers de profils utilisateur",
@@ -109,6 +109,8 @@
     "sourcePartner": "valeur par défaut du partenaire",
     "sourceDefault": "valeur par défaut de Breeze",
     "abovePartnerCeiling": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "aboveCeilingLevel": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "retentionAboveCeiling": "Votre partenaire conserve les sorties au plus {{days}} jours.",
     "saved": "Politique de données d'IA enregistrée",
     "failedToSave": "Échec de l'enregistrement de la politique de données d'IA",
     "partnerInheritDefault": "Valeur par défaut de Breeze : {{value}}",

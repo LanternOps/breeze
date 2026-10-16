@@ -66,6 +66,14 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
           body: JSON.stringify(patch),
         }),
         errorFallback: t('aiDataPolicy.failedToSave'),
+        // The API answers a tighten-only violation with a bare machine token.
+        friendly: (code, _message, body) => {
+          if (code !== 'above_partner_ceiling') return undefined;
+          const field = (body as { field?: string } | undefined)?.field;
+          return field === 'deviceFileReadLevel'
+            ? t('aiDataPolicy.aboveCeilingLevel')
+            : t('aiDataPolicy.retentionAboveCeiling', { days: ceiling?.toolOutputRetentionDays ?? '' });
+        },
         successMessage: t('aiDataPolicy.saved'),
         onUnauthorized: handleSessionExpired,
       });
@@ -137,6 +145,12 @@ export default function OrgAiDataPolicyCard({ orgId }: { orgId: string }) {
             const v = e.currentTarget.value.trim();
             const next = v === '' ? null : Number(v);
             if (next === (policy?.toolOutputRetentionDays ?? null)) return;
+            // `max` does not block typing: refuse client-side instead of PUTting a doomed value.
+            if (next !== null && ceiling.toolOutputRetentionDays !== null && next > ceiling.toolOutputRetentionDays) {
+              showToast({ type: 'error', message: t('aiDataPolicy.retentionAboveCeiling', { days: ceiling.toolOutputRetentionDays }) });
+              setReloadKey((k) => k + 1);
+              return;
+            }
             void save({ toolOutputRetentionDays: next });
           }}
           className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm" />

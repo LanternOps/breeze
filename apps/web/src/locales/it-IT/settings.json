@@ -89,7 +89,7 @@
     "levels": {
       "off": {
         "label": "Disattivato",
-        "help": "L'IA non elenca né legge mai i file sui dispositivi. Le richieste di accesso diagnostico vengono rifiutate."
+        "help": "L'IA non può leggere il contenuto dei file né sfogliare le cartelle sui dispositivi, e le richieste di accesso diagnostico vengono rifiutate. I riepiloghi sull'uso del disco e i tuoi script della libreria restano disponibili."
       },
       "no_user_profiles": {
         "label": "Esclude le cartelle dei profili utente",
@@ -109,6 +109,8 @@
     "sourcePartner": "predefinito del partner",
     "sourceDefault": "predefinito di Breeze",
     "abovePartnerCeiling": "Non disponibile: il valore predefinito del partner è più restrittivo.",
+    "aboveCeilingLevel": "Non disponibile: il valore predefinito del partner è più restrittivo.",
+    "retentionAboveCeiling": "Il tuo partner conserva gli output per al massimo {{days}} giorni.",
     "saved": "Policy sui dati IA salvata",
     "failedToSave": "Impossibile salvare la policy sui dati IA",
     "partnerInheritDefault": "Predefinito di Breeze: {{value}}",

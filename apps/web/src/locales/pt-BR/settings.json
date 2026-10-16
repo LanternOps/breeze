@@ -89,7 +89,7 @@
     "levels": {
       "off": {
         "label": "Desativado",
-        "help": "A IA nunca lista nem lê arquivos nos dispositivos. Solicitações de acesso de diagnóstico são recusadas."
+        "help": "A IA não pode ler o conteúdo de arquivos nem navegar por pastas nos dispositivos, e solicitações de acesso de diagnóstico são recusadas. Resumos de uso de disco e seus próprios scripts da biblioteca continuam disponíveis."
       },
       "no_user_profiles": {
         "label": "Exclui pastas de perfis de usuário",
@@ -109,6 +109,8 @@
     "sourcePartner": "padrão do parceiro",
     "sourceDefault": "padrão do Breeze",
     "abovePartnerCeiling": "Indisponível: o padrão do parceiro é mais restritivo.",
+    "aboveCeilingLevel": "Indisponível: o padrão do parceiro é mais restritivo.",
+    "retentionAboveCeiling": "Seu parceiro mantém as saídas por no máximo {{days}} dias.",
     "saved": "Política de dados de IA salva",
     "failedToSave": "Falha ao salvar a política de dados de IA",
     "partnerInheritDefault": "Padrão do Breeze: {{value}}",

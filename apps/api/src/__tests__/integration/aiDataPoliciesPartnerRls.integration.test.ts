@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { aiDataPolicies } from '../../db/schema';
+import { resolveAiDataPolicy, resolveAiDataPolicyCeiling } from '../../services/aiDataPolicy';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { executeOrgMerge } from '../../services/orgMerge';
 import { pgErrorCode } from '../../utils/pgErrors';
@@ -200,5 +201,57 @@ describe('ai_data_policies RLS', () => {
         else process.env.ORG_MERGE_FENCE_DRAIN_MS = prior;
       }
     });
+  });
+});
+
+describe('resolveAiDataPolicy under RLS', () => {
+  const seedPartnerCeiling = () =>
+    withSystemDbAccessContext(() =>
+      db.insert(aiDataPolicies).values({ partnerId: a.partnerId, deviceFileReadLevel: 'off', toolOutputRetentionDays: 7 }));
+
+  it('an org-scoped session resolves the partner ceiling through the SELECT branch', async () => {
+    await seedPartnerCeiling();
+    const ctx = orgContext(a.orgId, a.partnerId);
+    const effective = await withDbAccessContext(ctx, () => resolveAiDataPolicy(a.orgId));
+    expect(effective.deviceFileReadLevel).toBe('off');
+    expect(effective.source.deviceFileReadLevel).toBe('partner');
+    expect(effective.toolOutputRetentionDays).toBe(7);
+    const ceiling = await withDbAccessContext(ctx, () => resolveAiDataPolicyCeiling(a.orgId));
+    expect(ceiling.deviceFileReadLevel).toBe('off');
+    expect(ceiling.source.deviceFileReadLevel).toBe('partner');
+    expect(ceiling.toolOutputRetentionDays).toBe(7);
+  });
+
+  it('a partner-scoped session resolves the same ceiling', async () => {
+    await seedPartnerCeiling();
+    const effective = await withDbAccessContext(partnerContext(a.partnerId, [a.orgId]), () => resolveAiDataPolicy(a.orgId));
+    expect(effective.deviceFileReadLevel).toBe('off');
+    expect(effective.source.deviceFileReadLevel).toBe('partner');
+  });
+
+  it("another partner's org sees defaults: the foreign row is invisible", async () => {
+    await seedPartnerCeiling();
+    const effective = await withDbAccessContext(orgContext(b.orgId, b.partnerId), () => resolveAiDataPolicy(b.orgId));
+    expect(effective.deviceFileReadLevel).toBe('no_user_profiles');
+    expect(effective.toolOutputRetentionDays).toBe(30);
+    expect(effective.source.deviceFileReadLevel).toBe('default');
+    expect(effective.source.toolOutputRetentionDays).toBe('default');
+  });
+
+  it('fails open to defaults when the DB context carries no currentPartnerId (Wave 2 gate must assert it — see ledger ruling)', async () => {
+    await seedPartnerCeiling();
+    // Context literal built WITHOUT currentPartnerId: the partner SELECT branch cannot match.
+    const noPartnerCtx: DbAccessContext = {
+      scope: 'organization',
+      orgId: a.orgId,
+      accessibleOrgIds: [a.orgId],
+      accessiblePartnerIds: [],
+      userId: null,
+    } as DbAccessContext;
+    const effective = await withDbAccessContext(noPartnerCtx, () => resolveAiDataPolicy(a.orgId));
+    // Pins the current gap: the partner's stricter 'off' is invisible, so the resolver
+    // returns the (looser) default. Wave 2 turns this into a fail-closed assertion.
+    expect(effective.deviceFileReadLevel).toBe('no_user_profiles');
+    expect(effective.source.deviceFileReadLevel).toBe('default');
   });
 });

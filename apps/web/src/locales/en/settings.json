@@ -89,7 +89,7 @@
     "levels": {
       "off": {
         "label": "Off",
-        "help": "The AI never lists or reads files on devices. Diagnostic access requests are refused."
+        "help": "The AI cannot read file contents or browse folders on devices, and diagnostic access requests are refused. Disk-usage summaries and your own library scripts stay available."
       },
       "no_user_profiles": {
         "label": "Excludes user profile folders",
@@ -109,6 +109,8 @@
     "sourcePartner": "partner default",
     "sourceDefault": "Breeze default",
     "abovePartnerCeiling": "Not available: the partner default is stricter.",
+    "aboveCeilingLevel": "Not available: the partner default is stricter.",
+    "retentionAboveCeiling": "Your partner keeps outputs for at most {{days}} days.",
     "saved": "AI data policy saved",
     "failedToSave": "Failed to save AI data policy",
     "partnerInheritDefault": "Breeze default: {{value}}",
