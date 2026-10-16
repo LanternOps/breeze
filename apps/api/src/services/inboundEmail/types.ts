@@ -27,6 +27,13 @@ export interface SenderAuth {
   dkim: SenderAuthVerdict;
   dmarc: SenderAuthVerdict;
   verified: boolean;
+  /**
+   * Set only when `verified` came from something other than the provider's
+   * Authentication-Results verdicts. 'exchange-internal': a Microsoft 365 mailbox
+   * received mail that the tenant's own Exchange stamped as sent from inside the
+   * tenant (normalizeGraphMessage, #8299). Absent: `verified` is the DMARC result.
+   */
+  source?: 'exchange-internal';
 }
 
 // Why a message ended up WITHOUT a usable provider sender-auth verdict, as opposed to a

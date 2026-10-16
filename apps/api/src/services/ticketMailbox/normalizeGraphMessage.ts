@@ -1,5 +1,5 @@
 import type { GraphMessage } from './graphMailClient';
-import type { NormalizedInboundEmail } from '../inboundEmail/types';
+import type { NormalizedInboundEmail, SenderAuth } from '../inboundEmail/types';
 import { BREEZE_OUTBOUND_HEADER } from '../emailDomains/outboundMarker';
 import { htmlToText } from '../inboundEmail/htmlToText';
 import { buildSenderAuth } from '../inboundEmail/authenticationResults';
@@ -23,7 +23,9 @@ function header(headers: GraphMessage['internetMessageHeaders'], name: string): 
  * Unmatched → '' → all verdicts 'unknown' → verified=false → the R4 gate quarantines
  * (never drops) for manual review. NOTE: if a tenant's EOP stamps a different
  * authserv-id than the mailbox domain, genuine mail will quarantine until this is
- * tuned — safe because nothing is lost.
+ * tuned — safe because nothing is lost. Mail sent from inside the tenant is the
+ * common case of this (authserv-id `mx.microsoft.com`, dmarc=none); graphSenderAuth
+ * verifies it from Exchange's intra-tenant stamp instead (#8299).
  */
 function trustedAuthResults(
   headers: GraphMessage['internetMessageHeaders'], mailboxDomain: string,
@@ -38,6 +40,52 @@ function trustedAuthResults(
 }
 
 
+/**
+ * True only when the tenant's own Exchange says this message was sent from inside
+ * the tenant: `X-MS-Exchange-Organization-AuthAs: Internal` AND
+ * `X-MS-Exchange-Organization-MessageDirectionality: Originating` (#8299).
+ *
+ * Why this cannot be spoofed: Exchange Online's header firewall removes every
+ * `X-MS-Exchange-Organization-*` header from mail entering the organization from
+ * outside, then stamps its own. External mail arrives as AuthAs=Anonymous /
+ * MessageDirectionality=Incoming. The `X-MS-Exchange-CrossTenant-*` headers are
+ * deliberately NOT read: they describe the SENDING tenant, so another Microsoft
+ * 365 tenant's mail can carry `CrossTenant-AuthAs: Internal`.
+ *
+ * Strict by design: both headers must be present, every instance of each must
+ * equal the exact value Exchange writes, and a duplicate with any other value
+ * fails the check. This is read only on the Microsoft 365 mailbox path, where
+ * Graph returns the headers as the mailbox's own tenant stored them; the Gmail
+ * and Mailgun normalizers never look at these headers.
+ */
+function isExchangeIntraTenant(headers: GraphMessage['internetMessageHeaders']): boolean {
+  const allEqual = (name: string, expected: string): boolean => {
+    const values = (headers ?? [])
+      .filter((h) => h.name.toLowerCase() === name)
+      .map((h) => h.value.trim());
+    return values.length > 0 && values.every((v) => v === expected);
+  };
+  return allEqual('x-ms-exchange-organization-authas', 'Internal')
+    && allEqual('x-ms-exchange-organization-messagedirectionality', 'Originating');
+}
+
+/**
+ * Sender auth for a Microsoft 365 mailbox message. A trusted DMARC verdict wins in
+ * both directions: a pass needs nothing more, and a fail is never overridden. When
+ * there is no usable verdict (intra-tenant mail is unsigned, and EOP stamps
+ * `mx.microsoft.com` rather than the mailbox domain, so trustedAuthResults is
+ * empty), Exchange's intra-tenant stamp verifies the sender instead, so the R4
+ * gate in inboundEmailService passes for the tenant's own staff without trusting
+ * the From domain or the customer-domain list.
+ */
+function graphSenderAuth(
+  headers: GraphMessage['internetMessageHeaders'], mailboxDomain: string,
+): SenderAuth {
+  const auth = buildSenderAuth(trustedAuthResults(headers, mailboxDomain));
+  if (auth.verified || auth.dmarc === 'fail') return auth;
+  if (!isExchangeIntraTenant(headers)) return auth;
+  return { ...auth, verified: true, source: 'exchange-internal' };
+}
 
 /** jsonb cannot store U+0000; drop it from strings persisted in `raw`. */
 function stripNul(value: string): string {
@@ -92,7 +140,7 @@ export function normalizeGraphMessage(
     // Loop/bounce signals (ingest-level loop suppression).
     returnPath: header(msg.internetMessageHeaders, 'Return-Path'),
     xLoop: header(msg.internetMessageHeaders, 'X-Loop'),
-    senderAuth: buildSenderAuth(trustedAuthResults(msg.internetMessageHeaders, mailboxDomain)),
+    senderAuth: graphSenderAuth(msg.internetMessageHeaders, mailboxDomain),
     // Metadata only across the queue — attachment bytes never go into Redis. The
     // inbound worker fetches them from Graph before processing when this is set
     // (services/ticketMailbox/fetchInboundAttachments.ts, #6688).

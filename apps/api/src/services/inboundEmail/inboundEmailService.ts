@@ -402,8 +402,11 @@ export async function processInboundEmail(
     // known-portal-user match must NOT be trusted to append a PUBLIC comment, reopen a
     // ticket, or create a ticket as a trusted sender unless the sender's domain is
     // authenticated. We rely on the verdicts the provider already computed at its MX
-    // boundary (aligned SPF+DKIM, or DMARC pass). When NOT verified, route the message to
-    // the EXISTING quarantine/review path instead of auto-acting — mail is never dropped.
+    // boundary (aligned SPF+DKIM, or DMARC pass). On a Microsoft 365 mailbox, mail the
+    // tenant's own Exchange stamped as intra-tenant also counts (senderAuth.source
+    // 'exchange-internal', normalizeGraphMessage, #8299). When NOT verified, route the
+    // message to the EXISTING quarantine/review path instead of auto-acting — mail is
+    // never dropped.
     if (!n.senderAuth?.verified) {
       // A `senderAuthDiagnostic` means we're acting NOT because of a genuine DMARC fail but
       // because no usable provider verdict could be read — the silent mass-quarantine (or, when
