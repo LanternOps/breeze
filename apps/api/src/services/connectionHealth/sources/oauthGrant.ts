@@ -2,6 +2,10 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../../../db';
 import { PERMISSIONS } from '../../permissions';
 import type { HealthObservation, HealthSource } from '../types';
+import { cleanDisplayName } from '../sanitize';
+
+// Re-exported: W1 callers and tests import it from here.
+export { cleanDisplayName };
 
 const LOOKBACK_DAYS = 30;
 // The only automatic revocation W1 reports. `provider-revoke-grant` is also
@@ -12,20 +16,6 @@ const LOOKBACK_DAYS = 30;
 // partial index predicate.
 const AUTO_REASON = sql.raw(`'refresh-token-reuse'`);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DISPLAY_NAME_MAX = 80;
-
-// DCR client_name is attacker-controlled. C0/C1 controls and line separators
-// become spaces; bidi controls, zero-width characters and the BOM are removed,
-// so a name cannot reorder or hide text in a notice. Then whitespace collapses
-// and the result is capped in code points, never splitting a surrogate pair.
-const TO_SPACE_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
-const INVISIBLE_RE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
-export function cleanDisplayName(raw: unknown, fallback: string): string {
-  const s = typeof raw === 'string'
-    ? raw.replace(TO_SPACE_RE, ' ').replace(INVISIBLE_RE, '').replace(/\s+/g, ' ').trim()
-    : '';
-  return Array.from(s || fallback).slice(0, DISPLAY_NAME_MAX).join('');
-}
 
 type PairRow = {
   account_id: string; client_id: string; partner_id: string; org_id: string | null;
