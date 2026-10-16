@@ -153,7 +153,10 @@ describe('deliverPendingNotices', () => {
     expect(all).toHaveLength(3);
     expect(all.filter((n) => n.read).map((n) => n.userId).sort()).toEqual([o1, u1].sort());
     expect(all.find((n) => n.dedupeKey === 'unrelated')!.read).toBe(false);
-    expect(await incident()).toMatchObject({ pendingNotice: null, notifiedUserIds: [] });
+    const inc = await incident();
+    expect(inc.pendingNotice).toBeNull();
+    // Kept, so a reopen inside the window knows this episode reached someone.
+    expect([...inc.notifiedUserIds].sort()).toEqual([o1, u1].sort());
   });
 
   it('does not recreate a deleted notice on a later run', async () => {
@@ -320,7 +323,20 @@ describe('deliverPendingNotices', () => {
       const all = await notes();
       expect(all).toHaveLength(2);
       expect(all.every((n) => n.read)).toBe(true);
-      expect(await incident()).toMatchObject({ pendingNotice: null, notifiedUserIds: [] });
+      expect((await incident()).pendingNotice).toBeNull();
+    });
+
+    it('a reopen of an episode nobody was told about delivers its opened notice once', async () => {
+      // The opened notice was never delivered and the resolve cancelled it.
+      await asSystem(() => applyActions([{ type: 'resolve', incidentId, resolution: 'recovered' }], RESOLVED_AT));
+      expect((await incident()).pendingNotice).toBeNull();
+      await asSystem(() =>
+        applyActions([{ type: 'reopen', incidentId, obs: obs({ observedAt: REOPENED_AT }), escalated: false }], REOPENED_AT),
+      );
+      expect((await incident()).pendingNotice).toBe('opened');
+      await deliverPendingNotices(NOW);
+      const key = noticeDedupeKeys(incidentId, OPENED_AT).opened;
+      expect((await notes()).map((n) => [n.userId, n.dedupeKey, n.read]).sort()).toEqual([[o1, key, false], [u1, key, false]].sort());
     });
   });
 });

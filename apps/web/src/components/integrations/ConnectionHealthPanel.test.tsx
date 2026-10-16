@@ -110,6 +110,13 @@ describe("ConnectionHealthPanel", () => {
     expect(await screen.findByTestId("connection-health-open-row")).toBeTruthy();
   });
 
+  it("treats a 200 without a data array as an error, never as all healthy", async () => {
+    fetchMock.mockResolvedValue(res({ success: false }));
+    render(<ConnectionHealthPanel />);
+    expect(await screen.findByTestId("connection-health-error")).toBeTruthy();
+    expect(screen.queryByTestId("connection-health-empty")).toBeNull();
+  });
+
   it("treats a thrown fetch as an error, not a crash", async () => {
     fetchMock.mockRejectedValue(new Error("net"));
     render(<ConnectionHealthPanel />);

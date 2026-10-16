@@ -29,7 +29,10 @@ export type EdrRow = {
 };
 
 export function edrObservation(row: EdrRow, now: Date): HealthObservation {
-  const detail = row.lastInventorySyncStatus === 'error' ? row.lastInventorySyncError : row.lastDetectionSyncError;
+  // Only an errored stream's text: a reauth-only break must not show a stale stream error.
+  const detail = row.lastInventorySyncStatus === 'error'
+    ? row.lastInventorySyncError
+    : row.lastDetectionSyncStatus === 'error' ? row.lastDetectionSyncError : null;
   return toHealthObservation({
     kind: 'edr',
     verdict: edrHealth(row),

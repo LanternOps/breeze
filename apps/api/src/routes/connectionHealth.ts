@@ -58,9 +58,11 @@ connectionHealthRoutes.get(
     const order = status === 'open'
       ? [desc(chi.openedAt), desc(chi.id)]
       : [desc(chi.resolvedAt), desc(chi.id)];
-    const rows = await db.select().from(chi).where(where).orderBy(...order).limit(MAX_ROWS);
+    const rows = await db.select().from(chi).where(where).orderBy(...order).limit(MAX_ROWS + 1);
 
+    const truncated = rows.length > MAX_ROWS;
     const data = rows
+      .slice(0, MAX_ROWS)
       // Defense in depth: the WHERE already holds only permitted values.
       .filter((r) => {
         if (auth.scope === 'system') return true;
@@ -83,6 +85,6 @@ connectionHealthRoutes.get(
         resolution: r.resolution,
       }));
 
-    return c.json({ data, truncated: rows.length >= MAX_ROWS });
+    return c.json({ data, truncated });
   },
 );

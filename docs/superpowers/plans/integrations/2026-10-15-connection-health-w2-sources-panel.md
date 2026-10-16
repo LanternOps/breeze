@@ -59,8 +59,8 @@ Partner-axis tables grow with partners, not orgs (§1.3), so they are listed in 
 - §3 backup: `partial` counts as healthy. It is written only when alert evaluation fails after a successful vendor sync, so the connection itself works.
 - §3 accounting: `pending_tenant` is `unknown` (connect in progress); `disconnected` is never stored (a disconnect deletes the row), so in practice the source sees `reauth_required` and `error`.
 - §3 ticket mailbox: `detail` is always null; `last_error` holds raw upstream text that the API deliberately never exposes.
-- §1.2 reopen: a reopen inside the window is the **same episode**: it keeps `opened_at` and sends no new notice unless the severity escalates (goal 3). The window is `max(60 min, 2 × intervalMinutes)` so an hourly source's flap is still a reopen.
-- §1.2 seeding: a kind seeds only when it has no incident rows; Redis decides only whether to *check* (key present → never seed). Redis unavailable → check rows (a first deploy during a Redis outage must not storm). Retention always keeps each kind's newest resolved row, so retention alone never empties a kind.
+- §1.2 reopen: a reopen inside the window is the **same episode**: it keeps `opened_at` and sends no new notice unless the severity escalates or the episode never reached anyone (`notified_user_ids` empty; the resolved delivery now keeps the list) (goal 3). The window is `max(60 min, 2 × intervalMinutes + 5 min)` so an hourly source's flap is still a reopen.
+- §1.2 seeding: a kind seeds only with no Redis seeded key and no incident rows. Redis unavailable → a kind with rows runs normally; a kind with no rows is deferred (`skipped_unseeded`) to a run with Redis, so a Redis outage can neither swallow a first break nor burst a first-deploy backlog. Retention always keeps each kind's newest resolved row, so retention alone never empties a kind. (Revised after PR review.)
 - §3 wording: "a disabled client is always retired" (not only when E exists).
 - W1 plan Goal line: automatic revocation is refresh-token reuse only (code replay is W4).
 
@@ -73,7 +73,7 @@ Partner-axis tables grow with partners, not orgs (§1.3), so they are listed in 
 | 3 | Zero-recipient daily count (§8) | **Task 9**: Prometheus counter `breeze_connection_health_zero_recipient_incidents_total{source_kind}` (daily count = `increase(...[24h])`) plus `zeroRecipients` in the run summary log |
 | 4 | Read route applies `LIMIT 500` before the permission filter | **Task 10**: permitted `view_permission` values go into the WHERE, then LIMIT; response carries `truncated` |
 | 5 | Budget starvation | **Task 9**: due kinds run oldest `last-ok` first (never-run first), registry order breaking ties |
-| 6 | Retention-emptied kind / lost Redis `seeded` key | **Task 9**: seed only with zero rows; retention keeps each kind's newest resolved row; Redis-down + zero rows seeds silently |
+| 6 | Retention-emptied kind / lost Redis `seeded` key | **Task 9**: seed only with zero rows; retention keeps each kind's newest resolved row; Redis-down + zero rows defers the kind |
 | 7 | Doc wording (disabled client, "code replay") | **Task 0** (this commit) |
 | — | W1 deferred the `/admin/system` heartbeat display to W2 | **Deferred to W4** (missing signals / ops visibility); the heartbeat key is already written |
 

@@ -188,10 +188,21 @@ describe('runReconcile (end to end)', () => {
     expect(await redis.get('connection-health:kind:oauth_grant:failures')).toBeNull();
   });
 
-  it('without Redis a kind with no incident rows seeds silently (no first-deploy burst)', async () => {
+  it('without Redis a kind with no incident rows is deferred: no incident, no notice', async () => {
     const r = await runReconcile({ redis: null, now: () => T0, sources: [oauthGrantSource] });
-    expect(r.kinds[0]).toMatchObject({ status: 'ok', opened: 1, seeded: true });
+    expect(r.kinds[0]).toMatchObject({ kind: 'oauth_grant', status: 'skipped_unseeded' });
+    expect(await incidents()).toEqual([]);
     expect(await noticesFor([u1, o1])).toHaveLength(0);
+    // Redis back: the first run seeds the backlog silently, as on any first deploy.
+    const seeded = await reconcile(plusMin(T0, 15));
+    expect(seeded.kinds[0]).toMatchObject({ status: 'ok', seeded: true });
+  });
+
+  it('without Redis a kind that already has rows runs and notifies normally', async () => {
+    await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs({ sourceId: `${o1}:old` }), notify: false }], T0));
+    const r = await runReconcile({ redis: null, now: () => T0, sources: [oauthGrantSource] });
+    expect(r.kinds[0]).toMatchObject({ status: 'ok', seeded: false });
+    expect((await noticesFor([u1, o1])).length).toBeGreaterThan(0);
   });
 
   it('a kind failing part-way through applying rolls back whole; incidents untouched and other kinds still run', async () => {

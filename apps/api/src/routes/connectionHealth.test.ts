@@ -104,7 +104,7 @@ describe('GET /connection-health/incidents', () => {
     expect(q.sql).toMatch(/"view_permission" in \(\$\d+, \$\d+\)/i);
     expect(q.params).toEqual(expect.arrayContaining(['connected_apps:read', 'organizations:read']));
     expect(q.params).not.toContain('backup:read');
-    expect(limitMock).toHaveBeenCalledWith(500);
+    expect(limitMock).toHaveBeenCalledWith(501);
   });
 
   it('the distinct-permission probe uses the same status filter as the rows', async () => {
@@ -119,10 +119,12 @@ describe('GET /connection-health/incidents', () => {
     expect(rowsMock).not.toHaveBeenCalled();
   });
 
-  it('flags a full page as truncated', async () => {
+  it('flags truncation only when more than 500 rows match, and returns at most 500', async () => {
+    rowsMock.mockResolvedValue(Array.from({ length: 501 }, (_, i) => row({ id: `r${i}` })));
+    const over = await (await get()).json();
+    expect(over.truncated).toBe(true);
+    expect(over.data).toHaveLength(500);
     rowsMock.mockResolvedValue(Array.from({ length: 500 }, (_, i) => row({ id: `r${i}` })));
-    expect((await (await get()).json()).truncated).toBe(true);
-    rowsMock.mockResolvedValue([row()]);
     expect((await (await get()).json()).truncated).toBe(false);
   });
 

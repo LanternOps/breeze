@@ -12,13 +12,14 @@ import { reopenWindowMs, type HealthSource } from './types';
 // The connection health reconciler (spec 2026-10-15 §1.2, §1.3, §8). One run:
 // every due kind in its own system transaction, then the notice outbox, then
 // retention. Redis only remembers cadence, the seed flag and failure streaks.
-// A seed run opens incidents without notifying; it happens only when the kind
-// has no incident rows at all (checked inside the kind's transaction, and
-// retention always keeps each kind's newest row). Redis decides only whether to
-// check: a present seeded key means never seed; an absent key, or Redis missing
-// or erroring, means the rows decide, so a first deploy during a Redis outage
-// seeds silently instead of notifying a whole backlog at once. When Redis is
-// missing every kind is due.
+// A seed run opens incidents without notifying; it happens only when Redis
+// has no seeded key for the kind AND the kind has no incident rows (checked
+// inside the kind's transaction; retention always keeps each kind's newest row,
+// so rows, once written, stay). When Redis is missing or erroring nothing can
+// tell a brand-new kind from a quiet one, so a kind with rows runs normally and
+// a kind without rows is deferred to a run with Redis: neither a silent seed
+// (could swallow a real first break) nor a notifying run (could burst a whole
+// first-deploy backlog). When Redis is missing every kind is due.
 // Each kind's transaction first takes a per-kind advisory lock; a run that
 // cannot get it skips the kind instead of racing another run on it.
 
@@ -34,6 +35,10 @@ const key = (kind: string, k: 'last-ok' | 'seeded' | 'failures') => `connection-
 type KindCounts = { opened: number; resolved: number; pending: number; observations: number; seeded?: boolean };
 /** runKind's result when another run holds the kind's advisory lock. */
 export const KIND_LOCKED = 'locked' as const;
+/** runKind's result when Redis was unavailable and the kind has no rows yet (see top). */
+export const KIND_DEFERRED = 'deferred' as const;
+/** true: may seed if the kind has no rows; false: never seed; 'defer': skip the kind if it has no rows. */
+export type SeedMode = boolean | 'defer';
 
 /** The four Redis calls the reconciler makes; an ioredis client satisfies it. */
 export type ReconcileRedis = {
@@ -49,7 +54,7 @@ export type ReconcileDeps = {
   now: () => Date;
   redis: ReconcileRedis | null;
   budgetMs: number;
-  runKind: (source: HealthSource, now: Date, seed: boolean) => Promise<KindCounts | typeof KIND_LOCKED>;
+  runKind: (source: HealthSource, now: Date, seed: SeedMode) => Promise<KindCounts | typeof KIND_LOCKED | typeof KIND_DEFERRED>;
   deliver: (now: Date) => Promise<DeliveryCounts>;
   retention: (now: Date) => Promise<number>;
   alert: (msg: { title: string; body: string }) => Promise<boolean>;
@@ -57,7 +62,7 @@ export type ReconcileDeps = {
 
 export type KindResult = {
   kind: string;
-  status: 'ok' | 'failed' | 'skipped_not_due' | 'skipped_budget' | 'skipped_locked';
+  status: 'ok' | 'failed' | 'skipped_not_due' | 'skipped_budget' | 'skipped_locked' | 'skipped_unseeded';
   durationMs: number;
   error?: string;
 } & Partial<KindCounts>;
@@ -81,12 +86,14 @@ async function tryLockKind(kind: string): Promise<boolean> {
 export async function runKindInSystemScope(
   source: HealthSource,
   now: Date,
-  seedCandidate: boolean,
-): Promise<KindCounts | typeof KIND_LOCKED> {
+  seedCandidate: SeedMode,
+): Promise<KindCounts | typeof KIND_LOCKED | typeof KIND_DEFERRED> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     if (!(await tryLockKind(source.kind))) return KIND_LOCKED;
     await tightenStatementTimeout(db, KIND_STATEMENT_TIMEOUT_MS);
-    const seed = seedCandidate && !(await hasIncidentsForKind(source.kind));
+    const empty = seedCandidate !== false && !(await hasIncidentsForKind(source.kind));
+    if (seedCandidate === 'defer' && empty) return KIND_DEFERRED;
+    const seed = seedCandidate === true && empty;
     const windowMs = reopenWindowMs(source.intervalMinutes);
     const tracked = await loadTracked(source.kind, now, windowMs);
     const observations = await source.observe(now, tracked.map((t) => t.sourceId));
@@ -123,18 +130,18 @@ async function tryRedis<T>(op: string, fn: () => Promise<T>, fallback: T): Promi
   }
 }
 
-type KindState = { due: boolean; seed: boolean; lastOk: number };
+type KindState = { due: boolean; seed: SeedMode; lastOk: number };
 
 /**
- * Due, seed candidate and last success, from Redis. Unreadable Redis → due, a
- * seed candidate (the kind's incident rows decide), and lastOk 0 (runs first).
+ * Due, seed mode and last success, from Redis. Unreadable Redis → due, 'defer'
+ * (a kind without rows waits for Redis), and lastOk 0 (runs first).
  */
 async function readKindState(
   redis: ReconcileDeps['redis'],
   source: HealthSource,
   now: Date,
 ): Promise<KindState> {
-  if (!redis) return { due: true, seed: true, lastOk: 0 };
+  if (!redis) return { due: true, seed: 'defer', lastOk: 0 };
   try {
     const [lastOkRaw, seeded] = await Promise.all([
       redis.get(key(source.kind, 'last-ok')),
@@ -145,7 +152,7 @@ async function readKindState(
     return { due, seed: seeded === null, lastOk };
   } catch (err) {
     console.warn(JSON.stringify({ event: 'connection_health_redis_error', op: 'read-kind-state', kind: source.kind, error: errorMessage(err) }));
-    return { due: true, seed: true, lastOk: 0 };
+    return { due: true, seed: 'defer', lastOk: 0 };
   }
 }
 
@@ -205,12 +212,17 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
     const { seed } = state;
     try {
       const counts = await d.runKind(source, t0, seed);
+      if (counts === KIND_DEFERRED) {
+        // Redis was unavailable and the kind has no rows: neither a failure nor a success.
+        kinds.push({ kind: source.kind, status: 'skipped_unseeded', durationMs: d.now().getTime() - t0.getTime() });
+        continue;
+      }
       if (counts === KIND_LOCKED) {
         // Another run owns this kind right now: neither a failure nor a success.
         kinds.push({ kind: source.kind, status: 'skipped_locked', durationMs: d.now().getTime() - t0.getTime() });
         continue;
       }
-      if (d.redis) await recordSuccess(d.redis, source.kind, t0, seed);
+      if (d.redis) await recordSuccess(d.redis, source.kind, t0, seed !== false);
       kinds.push({ kind: source.kind, status: 'ok', durationMs: d.now().getTime() - t0.getTime(), ...counts });
     } catch (err) {
       const message = errorMessage(err);

@@ -51,12 +51,11 @@ type LoadState =
 const isSafeHref = (href: unknown): href is string =>
   typeof href === "string" && href.startsWith("/") && !href.startsWith("//");
 
-const asList = (body: unknown): IncidentList => {
+/** null = not an incident list; never read as "nothing is broken". */
+const asList = (body: unknown): IncidentList | null => {
   const b = (body ?? {}) as Partial<IncidentList>;
-  return {
-    data: Array.isArray(b.data) ? b.data : [],
-    truncated: b.truncated === true,
-  };
+  if (!Array.isArray(b.data)) return null;
+  return { data: b.data, truncated: b.truncated === true };
 };
 
 export default function ConnectionHealthPanel() {
@@ -75,10 +74,10 @@ export default function ConnectionHealthPanel() {
       }
       if (!openRes?.ok) return { kind: "error" };
       const open = asList(await openRes.json());
+      if (!open) return { kind: "error" };
       // Recent is secondary: a failure there must not hide open incidents.
-      const recent = recentRes?.ok
-        ? asList(await recentRes.json())
-        : { data: [], truncated: false };
+      const recent = (recentRes?.ok ? asList(await recentRes.json()) : null)
+        ?? { data: [], truncated: false };
       return { kind: "ready", open, recent };
     } catch {
       return { kind: "error" };

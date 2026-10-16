@@ -50,7 +50,9 @@ async function deliverOne(incidentId: string): Promise<{ zeroRecipients: boolean
     await userNotificationsModule.markNotificationsReadByDedupeKeyPrefix(
       row.notifiedUserIds, incidentKeyPrefix(row.id), [],
     );
-    await db.update(chi).set({ pendingNotice: null, notifiedUserIds: [] }).where(eq(chi.id, row.id));
+    // The recipient list is kept: a reopen inside the window checks it to tell an
+    // episode someone was told about (stay quiet) from one nobody heard of.
+    await db.update(chi).set({ pendingNotice: null }).where(eq(chi.id, row.id));
     return { zeroRecipients: false };
   }
 

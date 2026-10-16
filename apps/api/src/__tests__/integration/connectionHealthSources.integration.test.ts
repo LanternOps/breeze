@@ -22,6 +22,7 @@ import {
   unifiIntegrations,
 } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
+import { getTestRedis } from './setup';
 import { huntressSource } from '../../services/connectionHealth/sources/huntress';
 import { sentinelOneSource } from '../../services/connectionHealth/sources/sentinelOne';
 import { pax8Source } from '../../services/connectionHealth/sources/pax8';
@@ -187,9 +188,64 @@ describe('org sources', () => {
   });
 });
 
+describe('broken query covers every broken verdict branch', () => {
+  // A verdict branch the broken query misses never opens an incident.
+  it('unifi, backup, edr, accounting, m365 suspended and the mailbox streak boundary', async () => {
+    const id = () => randomUUID();
+    const [uConnFailed, uStatusErr, bReauth, bStatusErr, eInv, eStatusErr, aDisc, aErr] = Array.from({ length: 8 }, id);
+    const p = await partner();
+    const org = (await createOrganization({ partnerId: p })).id;
+    const [box4, box5] = [id(), id()];
+    await asSystem(async () => {
+      await db.insert(unifiIntegrations).values([
+        { id: uConnFailed, partnerId: await partner(), apiKeyEncrypted: 'x', status: 'connected', lastSyncStatus: 'failed', createdAt: OLD },
+        { id: uStatusErr, partnerId: await partner(), apiKeyEncrypted: 'x', status: 'error', lastSyncStatus: 'success', createdAt: OLD },
+      ]);
+      await db.insert(backupProviderConnections).values([
+        { id: bReauth, partnerId: p, provider: 'cove', name: 'R', credentialsEncrypted: 'x', status: 'reauth_required', lastSyncStatus: 'success', createdAt: OLD },
+        { id: bStatusErr, partnerId: p, provider: 'cove', name: 'E', credentialsEncrypted: 'x', status: 'error', lastSyncStatus: 'success', createdAt: OLD },
+      ]);
+      await db.insert(edrConnections).values([
+        { id: eInv, partnerId: p, provider: 'gravityzone', name: 'I', credentialsEncrypted: 'x', lastInventorySyncStatus: 'error', lastDetectionSyncStatus: 'success', createdAt: OLD },
+        { id: eStatusErr, partnerId: p, provider: 'gravityzone', name: 'S', credentialsEncrypted: 'x', status: 'error', createdAt: OLD },
+      ]);
+      await db.insert(accountingConnections).values([
+        { id: aDisc, partnerId: await partner(), provider: 'quickbooks', status: 'disconnected', createdAt: OLD },
+        { id: aErr, partnerId: await partner(), provider: 'quickbooks', status: 'error', createdAt: OLD },
+      ]);
+      await db.insert(ticketMailboxConnections).values([
+        { id: box4, partnerId: p, provider: 'gmail', orgId: org, googleAccountSub: `sub-${box4}`, mailboxAddress: `d-${box4}@example.test`, status: 'connected', consecutiveTransientFailures: 4, createdAt: OLD },
+        { id: box5, partnerId: p, provider: 'gmail', orgId: org, googleAccountSub: `sub-${box5}`, mailboxAddress: `e-${box5}@example.test`, status: 'connected', consecutiveTransientFailures: 5, createdAt: OLD },
+      ]);
+    });
+    const brokenIds = async (s: HealthSource) => (await observe(s)).filter((o) => o.state === 'broken').map((o) => o.sourceId);
+    expect(await brokenIds(unifiSource)).toEqual(expect.arrayContaining([uConnFailed, uStatusErr]));
+    expect(await brokenIds(backupProviderSource)).toEqual(expect.arrayContaining([bReauth, bStatusErr]));
+    expect(await brokenIds(edrSource)).toEqual(expect.arrayContaining([eInv, eStatusErr]));
+    expect(await brokenIds(accountingSource)).toEqual(expect.arrayContaining([aDisc, aErr]));
+    const mailbox = await brokenIds(ticketMailboxSource);
+    expect(mailbox).toContain(box5);
+    expect(mailbox).not.toContain(box4);
+  });
+
+  it('m365 suspended is broken', async () => {
+    const p = await partner();
+    const o = (await createOrganization({ partnerId: p })).id;
+    const [row] = await asSystem(() => db.insert(m365Connections).values({
+      orgId: o, userId: null, tenantId: randomUUID(), consentAttemptId: randomUUID(), clientId: randomUUID(),
+      clientSecret: null, profile: 'customer-graph-read', authMode: 'application-certificate',
+      credentialDomain: 'customer-graph-read',
+      vaultRef: `akv://vault.example/m365-customer-graph-read-${randomUUID()}/0123456789abcdef0123456789abcdef`,
+      credentialVersion: '0123456789abcdef0123456789abcdef', permissionManifestVersion: 3,
+      status: 'suspended', createdAt: OLD,
+    }).returning({ id: m365Connections.id }));
+    expect((await observe(m365ConnectionSource)).find((x) => x.sourceId === row!.id)).toMatchObject({ state: 'broken', severity: 'permanent' });
+  });
+});
+
 describe('full registry', () => {
   it('every registered kind reconciles against real Postgres (no failed kind)', async () => {
-    const r = await runReconcile({ redis: null, now: () => NOW, budgetMs: 120_000 });
+    const r = await runReconcile({ redis: getTestRedis(), now: () => NOW, budgetMs: 120_000 });
     expect(r.kinds.filter((k) => k.status !== 'ok')).toEqual([]);
     expect(r.kinds.map((k) => k.kind).sort()).toEqual([...CONNECTION_SOURCE_KINDS].sort());
   });

@@ -145,18 +145,23 @@ export async function applyActions(
         break;
       case 'reopen':
         // A flap inside the reopen window is the SAME episode (spec §1.2, goal 3):
-        // opened_at, and with it the notice dedupe keys, is kept and no new notice
-        // is queued. An undelivered 'resolved' is cancelled, so the episode's
-        // notices stay unread. Only an escalation to permanent notifies (its
-        // ':permanent' key dedupes against one already sent this episode). Only a
-        // resolved row reopens: on a row that is still open this is a no-op.
+        // opened_at, and with it the notice dedupe keys, is kept. If the episode
+        // already reached someone (notified_user_ids is kept through the resolve),
+        // no new notice is queued and an undelivered 'resolved' is cancelled, so
+        // those notices stay unread. If it never reached anyone (a seed, or an
+        // 'opened' the resolve cancelled before delivery), it is queued now. An
+        // escalation to permanent always notifies; its ':permanent' key dedupes
+        // against one already sent this episode. Only a resolved row reopens: on a
+        // row that is still open this is a no-op.
         await db.update(chi).set({
           ...observedColumns(a.obs, now),
           resolvedAt: null,
           resolution: null,
           healthyStreak: 0,
           flapCount: sql`${chi.flapCount} + 1`,
-          pendingNotice: a.escalated ? 'escalated' : null,
+          pendingNotice: a.escalated
+            ? 'escalated'
+            : sql`CASE WHEN cardinality(${chi.notifiedUserIds}) = 0 THEN 'opened' ELSE NULL END`,
         }).where(and(eq(chi.id, a.incidentId), isNotNull(chi.resolvedAt)));
         counts.opened += 1;
         break;

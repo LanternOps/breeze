@@ -103,22 +103,25 @@ describe('runReconcile', () => {
     expect(runKind).toHaveBeenCalledTimes(2);
   });
 
-  it('without Redis every kind is due and a seed candidate: the incident rows decide (no first-deploy burst)', async () => {
+  it("without Redis every kind is due in 'defer' mode, and a deferred kind is skipped_unseeded", async () => {
     const runKind = vi.fn().mockResolvedValue(okCounts);
     await runReconcile({ sources: [src('a', 60)], redis: null, runKind, now: () => T0, ...noops });
     await runReconcile({ sources: [src('a', 60)], redis: null, runKind, now: () => plusMin(T0, 1), ...noops });
     expect(runKind).toHaveBeenCalledTimes(2);
-    expect(runKind.mock.calls.every((c) => c[2] === true)).toBe(true);
+    expect(runKind.mock.calls.every((c) => c[2] === 'defer')).toBe(true);
+    const deferred = vi.fn().mockResolvedValue('deferred');
+    const r = await runReconcile({ sources: [src('a', 60)], redis: null, runKind: deferred, now: () => T0, ...noops });
+    expect(r.kinds).toEqual([expect.objectContaining({ kind: 'a', status: 'skipped_unseeded' })]);
   });
 
-  it('treats a kind as due and a seed candidate when Redis reads throw', async () => {
+  it("treats a kind as due and in 'defer' mode when Redis reads throw", async () => {
     const redis = fakeRedis();
     redis.get.mockRejectedValue(new Error('ECONNRESET'));
     redis.set.mockRejectedValue(new Error('ECONNRESET'));
     redis.del.mockRejectedValue(new Error('ECONNRESET'));
     const runKind = vi.fn().mockResolvedValue(okCounts);
     const r = await runReconcile({ sources: [src('a', 60)], redis, runKind, now: () => T0, ...noops });
-    expect(runKind).toHaveBeenCalledWith(expect.objectContaining({ kind: 'a' }), T0, true);
+    expect(runKind).toHaveBeenCalledWith(expect.objectContaining({ kind: 'a' }), T0, 'defer');
     expect(r.kinds[0]!.status).toBe('ok');
   });
 
@@ -180,7 +183,7 @@ describe('runReconcile', () => {
     redis.store.set('connection-health:kind:a:last-ok', String(plusMin(T0, -30).getTime()));
     redis.store.set('connection-health:kind:c:last-ok', String(plusMin(T0, -60).getTime()));
     let t = T0.getTime();
-    const runKind = vi.fn(async (_source: HealthSource, _now: Date, _seed: boolean) => { t += 40_000; return okCounts; });
+    const runKind = vi.fn(async (_source: HealthSource, _now: Date, _seed: unknown) => { t += 40_000; return okCounts; });
     const r = await runReconcile({ sources: [src('a', 15), src('b', 15), src('c', 15)], redis, runKind, now: () => new Date(t), budgetMs: 60_000, ...noops });
     expect(runKind.mock.calls.map((c) => c[0].kind)).toEqual(['b', 'c']);
     expect(r.kinds.map((k) => [k.kind, k.status])).toEqual([['b', 'ok'], ['c', 'ok'], ['a', 'skipped_budget']]);
@@ -292,6 +295,25 @@ describe('runKindInSystemScope', () => {
     const r = await runKindInSystemScope(source, T0, true);
     expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
     expect(r).toMatchObject({ seeded: false });
+  });
+
+  it("defer mode skips a kind with no rows without observing it", async () => {
+    loadTrackedMock.mockResolvedValue([]);
+    hasIncidentsMock.mockResolvedValueOnce(false);
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: vi.fn(async () => []) };
+    expect(await runKindInSystemScope(source, T0, 'defer')).toBe('deferred');
+    expect(source.observe).not.toHaveBeenCalled();
+    expect(applyActionsMock).not.toHaveBeenCalled();
+  });
+
+  it("defer mode runs a kind that has rows normally, never seeding", async () => {
+    loadTrackedMock.mockResolvedValue(tracked);
+    hasIncidentsMock.mockResolvedValueOnce(true);
+    planMock.mockReturnValue([]);
+    applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: async () => [] };
+    expect(await runKindInSystemScope(source, T0, 'defer')).toMatchObject({ seeded: false });
+    expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
   });
 
   it('a non-seed run never checks for rows', async () => {
