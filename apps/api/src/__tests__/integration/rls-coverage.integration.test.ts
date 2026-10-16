@@ -542,7 +542,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'ai_model_assignments',
   // ai_data_policies (AI device file read policy, spec 2026-10-15): partner
   // default (org_id NULL) or org override. Dual-axis from day one in
-  // 2026-12-29-130000-ai-data-policies, SELECT branch in the same file.
+  // 2026-12-29-160000-ai-data-policies, SELECT branch in the same file.
   // Functional forge proof: aiDataPoliciesPartnerRls.integration.test.ts.
   'ai_data_policies',
   // deliverable_template_sets / deliverable_template_items (spec #5573 §4.6,
@@ -901,7 +901,7 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'ai_script_policies',
   // ai_model_assignments_one_owner_chk, 2026-11-14-100200 (#7600 W02).
   'ai_model_assignments',
-  // ai_data_policies_one_owner_chk, 2026-12-29-130000.
+  // ai_data_policies_one_owner_chk, 2026-12-29-160000.
   'ai_data_policies',
   // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.

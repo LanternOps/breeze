@@ -81,7 +81,7 @@ export async function readWithPartnerAxisVisibility<T>(fn: () => Promise<T>): Pr
  * `patch_policies` and `patch_approvals`
  * (2026-11-13-140000-patch-partner-axis-own-partner-select.sql), and the
  * partner ceiling rows (`org_id IS NULL`) of the dual-owner `ai_data_policies`
- * (`ai_data_policies_partner_wide_select`, 2026-12-29-130000-ai-data-policies.sql;
+ * (`ai_data_policies_partner_wide_select`, 2026-12-29-160000-ai-data-policies.sql;
  * the query must stay pinned to `org_id IS NULL` too). Do not route any other
  * table through here until it has the same branch, or the in-place read
  * returns zero rows silently — the #2822 failure.
