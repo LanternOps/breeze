@@ -1994,12 +1994,13 @@ describe('compliance rule set names', () => {
 });
 
 // ============================================================
-// security_agents (#6960 W01): inline-only, nothing enableable yet
+// security_agents (#6960): inline-only; Huntress enableable from W02
 // ============================================================
 describe('security_agents feature links (#6960)', () => {
   const WRITE_ONLY = { permissions: [{ resource: 'devices', action: 'write' }] } as any;
   const DISABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: false }] };
   const ENABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: true }] };
+  const S1_ENABLED = { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] };
   const PARTNER_ID = '99999999-9999-9999-9999-999999999999';
   const SA_LINK = { id: LINK_ID, featureType: 'security_agents' };
 
@@ -2072,12 +2073,53 @@ describe('security_agents feature links (#6960)', () => {
     expect(addFeatureLinkMock).not.toHaveBeenCalled();
   });
 
-  it('(d) POST enabling any vendor → 400 vendor_not_enableable (nothing is enableable in W01)', async () => {
-    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: ENABLED });
+  it('(d) POST enabling a vendor that is not enableable yet → 400 vendor_not_enableable', async () => {
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: S1_ENABLED });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe('vendor_not_enableable');
-    expect(body.vendors).toEqual(['huntress']);
+    expect(body.vendors).toEqual(['sentinelone']);
+    expect(addFeatureLinkMock).not.toHaveBeenCalled();
+  });
+
+  it('POST enabling Huntress with devices.execute reaches the service with arming authorized → 201', async () => {
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: ENABLED });
+    expect(res.status).toBe(201);
+    expect(addFeatureLinkMock).toHaveBeenCalledWith(
+      POLICY_ID, 'security_agents', undefined, ENABLED, expect.anything(), undefined,
+      { securityAgentsArmAuthorized: true },
+    );
+  });
+
+  it('a missing catalog package (generator refusal) → 400 with the integration setup path', async () => {
+    const { SecurityAgentsLinkWriteError } = await vi.importActual<
+      typeof import('../../services/securityAgents/securityAgentsLinkWrite')
+    >('../../services/securityAgents/securityAgentsLinkWrite');
+    addFeatureLinkMock.mockRejectedValueOnce(new SecurityAgentsLinkWriteError({
+      status: 400,
+      body: {
+        error: 'Huntress cannot be enabled until its integration is connected for this partner.',
+        code: 'security_agents_catalog_missing',
+        vendors: ['huntress'],
+        setupPath: '/integrations#huntress',
+      },
+    }));
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: ENABLED });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      code: 'security_agents_catalog_missing',
+      vendors: ['huntress'],
+      setupPath: '/integrations#huntress',
+    });
+  });
+
+  it('POST limiting an enabled vendor to an unsupported platform → 400', async () => {
+    const res = await post(appWith(), {
+      featureType: 'security_agents',
+      inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: true, platforms: ['linux'] }] },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('security_agents_platform_unsupported');
     expect(addFeatureLinkMock).not.toHaveBeenCalled();
   });
 
@@ -2126,13 +2168,13 @@ describe('security_agents feature links (#6960)', () => {
     );
   });
 
-  it('PATCH: featurePolicyId → 400; unknown key → 400; null → 400; enabled → 400 vendor_not_enableable; none written', async () => {
+  it('PATCH: featurePolicyId → 400; unknown key → 400; null → 400; not-enableable vendor → 400; none written', async () => {
     const a = appWith();
     const cases: Array<[unknown, string]> = [
       [{ featurePolicyId: LINK_ID }, 'security_agents_feature_policy_not_allowed'],
       [{ inlineSettings: { ...DISABLED, orgKey: '<org-key>' } }, 'security_agents_invalid_settings'],
       [{ inlineSettings: null }, 'security_agents_invalid_settings'],
-      [{ inlineSettings: ENABLED }, 'vendor_not_enableable'],
+      [{ inlineSettings: S1_ENABLED }, 'vendor_not_enableable'],
     ];
     for (const [body, code] of cases) {
       const res = await patch(a, body);
