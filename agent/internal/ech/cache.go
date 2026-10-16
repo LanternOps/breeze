@@ -60,7 +60,9 @@ func (c *Cache) Get(host string) (configList []byte, fresh bool, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, found := c.entries[host]
-	if !found {
+	if !found || len(e.ConfigList) == 0 {
+		// An empty list (hand-edited file, older build) is not a usable
+		// config: crypto/tls would silently run a plain handshake with it.
 		return nil, false, false
 	}
 	expiry := e.FetchedAt.Add(time.Duration(e.TTLSeconds) * time.Second)
@@ -69,6 +71,9 @@ func (c *Cache) Get(host string) (configList []byte, fresh bool, ok bool) {
 
 // Put stores cfg for host and persists best-effort.
 func (c *Cache) Put(host string, cfg ECHConfig) {
+	if len(cfg.ConfigList) == 0 {
+		return
+	}
 	c.mu.Lock()
 	c.entries[host] = cacheEntry{
 		ConfigList: append([]byte(nil), cfg.ConfigList...),

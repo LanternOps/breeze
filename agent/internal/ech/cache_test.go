@@ -78,3 +78,20 @@ func TestCache_GetReturnsCopyAndEmptyPathIsInMemory(t *testing.T) {
 		t.Fatal("Get aliases cache bytes")
 	}
 }
+
+func TestCache_EmptyListIsNeverServed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ech-cache.json")
+	c := NewCache(path)
+	c.Put("api.example.com", ECHConfig{ConfigList: nil, TTL: time.Hour})
+	if _, _, ok := c.Get("api.example.com"); ok {
+		t.Fatal("Put stored an empty config list")
+	}
+	// An on-disk entry with an empty list (hand-edited or from an older
+	// build) must load as absent, not as a usable config.
+	if err := os.WriteFile(path, []byte(`{"api.example.com":{"configList":"","fetchedAt":"2026-01-01T00:00:00Z","ttlSeconds":86400000}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := NewCache(path).Get("api.example.com"); ok {
+		t.Fatal("loaded an empty config list as usable")
+	}
+}

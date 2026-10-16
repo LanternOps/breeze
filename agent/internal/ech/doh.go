@@ -140,6 +140,11 @@ func parseECHParam(data string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ech: decode ech= value: %w", err)
 		}
+		if len(b) == 0 {
+			// crypto/tls skips ECH for an empty list; treat it as absent so
+			// the dialer never mistakes a plain handshake for ECH.
+			return nil, ErrNoECHConfig
+		}
 		return b, nil
 	}
 	return nil, ErrNoECHConfig

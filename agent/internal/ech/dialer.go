@@ -384,7 +384,7 @@ func (a *attempt) plainFallback(ctx context.Context) (net.Conn, error) {
 func (a *attempt) ech(ctx context.Context) (tc *tls.Conn, tcpFailed bool, err error) {
 	d := a.d
 	list, fresh, ok := d.opts.Cache.Get(a.host)
-	if !ok {
+	if !ok || len(list) == 0 {
 		d.fetchAsync(a.host)
 		log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "error", errNoCachedConfig.Error())
 		return nil, false, errNoCachedConfig
@@ -402,6 +402,13 @@ func (a *attempt) echWith(ctx context.Context, list []byte, allowRetry bool) (*t
 	cfg.EncryptedClientHelloConfigList = list
 	tc, tcpFailed, err := a.handshake(ctx, cfg, a.echBudget)
 	if err == nil {
+		if !tc.ConnectionState().ECHAccepted {
+			// The handshake succeeded without ECH (crypto/tls offers none for
+			// an empty list, and a server may also just not accept it without
+			// rejecting). ECHActive is wire truth, so this is a plain success.
+			a.notePlainSuccess("ech-not-offered")
+			return tc, false, nil
+		}
 		now := d.opts.Now()
 		d.update(a.host, func(st *hostState) bool { st.NoteECHAcceptedAt(now); return false })
 		log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "result", "accepted")

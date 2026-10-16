@@ -148,3 +148,14 @@ func TestResolver_RespectsContextDeadline(t *testing.T) {
 		t.Fatalf("took %v", d)
 	}
 }
+
+func TestParseECHParam_EmptyValueIsNoConfig(t *testing.T) {
+	// A zone can publish `ech=""` (decoded-empty). crypto/tls gates ECH on a
+	// non-nil list, so an empty one would run a plain handshake that the
+	// dialer must not record as ECH-accepted.
+	for _, rec := range []string{`1 . ech=""`, `1 . alpn=h2 ech= ipv4hint=1.2.3.4`} {
+		if _, err := parseECHParam(rec); !errors.Is(err, ErrNoECHConfig) {
+			t.Fatalf("%q: want ErrNoECHConfig, got %v", rec, err)
+		}
+	}
+}

@@ -1209,3 +1209,31 @@ func TestStatus_SwitchOffKeepsECHActiveAndNamesSwitch(t *testing.T) {
 		})
 	}
 }
+
+func TestDial_ECHAttemptWithoutAcceptanceIsPlainSuccess(t *testing.T) {
+	// A config list that makes crypto/tls skip ECH (nil/empty) yields a plain
+	// TLS 1.3 handshake. ECHActive is wire truth, so that success must be
+	// recorded as plain (host leaves ECH mode), never as ECH-accepted.
+	addr, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+	rig := newRig(addr)
+	res, _ := noECHResolver(t)
+	d := newTestDialer(t, rig, res, &fakeClock{t: dialT0})
+	forceMode(d, dialHost, ModeECH)
+
+	a := &attempt{d: d, host: dialHost, base: baseCfg(pool), network: "tcp", addr: addr}
+	tc, tcpFailed, err := a.echWith(context.Background(), nil, false)
+	if err != nil || tcpFailed || tc == nil {
+		t.Fatalf("echWith = %v tcpFailed=%v err=%v", tc, tcpFailed, err)
+	}
+	defer func() { _ = tc.Close() }()
+	if tc.ConnectionState().ECHAccepted {
+		t.Fatal("server accepted ECH without a config list")
+	}
+	st := d.Status(dialHost)
+	if st.ECHActive || !st.LastECHAcceptedAt.IsZero() {
+		t.Fatalf("plain handshake recorded as ECH-accepted: %+v", st)
+	}
+	if st.LastPlainSuccessAt.IsZero() || st.Mode != ModePlain {
+		t.Fatalf("plain success not recorded / host still in ECH: %+v", st)
+	}
+}
