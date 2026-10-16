@@ -4,7 +4,9 @@
 // `{error: string}`, a plain `details: string[]` from hand-rolled route
 // validators, Hono's default `{message: string}`, and the legacy
 // pre-#2201 raw zod-validator `{error: {issues: [...]}}` / serialized
-// ZodError bodies (kept defensively for older deployed APIs).
+// ZodError bodies (kept defensively for older deployed APIs). When the
+// wrapper's `error` merely restates `details` as dotted JSON paths it is
+// dropped and the details render once with readable field labels (#8369).
 // Falling back to `new Error(obj)` produces `[object Object]` in the UI;
 // this function picks the most readable rendering of whatever we got.
 
@@ -34,12 +36,14 @@ const FIELD_ACRONYMS: Record<string, string> = {
  * Turns a zod field path from the API's validation 400
  * (`settings.contact.email`, `contacts.0.email`) into a readable field name
  * (`Email`): the last non-index segment, split on camelCase/snake_case and
- * sentence-cased (#8369). A trailing `Cents` is dropped — money fields are
- * entered in dollars on every form, so `monthlyBudgetCents` is "Monthly
- * budget", matching the label the user actually sees.
+ * sentence-cased (#8369). A trailing `Cents` is dropped — money fields such
+ * as the AI budgets are stored in cents but entered in dollars in the UI, so
+ * `monthlyBudgetCents` is "Monthly budget", matching the form label.
  *
- * English-only by construction (it derives from the schema key, not a
- * translation); still far closer to the form label than a JSON path.
+ * Only the leaf is used, so `contact.email` and `billing.email` both read
+ * "Email" — the user is on the form that sent them. English-only by
+ * construction (it derives from the schema key, not a translation); still far
+ * closer to the form label than a JSON path.
  */
 export function humanizeFieldPath(path: string): string {
   const segments = path.split('.').filter((s) => s.length > 0 && !/^\d+$/.test(s));

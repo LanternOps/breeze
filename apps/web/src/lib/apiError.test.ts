@@ -389,6 +389,30 @@ describe('extractApiError — zValidator field errors render with readable label
     );
   });
 
+  it('contract: the exact multi-field body formatZodError emits renders once, labelled', () => {
+    // Verbatim output pinned in apps/api/src/lib/validation.test.ts
+    // ('joins nested paths with dots and groups repeated fields'). If the API
+    // join changes, that test breaks; keep this literal in step with it.
+    const body = {
+      error: 'Unrecognized key: "extra"; contacts.0.email: Invalid email; Too short',
+      details: {
+        formErrors: ['Unrecognized key: "extra"'],
+        fieldErrors: { 'contacts.0.email': ['Invalid email', 'Too short'] },
+      },
+    };
+    expect(extractApiError(body, FALLBACK)).toBe('Unrecognized key: "extra"; Email: Invalid email; Too short');
+  });
+
+  it('keeps the label when the message only starts with a longer word', () => {
+    const body = wrapperBody([], { name: ['Names must be unique'] });
+    expect(extractApiError(body, FALLBACK)).toBe('Name: Names must be unique');
+  });
+
+  it('does not render "Email: Email" when the message is just the label', () => {
+    const body = wrapperBody([], { 'contact.email': ['Email'] });
+    expect(extractApiError(body, FALLBACK)).toBe('Email');
+  });
+
   it('humanizes a flatten details payload that rides with a different error headline', () => {
     const body = {
       error: 'Invalid feature link',

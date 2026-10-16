@@ -23,6 +23,11 @@ describe('errors:VALIDATION_FAILED copy (#8369)', () => {
     expect(locales.length).toBeGreaterThanOrEqual(8);
   });
 
+  it('en copy is the wording runAction.test.ts stubs', () => {
+    const en = JSON.parse(readFileSync(join(dir, 'en', 'errors.json'), 'utf8')) as Record<string, string>;
+    expect(en.VALIDATION_FAILED).toBe('Fix the invalid values and try again');
+  });
+
   it.each(locales)('%s does not promise highlighted fields', (locale) => {
     const errors = JSON.parse(readFileSync(join(dir, locale, 'errors.json'), 'utf8')) as Record<string, string>;
     const copy = errors.VALIDATION_FAILED;

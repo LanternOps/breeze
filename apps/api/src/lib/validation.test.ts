@@ -249,6 +249,14 @@ describe('formatZodError', () => {
     expect(result.details.fieldErrors.slug).toEqual(['Use lowercase letters only']);
   });
 
+  it('leaves non-regex format messages alone (#8369)', () => {
+    const parsed = z.object({ email: z.string().email() }).safeParse({ email: 'nope' });
+    expect(parsed.success).toBe(false);
+    const original = parsed.error!.issues[0]!.message;
+    expect(original).not.toBe('Invalid format');
+    expect(formatZodError(parsed.error!).details.fieldErrors.email).toEqual([original]);
+  });
+
   it('collapses duplicate messages produced by identical union branches', () => {
     const result = formatZodError({
       issues: [

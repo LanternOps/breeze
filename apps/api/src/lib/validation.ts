@@ -26,8 +26,9 @@
  * `error` string here is built with the same ordering and `'; '` join rules
  * as its `joinZodFlatten(details, rawPaths)` helper, which is how the web
  * recognises it and renders the details once with readable field labels
- * instead of these dotted paths (#8369; pinned by a contract test in
- * apiError.test.ts). Keep the two in step.
+ * instead of these dotted paths (#8369). Keep the two in step: the exact body
+ * `formatZodError` emits for the multi-field case in validation.test.ts is
+ * replayed verbatim by a contract test in apps/web/src/lib/apiError.test.ts.
  *
  * Route files must import `zValidator` from this module, not from
  * `@hono/zod-validator` directly (guarded by validation.imports.test.ts).
@@ -68,6 +69,7 @@ type ZodIssueLike = {
  * implementation detail, not user copy, and dozens of schemas still omit the
  * message. Scrub it here, at the single 400 choke point, so no regex reaches
  * a user (#8369). An explicit `.regex(re, 'message')` is passed through as-is.
+ * zod v4 only: v3 issues carry no `format`, so they pass through unchanged.
  */
 const DEFAULT_REGEX_MESSAGE_PREFIX = 'Invalid string: must match pattern';
 
