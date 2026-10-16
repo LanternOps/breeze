@@ -44,6 +44,9 @@ export const toolRateLimitMultiplierSchema = z
 // Per-tool rate limits: { limit, windowSeconds }
 export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }> = {
   execute_command: { limit: 10, windowSeconds: 300 },
+  // Per TOOL (list/get share the counter). 5 per hour is the shipped ceiling;
+  // the route's own per-actor limiter (endpointMessaging/rateLimits) stays authoritative.
+  send_endpoint_message: { limit: 5, windowSeconds: 3600 },
   run_script: { limit: 5, windowSeconds: 300 },
   // Deliberately looser than run_script: a stop is the safe direction, and a
   // rate limit that blocks a tech's assistant from halting a runaway script is
