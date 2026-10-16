@@ -2370,7 +2370,7 @@
       "currencyHelp": "Novas organizações começam nesta moeda. As organizações existentes mantêm a sua — altere-a na aba Faturamento de cada organização.",
       "defaultMarkup": "Margem padrão (%)",
       "defaultTaxRate": "Alíquota de imposto padrão (%)",
-      "description": "Padrões para cotações e faturas dos seus clientes. Uma organização pode definir sua própria alíquota de imposto e seus termos de pagamento; a moeda é definida quando a organização é criada.",
+      "description": "Padrões para cotações e faturas dos seus clientes. Uma organização pode definir sua própria alíquota de imposto e seus termos de pagamento. A moeda parte da moeda padrão definida aqui e é alterada na aba Faturamento da organização.",
       "deviceAppendix": "Incluir o apêndice de dispositivos faturados nos PDFs das faturas",
       "deviceAppendixHelp": "Adiciona uma página listando cada dispositivo contado em cada linha da fatura. Desativado por padrão; a escolha é congelada na emissão.",
       "documentPageSize": "Tamanho da página",

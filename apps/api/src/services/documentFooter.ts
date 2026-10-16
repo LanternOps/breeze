@@ -46,14 +46,24 @@ export type DocumentFooterSource = 'brand' | 'partner';
  * from — levels 2 and 3 of {@link resolveDocumentFooter}. Editors show this
  * beside a blank override field (settings rule 4: the inherited value AND its
  * source). Null when neither level sets a footer.
+ *
+ * Blank = inherit (rule 4): a level holding '' or whitespace counts as unset.
+ * The editors save a cleared field as NULL, but PATCH accepts '' and older rows
+ * may hold one — and now that the org level wins, a blank org footer would
+ * otherwise silently suppress the partner footer on every document. (This is
+ * NOT the document level: there `''` is the frozen "no footer" marker, #7216.)
  */
 export function resolveInheritedDocumentFooter(input: {
   partnerFooter: string | null;
   brandingFooter: string | null;
 }): { text: string; source: DocumentFooterSource } | null {
-  if (input.brandingFooter != null) return { text: input.brandingFooter, source: 'brand' };
-  if (input.partnerFooter != null) return { text: input.partnerFooter, source: 'partner' };
+  if (isSet(input.brandingFooter)) return { text: input.brandingFooter, source: 'brand' };
+  if (isSet(input.partnerFooter)) return { text: input.partnerFooter, source: 'partner' };
   return null;
+}
+
+function isSet(footer: string | null): footer is string {
+  return footer != null && footer.trim() !== '';
 }
 
 /**

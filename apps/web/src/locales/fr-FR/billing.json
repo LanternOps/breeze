@@ -2370,7 +2370,7 @@
       "currencyHelp": "Les nouvelles organisations démarrent dans cette devise. Les organisations existantes conservent la leur — modifiez-la dans l'onglet Facturation de chaque organisation.",
       "defaultMarkup": "Marge par défaut (%)",
       "defaultTaxRate": "Taux de taxe par défaut (%)",
-      "description": "Valeurs par défaut des devis et factures de vos clients. Une organisation peut définir son propre taux de taxe et ses propres conditions de paiement ; sa devise est fixée à la création de l'organisation.",
+      "description": "Valeurs par défaut des devis et factures de vos clients. Une organisation peut définir son propre taux de taxe et ses propres conditions de paiement. Sa devise part de la devise par défaut définie ici et se modifie dans l'onglet Facturation de cette organisation.",
       "deviceAppendix": "Inclure l'annexe des appareils facturés dans les PDF de factures",
       "deviceAppendixHelp": "Ajoute une page listant chaque appareil compté sur chaque ligne de facture. Désactivé par défaut ; le choix est figé à l'émission de la facture.",
       "documentPageSize": "Format de page",

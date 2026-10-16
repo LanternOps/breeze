@@ -2370,7 +2370,7 @@
       "currencyHelp": "New organizations start in this currency. Existing organizations keep their own — change one on that organization's Billing tab.",
       "defaultMarkup": "Default markup (%)",
       "defaultTaxRate": "Default tax rate (%)",
-      "description": "Defaults for quotes and invoices across your customers. An organization can override its own tax rate and payment terms; its currency is set when the organization is created.",
+      "description": "Defaults for quotes and invoices across your customers. An organization can override its own tax rate and payment terms. Its currency starts from the default currency here and is changed on that organization's Billing tab.",
       "deviceAppendix": "Include billed devices appendix on invoice PDFs",
       "deviceAppendixHelp": "Adds a page listing every device counted on each invoice line. Off by default; the choice is frozen when an invoice is issued.",
       "documentPageSize": "Page size",

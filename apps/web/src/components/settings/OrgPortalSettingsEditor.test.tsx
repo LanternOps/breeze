@@ -122,6 +122,18 @@ describe('OrgPortalSettingsEditor', () => {
       expect(screen.getByText('No Partner document footer configured')).toBeInTheDocument();
     });
 
+    // Blank = inherit: a cleared (or whitespace-only) org footer saves as NULL,
+    // never '', so it cannot suppress the partner footer on documents.
+    it.each(['', '   '])('saves a cleared org footer (%j) as null', async (blank) => {
+      mockApi({ ...SETTINGS, footerText: 'Org line', partnerInvoiceFooter: 'Thanks for your business' });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      fireEvent.change(await screen.findByTestId('org-portal-footer'), { target: { value: blank } });
+      fireEvent.click(screen.getByTestId('org-portal-save'));
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      expect(JSON.parse(String(patchCall![1]!.body)).footerText).toBeNull();
+    });
+
     it('never sends the inherited partner footer back on save', async () => {
       mockApi({ ...SETTINGS, footerText: null, partnerInvoiceFooter: 'Thanks for your business' });
       render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);

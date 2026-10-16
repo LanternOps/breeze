@@ -1687,9 +1687,9 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
     //    before the guarded write.
     const [org] = await db.select().from(organizations).where(eq(organizations.id, inv.orgId)).limit(1);
     const [partner] = await db.select().from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
-    // Portal-branding footer for the invoice's org — the org override in the
-    // shared footer chain, ahead of the partner default (#7510) (resolveDocumentFooter, documentFooter.ts). Read here,
-    // after all locks, alongside the org/partner snapshot reads: a pure
+    // #7510: the portal-branding footer for the invoice's org is the org override
+    // in the shared footer chain (resolveDocumentFooter, documentFooter.ts),
+    // ahead of the partner default. Read here, after all locks, alongside the org/partner snapshot reads: a pure
     // additional SELECT on a read-only table, no new lock class.
     const [issueBranding] = await db.select({ footerText: portalBranding.footerText })
       .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);

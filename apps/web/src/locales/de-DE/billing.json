@@ -2370,7 +2370,7 @@
       "currencyHelp": "Neue Organisationen starten in dieser Währung. Bestehende Organisationen behalten ihre eigene – ändern Sie sie im Tab „Abrechnung“ der jeweiligen Organisation.",
       "defaultMarkup": "Standardaufschlag (%)",
       "defaultTaxRate": "Standardsteuersatz (%)",
-      "description": "Standardwerte für Angebote und Rechnungen Ihrer Kunden. Eine Organisation kann ihren eigenen Steuersatz und ihre Zahlungsbedingungen festlegen; ihre Währung wird beim Anlegen der Organisation festgelegt.",
+      "description": "Standardwerte für Angebote und Rechnungen Ihrer Kunden. Eine Organisation kann ihren eigenen Steuersatz und ihre Zahlungsbedingungen festlegen. Ihre Währung startet mit der hier festgelegten Standardwährung und wird im Tab „Abrechnung“ der Organisation geändert.",
       "deviceAppendix": "Anhang mit abgerechneten Geräten in Rechnungs-PDFs aufnehmen",
       "deviceAppendixHelp": "Fügt eine Seite mit allen Geräten hinzu, die auf jeder Rechnungsposition gezählt wurden. Standardmäßig deaktiviert; die Auswahl wird bei Rechnungsstellung eingefroren.",
       "documentPageSize": "Seitengröße",

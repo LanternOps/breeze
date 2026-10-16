@@ -54,6 +54,19 @@ describe('resolveInheritedDocumentFooter', () => {
     expect(resolveInheritedDocumentFooter({ partnerFooter: 'Partner footer', brandingFooter: null }))
       .toEqual({ text: 'Partner footer', source: 'partner' });
   });
+  // Settings rule 4: blank = inherit. The org editor saves a cleared field as
+  // NULL, but PATCH accepts '' and older rows may hold one — a blank org footer
+  // must not silently suppress the partner footer now that the org level wins.
+  it.each(['', '   '])('a blank org footer (%j) inherits the partner default', (blank) => {
+    expect(resolveInheritedDocumentFooter({ partnerFooter: 'Partner footer', brandingFooter: blank }))
+      .toEqual({ text: 'Partner footer', source: 'partner' });
+    expect(resolveDocumentFooter({ documentTerms: null, partnerFooter: 'Partner footer', brandingFooter: blank }))
+      .toBe('Partner footer');
+  });
+  it('a blank partner footer with no org footer is no footer', () => {
+    expect(resolveInheritedDocumentFooter({ partnerFooter: '  ', brandingFooter: null })).toBeNull();
+    expect(freezeDocumentFooter({ documentTerms: null, partnerFooter: '  ', brandingFooter: '' })).toBe('');
+  });
   it('neither level set — null', () => {
     expect(resolveInheritedDocumentFooter({ partnerFooter: null, brandingFooter: null })).toBeNull();
   });

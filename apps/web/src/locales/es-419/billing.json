@@ -2370,7 +2370,7 @@
       "currencyHelp": "Las organizaciones nuevas empiezan con esta moneda. Las existentes conservan la suya; cámbiela en la pestaña Facturación de cada organización.",
       "defaultMarkup": "Margen predeterminado (%)",
       "defaultTaxRate": "Tasa impositiva predeterminada (%)",
-      "description": "Valores predeterminados para cotizaciones y facturas de sus clientes. Una organización puede definir su propia tasa de impuestos y sus términos de pago; su moneda se fija al crear la organización.",
+      "description": "Valores predeterminados para cotizaciones y facturas de sus clientes. Una organización puede definir su propia tasa de impuestos y sus términos de pago. Su moneda parte de la moneda predeterminada definida aquí y se cambia en la pestaña Facturación de esa organización.",
       "deviceAppendix": "Incluir el anexo de dispositivos facturados en los PDF de facturas",
       "deviceAppendixHelp": "Agrega una página con todos los dispositivos contados en cada línea de la factura. Desactivado de forma predeterminada; la elección se congela al emitir la factura.",
       "documentPageSize": "Tamaño de página",

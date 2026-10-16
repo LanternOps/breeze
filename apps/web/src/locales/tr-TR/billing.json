@@ -2370,7 +2370,7 @@
       "currencyHelp": "Yeni kuruluşlar bu para birimiyle başlar. Mevcut kuruluşlar kendi para birimlerini korur; değiştirmek için ilgili kuruluşun Faturalandırma sekmesini kullanın.",
       "defaultMarkup": "Varsayılan işaretleme (%)",
       "defaultTaxRate": "Varsayılan vergi oranı (%)",
-      "description": "Müşterilerinizin fiyat teklifleri ve faturaları için varsayılanlar. Bir kuruluş kendi vergi oranını ve ödeme koşullarını belirleyebilir; para birimi kuruluş oluşturulurken belirlenir.",
+      "description": "Müşterilerinizin fiyat teklifleri ve faturaları için varsayılanlar. Bir kuruluş kendi vergi oranını ve ödeme koşullarını belirleyebilir. Para birimi buradaki varsayılan para birimiyle başlar ve kuruluşun Faturalandırma sekmesinden değiştirilir.",
       "deviceAppendix": "Fatura PDF'lerine faturalanan cihazlar ekini dahil et",
       "deviceAppendixHelp": "Her fatura satırında sayılan tüm cihazları listeleyen bir sayfa ekler. Varsayılan olarak kapalıdır; seçim fatura düzenlendiğinde dondurulur.",
       "documentPageSize": "Sayfa boyutu",
