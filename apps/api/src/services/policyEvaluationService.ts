@@ -24,6 +24,8 @@ import {
 import { isManagedAutomation } from './aiAgents/managedAutomation';
 import { canReadPartnerWideRows, type PartnerWideReadAuth } from './partnerWideAccess';
 import { resolveExecutionSafeGroupIds, auditRefusedExecutionGroups } from './executionTargetGating';
+import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
+import { sqlTextArray } from '../db/sqlValues';
 import { notHoldingOrgCondition, notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 
 export type EvaluationStatus = 'compliant' | 'non_compliant' | 'error';
@@ -401,6 +403,22 @@ function normalizeTargetConfig(targets: unknown): TargetConfig {
     groupIds: groupIds.length > 0 ? groupIds : targetType === 'groups' ? targetIds : [],
     tags: tags.length > 0 ? tags : targetType === 'tags' ? targetIds : [],
   };
+}
+
+/**
+ * Which branch of resolveTargetDevices picks the devices. The first non-empty
+ * list wins, so `{ deviceIds, tags }` targets the devices, not the tags.
+ * evaluatePolicy keys the observe-only rule for tag targets off this same
+ * function, so the two cannot disagree about what a policy targets.
+ */
+type TargetKind = 'devices' | 'sites' | 'groups' | 'tags' | 'all';
+
+function targetKindOf(targets: TargetConfig): TargetKind {
+  if (targets.deviceIds && targets.deviceIds.length > 0) return 'devices';
+  if (targets.siteIds && targets.siteIds.length > 0) return 'sites';
+  if (targets.groupIds && targets.groupIds.length > 0) return 'groups';
+  if (targets.tags && targets.tags.length > 0) return 'tags';
+  return 'all';
 }
 
 function parsePolicyRules(rules: unknown): ParsedRulesResult {
@@ -1299,8 +1317,9 @@ async function resolveTargetDevices(policy: PolicyRow, options: ResolveTargetDev
     return [];
   }
   const scopeCondition = options.deviceIds ? and(ownerScope, inArray(devices.id, options.deviceIds))! : ownerScope;
+  const kind = targetKindOf(targets);
 
-  if (targets.deviceIds && targets.deviceIds.length > 0) {
+  if (kind === 'devices' && targets.deviceIds) {
     return db
       .select(TARGET_DEVICE_COLUMNS)
       .from(devices)
@@ -1312,7 +1331,7 @@ async function resolveTargetDevices(policy: PolicyRow, options: ResolveTargetDev
       );
   }
 
-  if (targets.siteIds && targets.siteIds.length > 0) {
+  if (kind === 'sites' && targets.siteIds) {
     return db
       .select(TARGET_DEVICE_COLUMNS)
       .from(devices)
@@ -1324,7 +1343,7 @@ async function resolveTargetDevices(policy: PolicyRow, options: ResolveTargetDev
       );
   }
 
-  if (targets.groupIds && targets.groupIds.length > 0) {
+  if (kind === 'groups' && targets.groupIds) {
     // Field-provenance tiering — this resolver feeds
     // `triggerRemediationAutomation` (dispatches an automation run for every
     // non-compliant device in the target set), always execution-bearing. A
@@ -1352,14 +1371,18 @@ async function resolveTargetDevices(policy: PolicyRow, options: ResolveTargetDev
       );
   }
 
-  if (targets.tags && targets.tags.length > 0) {
+  if (kind === 'tags' && targets.tags) {
+    // A bare `${targets.tags}` rendered as `&& ($1)` / `&& ($1, $2)`, which
+    // Postgres rejects ("malformed array literal" / "operator does not exist:
+    // text[] && record"), so every tag-targeted policy threw (#8857). The
+    // results this branch feeds are observe-only — see evaluatePolicy.
     return db
       .select(TARGET_DEVICE_COLUMNS)
       .from(devices)
       .where(
         and(
           scopeCondition,
-          sql<boolean>`${devices.tags} && ${targets.tags}`
+          sql<boolean>`${devices.tags} && ${sqlTextArray(targets.tags)}`
         )
       );
   }
@@ -1511,7 +1534,16 @@ export async function evaluatePolicy(
   const source = options.source ?? 'policy-evaluation-service';
   const deferred: DeferredRemediationEnqueues | undefined = options.deferEnqueue ? [] : undefined;
   const deferredEvents: DeferredPolicyEvent[] | undefined = options.deferEnqueue ? [] : undefined;
-  const requestRemediation = options.requestRemediation ?? true;
+  // Tag-targeted results are observe-only (#8857). Tags are writable by
+  // `devices:write` API keys, which a script on the device can hold, so a
+  // device can tag itself into the target set — the reason tags are refused as
+  // execution-target group rules (executionTargetGating.ts). The evaluation
+  // still runs and its compliance rows are written, but no remediation is
+  // dispatched and no policy.* event is published: an event-triggered
+  // automation runs on the event's device, and the alert the policy alert
+  // bridge raises from policy.violation can trigger automations and AI agents.
+  const observeOnly = targetKindOf(normalizeTargetConfig(policy.targets)) === 'tags';
+  const requestRemediation = !observeOnly && (options.requestRemediation ?? true);
   const wantsRemediation = requestRemediation && policy.enforcement === 'enforce';
 
   // Remediation automations are anchored per DEVICE org (org-owned rows plus
@@ -1695,12 +1727,35 @@ export async function evaluatePolicy(
       remediationRunId,
     });
 
+    if (observeOnly) {
+      continue;
+    }
     const events = policyEventsFor(policy, device, status, existing?.status ?? null, remediationRunId, source, checkedAt);
     if (deferredEvents) {
       deferredEvents.push(...events);
     } else {
       await publishPolicyEventsInOrder(events);
     }
+  }
+
+  const nonCompliantDevices = evaluationResults.filter((result) => result.status === 'non_compliant').length;
+  if (observeOnly && nonCompliantDevices > 0) {
+    // Same action string as the group gate, so one audit query finds every
+    // execution refused for a device-writable target field.
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: policy.orgId,
+      action: 'policy_evaluation.execution_target_refused_agent_reported_fields',
+      resourceType: 'automation_policy',
+      resourceId: policy.id,
+      resourceName: policy.name,
+      result: 'success',
+      actorType: 'system',
+      details: {
+        refusedFields: ['tags'],
+        nonCompliantDevices,
+        suppressed: ['remediation', 'policy_events'],
+      },
+    });
   }
 
   await db
@@ -1718,7 +1773,7 @@ export async function evaluatePolicy(
     results: evaluationResults,
     summary: {
       compliant: evaluationResults.filter((result) => result.status === 'compliant').length,
-      non_compliant: evaluationResults.filter((result) => result.status === 'non_compliant').length,
+      non_compliant: nonCompliantDevices,
     },
     evaluatedAt: new Date().toISOString(),
     ...afterCommitOf(deferred, deferredEvents),

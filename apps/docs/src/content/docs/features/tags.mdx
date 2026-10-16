@@ -158,7 +158,7 @@ Both the tag listing and device-by-tag endpoints enforce these access rules. An 
 
 ## Using tags with policies
 
-Configuration policies and compliance policies support `tags` as a target type. When you create or update a policy, set `targetType` to `"tags"` and provide the tag strings in `targetIds`:
+Compliance policies support `tags` as a target type. (Configuration policies do not: they are assigned to a partner, organization, site, device group or device.) When you create or update a compliance policy, set `targetType` to `"tags"` and provide the tag strings in `targetIds`:
 
 ```json
 {
@@ -168,11 +168,13 @@ Configuration policies and compliance policies support `tags` as a target type. 
   "rules": [
     { "type": "required_software", "softwareName": "CrowdStrike Falcon" }
   ],
-  "enforcement": "enforce"
+  "enforcement": "monitor"
 }
 ```
 
 The policy engine matches devices whose `tags` array includes any of the specified tag strings. This means you can control which devices a policy applies to by simply adding or removing a tag -- no need to restructure groups or site assignments.
+
+Tag-targeted compliance policies are **observe-only**: they are evaluated and their results appear in compliance reporting, but remediation is never dispatched and no `policy.*` events are published, so they raise no alerts and trigger no automations, even with `"enforcement": "enforce"`. Tags can be written by API keys that a script on the device itself can hold, so a tag target would let a device decide whether remediation runs on it. To remediate, target a site, a static device group, or a dynamic group whose rules do not use tags.
 
 <Aside>
   When using the `targets` object format instead of the flat `targetType`/`targetIds` fields, supply tags in `targets.tags` as an array of strings. See the [Policy Management](/features/policy-management) documentation for full details.
