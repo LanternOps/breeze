@@ -48,6 +48,8 @@ static int namedWindowVisible(void) {
 */
 import "C"
 
+import "log/slog"
+
 // namedWindowVisibleFn is a seam so tests never query the window server.
 var namedWindowVisibleFn = func() bool { return C.namedWindowVisible() != 0 }
 
@@ -76,4 +78,15 @@ func CheckCaptureAccess(config CaptureConfig) CaptureAccessReport {
 	report := checkCaptureAccess(signals)
 	logCaptureAccessOnce(report, &captureAccessUnverifiedWarned)
 	return report
+}
+
+// logCaptureAccessOnce keeps the unverified-state explanation to one line per
+// process: the TCC loop checks every few minutes.
+func logCaptureAccessOnce(r CaptureAccessReport, warned *bool) {
+	if r.State == CaptureAccessUnknown && !*warned {
+		*warned = true
+		slog.Warn("Screen Recording access could not be verified without capturing: preflight reports no grant " +
+			"(macOS 26 can report false while the grant is present), no other app's titled window is on screen, " +
+			"and no session has captured yet; a session will be allowed and its own capture decides")
+	}
 }

@@ -1,7 +1,5 @@
 package desktop
 
-import "log/slog"
-
 // Non-capturing Screen Recording access check (#8390).
 //
 // On macOS 15 every screen capture, ScreenCaptureKit or CoreGraphics, goes
@@ -114,15 +112,4 @@ func checkCaptureAccess(s captureAccessSignals) CaptureAccessReport {
 		return CaptureAccessReport{State: CaptureAccessGranted, Reason: "last_session"}
 	}
 	return CaptureAccessReport{State: CaptureAccessUnknown, Reason: "unverified"}
-}
-
-// logCaptureAccessOnce keeps the unverified-state explanation to one line per
-// process: the TCC loop checks every few minutes.
-func logCaptureAccessOnce(r CaptureAccessReport, warned *bool) {
-	if r.State == CaptureAccessUnknown && !*warned {
-		*warned = true
-		slog.Warn("Screen Recording access could not be verified without capturing: preflight reports no grant " +
-			"(macOS 26 can report false while the grant is present), no other app's titled window is on screen, " +
-			"and no session has captured yet; a session will be allowed and its own capture decides")
-	}
 }
