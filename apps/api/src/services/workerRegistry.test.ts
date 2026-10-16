@@ -54,6 +54,8 @@ const EXPECTED_WORKER_NAMES = [
   'serviceProcessCheckRetention', 'changeLogRetention',
   // Disk Cleanup v2 W03 (#6329) — daily sweep of the cleanup-run table.
   'filesystemCleanupRunRetention',
+  // #8581 — daily prune of device_restore_point_attempts.
+  'restorePointAttemptRetention',
   'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',

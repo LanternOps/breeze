@@ -48,6 +48,7 @@ export const RETENTION_JOB_NAMES = [
   'process_sample_retention',
   'reliability_retention',
   'removed_device_purge',
+  'restore_point_attempt_retention',
   'service_process_check_retention',
   'snmp_retention',
   'ticket_outbox_retention',
