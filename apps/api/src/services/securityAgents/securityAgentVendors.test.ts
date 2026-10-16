@@ -45,3 +45,13 @@ describe('security agent vendor registry (#6960)', () => {
     expect(Object.isFrozen(getVendor('huntress'))).toBe(true);
   });
 });
+
+describe('vendorForIntegrationProvider (#6960 W02)', () => {
+  it('maps built-in catalog providers back to their vendor', async () => {
+    const { vendorForIntegrationProvider } = await import('./securityAgentVendors');
+    expect(vendorForIntegrationProvider('huntress')).toBe('huntress');
+    expect(vendorForIntegrationProvider('sentinelone')).toBe('sentinelone');
+    expect(vendorForIntegrationProvider('controld')).toBeNull();
+    expect(vendorForIntegrationProvider(null)).toBeNull();
+  });
+});
