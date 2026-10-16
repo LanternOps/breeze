@@ -1,8 +1,9 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, like, notInArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { userNotifications } from '../db/schema';
 import { getEventBus } from './eventBus';
 import { captureException } from './sentry';
+import { escapeLike } from '../utils/sql';
 
 type NotificationType = typeof userNotifications.$inferInsert['type'];
 type NotificationPriority = typeof userNotifications.$inferInsert['priority'];
@@ -159,6 +160,33 @@ export async function markNotificationsReadByDedupeKeys(
       inArray(userNotifications.userId, [...userIds]),
       inArray(userNotifications.dedupeKey, [...dedupeKeys]),
       eq(userNotifications.read, false),
+    ))
+    .returning({ id: userNotifications.id });
+  return rows.length;
+}
+
+/**
+ * Mark the listed users' unread notices whose dedupe key starts with `prefix`
+ * read, except the keys in `exceptKeys`. Used for notices whose exact key is no
+ * longer known (connection health: an episode's opened_at was overwritten
+ * before its notices were retired). Bounded by `user_id IN (userIds)` via the
+ * (user_id, read) index; the prefix is LIKE-escaped. Caller supplies a system
+ * context (same contract as createNotification).
+ */
+export async function markNotificationsReadByDedupeKeyPrefix(
+  userIds: readonly string[],
+  prefix: string,
+  exceptKeys: readonly string[],
+): Promise<number> {
+  if (userIds.length === 0 || prefix.length === 0) return 0;
+  const rows = await db
+    .update(userNotifications)
+    .set({ read: true, readAt: new Date() })
+    .where(and(
+      inArray(userNotifications.userId, [...userIds]),
+      eq(userNotifications.read, false),
+      like(userNotifications.dedupeKey, `${escapeLike(prefix)}%`),
+      exceptKeys.length > 0 ? notInArray(userNotifications.dedupeKey, [...exceptKeys]) : undefined,
     ))
     .returning({ id: userNotifications.id });
   return rows.length;
