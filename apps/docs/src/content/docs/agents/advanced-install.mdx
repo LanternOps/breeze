@@ -246,6 +246,33 @@ On **Linux and macOS**, `service uninstall` stops and removes both the agent and
 
 ---
 
+## Encrypted Client Hello (ECH)
+
+Some home and small-office gateways ship a "security" feature (for example Comcast xFi Advanced Security or Spectrum Security Shield) that inspects the TLS server name (SNI) and answers on port 443 with a plaintext HTTP redirect for hosts on a threat feed. The agent then sees plaintext where it expected a TLS handshake and cannot reach the control plane. Encrypted Client Hello hides the server name from the gateway, so the filter has nothing to match.
+
+The agent is **plain-first**. Nothing changes on a network that does not interfere:
+
+- A host flips to ECH only after the agent sees the filter signature (plaintext HTTP answered on the TLS port) twice within 10 minutes.
+- In ECH mode the agent fetches the host's ECH config over DNS-over-HTTPS and caches it in `ech-cache.json` in the agent data directory. If ECH fails for any reason, that same dial falls back to a plain connection, and a plain success returns the host to plain.
+- Three consecutive ECH failures put ECH on a one-hour cooldown (plain only). Mode is kept in memory, so a restart starts plain.
+- `enroll`, `bootstrap` and `support` retry with ECH on the first signature, so a first-run enrollment on a filtered network can succeed.
+
+**How to tell:** the device's health shows a `control_plane` component. `warning` with "control plane blocked by a network security filter" means the agent saw the signature; `healthy` with "reachable via encrypted client hello" means ECH is carrying the connection. Heartbeats also carry `echActive` and `filterSignatureSeenAt`.
+
+**Opt out locally** by adding `ech: false` to `agent.yaml` and restarting the agent.
+
+**Server kill switch:** set `AGENT_ECH_ENABLED=false` on the API. Agents receive it in their next heartbeat response and dial plain from then on. Live connections are not torn down; the change takes effect on the next dial.
+
+<Aside type="caution">
+ECH needs the host to publish an ECH config in DNS. A self-hosted edge without one stays on plain connections, and `control_plane` keeps reporting the filter warning. ECH is also not applied to connections that go through an HTTP proxy (`HTTPS_PROXY`).
+</Aside>
+
+<Aside type="note">
+The installer downloaders (`install.sh` and the PowerShell one-liner) cannot use ECH yet; see [#8874](https://github.com/LanternOps/breeze/issues/8874). On a filtered network, download the MSI or pkg on another network and run it there. Enrollment inside the installer works.
+</Aside>
+
+---
+
 ## Pre-Staging Without Enrollment
 
 You can install the agent binary and service on an image **without** enrolling, then enroll on first boot. This is the standard pattern for VM templates and golden images.

@@ -100,3 +100,11 @@ The 2026-10-16 spike proved only a bare TLS 1.3 handshake + one HTTP/1.1 GET und
 ## Rollout
 
 Ships in the next agent release behind the server flag defaulting on. Watch `ech_active` counts and the WS reconnect rate after promote; the kill switch is the rollback. Release note must say: the installer downloaders cannot use ECH yet; on a filtered network, download the MSI/pkg elsewhere and run it (enrollment inside it works).
+
+## Deviations at implementation
+
+1. **No device-row columns, no migration (spec section 4).** `echActive` / `filterSignatureSeenAt` are optional top-level heartbeat keys surfaced as Prometheus counters; the per-device view is the `control_plane` entry in the strict v1 health observation, which avoids a schema change on a hot table.
+2. **`support` persists the ECH cache in its own user-workspace data dir (section 5).** `config.GetDataDir()` already resolves there, so nothing is special-cased.
+3. **No custom-CA `tls.Config` exists in the agent (Constraints).** The agent uses the OS trust store only, so "base config" means the mTLS config or nil.
+4. **A plain success inside ECH mode returns the host to plain, and a cache miss never counts as an ECH failure; the DoH fetch's failure does.** This keeps bursts of dials from each triggering a fetch while still bounding a broken fetch path with the cooldown.
+5. **`ech.Shared()` reads no config; each process calls `ech.Configure`.** A config read hidden inside the shared accessor made behaviour depend on call order across the agent, watchdog and one-shot commands, so configuration is now explicit.
