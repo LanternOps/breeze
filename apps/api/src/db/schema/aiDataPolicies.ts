@@ -11,7 +11,7 @@ export const aiDeviceFileReadLevelEnum = pgEnum('ai_device_file_read_level', AI_
  * AI device file read policy (spec 2026-10-15). Dual-owner (#2135): the
  * PARTNER row is the default for all its orgs, the ORG row may only tighten.
  * NULL on an org row = inherit. CHECK constraints live in
- * migrations/2026-12-29-110000-ai-data-policies.sql.
+ * migrations/2026-12-29-130000-ai-data-policies.sql.
  */
 export const aiDataPolicies = pgTable(
   'ai_data_policies',
