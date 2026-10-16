@@ -594,6 +594,30 @@ export async function pruneMissingTenantEndpoints(
   return count;
 }
 
+/** A recorded licence denial is honoured this long (W03; mirrors EDR_TENANT_DENIAL_TTL_MS in actions.ts). */
+const TENANT_DENIAL_TTL_MS = 24 * 3600_000;
+
+/**
+ * W03 (#8167): an inventory run clears this connection's licence denials once
+ * they are older than 24 h, so the vendor is asked again at most once a day.
+ * Expiry is the ONLY clear: inventory says nothing about a licence re-grant.
+ */
+export async function clearExpiredTenantDenials(
+  tx: EdrSyncTx,
+  connectionId: string,
+  now: Date,
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - TENANT_DENIAL_TTL_MS);
+  const cleared = await tx.execute(sql`
+    UPDATE edr_tenants SET unsupported_actions = '{}', unsupported_actions_at = NULL, updated_at = now()
+    WHERE connection_id = ${connectionId}::uuid
+      AND unsupported_actions_at IS NOT NULL
+      AND unsupported_actions_at < ${cutoff.toISOString()}::timestamptz
+    RETURNING id
+  `);
+  return (cleared as unknown as unknown[]).length;
+}
+
 /**
  * After matching: OPEN detections follow their endpoint's device link. Closed
  * detections keep the historical device (spec 4.2).

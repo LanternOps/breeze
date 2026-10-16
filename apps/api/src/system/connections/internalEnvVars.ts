@@ -113,6 +113,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_BOOTSTRAP_ADMIN_NAME: 'one-time first-boot seed',
   BREEZE_BOOTSTRAP_ADMIN_PASSWORD: 'one-time first-boot seed',
   BREEZE_BUILTIN_MONITORS_AUTOSEED: 'seed toggle',
+  BREEZE_EDR_ACTIONS_ENABLED: 'EDR response-action kill switch',
   BREEZE_INTEGRATION_ALLOW_LEDGER_DRIFT: 'test harness (testUtils)',
   BREEZE_INTEGRATION_LOCK_NOWAIT: 'test harness (testUtils)',
   BREEZE_LEGACY_ALERTING_SWEEP: 'boot sweep opt-out (legacy alerting retirement)',

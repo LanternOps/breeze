@@ -113,6 +113,12 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // `approvedBy`/`requestedBy` insert, so all three keys are required.
   ['services/aiToolsCisBenchmark.ts:520', ['', 'apply', 'rollback']],
   ['services/aiToolsCisBenchmark.ts:523', ['', 'apply', 'rollback']],
+  // aiToolsEdr.ts (#8167 W03): edr_endpoint_action has ONE write site — the
+  // `requestedBy: auth.user.id` handed to dispatchEdrAction, which writes
+  // edr_actions.requested_by for EVERY action. There is no `if (action === …)`
+  // guard: the action flows straight into the dispatch. The model is offered
+  // isolate/unisolate/scan, the whole input_schema enum (proven below).
+  ['services/aiToolsEdr.ts:233', ['isolate', 'unisolate', 'scan']],
 ]);
 
 /**
@@ -336,6 +342,13 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
     expect(cisActionEnum, "apply_cis_remediation's input_schema action enum moved").not.toBeNull();
     expect([...cisActionEnum![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1])).toEqual(['apply', 'rollback']);
     expect(cisSrc).toMatch(/input\.action === 'rollback' \? 'rollback' : 'apply'/);
+
+    const edrSrc = readFileSync(join(API_SRC, 'services/aiToolsEdr.ts'), 'utf8');
+    const edrLines = edrSrc.split('\n');
+    expect(edrLines[232], 'aiToolsEdr.ts:233 moved — re-key ACTION_GUARD_ALIASES').toMatch(/^\s*requestedBy: auth\.user\.id,$/);
+    expect(edrSrc.match(/requestedBy: auth\.user\.id/g)?.length, 'edr_endpoint_action must keep ONE write site').toBe(1);
+    expect(edrSrc).toMatch(/const EDR_AI_ENDPOINT_ACTIONS = \['isolate', 'unisolate', 'scan'\] as const;/);
+    expect(edrSrc).not.toMatch(/if \(action === /);
   });
 
   it('every SAFE_WRITE_SITES entry still matches its proven source', () => {

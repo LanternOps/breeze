@@ -43,3 +43,19 @@ ignore = [
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
 ]
+
+# zip 4.6.1 is flagged "yanked" (no RUSTSEC id, so it cannot go in `ignore`
+# above). Every zip 4.x/5.x release is yanked on crates.io, and the only
+# consumer is tauri-plugin-updater (`zip = "^4"`, still the case in the latest
+# stable 2.14.0; 3.0.0-alpha is the only newer line). It is unfixable from this
+# crate: we cannot take the zip 9.x line without a Tauri updater release that
+# does. The updater only unpacks update archives it downloaded from our own
+# update endpoint AFTER minisign signature verification, so the archive is
+# not attacker-controlled input.
+#
+# cargo-audit has no per-crate yanked exemption, so this disables the yanked
+# check for the viewer crate only (the helper crate keeps it). Real RUSTSEC
+# vulnerabilities/unmaintained/unsound advisories are still denied.
+# Re-evaluate when tauri-plugin-updater moves off zip 4.x.
+[yanked]
+enabled = false
