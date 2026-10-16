@@ -6,6 +6,7 @@
 // the `filtersV2=` writer in filterUrl.ts — each writer preserves the other's
 // fragments.
 import type { DeviceClass } from './DeviceList';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 export type DeviceClassFilter = 'all' | 'agent' | 'network' | 'manual';
 
@@ -102,6 +103,6 @@ export function writeDeviceClassToHash(filter: DeviceClassFilter): void {
   const newHash = next ? `#${next}` : '';
   if (newHash !== window.location.hash) {
     // Replace, don't push, so the back button doesn't fill with segment toggles.
-    history.replaceState(null, '', `${window.location.pathname}${window.location.search}${newHash}`);
+    replaceUrl(`${window.location.pathname}${window.location.search}${newHash}`);
   }
 }

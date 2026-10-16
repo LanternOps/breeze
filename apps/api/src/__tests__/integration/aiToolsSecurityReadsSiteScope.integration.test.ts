@@ -48,6 +48,7 @@ import { registerSecurityTools } from '../../services/aiToolsSecurity';
 import { registerUserRiskTools } from '../../services/aiToolsUserRisk';
 import type { AuthContext } from '../../middleware/auth';
 import type { AiTool } from '../../services/aiTools';
+import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
 
 function handlerFor(
   register: (map: Map<string, AiTool>) => void,
@@ -379,6 +380,7 @@ describe('security/compliance AI read tools — site scope + cross-org', () => {
         {
           orgId: org.id,
           deviceId: inScopeDevice.id,
+          deviceEpoch: currentOwnershipEpochSql(inScopeDevice.id),
           flowType: 'tech_jit_admin',
           subjectUserId: inScopeSubject.id,
           subjectUsername: 'in-scope-user',
@@ -390,6 +392,7 @@ describe('security/compliance AI read tools — site scope + cross-org', () => {
         {
           orgId: org.id,
           deviceId: outScopeDevice.id,
+          deviceEpoch: currentOwnershipEpochSql(outScopeDevice.id),
           flowType: 'tech_jit_admin',
           subjectUserId: outScopeSubject.id,
           subjectUsername: 'out-scope-user',
@@ -401,6 +404,7 @@ describe('security/compliance AI read tools — site scope + cross-org', () => {
         {
           orgId: otherOrg.id,
           deviceId: otherOrgDevice.id,
+          deviceEpoch: currentOwnershipEpochSql(otherOrgDevice.id),
           flowType: 'tech_jit_admin',
           subjectUserId: otherOrgSubject.id,
           subjectUsername: 'other-org-user',

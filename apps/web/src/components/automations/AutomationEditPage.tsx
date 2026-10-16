@@ -178,6 +178,9 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   // over the agent-managed notice below since a monitor-compiled automation
   // is never also agent-owned in practice.
   const [managedByMonitorId, setManagedByMonitorId] = useState<string | null>(null);
+  // #8599: the stored owner org (null/undefined for a partner-wide automation).
+  // Scopes the group picker and decides which target modes are offered.
+  const [storedOwnerOrgId, setStoredOwnerOrgId] = useState<string>();
   const [sites, setSites] = useState<Site[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [scripts, setScripts] = useState<Script[]>([]);
@@ -203,6 +206,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       const automation = data.automation ?? data;
       setManagedByAgentId(asString(automation.managedByAgentId) ?? null);
       setManagedByMonitorId(asString(automation.managedByMonitorId) ?? null);
+      setStoredOwnerOrgId(asString(automation.orgId));
 
       const trigger = isPlainRecord(automation.trigger)
         ? automation.trigger
@@ -236,6 +240,9 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         : [{ type: 'run_script' as const }];
 
       setDefaultValues({
+        // orgId NULL = partner-wide (#2133). Only an explicit null counts: a
+        // payload without the field is treated as org-owned.
+        ownerScope: automation.orgId === null ? 'partner' : 'organization',
         name: asString(automation.name) ?? '',
         description: asString(automation.description),
         triggerType,
@@ -389,6 +396,10 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
         errorFallback: t('automationEditPage.errors.save'),
         successMessage: t('common:states.saved'),
+        // #8599: the API names the offending groups/devices; put that behind a
+        // sentence that says what is wrong rather than a bare id list.
+        friendly: (code, message) =>
+          code === 'INVALID_TARGET' ? t('automationEditPage.errors.invalidTarget', { detail: message }) : undefined,
       });
 
       void navigateTo('/jobs');
@@ -505,6 +516,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
           defaultValues={isNew ? { ownerScope: defaultOwnerScope, ...defaultValues } : defaultValues}
           webhookUrl={webhookUrl}
           showOwnerScope={isNew && isPartnerScope}
+          ownerOrgId={isNew ? currentOrgId ?? undefined : storedOwnerOrgId}
           submitLabel={isNew ? t('automationEditPage.actions.create') : t('automationEditPage.actions.saveChanges')}
           loading={saving}
           sites={sites}

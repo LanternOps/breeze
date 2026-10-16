@@ -882,7 +882,42 @@ describe('AddDeviceModal — resolved enrollment defaults (#2776)', () => {
 
     expect((screen.getByTestId('link-ttl') as HTMLSelectElement).value).toBe('43200');
     expect((screen.getByTestId('device-count') as HTMLInputElement).value).toBe('50');
-    expect(optionLabels('link-ttl')).toEqual([
+    // The installer tab is bounded by the 30-day installer maximum even when
+    // no partner cap applies: 90 days and 1 year would be refused with a 400.
+    expect(optionLabels('link-ttl')).toEqual(['1 hour', '24 hours', '7 days', '30 days']);
+  });
+
+  it('caps the installer picker at 30 days while the CLI tab keeps the longer options', async () => {
+    setOrgStore({
+      enrollmentDefaults: { ttlMinutes: 129600, deviceCount: 1, maxTtlMinutes: 525600 },
+    });
+    fetchWithAuthMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/enrollment-keys/add-device-parent') {
+        return makeJsonResponse({ id: 'key-max', key: 'raw' }, true, 201);
+      }
+      return makeJsonResponse(null, true);
+    });
+
+    render(<AddDeviceModal isOpen onClose={vi.fn()} />);
+
+    // A 90-day resolved default folds down to the largest installer option.
+    await waitFor(() => {
+      expect((screen.getByTestId('link-ttl') as HTMLSelectElement).value).toBe('43200');
+    });
+    expect(optionLabels('link-ttl')).toEqual(['1 hour', '24 hours', '7 days', '30 days']);
+    expect(screen.getByText(/30 days at most/)).toBeDefined();
+
+    fireEvent.click(getDownloadButton());
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(2);
+    });
+    expect(String(fetchWithAuthMock.mock.calls[1][0])).toContain('ttlMinutes=43200');
+
+    // The CLI token is an enrollment key, not an installer: unchanged.
+    fireEvent.click(screen.getByTestId('tab-cli'));
+    expect((screen.getByTestId('cli-link-ttl') as HTMLSelectElement).value).toBe('129600');
+    expect(optionLabels('cli-link-ttl')).toEqual([
       '1 hour',
       '24 hours',
       '7 days',

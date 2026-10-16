@@ -21,7 +21,7 @@ import {
   isEtagFresh,
   portalFinancialMutationGuard,
 } from './helpers';
-import { getCustomerInvoice, markViewed, toCustomerInvoiceLine } from '../../services/invoiceService';
+import { getCustomerInvoice, markViewed, projectCustomerInvoiceLine } from '../../services/invoiceService';
 import { getInvoicePdf, renderInvoicePdf } from '../../services/invoicePdf';
 import { portalBase } from '../../services/portalUrl';
 import { safeContentDispositionFilename } from '../../utils/httpHeaders';
@@ -43,6 +43,10 @@ const settleSchema = z.object({ sessionId: z.string().trim().min(1).max(255) });
 
 // Invoice statuses that may be paid online. Drafts/paid/void are excluded.
 const PAYABLE = new Set(['sent', 'partially_paid', 'overdue']);
+// One body for a missing, other-org and draft invoice on the read, PDF, pay and
+// settle routes, so they never tell a portal user that an unissued invoice
+// exists. /autopay-confirmation does not use it yet (#8254).
+const INVOICE_NOT_FOUND_BODY = { error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND };
 
 /**
  * The customer-facing name of an invoice, which carries no title column: the
@@ -121,12 +125,14 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
   try {
     result = await getCustomerInvoice(id, auth.user.orgId);
   } catch (err) {
-    if (err instanceof InvoiceServiceError) return c.json({ error: err.message }, err.status);
+    if (err instanceof InvoiceServiceError) {
+      return err.status === 404 ? c.json(INVOICE_NOT_FOUND_BODY, 404) : c.json({ error: err.message }, err.status);
+    }
     throw err;
   }
 
   // Drafts are never customer-visible even though getCustomerInvoice is org-scoped.
-  if (result.invoice.status === 'draft') return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
+  if (result.invoice.status === 'draft') return c.json(INVOICE_NOT_FOUND_BODY, 404);
 
   // Best-effort view stamp — never fail the read if the stamp write hiccups.
   try {
@@ -196,7 +202,10 @@ invoiceRoutes.get('/invoices/:id', zValidator('param', ticketParamSchema), async
 
   return c.json({
     invoice: result.invoice,
-    lines: result.lines.map(toCustomerInvoiceLine),
+    // Re-project the exact safe keyset (defense in depth over the service).
+    // Not toCustomerInvoiceLine: getCustomerInvoice already applied the #8604
+    // toggles from the frozen columns, and re-running it would apply defaults.
+    lines: result.lines.map(projectCustomerInvoiceLine),
     onlinePaymentAvailable,
     collectionInProgress,
     autopayStatus: customerAutopay.status,
@@ -222,6 +231,11 @@ invoiceRoutes.post('/invoices/:id/autopay-confirmation', zValidator('param', tic
   try {
     return c.json(await releaseInvoiceConfirmation({ invoiceId: id, orgId: auth.user.orgId }));
   } catch (err) {
+    if (err instanceof InvoiceServiceError && err.status === 404) {
+      // The service gives a missing, other-org and draft invoice one 404; answer
+      // it with the body the other portal invoice routes use (#8254).
+      return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
+    }
     if (err instanceof InvoiceServiceError && err.status < 500) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;
   }
@@ -237,10 +251,12 @@ invoiceRoutes.get('/invoices/:id/pdf', zValidator('param', ticketParamSchema), a
   try {
     invoice = (await getCustomerInvoice(id, auth.user.orgId)).invoice;
   } catch (err) {
-    if (err instanceof InvoiceServiceError) return c.json({ error: err.message }, err.status);
+    if (err instanceof InvoiceServiceError) {
+      return err.status === 404 ? c.json(INVOICE_NOT_FOUND_BODY, 404) : c.json({ error: err.message }, err.status);
+    }
     throw err;
   }
-  if (invoice.status === 'draft') return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
+  if (invoice.status === 'draft') return c.json(INVOICE_NOT_FOUND_BODY, 404);
 
   let pdf = await getInvoicePdf(id);
   if (!pdf) {
@@ -284,7 +300,7 @@ invoiceRoutes.post('/invoices/:id/pay', zValidator('param', ticketParamSchema), 
       .where(and(eq(invoices.id, id), eq(invoices.orgId, auth.user.orgId), ne(invoices.status, 'draft')))
       .limit(1)
   );
-  if (!inv) return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
+  if (!inv) return c.json(INVOICE_NOT_FOUND_BODY, 404);
   if (!PAYABLE.has(inv.status)) return c.json({ error: 'Invoice is not payable', code: ERROR_CODES.CONFLICT }, 409);
 
   if('methodType' in body && body.methodType==='us_bank_account'){
@@ -563,7 +579,7 @@ invoiceRoutes.post('/invoices/:id/settle',
         .limit(1);
       return { inv, hasMapping: !!mapping };
     });
-    if (!owned) return c.json({ error: 'Invoice not found', code: ERROR_CODES.NOT_FOUND }, 404);
+    if (!owned) return c.json(INVOICE_NOT_FOUND_BODY, 404);
     if (!owned.hasMapping) return c.json({ settled: false });
     const { inv } = owned;
 

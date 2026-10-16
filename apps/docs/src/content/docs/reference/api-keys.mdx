@@ -151,6 +151,8 @@ curl -X POST https://breeze.yourdomain.com/api/v1/api-keys/KEY_UUID/rotate \
 
 The response contains the new full key in the `key` field. All other attributes (name, scopes, rate limit, expiration) are preserved.
 
+Only the key's **creator** can rotate it: the key keeps acting with its creator's permissions, so another admin gets `403` with `code: "API_KEY_CREATOR_REQUIRED"` and should revoke the key instead. A key that belongs to an organization service principal is rotated from the service principal (`POST /service-principals/:id/rotate`). Rotating binds the key to the creator's current sign-in, the same way creating one does, so a key that stopped working after its creator's password or MFA change works again once the creator rotates it.
+
 ### Revocation
 
 Revoking an API key performs a **soft delete** -- the record remains in the database with `status: "revoked"` but the key can no longer authenticate. Revoked keys cannot be rotated or updated.
@@ -245,12 +247,25 @@ Every mutation is recorded in the audit log (`service_principal.create`, `servic
 | `custom-fields:read` | Export custom field definitions and values |
 | `alerts:read` | Read the alerts feed across accessible organizations (opt-in, never a default scope) |
 | `device-status:read` | Read live device status, last-seen time and agent version across accessible organizations (opt-in, never a default scope, not implied by `devices:read`) |
+| `tickets:read` | Read the tickets feed, single tickets and ticket comments across accessible organizations, including every internal note (opt-in, never a default scope) |
 | `organizations:write` | Create organizations (bounded by the partner's organization cap) |
 | `sites:write` | Create sites in the principal's accessible organizations |
 | `enrollment-keys:write` | Create enrollment keys (raw key returned once) |
 | `contracts:write` | Create a contract, update header fields, add/patch/remove lines, and GET one contract. Does not grant activate/pause/cancel, documents, or the human JWT `/api/v1/contracts` surface. Line removal is contents, not tenancy deletion. |
+| `tickets:write` | Create, update, change status, assign and comment on tickets in accessible organizations. Does not grant delete, restore, moving a ticket between organizations, bulk actions, attachments, time entries, AI drafts or the ticket mailbox; the principal acts as itself, never as a person |
 
 The `:write` scopes exist for unattended provisioning and integrations -- migration scripts, scheduled syncs, and partner-built tools. They are **opt-in at principal creation and never part of the default scope set**: a default-scoped principal stays read-only. Grant them only to credentials that genuinely need them, and prefer a dedicated principal so rotation and revocation stay surgical. Tenancy writes are create-only -- deleting organizations, sites, or enrollment keys remains a human, MFA-gated action.
+
+#### Who can manage a partner service principal
+
+Managing partner service principals needs a partner-wide admin (all-organization access) with `organizations:write` and a completed MFA challenge. Beyond that:
+
+- **Only the principal's owner** (the admin who created it) can issue or rotate its keys, re-enable it, add a scope, or remove or extend its expiry or source-CIDR restriction. Anyone else gets `403` with `code: "SERVICE_PRINCIPAL_OWNER_REQUIRED"`.
+- **Any partner-wide admin** can revoke a key, disable the principal, remove scopes, shorten its expiry, remove some of its source CIDRs, and rename it.
+- **Every scope is a delegation.** Whoever grants a scope, by creating the principal, adding the scope, or issuing, rotating or re-enabling a key that carries it, must hold the permission the dashboard requires for the same data: for example `tickets:read` needs `tickets.read`, `contracts:write` needs `contracts.write`, `backup-configuration:read` needs `backup.read`, and `inventory:read`, `custom-fields:read` and `device-status:read` need `devices.read`.
+- **Keys end with the owner's sign-in credential**, the same way a person's own API keys do: the owner's password change or reset, an administrator changing the owner's account status, a change to the owner's MFA factors, or removing the owner from the partner stops every key issued before it, on both the Partner API and MCP. Signing out does not. The owner issues a new key afterwards.
+
+If the owner leaves, create a new principal under another admin, move the integration to its key, and disable the old principal.
 
 #### MCP scopes (partner-wide MCP access)
 
@@ -263,7 +278,7 @@ A partner service principal can also authenticate the [MCP server](/features/mcp
 | `ai:execute` | Tier 3 tools (still approval-only unless the principal is listed in `MCP_UNATTENDED_TIER3_PRINCIPALS` as `partner_sp:<id>`) |
 | `ai:execute_admin` | Tier 3 tools in production when `MCP_REQUIRE_EXECUTE_ADMIN` is on |
 
-They are opt-in and never default, and `ai:write`, `ai:execute` and `ai:execute_admin` each require `ai:read`. Granting one requires the acting admin to hold the permissions an organization API key's creator needs for the same scope. Over MCP the principal reaches every organization of its partner; its per-tool permissions are its owner's (the admin who created it) live partner role, and the owner must keep all-organization access or the key is refused.
+They are opt-in and never default, and `ai:write`, `ai:execute` and `ai:execute_admin` each require `ai:read`. Granting one requires the acting admin to hold the permissions an organization API key's creator needs for the same scope. Over MCP the principal reaches every organization of its partner; its per-tool permissions are its owner's (the admin who created it) live partner role, the owner must keep all-organization access, and only keys the owner issued are accepted.
 
 ---
 

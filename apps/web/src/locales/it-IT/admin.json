@@ -891,6 +891,7 @@
       "empty": "Nessun log di audit trovato.",
       "viewDetails": "Visualizza dettagli",
       "errors": {
+        "export": "Impossibile esportare i log di audit",
         "fetch": "Impossibile recuperare i log di audit",
         "load": "Impossibile caricare i log di audit"
       },

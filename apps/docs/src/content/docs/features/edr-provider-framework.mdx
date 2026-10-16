@@ -1,0 +1,70 @@
+---
+title: EDR Provider Framework
+description: Connect additional EDR products to Breeze through a common framework, map vendor tenants to organizations, link endpoints to devices, and review detections alongside your other security data.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The EDR provider framework is a common way for Breeze to connect to Endpoint Detection and Response products. A provider supplies the vendor-specific parts (credentials, tenant and endpoint discovery, detections); Breeze supplies the shared parts: tenant-to-organization mapping, endpoint-to-device linking, the incidents feed, the device page section, alerts, and the customer portal summary.
+
+Currently one provider is available:
+
+| Provider | Key |
+|----------|-----|
+| Bitdefender GravityZone | `bitdefender` |
+
+Huntress and SentinelOne keep their own dedicated integrations; see [EDR Integrations](/features/edr-integrations/).
+
+<Aside>
+  This release is read-only. Response actions (isolation, remediation) are not yet available for framework providers.
+</Aside>
+
+## Connecting a provider
+
+<Steps>
+1. Set your scope selector to **All orgs**. Connections are partner-level and require a partner admin with all-organization access.
+2. Go to **Integrations**, open the **Security** tab, and select **EDR providers**.
+3. Choose the provider and give the connection a name.
+4. Fill in the credential fields. The fields come from the provider, so they differ per product. Secret values are encrypted at rest and are never shown again after saving.
+5. Enter the **Access URL** if the provider asks for one.
+6. Save, then use **Test connection** to confirm Breeze can reach the vendor. An initial sync is scheduled automatically.
+</Steps>
+
+A connection reports its own health: connected, needs re-authentication, or error, along with the last inventory and detection sync times. You can pause a connection, trigger a manual sync, or delete it. Deleting is permanent and asks you to confirm the number of detections and endpoints that will be removed.
+
+## Mapping vendor tenants to organizations
+
+Providers expose their own customer or company structure, called tenants. Each tenant must be mapped to a Breeze organization before its data is attributed to that customer.
+
+- Breeze may show a **suggested match** when a tenant name matches an organization name. Suggestions are never applied automatically; you confirm each one.
+- You can leave a tenant deliberately unmapped.
+- Unmapping a tenant detaches its data from the organization again.
+- A tenant that disappears from the vendor is flagged **missing since** with the date it was last seen, rather than being silently removed.
+
+Until a tenant is mapped, its endpoints and detections are not visible to any organization.
+
+## Linking endpoints to devices
+
+During each sync Breeze tries to match vendor endpoints to enrolled devices. Endpoints that cannot be matched are listed as **unlinked**, and endpoints that match more than one device are listed as **ambiguous**. From the connection's endpoint list you can link an endpoint to the correct device, or unlink one that was matched wrongly.
+
+## Where the data appears
+
+| Location | What you see |
+|----------|--------------|
+| **Security → EDR → Other EDR** tab | Detections from framework providers. The tab carries the provider name when only one provider is connected. |
+| **Incidents** | An incidents feed of framework detections, with **Promote to incident** to open a Breeze incident from a detection. |
+| **Device page → EDR section** | Read-only endpoint health, isolation state and detections for the linked device. |
+| **Alerts** | Alerts raised from framework detections. |
+| **Customer portal** | An optional generic status and threat count; see below. |
+
+### Reading coverage correctly
+
+Every detection list reports coverage. An empty list with incomplete coverage (a tenant not yet mapped, a sync that failed, or a sync that has not run) does not mean there are no threats, and Breeze says so instead of showing an all-clear. Sync health is visible to partner users only; organization-scoped users see a note saying so rather than the sync details.
+
+## Customer portal
+
+The portal flag `enableEdrVisibility` controls whether an organization's portal users see EDR information. It is off by default and is included when you use **Enable all visibility**.
+
+When on, customers see a generic **Managed endpoint protection** status and threat counts from connected providers. Vendor and product names are never shown in the portal.
+
+To change it, open **Settings → Organizations**, choose the organization, open the **Customer Portal** tab, and toggle **Endpoint protection (EDR)**. See [Customer Portal](/features/portal/) for the full visibility list.

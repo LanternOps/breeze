@@ -81,7 +81,7 @@ export function planChildRowSync<S extends { id: string }, R>(
  * request it retries), so two writers never both insert the same new row.
  * Per device, so it never contends across devices.
  */
-async function lockDeviceInventory(tx: DbTx, table: string, deviceId: string) {
+export async function lockDeviceInventory(tx: Pick<DbTx, 'execute'>, table: string, deviceId: string) {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`inventory-sync:${table}`}), hashtext(${deviceId}))`);
 }
 

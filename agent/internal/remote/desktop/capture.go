@@ -52,33 +52,69 @@ func NewScreenCapturer(config CaptureConfig) (ScreenCapturer, error) {
 	return newPlatformCapturer(config)
 }
 
-// ProbeCaptureAccess performs a real capture attempt and reports whether a
-// frame came back.
+// CaptureProbeOptions selects what a capability probe may do.
+type CaptureProbeOptions struct {
+	// AllowScreenCaptureKit lets the macOS 14+ user-session probe try
+	// ScreenCaptureKit, once, before CoreGraphics. Leave it false for every
+	// permission check: on Sequoia a ScreenCaptureKit call can raise macOS's
+	// own screen-recording consent dialog, and for the bare helper binary
+	// that approval does not persist, so a check that touches it re-prompts
+	// the user on every run (#8058). Only an explicit operator probe (the
+	// desktop helper CLI's `probe --sck`) sets it; a real capture session
+	// picks its backend in newPlatformCapturer instead. Ignored elsewhere.
+	AllowScreenCaptureKit bool
+}
+
+// CaptureProbeReport is the outcome of ProbeCapture.
+type CaptureProbeReport struct {
+	// Granted is true when a backend produced a frame.
+	Granted bool
+	// Backend names the backend that produced it ("screencapturekit",
+	// "coregraphics", or "platform" where the OS has one backend).
+	Backend string
+	// ScreenCaptureKitCalls counts how many times the probe opened a
+	// ScreenCaptureKit capturer.
+	ScreenCaptureKitCalls int
+}
+
+// ProbeCaptureAccess is the permission-check probe: one real capture attempt
+// that reports whether a frame came back. On macOS it never calls
+// ScreenCaptureKit (#8058); see CaptureProbeOptions.
+func ProbeCaptureAccess(config CaptureConfig) (bool, error) {
+	report, err := ProbeCapture(config, CaptureProbeOptions{})
+	return report.Granted, err
+}
+
+// ProbeCapture performs a real capture attempt and reports which backend, if
+// any, produced a frame.
 //
 // By default that is a single attempt with the backend NewScreenCapturer
-// selects. A platform can install platformCaptureProbePlan to add retries and
-// a fallback backend: macOS does, because a ScreenCaptureKit capture that times
-// out after a successful init used to report false with no second attempt and
-// no CoreGraphics try, leaving the helper Desktop Unavailable (#6105).
-func ProbeCaptureAccess(config CaptureConfig) (bool, error) {
+// selects. A platform can install platformCaptureProbePlan to choose the
+// backends: macOS does, to keep permission checks off ScreenCaptureKit and to
+// fall back to CoreGraphics when ScreenCaptureKit cannot capture (#6105).
+func ProbeCapture(config CaptureConfig, opts CaptureProbeOptions) (CaptureProbeReport, error) {
 	plan := defaultCaptureProbePlan(config)
 	if platformCaptureProbePlan != nil {
-		plan = platformCaptureProbePlan(config)
+		plan = platformCaptureProbePlan(config, opts)
 	}
 	res, err := probeCaptureBackends(plan)
+	report := CaptureProbeReport{Granted: err == nil, Backend: res.backend}
+	if plan.primary.name == captureBackendScreenCaptureKit {
+		report.ScreenCaptureKitCalls = res.primaryOpens
+	}
 	if err != nil {
-		return false, err
+		return report, err
 	}
 	if plan.onSuccess != nil {
 		plan.onSuccess(res)
 	}
-	return true, nil
+	return report, nil
 }
 
 // platformCaptureProbePlan, when non-nil, supplies the backend ordering for
-// ProbeCaptureAccess. Installed from init() by platforms that need more than
-// one attempt (capture_darwin.go).
-var platformCaptureProbePlan func(CaptureConfig) captureProbePlan
+// ProbeCapture. Installed from init() by platforms that need more than one
+// backend (capture_darwin.go).
+var platformCaptureProbePlan func(CaptureConfig, CaptureProbeOptions) captureProbePlan
 
 // defaultCaptureProbePlan is the historical probe: one attempt, no fallback.
 func defaultCaptureProbePlan(config CaptureConfig) captureProbePlan {

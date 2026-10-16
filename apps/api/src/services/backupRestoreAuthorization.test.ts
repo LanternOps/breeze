@@ -75,11 +75,21 @@ describe('unattestedRestoreResourceDigest', () => {
 });
 
 describe('recordRestoreAuthorization', () => {
-  it('records how the restore was confirmed in the audit event, and only there', async () => {
+  it.each(['mfa', 'confirm'] as const)('records how the restore was confirmed (%s) in the audit event, and only there', async (method) => {
     const { writer, committed } = transactionalWriter();
-    await recordRestoreAuthorization({ ...input(), confirmationMethod: 'typed' }, writer);
-    expect(committed.audits[0].details).toMatchObject({ confirmationMethod: 'typed', reason: 'unattested_legacy' });
+    await recordRestoreAuthorization({ ...input(), confirmationMethod: method }, writer);
+    expect(committed.audits[0].details).toMatchObject({ confirmationMethod: method, reason: 'unattested_legacy' });
     expect(committed.authorizations[0]).not.toHaveProperty('confirmationMethod');
+  });
+
+  it('accepts only a two-factor step-up or an explicit confirmation as the method, and records nothing otherwise', async () => {
+    const { writer, committed } = transactionalWriter();
+    await expect(
+      // @ts-expect-error -- only 'mfa' and 'confirm' confirm a restore
+      recordRestoreAuthorization({ ...input(), confirmationMethod: 'typed' }, writer),
+    ).rejects.toThrow(/confirmation method/);
+    expect(committed.authorizations).toHaveLength(0);
+    expect(committed.audits).toHaveLength(0);
   });
 
   it('writes the authorization and its audit event together, bound to the reserved command id', async () => {

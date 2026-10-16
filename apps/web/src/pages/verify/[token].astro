@@ -1,0 +1,16 @@
+---
+// Public, unauthenticated caller-verification page. The URL token is the only
+// credential, so this page must render for a logged-out stranger — deliberately
+// NO auth guard. Never cached and never leaks the token via Referer.
+import AuthLayout from '../../layouts/AuthLayout.astro';
+import CallerVerifyCard from '../../components/callerVerification/CallerVerifyCard';
+
+export const prerender = false;
+Astro.response.headers.set('Cache-Control', 'no-store, private');
+Astro.response.headers.set('Referrer-Policy', 'no-referrer');
+const token = Astro.params.token ?? '';
+---
+
+<AuthLayout titleKey="titles.verify">
+  <CallerVerifyCard token={token} client:load />
+</AuthLayout>

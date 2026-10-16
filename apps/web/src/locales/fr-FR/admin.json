@@ -891,6 +891,7 @@
       "empty": "Aucun journal d’audit trouvé.",
       "viewDetails": "Voir les détails",
       "errors": {
+        "export": "Impossible d’exporter les journaux d’audit",
         "fetch": "Impossible de récupérer les journaux d’audit",
         "load": "Impossible de charger les journaux d’audit"
       },

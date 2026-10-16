@@ -1,0 +1,41 @@
+{
+  "badge": {
+    "requested": "Warten auf das Gerät",
+    "created": "Erstellung des Wiederherstellungspunkts bestätigt {{time}}",
+    "createdNoTime": "Erstellung des Wiederherstellungspunkts bestätigt",
+    "existingAccepted": "Vorhandener Punkt wiederverwendet — vor {{age}} erstellt (Windows-Limit: alle {{limit}})",
+    "existingAcceptedAgeOnly": "Vorhandener Punkt wiederverwendet — vor {{age}} erstellt",
+    "existingAcceptedNoDetail": "Vorhandener Punkt wiederverwendet",
+    "skippedDisabled": "Übersprungen — Systemwiederherstellung ist auf diesem Gerät deaktiviert",
+    "skippedDefinitionOnly": "Übersprungen — reines Definitionsupdate",
+    "unsupported": "Auf diesem Gerät nicht verfügbar",
+    "busy": "Übersprungen — der Volumeschattenkopie-Dienst war ausgelastet",
+    "insufficientPrivileges": "Übersprungen — unzureichende Berechtigungen",
+    "verificationFailed": "Konnte nicht überprüft werden",
+    "failed": "Fehlgeschlagen — {{message}}",
+    "failedNoMessage": "Fehlgeschlagen",
+    "unknown": "Ergebnis wird von dieser Version der Konsole nicht erkannt"
+  },
+  "list": {
+    "title": "Systemwiederherstellung",
+    "disclaimer": "Die Systemwiederherstellung ist keine Datensicherung. Diese Liste zeigt, wann Breeze Windows aufgefordert hat, einen Wiederherstellungspunkt zu erstellen, und was das Gerät gemeldet hat; sie garantiert nicht, dass ein Wiederherstellungspunkt existiert oder wiederhergestellt werden kann.",
+    "loading": "Verlauf der Systemwiederherstellung wird geladen…",
+    "loadError": "Der Verlauf der Systemwiederherstellung konnte nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Für dieses Gerät wurden keine Anfragen zur Systemwiederherstellung erfasst.",
+    "loadMore": "Mehr laden",
+    "loadingMore": "Wird geladen…",
+    "loadMoreError": "Weitere Einträge konnten nicht geladen werden.",
+    "columns": {
+      "requested": "Angefordert",
+      "trigger": "Ausgelöst durch",
+      "outcome": "Ergebnis"
+    },
+    "trigger": {
+      "patch": "Patch-Installation",
+      "script": "Skriptausführung",
+      "software_install": "Software-Installation"
+    },
+    "viewScriptRun": "Skriptausführung anzeigen"
+  }
+}

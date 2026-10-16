@@ -155,7 +155,7 @@ export function baselineGraph() {
       omittedNodes: 0, omittedRelationships: 0,
     },
     coverage: { state: 'limited', reasons: [{ code: 'no_managed_switch', message: 'No managed switch or controller reports' }] },
-    frontier: [], permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: true },
+    frontier: [], permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: true, canMoveDevices: false },
   };
 }
 

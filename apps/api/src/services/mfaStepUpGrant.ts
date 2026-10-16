@@ -116,15 +116,29 @@ export type StepUpOperation =
   // and recorded as a durable authorization with its audit event
   // (services/backupRestoreAuthorization.ts).
   | 'backup_unattested_restore'
-  // The same restore confirmation for a user WITHOUT a second factor, of a
-  // snapshot taken before attestations existed: minted by
-  // POST /backup/restore-confirmations once the user typed the target
-  // device's name (routes/backup/restoreConfirmations.ts), bound by the same
-  // resourceDigest and consumed by the same restore routes. A separate
-  // operation so a typed grant is never accepted where the two-factor step-up
-  // is required, and the reverse. MUST NOT be client-requestable from
-  // POST /auth/mfa/step-up: excluded from STEP_UP_OPERATIONS by the compiler.
-  | 'backup_unattested_restore_typed';
+  // Charging a client now (autopay): an off-session payment the MSP starts by
+  // hand. Bound by resourceDigest to exactly one invoice; consumed right
+  // before the charge is reserved, so it can never pay a different invoice.
+  | 'autopay_charge_now'
+  // Saving the partner's payment settings (automatic-payment cap, schedule,
+  // fees, reminders). Bound to the partner AND to the exact values saved, so
+  // a grant minted for one change cannot save a different, wider one.
+  | 'partner_payment_settings_update'
+  // Sending a client's automatic-payment authorization request to an address
+  // other than its billing contact. Bound to the exact org set, recipient and
+  // request mode.
+  | 'autopay_request_recipient'
+  // Saving an organization's own payment settings, which override the
+  // partner's (cap, schedule, fees, payment methods, reminders). Asked for only
+  // when a saved value differs from the stored one; bound to the organization
+  // AND to the exact values saved, like partner_payment_settings_update.
+  | 'org_payment_settings_update'
+  // Ticket migration windows (#8313): opening a window widens a keyless
+  // partner service principal into import mode across the chosen orgs. Bound
+  // to the exact { partnerId, principalId, sorted orgIds, endsAt,
+  // writesPerHour } the admin confirmed, so a grant can never open a wider,
+  // longer or faster window than the one shown.
+  | 'migration_window_open';
 
 export interface StepUpGrant {
   id: string;
@@ -397,6 +411,102 @@ export function unattestedRestoreResourceDigest(input: {
     commandType: input.commandType,
     snapshotDbId: input.snapshotDbId.toLowerCase(),
     targetDeviceId: input.targetDeviceId.toLowerCase(),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Canonical JSON for an open settings object: keys sorted at every depth and
+ * `undefined` dropped, so two equivalent patches always hash the same.
+ */
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort()
+      .filter(key => (value as Record<string, unknown>)[key] !== undefined)
+      .map(key => [key, canonicalValue((value as Record<string, unknown>)[key])]));
+  }
+  return value;
+}
+
+/** Charge-now step-up binding: one invoice. */
+export function autopayChargeNowResourceDigest(input: { invoiceId: string }): `sha256:${string}` {
+  const canonical = JSON.stringify({ kind: 'autopay_charge_now', invoiceId: input.invoiceId.toLowerCase() });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Partner payment-settings binding: the partner and every value in the saved
+ * patch (as parsed by the shared patch schema on both the mint and the write
+ * side), independent of key order.
+ */
+export function partnerPaymentSettingsResourceDigest(input: {
+  partnerId: string;
+  settings: Record<string, unknown>;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'partner_payment_settings_update',
+    partnerId: input.partnerId.toLowerCase(),
+    settings: canonicalValue(input.settings),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Organization payment-settings binding: the organization and every value in
+ * the saved patch (as parsed by the shared org patch schema on both the mint
+ * and the write side), independent of key order. Its own `kind`, so a partner
+ * grant never fits an organization save.
+ */
+export function orgPaymentSettingsResourceDigest(input: {
+  orgId: string;
+  settings: Record<string, unknown>;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'org_payment_settings_update',
+    orgId: input.orgId.toLowerCase(),
+    settings: canonicalValue(input.settings),
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Migration window open binding (#8313): the partner, the principal, the
+ * deduplicated sorted org set, the end (normalised to ISO) and the throughput
+ * as requested (null when the admin left the default), independent of order.
+ */
+export function migrationWindowOpenResourceDigest(input: {
+  partnerId: string;
+  principalId: string;
+  orgIds: readonly string[];
+  endsAt: string;
+  writesPerHour?: number | null;
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'migration_window_open',
+    partnerId: input.partnerId.toLowerCase(),
+    principalId: input.principalId.toLowerCase(),
+    orgIds: [...new Set(input.orgIds.map((id) => id.toLowerCase()))].sort(),
+    endsAt: new Date(input.endsAt).toISOString(),
+    writesPerHour: input.writesPerHour ?? null,
+  });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Redirected authorization-request binding: the deduplicated, sorted org set,
+ * the exact recipient, and the mode (absent means 'request', as on the route).
+ */
+export function autopayRequestRecipientResourceDigest(input: {
+  orgIds: readonly string[];
+  recipientOverride: string;
+  mode?: 'request' | 'reauthorize';
+}): `sha256:${string}` {
+  const canonical = JSON.stringify({
+    kind: 'autopay_request_recipient',
+    mode: input.mode ?? 'request',
+    orgIds: [...new Set(input.orgIds.map(id => id.toLowerCase()))].sort(),
+    recipientOverride: input.recipientOverride,
   });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }

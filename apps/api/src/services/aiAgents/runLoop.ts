@@ -123,6 +123,7 @@ import {
   startHopFor,
   type NextAgentHop,
 } from './agentRunFailover';
+import { admissionFailoverOf } from './admissionFailover';
 import { AgentRunBlockedError, blockedOutcome, notifyModelBlocked } from './modelBlocked';
 import type { ToolExecutionContext } from '../toolExecutionContext';
 import { EXPORT_DEFAULT_MAX_BYTES } from '../aiToolsExport';
@@ -288,9 +289,17 @@ function isProviderFailureCause(cause: FailoverCause | null): cause is ProviderF
  * run rebuilds matches the one its hop reserved, and the ledger row keeps
  * `failover_hop` / `failover_cause` (Codex review 5).
  */
-function agentHopBinding(resolved: ResolvedModel, hop: number, cause: FailoverCause | null): TurnBinding {
+function agentHopBinding(
+  resolved: ResolvedModel,
+  hop: number,
+  cause: FailoverCause | null,
+  admissionFailover: TurnBinding['failover'] | null = null,
+): TurnBinding {
   const binding = turnBindingFrom(resolved);
-  if (hop === 0) return binding;
+  // #7787: hop 0 of a run ADMISSION put on a fallback (primary cooling or
+  // ineligible) records admission's provenance, as chat does — unless this
+  // re-resolution itself moved, whose provenance then describes the serve.
+  if (hop === 0) return binding.failover || !admissionFailover ? binding : { ...binding, failover: admissionFailover };
   const recordedCause = cause ?? binding.failover?.cause ?? null;
   if (!recordedCause) return binding;
   return { ...binding, failover: { fromOfferingId: binding.failover?.fromOfferingId ?? null, hop, cause: recordedCause } };
@@ -346,6 +355,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         servedFundingSource: aiAgentRuns.servedFundingSource,
         servedFailoverHop: aiAgentRuns.servedFailoverHop,
         servedFailoverCause: aiAgentRuns.servedFailoverCause,
+        // #7787 — the failover source admission (or a hop) recorded.
+        servedFailoverFromOfferingId: aiAgentRuns.servedFailoverFromOfferingId,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -2142,7 +2153,7 @@ async function driveSdkLoop(
   // Codex review 5: a hop > 0 carries the RUN's provenance (hop index and
   // cause from the run row), so a re-driven hop rebuilds the binding it
   // reserved and its ledger row keeps its failover provenance.
-  let binding = agentHopBinding(hopModel, hopIndex, hopCause);
+  let binding = agentHopBinding(hopModel, hopIndex, hopCause, admissionFailoverOf(run));
   // Provenance only (resolved_model, the execution-ledger session): the wire
   // id the SDK is sent comes from sdkModelOptions below.
   const model = agentModel.logicalModel;

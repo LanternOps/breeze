@@ -8,6 +8,7 @@ import { ticketMoveOrgRoutes } from './moveOrg';
 import { ticketAttachmentRoutes } from './attachments';
 import { ticketAiDraftsRoutes } from './aiDrafts';
 import { ticketChecklistRoutes } from './checklist';
+import { ticketLinkRoutes } from './links';
 
 export const ticketsRoutes = new Hono();
 
@@ -35,4 +36,7 @@ ticketsRoutes.route('/', ticketAiDraftsRoutes);
 // the generic /:id param matcher, and /:id/checklist/reorder is not captured by
 // a shorter /:id route (#5783 W01).
 ticketsRoutes.route('/', ticketChecklistRoutes);
+// links BEFORE core /:id routes so /:id/links and /:id/links/:linkId are not
+// captured by a shorter /:id route (#7900 W02).
+ticketsRoutes.route('/', ticketLinkRoutes);
 ticketsRoutes.route('/', ticketsApiRoutes);

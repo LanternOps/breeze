@@ -450,6 +450,61 @@ describe('manage_update_rings autoApprove fail-closed write boundary (#1317)', (
     expect(parsed.ring).not.toHaveProperty('sources');
     expect(parsed.ring.id).toBe(RING_ID);
   });
+
+  it('manage_update_rings get returns the ring appRules (#8184) — full-row read', async () => {
+    const rules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring', appRules: rules });
+    const tool = getTool();
+    const output = await tool.handler({ action: 'get', ringId: RING_ID }, makeAuth());
+
+    // No explicit projection: a future one must remember app_rules.
+    expect(selectMock.mock.calls[0]).toEqual([]);
+    expect(JSON.parse(output).ring.appRules).toEqual(rules);
+  });
+
+  it('manage_update_rings create/update persist appRules (#8184)', async () => {
+    const appRules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+    mockInsertReturns({ id: RING_ID, name: 'Ring A' });
+    const tool = getTool();
+    const createOutput = await tool.handler({ action: 'create', name: 'Ring A', appRules }, makeAuth());
+    expect(JSON.parse(createOutput).success).toBe(true);
+    const createdValues = insertMock.mock.results[0]!.value.values.mock.calls[0][0];
+    expect(createdValues.appRules).toEqual(appRules);
+
+    vi.clearAllMocks();
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
+    mockUpdate();
+    const updateOutput = await tool.handler({ action: 'update', ringId: RING_ID, name: 'Ring B', appRules }, makeAuth());
+    expect(JSON.parse(updateOutput).success).toBe(true);
+    const updatedValues = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
+    expect(updatedValues.appRules).toEqual(appRules);
+  });
+
+  it('manage_update_rings update omitting appRules leaves the column untouched (#8184)', async () => {
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
+    mockUpdate();
+    const tool = getTool();
+    const out = await tool.handler({ action: 'update', ringId: RING_ID, name: 'Ring B' }, makeAuth());
+    expect(JSON.parse(out).success).toBe(true);
+    expect(updateMock.mock.results[0]!.value.set.mock.calls[0][0]).not.toHaveProperty('appRules');
+  });
+
+  it('manage_update_rings rejects duplicate appRules on create and update (#8184)', async () => {
+    vi.clearAllMocks();
+    const appRules = [
+      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+      { source: 'custom', packageId: 'mozilla.firefox', action: 'block' }
+    ];
+    const tool = getTool();
+    const createOutput = await tool.handler({ action: 'create', name: 'Ring A', appRules }, makeAuth());
+    expect(JSON.parse(createOutput).error).toMatch(/duplicate application rule/i);
+    expect(insertMock).not.toHaveBeenCalled();
+
+    mockSelectReturns({ id: RING_ID, partnerId: PARTNER_ID, name: 'Ring A', kind: 'ring' });
+    const updateOutput = await tool.handler({ action: 'update', ringId: RING_ID, appRules }, makeAuth());
+    expect(JSON.parse(updateOutput).error).toMatch(/duplicate application rule/i);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
 });
 
 // manage_backup_configs used to write `providerConfig` straight to the DB,
@@ -592,6 +647,80 @@ describe('manage_backup_configs S3 endpoint validation (Sentry BREEZE-P residual
     expect(JSON.parse(output).success).toBe(true);
     const setArg = updateMock.mock.results[0]!.value.set.mock.calls[0][0];
     expect(setArg.providerConfig.endpoint).toBe('https://minio.internal.example.com:9000/');
+  });
+
+  // #7081: the destination key prefix goes through the same validation and
+  // normalization as the REST routes.
+  describe('destination key prefix (#7081)', () => {
+    const s3Config = { bucket: 'backups', region: 'us-east-1', accessKey: 'key', secretKey: 'secret' };
+    const stored = {
+      id: BACKUP_CONFIG_ID,
+      orgId: ORG_ID,
+      name: 'S3 backup',
+      provider: 's3',
+      providerConfig: { bucket: 'backups', region: 'us-east-1' },
+    };
+
+    it('rejects create with a reserved prefix and does NOT write', async () => {
+      const output = await getBackupConfigsTool().handler(
+        { action: 'create', name: 'S3 backup', type: 'file', provider: 's3', providerConfig: { ...s3Config, prefix: 'snapshots' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).error).toBe('Invalid key prefix: must not contain a "snapshots" segment');
+      expect(insertMock).not.toHaveBeenCalled();
+    });
+
+    it('stores the normalized prefix on create', async () => {
+      mockInsertReturns({ id: BACKUP_CONFIG_ID, name: 'S3 backup' });
+      const output = await getBackupConfigsTool().handler(
+        { action: 'create', name: 'S3 backup', type: 'file', provider: 's3', providerConfig: { ...s3Config, prefix: '/acme/' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).success).toBe(true);
+      expect(insertMock.mock.results[0]!.value.values.mock.calls[0][0].providerConfig.prefix).toBe('acme');
+    });
+
+    it('rejects update with a reserved prefix and does NOT write', async () => {
+      mockSelectReturns(stored);
+      const output = await getBackupConfigsTool().handler(
+        { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { ...s3Config, prefix: 'snapshots' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).error).toMatch(/Invalid key prefix/);
+      expect(updateMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts an update that leaves an invalid stored prefix unchanged', async () => {
+      mockSelectReturns({ ...stored, providerConfig: { ...stored.providerConfig, prefix: 'Acme Corp' } });
+      mockUpdate();
+      const output = await getBackupConfigsTool().handler(
+        { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { ...s3Config, prefix: 'Acme Corp' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).success).toBe(true);
+      expect(updateMock.mock.results[0]!.value.set.mock.calls[0][0].providerConfig.prefix).toBe('Acme Corp');
+    });
+
+    it('stores the normalized prefix on update, and drops an empty one', async () => {
+      mockSelectReturns(stored);
+      mockUpdate();
+      const output = await getBackupConfigsTool().handler(
+        { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { ...s3Config, prefix: '/acme/' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(output).success).toBe(true);
+      expect(updateMock.mock.results[0]!.value.set.mock.calls[0][0].providerConfig.prefix).toBe('acme');
+
+      vi.clearAllMocks();
+      mockSelectReturns(stored);
+      mockUpdate();
+      const second = await getBackupConfigsTool().handler(
+        { action: 'update', configId: BACKUP_CONFIG_ID, providerConfig: { ...s3Config, prefix: '/' } },
+        makeOrgAuth()
+      );
+      expect(JSON.parse(second).success).toBe(true);
+      expect(updateMock.mock.results[0]!.value.set.mock.calls[0][0].providerConfig).not.toHaveProperty('prefix');
+    });
   });
 
   // Site-ceiling gate contract §3/finding 2: this AI-tool write is a second
@@ -1113,5 +1242,36 @@ describe('manage_backup_configs writes a destination change and its key record t
       makeOrgAuth(),
     );
     expect(txn.log).toEqual(['insert:1', 'record:1']);
+  });
+});
+
+describe('manage_software_policies update refuses a generated (security_agents) policy (#6960)', () => {
+  beforeEach(() => {
+    insertMock.mockReset();
+    updateMock.mockReset();
+    selectMock.mockReset();
+  });
+
+  it('returns the read-only refusal and writes nothing', async () => {
+    mockSelectReturns({ id: 'policy-1', orgId: ORG_ID, partnerId: null, name: 'Security agents', managedByLinkId: 'link-1' });
+    const output = await getToolByName('manage_software_policies').handler(
+      { action: 'update', policyId: 'policy-1', name: 'Renamed' },
+      makeOrgAuth(),
+    );
+    const parsed = JSON.parse(output);
+    expect(parsed.code).toBe('managed_software_policy_read_only');
+    expect(parsed.error).toMatch(/configuration policy/i);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('still updates an ordinary policy', async () => {
+    mockSelectReturns({ id: 'policy-1', orgId: ORG_ID, partnerId: null, name: 'Ordinary', managedByLinkId: null });
+    updateMock.mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) });
+    const output = await getToolByName('manage_software_policies').handler(
+      { action: 'update', policyId: 'policy-1', name: 'Renamed' },
+      makeOrgAuth(),
+    );
+    expect(JSON.parse(output).success).toBe(true);
+    expect(updateMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -40,6 +40,11 @@ import { createPartner, createOrganization, createSite } from './db-utils';
 
 const { resolveDeviceIdsForAssignment } = __testOnly;
 
+/** An organization-level assignment with no role/OS filter (#8442 made the filters explicit). */
+function unfilteredOrgAssignment(orgId: string) {
+  return { level: 'organization', targetId: orgId, roleFilter: null, osFilter: null };
+}
+
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
   orgId: null,
@@ -125,7 +130,7 @@ describe('patch scheduler SUBSET resolution — partner re-clamp (#2280 review)'
     await assignOrg(policyId, orgA!.id);
 
     const ids = await withSystemDbAccessContext(() =>
-      resolveDeviceIdsForAssignment('organization', orgA!.id, null, partner.id)
+      resolveDeviceIdsForAssignment(unfilteredOrgAssignment(orgA!.id), null, partner.id)
     );
 
     expect(ids).toEqual([deviceA.id]);
@@ -144,7 +149,7 @@ describe('patch scheduler SUBSET resolution — partner re-clamp (#2280 review)'
     // Sanity check: resolves normally while the org still belongs to the
     // policy's partner.
     const before = await withSystemDbAccessContext(() =>
-      resolveDeviceIdsForAssignment('organization', org!.id, null, partner.id)
+      resolveDeviceIdsForAssignment(unfilteredOrgAssignment(org!.id), null, partner.id)
     );
     expect(before).toEqual([device.id]);
 
@@ -186,7 +191,7 @@ describe('patch scheduler SUBSET resolution — partner re-clamp (#2280 review)'
     });
 
     const after = await withSystemDbAccessContext(() =>
-      resolveDeviceIdsForAssignment('organization', org!.id, null, partner.id)
+      resolveDeviceIdsForAssignment(unfilteredOrgAssignment(org!.id), null, partner.id)
     );
 
     // The resolution join must still re-clamp by partner: no devices resolve

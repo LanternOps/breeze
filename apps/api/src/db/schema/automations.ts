@@ -231,6 +231,9 @@ export const automationActionResults = pgTable('automation_action_results', {
   output: text('output'),
   error: text('error'),
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  /** #7188 — set by CAS when an attempt claims this failed action's
+   * on-failure notification; a replay sends only while it is NULL. */
+  failureNotifiedAt: timestamp('failure_notified_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [

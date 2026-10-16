@@ -838,6 +838,34 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
       expect(dbMockState.insertValues[0]).toMatchObject({ fundingSource: 'partner_key', admittedOfferingId: 'off-1' });
     });
 
+    it('#7787: an admission that falls back from a cooling primary stamps the failover provenance on the run', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue(makeResolvedModel('platform', {
+        surface: 'ai_agents', offering: { id: 'off-haiku', displayName: 'Haiku' },
+        failover: { fromOfferingId: 'off-primary', hop: 2, cause: 'cooldown' },
+      }));
+      expect(await createAndEnqueueAgentRun(input())).toMatchObject({ created: true });
+      expect(dbMockState.insertValues[0]).toMatchObject({
+        fundingSource: 'platform',
+        admittedOfferingId: 'off-haiku',
+        servedOfferingId: 'off-haiku',
+        servedFundingSource: 'platform',
+        servedFailoverHop: 2,
+        servedFailoverCause: 'cooldown',
+        servedFailoverFromOfferingId: 'off-primary',
+      });
+    });
+
+    it('#7787: an admission on its primary stamps no failover provenance', async () => {
+      seedAdmissionReads();
+      resolveModel.mockResolvedValue(makeResolvedModel('platform', { surface: 'ai_agents' }));
+      await createAndEnqueueAgentRun(input());
+      expect(dbMockState.insertValues[0]).toMatchObject({
+        servedOfferingId: null, servedFundingSource: null, servedFailoverHop: null,
+        servedFailoverCause: null, servedFailoverFromOfferingId: null,
+      });
+    });
+
     it('requests the policy\'s bound offering with origin policy', async () => {
       seedAdmissionReads();
       resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ offeringId: 'off-77' }));
@@ -1004,6 +1032,31 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     // cosmetic drift.
     expect(dbMockState.updateSets.at(-1)).toMatchObject({ profile: 'full', correlationGroupId: null });
     expect(enqueueAgentRunJob).toHaveBeenCalledWith(RUN_ID);
+  });
+
+  it('#7787: a reclaim rewrites the failover provenance for THIS admission (all five, nulls when none)', async () => {
+    seedAdmissionReads();
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, status: 'queued', deviceId: DEVICE_ID }];
+    await createAndEnqueueAgentRun(input());
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({
+      servedOfferingId: null, servedFundingSource: null, servedFailoverHop: null,
+      servedFailoverCause: null, servedFailoverFromOfferingId: null,
+    });
+
+    vi.clearAllMocks();
+    seedAdmissionReads();
+    resolveModel.mockResolvedValue(makeResolvedModel('platform', {
+      surface: 'ai_agents', offering: { id: 'off-haiku', displayName: 'Haiku' },
+      failover: { fromOfferingId: 'off-primary', hop: 1, cause: 'cooldown' },
+    }));
+    dbMockState.insertRows = [];
+    dbMockState.updateRows = [{ id: RUN_ID, orgId: ORG_ID, status: 'queued', deviceId: DEVICE_ID }];
+    await createAndEnqueueAgentRun(input());
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({
+      admittedOfferingId: 'off-haiku', servedOfferingId: 'off-haiku', servedFundingSource: 'platform',
+      servedFailoverHop: 1, servedFailoverCause: 'cooldown', servedFailoverFromOfferingId: 'off-primary',
+    });
   });
 
   it('still reports duplicate when the dedupe row is not an enqueue_failed one', async () => {

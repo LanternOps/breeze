@@ -67,12 +67,15 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/eventlogs': 'deny',
   'PUT /:id/hardware-health': 'deny',
   'PUT /:id/time-status': 'deny',
+  'PUT /:id/workloads': 'deny',
   'POST /:id/logs': 'deny',
   'POST /:id/boot-performance': 'deny',
   'POST /:id/reliability': 'deny',
   'PUT /:id/changes': 'deny',
   'PUT /:id/peripherals/events': 'deny',
   'POST /:id/elevation-requests': 'deny',
+  // Endpoint-messaging receipts (#8741): a parked device is sent no messages.
+  'POST /:id/message-events': 'deny',
   'POST /:id/process-sample': 'deny',
   // `.use()` on a single path (unifiTelemetry.ts) — classified like its route.
   'ALL /:id/unifi-collectors': 'deny',

@@ -50,11 +50,34 @@ describe('classifyDeviceProtection', () => {
       expected: 'unprotected',
     },
     {
-      name: 'RTP null is unprotected',
+      // #8252: a null reading means the agent's AV collector failed — unknown,
+      // not "protection off".
+      name: 'RTP null is unknown',
       securityStatus: status({ realTimeProtection: null }),
       hasS1Agent: false,
       hasHuntressAgent: false,
+      expected: 'unknown',
+    },
+    {
+      name: 'RTP null with provider other is unknown',
+      securityStatus: status({ provider: 'other', realTimeProtection: null }),
+      hasS1Agent: false,
+      hasHuntressAgent: false,
+      expected: 'unknown',
+    },
+    {
+      name: 'RTP false is unprotected',
+      securityStatus: status({ realTimeProtection: false }),
+      hasS1Agent: false,
+      hasHuntressAgent: false,
       expected: 'unprotected',
+    },
+    {
+      name: 'S1 agent takes precedence over a null RTP reading',
+      securityStatus: status({ realTimeProtection: null }),
+      hasS1Agent: true,
+      hasHuntressAgent: false,
+      expected: 'protected',
     },
   ])('$name', ({ expected, securityStatus, hasS1Agent, hasHuntressAgent }) => {
     expect(classifyDeviceProtection({
@@ -82,6 +105,8 @@ describe('classifyDeviceProtection', () => {
     ['SentinelOne managed row', status({ provider: 'sentinelone' }), true, false, 'protected', 'protected'],
     ['native Defender row', status(), false, false, 'protected', 'protected'],
     ['other provider with RTP on', status({ provider: 'other' }), false, false, 'unprotected', 'unprotected'],
+    // #8538: 'unknown' (failed collection) is not a named AV provider either.
+    ['unknown provider with RTP on', status({ provider: 'unknown' }), false, false, 'unprotected', 'unprotected'],
     ['CrowdStrike with RTP off', status({ provider: 'crowdstrike', realTimeProtection: false }), false, false, 'unprotected', 'unprotected'],
     ['coverage dev-1 Defender', status(), false, false, 'protected', 'protected'],
     ['coverage dev-2 Defender', status(), false, false, 'protected', 'protected'],
@@ -89,6 +114,8 @@ describe('classifyDeviceProtection', () => {
     ['coverage dev-4 Defender', status(), false, false, 'protected', 'protected'],
     ['coverage dev-5 managed SentinelOne', status({ provider: 'sentinelone' }), true, false, 'protected', 'protected'],
     ['coverage dev-6 managed SentinelOne/RTP-off', status({ provider: 'sentinelone', realTimeProtection: false }), true, false, 'protected', 'protected'],
+    // #8252: the report keeps folding unknown into unprotected.
+    ['Defender RTP unknown (collector failed)', status({ realTimeProtection: null }), false, false, 'unknown', 'unprotected'],
   ] as const)(
     'matches report fixture %s and its existing report bucket',
     (_, securityStatus, hasS1Agent, hasHuntressAgent, expected, reportBucket) => {
@@ -103,4 +130,32 @@ describe('classifyDeviceProtection', () => {
         .toBe(reportBucket);
     },
   );
+
+  // EDR provider framework W02 (#8166). The read model only passes
+  // hasEdrEndpoint=true for a healthy + online linked endpoint (SQL predicate,
+  // asserted in securityReadModel.test.ts); unhealthy/degraded/unknown rows
+  // arrive as false and must fall through to the existing logic.
+  it.each([
+    ['healthy+online EDR endpoint, no status row', null, true, 'protected'],
+    ['healthy+online EDR endpoint beats RTP off', status({ realTimeProtection: false }), true, 'protected'],
+    ['healthy+online EDR endpoint beats a null RTP reading', status({ realTimeProtection: null }), true, 'protected'],
+    ['EDR endpoint not healthy/online (false) + no status row stays unknown', null, false, 'unknown'],
+    ['EDR endpoint not healthy/online (false) + RTP off stays unprotected', status({ realTimeProtection: false }), false, 'unprotected'],
+    ['EDR endpoint not healthy/online (false) + Defender RTP on stays protected via native', status(), false, 'protected'],
+  ] as const)('EDR: %s', (_, securityStatus, hasEdrEndpoint, expected) => {
+    expect(classifyDeviceProtection({
+      securityStatus,
+      hasS1Agent: false,
+      hasHuntressAgent: false,
+      hasEdrEndpoint,
+    })).toBe(expected);
+  });
+
+  it('EDR: an omitted hasEdrEndpoint behaves exactly like false (other callers unchanged)', () => {
+    expect(classifyDeviceProtection({
+      securityStatus: null,
+      hasS1Agent: false,
+      hasHuntressAgent: false,
+    })).toBe('unknown');
+  });
 });

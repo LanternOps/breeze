@@ -271,6 +271,8 @@ vi.mock('../ticketService', () => ({
   changeTicketStatus: changeStatusMock,
   assignTicket: assignTicketMock,
   TicketServiceError: TicketServiceErrorMock,
+  // #8326 — emailComments writes the reply's ticket.commented outbox row through it.
+  writeTicketCommentedOutbox: vi.fn(),
 }));
 
 const { emitMock } = vi.hoisted(() => ({ emitMock: vi.fn() }));

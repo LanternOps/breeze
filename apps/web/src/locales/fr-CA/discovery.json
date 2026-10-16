@@ -269,11 +269,15 @@
       "time": "Temps",
       "timeout": "Temps mort (ms)",
       "timezone": "Fuse horaire",
-      "username": "Nom d’utilisateur"
+      "username": "Nom d’utilisateur",
+      "scanAgent": "Agent d'analyse"
     },
     "options": {
       "everyHours": "Toutes les {{count}} heures",
-      "selectSite": "Sélectionnez un site..."
+      "selectSite": "Sélectionnez un site...",
+      "automaticAgent": "Automatique (privilégier un agent sur ces sous-réseaux)",
+      "agentOffline": "{{name}} (hors ligne)",
+      "pinnedAgentUnlisted": "Agent épinglé (pas dans ce site)"
     },
     "placeholders": {
       "profileName": "Scan du quartier général",
@@ -296,7 +300,8 @@
       "invalidCidr": "« {{value}} » : pas une portée CIDR valide ni une adresse IP",
       "octet": "« {{value}} » : la valeur de l’octet dépasse 255",
       "prefix": "« {{value}} » : longueur de préfixe doit être de 0 à 32",
-      "subnetRequired": "Au moins une adresse sous-réseau ou IP est requise."
+      "subnetRequired": "Au moins une adresse sous-réseau ou IP est requise.",
+      "subnetTooLarge": "\"{{value}}\" : le sous-réseau est trop grand. L’agent ignore les sous-réseaux de plus de {{limit}} adresses (plus grands qu’un /16); divisez-le en plages plus petites"
     },
     "actions": {
       "saveProfile": "Enregistrer le profil"
@@ -312,7 +317,13 @@
       "moveAssets_one": "Déplacer aussi le {{count}} appareil réseau découvert par ce profil vers le nouveau site",
       "moveAssets_other": "Déplacer aussi les {{count}} appareils réseau découverts par ce profil vers le nouveau site",
       "moveAssetsUnknown": "Déplacer aussi les appareils réseau découverts par ce profil vers le nouveau site"
-    }
+    },
+    "scanAgentHelp": {
+      "automatic": "Un agent en ligne de ce site ayant une adresse dans l'un des sous-réseaux est privilégié.",
+      "pinned": "Les analyses s'exécutent uniquement depuis cet agent. S'il est hors ligne, l'analyse échoue au lieu d'utiliser un autre agent.",
+      "loadError": "Impossible de charger les agents de ce site. La sélection automatique reste disponible."
+    },
+    "subnetTopologyNote": "Les sous-réseaux saisis ici identifient aussi les réseaux de ce site sur la carte de topologie."
   },
   "discoveryProfileList": {
     "actions": {
@@ -426,7 +437,8 @@
       "interval": "L’intervalle de balayage doit être compris entre 1 et 168 heures.",
       "selectSite": "Sélectionnez un site avant d’enregistrer."
     },
-    "configuredCount": "{{count}} bases configurées"
+    "configuredCount": "{{count}} bases configurées",
+    "subnetTopologyNote": "Les sous-réseaux saisis ici identifient aussi les réseaux de ce site sur la carte de topologie."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Accuser réception de l’événement",

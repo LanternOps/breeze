@@ -30,7 +30,12 @@ import {
 } from '../../services/backupEncryption';
 import { checkBackupProviderCapabilities, type ProviderCapabilityStatus } from '../../services/backupSnapshotStorage';
 import { PERMISSIONS } from '../../services/permissions';
-import { coerceS3EndpointUrl, deriveS3RegionFromEndpoint } from '@breeze/shared';
+import {
+  backupDestinationPrefixReasonMessage,
+  coerceS3EndpointUrl,
+  deriveS3RegionFromEndpoint,
+  normalizeBackupDestinationPrefix,
+} from '@breeze/shared';
 import { resolveScopedOrgId } from './helpers';
 import { canonicalizeS3CredentialFields, configSchema, configUpdateSchema, validateS3Details } from './schemas';
 
@@ -92,7 +97,14 @@ async function probeS3Config(rawDetails: Record<string, unknown>): Promise<void>
   const accessKeyId = typeof details.accessKey === 'string' ? details.accessKey : '';
   const secretAccessKey = typeof details.secretKey === 'string' ? details.secretKey : '';
   const endpoint = typeof details.endpoint === 'string' ? details.endpoint : undefined;
-  const prefix = typeof details.prefix === 'string' ? details.prefix.replace(/\/+$/, '') : '';
+  // #7081: probe under the normalized prefix. A stored prefix that predates
+  // validation and no longer normalizes is probed as before (trailing slashes
+  // trimmed) so the connection test is not a new failure; only new or changed
+  // prefixes are refused, on save.
+  const normalizedPrefix = normalizeBackupDestinationPrefix(details.prefix);
+  const prefix = normalizedPrefix.ok
+    ? (normalizedPrefix.prefix ?? '')
+    : (typeof details.prefix === 'string' ? details.prefix.replace(/\/+$/, '') : '');
 
   if (!bucket.trim() || !accessKeyId.trim() || !secretAccessKey.trim()) {
     throw new Error('S3 bucket and credentials are required');
@@ -203,8 +215,12 @@ configsRoutes.post(
       // (jobs/backupWorker.ts -> agent/internal/backup/providers/s3.go), which
       // does no scheme coercion of its own, so a scheme-less value stored here
       // fails on every device while this API's own test probe passes.
-      const { region, endpoint } = validateS3Details(details);
+      const { region, endpoint, prefix } = validateS3Details(details);
       if (region) details.region = region;
+      // #7081: persist the normalized key prefix (the schema already refused
+      // an invalid one); no prefix is stored as an absent key.
+      if (prefix) details.prefix = prefix;
+      else delete details.prefix;
       if (endpoint) {
         details.endpoint = endpoint;
       } else {
@@ -431,11 +447,20 @@ configsRoutes.patch(
         // ONLY thing standing between a malformed endpoint and the database on
         // the PATCH path. Do not remove it without adding equivalent
         // validation elsewhere. Covered by the PATCH tests in configs.test.ts.
-        const { error, region, endpoint } = validateS3Details(nextProviderConfig);
+        const storedDetails = isRecord(current.providerConfig) ? current.providerConfig : {};
+        const { error, region, endpoint, prefix, keepStoredPrefix } = validateS3Details(nextProviderConfig, {
+          storedPrefix: storedDetails.prefix,
+        });
         if (error) {
           return c.json({ error }, 400);
         }
         if (region) nextProviderConfig.region = region;
+        // #7081: persist the normalized key prefix; none is an absent key. An
+        // unchanged stored prefix is left as it is (see validateS3Details).
+        if (!keepStoredPrefix) {
+          if (prefix) nextProviderConfig.prefix = prefix;
+          else delete nextProviderConfig.prefix;
+        }
         if (endpoint) {
           nextProviderConfig.endpoint = endpoint;
         } else {

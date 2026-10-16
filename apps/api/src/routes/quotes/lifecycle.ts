@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
-import { acceptQuoteOnBehalfSchema, declineQuoteOnBehalfSchema } from '@breeze/shared';
+import { acceptQuoteOnBehalfSchema, declineQuoteOnBehalfSchema, ERROR_CODES } from '@breeze/shared';
 import { sendComposerSchema as sendBodySchema, parseComposerBody } from '../../lib/sendComposer';
 import { requireScope, requirePermission, withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
@@ -434,7 +434,7 @@ quoteLifecycleRoutes.get('/:id/images/:imageId', scopes, readPerm, zValidator('p
   try {
     await getQuote(id, quoteActorFrom(c)); // org-access 404 before serving bytes
     const img = await readQuoteImage(imageId, id);
-    if (!img) return c.json({ error: 'Image not found' }, 404);
+    if (!img) return c.json({ error: 'Image not found', code: ERROR_CODES.NOT_FOUND }, 404);
     return new Response(new Uint8Array(img.data), { status: 200, headers: { 'Content-Type': img.mime, 'Content-Length': String(img.byteSize), 'Cache-Control': 'private, max-age=300' } });
   } catch (err) { return handleServiceError(c, err); }
 });
@@ -448,10 +448,10 @@ quoteLifecycleRoutes.get('/:id/contract-file/:blockId', scopes, readPerm, zValid
   try {
     const { blocks } = await getQuote(id, quoteActorFrom(c)); // org-access 404
     const block = blocks.find((b) => b.id === blockId && b.blockType === 'contract');
-    if (!block) return c.json({ error: 'Contract file not found' }, 404);
+    if (!block) return c.json({ error: 'Contract file not found', code: ERROR_CODES.NOT_FOUND }, 404);
     const [renderData] = await loadContractBlockRenderData([block], { includeFileData: true });
     if (!renderData || renderData.sourceType !== 'uploaded' || !renderData.fileData) {
-      return c.json({ error: 'Contract file not found' }, 404);
+      return c.json({ error: 'Contract file not found', code: ERROR_CODES.NOT_FOUND }, 404);
     }
     return new Response(new Uint8Array(renderData.fileData), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(renderData.fileData.length), 'Cache-Control': 'private, max-age=300' } });
   } catch (err) { return handleServiceError(c, err); }

@@ -36,8 +36,8 @@ describe('HelperTab', () => {
 
     // The toggles are discoverable (rendered), not hidden...
     const checkboxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
-    // 4 = tray icon (#3202) + the three menu items.
-    expect(checkboxes.length).toBe(4);
+    // The three menu items. The tray icon itself is always shown (#8138).
+    expect(checkboxes.length).toBe(3);
     // ...but disabled until deploy is enabled, with a hint explaining why.
     expect(checkboxes.every((c) => c.disabled)).toBe(true);
     expect(screen.getByText(/Enable "Deploy Breeze Assist to devices" above/i)).toBeTruthy();
@@ -57,37 +57,13 @@ describe('HelperTab', () => {
     expect(checkboxes.every((c) => !c.disabled)).toBe(true);
   });
 
-  it('defaults the tray-icon toggle to on and saves it as true (#3202)', async () => {
-    saveMock.mockClear();
+  it('has no tray-icon toggle — the tray icon is always shown (#8138)', () => {
     render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
-    const trayIcon = screen.getByTestId('helper-show-tray-icon') as HTMLInputElement;
-    expect(trayIcon.checked).toBe(true);
-
-    fireEvent.click(screen.getByText('Save'));
-    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
-    const call = saveMock.mock.calls[0] as unknown as [
-      unknown,
-      { inlineSettings: Record<string, unknown> },
-    ];
-    expect(call[1].inlineSettings.showTrayIcon).toBe(true);
+    expect(screen.queryByTestId('helper-show-tray-icon')).toBeNull();
   });
 
-  it('saves showTrayIcon:false when the tray-icon toggle is turned off (#3202)', async () => {
+  it('does not re-save a legacy showTrayIcon key from an existing link (#8138)', async () => {
     saveMock.mockClear();
-    render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
-    fireEvent.click(screen.getByTestId('helper-show-tray-icon'));
-    expect((screen.getByTestId('helper-show-tray-icon') as HTMLInputElement).checked).toBe(false);
-
-    fireEvent.click(screen.getByText('Save'));
-    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
-    const call = saveMock.mock.calls[0] as unknown as [
-      unknown,
-      { inlineSettings: Record<string, unknown> },
-    ];
-    expect(call[1].inlineSettings.showTrayIcon).toBe(false);
-  });
-
-  it('hydrates the tray-icon toggle from an existing link storing showTrayIcon:false', () => {
     render(
       <HelperTab
         {...baseProps}
@@ -97,11 +73,15 @@ describe('HelperTab', () => {
         }}
       />,
     );
-    expect((screen.getByTestId('helper-show-tray-icon') as HTMLInputElement).checked).toBe(false);
-    // Menu-item toggles stay editable so re-showing the icon keeps the config.
-    expect(
-      (screen.getByTestId('helper-show-tray-icon') as HTMLInputElement).disabled,
-    ).toBe(false);
+
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [
+      unknown,
+      { inlineSettings: Record<string, unknown> },
+    ];
+    expect(call[1].inlineSettings).not.toHaveProperty('showTrayIcon');
+    expect(call[1].inlineSettings.enabled).toBe(true);
   });
 
   it('renders the lifecycle-mode select defaulting to auto', () => {

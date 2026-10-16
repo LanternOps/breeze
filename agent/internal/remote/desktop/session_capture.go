@@ -1092,12 +1092,20 @@ func (s *Session) handleDesktopSwitch() {
 		return
 	}
 
+	s.geometryMu.Lock()
+	defer s.geometryMu.Unlock()
+
+	// Key-ups for anything held would land on the other desktop, and the
+	// input offset is about to change: a geometry transition. (W2b)
+	s.resetInputGeometry("desktop_switch")
+
 	if dsn.OnSecureDesktop() {
 		// Secure desktop is always at origin — reset offsets
 		slog.Info("Desktop switch: entering secure desktop, resetting offsets", "session", s.id)
 		s.inputHandler.SetDisplayOffset(0, 0)
 		s.cursorOffsetX.Store(0)
 		s.cursorOffsetY.Store(0)
+		s.announceCurrentMonitor()
 		// Prime secure desktop rendering: some credential/UAC surfaces do not
 		// fully paint until they observe input + invalidation.
 		for i := 0; i < 3; i++ {
@@ -1110,7 +1118,8 @@ func (s *Session) handleDesktopSwitch() {
 	} else {
 		// Returning to normal desktop — restore monitor offsets
 		slog.Info("Desktop switch: returning to default desktop, restoring offsets", "session", s.id)
-		applyDisplayOffset(s.inputHandler, s.displayIndex, &s.cursorOffsetX, &s.cursorOffsetY)
+		applyDisplayOffset(s.inputHandler, s.currentDisplayIndex(), &s.cursorOffsetX, &s.cursorOffsetY)
+		s.announceCurrentMonitor()
 		// Force repaint so DXGI gets dirty rects for the first frame after
 		// reinitializing Desktop Duplication on the Default desktop.
 		forceDesktopRepaint()

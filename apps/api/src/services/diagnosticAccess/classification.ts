@@ -2,6 +2,11 @@
  * Diagnostic read grants — path form, default restriction and sensitive-store
  * classification.
  *
+ * Every sensitive class is credential material and is never grantable: a
+ * request naming a classified location is refused, a grant never covers one
+ * (grants.ts evaluateGrantCoverage), and the agent refuses it independently.
+ * The classes are kept so refusals can say what the location holds.
+ *
  * The agent carries an identical classifier
  * (agent/internal/remote/tools/diagaccess_classify.go); both are pinned by the
  * shared fixture agent/internal/remote/tools/testdata/diagnostic_path_classes.json.
@@ -160,7 +165,7 @@ function matchesFragment(norm: string, frag: string): boolean {
 export type DiagnosticPathClassification = {
   /** Never grantable (the agent's own configuration and credentials). */
   hardDenied: boolean;
-  /** Sensitive classes this location falls in (sorted). */
+  /** Credential-material classes this location falls in (sorted); any one makes it unavailable. */
   classes: SensitiveClass[];
   /** Refused by the default AI path restriction without a grant. */
   restricted: boolean;

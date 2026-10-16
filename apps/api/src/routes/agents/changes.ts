@@ -10,6 +10,7 @@ import { submitChangesSchema } from './schemas';
 import { getRedis } from '../../services/redis';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { envInt } from '../../utils/envInt';
+import { stripNul } from '../../utils/stripNul';
 
 // Async gunzip: a synchronous inflate blocks the event loop for every OTHER
 // agent's request for the duration of the decompression.
@@ -43,29 +44,6 @@ const AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY = envInt('AGENT_CHANGES_MAX_BYTES_
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [k: string]: JsonValue };
-
-/**
- * Postgres rejects U+0000 in text (22021) and jsonb (22P05), and one bad value
- * aborts the whole 200-row insert batch — the agent then retries the identical
- * batch forever (#8020). Unlike the memory-inventory schema (`noNul` in
- * schemas.ts, which rejects), a change batch is stripped: rejecting would drop
- * every other valid change in the batch. Keys are stripped too.
- */
-function stripNul<T>(value: T): T {
-  if (typeof value === 'string') {
-    return (value.includes('\u0000') ? value.replaceAll('\u0000', '') : value) as T;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => stripNul(item)) as T;
-  }
-  if (value !== null && typeof value === 'object') {
-    // fromEntries defines own properties, so a literal "__proto__" key survives.
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [stripNul(k), stripNul(v)]),
-    ) as T;
-  }
-  return value;
-}
 
 function stableStringify(value: unknown): string {
   if (value === null || value === undefined) return 'null';
@@ -145,6 +123,8 @@ changesRoutes.put('/:id/changes', async (c) => {
       }))
     }, 400);
   }
+  // Strip, don't reject: a rejected batch would drop every other valid change
+  // (#8020). Unlike the memory-inventory schema (`noNul` in schemas.ts).
   const data = { ...parsed.data, changes: stripNul(parsed.data.changes) };
 
   const [device] = await db

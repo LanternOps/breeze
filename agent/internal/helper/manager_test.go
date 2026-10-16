@@ -452,45 +452,17 @@ func TestApplyReapsOnDiskSessionNotSurfacedByEnumerator(t *testing.T) {
 	}
 }
 
-// #3202: the tray-icon visibility flag must reach the per-session YAML the
-// Tauri helper reads (`show_tray_icon`), otherwise the policy is a no-op.
-func TestSettingsToConfigCarriesShowTrayIcon(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		want bool
-	}{
-		{"visible", true},
-		{"hidden", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := settingsToConfig(&Settings{Enabled: true, ShowTrayIcon: tc.want})
-			if cfg.ShowTrayIcon != tc.want {
-				t.Fatalf("ShowTrayIcon = %v, want %v", cfg.ShowTrayIcon, tc.want)
-			}
-			data, err := yaml.Marshal(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := fmt.Sprintf("show_tray_icon: %v", tc.want)
-			if !strings.Contains(string(data), want) {
-				t.Fatalf("marshalled config %q missing %q", string(data), want)
-			}
-		})
+// #8138: the tray icon is no longer a policy setting — the helper always
+// draws it. The agent must stop writing `show_tray_icon`: an explicit false in
+// the YAML would still hide the tray on a pre-#8138 helper binary, and an
+// absent key decodes as true there (#[serde(default = "default_true")]).
+func TestSettingsToConfigOmitsShowTrayIcon(t *testing.T) {
+	data, err := yaml.Marshal(settingsToConfig(&Settings{Enabled: true, ShowOpenPortal: true}))
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A tray-icon-only change must count as a config change; otherwise
-// configUnchanged short-circuits Apply and the helper is never restarted with
-// the new YAML (the #1382 restart path).
-func TestConfigUnchangedDetectsTrayIconFlip(t *testing.T) {
-	state := newSessionState("501", t.TempDir())
-	state.lastConfig = &Config{ShowTrayIcon: true, ShowOpenPortal: true}
-
-	if !state.configUnchanged(&Config{ShowTrayIcon: true, ShowOpenPortal: true}) {
-		t.Fatal("identical config reported as changed")
-	}
-	if state.configUnchanged(&Config{ShowTrayIcon: false, ShowOpenPortal: true}) {
-		t.Fatal("tray-icon flip reported as unchanged — helper would never restart")
+	if strings.Contains(string(data), "show_tray_icon") {
+		t.Fatalf("marshalled config %q still carries show_tray_icon", string(data))
 	}
 }
 

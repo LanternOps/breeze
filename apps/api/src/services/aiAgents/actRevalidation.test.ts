@@ -113,7 +113,7 @@ vi.mock('../actionIntents/effectDigest', () => ({ computeEffectDigestForRelease 
 const countContractDevices = vi.hoisted(() => vi.fn<(orgId: string, siteId: string | null) => Promise<number>>());
 vi.mock('../contractQuantities', () => ({ countContractDevices }));
 
-import { ACT_MANIFEST } from './actManifest';
+import { ACT_MANIFEST, resolveActOperation } from './actManifest';
 import { ACT_DISK_CLEANUP_MAX_BYTES_V1, revalidateActExecution, type ActReservationState } from './actRevalidation';
 // Real (unmocked) module — `revalidateActExecution` imports it for real, and
 // the "DB kill-state gate" describe block below drives it through the
@@ -397,6 +397,37 @@ describe('revalidateActExecution — step 3: device pinning', () => {
     const result = await revalidateActExecution({
       run: runArgs(), op: runScriptOp, toolName: 'run_script',
       input: { scriptId: SCRIPT_ID, deviceIds: ['some-other-device'] },
+      reserved: reservation(),
+    });
+    expect(result.ok).toBe(false);
+    expect((result as { deny: string }).deny).toMatch(/Act revalidation/);
+  });
+
+  // #8600: `run_script { scriptId, groupId }` is a chat/approval shape only.
+  // The manifest's shape-only `matches` admits it (it keys on scriptId), so
+  // the bound that keeps a device-group fan-out out of unattended act mode is
+  // `normalizeTarget`: no `deviceIds` is a device MISMATCH, which stays a hard
+  // deny — never softened to a proposal a reviewer could approve onto a group.
+  it('run_script with a groupId instead of deviceIds matches the manifest but hard-denies', async () => {
+    const input = { scriptId: SCRIPT_ID, groupId: '11111111-2222-4333-8444-555555555555' };
+    expect(resolveActOperation('run_script', input)).toBe(runScriptOp);
+    const result = await revalidateActExecution({
+      run: runArgs(), op: runScriptOp, toolName: 'run_script', input, reserved: reservation(),
+    });
+    expect(result).toEqual({
+      ok: false,
+      deny: 'Act revalidation: deviceIds must equal exactly [runDeviceId] under act mode',
+    });
+  });
+
+  it('run_script with BOTH the run device and a groupId still hard-denies on the device argument', async () => {
+    // The groupId is not what is checked — the frozen-list handler would refuse
+    // it anyway — but the deviceIds pin must not be satisfiable while a group
+    // rides along: zod refuses the pair, and this pins that act mode never
+    // reaches the handler with it either.
+    const result = await revalidateActExecution({
+      run: runArgs(), op: runScriptOp, toolName: 'run_script',
+      input: { scriptId: SCRIPT_ID, groupId: '11111111-2222-4333-8444-555555555555', deviceIds: ['some-other-device'] },
       reserved: reservation(),
     });
     expect(result.ok).toBe(false);

@@ -357,6 +357,12 @@ If `deviceIds` is omitted, remediation targets all devices with active violation
 
 ---
 
+## System Restore checkpoints
+
+Software installs on Windows can be set up to request a System Restore checkpoint first. This is **off by default** and is controlled by the **System Protection** policy setting, not by a software policy. The outcome appears as a badge on the deployment; until a device runs a future agent release that supports it, the badge reads **Awaiting the device**. See [System Protection](/features/configuration-policies/#system-protection). System Restore is not a backup.
+
+---
+
 ## Winget Integration
 
 On Windows endpoints, Breeze integrates with the Windows Package Manager (winget) for software management operations. Because winget requires user-context execution (it cannot run in Session 0 where the Breeze service lives), all winget commands are dispatched through IPC to a user helper process.

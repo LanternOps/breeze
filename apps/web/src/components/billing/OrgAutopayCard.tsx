@@ -4,6 +4,7 @@ import { handleActionError } from '../../lib/runAction';
 import { formatDateTime } from '../../lib/dateTimeFormat';
 import { autopayButton } from './autopayUi';
 import { readAutopay, mutateAutopay, methodLabel, needsAttentionReason, skippedAutopayReason, type AutopayRow } from './autopayClient';
+import { useBillingStepUp, suppressBillingStepUpToast } from './useBillingStepUp';
 const actionResults = { pause: 'autopay.result.paused', resume: 'autopay.result.resumed', turn_off: 'autopay.result.turnedOff' } as const;
 const { primary: primaryButton, secondary: secondaryButton, danger: dangerButton } = autopayButton;
 export default function OrgAutopayCard({ orgId }: { orgId: string }) {
@@ -17,6 +18,8 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
   const [recipient, setRecipient] = useState(''); const [busy, setBusy] = useState(false);
   const [warning,setWarning]=useState(false);
   const [off, setOff] = useState(false); const [result, setResult] = useState('');
+  // Sending the request to an address other than the billing contact asks for a second factor.
+  const stepUp = useBillingStepUp();
   const load = useCallback(async () => {
     const current = generation.current;
     try {
@@ -37,9 +40,13 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
     try {
       if (action === 'request') {
         const sentTo = t('autopay.requestSentTo', { email: recipient.trim() || row?.billingContact?.email?.trim() || '' });
-        const response = await mutateAutopay<{ requested: string[]; skipped: { orgId: string; reason: string }[] }>(
-          '/billing/autopay/requests', { orgIds: [orgId], ...(recipient.trim() ? { recipientOverride: recipient.trim() } : {}) }, 'POST', sentTo);
-        if (current !== generation.current) return;
+        const override = recipient.trim();
+        const outcome = await stepUp.run(stepUpGrant => mutateAutopay<{ requested: string[]; skipped: { orgId: string; reason: string }[] }>(
+          '/billing/autopay/requests', { orgIds: [orgId], ...(override ? { recipientOverride: override } : {}),
+            ...(stepUpGrant ? { stepUpGrant } : {}) }, 'POST', sentTo, suppressBillingStepUpToast));
+        // Closed at the confirmation: no request was sent.
+        if (!outcome.confirmed || current !== generation.current) return;
+        const response = outcome.value;
         setWarning(response.skipped.length>0);
         setResult(response.skipped.map(item => skippedAutopayReason(item.reason)).join(', ') || sentTo);
       } else {
@@ -87,6 +94,7 @@ function OrgAutopayCardContent({ orgId }: { orgId: string }) {
         <button type="button" data-testid="autopay-off-confirm-submit" className={dangerButton} disabled={busy} onClick={() => void act('turn_off')}>{t('autopay.turnOff')}</button>
         <button type="button" data-testid="autopay-off-cancel" className={secondaryButton} onClick={() => setOff(false)}>{t('autopay.cancel')}</button>
       </div></div>}
+    {stepUp.prompt}
     {result && <p role={warning?'alert':'status'} className={warning?'text-sm text-amber-800 dark:text-amber-200':'text-sm'} data-testid="autopay-org-result">{result}</p>}
   </section>;
 }

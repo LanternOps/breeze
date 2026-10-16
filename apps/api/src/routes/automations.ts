@@ -38,7 +38,12 @@ import {
   replaceAutomationResourceBindings,
   resolveAutomationReferencesForOwner,
   withWebhookDefaults,
+  type AutomationTargetDiagnostics,
 } from '../services/automationRuntime';
+import {
+  validateAutomationTargetConditions,
+  type AutomationTargetValidationResult,
+} from '../services/automationTargetValidation';
 import { AutomationReferenceAuthorizationError } from '../services/automationReferenceAuthorization';
 import { enqueueAutomationRun } from '../jobs/automationWorker';
 import {
@@ -294,10 +299,26 @@ const requireValidRunId = requireUuidParam('runId', 'Automation run not found');
  * Unrestricted callers always pass, with an empty `targetDeviceIds` (the
  * dispatch path resolves its own target set in that case, same as before).
  */
+function automationTargetInvalid(
+  c: Context,
+  result: Extract<AutomationTargetValidationResult, { ok: false }>,
+): Response {
+  return c.json({
+    error: result.error,
+    code: result.code,
+    ...(result.groupIds ? { groupIds: result.groupIds } : {}),
+    ...(result.deviceIds ? { deviceIds: result.deviceIds } : {}),
+  }, 400);
+}
+
 async function enforceAutomationSiteScope(
   c: Context,
   automation: Parameters<typeof checkAutomationTargetsWithinSiteScope>[0],
-): Promise<{ denied: Response | null; targetDeviceIds: string[] | null }> {
+): Promise<{
+  denied: Response | null;
+  targetDeviceIds: string[] | null;
+  targetDiagnostics?: AutomationTargetDiagnostics;
+}> {
   const perms = c.get('permissions') as UserPermissions | undefined;
   const result = await checkAutomationTargetsWithinSiteScope(automation, perms);
   if (!result.ok) {
@@ -317,7 +338,13 @@ async function enforceAutomationSiteScope(
   // its own resolution, exactly as before the field-provenance/TOCTOU fix) from "site-restricted
   // caller whose resolved target legitimately came back empty" (`[]`, which
   // must be bound as-is, not treated as "resolve your own").
-  return { denied: null, targetDeviceIds: result.restricted ? result.targetDeviceIds : null };
+  return {
+    denied: null,
+    targetDeviceIds: result.restricted ? result.targetDeviceIds : null,
+    // #8598 — travels with the bound set so a broken group target still fails
+    // the run visibly instead of running as an empty bound set.
+    ...(result.restricted && result.targetDiagnostics ? { targetDiagnostics: result.targetDiagnostics } : {}),
+  };
 }
 
 // Dual-ownership (#2133): an automation is org-owned (orgId set) or
@@ -1327,6 +1354,13 @@ automationRoutes.post(
       return c.json({ error: AI_TRIAGE_SYSTEM_MANAGED_ERROR_CODE }, 400);
     }
 
+    // #8598 — the target shape and every group/device id it names, checked
+    // against the resolved owner before anything is written.
+    const targetCheck = await validateAutomationTargetConditions({ owner, conditions: data.conditions });
+    if (!targetCheck.ok) {
+      return automationTargetInvalid(c, targetCheck);
+    }
+
     try {
       const automationId = randomUUID();
       const trigger = withWebhookDefaults(
@@ -1445,6 +1479,18 @@ async function handleUpdateAutomation(c: Context) {
   // partner — administrable only with the partner-wide capability (#2133).
   if (automation.orgId === null && !canManagePartnerWidePolicies(auth)) {
     return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+  }
+
+  // #8598 — only when the update replaces the target; ownership never changes
+  // on update, so the stored owner is the one to check against.
+  if (data.conditions !== undefined) {
+    const targetCheck = await validateAutomationTargetConditions({
+      owner: { orgId: automation.orgId, partnerId: automation.partnerId },
+      conditions: data.conditions,
+    });
+    if (!targetCheck.ok) {
+      return automationTargetInvalid(c, targetCheck);
+    }
   }
 
   try {
@@ -1795,7 +1841,11 @@ async function admitManualAutomationRun(
   // Site-scope gate: re-validate the *current* resolved target set. Protects
   // against a target set that drifted (new devices/sites) since creation, and
   // against an automation created before the user's sites were restricted.
-  const { denied: siteScopeDenied, targetDeviceIds: siteScopedTargetDeviceIds } = await enforceAutomationSiteScope(c, automation);
+  const {
+    denied: siteScopeDenied,
+    targetDeviceIds: siteScopedTargetDeviceIds,
+    targetDiagnostics: siteScopedTargetDiagnostics,
+  } = await enforceAutomationSiteScope(c, automation);
   if (siteScopeDenied) {
     return siteScopeDenied;
   }
@@ -1812,6 +1862,9 @@ async function admitManualAutomationRun(
     // an empty array is a real (possibly zero-device) resolved result and is
     // bound as-is.
     ...(siteScopedTargetDeviceIds !== null ? { boundDeviceIds: siteScopedTargetDeviceIds } : {}),
+    ...(siteScopedTargetDeviceIds !== null && siteScopedTargetDiagnostics
+      ? { targetDiagnostics: siteScopedTargetDiagnostics }
+      : {}),
   });
 
   return { automation, run, targetDeviceIds };

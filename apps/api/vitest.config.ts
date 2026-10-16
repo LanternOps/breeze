@@ -25,6 +25,7 @@ export default defineConfig({
       'src/services/autopay/charging.integration.test.ts',
       'src/services/autopay/**/*.integration.test.ts',
       'src/jobs/scriptVerifyReconciliation.integration.test.ts',
+      'src/services/scriptProposals/reviewConcurrency.integration.test.ts',
       'src/__tests__/integration/**',
       // Real bearer + PostgreSQL integration connection authority checks.
       'src/routes/integrationConnectionScope.integration.test.ts',
@@ -63,6 +64,9 @@ export default defineConfig({
       // Belongs to vitest.integration.config.ts.
       'src/services/hardwareHealth/**/*.integration.test.ts',
       'src/services/timeSync/**/*.integration.test.ts',
+      'src/services/workloads/**/*.integration.test.ts',
+      // Workload image currency W05 (#8194): real-DB pass + system-only cache proof.
+      'src/services/imageCurrency/**/*.integration.test.ts',
       // Hardware & RAID monitoring (W05 BMC in-band): use real PostgreSQL and
       // the integration setup.
       'src/services/discovery/agentReportedBmcLink.integration.test.ts',
@@ -203,6 +207,8 @@ export default defineConfig({
       'src/routes/installerRotationRevocation.integration.test.ts',
       // Disposable-database credential cutover proof uses the integration runner.
       'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
+      // Disposable-database proof for the quarantine execution-authority migration.
+      'src/db/securityQuarantineExecutionAuthorityMigration.integration.test.ts',
       // Hardware & RAID monitoring (W03): disposable-database replay proof for
       // the monitor-kind enum and alert subject-identity migrations. Belongs to
       // vitest.integration.config.ts (registered in its include list).
@@ -236,6 +242,8 @@ export default defineConfig({
       'src/services/portal/hardwareHealthReadModel.integration.test.ts',
       // #7732 portal hardware inventory: real-DB test, belongs to vitest.integration.config.ts.
       'src/services/portal/hardwareInventoryReadModel.integration.test.ts',
+      // #7733 portal performance metrics: real-DB test, belongs to vitest.integration.config.ts.
+      'src/services/portal/performanceReadModel.integration.test.ts',
       // Canary for issue #4046: asserts the process observes a non-UTC
       // offset. It must ONLY run under the pinned non-UTC pass
       // (vitest.config.tz.ts, TZ=America/Denver), where it belongs — it is

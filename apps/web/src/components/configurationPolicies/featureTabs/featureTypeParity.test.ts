@@ -34,9 +34,14 @@ describe('config-policy editor feature-type parity (#2004)', () => {
     }
   });
 
-  it('exposes every canonical type and no retired type', () => {
-    expect([...EDITOR_EXCLUDED_FEATURE_TYPES]).toEqual([]);
-    expect(Object.keys(FEATURE_META).sort()).toEqual([...CONFIG_FEATURE_TYPES].sort());
+  it('exposes every canonical type except the documented exclusions, and no retired type', () => {
+    // Every canonical feature type has an editor tab (workload_inventory gained
+    // one in #8193) except security_agents (#6960): W01 ships the type with no
+    // vendor enableable, and its authoring tab lands in W02.
+    expect([...EDITOR_EXCLUDED_FEATURE_TYPES]).toEqual(['security_agents']);
+    expect(Object.keys(FEATURE_META).sort()).toEqual(
+      CONFIG_FEATURE_TYPES.filter((t) => !(EDITOR_EXCLUDED_FEATURE_TYPES as readonly string[]).includes(t)).sort(),
+    );
     for (const retired of RETIRED_CONFIG_FEATURE_TYPES) {
       expect(FEATURE_META).not.toHaveProperty(retired);
       expect(FEATURE_TYPES as readonly string[]).not.toContain(retired);

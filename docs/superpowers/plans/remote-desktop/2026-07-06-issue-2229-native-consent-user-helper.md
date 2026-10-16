@@ -1494,7 +1494,7 @@ cd ../apps/api && npx vitest run src/routes/remote/
 ```
 Expected: PASS. Fix regressions before proceeding.
 
-- [ ] **Step 2: Manual QA on the Windows test VM** (100.101.150.55 — see `dev-push` notes: kill the watchdog first)
+- [ ] **Step 2: Manual QA on the Windows test VM** (`<lab-windows-test-vm-ip>` — see `dev-push` notes: kill the watchdog first)
 
 Use `make dev-push` to ship the dev agent+user-helper build, set a `remote_access` policy with `{"session_prompt_mode":"consent"}` on the VM's org, ensure the Assist app is NOT running, then from the web UI start a remote desktop session and verify:
 1. Native Yes/No dialog appears: "Billy from <Partner> is requesting remote access…" — Deny → technician sees session denied.

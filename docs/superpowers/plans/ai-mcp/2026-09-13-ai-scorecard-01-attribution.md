@@ -61,7 +61,7 @@ Everything in the hub's *Global Constraints* section applies. W01-specific addit
 | `apps/api/src/services/orgMergeRegistry.ts` (modify, `:822`) | `script_executions` `repoint` → `custom` |
 | `apps/api/src/services/orgMergeCustomExecutors.ts` (modify) | `repointScriptExecutionsDetachingAiOrigin` |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts` (modify, `:44`, `:487`) | 6 new `included` strings |
-| `apps/api/src/__tests__/integration/aiOriginAttribution.integration.test.ts` (create) | the Kit-case reproduction, move/merge/erasure proofs |
+| `apps/api/src/__tests__/integration/aiOriginAttribution.integration.test.ts` (create) | the lab-hyperv-host-case reproduction, move/merge/erasure proofs |
 
 ---
 
@@ -1122,7 +1122,7 @@ Add an optional `principalActorId?: string | null` to `DispatchScriptInput` (pop
     : (safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID);
 ```
 
-and widen the gate so an AI-run **library** script also writes a row (Todd's Kit case):
+and widen the gate so an AI-run **library** script also writes a row (Todd's lab-hyperv-host case):
 
 ```ts
   if (executionId && (source.kind === 'proposal' || input.aiOrigin)) {
@@ -1649,7 +1649,7 @@ git commit -m "docs(ai): release notes for AI device attribution, stating the in
 import './setup';
 
 describe('AI origin attribution (#5022 W01)', () => {
-  it('reproduces the Kit case: an AI-dispatched LIBRARY script is attributed end to end', async () => {
+  it('reproduces the lab-hyperv-host case: an AI-dispatched LIBRARY script is attributed end to end', async () => {
     // dispatch a saved (non-proposal) script through aiDispatchScriptToDevice with
     // an ai_assistant origin, then assert:
     //  - script_executions row: ai_initiator_kind='ai_assistant', ai_session_id set

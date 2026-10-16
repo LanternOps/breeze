@@ -80,7 +80,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
     2. Verify the download passes Gatekeeper's notarization assessment (`spctl --assess`) before installing it as root
     3. `sudo installer -pkg breeze-agent.pkg -target /`
     4. Read `enrollment.json` via `plutil -extract`
-    5. Invoke `sudo /usr/local/bin/breeze-agent enroll <key> --server <url> [--enrollment-secret <secret>] [--site-id <id>]`
+    5. Invoke `sudo <agent> enroll <key> --server <url> [--enrollment-secret <secret>]`, where `<agent>` is the binary the package installed: `/Library/Breeze/bin/breeze-agent` when the package put it there, otherwise `/usr/local/bin/breeze-agent` (the site comes from the enrollment key; the installer no longer passes the deprecated `--site-id`)
     6. Delete `enrollment.json` and the downloaded pkg
   </TabItem>
 </Tabs>
@@ -105,7 +105,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
 | `serverUrl` | yes | Passed as `--server` to the agent. Validated server-side at zip generation. |
 | `enrollmentKey` | yes | 64 lowercase hex chars. Server-side regex: `^[a-f0-9]{64}$`. |
 | `enrollmentSecret` | optional | Only set when `AGENT_ENROLLMENT_SECRET` is required by the server. Maps to `--enrollment-secret`. |
-| `siteId` | yes | Site UUID. The MSI install script does not pass `--site-id` (Windows pins site via the enrollment key); the macOS script does. |
+| `siteId` | yes | Site UUID, for reference only. The device always lands in the site the enrollment key resolves to. The installers no longer pass it as `--site-id` (deprecated and ignored by the agent). |
 
 If you write your own wrapper, you can ignore the bundled `install.bat` / `install.sh` and just feed the JSON values straight into `breeze-agent enroll` — see [Direct binary + manual enroll](#direct-binary--manual-enroll).
 
@@ -152,7 +152,6 @@ For MDM, configuration management (Ansible, Chef, Puppet, Salt), golden images, 
     sudo /usr/local/bin/breeze-agent enroll <ENROLLMENT_KEY> \
       --server https://breeze.yourdomain.com \
       --enrollment-secret <ENROLLMENT_SECRET> \
-      --site-id <SITE_UUID> \
       --quiet
 
     sudo /usr/local/bin/breeze-agent service install
@@ -167,7 +166,6 @@ For MDM, configuration management (Ansible, Chef, Puppet, Salt), golden images, 
     sudo /usr/local/bin/breeze-agent enroll <ENROLLMENT_KEY> \
       --server https://breeze.yourdomain.com \
       --enrollment-secret <ENROLLMENT_SECRET> \
-      --site-id <SITE_UUID> \
       --quiet
 
     sudo /usr/local/bin/breeze-agent service install
@@ -203,7 +201,7 @@ On macOS, this manual `service install` path (unlike the `.pkg` installer) alway
 | `<enrollment-key>` (positional) | yes | Single positional argument. 64-char enrollment key. |
 | `--server <url>` | yes | API base URL. May also be set in the config file. |
 | `--enrollment-secret <secret>` | optional | The server's `AGENT_ENROLLMENT_SECRET`. Required when configured server-side. |
-| `--site-id <uuid>` | optional | Override the enrollment key's default site assignment. Must be a site the key is authorized for. |
+| `--site-id <uuid>` | deprecated | Ignored: the site comes from the enrollment key. Passing it prints a deprecation warning; the flag will be removed in a future release. |
 | `--device-role <role>` | optional | Override the inferred device role (e.g. `workstation`, `server`). |
 | `--force` | optional | Re-enroll a host that already has a config. Replaces `agent_id` and `auth_token` only on success — a failed re-enroll leaves the existing config untouched. |
 | `--quiet` | optional | Suppress stdout progress output. Errors still go to stderr. Use for unattended installs. |
@@ -215,10 +213,30 @@ The agent refuses to enroll with an empty hostname — if your provisioning pipe
 
 | Flag | Platform | Notes |
 |---|---|---|
-| `--no-watchdog` | all | Skip auto-fetching and registering the watchdog. Use for air-gapped hosts where the agent cannot reach GitHub releases. |
+| `--no-watchdog` | all | Skip auto-fetching and registering the watchdog, and remember the choice: it writes the `watchdog.disabled` marker in the agent's config directory, so later plain `service install` runs and the running agent's automatic repair also leave the watchdog alone. Use for air-gapped hosts where the agent cannot reach GitHub releases or the Breeze server's watchdog download. |
+| `--watchdog` | all | Undo `--no-watchdog`: remove the marker, reset the watchdog install retry state, and install the watchdog. Cannot be combined with `--no-watchdog`. |
+| `--strict-watchdog` | all | Exit with code `78` instead of `0` when the agent installed but the watchdog could not be. See [exit codes](#service-install-exit-codes). |
 | `--with-user-helper` | Linux, macOS | Also install the per-user desktop helper unit (systemd user unit / LaunchAgent). Not needed on Windows — the helper is spawned per-session by the service. |
 
 `service install` is safe to re-run — it overwrites the binary at the install path, records whether the agent service was running beforehand, and rewrites and re-enables the unit. It starts the service again if it was running before the install or the host is already enrolled; a fresh, unenrolled host is left stopped until you enroll it. If the service was stopped for the install and can't be started again, the command now fails with recovery instructions rather than exiting successfully. It also registers any missing watchdog, which is always restarted so a newly staged binary takes over. Use this to add the watchdog to a previously agent-only install. To install only the watchdog without touching the agent, run `breeze-watchdog service install` directly.
+
+#### `service install` exit codes
+
+| Exit code | Meaning |
+|---|---|
+| `0` | The agent service is installed (and started when it was running before or the host is enrolled). The watchdog either installed, was skipped by `--no-watchdog` or a standing opt-out, or could not be installed and was **deferred** to the running agent. |
+| `78` | Only with `--strict-watchdog`: the agent installed, but the watchdog did not. Any watchdog failure counts, whether or not the agent could repair it later. |
+| `1` | The agent itself could not be installed, or its service was stopped for the install and could not be started again. This wins over the watchdog outcome: an agent failure is never reported as `0` or `78`. |
+
+When the watchdog is deferred, `service install` prints the usual warning to stderr and one machine-readable line to stdout:
+
+```text
+BREEZE_WATCHDOG_INSTALL=deferred reason=<class>
+```
+
+`<class>` is one of `network`, `server`, `policy`, `signature`, `checksum`, `dev_build`, `unsupported_os`, `install_cmd`, `locked` or `unknown`. It never contains the error text. A failure while verifying the release download during the first install (before enrollment) often reports `unknown`; the warning on stderr has the detail. Nothing is printed when the watchdog installed or was skipped.
+
+The default is `0` on purpose. The agent did install, and once the host is enrolled the running agent installs the missing watchdog by itself (see [Automatic repair of a missing watchdog](/features/watchdog#automatic-repair-of-a-missing-watchdog)), so reporting failure would break scripted installs that work today. Use `--strict-watchdog` in lanes that must not finish without a watchdog, for example golden-image builds. If the running agent is installing the watchdog at that moment, `service install` leaves the install to it and exits `0` without the marker line, even with `--strict-watchdog`.
 
 <Aside type="note">
 On agent v0.110.0 and earlier, `service install` stopped the service and did not start it again. On those versions, follow it with `sudo systemctl restart breeze-agent breeze-watchdog` (Linux), or prefer the in-band auto-update instead.

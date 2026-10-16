@@ -192,7 +192,8 @@
     "script": "Verifica script",
     "network_check": "Verifica di rete",
     "hardware_health": "Stato hardware",
-    "time_sync": "Sincronizzazione dell’ora"
+    "time_sync": "Sincronizzazione dell’ora",
+    "container_image_currency": "Aggiornamento delle immagini container"
   },
   "fields": {
     "operator": "Confronto",
@@ -244,7 +245,9 @@
     "expectedValue": "Valore atteso",
     "nameserver": "Server dei nomi",
     "degradedIsFailure": "Considera degradato come errore",
-    "maxResponseMs": "Fallisci se più lento di (ms)"
+    "maxResponseMs": "Fallisci se più lento di (ms)",
+    "eventLogCollectionNoSource": "Gli eventi Applicazione di livello Informazioni e Avviso vengono raccolti solo da {{providers}}. Gli eventi di altre origini attivano questa regola solo ai livelli Errore o Critico.",
+    "eventLogCollectionSourceNotCollected": "L'agente non raccoglie gli eventi Applicazione di livello Informazioni o Avviso da \"{{source}}\", quindi questa regola corrisponderà solo ai suoi eventi Errore o Critico. Provider raccolti: {{providers}}."
   },
   "operators": {
     "gt": "maggiore di",
@@ -268,6 +271,7 @@
     "system": "Sistema"
   },
   "eventLevels": {
+    "info": "Informazioni",
     "warning": "Avviso",
     "error": "Errore",
     "critical": "Critica"
@@ -359,7 +363,7 @@
   "legacy": {
     "title": "Regole di avviso legacy",
     "description": "Regole di avviso autonome non gestite da un monitor. Convertile per ottenere risposte, consegna ed escalation in un unico posto.",
-    "empty": "Nessuna regola legacy.",
+    "empty": "Nessuna regola di avviso autonoma richiede conversione.",
     "columns": {
       "name": "Nome",
       "template": "Modello",
@@ -535,6 +539,7 @@
       "more": "Carica altro",
       "empty": "Nessuna conversione precedente.",
       "system": "Sistema",
+      "unknownUser": "Utente sconosciuto",
       "reverted": "Annullato",
       "deadline": "Annullamento non disponibile dopo la rimozione del motore di origine da parte del ritiro degli avvisi legacy."
     },
@@ -643,6 +648,9 @@
           "policy_not_applied": "Il criterio relativo all’ora non è stato applicato",
           "policy_conflict_gpo": "Criteri di gruppo controlla le impostazioni dell’ora"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Giorni minimi di ritardo"
       }
     }
   },

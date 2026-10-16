@@ -22,9 +22,17 @@ import {
 const GUID = '11111111-2222-3333-4444-555555555555';
 
 describe('m365 read action contracts', () => {
-  it('defines exactly the 12 interactive catalog actions with non-empty field allowlists', () => {
+  it('accepts mailbox reads only for an object id, with exactly four projected fields (#6354 W03)', () => {
+    expect(m365ReadActionSchema.parse({ type: 'm365.user.mailboxes', userId: GUID })).toEqual({ type: 'm365.user.mailboxes', userId: GUID });
+    expect(M365_READ_ACTION_FIELDS['m365.user.mailboxes']).toEqual(['id', 'userPrincipalName', 'mail', 'proxyAddresses']);
+    expect(m365ReadActionSchema.safeParse({ type: 'm365.user.mailboxes', userId: 'alex@example.com' }).success).toBe(false);
+    expect(m365ReadActionSchema.safeParse({ type: 'm365.user.mailboxes', userId: GUID, select: ['passwordProfile'] }).success).toBe(false);
+    expect(M365_READ_ACTION_FIELDS['m365.user.get']).not.toContain('proxyAddresses');
+  });
+
+  it('defines exactly the 13 interactive catalog actions with non-empty field allowlists', () => {
     expect(M365_INTERACTIVE_READ_ACTION_IDS).toEqual([
-      'm365.user.list', 'm365.user.get', 'm365.signins.list',
+      'm365.user.list', 'm365.user.get', 'm365.user.mailboxes', 'm365.signins.list',
       'm365.intune.device.list', 'm365.intune.device.get',
       'm365.group.list', 'm365.group.get', 'm365.group.members.list',
       'm365.org.get', 'm365.org.skus.list',
@@ -40,6 +48,7 @@ describe('m365 read action contracts', () => {
     const variants = [
       { type: 'm365.user.list', search: 'ada', accountEnabled: true, pageSize: 50 },
       { type: 'm365.user.get', userIdOrUpn: 'ada@contoso.com' },
+      { type: 'm365.user.mailboxes', userId: GUID },
       { type: 'm365.signins.list', userPrincipalName: 'ada@contoso.com', sinceHours: 168, pageSize: 50 },
       { type: 'm365.intune.device.list', complianceState: 'noncompliant', pageSize: 50 },
       { type: 'm365.intune.device.get', deviceId: GUID },
@@ -182,7 +191,7 @@ describe('m365 sync action contracts', () => {
     }).success).toBe(true);
   });
 
-  it('keeps all twelve interactive branches, each still .strict()', () => {
+  it('keeps all thirteen interactive branches, each still .strict()', () => {
     // The interactive branches move wholesale from m365ReadActionSchema into
     // INTERACTIVE_BRANCHES. A branch dropped in that cut, or a `.strict()` lost
     // to a retype, is invisible to every other assertion here: the id arrays are
@@ -192,9 +201,9 @@ describe('m365 sync action contracts', () => {
       shape: { type: { value: string } };
     }[]).map((branch) => branch.shape.type.value);
 
-    expect(branchIds).toHaveLength(19);
+    expect(branchIds).toHaveLength(20);
     expect(branchIds.filter((id) => !isM365SyncActionId(id)))
-      .toEqual([...M365_INTERACTIVE_READ_ACTION_IDS]);   // all twelve, in order
+      .toEqual([...M365_INTERACTIVE_READ_ACTION_IDS]);   // all thirteen, in order
     expect(branchIds.filter((id) => isM365SyncActionId(id)))
       .toEqual([...M365_SYNC_ACTION_IDS]);
 
@@ -204,6 +213,7 @@ describe('m365 sync action contracts', () => {
     const MINIMAL: Record<M365InteractiveReadActionId, Record<string, unknown>> = {
       'm365.user.list': {},
       'm365.user.get': { userIdOrUpn: 'ada@contoso.com' },
+      'm365.user.mailboxes': { userId: GUID },
       'm365.signins.list': {},
       'm365.intune.device.list': {},
       'm365.intune.device.get': { deviceId: GUID },

@@ -224,6 +224,15 @@ export const SENTRY_EVENT_CODES = [
    */
   'ai_usage_snapshot_regressed',
   /**
+   * #7773: the pricing decision for an unbound BYOK refusal-fallback key could
+   * not be read or attested while SETTLING against a reservation (lock
+   * timeout, connection error). The key billed the bound rate instead; if the
+   * turn had already attested an offering rate, the ledger now disagrees with
+   * that attestation (or a retry hits a fingerprint conflict). Tags carry
+   * org_id + ai_reservation_id.
+   */
+  'ai_unbound_byok_rate_lookup_failed',
+  /**
    * Execution plane W04 (#5715): the sandbox backend's create circuit opened
    * after 5 consecutive failures — no analysis run can start in this region
    * until it closes.
@@ -306,6 +315,12 @@ export const SENTRY_EVENT_CODES = [
    * owner left on disk until the next orphan sweep succeeds.
    */
   'screenshot_file_removal_failed',
+  /**
+   * Patch compliance report files could not be removed after their rows were
+   * deleted (org erasure) or by the retention job's orphan sweep. The bytes
+   * stay on disk with no row until a later sweep succeeds.
+   */
+  'patch_report_file_removal_failed',
 
   // --- agent binary serving ---------------------------------------------
   /** No promoted `agent_versions` row, so downloads fall back to the
@@ -319,6 +334,14 @@ export const SENTRY_EVENT_CODES = [
   'device_deletion_parent_lock_missing',
   /** Auto edition migration (#4072) dispatched its script to at least one stranded device this process lifetime. */
   'agent_edition_auto_migration_dispatched',
+  /** Auto edition migration (#5016): an org's canary device was dispatched and has not come back on the target edition, so the rest of the org is held. */
+  'agent_edition_auto_migration_canary_unresolved',
+
+  // --- restore checkpoint ledger (#4757) --------------------------------
+  /** An agent reported a restore-point status this API does not know (agent/API version skew); the ledger row stays `requested`. */
+  'restore_point_outcome_unknown_status',
+  /** An agent reported a restore-point outcome (other than skipped_disabled) for a request id the ledger has no row for. */
+  'restore_point_outcome_unrequested',
 
   // --- mcp transport ----------------------------------------------------
   /** A principal presented an `Mcp-Session-Id` owned by someone else (MED-1). */
@@ -370,6 +393,16 @@ export const SENTRY_EVENT_CODES = [
    *  `remote_desktop_stop_undelivered` because the actionable target is the
    *  relay (Redis/BullMQ), not the device. */
   'remote_desktop_stop_dispatch_failed',
+
+  // --- quotes / payments --------------------------------------------------
+  /** A public quote accept gave up waiting on the Stripe Checkout mint
+   *  (ACCEPT_CHECKOUT_TIMEOUT_MS) and sent the customer to the invoice page.
+   *  A run of these means Stripe (or the partner's account) is slow. */
+  'quote_accept_checkout_timeout',
+  /** #8603: a partner's stored `timezone` is not a zone Intl knows, so invoice
+   *  line work dates were computed in UTC instead (assembly never blocks on
+   *  it). Fix the partner's timezone setting; near-midnight lines may be a day off. */
+  'invoice_work_date_invalid_timezone',
 ] as const;
 
 /**

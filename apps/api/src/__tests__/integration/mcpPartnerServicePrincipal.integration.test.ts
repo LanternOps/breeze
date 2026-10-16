@@ -54,6 +54,7 @@ import {
   createSite,
   createUser,
   grantRolePermissions,
+  userEpochs,
 } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -128,10 +129,13 @@ async function insertKey(opts: {
   partnerId: string;
   principalId: string;
   createdBy: string;
+  /** The principal's owner, whose epochs bind the key. Defaults to createdBy. */
+  ownerId?: string;
   status?: 'active' | 'revoked';
   expiresAt?: Date | null;
 }): Promise<{ rawKey: string; id: string }> {
   const rawKey = `brz_sp_${randomBytes(32).toString('base64url')}`;
+  const ownerEpochs = await userEpochs(opts.ownerId ?? opts.createdBy);
   const [row] = await getTestDb()
     .insert(partnerServicePrincipalKeys)
     .values({
@@ -144,6 +148,8 @@ async function insertKey(opts: {
       expiresAt: opts.expiresAt ?? null,
       rateLimit: 10000,
       createdBy: opts.createdBy,
+      ownerCredentialEpoch: ownerEpochs.credentialEpoch,
+      ownerMfaEpoch: ownerEpochs.mfaEpoch,
     })
     .returning();
   return { rawKey, id: row!.id };
@@ -291,6 +297,46 @@ describe('partner service principal key on MCP: fail closed', () => {
     expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(200);
     await getTestDb().update(partners).set({ status: 'suspended' }).where(eq(partners.id, p.partner.id));
     expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(401);
+  });
+
+  it('keeps working after the owner signs out, and ends when the owner\'s password changes', async () => {
+    const p = await partnerFixture(['ai:read']);
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(200);
+
+    // Ordinary (global) logout advances only the session epoch.
+    await getTestDb().update(users)
+      .set({ authEpoch: sql`${users.authEpoch} + 1` })
+      .where(eq(users.id, p.owner.id));
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(200);
+
+    // A password change/reset also advances the credential epoch.
+    await getTestDb().update(users)
+      .set({ authEpoch: sql`${users.authEpoch} + 1`, credentialEpoch: sql`${users.credentialEpoch} + 1` })
+      .where(eq(users.id, p.owner.id));
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(401);
+
+    // A key issued after the change works again.
+    const fresh = await insertKey({ partnerId: p.partner.id, principalId: p.principal.id, createdBy: p.owner.id });
+    expect((await mcp(fresh.rawKey, 'tools/list')).status).toBe(200);
+  });
+
+  it('ends when the owner\'s MFA factors change', async () => {
+    const p = await partnerFixture(['ai:read']);
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(200);
+    await getTestDb().update(users)
+      .set({ authEpoch: sql`${users.authEpoch} + 1`, mfaEpoch: sql`${users.mfaEpoch} + 1` })
+      .where(eq(users.id, p.owner.id));
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(401);
+  });
+
+  it('refuses a key that someone other than the owner issued', async () => {
+    const p = await partnerFixture(['ai:read']);
+    const { owner: otherAdmin } = await partnerOwner(p.partner.id);
+    const foreign = await insertKey({
+      partnerId: p.partner.id, principalId: p.principal.id, createdBy: otherAdmin.id, ownerId: p.owner.id,
+    });
+    expect((await mcp(foreign.rawKey, 'tools/list')).status).toBe(401);
+    expect((await mcp(p.key.rawKey, 'tools/list')).status).toBe(200);
   });
 
   it('refuses a principal that holds no MCP scope (Partner API scopes do not admit MCP)', async () => {

@@ -2,7 +2,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { zodValidationErrorBody } from '../../lib/zodIssues';
 import type { AuthContext } from '../../middleware/auth';
-import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { hasSatisfiedMfa, requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import {
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
@@ -15,6 +15,8 @@ import {
   onedriveHelperInlineSettingsSchema,
   patchInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
+  workloadInventoryInlineSettingsSchema,
+  systemProtectionInlineSettingsSchema,
   warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -22,7 +24,11 @@ import { ORG_SCOPED_ONLY_FEATURE_TYPES, isRetiredConfigFeatureType } from '@bree
 import { writeRouteAudit } from '../../services/auditEvents';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
-import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
+import {
+  checkSecurityAgentsLinkWrite,
+  SecurityAgentsLinkWriteError,
+} from '../../services/securityAgents/securityAgentsLinkWrite';
 import {
   getConfigPolicy,
   getRetiredFeatureLink,
@@ -39,6 +45,7 @@ import {
   PARTNER_LINKABLE_FEATURE_TYPES,
   isBackupProfileReference,
   WarrantyConsentError,
+  BackupDestinationNotInOrgError,
 } from '../../services/configurationPolicy';
 import { isMonitorAttachableToPolicy } from '../../services/monitors/monitorAttachability';
 import { getMonitorDefinition } from '../../services/monitors/monitorService';
@@ -54,6 +61,7 @@ import {
   linkIdParamSchema,
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
+import { omitUnsentLegacyApprovalKeys, PolicyApprovalFieldMovedError } from '../../services/configPolicyPatching';
 import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 import { checkSecurityQuarantineWrite } from './securityQuarantineGate';
 import { withoutFeatureLinkAuthority } from '../../services/securityScanQuarantineAuthority';
@@ -152,6 +160,15 @@ const rejectRetiredFeatureType = async (c: Context, next: Next) => {
   await next();
 };
 
+// #6960: enabling a security agent arms installs, so the link write needs the
+// software-deployment grant (devices.execute + MFA), mirroring the HP CMSL gate.
+// Fail closed when permissions were not resolved.
+function mayArmSecurityAgents(auth: AuthContext, perms: UserPermissions | undefined): boolean {
+  return !!perms
+    && hasPermission(perms, PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action)
+    && hasSatisfiedMfa(auth);
+}
+
 // A remote_access link write changes what resolveRemoteAccessForDevice returns;
 // its cache (served to the heartbeat for up to HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS,
 // #8053) must drop, as the policy CRUD and assignment routes already do.
@@ -217,6 +234,20 @@ featureLinkRoutes.post(
       );
       if (!gate.allowed) return c.json(gate.body, 403);
       securityAuthority = gate.executionAuthority;
+    }
+
+    // #6960: authorization (arming), NULL featurePolicyId, strict settings and
+    // the enableable gate, in that order — see securityAgentsLinkWrite.ts.
+    let securityAgentsArmAuthorized = false;
+    if (data.featureType === 'security_agents') {
+      securityAgentsArmAuthorized = mayArmSecurityAgents(auth, c.get('permissions') as UserPermissions | undefined);
+      const check = checkSecurityAgentsLinkWrite({
+        featurePolicyId: data.featurePolicyId ?? null,
+        inlineSettings: data.inlineSettings ?? null,
+        armAuthorized: securityAgentsArmAuthorized,
+      });
+      if (!check.ok) return c.json(check.refusal.body, check.refusal.status);
+      data.inlineSettings = check.inlineSettings;
     }
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
@@ -396,6 +427,28 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    if (data.featureType === 'workload_inventory' && data.inlineSettings) {
+      const parsed = workloadInventoryInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid workload inventory settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
+    if (data.featureType === 'system_protection' && data.inlineSettings) {
+      const parsed = systemProtectionInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid system protection settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     if (data.featureType === 'compliance') {
       const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
       if (refusal) return c.json(refusal, 400);
@@ -417,6 +470,16 @@ featureLinkRoutes.post(
             undefined,
             { executionAuthority: securityAuthority },
           )
+        : data.featureType === 'security_agents'
+        ? await addFeatureLink(
+            id,
+            data.featureType,
+            data.featurePolicyId,
+            data.inlineSettings,
+            { userId: auth.user.id },
+            undefined,
+            { securityAgentsArmAuthorized },
+          )
         : await addFeatureLink(
             id,
             data.featureType,
@@ -430,6 +493,16 @@ featureLinkRoutes.post(
       }
       if (error instanceof WarrantyConsentError) {
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
+      }
+      if (error instanceof SecurityAgentsLinkWriteError) {
+        return c.json(error.body, error.status);
+      }
+      if (error instanceof BackupDestinationNotInOrgError) {
+        return c.json({ error: error.message, code: error.code }, 400);
+      }
+      // #8186: approval / app rules are edited on the Update Ring now.
+      if (error instanceof PolicyApprovalFieldMovedError) {
+        return c.json({ error: error.message, code: error.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
@@ -516,6 +589,20 @@ featureLinkRoutes.patch(
       securityAuthority = gate.executionAuthority;
     }
 
+    // #6960: same checks as POST, applied to whichever fields this PATCH sends.
+    const securityAgentsWrite = existingLink.featureType === 'security_agents';
+    let securityAgentsArmAuthorized = false;
+    if (securityAgentsWrite) {
+      securityAgentsArmAuthorized = mayArmSecurityAgents(auth, c.get('permissions') as UserPermissions | undefined);
+      const check = checkSecurityAgentsLinkWrite({
+        featurePolicyId: data.featurePolicyId,
+        inlineSettings: data.inlineSettings,
+        armAuthorized: securityAgentsArmAuthorized,
+      });
+      if (!check.ok) return c.json(check.refusal.body, check.refusal.status);
+      if (data.inlineSettings !== undefined) data.inlineSettings = check.inlineSettings;
+    }
+
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
       // Same partner-linkable exception as the POST route above.
       if (policy.orgId === null && !PARTNER_LINKABLE_FEATURE_TYPES.has(existingLink.featureType as any)) {
@@ -540,7 +627,9 @@ featureLinkRoutes.patch(
             400
           );
         }
-        data.inlineSettings = parsed.data;
+        // #8671: the schema defaults omitted approval keys; forward only the
+        // ones the client sent (the service keeps the stored values).
+        data.inlineSettings = omitUnsentLegacyApprovalKeys(data.inlineSettings, parsed.data);
       }
       if (existingLink.featureType === 'backup') {
         // PATCH may keep the existing profile reference (featurePolicyId
@@ -670,6 +759,26 @@ featureLinkRoutes.patch(
         }
         data.inlineSettings = parsed.data;
       }
+      if (existingLink.featureType === 'workload_inventory') {
+        const parsed = workloadInventoryInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid workload inventory settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
+      if (existingLink.featureType === 'system_protection') {
+        const parsed = systemProtectionInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid system protection settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
       if (existingLink.featureType === 'compliance') {
         const refusal = duplicateComplianceNamesRefusal(data.inlineSettings);
         if (refusal) return c.json(refusal, 400);
@@ -682,6 +791,10 @@ featureLinkRoutes.patch(
         ? await updateFeatureLink(linkId, data, id, { userId: auth.user.id }, undefined, {
             executionAuthority: securityAuthority,
           })
+        : securityAgentsWrite
+        ? await updateFeatureLink(linkId, data, id, { userId: auth.user.id }, undefined, {
+            securityAgentsArmAuthorized,
+          })
         : await updateFeatureLink(linkId, data, id, { userId: auth.user.id });
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
@@ -689,6 +802,16 @@ featureLinkRoutes.patch(
       }
       if (error instanceof WarrantyConsentError) {
         return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
+      }
+      if (error instanceof SecurityAgentsLinkWriteError) {
+        return c.json(error.body, error.status);
+      }
+      if (error instanceof BackupDestinationNotInOrgError) {
+        return c.json({ error: error.message, code: error.code }, 400);
+      }
+      // #8186: approval / app rules are edited on the Update Ring now.
+      if (error instanceof PolicyApprovalFieldMovedError) {
+        return c.json({ error: error.message, code: error.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);

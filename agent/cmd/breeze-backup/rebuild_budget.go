@@ -91,11 +91,19 @@ func (e *rebuildBudgetError) Error() string {
 	return fmt.Sprintf("rebuild exceeded its time budget of %s (in phase %s)", e.Limit, phase)
 }
 
+// rebuildWatchdogNow is the clock the watchdog measures progress idleness
+// with. It is a var so tests can freeze it: under -race on a loaded host the
+// bootstrap before the engine's first progress report can outlast a test's
+// short stall window (#8489). It is read once, when a watchdog starts, and
+// is process-global: a test that overrides it must not run in parallel.
+var rebuildWatchdogNow = time.Now
+
 // rebuildWatchdog tracks the last progress of one rebuild and cancels its
 // context when the budget runs out.
 type rebuildWatchdog struct {
 	budget rebuildBudget
 	cancel context.CancelCauseFunc
+	now    func() time.Time
 
 	mu    sync.Mutex
 	phase rebuild.Phase
@@ -109,7 +117,8 @@ type rebuildWatchdog struct {
 // stop must be called when the rebuild returns.
 func startRebuildWatchdog(parent context.Context, b rebuildBudget) (ctx context.Context, w *rebuildWatchdog, stop func()) {
 	inner, cancel := context.WithCancelCause(parent)
-	w = &rebuildWatchdog{budget: b, cancel: cancel, last: time.Now()}
+	w = &rebuildWatchdog{budget: b, cancel: cancel, now: rebuildWatchdogNow}
+	w.last = w.now()
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -142,7 +151,8 @@ func (w *rebuildWatchdog) watch(ctx context.Context, done <-chan struct{}) {
 			w.mu.Unlock()
 			w.cancel(&rebuildBudgetError{Phase: phase, Limit: w.budget.Ceiling})
 			return
-		case now := <-tick.C:
+		case <-tick.C:
+			now := w.now()
 			w.mu.Lock()
 			phase, idle, limit := w.phase, now.Sub(w.last), w.budget.stallWindowFor(w.phase, w.bytes)
 			w.mu.Unlock()
@@ -157,7 +167,7 @@ func (w *rebuildWatchdog) watch(ctx context.Context, done <-chan struct{}) {
 // progress records an engine progress report (rebuild.Options.Progress).
 func (w *rebuildWatchdog) progress(phase rebuild.Phase) {
 	w.mu.Lock()
-	w.phase, w.last = phase, time.Now()
+	w.phase, w.last = phase, w.now()
 	w.mu.Unlock()
 }
 
@@ -165,7 +175,7 @@ func (w *rebuildWatchdog) progress(phase rebuild.Phase) {
 func (w *rebuildWatchdog) downloaded(n int64) {
 	w.mu.Lock()
 	w.bytes += n
-	w.last = time.Now()
+	w.last = w.now()
 	w.mu.Unlock()
 }
 

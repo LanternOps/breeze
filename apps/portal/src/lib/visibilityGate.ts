@@ -27,6 +27,16 @@ export const PORTAL_DISABLED_CODES = [
   // Portal advanced visibility W01 (#7731): hardware health, strict fail-closed.
   'PORTAL_HARDWARE_HEALTH_DISABLED',
   'PORTAL_HARDWARE_INVENTORY_DISABLED',
+  'PORTAL_PERFORMANCE_METRICS_DISABLED',
+  'PORTAL_SOFTWARE_INVENTORY_DISABLED',
+  // Block-hours (#8183): strict fail-closed support-hours card.
+  'PORTAL_HOUR_BLOCK_DISABLED',
+  // Portal advanced visibility W05 (#7735): sensitive patch detail, strict fail-closed.
+  'PORTAL_PATCH_DETAIL_DISABLED',
+  // Portal advanced visibility W06 (#7736): sensitive vulnerability detail, strict fail-closed.
+  'PORTAL_VULNERABILITY_DETAIL_DISABLED',
+  // EDR provider framework W02 (#8166): strict flag; gates the EDR leg of the security view, no page of its own.
+  'PORTAL_EDR_VISIBILITY_DISABLED',
 ] as const;
 
 const DISABLED_CODE_SET: ReadonlySet<string> = new Set(PORTAL_DISABLED_CODES);
@@ -41,6 +51,8 @@ export const PORTAL_GATED_PAGES = [
   '/devices',
   '/assets',
   '/tickets',
+  // Customer work approval (#8200) rides the tickets flag: no flag of its own.
+  '/approvals',
   '/service',
   '/documents',
   '/reports/lifecycle',

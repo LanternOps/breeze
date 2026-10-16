@@ -14,6 +14,7 @@ import { useOrgStore } from '@/stores/orgStore';
 import { fetchWithAuth } from '../../stores/auth';
 import { currencyLabel, currencyOptions } from '@/lib/currencies';
 import { usePartnerCurrency } from '../../lib/usePartnerCurrency';
+import { catalogBillingFrequencySchema, catalogBillingTypeSchema } from '@breeze/shared';
 import {
   createCatalogItem, updateCatalogItem, getCatalogItem, setBundleComponents,
   setOrgPriceOverride, removeOrgPriceOverride, setItemPrice, removeItemPrice,
@@ -21,6 +22,7 @@ import {
   computeMargin, formatMargin, marginTone,
   CATALOG_TYPE_LABELS, CATALOG_TYPE_ORDER,
   type CatalogItem, type CatalogItemType, type CatalogItemDetail, type OrgPriceOverride,
+  type CatalogBillingType, type CatalogBillingFrequency,
   type PriceBookEntry, type EnrichResult, type EnrichmentProvenance,
 } from '../../lib/api/catalog';
 import CatalogEnrichButton from '../catalog/CatalogEnrichButton';
@@ -94,6 +96,21 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
   const { currency: partnerCurrency, failed: partnerCurrencyFailed, retry: retryPartnerCurrency } = usePartnerCurrency(open);
 
   const [itemType, setItemType] = useState<CatalogItemType>('service');
+  // Billing axis (#8339). Frequency stays non-null in state and is sent as null for a
+  // one-time item, so "recurring with no frequency" can't be saved from here.
+  const [billingType, setBillingType] = useState<CatalogBillingType>('one_time');
+  const [billingFrequency, setBillingFrequency] = useState<CatalogBillingFrequency>('monthly');
+  const [commitmentTermMonths, setCommitmentTermMonths] = useState('');
+  // Options come from the shared validators, so the drawer offers exactly what the API accepts.
+  // Typed as Records so a value added there fails to compile here until it has a label.
+  const billingTypeLabels: Record<CatalogBillingType, string> = {
+    one_time: t('catalogItemEditorDrawer.billingOneTime'),
+    recurring: t('catalogItemEditorDrawer.billingRecurring'),
+  };
+  const billingFrequencyLabels: Record<CatalogBillingFrequency, string> = {
+    monthly: t('catalogItemEditorDrawer.frequencyMonthly'),
+    annual: t('catalogItemEditorDrawer.frequencyAnnual'),
+  };
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [sku, setSku] = useState('');
@@ -153,6 +170,9 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     setDetailLoadFailed(false);
     if (item) {
       setItemType(item.itemType);
+      setBillingType(item.billingType);
+      setBillingFrequency(item.billingFrequency ?? 'monthly');
+      setCommitmentTermMonths(item.commitmentTermMonths != null ? String(item.commitmentTermMonths) : '');
       setName(item.name);
       setDescription(item.description ?? '');
       setSku(item.sku ?? '');
@@ -201,6 +221,9 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
         .finally(() => setComponentsLoading(false));
     } else {
       setItemType('service');
+      setBillingType('one_time');
+      setBillingFrequency('monthly');
+      setCommitmentTermMonths('');
       setName('');
       setDescription('');
       setSku('');
@@ -463,9 +486,24 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
       }
     }
 
+    // Bounded by the shared validator (int 1-120); check here so a typo is a toast rather
+    // than a 400 after the price rows have already been diffed.
+    const term = commitmentTermMonths.trim();
+    if (billingType === 'recurring' && term !== '') {
+      const months = Number(term);
+      if (!Number.isInteger(months) || months < 1 || months > 120) {
+        showToast({ message: t('catalogItemEditorDrawer.commitmentTermRange'), type: 'error' });
+        return;
+      }
+    }
+
     const prices = priceRows.map((r) => ({ currencyCode: r.currencyCode, unitPrice: Number(r.unitPrice) }));
     const body = {
       itemType,
+      billingType,
+      // Cleared for a one-time item so switching type cannot leave a stale frequency behind.
+      billingFrequency: billingType === 'recurring' ? billingFrequency : null,
+      commitmentTermMonths: billingType === 'recurring' && term !== '' ? Number(term) : null,
       name: name.trim(),
       description: description.trim() || null,
       sku: sku.trim() || null,
@@ -552,7 +590,7 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
     } finally {
       setSaving(false);
     }
-  }, [saving, name, description, pricesValid, priceRows, basePrices, partnerCurrency, isBundle, detailLoadFailed, components, itemType, sku, costBasis, costCurrency, enrichment, effectiveId, editId, onSaved, onClose]);
+  }, [saving, name, description, pricesValid, priceRows, basePrices, partnerCurrency, isBundle, detailLoadFailed, components, itemType, billingType, billingFrequency, commitmentTermMonths, sku, costBasis, costCurrency, enrichment, effectiveId, editId, onSaved, onClose]);
 
   // Auto-fill a NEW item from the web: fill the fields this form actually edits
   // (name + type) and stash provenance. Price is never auto-set — the button shows
@@ -637,6 +675,63 @@ export default function CatalogItemEditorDrawer({ open, item, allItems, onClose,
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Billing — type, and for a recurring item its frequency and commitment term (#8339) */}
+          <div className="space-y-2" data-testid="catalog-form-billing">
+            <span className="mb-1.5 block text-xs font-medium text-muted-foreground">{t('catalogItemEditorDrawer.billing')}</span>
+            <div className="grid grid-cols-2 gap-1 rounded-md border bg-muted/40 p-1" role="group" aria-label={t('catalogItemEditorDrawer.billing')}>
+              {catalogBillingTypeSchema.options.map((bt) => (
+                <button
+                  key={bt}
+                  type="button"
+                  onClick={() => setBillingType(bt)}
+                  aria-pressed={billingType === bt}
+                  className={`rounded px-2 py-1.5 text-sm font-medium transition ${
+                    billingType === bt ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  data-testid={`catalog-form-billing-${bt}`}
+                >
+                  {billingTypeLabels[bt]}
+                </button>
+              ))}
+            </div>
+            {billingType === 'recurring' && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-billing-frequency">
+                    {t('catalogItemEditorDrawer.billingFrequency')}
+                  </label>
+                  <select
+                    id="catalog-form-billing-frequency"
+                    value={billingFrequency}
+                    onChange={(e) => setBillingFrequency(e.target.value as CatalogBillingFrequency)}
+                    className={fieldCls}
+                    data-testid="catalog-form-billing-frequency"
+                  >
+                    {catalogBillingFrequencySchema.options.map((f) => (
+                      <option key={f} value={f}>{billingFrequencyLabels[f]}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-medium text-muted-foreground" htmlFor="catalog-form-commitment-term">
+                    {t('catalogItemEditorDrawer.commitmentTerm')}
+                  </label>
+                  <input
+                    id="catalog-form-commitment-term"
+                    type="number"
+                    min={1}
+                    max={120}
+                    value={commitmentTermMonths}
+                    onChange={(e) => setCommitmentTermMonths(e.target.value)}
+                    className={fieldCls}
+                    placeholder={t('catalogItemEditorDrawer.commitmentTermPlaceholder')}
+                    data-testid="catalog-form-commitment-term"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div>

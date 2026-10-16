@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, numeric, char } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
@@ -10,6 +10,9 @@ export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'h
 export const ticketSourceEnum = pgEnum('ticket_source', ['portal', 'email', 'alert', 'manual', 'api', 'ai']);
 // Spec #5573 §4.8: planned work (service deliverables, project tasks) is typed, not tagged.
 export const ticketWorkKindEnum = pgEnum('ticket_work_kind', ['support', 'deliverable', 'project_task']);
+// #7900: fixed ITIL classification (what the ticket is ABOUT). A separate axis
+// from work_kind (how the work is delivered/billed). Labels live in i18n only.
+export const ticketTypeEnum = pgEnum('ticket_type', ['incident', 'service_request', 'problem', 'change']);
 export const ticketCommentTypeEnum = pgEnum('ticket_comment_type', ['comment', 'internal', 'status_change', 'assignment', 'time_entry', 'system']);
 
 export const portalBranding = pgTable('portal_branding', {
@@ -64,6 +67,11 @@ export const portalBranding = pgTable('portal_branding', {
   // the read-only hardware inventory surface (make, model, processor, memory,
   // network adapters, connection counts). Inside "Enable all" (low sensitivity).
   enableHardwareInventory: boolean('enable_hardware_inventory').notNull().default(false),
+  // Portal Advanced Visibility W03 (#7733): read-only CPU, memory, disk and
+  // network performance trends. Inside "Enable all" (low sensitivity).
+  enablePerformanceMetrics: boolean('enable_performance_metrics').notNull().default(false),
+  // W04 (#7734): independent read-only software inventory flag, inside Enable all.
+  enableSoftwareInventory: boolean('enable_software_inventory').notNull().default(false),
   // Customer Portal Network Visibility (#5861): independent, fail-closed
   // visibility gate for the read-only networking surface.
   enableNetworkVisibility: boolean('enable_network_visibility').notNull().default(false),
@@ -72,6 +80,24 @@ export const portalBranding = pgTable('portal_branding', {
   // from asset inventory (enableNetworkVisibility above), so it is NOT part
   // of PORTAL_VISIBILITY_FLAG_KEYS / "Enable all".
   enableNetworkAlerts: boolean('enable_network_alerts').notNull().default(false),
+  // Block hours W04 (#8179): independent, fail-closed gate for the read-only
+  // "Support hours" card inside the Support usage section. A prepaid-hours
+  // balance is a billing figure the MSP must choose to show, so — like
+  // enableNetworkAlerts — it is NOT part of PORTAL_VISIBILITY_FLAG_KEYS /
+  // "Enable all".
+  enableHourBlock: boolean('enable_hour_block').notNull().default(false),
+  // Portal Advanced Visibility W05 (#7735): read-only per-host patch status.
+  // Sensitive (points at patch gaps): NOT in PORTAL_VISIBILITY_FLAG_KEYS or
+  // "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
+  enablePatchDetail: boolean('enable_patch_detail').notNull().default(false),
+  // Portal Advanced Visibility W06 (#7736): read-only per-host CVE findings.
+  // Sensitive (points at vulnerabilities): NOT in PORTAL_VISIBILITY_FLAG_KEYS or
+  // "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
+  enableVulnerabilityDetail: boolean('enable_vulnerability_detail').notNull().default(false),
+  // EDR provider framework W02 (#8166): strict fail-closed flag for the
+  // vendor-neutral "Managed endpoint protection" leg of the security view.
+  // Inside "Enable all" (not sensitive: no vendor/product names are exposed).
+  enableEdrVisibility: boolean('enable_edr_visibility').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -183,6 +209,9 @@ export const tickets = pgTable('tickets', {
   slaPausedMinutes: integer('sla_paused_minutes').default(0),
   source: ticketSourceEnum('source').notNull().default('portal'),
   workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
+  // #7900 (2026-12-26-170000): constant default, so existing rows read as
+  // 'incident' without a backfill. Per-source defaults: services/ticketType.ts.
+  ticketType: ticketTypeEnum('ticket_type').notNull().default('incident'),
   internalNumber: varchar('internal_number', { length: 20 }),
   emailMessageId: text('email_message_id'),
   emailThreadKey: text('email_thread_key'),
@@ -213,6 +242,18 @@ export const tickets = pgTable('tickets', {
   // end — see schema/columnTypes.ts. Existing rows keep '1', which sorts
   // before every real transaction id, so a first full sync covers them.
   partnerFeedXid: xid8('partner_feed_xid').notNull().default(sql`'1'::xid8`),
+  // #4617 spec §4.2: per-ticket labour ceiling (a document value, no default).
+  // CHECK tickets_budget_chk (SQL-only, 2026-12-20-200300): each > 0 when set,
+  // budget_currency_code set iff budget_amount is, and ^[A-Z]{3}$.
+  budgetMinutes: integer('budget_minutes'),
+  budgetAmount: numeric('budget_amount', { precision: 12, scale: 2 }),
+  budgetCurrencyCode: char('budget_currency_code', { length: 3 }),
+  // Ticket migration windows (#8313, 2026-12-25-120000): the window that
+  // imported this ticket, null for live tickets. An FK-less snapshot, so it
+  // outlives window retention and never couples an org table to a partner
+  // table. Partial index idx_tickets_migration_window (2026-12-25-120100) is
+  // not modeled here, like the other partial indexes in this file.
+  migrationWindowId: uuid('migration_window_id'),
 });
 
 export const ticketComments = pgTable('ticket_comments', {
@@ -289,7 +330,20 @@ export const ticketComments = pgTable('ticket_comments', {
   // ticket_comments_one_ai_note_per_run_uq. Not modeled in Drizzle for the
   // same "partial index" reason as that index and ticketDrafts.ts's
   // ticket_drafts_active_uq.
-  proposedByRunId: uuid('proposed_by_run_id')
+  proposedByRunId: uuid('proposed_by_run_id'),
+  // Ticket migration windows (#8313, 2026-12-25-120000), all null on live
+  // comments. migrationWindowId marks an imported comment (FK-less, like
+  // tickets.migration_window_id). originalAuthorEmail/originalAuthorKind
+  // ('staff' | 'requester', CHECK ticket_comments_original_author_kind_chk)
+  // are the display-only "originally by" of an imported comment: authorName
+  // carries the original name and no user or contact is created.
+  // importSourceId is the source's comment id, unique per principal through
+  // the partial index ticket_comments_import_source_uq (2026-12-25-120100),
+  // so a rerun skips what it already imported.
+  migrationWindowId: uuid('migration_window_id'),
+  originalAuthorEmail: varchar('original_author_email', { length: 320 }),
+  originalAuthorKind: text('original_author_kind').$type<'staff' | 'requester'>(),
+  importSourceId: varchar('import_source_id', { length: 255 }),
 });
 
 export const assetCheckouts = pgTable('asset_checkouts', {

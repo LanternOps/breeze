@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronUp, Copy, Check, Loader2, AlertOctagon, RotateCcw, Square } from 'lucide-react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { postScriptExecute, type ScriptExecuteResult, type ScriptRunTarget } from '@/lib/scriptExecute';
+import { Terminal, RefreshCw, Eye, X, ChevronDown, ChevronRight, ChevronUp, Copy, Check, Loader2, AlertOctagon, RotateCcw, Square } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
-import { extractApiError } from '@/lib/apiError';
 import { navigateTo } from '@/lib/navigation';
 import { handleActionError } from '@/lib/runAction';
 import {
@@ -12,6 +12,9 @@ import {
   SCRIPT_CANCEL_DEFAULT_GRACE_SECONDS,
 } from '@/lib/cancelScriptExecution';
 import { usePermissions } from '@/lib/permissions';
+import { useHashState } from '@/lib/useHashState';
+import { deviceScriptsViewHash, scriptsViewFromHash, type ScriptsView } from '@/lib/deviceScriptsLink';
+import { groupExecutionsByScript, outputExcerpt } from './scriptLatestResults';
 import { showToast } from '../shared/Toast';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import ScriptExecutionModal from '../scripts/ScriptExecutionModal';
@@ -22,7 +25,7 @@ import {
 } from '../scripts/executionStatus';
 import type { Script } from '../scripts/ScriptList';
 import type { ScriptParameter } from '../scripts/ScriptForm';
-import type { CancelState, ExecutionStatus, ScriptAdmissionResult } from '@breeze/shared';
+import type { CancelState, ExecutionStatus } from '@breeze/shared';
 import { RunContextChip, type RunContextValue } from '../common/RunContext';
 import { AiInitiatorChip } from '../common/AiInitiatorChip';
 import type { AiInitiatorKind, AiOriginSummaryDto } from '@breeze/shared';
@@ -242,8 +245,10 @@ function ExecutionStatusBadge({
   status,
   rawStatus,
   cancelState,
+  testId,
 }: {
   executionId: string;
+  testId?: string;
   status: ExecutionStatus | null;
   rawStatus: string;
   cancelState?: CancelState | null;
@@ -252,7 +257,7 @@ function ExecutionStatusBadge({
   if (!status) {
     return (
       <span
-        data-testid={`device-execution-status-${executionId}`}
+        data-testid={testId ?? `device-execution-status-${executionId}`}
         className="inline-flex items-center rounded-full border border-muted bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground"
       >
         {rawStatus}
@@ -263,7 +268,7 @@ function ExecutionStatusBadge({
   const StatusIcon = config.icon;
   return (
     <span
-      data-testid={`device-execution-status-${executionId}`}
+      data-testid={testId ?? `device-execution-status-${executionId}`}
       className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium', config.color)}
     >
       <StatusIcon className={cn('h-3 w-3', (status === 'running' || status === 'cancelling') && 'animate-spin')} />
@@ -305,6 +310,25 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
   const canCancel = can('scripts', 'execute');
   const [confirmingCancel, setConfirmingCancel] = useState<ScriptExecution | null>(null);
   const [cancelSubmittingId, setCancelSubmittingId] = useState<string | null>(null);
+
+  // #7413 — `#scripts/view=latest|all`. With no explicit view the per-script
+  // latest-result view is the default, except when a post-run redirect is
+  // highlighting one execution (#4886): that run may not be its script's
+  // newest, so land on the chronological list where it is always visible.
+  const [hashView, setHashView] = useHashState<ScriptsView | undefined>(undefined, scriptsViewFromHash);
+  const view: ScriptsView = hashView ?? (highlightExecutionId ? 'all' : 'latest');
+  const [expandedScripts, setExpandedScripts] = useState<Set<string>>(() => new Set());
+  const switchView = (next: ScriptsView) => {
+    window.location.hash = deviceScriptsViewHash(next);
+    setHashView(next);
+  };
+  const toggleScript = (key: string) =>
+    setExpandedScripts(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const effectiveTimezone = timezone ?? siteTimezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -386,6 +410,16 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
     });
   }, [executions, effectiveTimezone]);
 
+  // #7413 — one entry per script (latest run + full history), as formatted rows.
+  const scriptGroups = useMemo(() => {
+    const rowByRaw = new Map(rows.map(row => [row.raw, row]));
+    return groupExecutionsByScript(executions).flatMap(group => {
+      const groupRows = group.runs.flatMap(run => rowByRaw.get(run) ?? []);
+      const latest = groupRows[0];
+      return latest ? [{ key: group.key, name: latest.name, latest, runs: groupRows, excerpt: outputExcerpt(latest.raw) }] : [];
+    });
+  }, [executions, rows]);
+
   // #4886 — once the highlighted execution shows up in the fetched list, open
   // its details automatically so a post-run redirect actually lands the
   // operator watching the result, not just staring at a list.
@@ -455,26 +489,87 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
 
   const handleExecuteRunAgain = async (
     scriptId: string,
-    deviceIds: string[],
+    target: ScriptRunTarget,
     parameters: Record<string, string | number | boolean>,
     runAs: 'system' | 'user'
-  ): Promise<ScriptAdmissionResult> => {
-    const response = await fetchWithAuth(`/scripts/${scriptId}/execute`, {
-      method: 'POST',
-      body: JSON.stringify({ deviceIds, parameters, runAs })
-    });
-
-    const data = await response.json().catch(() => ({})) as ScriptAdmissionResult & { error?: string };
-
-    if (!response.ok) {
-      throw new Error(extractApiError(data, tScripts('scriptExecutionsPage.errors.execute')));
-    }
+  ): Promise<ScriptExecuteResult> => {
+    const data = await postScriptExecute(
+      scriptId,
+      target,
+      parameters,
+      runAs,
+      tScripts('scriptExecutionsPage.errors.execute'),
+    );
 
     if (data.targets.some(target => target.admission === 'admitted')) {
       await fetchHistory(true);
     }
     return data;
   };
+
+  type Row = (typeof rows)[number];
+  const renderExecutionRow = (row: Row, rowTestId?: string) => (
+        <tr
+          key={row.id}
+          data-testid={rowTestId}
+          className={cn(
+            'text-sm cursor-pointer hover:bg-muted/40 transition',
+            // #4886 — the row a post-run redirect sent the operator
+            // here to watch, so it's findable even after they close
+            // the auto-opened details modal.
+            row.id === highlightExecutionId && 'bg-primary/5 ring-1 ring-inset ring-primary/40'
+          )}
+          onClick={() => setSelectedExecution(row.raw)}
+        >
+          <td className="px-4 py-3 font-medium">{row.name}</td>
+          <td className="px-4 py-3">
+            <ExecutionStatusBadge
+              executionId={row.id}
+              status={row.executionStatus}
+              rawStatus={row.status}
+              cancelState={row.raw.cancelState}
+            />
+          </td>
+          <td className="px-4 py-3 text-xs text-muted-foreground">{row.startedAt}</td>
+          <td className="px-4 py-3 text-xs text-muted-foreground">{row.completedAt}</td>
+          <td className="px-4 py-3 text-xs text-muted-foreground">{row.duration}</td>
+          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+            <AiInitiatorChip
+              kind={row.raw.aiInitiatorKind ?? null}
+              loadOrigin={
+                row.raw.hasAiOrigin && row.raw.id
+                  ? () => fetchOrigin('execution', row.raw.id!)
+                  : undefined
+              }
+            />
+          </td>
+          <td className="px-4 py-3">
+            <div className="flex items-center justify-end gap-1">
+              {canCancel && row.raw.id && row.executionStatus
+                && (CANCELLABLE_STATUSES.has(row.executionStatus) || row.executionStatus === 'cancelling') && (
+                <button
+                  type="button"
+                  data-testid={`device-script-stop-${row.raw.id}`}
+                  disabled={row.executionStatus === 'cancelling'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (row.executionStatus !== 'cancelling') setConfirmingCancel(row.raw);
+                  }}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+                  title={row.executionStatus === 'cancelling'
+                    ? tScripts('executionHistory.status.cancelling')
+                    : tScripts('executionHistory.actions.stop')}
+                >
+                  {row.executionStatus === 'cancelling'
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : <Square className="h-4 w-4" />}
+                </button>
+              )}
+              <Eye className="h-4 w-4 text-muted-foreground" />
+            </div>
+          </td>
+        </tr>
+  );
 
   if (loading) {
     return (
@@ -526,6 +621,108 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
             {refreshing ? t('deviceScriptHistory.refreshing') : t('common:actions.refresh')}
           </button>
         </div>
+        <div className="mt-4 inline-flex rounded-md border p-0.5" role="group" aria-label={t('deviceScriptHistory.view.label')}>
+          {(['latest', 'all'] as const).map(option => (
+            <button
+              key={option}
+              type="button"
+              data-testid={`device-scripts-view-${option}`}
+              aria-pressed={view === option}
+              onClick={() => switchView(option)}
+              className={cn(
+                'rounded px-3 py-1 text-xs font-medium transition',
+                view === option ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              {t(/* i18n-dynamic */ `deviceScriptHistory.view.${option}`)}
+            </button>
+          ))}
+        </div>
+        {view === 'latest' ? (
+          <div className="mt-4 overflow-hidden rounded-md border">
+            <table className="min-w-full divide-y">
+              <thead className="bg-muted/40">
+                <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-3">{t('deviceScriptHistory.table.script')}</th>
+                  <th className="px-4 py-3">{t('deviceScriptHistory.table.status')}</th>
+                  <th className="px-4 py-3">{t('deviceScriptHistory.table.lastRun')}</th>
+                  <th className="px-4 py-3">{t('deviceScriptHistory.table.lastOutput')}</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {scriptGroups.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      {t('deviceScriptHistory.empty')}
+                    </td>
+                  </tr>
+                ) : (
+                  scriptGroups.map(group => {
+                    const expanded = expandedScripts.has(group.key);
+                    return (
+                      <Fragment key={group.key}>
+                        <tr
+                          data-testid={`device-script-latest-row-${group.key}`}
+                          className="text-sm cursor-pointer hover:bg-muted/40 transition"
+                          onClick={() => toggleScript(group.key)}
+                        >
+                          <td className="px-4 py-3 font-medium">
+                            <button
+                              type="button"
+                              data-testid={`device-script-latest-toggle-${group.key}`}
+                              aria-expanded={expanded}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleScript(group.key);
+                              }}
+                              className="inline-flex items-center gap-1.5 text-left"
+                            >
+                              {expanded
+                                ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                              {group.name}
+                            </button>
+                            <span className="ml-2 text-xs font-normal text-muted-foreground">
+                              {t('deviceScriptHistory.runCount', { count: group.runs.length })}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <ExecutionStatusBadge
+                              executionId={group.latest.id}
+                              testId={`device-script-latest-status-${group.key}`}
+                              status={group.latest.executionStatus}
+                              rawStatus={group.latest.status}
+                              cancelState={group.latest.raw.cancelState}
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-xs text-muted-foreground">{group.latest.startedAt}</td>
+                          <td
+                            data-testid={`device-script-latest-excerpt-${group.key}`}
+                            className="max-w-md truncate px-4 py-3 font-mono text-xs text-muted-foreground"
+                            title={group.excerpt || undefined}
+                          >
+                            {group.excerpt}
+                          </td>
+                        </tr>
+                        {expanded && (
+                          <tr>
+                            <td colSpan={4} className="bg-muted/10 p-0">
+                              <table className="min-w-full divide-y">
+                                <tbody className="divide-y">
+                                  {group.runs.map(run => renderExecutionRow(run, `device-script-history-row-${run.id}`))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
         <div className="mt-4 overflow-hidden rounded-md border">
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
@@ -547,71 +744,12 @@ export default function DeviceScriptHistory({ deviceId, orgId, timezone, highlig
                   </td>
                 </tr>
               ) : (
-                rows.map(row => (
-                  <tr
-                    key={row.id}
-                    className={cn(
-                      'text-sm cursor-pointer hover:bg-muted/40 transition',
-                      // #4886 — the row a post-run redirect sent the operator
-                      // here to watch, so it's findable even after they close
-                      // the auto-opened details modal.
-                      row.id === highlightExecutionId && 'bg-primary/5 ring-1 ring-inset ring-primary/40'
-                    )}
-                    onClick={() => setSelectedExecution(row.raw)}
-                  >
-                    <td className="px-4 py-3 font-medium">{row.name}</td>
-                    <td className="px-4 py-3">
-                      <ExecutionStatusBadge
-                        executionId={row.id}
-                        status={row.executionStatus}
-                        rawStatus={row.status}
-                        cancelState={row.raw.cancelState}
-                      />
-                    </td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{row.startedAt}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{row.completedAt}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{row.duration}</td>
-                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <AiInitiatorChip
-                        kind={row.raw.aiInitiatorKind ?? null}
-                        loadOrigin={
-                          row.raw.hasAiOrigin && row.raw.id
-                            ? () => fetchOrigin('execution', row.raw.id!)
-                            : undefined
-                        }
-                      />
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        {canCancel && row.raw.id && row.executionStatus
-                          && (CANCELLABLE_STATUSES.has(row.executionStatus) || row.executionStatus === 'cancelling') && (
-                          <button
-                            type="button"
-                            data-testid={`device-script-stop-${row.raw.id}`}
-                            disabled={row.executionStatus === 'cancelling'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (row.executionStatus !== 'cancelling') setConfirmingCancel(row.raw);
-                            }}
-                            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
-                            title={row.executionStatus === 'cancelling'
-                              ? tScripts('executionHistory.status.cancelling')
-                              : tScripts('executionHistory.actions.stop')}
-                          >
-                            {row.executionStatus === 'cancelling'
-                              ? <Loader2 className="h-4 w-4 animate-spin" />
-                              : <Square className="h-4 w-4" />}
-                          </button>
-                        )}
-                        <Eye className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                rows.map(row => renderExecutionRow(row))
               )}
             </tbody>
           </table>
         </div>
+        )}
       </div>
 
       {/* Execution Details Modal */}

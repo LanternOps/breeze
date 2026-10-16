@@ -2,6 +2,7 @@ package agentapp
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
+	"github.com/breeze-rmm/agent/internal/watchdoginstall"
 )
 
 // watchdogBinaryName returns the filename for the watchdog binary on the given GOOS.
@@ -105,9 +108,23 @@ type bootstrapOptions struct {
 // system service. All errors are returned — callers are expected to downgrade
 // them to warnings so that a watchdog problem never aborts the agent install.
 func bootstrapWatchdog(opts bootstrapOptions) error {
+	// Share the agent Ensure's install lock so a freshly restarted agent does
+	// not race this bootstrap and burn a retry. Non-blocking: if held, the
+	// holder is already installing it.
+	lock, lerr := watchdoginstall.AcquireLock(config.MachineConfigDir())
+	switch {
+	case lerr == nil:
+		defer lock.Release()
+	case errors.Is(lerr, watchdoginstall.ErrLockHeld):
+		log.Info("watchdog install already in progress; skipping bootstrap (the agent will finish it)")
+		return nil
+	default:
+		log.Warn("watchdog install lock unavailable; continuing bootstrap unlocked", "error", lerr.Error())
+	}
 	siblingPath, siblingFound := locateSiblingWatchdog(opts.agentPath)
 	if !siblingFound && isDevBuildVersion(opts.version) {
-		return fmt.Errorf("no sibling watchdog found and agent is a dev build (version=%q); run `breeze-watchdog service install` manually", opts.version)
+		return withWatchdogClass(watchdoginstall.ErrDevBuild,
+			fmt.Errorf("no sibling watchdog found and agent is a dev build (version=%q); run `breeze-watchdog service install` manually", opts.version))
 	}
 	secureDir, err := os.MkdirTemp("", "breeze-watchdog-bootstrap-")
 	if err != nil {
@@ -158,7 +175,18 @@ func bootstrapWatchdog(opts bootstrapOptions) error {
 		}
 	}
 	if err := runner(watchdogPath); err != nil {
-		return fmt.Errorf("run %s service install: %w", watchdogPath, err)
+		return withWatchdogClass(watchdoginstall.ErrInstallCommand,
+			fmt.Errorf("run %s service install: %w", watchdogPath, err))
 	}
 	return nil
 }
+
+// classedError tags err with a watchdoginstall sentinel so Classify can map
+// it (the `service install` marker line, #8621) while the operator-facing text
+// stays exactly err's.
+type classedError struct{ err, class error }
+
+func (e classedError) Error() string   { return e.err.Error() }
+func (e classedError) Unwrap() []error { return []error{e.err, e.class} }
+
+func withWatchdogClass(class, err error) error { return classedError{err: err, class: class} }

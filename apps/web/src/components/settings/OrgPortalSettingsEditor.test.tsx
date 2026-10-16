@@ -36,7 +36,13 @@ const SETTINGS = {
   enableLifecycle: false,
   enableHardwareHealth: false,
   enableHardwareInventory: false,
+  enablePerformanceMetrics: false,
+  enableSoftwareInventory: false,
   enableNetworkVisibility: false,
+  enableEdrVisibility: false,
+  enableHourBlock: false,
+  enablePatchDetail: false,
+  enableVulnerabilityDetail: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
@@ -109,7 +115,7 @@ describe('OrgPortalSettingsEditor', () => {
     expect(body.welcomeMessage).toBe('Welcome!');
   });
 
-  it('enables all visibility flags in the local draft', async () => {
+  it('enables available visibility flags in the local draft', async () => {
     mockApi();
     render(<OrgPortalSettingsEditor
       orgId={ORG_ID}
@@ -133,6 +139,7 @@ describe('OrgPortalSettingsEditor', () => {
       'enableLifecycle',
       'enableHardwareHealth',
       'enableHardwareInventory',
+      'enablePerformanceMetrics',
       'enableNetworkVisibility',
     ]) {
       expect((screen.getByTestId(
@@ -142,6 +149,179 @@ describe('OrgPortalSettingsEditor', () => {
 
     expect(onDirty).toHaveBeenCalled();
   });
+
+  it('shows the Support hours toggle from the fetched settings, unchecked by default', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    const toggle = await screen.findByTestId('org-portal-toggle-enableHourBlock');
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('Enable all visibility does not turn on Support hours (billing-sensitive, enabled one at a time)', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+
+    expect((screen.getByTestId('org-portal-toggle-enableHourBlock') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('org-portal-toggle-enableSupportUsage') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('is disabled while Support usage is off, enabled once it is on', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    const hours = await screen.findByTestId('org-portal-toggle-enableHourBlock') as HTMLInputElement;
+    expect(hours.disabled).toBe(true);
+
+    fireEvent.click(screen.getByTestId('org-portal-toggle-enableSupportUsage'));
+    expect((screen.getByTestId('org-portal-toggle-enableHourBlock') as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('saves the Support hours flag through the existing runAction PATCH once Support usage is on', async () => {
+    mockApi({ ...SETTINGS, enableSupportUsage: true });
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-toggle-enableHourBlock'));
+    expect(onDirty).toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({ enableSupportUsage: true, enableHourBlock: true });
+  });
+
+  it('turning Support usage off also turns Support hours off', async () => {
+    mockApi({ ...SETTINGS, enableSupportUsage: true, enableHourBlock: true });
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-toggle-enableSupportUsage'));
+
+    expect((screen.getByTestId('org-portal-toggle-enableHourBlock') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({ enableSupportUsage: false, enableHourBlock: false });
+  });
+
+  it('never saves Support hours ON while Support usage is OFF, even from stale loaded settings', async () => {
+    mockApi({ ...SETTINGS, enableSupportUsage: false, enableHourBlock: true });
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-save'));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({ enableHourBlock: false });
+  });
+
+  it.each(['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR'])(
+    'has a translated Support hours label and description in %s',
+    async (locale) => {
+      const catalog = (await import(`../../locales/${locale}/settings.json`)).default as {
+        orgPortalSettingsEditor: { visibility: { toggles: Record<string, { label: string; description: string }> } };
+      };
+      const entry = catalog.orgPortalSettingsEditor.visibility.toggles.enableHourBlock;
+      expect(entry?.label.length).toBeGreaterThan(0);
+      expect(entry?.description.length).toBeGreaterThan(0);
+    },
+  );
+
+  it('preserves individual software opt-in when "Enable all" is clicked', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+    const softwareToggle = screen.getByTestId('org-portal-toggle-enableSoftwareInventory') as HTMLInputElement;
+    expect(softwareToggle.checked).toBe(false);
+    fireEvent.click(softwareToggle);
+    expect(softwareToggle.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('org-portal-enable-all-visibility'));
+    expect(softwareToggle.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enableSoftwareInventory).toBe(true);
+  });
+
+  it('shows the EDR visibility toggle and saves it when toggled individually', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    const toggle = (await screen.findByTestId('org-portal-toggle-enableEdrVisibility')) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enableEdrVisibility).toBe(true);
+  });
+
+  it('"Enable all" turns EDR visibility on (not a sensitive flag)', async () => {
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).not.toContain('enableEdrVisibility');
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+    expect((screen.getByTestId('org-portal-toggle-enableEdrVisibility') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('keeps patch detail (sensitive) off through "Enable all" and saves it when toggled individually', async () => {
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enablePatchDetail');
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+    const toggle = screen.getByTestId('org-portal-toggle-enablePatchDetail') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('org-portal-enable-all-visibility'));
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enablePatchDetail).toBe(true);
+  });
+
+  it.each(['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR'])(
+    'has a translated patch detail label and description in %s',
+    async (locale) => {
+      const catalog = (await import(`../../locales/${locale}/settings.json`)).default as {
+        orgPortalSettingsEditor: { visibility: { toggles: Record<string, { label: string; description: string }> } };
+      };
+      const entry = catalog.orgPortalSettingsEditor.visibility.toggles.enablePatchDetail;
+      expect(entry?.label.length).toBeGreaterThan(0);
+      expect(entry?.description.length).toBeGreaterThan(0);
+    },
+  );
+
+  it('keeps vulnerability detail (sensitive) off through "Enable all" and saves it when toggled individually', async () => {
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enableVulnerabilityDetail');
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+    const toggle = screen.getByTestId('org-portal-toggle-enableVulnerabilityDetail') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('org-portal-enable-all-visibility'));
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enableVulnerabilityDetail).toBe(true);
+  });
+
+  it.each(['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR'])(
+    'has a translated vulnerability detail label and description in %s',
+    async (locale) => {
+      const catalog = (await import(`../../locales/${locale}/settings.json`)).default as {
+        orgPortalSettingsEditor: { visibility: { toggles: Record<string, { label: string; description: string }> } };
+      };
+      const entry = catalog.orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail;
+      expect(entry?.label.length).toBeGreaterThan(0);
+      expect(entry?.description.length).toBeGreaterThan(0);
+    },
+  );
 
   it('leaves every sensitive flag off when "Enable all" is clicked', async () => {
     mockApi();
@@ -188,7 +368,10 @@ describe('OrgPortalSettingsEditor', () => {
       enableLifecycle: true,
       enableHardwareHealth: true,
       enableHardwareInventory: true,
+      enablePerformanceMetrics: true,
+      enableSoftwareInventory: false,
       enableNetworkVisibility: true,
+      enableEdrVisibility: true,
     });
   });
 

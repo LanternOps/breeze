@@ -24,6 +24,7 @@ import { compositeKind } from './composite';
 // W03 (hardware & RAID monitoring).
 import { hardwareHealthKind } from './hardwareHealth';
 import { timeSyncKind } from './timeSync';
+import { containerImageCurrencyKind } from './containerImageCurrency';
 
 export type { MonitorKindSpec, MonitorCompileContext } from './types';
 export { MonitorValidationError } from './types';
@@ -63,6 +64,7 @@ export const MONITOR_KIND_SPECS: Record<MonitorKind, MonitorKindSpec<any>> = {
   get composite() { return compositeKind; },
   hardware_health: hardwareHealthKind,
   time_sync: timeSyncKind,
+  container_image_currency: containerImageCurrencyKind,
 };
 
 export function getMonitorKindSpec(kind: string): MonitorKindSpec {

@@ -101,6 +101,14 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // one enqueue site a caller can reach — added in the same PR that added
   // this allowlist entry, after a review round found it missing).
   'services/deliverableAutoEvidence.ts': 'report_runs gained partner_id in #4247; this file writes a run only for a definition it loaded with `reports.orgId = <deliverable org>` (an org-owned row; a partner-owned report has org_id NULL and never matches), copies the owner axis off that row, and runs in system context for managed evidence — never a partner-owned run, no caller-chosen owner axis',
+  // #8167 W03. dispatchEdrAction writes partner-axis rows only as VENDOR-OUTCOME
+  // bookkeeping, under system context, keyed by ids off the row the caller was
+  // authorized to act on: the connection flips to reauth_required when the
+  // vendor rejected the key (what the sync job does), and the action's own
+  // tenant records a licence denial. No caller-chosen value reaches either
+  // row; the caller-facing config write (PATCH actionsEnabled) is gated in
+  // routes/edr/connections.ts by requireEdrPartnerAdmin.
+  'services/edrProviders/actions.ts': 'vendor-outcome bookkeeping only (reauth_required on a rejected key, a licence denial on the acted-on tenant), system context, ids from the authorized row; no caller-chosen value',
   'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
   // They mutate the acting user's own credential/session columns (password
@@ -226,12 +234,18 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/contacts/compat.ts': 'updates one org\'s legacy billing-contact blob by org id',
   'services/autopay/billingPaymentSettings.ts': 'C4 settings mutators have one HTTP caller, routes/billingPaymentSettings.ts, which checks billing:manage plus canManagePartnerWidePolicies before partner writes; strict schemas reject owner/provenance writes and org attestation',
   'services/invoiceService.ts': 'org billing settings + time-entry billing status, org-axis authority',
+  'services/contractHourBlockClose.ts': 'block-hours period close (#8181): flips one org\'s not_billed time entries to contract inside the system billing run / close-out sweep, filtered by the contract\'s org_id — same billing-status class as invoiceService.ts; no caller-facing route, never partner-wide config',
   'services/orgCurrencyService.ts': 'updates the selected organization\'s currency by org id',
   'services/orgImport/index.ts': 'org import creates org-axis rows across the resolved partner under system context; every HTTP entry point requires canManagePartnerWidePolicies, while mutating and CSV/PSA preview routes additionally require organizations:write and sites:write',
   'services/quickSupportOrg.ts': 'quick-support provisioning creates an org-axis container',
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
   'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
+  // #4617 W02 customer approval: the gate holds/releases a ticket's own time
+  // entries (awaiting_approval <-> not_billed/no_charge) under that ticket's
+  // row lock, keyed by entry id on one ticket of one org — never partner-wide config.
+  'services/ticketApproval/requests.ts': 'customer approval gate: holds one ticket\'s time entries on its approval request, ticket/org-axis authority — same billing-status class as timeEntryService.ts',
+  'services/ticketApproval/decisions.ts': 'customer approval decisions: release, re-hold or write off one ticket\'s held time entries under the ticket lock, ticket/org-axis authority — same class as timeEntryService.ts',
   // W06 (#3900). time_suggestion_decisions carries partner_id purely so the
   // Shape-3 RLS policy has an axis to check; the ROW is per-technician —
   // every write is `user_id = actor.userId` and every read/delete is scoped to
@@ -291,6 +305,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/scriptClone.ts': 'gated via resolveScriptCloneScope → resolveScriptCreateScope (services/scriptWrite.ts), which calls canManagePartnerWidePolicies before any partner-wide insert',
   // #6008 W01. The scanner is file-local; both gates are one import away.
   'routes/backup/providers.ts': 'every connection write calls requireProviderPartnerAdmin (routes/backup/providerAccess.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE',
+  // #8164 W01b — same shape as routes/backup/providers.ts. NOT routes/edr/tenants.ts:
+  // it delegates to the service and mutates nothing itself.
+  'routes/edr/connections.ts': 'every connection write calls requireEdrPartnerAdmin (routes/edr/access.ts), which calls canManagePartnerWidePolicies and returns 403 + PARTNER_WIDE_WRITE_DENIED_MESSAGE',
   'services/backupProviders/mapping.ts': 'remapCustomer has one caller, PUT /backup/providers/customers/:id/mapping, which passes requireProviderPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached',
   // #6008 W02. persistVendorSnapshot has exactly one caller, syncConnectionById
   // (jobs/backupProviderSync.ts), invoked only from the backup-provider-sync
@@ -300,6 +317,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // connection's OWN partner_id (never a caller-supplied one). The one
   // caller-facing write to this table, remapCustomer, is the entry above.
   'services/backupProviders/persist.ts': 'persistVendorSnapshot runs only inside the backup-provider-sync worker under system context, invoked from a job payload with no caller to gate; it writes each row under the syncing connection\'s own partner_id',
+  // #8165 W01b. Mirrors the backup entries: the EDR mapping service is reached only through the gated route; the persist writers run only in the sync worker.
+  'services/edrProviders/mapping.ts': 'remapEdrTenant has one caller, PUT /edr/tenants/:id/mapping, which passes requireEdrPartnerAdmin (→ canManagePartnerWidePolicies) before it is reached; autoMapEdrTenants runs only inside the edr-provider-sync worker under system context',
+  'services/edrProviders/persist.ts': 'upsertTenants/persistInventory/persistDetections run only inside the edr-provider-sync worker under system context, invoked from a job payload with no caller to gate; every row they write takes the syncing connection\'s own partner_id',
   // W01a (#5612). cutScriptVersion's only write to `scripts` is
   // `.set({ version, updatedAt })` on a row it just located by id and locked
   // FOR UPDATE — it never reads or writes org_id/partner_id, so it can neither
@@ -365,6 +385,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/portal/reportsSelfService.ts': 'customer-portal self-service: inserts portal definitions with the portal org_id and updates a definition it loaded by org_id + portal_self_service; partner-owned rows are never portal-visible (spec 3.5)',
   'services/reportSeries/reconcile.ts': 'the multi-org report reconciler writes only ORG-owned series children: inserts carry a concrete org_id from the eligible target set, updates key on id + org_id + series_id, and reports_series_child_shape_chk forbids a partner-owned child. Its callers are services/reportSeries/store.ts (every entry point gated by canManagePartnerWidePolicies through requireSeriesPartner) and the schedule worker gate / repair sweep (system context, no caller)',
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
+  'services/migrationWindows.ts': 'system sweep and admin-gated close: every caller-facing write of migration_windows / migration_window_orgs goes through routes/migrationWindows.ts, whose open and close routes carry the canManagePartnerWidePolicies gate (open is further owner-only and step-up bound); the remaining writer is the migration-window-sweep worker under system scope, with no caller',
 };
 
 /**

@@ -269,11 +269,15 @@
       "time": "Saat",
       "timeout": "Zaman Aşımı (ms)",
       "timezone": "Saat Dilimi",
-      "username": "Kullanıcı adı"
+      "username": "Kullanıcı adı",
+      "scanAgent": "Tarama ajanı"
     },
     "options": {
       "everyHours": "Her {{count}} saatte bir",
-      "selectSite": "Bir site seçin..."
+      "selectSite": "Bir site seçin...",
+      "automaticAgent": "Otomatik (bu alt ağlardaki bir ajanı tercih et)",
+      "agentOffline": "{{name}} (çevrimdışı)",
+      "pinnedAgentUnlisted": "Sabitlenmiş ajan (bu sitede değil)"
     },
     "placeholders": {
       "profileName": "Karargah taraması",
@@ -296,7 +300,8 @@
       "invalidCidr": "\"{{value}}\": geçerli bir CIDR aralığı veya IP adresi değil",
       "octet": "\"{{value}}\": sekizli değeri 255'i aşıyor",
       "prefix": "\"{{value}}\": önek uzunluğu 0–32 olmalıdır",
-      "subnetRequired": "En az bir alt ağ veya IP adresi gerekli."
+      "subnetRequired": "En az bir alt ağ veya IP adresi gerekli.",
+      "subnetTooLarge": "\"{{value}}\": alt ağ çok büyük. Aracı, {{limit}} adresten büyük alt ağları (/16'dan büyük) atlar; daha küçük aralıklara bölün"
     },
     "actions": {
       "saveProfile": "Profili Kaydet"
@@ -312,7 +317,13 @@
       "moveAssets_one": "Bu profilin keşfettiği {{count}} ağ cihazını da yeni siteye taşı",
       "moveAssets_other": "Bu profilin keşfettiği {{count}} ağ cihazını da yeni siteye taşı",
       "moveAssetsUnknown": "Bu profilin keşfettiği ağ cihazlarını da yeni siteye taşı"
-    }
+    },
+    "scanAgentHelp": {
+      "automatic": "Bu sitede, alt ağlardan birinde adresi olan çevrimiçi bir ajan tercih edilir.",
+      "pinned": "Taramalar yalnızca bu ajandan çalışır. Ajan çevrimdışıysa tarama başka bir ajana geçmek yerine başarısız olur.",
+      "loadError": "Bu sitenin ajanları yüklenemedi. Otomatik seçim kullanılabilir durumda."
+    },
+    "subnetTopologyNote": "Buradaki alt ağlar, topoloji haritasında bu sitenin ağlarını da tanımlar."
   },
   "discoveryProfileList": {
     "actions": {
@@ -426,7 +437,8 @@
       "interval": "Tarama aralığı 1 ila 168 saat arasında olmalıdır.",
       "selectSite": "Kaydetmeden önce bir site seçin."
     },
-    "configuredCount": "{{count}} temeller yapılandırıldı"
+    "configuredCount": "{{count}} temeller yapılandırıldı",
+    "subnetTopologyNote": "Buradaki alt ağlar, topoloji haritasında bu sitenin ağlarını da tanımlar."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Onaylama Etkinliği",

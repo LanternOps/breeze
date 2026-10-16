@@ -4,6 +4,7 @@ import {
   timeTrackingSessionSuggestionsSchema,
   readTicketingInboundSettings,
   readTimeTrackingSessionSuggestions,
+  readTimeTrackingLocationSuggestions,
 } from './partnerTicketingSettings';
 
 describe('ticketingInboundSettingsSchema', () => {
@@ -161,5 +162,33 @@ describe('readTimeTrackingSessionSuggestions (tolerant read)', () => {
     }); }).not.toThrow();
     expect(result.valid).toBe(false);
     expect(result.settings.enabled).toBe(true);
+  });
+});
+
+describe('timeTracking.locationSuggestions', () => {
+  it('accepts locationSuggestions alongside sessionSuggestions', () => {
+    expect(timeTrackingSessionSuggestionsSchema.safeParse({
+      sessionSuggestions: { enabled: true },
+      locationSuggestions: { enabled: true, defaultRadiusM: 200 },
+    }).success).toBe(true);
+  });
+  it('rejects a typo inside locationSuggestions (strict)', () => {
+    expect(timeTrackingSessionSuggestionsSchema.safeParse({ locationSuggestions: { enabld: true } }).success).toBe(false);
+  });
+  it('rejects defaultRadiusM out of range', () => {
+    expect(timeTrackingSessionSuggestionsSchema.safeParse({ locationSuggestions: { defaultRadiusM: 20 } }).success).toBe(false);
+    expect(timeTrackingSessionSuggestionsSchema.safeParse({ locationSuggestions: { defaultRadiusM: 1001 } }).success).toBe(false);
+  });
+  it('still passes through unknown sibling blocks', () => {
+    const r = timeTrackingSessionSuggestionsSchema.parse({ somethingElse: { a: 1 } });
+    expect((r as Record<string, unknown>).somethingElse).toEqual({ a: 1 });
+  });
+  it('readTimeTrackingLocationSuggestions is tolerant', () => {
+    expect(readTimeTrackingLocationSuggestions({})).toEqual({ settings: {}, valid: true });
+    expect(readTimeTrackingLocationSuggestions({ timeTracking: { locationSuggestions: { enabled: true, defaultRadiusM: 200 } } }))
+      .toEqual({ settings: { enabled: true, defaultRadiusM: 200 }, valid: true });
+    const bad = readTimeTrackingLocationSuggestions({ timeTracking: { locationSuggestions: { enabled: 'yes' } } });
+    expect(bad.valid).toBe(false);
+    expect(bad.settings).toEqual({ enabled: 'yes' });
   });
 });

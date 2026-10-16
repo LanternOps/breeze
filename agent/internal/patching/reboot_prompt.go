@@ -9,7 +9,9 @@ package patching
 
 import (
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // PromptFunc shows an interactive notification and reports what came back.
@@ -33,6 +35,110 @@ type PromptFunc func(title, body, urgency string, actions []string, timeout time
 // manager compares what came back against what it sent; the postponement label
 // carries a duration and so is built by rebootActionPostpone.
 const RebootActionRestartNow = "Restart now"
+
+// RebootPromptText is operator-supplied replacement copy for the restart
+// warnings (#8030), resolved server-side from the patch policy and delivered on
+// the schedule_reboot payload. Each field is independent; an empty field keeps
+// the built-in English text for that part. The zero value is exactly today's
+// behaviour, which is what an old API (that never sends the keys) produces.
+type RebootPromptText struct {
+	// Title replaces every rung's title.
+	Title string
+	// Body replaces every rung's body. RebootPromptCountdownPlaceholder is
+	// replaced by the time left on that rung.
+	Body string
+	// Button replaces the "Restart now" label. Postponement labels are not
+	// affected.
+	Button string
+}
+
+// RebootPromptCountdownPlaceholder is the one placeholder a custom body or
+// title may carry.
+const RebootPromptCountdownPlaceholder = "{{countdown}}"
+
+// Limits in runes, mirroring the API validator and the DB varchar lengths. The
+// API rejects anything longer at write time; these re-check a payload that did
+// not come from that path.
+const (
+	maxRebootPromptTitleRunes  = 100
+	maxRebootPromptBodyRunes   = 500
+	maxRebootPromptButtonRunes = 40
+)
+
+// SanitizeRebootPromptText re-validates custom prompt text from a command
+// payload with the same rules the API applies on write: trimmed, valid UTF-8,
+// within its length limit, no control characters (newline and tab are allowed
+// in the body only), no '<' or '>', and no placeholder but {{countdown}}.
+//
+// A field that fails is DROPPED, not truncated or escaped, and its name is
+// returned so the caller can log it. Dropping is deliberately the failure mode
+// rather than rejecting the command: the reboot and its warnings still go out,
+// in the built-in English, so bad copy can never cost a user their warning
+// (#3197) — and text that was never validated never reaches a screen.
+//
+// Every rendering path already treats this text as data (exec arguments with
+// no shell, AppleScript string escaping, toast XML escaping, zenity
+// --no-markup); refusing markup characters here covers notify-send, which may
+// render a body as markup and has no portable switch to stop it.
+func SanitizeRebootPromptText(in RebootPromptText) (RebootPromptText, []string) {
+	var out RebootPromptText
+	var dropped []string
+	check := func(name, value string, maxRunes int, multiline bool) string {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return ""
+		}
+		if !validRebootPromptText(value, maxRunes, multiline) {
+			dropped = append(dropped, name)
+			return ""
+		}
+		return value
+	}
+	out.Title = check("title", in.Title, maxRebootPromptTitleRunes, false)
+	out.Body = check("body", in.Body, maxRebootPromptBodyRunes, true)
+	out.Button = check("button", in.Button, maxRebootPromptButtonRunes, false)
+	return out, dropped
+}
+
+func validRebootPromptText(value string, maxRunes int, multiline bool) bool {
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > maxRunes {
+		return false
+	}
+	for _, r := range value {
+		if multiline && (r == '\n' || r == '\t') {
+			continue
+		}
+		if r < 0x20 || r == 0x7f || r == '<' || r == '>' {
+			return false
+		}
+	}
+	rest := strings.ReplaceAll(value, RebootPromptCountdownPlaceholder, "")
+	return !strings.Contains(rest, "{{") && !strings.Contains(rest, "}}")
+}
+
+// applyRebootPromptText returns the title and body one rung should show. With
+// no custom text it returns the rung's built-in copy untouched.
+func applyRebootPromptText(n RebootNotification, text RebootPromptText) (title, body string) {
+	title, body = n.Title, n.Body
+	countdown := humanizeRebootDelay(n.Countdown)
+	if text.Title != "" {
+		title = strings.ReplaceAll(text.Title, RebootPromptCountdownPlaceholder, countdown)
+	}
+	if text.Body != "" {
+		body = strings.ReplaceAll(text.Body, RebootPromptCountdownPlaceholder, countdown)
+	}
+	return title, body
+}
+
+// rebootActionRestartNowLabel is the affirmative button for one rung. The
+// manager compares the clicked label against exactly this string, so a custom
+// label is honoured and the built-in one is not once a custom one was offered.
+func rebootActionRestartNowLabel(n RebootNotification, text RebootPromptText) string {
+	if text.Button != "" {
+		return strings.ReplaceAll(text.Button, RebootPromptCountdownPlaceholder, humanizeRebootDelay(n.Countdown))
+	}
+	return RebootActionRestartNow
+}
 
 // maxRebootPromptWindow caps how long a dialog may sit on screen. Two minutes:
 // long enough for someone who stepped away to come back, short enough that a

@@ -11,6 +11,7 @@
 
 import { helperRequest } from './helperFetch';
 import { workspaceUrl } from './workspaceUrl';
+import { errorMessageFromBody } from './errorMessage';
 import { useChatStore } from '../stores/chatStore';
 
 /** Wire shape accepted by core's `clientTools` (generic, workspace-agnostic). */
@@ -97,15 +98,6 @@ interface PassageRow {
   score: number;
 }
 
-function errorString(body: string, fallback: string): string {
-  try {
-    const data = JSON.parse(body) as { error?: unknown };
-    return typeof data.error === 'string' && data.error ? data.error : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 /**
  * Execute one client-declared workspace tool by name. Returns the tool output
  * (plain JSON the model reads) or a degradable `{ error: string }` — never
@@ -127,7 +119,7 @@ export async function executeWorkspaceChatTool(
       const res = await helperRequest(config, workspaceUrl(config, '/search', params), {
         method: 'GET',
       });
-      if (!res.ok) return { error: errorString(res.body, 'File search is unavailable right now.') };
+      if (!res.ok) return { error: errorMessageFromBody(res.body, 'File search is unavailable right now.') };
 
       const data = JSON.parse(res.body) as { results?: SearchResultFile[] };
       const files = (data.results ?? []).slice(0, FILE_LIMIT).map((f) => ({
@@ -151,7 +143,7 @@ export async function executeWorkspaceChatTool(
         method: 'GET',
       });
       if (!res.ok) {
-        return { error: errorString(res.body, 'Passage retrieval is unavailable right now.') };
+        return { error: errorMessageFromBody(res.body, 'Passage retrieval is unavailable right now.') };
       }
 
       const data = JSON.parse(res.body) as { passages?: PassageRow[] };

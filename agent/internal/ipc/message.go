@@ -43,6 +43,9 @@ const (
 
 	// Desktop peer disconnected — helper notifies service when WebRTC drops
 	TypeDesktopPeerDisconnected = "desktop_peer_disconnected"
+	// helper -> agent, once per desktop session at teardown: what crossed the
+	// clipboard channel, for the central audit log (#1012).
+	TypeDesktopClipboardSummary = "desktop_clipboard_summary"
 
 	// Console user changed — agent notifies helpers to switch input mode
 	TypeConsoleUserChanged = "console_user_changed"
@@ -75,6 +78,17 @@ const (
 	// exceeded, or binary path unknown). Distinct from AuthResponse so the
 	// helper can differentiate "never got to auth" from "auth was rejected".
 	TypePreAuthReject = "pre_auth_reject"
+
+	// Endpoint messaging (#8293 W1). agent -> assist helper: show / pull a
+	// persistent branded message card. helper -> agent: the card was drawn
+	// (correlated reply to message_show; unsolicited after a replay), the user
+	// acknowledged it, or it closed without an ack (user or expiry). All need
+	// ScopeMessaging. New typ values only — the envelope framing is unchanged.
+	TypeMessageShow      = "message_show"
+	TypeMessageRetract   = "message_retract"
+	TypeMessagePresented = "message_presented"
+	TypeMessageAck       = "message_ack"
+	TypeMessageDismissed = "message_dismissed"
 
 	// Desktop revocation-lease bridge. A helper-hosted session's SessionManager
 	// has no command WebSocket of its own, so its lease renewals travel over
@@ -192,6 +206,15 @@ const (
 	// (ScopeConsentUI) is connected. Granted only on explicit advertisement so
 	// older helpers keep helper_absent semantics instead of timing out.
 	ScopeConsentUIFallback = "consent_ui_fallback"
+
+	// ScopeMessaging lets an Assist helper receive endpoint message cards
+	// (message_show/message_retract) and report message_presented/ack/dismissed.
+	// Granted per session only when the helper advertised
+	// AuthRequest.SupportsMessaging, so an Assist build that predates the card
+	// never receives a message it cannot render. Deliberately separate from
+	// ScopeConsentUI: that scope carries Breeze-owned consent wording only and
+	// must never carry operator-chosen text.
+	ScopeMessaging = "messaging"
 )
 
 const (
@@ -237,6 +260,11 @@ type AuthRequest struct {
 	// ConsentProtocolVersion advertises the consent prompt exchange this
 	// helper speaks (see ConsentProtocolVersion). Absent/0 means version 1.
 	ConsentProtocolVersion int `json:"consentProtocolVersion,omitempty"`
+
+	// SupportsMessaging advertises that this Assist helper renders endpoint
+	// message cards. Drives the messaging scope grant. Additive: absent/false
+	// on older helpers, which therefore get the native fallback.
+	SupportsMessaging bool `json:"supportsMessaging,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -267,6 +295,10 @@ type Capabilities struct {
 	CanCapture    bool   `json:"canCapture"`
 	CanClipboard  bool   `json:"canClipboard"`
 	DisplayServer string `json:"displayServer"`
+	// CallerVerify is advertised by an Assist helper that can render the
+	// caller-verification card (#6354 W02). Old helpers omit it (false). The
+	// broker keeps it only for an assist-role session holding consent_ui.
+	CallerVerify bool `json:"callerVerify"`
 }
 
 // IPCCommand is a command forwarded from root daemon to user helper.
@@ -507,6 +539,31 @@ type DesktopPeerDisconnectedNotice struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+// ClipboardSummary is a desktop session's clipboard traffic: direction × type
+// → transfers and bytes, plus attempts the policy blocked. Never content.
+type ClipboardSummary struct {
+	Transfers []ClipboardTransferCount `json:"transfers"`
+	Blocked   int                      `json:"blocked"`
+	// SegmentID names the agent Session that counted this. One server session
+	// can span several (reconnect, Retry, session switch), each reporting
+	// once; the API keeps one row per segment.
+	SegmentID string `json:"segmentId,omitempty"`
+}
+
+type ClipboardTransferCount struct {
+	Direction string `json:"direction"` // host_to_viewer | viewer_to_host
+	Type      string `json:"type"`      // text | rtf | image
+	Count     int    `json:"count"`
+	Bytes     int    `json:"bytes"`
+}
+
+// DesktopClipboardSummaryNotice carries a session's ClipboardSummary from the
+// user helper to the service, which forwards it to the API.
+type DesktopClipboardSummaryNotice struct {
+	SessionID string           `json:"sessionId"`
+	Clipboard ClipboardSummary `json:"clipboard"`
+}
+
 // LaunchProcessRequest asks the user-role helper to launch a binary.
 // The helper is already running as the logged-in user, so no token
 // manipulation is needed.
@@ -709,4 +766,67 @@ type BannerShowRequest struct {
 	SessionID       string `json:"sessionId"`
 	Label           string `json:"label"`
 	StartedAtUnixMs int64  `json:"startedAtUnixMs"`
+}
+
+// MessageBranding is the sender identity resolved server-side at send time.
+// The helper composes the fixed "From <CompanyName>" slot from it; the message
+// body can never replace that slot.
+type MessageBranding struct {
+	CompanyName string `json:"companyName"`
+	DisplayName string `json:"displayName"`
+	Accent      string `json:"accent,omitempty"`
+}
+
+// MessageShow asks the Assist helper to draw a persistent message card.
+// ExpiresAt is RFC3339; the helper closes the card (and reports
+// message_dismissed reason "expired") when it passes. Replay is true when the
+// agent resends a still-pending card after the helper (re)authenticated.
+type MessageShow struct {
+	MessageID   string          `json:"messageId"`
+	BatchID     string          `json:"batchId"`
+	Title       string          `json:"title"`
+	Body        string          `json:"body"`
+	Severity    string          `json:"severity"`
+	RequiresAck bool            `json:"requiresAck"`
+	ExpiresAt   string          `json:"expiresAt"`
+	Branding    MessageBranding `json:"branding"`
+	Replay      bool            `json:"replay,omitempty"`
+}
+
+// MessageRef names one message: the message_presented / message_ack payload
+// and the message_retract request.
+type MessageRef struct {
+	MessageID string `json:"messageId"`
+}
+
+// MessagePresented is the helper's reply to message_show (same envelope id).
+// Status is empty when the card is on screen. A helper that cannot or will
+// not draw it says so instead of staying silent, so the agent neither waits
+// out its timeout nor shows a message the user already closed.
+type MessagePresented struct {
+	MessageID string `json:"messageId"`
+	Status    string `json:"status,omitempty"`
+}
+
+// MessagePresented.Status values.
+const (
+	// MessagePresentedAlreadyResolved: this helper already saw the user
+	// acknowledge, close or outlive this message. Nothing is drawn and the
+	// agent must not fall back to a native toast.
+	MessagePresentedAlreadyResolved = "already_resolved"
+	// MessagePresentedFailed: the card could not be drawn (invalid content,
+	// window error). The agent falls back to the native path at once.
+	MessagePresentedFailed = "failed"
+)
+
+// Message dismissal reasons carried by message_dismissed.
+const (
+	MessageDismissReasonUser    = "user"
+	MessageDismissReasonExpired = "expired"
+)
+
+// MessageDismissed reports a card closed without an acknowledgement.
+type MessageDismissed struct {
+	MessageID string `json:"messageId"`
+	Reason    string `json:"reason,omitempty"`
 }

@@ -1,0 +1,115 @@
+---
+title: Verify a Breeze Installer
+description: "How an admin confirms a downloaded Breeze agent installer is genuine: SHA-256 against checksums.txt, the signed release manifest, and the Authenticode and notarization results to expect per platform."
+sidebar:
+  order: 10
+  label: Verify an Installer
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Every Breeze release publishes `checksums.txt` and a signed
+`release-artifact-manifest.json` next to its installers. The Windows MSI that Breeze
+serves from the dashboard is the release file, byte for byte (the enrollment token
+travels in the download **filename**, not inside the file), so its SHA-256 matches
+the release entry exactly. The macOS dashboard download is different: it is a
+bootstrap app zip (the token lives in `bootstrap.json`), so verify the
+`breeze-agent-darwin-*.pkg` release assets directly instead.
+
+---
+
+## 1. Check the SHA-256 against `checksums.txt`
+
+Download `checksums.txt` from the GitHub release for the **same version** as your
+installer, then compare.
+
+<Tabs>
+  <TabItem label="Windows (PowerShell)">
+    ```powershell
+    Get-FileHash .\breeze-agent.msi -Algorithm SHA256
+    Select-String -Path .\checksums.txt -Pattern 'breeze-agent\.msi'
+    ```
+    The two hashes must be identical (case-insensitive).
+  </TabItem>
+  <TabItem label="macOS / Linux">
+    ```bash
+    shasum -a 256 breeze-agent-darwin-arm64.pkg
+    grep 'breeze-agent-darwin-arm64.pkg' checksums.txt
+    ```
+    Or check every file you downloaded at once: `shasum -a 256 -c checksums.txt --ignore-missing`.
+  </TabItem>
+</Tabs>
+
+<Aside type="note">
+  A Windows installer downloaded from the dashboard is named
+  `Breeze Agent (<token>@<host>).msi`. Compare its hash to the `breeze-agent.msi`
+  line in `checksums.txt`; the filename is not part of the hash.
+</Aside>
+
+---
+
+## 2. Verify the signed manifest (optional, stronger)
+
+`checksums.txt` is only as trustworthy as the place you downloaded it from. The
+release also contains `release-artifact-manifest.json`, which lists every
+asset's `sha256`, `size`, and `platformTrust`, plus
+`release-artifact-manifest.json.ed25519`, a base64 Ed25519 signature over the
+exact bytes of the manifest. A `.minisig` signature over the same file is also
+published. Your Breeze API performs this same check before it serves a release.
+
+Verify with the official manifest public key (one key, base64, raw 32-byte or
+SPKI form). Get it from a source independent of the download. Your own deployment's
+`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` setting is a comma-separated list that
+you already trust; it is a convenient copy of the key, but it only proves the
+release matches what your server was configured with.
+
+```bash
+KEY_B64='<manifest public key>' node -e '
+const { createPublicKey, verify } = require("node:crypto");
+const fs = require("node:fs");
+const raw = Buffer.from(process.env.KEY_B64, "base64");
+const spki = raw.length === 32
+  ? Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), raw]) : raw;
+const key = createPublicKey({ key: spki, format: "der", type: "spki" });
+const manifest = fs.readFileSync("release-artifact-manifest.json");
+const sig = Buffer.from(fs.readFileSync("release-artifact-manifest.json.ed25519", "utf8").trim(), "base64");
+console.log(verify(null, manifest, key, sig) ? "manifest signature OK" : "BAD SIGNATURE");
+'
+```
+
+Then compare your file's SHA-256 with the matching entry in `assets[]`. A
+manifest that verifies and lists your hash is proof the file is what the release
+published. If you sign your own packages, the manifest is signed with
+**your** key; see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/).
+
+---
+
+## 3. Signature expectations per platform
+
+Hash and manifest checks prove the file is the published one. The platform
+signature checks below tell you who published it.
+
+| Asset | Expected result |
+|-------|-----------------|
+| Windows agent `.msi` and `.exe` (public release) | **Unsigned.** `Get-AuthenticodeSignature` reports `NotSigned`. This is expected; manifest `platformTrust` is `none`. |
+| Windows agent signed by you (BYO signing) | `Valid`, with your certificate as signer and an RFC 3161 timestamp. |
+| Windows Viewer and Helper installers | `Valid`, signer is LanternOps. |
+| macOS agent `.pkg` | Developer ID Installer signed and notarized. |
+
+```powershell
+Get-AuthenticodeSignature .\breeze-agent.msi | Format-List Status, SignerCertificate, TimeStamperCertificate
+```
+
+```bash
+pkgutil --check-signature breeze-agent-darwin-arm64.pkg
+spctl --assess --type install -vv breeze-agent-darwin-arm64.pkg   # expect: accepted, source=Notarized Developer ID
+xcrun stapler validate breeze-agent-darwin-arm64.pkg
+```
+
+<Aside type="caution">
+  An **unsigned** public Windows agent MSI is normal, not a sign of tampering, and
+  SmartScreen will warn on it. For that package the SHA-256 and manifest checks
+  above are your authenticity proof. To get a signed MSI, follow
+  [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/). See also
+  [Code Signing](/deploy/code-signing/).
+</Aside>

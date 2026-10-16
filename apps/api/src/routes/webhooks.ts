@@ -349,7 +349,7 @@ webhookRoutes.get(
   '/',
   authMiddleware,
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.WEBHOOKS_READ.resource, PERMISSIONS.WEBHOOKS_READ.action),
   zValidator('query', listWebhooksSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
@@ -500,7 +500,7 @@ webhookRoutes.get(
   '/:id',
   authMiddleware,
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.WEBHOOKS_READ.resource, PERMISSIONS.WEBHOOKS_READ.action),
   zValidator('param', webhookIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as RouteAuth;
@@ -679,7 +679,7 @@ webhookRoutes.get(
   '/:id/deliveries',
   authMiddleware,
   requireScope('organization', 'partner', 'system'),
-  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  requirePermission(PERMISSIONS.WEBHOOKS_READ.resource, PERMISSIONS.WEBHOOKS_READ.action),
   zValidator('param', webhookIdParamSchema),
   zValidator('query', listDeliveriesSchema),
   async (c) => {

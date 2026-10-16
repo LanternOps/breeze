@@ -103,8 +103,8 @@ describe('installer bootstrap token TTL (#2775, real Postgres)', () => {
         const ttlMs = new Date(row!.expiresAt).getTime() - Date.now();
         // 30 days = 2,592,000,000ms. Bounding both sides proves the column
         // reflects the full 30-day admin-chosen TTL — not the parent's
-        // 60-minute lifetime (the pre-fix clamp bug) and not the 24h
-        // issuance default (bootstrapTokenExpiresAt()).
+        // 60-minute lifetime (the pre-fix clamp bug) and not the 7-day
+        // issuance default (bootstrapTokenTtlMinutes()).
         expect(ttlMs).toBeGreaterThan(29 * 24 * 60 * 60 * 1000);
         expect(ttlMs).toBeLessThan(31 * 24 * 60 * 60 * 1000);
 

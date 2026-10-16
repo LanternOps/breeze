@@ -2050,6 +2050,19 @@ describe('org routes', () => {
       const res = await patchMe({ settings: { ml: { anomalies: { enabled: 'yes' } } } });
       expect(res.status).toBe(400);
     });
+
+    it('persists settings.networkProxy.dedicatedTunnelOrigin and rejects a non-boolean value (#8155)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({ ml: { rca: { enabled: true } } });
+      const getCaptured = mockUpdateCapture();
+
+      const ok = await patchMe({ settings: { networkProxy: { dedicatedTunnelOrigin: true } } });
+      expect(ok.status).toBe(200);
+      expect(getCaptured().settings.networkProxy).toEqual({ dedicatedTunnelOrigin: true });
+
+      const bad = await patchMe({ settings: { networkProxy: { dedicatedTunnelOrigin: 'yes' } } });
+      expect(bad.status).toBe(400);
+    });
   });
 
   describe('PATCH /orgs/partners/me — emailTemplates', () => {
@@ -5872,6 +5885,44 @@ describe('org routes', () => {
     });
   });
 
+  describe('POST /orgs/sites/:id/location mount', () => {
+    it('is reachable under /orgs and sits behind authMiddleware (401 when unauthenticated)', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any) => c.json({ error: 'Unauthorized' }, 401));
+      const res = await app.request('/orgs/sites/33333333-3333-4333-8333-333333333333/location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ latitude: 1, longitude: 2 })
+      });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /orgs/sites location columns', () => {
+    it('strips latitude/longitude from a create body (no unstamped pin)', async () => {
+      setAuthContext({ scope: 'system' });
+      const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'site-new', name: 'N' }]) });
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: '11111111-1111-1111-1111-111111111111', partnerId: 'partner-123' }])
+          })
+        })
+      } as any);
+      await app.request('/orgs/sites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: '11111111-1111-1111-1111-111111111111', name: 'N', latitude: 1, longitude: 2, geofenceRadiusM: 100 })
+      });
+      expect(values).toHaveBeenCalled();
+      for (const call of values.mock.calls as any[][]) {
+        expect(call[0]).not.toHaveProperty('latitude');
+        expect(call[0]).not.toHaveProperty('longitude');
+        expect(call[0]).not.toHaveProperty('geofenceRadiusM');
+      }
+    });
+  });
+
   describe('POST /orgs/sites', () => {
     it('should create a site', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
@@ -6159,6 +6210,73 @@ describe('org routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.name).toBe('Updated');
+    });
+
+    describe('location fields', () => {
+      const ORG_ID = '11111111-1111-1111-1111-111111111111';
+      const patchSite = (body: unknown) => app.request('/orgs/sites/site-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const arrange = () => {
+        setAuthContext({ scope: 'organization', orgId: ORG_ID });
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'site-1', orgId: ORG_ID }])
+            })
+          })
+        } as any);
+        const set = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'site-1', name: 'S' }])
+          })
+        });
+        vi.mocked(db.update).mockReturnValue({ set } as any);
+        return set;
+      };
+
+      it('stamps location_source=manual when lat/lng are set', async () => {
+        const set = arrange();
+        const res = await patchSite({ latitude: 40.5, longitude: -75.5, geofenceRadiusM: 300 });
+        expect(res.status).toBe(200);
+        const written = (set.mock.calls[0] as any[])[0];
+        expect(written).toMatchObject({
+          latitude: 40.5, longitude: -75.5, geofenceRadiusM: 300,
+          locationSource: 'manual', locationSetBy: 'user-123'
+        });
+        expect(written.locationSetAt).toBeInstanceOf(Date);
+      });
+
+      it('clearing lat+lng nulls source/setBy/setAt', async () => {
+        const set = arrange();
+        const res = await patchSite({ latitude: null, longitude: null });
+        expect(res.status).toBe(200);
+        expect((set.mock.calls[0] as any[])[0]).toMatchObject({
+          latitude: null, longitude: null,
+          locationSource: null, locationSetBy: null, locationSetAt: null
+        });
+      });
+
+      it('does not stamp location columns on an unrelated edit', async () => {
+        const set = arrange();
+        await patchSite({ name: 'Renamed' });
+        const written = (set.mock.calls[0] as any[])[0];
+        expect('locationSource' in written).toBe(false);
+        expect('latitude' in written).toBe(false);
+      });
+
+      it('400 when only latitude is sent', async () => {
+        const set = arrange();
+        expect((await patchSite({ latitude: 40 })).status).toBe(400);
+        expect(set).not.toHaveBeenCalled();
+      });
+
+      it('400 on out-of-range coordinates', async () => {
+        arrange();
+        expect((await patchSite({ latitude: 95, longitude: 0 })).status).toBe(400);
+      });
     });
 
     it('rejects an invalid IANA timezone on update', async () => {
@@ -8631,6 +8749,90 @@ describe('org routes', () => {
 
       expect(res.status).toBe(200);
       expect(lockReads).not.toHaveBeenCalled();
+    });
+  });
+
+  // #6111 — Session Timeout ceiling is 720 min (12 h) at every write path, and
+  // a stored value above it (written before the cap existed) reads back clamped.
+  describe('security.sessionTimeout ceiling (#6111)', () => {
+    function primeSelect(partnerSettings: Record<string, unknown> = {}) {
+      const whereRet: any = Promise.resolve([{ partnerId: 'partner-123', id: 'partner-123', name: 'P', settings: partnerSettings }]);
+      whereRet.limit = vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: partnerSettings }]);
+      whereRet.orderBy = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(whereRet) })
+      } as any);
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => ({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 'x', name: 'N', settings: data.settings }])
+          })
+        }))
+      } as any);
+    }
+    function send(method: string, path: string, body: unknown) {
+      return app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+    const sec = (sessionTimeout: number) => ({ settings: { security: { sessionTimeout } } });
+
+    const PATHS: Array<[string, string, string, () => void]> = [
+      ['PATCH /partners/me', 'PATCH', '/orgs/partners/me', () => setAuthContext({ scope: 'partner', partnerId: 'partner-123' })],
+      ['PATCH /partners/:id (system)', 'PATCH', '/orgs/partners/partner-1', () => {}],
+      ['PATCH /organizations/:id', 'PATCH', '/orgs/organizations/org-1', () => setAuthContext({ scope: 'partner', partnerId: 'partner-123' })],
+    ];
+
+    describe.each(PATHS)('%s', (_name, method, path, auth) => {
+      beforeEach(() => { auth(); primeSelect(); });
+
+      it('rejects 721 with 400 and never writes', async () => {
+        const res = await send(method, path, sec(721));
+        expect(res.status).toBe(400);
+        expect(db.update).not.toHaveBeenCalled();
+      });
+
+      it('accepts 720', async () => {
+        const res = await send(method, path, sec(720));
+        expect(res.status).toBe(200);
+        expect(db.update).toHaveBeenCalled();
+      });
+    });
+
+    it.each([
+      ['POST /organizations', '/orgs/organizations', { name: 'O', slug: 'o', partnerId: '00000000-0000-4000-8000-000000000001' }],
+      ['POST /partners', '/orgs/partners', { name: 'P', slug: 'p' }],
+    ])('%s rejects security.sessionTimeout 721 with 400', async (_n, path, base) => {
+      setAuthContext({ scope: 'system' });
+      primeSelect();
+      const res = await send('POST', path, { ...base, ...sec(721) });
+      expect(res.status).toBe(400);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-integer or zero timeout on the free-form paths, accepts null (unset)', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      primeSelect();
+      expect((await send('PATCH', '/orgs/organizations/org-1', sec(0))).status).toBe(400);
+      expect((await send('PATCH', '/orgs/organizations/org-1', sec(60.5))).status).toBe(400);
+      expect((await send('PATCH', '/orgs/organizations/org-1', { settings: { security: { sessionTimeout: null } } })).status).toBe(200);
+    });
+
+    it('GET /partners/me clamps a stored 1440 to 720', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: { security: { sessionTimeout: 1440, requireMfa: true } } }]),
+          }),
+        }),
+      } as any);
+      const res = await app.request('/orgs/partners/me');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.settings.security).toEqual({ sessionTimeout: 720, requireMfa: true });
     });
   });
 

@@ -297,6 +297,10 @@ export const aiBudgetReservations = pgTable('ai_budget_reservations', {
   modelBinding: jsonb('model_binding').$type<Record<string, unknown> | null>(),
   // A settlement deferred by org-lock contention, replayed by the sweep.
   pendingSettlement: jsonb('pending_settlement').$type<Record<string, unknown> | null>(),
+  // #7773: turn-time rate of each unbound BYOK refusal-fallback key, written
+  // by settleInvocation from the connection's offering (first write wins) and
+  // verified by the settlement transaction, so a deferred replay settles at it.
+  unboundRateAttestations: jsonb('unbound_rate_attestations').$type<Record<string, unknown> | null>(),
   // Replay dead-letter (#7700 finding 5): failed replays so far, the last
   // scrubbed error, and when it was given up on (excluded from replay).
   pendingSettlementAttempts: integer('pending_settlement_attempts').notNull().default(0),

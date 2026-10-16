@@ -114,7 +114,7 @@ export function buildTopologyGraphResponse(overrides: Partial<GraphResponse> = {
     },
     coverage: { state: 'complete', reasons: [] },
     frontier: [],
-    permissions: { canEdit: false, canDiagnose: false, canConfigureMonitoring: false },
+    permissions: { canEdit: false, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false },
     ...overrides,
   };
 }

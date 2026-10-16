@@ -26,7 +26,7 @@ function seed(schedule: Record<string, unknown> | null, invoice: Record<string, 
   h.rows.set(invoiceAutopaySchedules, schedule ? [{ invoiceId: 'invoice', orgId: 'org', enrollmentId: 'enrollment', state: 'scheduled',
     stateReason: null, ineligibleReason: null, collectOn: '2026-11-04', nextAttemptAt: null, termsSnapshot: terms, ...schedule }] : []);
   h.rows.set(orgAutopayEnrollments, [{ id: 'enrollment', orgId: 'org', status: 'active', needsAttentionReason: null, ...enrollment }]);
-  h.rows.set(partners, [{ enabled: true }]);
+  h.rows.set(partners, [{ autopayEnabled: true, status: 'active', deletedAt: null }]);
 }
 beforeEach(() => {
   vi.clearAllMocks(); h.rows.clear();
@@ -150,7 +150,7 @@ describe('Final-A paper cuts', () => {
   it.each([{}, { state: 'awaiting_notice' }, { state: 'retry_scheduled', nextAttemptAt: new Date('2026-11-07T06:00:00Z') }])(
     'while the MSP has automatic payments switched off, %j reads "on hold"', async schedule => {
       seed(schedule);
-      h.rows.set(partners, [{ enabled: false }]);
+      h.rows.set(partners, [{ autopayEnabled: false, status: 'active', deletedAt: null }]);
       expect((await getCustomerInvoiceAutopay(fakeDb(), ids)).status).toMatchObject({ state: 'delayed', reason: 'on_hold' });
     });
   // FP-6: the client's own bank payment is not "paid automatically".

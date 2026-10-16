@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "predev": "node scripts/make-icons.mjs && node scripts/generate-manifest.mjs",
-    "dev": "vite",
+    "dev": "node ../../scripts/dev/addin-dev.mjs",
     "prebuild": "node scripts/make-icons.mjs",
     "build": "tsc --noEmit && vite build && node scripts/generate-manifest.mjs",
     "test": "vitest",

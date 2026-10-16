@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   ALLOWED_EVIDENCE_STORAGE_SCHEMES,
+  createIncidentSchema,
+  listIncidentFeedSchema,
   parseEvidenceStorageSchemes,
 } from './incidents.validation';
+import { EDR_PROVIDER_KEYS } from '../services/edrProviders/providerKeys';
 
 describe('evidence storage scheme allowlist (#2823)', () => {
   it('parses a normal comma list, trimming and lowercasing', () => {
@@ -30,5 +33,25 @@ describe('evidence storage scheme allowlist (#2823)', () => {
 
   it('does not allow an arbitrary scheme', () => {
     expect(ALLOWED_EVIDENCE_STORAGE_SCHEMES.has('file')).toBe(false);
+  });
+});
+
+describe('EDR provider framework promotion + feed source (#8166)', () => {
+  const validBody = { title: 'Promoted finding', classification: 'malware', severity: 'p2' as const };
+
+  it('accepts edr_detection as a promotion source type', () => {
+    const r = createIncidentSchema.safeParse({ ...validBody, sourceType: 'edr_detection', sourceRef: crypto.randomUUID() });
+    expect(r.success).toBe(true);
+  });
+
+  it('still rejects unknown source types', () => {
+    expect(createIncidentSchema.safeParse({ ...validBody, sourceType: 'nope', sourceRef: 'x' }).success).toBe(false);
+  });
+
+  it('accepts every registered EDR provider key as a feed source, and the legacy literals', () => {
+    for (const source of [...EDR_PROVIDER_KEYS, 'breeze', 'huntress', 's1']) {
+      expect(listIncidentFeedSchema.safeParse({ source }).success).toBe(true);
+    }
+    expect(listIncidentFeedSchema.safeParse({ source: 'not-a-provider' }).success).toBe(false);
   });
 });

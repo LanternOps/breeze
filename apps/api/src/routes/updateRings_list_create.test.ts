@@ -48,6 +48,7 @@ vi.mock('../db/schema', () => ({
     excludeCategories: 'excludeCategories',
     autoApprove: 'autoApprove',
     categoryRules: 'categoryRules',
+    appRules: 'appRules',
     targets: 'targets',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
@@ -271,6 +272,28 @@ describe('updateRings routes', () => {
       const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
       expect(projection).not.toHaveProperty('sources');
     });
+
+    it('returns each ring\'s appRules (#8184)', async () => {
+      const rules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([makeRing({ appRules: rules })])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
+      expect(projection.appRules).toBe('appRules');
+      const body = await res.json();
+      expect(body.data[0].appRules).toEqual(rules);
+    });
   });
 
   // ----------------------------------------------------------------
@@ -298,6 +321,59 @@ describe('updateRings routes', () => {
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.name).toBe('Test Ring');
+    });
+
+    it('persists appRules on create (#8184)', async () => {
+      const rules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }];
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeRing({ appRules: rules })])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Ring With Rules', appRules: rules })
+      });
+
+      expect(res.status).toBe(201);
+      const inserted = valuesMock.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted.appRules).toEqual(rules);
+      expect((await res.json()).appRules).toEqual(rules);
+    });
+
+    it('defaults appRules to [] on create when omitted (#8184)', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([makeRing()])
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesMock } as any);
+
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'No Rules' })
+      });
+
+      expect(res.status).toBe(201);
+      expect((valuesMock.mock.calls[0]![0] as Record<string, unknown>).appRules).toEqual([]);
+    });
+
+    it('rejects duplicate appRules (same canonical key) on create with 400 (#8184)', async () => {
+      vi.mocked(db.insert).mockClear();
+      const res = await app.request('/update-rings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          name: 'Dup',
+          appRules: [
+            { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
+            { source: 'custom', packageId: 'mozilla.firefox', action: 'block' }
+          ]
+        })
+      });
+
+      expect(res.status).toBe(400);
+      expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
     });
 
     it('stamps explicit third-party defaults when an old-shape autoApprove omits them on create', async () => {

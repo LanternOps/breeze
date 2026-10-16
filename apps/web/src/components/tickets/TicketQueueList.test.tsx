@@ -45,3 +45,29 @@ describe('TicketQueueList loading skeleton', () => {
     expect(screen.getByTestId('ticket-row-tk-1')).toBeInTheDocument();
   });
 });
+
+describe('TicketQueueList type chip (#7900)', () => {
+  it('shows the ticket type on each row', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-p', ticketType: 'problem' }),
+          makeTicket({ id: 'tk-c', ticketType: 'change' }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.getByTestId('ticket-type-chip-tk-p')).toHaveTextContent('Problem');
+    expect(screen.getByTestId('ticket-type-chip-tk-p')).toHaveAttribute('data-ticket-type', 'problem');
+    expect(screen.getByTestId('ticket-type-chip-tk-c')).toHaveTextContent('Change');
+  });
+
+  it('reads a row without ticketType (older payload) as Incident', () => {
+    render(
+      <TicketQueueList tickets={[makeTicket({ id: 'tk-old' })]} selectedId={null} onSelect={vi.fn()} loading={false} />
+    );
+    expect(screen.getByTestId('ticket-type-chip-tk-old')).toHaveAttribute('data-ticket-type', 'incident');
+  });
+});

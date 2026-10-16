@@ -32,6 +32,13 @@ export const backupSnapshotIdReservations = pgTable(
     publishedSnapshotDbId: uuid('published_snapshot_db_id').references(() => backupSnapshots.id, { onDelete: 'set null' }),
     /** When the cleanup job last aborted every stray multipart upload under the prefix. */
     uploadsSweptAt: timestamp('uploads_swept_at', { withTimezone: true }),
+    /**
+     * Key root the id's objects are written under (#7081), fixed at mint and
+     * immutable (DB trigger): legacy_flat + NULL, or prefixed_flat + the
+     * normalized destination prefix. See services/backupKeyLayout.ts.
+     */
+    keyLayout: text('key_layout').notNull().default('legacy_flat'),
+    keyPrefix: text('key_prefix'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

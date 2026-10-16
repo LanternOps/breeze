@@ -60,6 +60,7 @@ import { registerNetworkTools } from './aiToolsNetwork';
 import { registerTopologyTools } from './aiToolsTopology';
 import { registerSentinelOneTools } from './aiToolsSentinelOne';
 import { registerHuntressTools } from './aiToolsHuntress';
+import { registerEdrTools } from './aiToolsEdr';
 import { registerSecurityTools } from './aiToolsSecurity';
 import { registerDnsTools } from './aiToolsDns';
 import { registerPeripheralTools } from './aiToolsPeripherals';
@@ -86,6 +87,7 @@ import { registerAgentMgmtTools } from './aiToolsAgentMgmt';
 // AI-agent GOVERNANCE (P2-5, #4192) — distinct from aiToolsAgentMgmt above,
 // which manages the Go endpoint agent. See that module's header.
 import { registerAiAgentGovernanceTools } from './aiToolsAiAgentGovernance';
+import { registerAiOperatorTools } from './aiToolsAiOperator';
 import { registerUITools } from './aiToolsUI';
 import { registerTicketingTools } from './aiToolsTicketing';
 import { registerCatalogTools } from './aiToolsCatalog';
@@ -330,6 +332,7 @@ registerNetworkTools(aiTools);
 registerTopologyTools(aiTools);
 registerSentinelOneTools(aiTools);
 registerHuntressTools(aiTools);
+registerEdrTools(aiTools);
 registerSecurityTools(aiTools);
 registerDnsTools(aiTools);
 registerPeripheralTools(aiTools);
@@ -361,6 +364,7 @@ registerDocsTools(aiTools);
 registerRemoteTools(aiTools);
 registerAgentMgmtTools(aiTools);
 registerAiAgentGovernanceTools(aiTools);
+registerAiOperatorTools(aiTools);
 registerUITools(aiTools);
 registerPamTools(aiTools);
 registerDiagnosticAccessTools(aiTools);
@@ -529,6 +533,7 @@ export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
   get_device_details: 'deviceId',
   get_device_hardware_health: 'deviceId',
   get_device_time_status: 'deviceId',
+  query_device_workloads: 'deviceId',
   list_time_sync_issues: 'deviceId',
   analyze_metrics: 'deviceId',
   analyze_disk_usage: 'deviceId',

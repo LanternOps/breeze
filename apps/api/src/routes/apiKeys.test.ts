@@ -573,17 +573,41 @@ describe('api keys routes', () => {
   });
 
   it('should rotate an API key', async () => {
-    vi.mocked(db.select).mockReturnValue({
+    vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        partnerId: null,
+        orgId: ORG_ID,
+        token: { mfa: true, aep: 1, mep: 1 },
+        user: { id: 'user-123', email: 'test@example.com' },
+        canAccessOrg: (orgId: string) => orgId === ORG_ID
+      });
+      c.set('permissions', {
+        permissions: [{ resource: '*', action: '*' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization'
+      });
+      return next();
+    });
+    const selectReturning = (rows: unknown[]) => ({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{
-            id: KEY_ID,
-            orgId: ORG_ID,
-            status: 'active'
-          }])
+          limit: vi.fn().mockResolvedValue(rows)
         })
       })
     } as any);
+    vi.mocked(db.select)
+      // The key, rotated by its own creator...
+      .mockReturnValueOnce(selectReturning([{
+        id: KEY_ID,
+        orgId: ORG_ID,
+        status: 'active',
+        createdBy: 'user-123'
+      }]))
+      // ...then the creator's guarded users row.
+      .mockReturnValueOnce(selectReturning([{ credentialEpoch: 1 }]));
     vi.mocked(db.update).mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({

@@ -68,6 +68,18 @@ Instead of recreating the same automation in every customer organization, a part
 
 ---
 
+## Targeting Device Groups
+
+An automation can target saved [device groups](/features/device-groups/). In **Device Targeting**, choose **Device Groups** and select one or more groups from the automation's organization. The stored target is `{ "type": "groups", "groupIds": [...] }`.
+
+- **Validation on save.** Targets are checked when you create or update an automation. An unknown target type, an empty group or device list, or an id that does not exist or belongs to another organization is rejected with `400` and code `INVALID_TARGET`.
+- **Partner-wide automations cannot use `groups` or `devices` targets.** A group or device belongs to a single organization. Use **All Devices** or an **Advanced Filter**, which fan out per organization. If a partner-wide automation somehow holds a groups target, its runs fail with the reason in the run log rather than doing nothing.
+- **Groups are resolved when the run starts**, not when you save. Dynamic groups use their stored membership as of the last evaluation. Groups whose rules match on fields a device reports about itself are refused as execution targets.
+- **Failed and empty targets.** If a group has been deleted, is no longer accessible, or every group was refused, the run fails and the run log states why. A valid group that currently has no members completes with a warning instead of failing, so a quiet scheduled run does not raise an alert.
+- **Site-restricted users** cannot create or edit an automation that targets a dynamic group, or a group outside their allowed sites.
+
+---
+
 ## Managing Automations
 
 The Automations list page displays all automations in a table with columns for name, trigger type, last run time, status, and an enabled toggle. Partner-wide automations show an **All orgs** badge next to their name.

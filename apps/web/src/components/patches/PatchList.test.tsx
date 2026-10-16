@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 
 import PatchList, { type Patch } from './PatchList';
@@ -490,5 +490,25 @@ describe('PatchList release column (#7800)', () => {
     const desktop = within(screen.getByTestId('responsive-table-desktop'));
     expect(desktop.getByTestId(`patch-row-${patch.id}-release`).textContent)
       .toBe(new Date('2026-02-07T12:00:00.000Z').toLocaleDateString());
+  });
+});
+
+// Date-only ISO strings parse as UTC midnight, so west-of-UTC zones rendered the
+// release date one calendar day early (2026-09-15 -> 9/14/2026).
+describe('PatchList release date is timezone-stable for date-only values', () => {
+  const originalTz = process.env.TZ;
+  beforeAll(() => { process.env.TZ = 'America/Los_Angeles'; });
+  afterAll(() => {
+    if (originalTz === undefined) delete process.env.TZ; else process.env.TZ = originalTz;
+  });
+
+  it('renders 2026-09-15 as that calendar date in a US timezone', () => {
+    expect(new Date('2026-09-15T12:00:00Z').getTimezoneOffset()).toBeGreaterThan(0);
+    const patch = makePatch({ id: '11111111-aaaa-aaaa-aaaa-111111111111', releaseDate: '2026-09-15' });
+    render(<PatchList patches={[patch]} />);
+
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId(`patch-row-${patch.id}-release`).textContent)
+      .toBe(new Date(2026, 8, 15).toLocaleDateString());
   });
 });

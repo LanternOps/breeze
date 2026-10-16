@@ -114,14 +114,24 @@ async function insertDeviceWithoutTriggers(orgId: string, siteId: string): Promi
   }
 }
 
-async function seedPamActuation(orgId: string, siteId: string, partnerId: string, deviceId: string): Promise<string> {
+async function seedPamActuation(
+  orgId: string,
+  siteId: string,
+  partnerId: string,
+  deviceId: string,
+  // The request's own device. Defaults to the actuation's; the W6-simulating
+  // move test below points it at another device so the moving device carries
+  // actuations but no request rows, which the W2 freeze guard (#8204) would
+  // otherwise refuse to restamp — evidence never changes org.
+  requestDeviceId: string = deviceId,
+): Promise<string> {
   const [row] = await getTestDb().execute<{ id: string }>(sql`
     WITH request AS (
       INSERT INTO elevation_requests (
         org_id, site_id, partner_id, device_id, flow_type, subject_username,
         reason, target_executable_path, target_executable_hash, status, approved_at
       ) VALUES (
-        ${orgId}, ${siteId}, ${partnerId}, ${deviceId}, 'uac_intercept', 'fixture-user',
+        ${orgId}, ${siteId}, ${partnerId}, ${requestDeviceId}, 'uac_intercept', 'fixture-user',
         'ownership epoch fixture', 'C:\\Program Files\\Fixture\\fixture.exe', ${'a'.repeat(64)},
         'approved', now()
       ) RETURNING id
@@ -336,10 +346,14 @@ describe('device ownership epochs — advance on org change', () => {
     // guard inside one rolled-back transaction to exercise the trigger body.
     const { partner, a, b, siteA, siteB } = await twoOrgs();
     const device = await createDevice({ orgId: a.id, siteId: siteA.id });
-    const act1 = await seedPamActuation(a.id, siteA.id, partner.id, device.id);
-    const act2 = await seedPamActuation(a.id, siteA.id, partner.id, device.id);
     // Decoy: another device's actuation in the same source org must not be retired.
     const otherDevice = await createDevice({ orgId: a.id, siteId: siteA.id });
+    // Requests hang off the decoy device: from W2 (#8204) an actuated request
+    // is frozen to its epoch, so the generic restamp of the moving device
+    // would refuse it. Re-homing that restamp is W6's change; this test only
+    // exercises the epoch-advance trigger body.
+    const act1 = await seedPamActuation(a.id, siteA.id, partner.id, device.id, otherDevice.id);
+    const act2 = await seedPamActuation(a.id, siteA.id, partner.id, device.id, otherDevice.id);
     await seedPamActuation(a.id, siteA.id, partner.id, otherDevice.id);
 
     const client = postgres(DATABASE_URL, { max: 1, onnotice: () => {} });
@@ -427,6 +441,7 @@ describe('device ownership epochs — advance on org change', () => {
       'ai_operator_tasks',
       'device_ownership_epoch_closures',
       'device_ownership_epochs',
+      'elevation_requests',
       'fix_outcomes',
       'invoice_line_devices',
       'offline_transition_effects',

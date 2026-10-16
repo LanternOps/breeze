@@ -99,7 +99,9 @@ export async function prepareDiagnosticDelivery(
     encoding,
     resultPublicKey,
     roots: grant.scopes.map((s) => ({ path: s.path, recursive: s.recursive })),
-    sensitiveClasses: grant.sensitiveClasses,
+    // Credential material is never grantable, so an authorization never names
+    // a class (the agent refuses one that does), whatever the grant row holds.
+    sensitiveClasses: [],
     approvedBy: grant.approvedByUserId,
     grantExpiresAt: grant.expiresAt,
     now,

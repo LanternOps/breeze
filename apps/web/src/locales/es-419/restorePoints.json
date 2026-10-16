@@ -1,0 +1,41 @@
+{
+  "badge": {
+    "requested": "Esperando al dispositivo",
+    "created": "Creación del punto de restauración confirmada {{time}}",
+    "createdNoTime": "Creación del punto de restauración confirmada",
+    "existingAccepted": "Se reutilizó un punto existente — creado hace {{age}} (límite de Windows: cada {{limit}})",
+    "existingAcceptedAgeOnly": "Se reutilizó un punto existente — creado hace {{age}}",
+    "existingAcceptedNoDetail": "Se reutilizó un punto existente",
+    "skippedDisabled": "Omitido — Restaurar sistema está desactivado en este dispositivo",
+    "skippedDefinitionOnly": "Omitido — actualización solo de definiciones",
+    "unsupported": "No disponible en este dispositivo",
+    "busy": "Omitido — el servicio de instantáneas de volumen estaba en uso",
+    "insufficientPrivileges": "Omitido — privilegios insuficientes",
+    "verificationFailed": "No se pudo verificar",
+    "failed": "Error — {{message}}",
+    "failedNoMessage": "Error",
+    "unknown": "Esta versión de la consola no reconoce el resultado"
+  },
+  "list": {
+    "title": "Restaurar sistema",
+    "disclaimer": "Restaurar sistema no es una copia de seguridad. Esta lista registra cuándo Breeze pidió a Windows crear un punto de restauración y lo que informó el dispositivo; no garantiza que exista un punto de restauración ni que pueda restaurarse.",
+    "loading": "Cargando el historial de Restaurar sistema…",
+    "loadError": "No se pudo cargar el historial de Restaurar sistema.",
+    "retry": "Reintentar",
+    "empty": "No se han registrado solicitudes de Restaurar sistema para este dispositivo.",
+    "loadMore": "Cargar más",
+    "loadingMore": "Cargando…",
+    "loadMoreError": "No se pudieron cargar más entradas.",
+    "columns": {
+      "requested": "Solicitado",
+      "trigger": "Activado por",
+      "outcome": "Resultado"
+    },
+    "trigger": {
+      "patch": "Instalación de parches",
+      "script": "Ejecución de script",
+      "software_install": "Instalación de software"
+    },
+    "viewScriptRun": "Ver ejecución del script"
+  }
+}

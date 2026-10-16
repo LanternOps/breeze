@@ -5,7 +5,7 @@ type InputEvent struct {
 	Type      string   `json:"type"` // "mouse_move", "mouse_click", "mouse_scroll", "key_press", "key_release"
 	X         int      `json:"x,omitempty"`
 	Y         int      `json:"y,omitempty"`
-	Button    string   `json:"button,omitempty"`    // "left", "right", "middle"
+	Button    string   `json:"button,omitempty"`    // "left", "right", "middle"; W2c: "back", "forward"
 	Key       string   `json:"key,omitempty"`       // Key code or character
 	Modifiers []string `json:"modifiers,omitempty"` // "ctrl", "alt", "shift", "meta"
 	Delta     int      `json:"delta,omitempty"`     // Scroll delta
@@ -17,6 +17,31 @@ type InputEvent struct {
 	// predate issue #3595 never set it, and those sessions keep the platform
 	// handler's original behaviour.
 	CapsLock *bool `json:"capsLock,omitempty"`
+
+	// W2c key/pointer coverage (spec §3). All zero for viewers that predate
+	// it; a viewer sends them only after the agent advertised keyCodes.
+	//
+	// Code is the DOM KeyboardEvent.code of the physical key (e.g.
+	// "ControlRight", "NumpadEnter"). The Windows agent injects a fixed subset
+	// of codes by scancode (see winCodeKeys); every other code, and every
+	// other platform, falls back to Key. Code never reaches a syscall as text.
+	Code string `json:"code,omitempty"`
+	// NumLock is the viewer's Num Lock state; a pointer for the same reason
+	// as CapsLock.
+	NumLock *bool `json:"numLock,omitempty"`
+	// DeltaX is the horizontal scroll in steps, positive = right. Delta may
+	// be 0 when DeltaX is set.
+	DeltaX int `json:"deltaX,omitempty"`
+
+	// W2b ordering fields (spec §1–2). All zero for viewers that predate them.
+	// A zero Seq means "legacy": the event is handled exactly as before W2b
+	// (see inputOrder). The WebSocket relay (heartbeat/handlers_desktop.go)
+	// rebuilds events field by field and deliberately does not copy these, so WS
+	// input always stays legacy.
+	Seq      uint64 `json:"seq,omitempty"`      // per-session, strictly increasing across both channels
+	After    uint64 `json:"after,omitempty"`    // mouse_move only: seq of the last discrete event sent before it
+	Epoch    uint32 `json:"epoch,omitempty"`    // reset epoch the viewer believes is current
+	GeoEpoch uint32 `json:"geoEpoch,omitempty"` // geometry epoch from the last monitor_switched
 }
 
 // InputHandler processes input events

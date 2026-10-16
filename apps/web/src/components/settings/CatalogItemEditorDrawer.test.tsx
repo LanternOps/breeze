@@ -69,7 +69,7 @@ const seedPartner = (currencyCode: string | null = 'EUR') => {
 
 const item = (over: Partial<CatalogItem> = {}): CatalogItem => ({
   id: 'item-1', partnerId: 'p-1', itemType: 'service', name: 'Managed WS', sku: null, description: null,
-  billingType: 'one_time', costBasis: null, costCurrency: 'EUR', markupPercent: null, unitOfMeasure: 'each',
+  billingType: 'one_time', billingFrequency: null, commitmentTermMonths: null, costBasis: null, costCurrency: 'EUR', markupPercent: null, unitOfMeasure: 'each',
   taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
   prices: [{ currencyCode: 'EUR', unitPrice: '100.00' }], ...over,
 });
@@ -426,5 +426,84 @@ describe('CatalogItemEditorDrawer — price book + cost currency', () => {
     fireEvent.change(screen.getByTestId('catalog-form-name'), { target: { value: 'Thing' } });
     expect(screen.getByTestId('catalog-form-save')).toBeDisabled();
     expect(createMock).not.toHaveBeenCalled();
+  });
+});
+
+// Billing axis (#8339): quoteService takes a quote line's recurrence from the catalog item, so the
+// drawer must send billingType, billingFrequency and commitmentTermMonths or a monthly service is
+// quoted as a one-off.
+describe('CatalogItemEditorDrawer — billing type (#8339)', () => {
+  const createMock = vi.mocked(catalogApi.createCatalogItem);
+  const updateMock = vi.mocked(catalogApi.updateCatalogItem);
+
+  beforeEach(() => {
+    resetPartnerCurrencyCache();
+    vi.clearAllMocks();
+    seedPartner('EUR');
+    claimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    getMock.mockResolvedValue(detail([]));
+    createMock.mockResolvedValue(json({ data: item({ id: 'new-1' }) }));
+    updateMock.mockResolvedValue(json({ data: item() }));
+  });
+
+  it('posts billingType, frequency and term when creating a recurring monthly item', async () => {
+    render(<CatalogItemEditorDrawer open item={null} allItems={[]} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+    fireEvent.change(await screen.findByTestId('catalog-form-name'), { target: { value: 'Managed IT - Essentials' } });
+    // The drawer seeds one partner-currency price row once the currency resolves.
+    fireEvent.change(await screen.findByTestId('catalog-form-price-0'), { target: { value: '65.00' } });
+    fireEvent.click(screen.getByTestId('catalog-form-billing-recurring'));
+    fireEvent.change(screen.getByTestId('catalog-form-billing-frequency'), { target: { value: 'monthly' } });
+    fireEvent.change(screen.getByTestId('catalog-form-commitment-term'), { target: { value: '12' } });
+
+    const saveBtn = screen.getByTestId('catalog-form-save') as HTMLButtonElement;
+    await waitFor(() => expect(saveBtn).not.toBeDisabled());
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => expect(createMock).toHaveBeenCalled());
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ billingType: 'recurring', billingFrequency: 'monthly', commitmentTermMonths: 12 }),
+    );
+  });
+
+  it('clears frequency and term when the item is one-time', async () => {
+    render(
+      <CatalogItemEditorDrawer
+        open
+        item={item({ billingType: 'recurring', billingFrequency: 'monthly', commitmentTermMonths: 12 })}
+        allItems={[]}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    await screen.findByTestId('catalog-form-price-row-EUR');
+    fireEvent.click(screen.getByTestId('catalog-form-billing-one_time'));
+
+    const saveBtn = screen.getByTestId('catalog-form-save') as HTMLButtonElement;
+    await waitFor(() => expect(saveBtn).not.toBeDisabled());
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalled());
+    expect(updateMock).toHaveBeenCalledWith(
+      'item-1',
+      expect.objectContaining({ billingType: 'one_time', billingFrequency: null, commitmentTermMonths: null }),
+    );
+  });
+
+  it('prefills frequency and term from an existing recurring item', async () => {
+    render(
+      <CatalogItemEditorDrawer
+        open
+        item={item({ billingType: 'recurring', billingFrequency: 'annual', commitmentTermMonths: 24 })}
+        allItems={[]}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    const freq = (await screen.findByTestId('catalog-form-billing-frequency')) as HTMLSelectElement;
+    expect(freq.value).toBe('annual');
+    expect((screen.getByTestId('catalog-form-commitment-term') as HTMLInputElement).value).toBe('24');
   });
 });

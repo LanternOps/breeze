@@ -138,7 +138,7 @@ func TestBuildInputCapabilitiesWireShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if got, want := string(body), `{"type":"input_capabilities","typeText":true}`; got != want {
+	if got, want := string(body), `{"releasesHeldInput":true,"type":"input_capabilities","typeText":true}`; got != want {
 		t.Fatalf("input_capabilities payload:\n got: %s\nwant: %s", got, want)
 	}
 }

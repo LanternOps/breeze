@@ -3,7 +3,8 @@
     "errors": {
       "fetch": "Failed to fetch automation",
       "generic": "An error occurred",
-      "save": "Failed to save automation"
+      "save": "Failed to save automation",
+      "invalidTarget": "The device target is invalid: {{detail}}"
     },
     "loading": "Loading automation...",
     "breadcrumb": {
@@ -210,7 +211,9 @@
     },
     "empty": {
       "noActions": "No actions defined. Click \"Add Action\" to create one."
-    }
+    },
+    "partnerGroupsNote": "Partner-wide automations cannot target specific device groups or devices, because each belongs to a single organization. Use All Devices or an Advanced Filter.",
+    "partnerTargetBlocked": "This partner-wide automation targets specific device groups or devices, which is not supported. Change the target to All Devices or an Advanced Filter before saving."
   },
   "automationList": {
     "elevated": "Elevated",
@@ -979,6 +982,43 @@
       "windows": "Windows",
       "macos": "macOS",
       "linux": "Linux"
+    },
+    "targetMode": {
+      "label": "Run on",
+      "devices": "Devices",
+      "groups": "Device groups"
+    },
+    "groups": {
+      "title": "Select device groups",
+      "searchPlaceholder": "Search groups",
+      "selectedCount": "{{count}} group(s) selected",
+      "dynamic": "Dynamic",
+      "deviceCount": "{{count}} device(s)",
+      "refusedReason": "Unavailable as a run target: this group's rules match on fields a device reports about itself ({{fields}}).",
+      "loading": "Loading device groups...",
+      "loadFailed": "Could not load device groups.",
+      "retry": "Retry",
+      "empty": "No device groups found.",
+      "tooManyGroups": "A run can target at most {{max}} groups.",
+      "countingMembers": "Counting members...",
+      "countFailed": "Could not count the members of the selected groups. The server checks the limit when you run.",
+      "summaryUnique": "{{count}} unique device(s) in the selected groups",
+      "summaryCompatible": "{{count}} can run this script (matching operating system)",
+      "summaryOffline": "{{count}} of those are offline and run when the device is online",
+      "membershipNote": "Dynamic group membership is as of the last evaluation and is read again when the run starts.",
+      "overCap": "These groups contain {{count}} unique devices, above the limit of {{max}} per run. Deselect a group or split the run.",
+      "submitting": "Submitting to {{count}} group(s)...",
+      "warningsTitle": "Notes from the server",
+      "confirmDescription": "Run “{{name}}” on {{groups}} device group(s) as {{runAs}}. Scripts are queued and begin executing immediately.",
+      "confirmMembers": "{{count}} unique device(s) are in these groups right now; membership is read again when you confirm.",
+      "confirmMembersUnknown": "The number of devices is not known yet; membership is read when you confirm.",
+      "errors": {
+        "selectGroup": "Please select at least one device group",
+        "tooManyTargets": "These groups resolve to {{count}} devices, above the limit of {{max}} per run. Deselect a group or split the run.",
+        "perGroup": "Devices per group: {{groups}}.",
+        "groupNotFound": "{{count}} selected group(s) no longer exist or are not accessible. Reload the list and try again.",
+        "noTargets": "The selected groups contain no devices this run can target; nothing was run."
+      }
     }
   },
   "secretParameters": {

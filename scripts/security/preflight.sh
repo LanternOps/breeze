@@ -85,9 +85,10 @@ fi
 
 # 2) Go Vulnerability Check — CI: security.yml job go-vuln
 if command -v govulncheck >/dev/null 2>&1; then
-  step "govulncheck (agent/)" bash -c '
-    cd agent && CGO_ENABLED=0 govulncheck ./...
-  '
+  # Allowlist-aware, exactly as CI runs it (security.yml job go-vuln). Calling
+  # `govulncheck ./...` directly here fails on reviewed, mitigated exceptions in
+  # scripts/security/govulncheck-allowlist.txt, so a clean checkout looks broken.
+  step "govulncheck (agent/, allowlist wrapper)" bash scripts/security/run-govulncheck.sh
 else
   skip "govulncheck" "install: go install golang.org/x/vuln/cmd/govulncheck@latest"
 fi

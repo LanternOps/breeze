@@ -7,7 +7,7 @@
  * accident of naming).
  *
  * WHAT IS DELIBERATELY ABSENT is the important part. `file_operations:read`,
- * `execute_command` and `run_script` are Tier 3 BY DESIGN (SR5-01): they run
+ * `execute_command` and `run_script` are Tier 3 BY DESIGN (privileged-read rule): they run
  * as root/LocalSystem on a customer endpoint, so approval is the human check
  * on what enters the box. An unattended analysis run has no approval surface,
  * so v1 gives it none of them (spec §5.4 "Live device reads"). A technician
@@ -28,7 +28,7 @@ export const ANALYSIS_TOOL_ALLOWLIST = [
   // Gathering, to completion, straight into an artifact.
   'export_dataset',
   // Ordinary read tools, for orientation before an export.
-  'query_devices', 'get_device_details', 'get_device_hardware_health', 'get_device_time_status', 'list_time_sync_issues', 'analyze_metrics', 'analyze_fleet_metrics',
+  'query_devices', 'get_device_details', 'get_device_hardware_health', 'get_device_time_status', 'query_device_workloads', 'list_time_sync_issues', 'analyze_metrics', 'analyze_fleet_metrics',
   'get_device_vulnerabilities', 'search_logs', 'get_log_trends', 'detect_log_correlations',
   'search_agent_logs', 'get_fleet_health', 'get_fleet_findings',
   // The sandbox.

@@ -108,6 +108,24 @@ describe('WorkTypesCard', () => {
     expect(resetWorkTypeCache).not.toHaveBeenCalled();
   });
 
+  it('toggling the after-hours checkbox PATCHes only isAfterHours through runAction', async () => {
+    render(<WorkTypesCard />);
+    const box = await screen.findByTestId('work-type-after-hours-wt-1');
+    expect((box as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(box);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/billing-profiles/work-types/wt-1', expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ isAfterHours: true }) })));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+    expect(resetWorkTypeCache).toHaveBeenCalledOnce();
+  });
+
+  it('reflects a stored after-hours flag and disables the checkbox when readOnly', async () => {
+    fetchMock.mockImplementation(async () => response({ workTypes: [{ id: 'wt-1', name: 'Remote', isActive: true, isAfterHours: true }] }));
+    render(<WorkTypesCard readOnly />);
+    const box = await screen.findByTestId('work-type-after-hours-wt-1');
+    expect((box as HTMLInputElement).checked).toBe(true);
+    expect((box as HTMLInputElement).disabled).toBe(true);
+  });
+
   it('readOnly hides mutation controls and the imperative handle cannot mutate (#7597)', async () => {
     const ref = createRef<WorkTypesCardHandle>();
     render(<WorkTypesCard ref={ref} readOnly />);

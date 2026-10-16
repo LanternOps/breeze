@@ -108,3 +108,51 @@ describe('extendTermPastDue', () => {
       .toEqual({ newEndDate: '2027-07-01', renewed: false });
   });
 });
+
+import { advancePastClaimed, firstUnclaimedPeriodStart, todayISO } from './contractMath';
+
+describe('todayISO (#4547 W03)', () => {
+  it('is the UTC calendar date', () => {
+    expect(todayISO(new Date('2026-10-06T23:59:59Z'))).toBe('2026-10-06');
+    expect(todayISO(new Date('2026-10-07T00:00:00Z'))).toBe('2026-10-07');
+  });
+});
+
+describe('firstUnclaimedPeriodStart — index C9 (#4547 W03)', () => {
+  const c = (over: Record<string, unknown>) => ({
+    status: 'active', startDate: '2026-06-01', intervalMonths: 1, billingTiming: 'advance', nextBillingAt: '2026-07-01', ...over,
+  }) as Parameters<typeof firstUnclaimedPeriodStart>[0];
+
+  it.each([
+    ['active advance, added mid-June (June already claimed without the fee) -> NEXT period', c({}), '2026-07-01'],
+    ['active arrears, added mid-June (June is billed at its end WITH the fee) -> period IN PROGRESS', c({ billingTiming: 'arrears' }), '2026-06-01'],
+    ['active quarterly advance', c({ startDate: '2026-04-01', intervalMonths: 3, nextBillingAt: '2026-10-01' }), '2026-10-01'],
+    ['active quarterly arrears', c({ startDate: '2026-04-01', intervalMonths: 3, billingTiming: 'arrears', nextBillingAt: '2026-10-01' }), '2026-07-01'],
+    ['draft: provisional stamp is the first period', c({ status: 'draft', nextBillingAt: null }), '2026-06-01'],
+    ['draft with a past start date is still its first period (activation re-stamps it)', c({ status: 'draft', startDate: '2025-01-01', nextBillingAt: null }), '2025-01-01'],
+    ['draft ignores a stale pointer', c({ status: 'draft', nextBillingAt: '2026-09-01' }), '2026-06-01'],
+    ['active with no pointer cannot be stamped', c({ nextBillingAt: null }), null],
+    // S5: month-end starts. Periods of a 03-31 monthly contract: 03-31, 04-30, 05-31, 06-30 (each from the START date).
+    ['03-31 monthly ARREARS, pointer 04-30: the period in progress starts 03-31 (duePeriodStartFor would say 03-30)', c({ startDate: '2026-03-31', billingTiming: 'arrears', nextBillingAt: '2026-04-30' }), '2026-03-31'],
+    ['03-31 monthly ARREARS, pointer 05-31: period in progress starts 04-30', c({ startDate: '2026-03-31', billingTiming: 'arrears', nextBillingAt: '2026-05-31' }), '2026-04-30'],
+    ['03-31 monthly ADVANCE, pointer 04-30: the next period', c({ startDate: '2026-03-31', nextBillingAt: '2026-04-30' }), '2026-04-30'],
+  ])('%s', (_name, contract, expected) => {
+    expect(firstUnclaimedPeriodStart(contract)).toBe(expected);
+  });
+});
+
+describe('advancePastClaimed — pause -> resume lands the pointer on a claimed period (#4547 W03, I3)', () => {
+  it.each([
+    ['unclaimed candidate is returned as is', '2026-07-01', [], '2026-07-01'],
+    ['one claimed period (June claimed before the pause) -> July', '2026-06-01', ['2026-06-01'], '2026-07-01'],
+    ['two consecutive claimed periods -> August', '2026-06-01', ['2026-06-01', '2026-07-01'], '2026-08-01'],
+    ['a claimed period later than the gap does not matter', '2026-06-01', ['2026-08-01'], '2026-06-01'],
+  ])('%s', (_name, candidate, claimed, expected) => {
+    expect(advancePastClaimed(candidate as string, new Set(claimed as string[]), '2026-06-01', 1)).toBe(expected);
+  });
+
+  it('walks month-end boundaries from the START date (03-31 contract)', () => {
+    expect(advancePastClaimed('2026-03-31', new Set(['2026-03-31']), '2026-03-31', 1)).toBe('2026-04-30');
+    expect(advancePastClaimed('2026-03-31', new Set(['2026-03-31', '2026-04-30']), '2026-03-31', 1)).toBe('2026-05-31');
+  });
+});

@@ -7,6 +7,7 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  restoreAccessTokenFromCookie: vi.fn(async () => true),
 }));
 const showToastMock = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (input: unknown) => showToastMock(input) }));
@@ -169,6 +170,96 @@ describe('RestoreWizard', () => {
     expect(bodies).toHaveLength(2);
     expect(bodies[0]).not.toHaveProperty('confirmUnattestedRestore');
     expect(bodies[1]).toMatchObject({ snapshotId: 'snap-1', confirmUnattestedRestore: true });
+  });
+
+  it('sends a user without a second factor to set one up, and Retry resubmits the restore', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', deviceName: 'RECEPTION-PC' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore' && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Enroll a second factor to confirm this restore.',
+          code: 'MFA_ENROLLMENT_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'enroll',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: 'snap-1', targetDeviceId: 'device-1', commandType: 'backup_restore' },
+          },
+        }, false, 403);
+        return makeJsonResponse({ id: 'restore-2', snapshotId: 'snap-1', status: 'pending', restoreType: 'full' });
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+
+    await screen.findByTestId('unattested-restore-stepup');
+    expect(screen.getByTestId('unattested-restore-stepup-enroll').getAttribute('href')).toBe('/settings/profile');
+    expect(screen.queryByTestId('unattested-restore-stepup-confirm')).toBeNull();
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(screen.queryByTestId('restore-success-banner')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    await screen.findByTestId('restore-success-banner');
+    const bodies = fetchMock.mock.calls
+      .filter(([url, init]) => url === '/backup/restore' && init?.method === 'POST')
+      .map(([, init]) => JSON.parse(String(init!.body)));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[1]).not.toHaveProperty('stepUpGrant');
+    expect(bodies[1]).not.toHaveProperty('confirmUnattestedRestore');
+  });
+
+  it('a Retry that fails keeps the set-up link and Retry visible; nothing was restored', async () => {
+    let posts = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', deviceName: 'RECEPTION-PC' }] });
+      if (url === '/backup/snapshots/snap-1/browse') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      if (url === '/backup/restore' && method === 'POST') {
+        posts += 1;
+        if (posts === 1) return makeJsonResponse({
+          error: 'Enroll a second factor to confirm this restore.',
+          code: 'MFA_ENROLLMENT_REQUIRED',
+          stepUp: {
+            operation: 'backup_unattested_restore',
+            method: 'enroll',
+            reason: 'unattested_legacy',
+            resource: { snapshotId: 'snap-1', targetDeviceId: 'device-1', commandType: 'backup_restore' },
+          },
+        }, false, 403);
+        return makeJsonResponse({ error: 'Restore service unavailable' }, false, 500);
+      }
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard />);
+    await screen.findByText('Restore Wizard');
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+    await screen.findByTestId('unattested-restore-stepup-enroll');
+
+    fireEvent.click(screen.getByTestId('unattested-restore-stepup-retry'));
+    await waitFor(() => expect(posts).toBe(2));
+    await waitFor(() => expect(screen.getByTestId('unattested-restore-stepup-retry')).not.toBeDisabled());
+    expect(screen.getByTestId('unattested-restore-stepup-enroll')).toBeTruthy();
+    expect(screen.queryByTestId('restore-success-banner')).toBeNull();
+    expect(await screen.findByText('Restore service unavailable')).toBeTruthy();
   });
 
   it('shows each snapshot\'s integrity status on its card and in the review', async () => {
@@ -864,5 +955,55 @@ describe('RestoreWizard', () => {
       expect(await screen.findByText('1 file selected')).toBeTruthy();
       expect(screen.queryByText('1 files selected')).toBeNull();
     });
+  });
+
+  it('browses selective-restore files one directory at a time and keeps selections across directories (#8230)', async () => {
+    const browseCalls: string[] = [];
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+      }
+      if (url.startsWith('/backup/snapshots/snap-1/browse')) {
+        browseCalls.push(url);
+        if (url === '/backup/snapshots/snap-1/browse') {
+          return makeJsonResponse({
+            data: [
+              { name: 'C:', path: '/C:', type: 'directory' },
+              { name: 'root.txt', path: 'root.txt', type: 'file', sizeBytes: 1 },
+            ],
+            nextCursor: null,
+          });
+        }
+        if (url === '/backup/snapshots/snap-1/browse?dir=%2FC%3A') {
+          return makeJsonResponse({
+            data: [{ name: 'a.txt', path: 'C:/a.txt', type: 'file', sizeBytes: 2 }],
+            nextCursor: null,
+          });
+        }
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+
+    render(<RestoreWizard initialSnapshotId="snap-1" initialSelectedPaths={['root.txt']} />);
+    await screen.findByText('Restore Wizard');
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+
+    expect(((await screen.findByRole('checkbox', { name: /root\.txt/i })) as HTMLInputElement).checked).toBe(true);
+    expect(browseCalls).toEqual(['/backup/snapshots/snap-1/browse']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'C:/' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /a\.txt/i }));
+    expect(browseCalls).toEqual([
+      '/backup/snapshots/snap-1/browse',
+      '/backup/snapshots/snap-1/browse?dir=%2FC%3A',
+    ]);
+
+    // Back at the root, the earlier selection is still checked.
+    fireEvent.click(screen.getByRole('button', { name: 'Up' }));
+    expect(((await screen.findByRole('checkbox', { name: /root\.txt/i })) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByText(/2 files? selected|2/)).toBeTruthy();
   });
 });

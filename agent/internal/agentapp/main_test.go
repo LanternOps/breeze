@@ -519,8 +519,16 @@ func TestApplyEnrollResponseIdentityCopiesDeviceID(t *testing.T) {
 			// filling in when empty.
 			cfg := config.Default()
 			cfg.DeviceID = "stale-device-id-from-before-re-enroll"
+			// #8206 — the previous device's ownership epoch must not survive
+			// a re-enroll: the new device row starts at epoch 1, and a stale
+			// higher epoch would never be acknowledged (PAM stays closed).
+			cfg.OwnershipEpoch = 5
 
 			applyEnrollResponseIdentity(cfg, tc.enrollResp)
+
+			if cfg.OwnershipEpoch != 0 {
+				t.Errorf("OwnershipEpoch = %d, want 0 after enrollment", cfg.OwnershipEpoch)
+			}
 
 			if cfg.AgentID != tc.wantCfg.AgentID {
 				t.Errorf("AgentID = %q, want %q", cfg.AgentID, tc.wantCfg.AgentID)

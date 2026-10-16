@@ -5,6 +5,7 @@ import {
   commandResultSchema,
   commandResultResultByteLength,
   MAX_COMMAND_RESULT_BYTES,
+  AGENT_COMMAND_ERROR_CODES,
 } from './schemas';
 
 // The Go mirror of the cap. Relative to this file's directory.
@@ -171,5 +172,50 @@ describe('commandResultResultByteLength', () => {
     cyclic.self = cyclic;
     expect(commandResultResultByteLength(cyclic)).toBeNull();
     expect(commandResultSchema.safeParse(validResult({ result: cyclic })).success).toBe(false);
+  });
+});
+
+// The Go mirror of the error-code enum. Relative to this file's directory.
+const GO_ERROR_CODES_PATH = resolve(__dirname, '../../../../../agent/internal/wire/errorcodes.go');
+
+describe('command_result `errorCode` (#4026)', () => {
+  it('pins AGENT_COMMAND_ERROR_CODES to the Go enum in agent/internal/wire/errorcodes.go', () => {
+    // The other direction is TestCommandErrorCodesMatchServerSchema in Go.
+    // A missing file is a failure, not a skip: readFileSync throws.
+    const go = readFileSync(GO_ERROR_CODES_PATH, 'utf8');
+    const goCodes = [...go.matchAll(/^\s*ErrCode\w+\s+CommandErrorCode\s*=\s*"([a-z0-9_]+)"/gm)].map((m) => m[1]);
+    expect(goCodes.length).toBeGreaterThan(0);
+    expect([...AGENT_COMMAND_ERROR_CODES].sort()).toEqual([...goCodes].sort());
+    expect(new Set(AGENT_COMMAND_ERROR_CODES).size).toBe(AGENT_COMMAND_ERROR_CODES.length);
+  });
+
+  it('carries a typed code through parsing', () => {
+    const parsed = commandResultSchema.parse(
+      validResult({ status: 'failed', error: 'path does not exist: /x', errorCode: 'path_not_found' }),
+    );
+    expect(parsed.errorCode).toBe('path_not_found');
+  });
+
+  it('accepts a code this API does not know yet rather than rejecting the result', () => {
+    // A newer agent can ship a code before the API learns it; the classifier
+    // treats it as absent. Rejecting the whole command_result would lose the
+    // outcome entirely — far worse than prose classification.
+    const parsed = commandResultSchema.safeParse(validResult({ status: 'failed', errorCode: 'brand_new_code' }));
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.errorCode).toBe('brand_new_code');
+  });
+
+  it('drops a malformed code instead of rejecting the result', () => {
+    for (const errorCode of [42, 'x'.repeat(65), { nested: true }]) {
+      const parsed = commandResultSchema.safeParse(validResult({ status: 'failed', error: 'boom', errorCode }));
+      expect(parsed.success, JSON.stringify(errorCode)).toBe(true);
+      expect(parsed.success && parsed.data.errorCode).toBeUndefined();
+      expect(parsed.success && parsed.data.error).toBe('boom');
+    }
+  });
+
+  it('is optional for agents that predate it', () => {
+    const parsed = commandResultSchema.parse(validResult({ status: 'failed', error: 'boom' }));
+    expect(parsed.errorCode).toBeUndefined();
   });
 });

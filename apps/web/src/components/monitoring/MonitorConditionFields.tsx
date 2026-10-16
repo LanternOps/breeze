@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFormContext, type FieldValues } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
-import type { MonitorKind } from '@breeze/shared';
+import { APPLICATION_INFO_EVENT_PROVIDERS, eventLogCollectionGap, type MonitorKind } from '@breeze/shared';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
 import { MONITOR_KIND_FIELDS, NETWORK_CHECK_TARGET_DEFAULTS, type KindField } from './monitorKindFields';
 import { CompositeConditionFields } from './MonitorAuthoringFields';
@@ -81,6 +81,10 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
   // fields would need watching) varies by `kind`, and calling a hook a
   // variable number of times per render breaks the rules of hooks.
   const conditionValues = (watch(name) as Record<string, unknown> | undefined) ?? {};
+  // #8174 — Information/Warning Application events reach the server only from
+  // the agent's provider allowlist; flag a rule that targets anything else
+  // before it is saved (the API returns the same check as `warnings`).
+  const collectionGap = kind === 'event_log' ? eventLogCollectionGap(conditionValues) : null;
   const isVisible = (field: KindField): boolean =>
     !field.showWhen || String(conditionValues[field.showWhen.key] ?? '') === field.showWhen.equals;
 
@@ -309,6 +313,22 @@ function ScalarConditionFields({ kind, name }: MonitorConditionFieldsProps) {
           </div>
         );
       })}
+      {collectionGap && (
+        <p
+          className="text-xs text-amber-700 dark:text-amber-400 sm:col-span-2"
+          data-testid="event-log-collection-warning"
+          role="note"
+        >
+          {collectionGap.reason === 'no_source'
+            ? t('fields.eventLogCollectionNoSource', { providers: collectionProviders })
+            : t('fields.eventLogCollectionSourceNotCollected', {
+                source: collectionGap.source,
+                providers: collectionProviders,
+              })}
+        </p>
+      )}
     </div>
   );
 }
+
+const collectionProviders = APPLICATION_INFO_EVENT_PROVIDERS.join(', ');

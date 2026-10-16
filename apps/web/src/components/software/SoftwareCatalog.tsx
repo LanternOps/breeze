@@ -30,6 +30,7 @@ import { useEdrReadiness, type EdrReadiness } from "./useEdrReadiness";
 import BuiltinPackageDetail from "./BuiltinPackageDetail";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { replaceUrl } from '../../lib/replaceUrl';
 type SoftwareItem = {
   id: string;
   /** Owning org for an org-scoped (non-built-in) package; unset for partner-scoped built-ins. */
@@ -199,11 +200,7 @@ export default function SoftwareCatalog() {
         .slice("deploy=".length)
         .split(",")
         .filter(Boolean);
-      window.history.replaceState(
-        null,
-        "",
-        window.location.pathname + window.location.search,
-      );
+      replaceUrl(window.location.pathname + window.location.search);
       if (ids.length === 0) return;
       setDeployCatalogId(undefined); // no package preselected — user picks first
       setDeployDeviceIds(ids);

@@ -37,37 +37,42 @@ function grant(over: Partial<GrantRow> = {}): GrantRow {
 
 describe('validateRequestedScope', () => {
   it('accepts the previously blocked AppData locations as requestable scopes', () => {
-    expect(validateRequestedScope({ path: GEFORCE, recursive: true }, DEVICE, new Set())).toBeNull();
-    expect(validateRequestedScope({ path: BATTLENET, recursive: true }, DEVICE, new Set())).toBeNull();
+    expect(validateRequestedScope({ path: GEFORCE, recursive: true }, DEVICE)).toBeNull();
+    expect(validateRequestedScope({ path: BATTLENET, recursive: true }, DEVICE)).toBeNull();
   });
 
   it('rejects traversal, relative and wrong-platform forms', () => {
-    expect(validateRequestedScope({ path: 'C:\\Users\\..\\Windows', recursive: true }, DEVICE, new Set())).not.toBeNull();
-    expect(validateRequestedScope({ path: 'Users\\Alice', recursive: true }, DEVICE, new Set())).not.toBeNull();
-    expect(validateRequestedScope({ path: '/var/log', recursive: true }, DEVICE, new Set())).toMatch(/Windows device/);
-    expect(validateRequestedScope({ path: 'C:\\Temp', recursive: true }, { osType: 'linux' }, new Set())).toMatch(/not a Windows/);
+    expect(validateRequestedScope({ path: 'C:\\Users\\..\\Windows', recursive: true }, DEVICE)).not.toBeNull();
+    expect(validateRequestedScope({ path: 'Users\\Alice', recursive: true }, DEVICE)).not.toBeNull();
+    expect(validateRequestedScope({ path: '/var/log', recursive: true }, DEVICE)).toMatch(/Windows device/);
+    expect(validateRequestedScope({ path: 'C:\\Temp', recursive: true }, { osType: 'linux' })).toMatch(/not a Windows/);
   });
 
   it('never allows virtual filesystems or the agent configuration', () => {
-    expect(validateRequestedScope({ path: '/proc/1', recursive: false }, { osType: 'linux' }, new Set())).toMatch(/never available/);
-    expect(validateRequestedScope({ path: '/sys', recursive: true }, { osType: 'linux' }, new Set())).toMatch(/never available/);
+    expect(validateRequestedScope({ path: '/proc/1', recursive: false }, { osType: 'linux' })).toMatch(/never available/);
+    expect(validateRequestedScope({ path: '/sys', recursive: true }, { osType: 'linux' })).toMatch(/never available/);
   });
 
   it('refuses volume roots and scopes shallower than two levels', () => {
     for (const path of ['C:\\', 'D:\\', 'C:\\Users', 'C:\\Windows\\']) {
-      expect(validateRequestedScope({ path, recursive: true }, DEVICE, new Set())).toMatch(/too broad/);
+      expect(validateRequestedScope({ path, recursive: true }, DEVICE)).toMatch(/too broad/);
     }
     for (const path of ['/', '/home', '/var/']) {
-      expect(validateRequestedScope({ path, recursive: false }, { osType: 'linux' }, new Set())).toMatch(/too broad/);
+      expect(validateRequestedScope({ path, recursive: false }, { osType: 'linux' })).toMatch(/too broad/);
     }
-    expect(validateRequestedScope({ path: 'C:\\ProgramData\\Vendor', recursive: true }, DEVICE, new Set())).toBeNull();
-    expect(validateRequestedScope({ path: '/var/log', recursive: true }, { osType: 'linux' }, new Set())).toBeNull();
+    expect(validateRequestedScope({ path: 'C:\\ProgramData\\Vendor', recursive: true }, DEVICE)).toBeNull();
+    expect(validateRequestedScope({ path: '/var/log', recursive: true }, { osType: 'linux' })).toBeNull();
   });
 
-  it('requires a sensitive store to be named explicitly', () => {
-    const cookies = 'C:\\Users\\Alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Network\\Cookies';
-    expect(validateRequestedScope({ path: cookies, recursive: false }, DEVICE, new Set())).toMatch(/browser_secrets/);
-    expect(validateRequestedScope({ path: cookies, recursive: false }, DEVICE, new Set(['browser_secrets']))).toBeNull();
+  it.each([
+    ['browser cookie jar', 'C:\\Users\\Alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Network\\Cookies', DEVICE],
+    ['credential store', 'C:\\Windows\\System32\\config', DEVICE],
+    ['private keys', '/home/alice/.ssh', { osType: 'linux' }],
+    ['stored tokens', '/home/alice/.aws', { osType: 'linux' }],
+  ] as const)('never grants credential material: %s', (_label, path, device) => {
+    for (const recursive of [false, true]) {
+      expect(validateRequestedScope({ path, recursive }, device)).toMatch(/credential material.*never available through diagnostic access/);
+    }
   });
 });
 
@@ -123,8 +128,24 @@ describe('evaluateGrantCoverage', () => {
     const wide = grant({ scopes: [{ path: 'C:\\Users\\Alice\\AppData\\Local', recursive: true }] });
     expect(read(wide, 'C:\\Users\\Alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data')).toMatchObject({
       ok: false,
-      reason: 'sensitive_not_granted',
+      reason: 'credential_material',
     });
+  });
+
+  it('refuses credential material even on a grant row that names its class', () => {
+    const named = grant({
+      scopes: [{ path: 'C:\\Users\\Alice\\AppData\\Local', recursive: true }],
+      sensitiveClasses: ['browser_secrets', 'credential_store', 'private_keys', 'session_tokens'],
+    });
+    for (const path of [
+      'C:\\Users\\Alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data',
+      'C:\\Users\\Alice\\AppData\\Local\\Microsoft\\Credentials\\x',
+      'C:\\Users\\Alice\\AppData\\Local\\App\\server.pem',
+      'C:\\Users\\Alice\\AppData\\Local\\App\\.env',
+    ]) {
+      expect(read(named, path)).toMatchObject({ ok: false, reason: 'credential_material' });
+    }
+    expect(read(named, 'C:\\Users\\Alice\\AppData\\Local\\App\\app.log')).toMatchObject({ ok: true });
   });
 });
 

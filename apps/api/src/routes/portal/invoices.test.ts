@@ -19,7 +19,7 @@ const { getCustomerInvoiceMock, markViewedMock } = vi.hoisted(() => ({
   getCustomerInvoiceMock: vi.fn(),
   markViewedMock: vi.fn(),
 }));
-// toCustomerInvoiceLine is deliberately kept REAL (importActual) — it is the
+// projectCustomerInvoiceLine is deliberately kept REAL (importActual) — it is the
 // serialization boundary this suite's leak-guard test exists to police. A
 // hand-written stub here would only ever assert itself: it silently drifted
 // from the real field list when `name` was added (#3319), leaving the keyset
@@ -29,7 +29,7 @@ vi.mock('../../services/invoiceService', async (importActual) => {
   return {
     getCustomerInvoice: getCustomerInvoiceMock,
     markViewed: markViewedMock,
-    toCustomerInvoiceLine: actual.toCustomerInvoiceLine,
+    projectCustomerInvoiceLine: actual.projectCustomerInvoiceLine,
   };
 });
 
@@ -316,6 +316,31 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(confirmation.release).toHaveBeenCalledWith({ invoiceId: INV_ID, orgId: '99999999-9999-4999-8999-999999999999' });
   });
 
+  // #8254: releaseInvoiceConfirmation refuses a draft with the same 404 as a
+  // missing or other-org invoice (confirmPayment.test.ts). The route must then
+  // answer with the body every other portal invoice route gives a draft, so the
+  // response never says whether an unissued invoice exists.
+  it('POST /invoices/:id/autopay-confirmation answers not-found with the same body GET gives a draft', async () => {
+    confirmation.release.mockRejectedValue(new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND'));
+    const release = await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' });
+    getCustomerInvoiceMock.mockResolvedValue({ invoice: { id: INV_ID, status: 'draft' }, lines: [] });
+    const draftRead = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
+    expect(release.status).toBe(404);
+    expect(draftRead.status).toBe(404);
+    const body = await release.json();
+    expect(body).toEqual({ error: 'Invoice not found', code: 'NOT_FOUND' });
+    expect(body).toEqual(await draftRead.json());
+  });
+
+  it('POST /invoices/:id/autopay-confirmation passes a 409 through with its message and code', async () => {
+    confirmation.release.mockRejectedValue(new InvoiceServiceError('Payment is still processing', 409, 'INVALID_STATE', { reason: 'processing' }));
+    const res = await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: '{}' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'Payment is still processing', code: 'INVALID_STATE' });
+  });
+
   it('POST /invoices/:id/autopay-confirmation requires a JSON body and cookie CSRF before Stripe', async () => {
     expect((await app().request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST' })).status).toBe(415);
     expect((await app(ORG_ID, 'cookie').request(`/invoices/${INV_ID}/autopay-confirmation`, { method: 'POST',
@@ -357,6 +382,8 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
         // IN the safe keyset (ordinary numeric fact, like quantity), unlike
         // sourceType/sourceId/costBasis/revenueAllocation/isUnapprovedTime above.
         workedMinutes: 30,
+        // #8604: applied upstream from the frozen columns; must pass through.
+        workDate: '2026-09-16',
       }],
     });
 
@@ -364,7 +391,7 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(Object.keys(body.lines[0]).sort()).toEqual([
-      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workedMinutes',
+      'description', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber', 'unitPrice', 'workDate', 'workedMinutes',
     ]);
     expect(body.lines[0]).not.toHaveProperty('sourceType');
     expect(body.lines[0]).not.toHaveProperty('sourceId');
@@ -374,6 +401,8 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     expect(body.lines[0].description).toBe('Support');
     // #6467: workedMinutes itself survives the route boundary too.
     expect(body.lines[0].workedMinutes).toBe(30);
+    // #8604: the route must not re-apply default toggles (which would drop the date).
+    expect(body.lines[0].workDate).toBe('2026-09-16');
   });
 
   it('GET /invoices/:id resolves branding from the OUT-OF-HEADER partnerId', async () => {
@@ -417,6 +446,18 @@ it('portal pay returns 409 for a reservation before contacting Stripe', async ()
     const res = await app().request(`/invoices/${INV_ID}`, { method: 'GET' });
     expect(res.status).toBe(404);
     expect(markViewedMock).not.toHaveBeenCalled();
+  });
+
+  // A draft and a missing / other-org invoice must be indistinguishable, or the
+  // body tells a portal user that an unissued invoice exists (#8123 follow-up).
+  it.each(['', '/pdf'])('GET /invoices/:id%s answers a draft and a missing invoice with the same 404 body', async (suffix) => {
+    getCustomerInvoiceMock.mockRejectedValue(new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND'));
+    const missing = await app().request(`/invoices/${INV_ID}${suffix}`, { method: 'GET' });
+    getCustomerInvoiceMock.mockResolvedValue({ invoice: { id: INV_ID, status: 'draft' }, lines: [] });
+    const draft = await app().request(`/invoices/${INV_ID}${suffix}`, { method: 'GET' });
+    expect(missing.status).toBe(404);
+    expect(draft.status).toBe(404);
+    expect(await missing.json()).toEqual(await draft.json());
   });
 
   it('GET /invoices/:id/pdf streams the stored PDF', async () => {

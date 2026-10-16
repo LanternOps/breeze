@@ -22,19 +22,26 @@ const dbMocks = vi.hoisted(() => ({
   loadSummariesMock: vi.fn(async () => new Map()),
   // #7109 — models withAuthDbAccessContext as a context that COMMITS when its
   // callback returns; `depth` says whether a DB call ran inside one.
-  dbContextState: { depth: 0, events: [] as string[] },
+  // `ids` is the stack of open context identities (outermost first): `depth`
+  // alone cannot tell the SAME context from a sibling one (#7280).
+  dbContextState: { depth: 0, events: [] as string[], ids: [] as number[], committed: [] as number[], nextId: 0 },
 }));
 
 const withAuthDbAccessContextMock = vi.hoisted(() => vi.fn(async (_auth: unknown, fn: () => Promise<unknown>) => {
   dbMocks.dbContextState.depth += 1;
+  const id = ++dbMocks.dbContextState.nextId;
+  dbMocks.dbContextState.ids.push(id);
   try {
     return await fn();
   } finally {
     dbMocks.dbContextState.depth -= 1;
+    dbMocks.dbContextState.ids.pop();
     dbMocks.dbContextState.events.push('commit');
+    dbMocks.dbContextState.committed.push(id);
   }
 }));
 
+let authOverride: Record<string, unknown> | undefined;
 let currentPermissions: { allowedSiteIds?: string[]; permissions?: Array<{ resource: string; action: string }> } | undefined;
 
 vi.mock('../db', () => ({
@@ -95,6 +102,7 @@ vi.mock('../middleware/auth', () => ({
       accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'],
       orgCondition: () => undefined,
       canAccessOrg: (orgId: string) => orgId === '11111111-1111-4111-8111-111111111111',
+      ...authOverride,
     });
     c.set('permissions', currentPermissions ?? { permissions: [] });
     return next();
@@ -326,6 +334,9 @@ describe('remediation suggestion routes', () => {
     scriptUpdateCalls.length = 0;
     dbMocks.dbContextState.depth = 0;
     dbMocks.dbContextState.events = [];
+    dbMocks.dbContextState.ids = [];
+    dbMocks.dbContextState.committed = [];
+    dbMocks.dbContextState.nextId = 0;
     app = new Hono();
     app.route('/remediation-suggestions', remediationSuggestionRoutes);
   });
@@ -711,11 +722,12 @@ describe('remediation suggestion routes', () => {
     const deviceRow = { id: builtinRow.deviceId, orgId: builtinRow.orgId, siteId: '99999999-9999-4999-8999-999999999999', osType: 'windows', agentVersion: '1.0.0', status: 'online' };
     const phase3Row = { ...builtinRow, status: 'executed', executedBy: 'user-1', executedAt: new Date('2026-06-18T12:10:00.000Z') };
     // A5: the gate's conditional claim (accepted/edited -> executed) and phase 3's idempotent update.
-    const updateCalls: Array<{ depth: number; set: Record<string, unknown> }> = [];
+    const updateCalls: Array<{ depth: number; ctx: number | null; set: Record<string, unknown> }> = [];
+    const currentCtx = () => dbMocks.dbContextState.ids.at(-1) ?? null;
     const mockUpdateReturning = (rows: unknown[]) => {
       dbMocks.updateMock.mockImplementationOnce(() => ({
         set: vi.fn((set: Record<string, unknown>) => {
-          updateCalls.push({ depth: dbMocks.dbContextState.depth, set });
+          updateCalls.push({ depth: dbMocks.dbContextState.depth, ctx: currentCtx(), set });
           return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(rows) }) };
         }),
       }));
@@ -725,7 +737,7 @@ describe('remediation suggestion routes', () => {
       dbMocks.updateMock.mockImplementationOnce(() => {
         if (depths) depths.update = dbMocks.dbContextState.depth;
         return { set: vi.fn((set: Record<string, unknown>) => {
-          updateCalls.push({ depth: dbMocks.dbContextState.depth, set });
+          updateCalls.push({ depth: dbMocks.dbContextState.depth, ctx: currentCtx(), set });
           return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([phase3Row]) }) };
         }) };
       });
@@ -773,6 +785,37 @@ describe('remediation suggestion routes', () => {
       expect(depths.dispatch).toBe(0);
       expect(depths.update).toBeGreaterThan(0);
       expect(depths.record).toBeGreaterThan(0);
+    });
+
+    it('#7280: the claim and phase 3 are separate committed contexts; dispatch runs outside any; link + record share phase 3\'s', async () => {
+      withDevicesExecute();
+      const seen: Record<string, number | null> = {};
+      mockSuggestionLoad(builtinRow);
+      mockDeviceLoad(deviceRow);
+      mockClaim();
+      dbMocks.dispatchBuiltinMock.mockImplementationOnce(async () => {
+        seen.dispatch = currentCtx();
+        seen.committedBeforeDispatch = dbMocks.dbContextState.committed.at(0) ?? null;
+        return { ok: true, commandId: 'cmd-1', cleanupRunId: null };
+      });
+      mockPhase3();
+      dbMocks.recordBuiltinMock.mockImplementationOnce(async () => {
+        seen.record = currentCtx();
+        return { state: 'pending', stateReason: null, humanVote: null };
+      });
+      const res = await run();
+      expect(res.status).toBe(201);
+      const [claim, link] = updateCalls;
+      expect(claim!.ctx).not.toBeNull();
+      expect(link!.ctx).not.toBeNull();
+      expect(seen.dispatch).toBeNull(); // outside every context
+      expect(seen.record).not.toBeNull();
+      // Phase 3 is a NEW context, not a continuation of the gate's: the gate committed first.
+      expect(link!.ctx).not.toBe(claim!.ctx);
+      expect(seen.record).toBe(link!.ctx);
+      expect(seen.record).not.toBe(claim!.ctx);
+      // The CLAIM's own context committed before dispatch ran.
+      expect(seen.committedBeforeDispatch).toBe(claim!.ctx);
     });
 
     it('A5: a claim that matches no row (a concurrent /execute won) is a 409 and nothing is dispatched', async () => {
@@ -1715,6 +1758,7 @@ describe('research / memory / draft-brief routes', () => {
     });
     dbMocks.loadSummariesMock.mockResolvedValue(new Map());
     currentPermissions = undefined;
+    authOverride = undefined;
     app = new Hono();
     app.route('/remediation-suggestions', remediationSuggestionRoutes);
   });
@@ -1748,6 +1792,64 @@ describe('research / memory / draft-brief routes', () => {
   it('POST /research refuses an org the caller cannot access before starting anything', async () => {
     const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick', orgId: '99999999-9999-4999-8999-999999999999' }));
     expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  // A partner-scope caller has no org of its own; ?orgId= is the only way to pick one.
+  const partnerAuth = () => {
+    authOverride = {
+      scope: 'partner', orgId: null, partnerId: 'p-1',
+      accessibleOrgIds: ['11111111-1111-4111-8111-111111111111'],
+      canAccessOrg: (orgId: string) => orgId === '11111111-1111-4111-8111-111111111111',
+    };
+  };
+
+  it('POST /research resolves the org from ?orgId= when the body has none (#7940)', async () => {
+    partnerAuth();
+    dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'started', runId: 'run-1', depth: 'quick' });
+    const res = await app.request(`/remediation-suggestions/research?orgId=${ORG}`, post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(202);
+    expect(dbMocks.requestResearchMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG }));
+  });
+
+  it('POST /research prefers the body org over ?orgId=', async () => {
+    partnerAuth();
+    dbMocks.requestResearchMock.mockResolvedValueOnce({ status: 'started', runId: 'run-1', depth: 'quick' });
+    const res = await app.request('/remediation-suggestions/research?orgId=99999999-9999-4999-8999-999999999999', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick', orgId: ORG }));
+    expect(res.status).toBe(202);
+    expect(dbMocks.requestResearchMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG }));
+  });
+
+  it('POST /research: an inaccessible body org is not masked by an accessible ?orgId=', async () => {
+    partnerAuth();
+    const res = await app.request(`/remediation-suggestions/research?orgId=${ORG}`, post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick', orgId: '99999999-9999-4999-8999-999999999999' }));
+    expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /research 400s for a partner caller with neither body nor query org', async () => {
+    partnerAuth();
+    const res = await app.request('/remediation-suggestions/research', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(400);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /research refuses an inaccessible ?orgId= with 403 and starts nothing (#7940)', async () => {
+    partnerAuth(); // org outside the partner
+    const res = await app.request('/remediation-suggestions/research?orgId=99999999-9999-4999-8999-999999999999', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /research: an org-scope caller cannot switch org via ?orgId= (#7940)', async () => {
+    const res = await app.request('/remediation-suggestions/research?orgId=99999999-9999-4999-8999-999999999999', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(403);
+    expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
+  });
+
+  it('POST /research 400s on a malformed ?orgId=', async () => {
+    const res = await app.request('/remediation-suggestions/research?orgId=not-a-uuid', post({ sourceType: 'alert', sourceId: ALERT, depth: 'quick' }));
+    expect(res.status).toBe(400);
     expect(dbMocks.requestResearchMock).not.toHaveBeenCalled();
   });
 

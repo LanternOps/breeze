@@ -1,0 +1,1 @@
+{"id":1,"jsonrpc":"2.0","error":{"code":-32001,"message":"Authorization error","data":{"details":"API Key is not allowed to access the selected API: Incidents"}}}

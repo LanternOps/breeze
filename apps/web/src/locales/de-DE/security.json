@@ -198,13 +198,85 @@
     "running": "Wird ausgeführt",
     "threatsDetectedCount": "{{count}} Bedrohungen",
     "unknownProvider": "Unbekannter Anbieter",
-    "unknownVendor": "Unbekannter Anbieter"
+    "unknownVendor": "Unbekannter Anbieter",
+    "unknown": "Unbekannt"
   },
   "securityEdrPage": {
     "endpointDetectionAndAmpResponse": "Endpunkterkennung und -reaktion",
     "huntressIncidents": "Huntress-Vorfälle",
     "sentineloneThreats": "SentinelOne-Bedrohungen",
     "threatsAndIncidentsAcrossYourFleetFrom": "Bedrohungen und Vorfälle in Ihrer gesamten Flotte durch SentinelOne und Huntress."
+  },
+  "securityOtherEdr": {
+    "tabLabel": "Weitere EDR",
+    "statusError": "Andere EDR-Anbieter konnten nicht geprüft werden.",
+    "title": "Erkennungen weiterer EDR-Anbieter",
+    "loading": "Erkennungen werden geladen...",
+    "showing": "{{from}}-{{to}} von {{total}} werden angezeigt",
+    "refresh": "Aktualisieren",
+    "filters": {
+      "severity": "Schweregrad",
+      "status": "Status",
+      "provider": "Anbieter",
+      "allSeverities": "Alle Schweregrade",
+      "allProviders": "Alle Anbieter",
+      "openDefault": "Offen (Standard)",
+      "allStatuses": "Alle Status"
+    },
+    "severities": {
+      "critical": "Kritisch",
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig",
+      "info": "Info",
+      "unknown": "Unbekannt"
+    },
+    "statuses": {
+      "open": "Offen",
+      "in_progress": "In Bearbeitung",
+      "mitigated": "Eingedämmt",
+      "resolved": "Behoben",
+      "false_positive": "Fehlalarm",
+      "dismissed": "Verworfen",
+      "unknown": "Unbekannt"
+    },
+    "connectionStatuses": {
+      "connected": "Verbunden",
+      "error": "Fehler",
+      "reauth_required": "Erneute Authentifizierung erforderlich"
+    },
+    "tenants": {
+      "stale": "Veraltete Mandanten",
+      "failed": "Fehlgeschlagene Mandanten",
+      "pending": "Ausstehende Mandanten",
+      "unmapped": "Nicht zugeordnete Mandanten"
+    },
+    "openDetections": "Offene Erkennungen",
+    "endpoints": "Endpoints",
+    "linkedEndpoints": "Verknüpfte Endpoints",
+    "unhealthyEndpoints": "Fehlerhafte Endpoints",
+    "lastDetectionSync": "Letzte Erkennungssynchronisierung",
+    "never": "Nie",
+    "coverageHeading": "Hinweise zur Abdeckung",
+    "emptyPartial": "Keine Erkennungen zurückgegeben. Die Abdeckung ist unvollständig - siehe Hinweise oben.",
+    "empty": "Keine Erkennungen entsprechen Ihren Filtern.",
+    "table": {
+      "provider": "Anbieter",
+      "detection": "Erkennung",
+      "severity": "Schweregrad",
+      "status": "Status",
+      "device": "Gerät",
+      "detected": "Erkannt",
+      "actions": "Aktionen"
+    },
+    "unnamedDetection": "Erkennung",
+    "detached": "Getrennt",
+    "promoteToIncident": "Zum Vorfall hochstufen",
+    "promoted": "Hochgestuft",
+    "alreadyPromoted": "Bereits hochgestuft",
+    "promoteFailed": "Vorfall konnte nicht erstellt werden",
+    "previous": "Zurück",
+    "next": "Weiter"
   },
   "securityEdrSummaryPanel": {
     "edrStatusUnavailable": "EDR Status konnte nicht geladen werden. Aktualisieren Sie, um es erneut zu versuchen.",
@@ -285,7 +357,8 @@
     "totalDevices": "Gesamtzahl der Geräte",
     "windows": "Windows",
     "statusFilterLabel": "Firewallstatus",
-    "osFilterLabel": "Betriebssystem"
+    "osFilterLabel": "Betriebssystem",
+    "unknown": "Unbekannt"
   },
   "securityHuntressIncidentList": {
     "actions": "Aktionen",
@@ -534,7 +607,8 @@
     "vulnerabilities": "Schwachstellen",
     "weakAdmins": "Schwache Admins",
     "accessDeniedMessage": "Sie haben keine Berechtigung, die Sicherheitsdaten dieser Organisation anzuzeigen.",
-    "someSecurityDataPermissionDenied": "Einige Sicherheitsdaten sind für Sie nicht sichtbar. Wenden Sie sich an einen Administrator, wenn Sie Zugriff benötigen."
+    "someSecurityDataPermissionDenied": "Einige Sicherheitsdaten sind für Sie nicht sichtbar. Wenden Sie sich an einen Administrator, wenn Sie Zugriff benötigen.",
+    "unknown": "Unbekannt"
   },
   "securitySecurityPageHeader": {
     "refresh": "Aktualisieren",

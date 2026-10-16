@@ -1,3 +1,4 @@
+import { replaceUrl } from '../../../lib/replaceUrl';
 // Shared chrome for the billing list surfaces (quotes / invoices / contracts).
 
 /** className for a row-title link inside a clickable table or card row. The
@@ -19,6 +20,6 @@ export function writeHashFilters(params: URLSearchParams): void {
   if (next) {
     window.location.hash = `#${next}`;
   } else if (window.location.hash) {
-    history.replaceState(null, '', window.location.pathname + window.location.search);
+    replaceUrl(window.location.pathname + window.location.search);
   }
 }

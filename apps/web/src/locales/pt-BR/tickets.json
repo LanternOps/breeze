@@ -245,7 +245,8 @@
       "deleteLost": "A entrada mudou enquanto era excluída. Recarregue e tente novamente.",
       "notFound": "Esta entrada não existe mais."
     },
-    "deleteEntryWithDescription": "Excluir a entrada de tempo de {{duration}} de {{tech}}: {{description}}"
+    "deleteEntryWithDescription": "Excluir a entrada de tempo de {{duration}} de {{tech}}: {{description}}",
+    "noteInvoiceCue": "Os clientes veem esta observação na fatura, a menos que suas configurações de faturamento ocultem observações."
   },
   "inboundReviewQueue": {
     "title": "Fila de revisão",
@@ -303,7 +304,8 @@
       "normal": "Normal",
       "high": "Alta",
       "urgent": "Urgente"
-    }
+    },
+    "type": "Tipo"
   },
   "ticketFormFields": {
     "selectPlaceholder": "Selecionar…"
@@ -398,7 +400,9 @@
       "title_other": "Excluir {{count}} chamados?",
       "message": "Isso os oculta de todas as filas; um administrador pode restaurá-los em Arquivados.",
       "confirm": "Excluir chamados"
-    }
+    },
+    "filterByType": "Filtrar por tipo",
+    "allTypes": "Todos os tipos"
   },
   "ticketWorkbench": {
     "notFound": "Chamado não encontrado. Ele pode ter sido excluído ou você pode não ter acesso a ele.",
@@ -451,7 +455,9 @@
       "allMissingRate": "Nada pôde ser faturado: todos os lançamentos de tempo faturáveis deste ticket estão sem valor por hora.",
       "missingRateHeading": "Lançamentos de tempo sem valor por hora (não faturados — defina um valor e crie a fatura novamente):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Definir um valor na folha de horas"
+      "setRate": "Definir um valor na folha de horas",
+      "heldForHourBlock_one": "{{count}} lançamento de tempo ({{hours}} horas) está retido para o banco de horas desta organização e será cobrado quando o período do banco for encerrado.",
+      "heldForHourBlock_other": "{{count}} lançamentos de tempo ({{hours}} horas) estão retidos para o banco de horas desta organização e serão cobrados quando o período do banco for encerrado."
     },
     "move": {
       "open": "Mover para outra org…",
@@ -531,7 +537,8 @@
       "assigned": "Atribuído",
       "unassigned": "Não atribuído",
       "assignFailed": "Falha ao atribuir. Tente novamente.",
-      "attachmentFailed": "Não foi possível enviar o anexo."
+      "attachmentFailed": "Não foi possível enviar o anexo.",
+      "typeUpdateFailed": "Não foi possível atualizar o tipo do chamado."
     },
     "delete": {
       "failed": "Falha ao excluir. Tente novamente.",
@@ -541,7 +548,8 @@
       "title": "Excluir este chamado?",
       "message": "Isso oculta o chamado de todas as filas. Um administrador pode restaurá-lo na fila Arquivados.",
       "confirm": "Excluir chamado"
-    }
+    },
+    "typeLabel": "Tipo de chamado"
   },
   "billingOutcome": {
     "included": "Incluído",
@@ -551,5 +559,185 @@
     "missingRate": "Faturável · tarifa não configurada",
     "recalculated": "O faturamento é recalculado para este tipo de trabalho ao salvar.",
     "unavailable": "Resultado do faturamento indisponível"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "Esta solicitação de aprovação não está mais pendente.",
+      "requestChanged": "A solicitação mudou enquanto você a visualizava. A versão mais recente foi recarregada; revise e tente novamente.",
+      "requestExpired": "Esta solicitação de aprovação expirou. Solicite novamente para enviar uma nova.",
+      "requestAlreadyPending": "Já existe uma solicitação de aprovação pendente neste chamado pelo mesmo motivo.",
+      "requestNotReaskable": "Somente uma solicitação negada, expirada ou cancelada que ainda tenha tempo retido pode ser solicitada novamente.",
+      "nothingHeld": "Este chamado não tem tempo retido para o qual solicitar aprovação.",
+      "approvalsDisabled": "A aprovação do cliente não está habilitada para este cliente.",
+      "entryNotResolvable": "Este tempo só pode ser baixado depois que a solicitação de aprovação for negada, expirar ou ser cancelada.",
+      "approvalRequestPending": "Este chamado tem uma solicitação de aprovação aguardando o cliente, portanto não pode ser movido. Cancele ou resolva a solicitação primeiro.",
+      "sourceAwaitingApproval": "Parte do tempo desta fatura está aguardando a aprovação do cliente. Obtenha a aprovação ou dê baixa nesse tempo antes de emitir.",
+      "approvalRequired": "A aprovação do cliente é necessária antes de registrar tempo faturável neste chamado. Solicite a aprovação no painel de aprovações do chamado."
+    },
+    "budget": {
+      "title": "Orçamento e aprovação",
+      "hours": "Orçamento (horas)",
+      "amount": "Valor do orçamento",
+      "save": "Salvar orçamento",
+      "saved": "Orçamento salvo",
+      "saveFailed": "Não foi possível salvar o orçamento",
+      "invalidHours": "Informe horas maiores que 0 ou deixe em branco para não ter limite.",
+      "invalidAmount": "Informe um valor maior que 0 com no máximo 2 casas decimais ou deixe em branco.",
+      "ceiling": "Teto {{ceiling}}",
+      "ceilingWithExtensions": "Teto {{ceiling}} (orçamento {{budget}} + {{extra}} aprovadas)",
+      "noBudget": "Nenhum orçamento definido",
+      "usedLegend": "Usado {{value}}",
+      "heldLegend": "Aguardando aprovação {{value}}",
+      "unpriced_one": "{{count}} lançamento retido ainda não tem preço.",
+      "unpriced_other": "{{count}} lançamentos retidos ainda não têm preço.",
+      "barLabel": "Uso do orçamento",
+      "requestApproval": "Solicitar aprovação"
+    },
+    "request": {
+      "trigger": "Motivo",
+      "triggerBudget": "Orçamento excedido",
+      "triggerAfterHours": "Trabalho fora do expediente",
+      "extensionMinutes": "Minutos adicionais",
+      "extensionAmount": "Valor adicional",
+      "windowStart": "Cobre a partir de",
+      "windowEnd": "Cobre até",
+      "message": "Mensagem para o cliente (opcional)",
+      "submit": "Enviar solicitação",
+      "sent": "Solicitação de aprovação enviada",
+      "failed": "Não foi possível enviar a solicitação de aprovação",
+      "invalidExtension": "Informe minutos adicionais ou um valor adicional maior que 0.",
+      "invalidWindow": "Escolha um início e um fim, com o fim depois do início e a no máximo 14 dias de distância."
+    },
+    "panel": {
+      "title": "Aprovações do cliente",
+      "status": {
+        "pending": "Pendente",
+        "approved": "Aprovada",
+        "denied": "Negada",
+        "expired": "Expirada",
+        "cancelled": "Cancelada"
+      },
+      "revision": "Revisão {{n}}",
+      "ask": "Solicita {{ask}}",
+      "window": "Cobre de {{from}} a {{to}}",
+      "expires": "Expira {{when}}",
+      "heldEntries_one": "{{count}} lançamento retido",
+      "heldEntries_other": "{{count}} lançamentos retidos",
+      "approvers": "Aprovadores",
+      "notified": "Notificados",
+      "noneListed": "Nenhum",
+      "noApprover": "Nenhum aprovador cadastrado: adicione um contato de cobrança ou registre a decisão em nome do cliente.",
+      "decidedByCustomer": "Decidido por {{who}}",
+      "customerFallback": "o cliente",
+      "decidedOnBehalf": "Registrado por {{user}} em nome de {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Oral",
+        "email": "E-mail",
+        "signedDocument": "Documento assinado",
+        "other": "Outro"
+      },
+      "cancel": "Cancelar solicitação",
+      "cancelConfirmTitle": "Cancelar esta solicitação de aprovação?",
+      "cancelConfirmMessage": "O cliente não poderá mais responder. O tempo já retido continua retido até que você solicite novamente ou dê baixa nele.",
+      "cancelled": "Solicitação de aprovação cancelada",
+      "cancelFailed": "Não foi possível cancelar a solicitação",
+      "reask": "Solicitar novamente",
+      "reaskSubmit": "Enviar novamente",
+      "reasked": "Solicitação de aprovação enviada novamente",
+      "reaskFailed": "Não foi possível solicitar novamente",
+      "record": "Registrar decisão"
+    },
+    "record": {
+      "title": "Registrar a decisão do cliente",
+      "intro": "Use quando o cliente informou a decisão fora do Breeze. Ela fica registrada em seu nome.",
+      "target": "Revisão {{revision}} · {{ask}}",
+      "decision": "Decisão",
+      "approve": "Aprovada",
+      "deny": "Negada",
+      "method": "Como foi informada?",
+      "reference": "Referência",
+      "referencePlaceholder": "ex.: ligação de 12 de out., assunto do e-mail, número do documento",
+      "signerName": "Nome do cliente",
+      "signerEmail": "E-mail do cliente (opcional)",
+      "note": "Observação (opcional)",
+      "submit": "Registrar decisão",
+      "recorded": "Decisão registrada",
+      "failed": "Não foi possível registrar a decisão"
+    },
+    "held": {
+      "chip": "Aguardando aprovação do cliente",
+      "writeOff": "Dar baixa",
+      "writeOffTitle": "Dar baixa no tempo retido?",
+      "writeOffMessage": "Este tempo está retido porque o cliente não o aprovou. Ao dar baixa, ele é marcado como sem cobrança e não será faturado.",
+      "writtenOff": "Baixa do tempo concluída",
+      "writeOffFailed": "Não foi possível dar baixa no tempo"
+    },
+    "timer": {
+      "startNonBillable": "Iniciar como não faturável"
+    },
+    "loadError": "Não foi possível carregar as aprovações do cliente",
+    "retry": "Tentar novamente"
+  },
+  "ticketType": {
+    "incident": "Incidente",
+    "service_request": "Solicitação de serviço",
+    "problem": "Problema",
+    "change": "Mudança"
+  },
+  "ticketLinks": {
+    "title": "Chamados relacionados",
+    "loading": "Carregando chamados relacionados…",
+    "loadFailed": "Não foi possível carregar os chamados relacionados.",
+    "empty": "Nenhum chamado relacionado.",
+    "deleted": "Excluído",
+    "add": "Vincular um chamado",
+    "addTitle": "Vincular um chamado",
+    "linkType": "Este chamado…",
+    "addType": {
+      "related": "está relacionado a",
+      "caused_by": "foi causado por",
+      "resolves": "resolve",
+      "duplicate_of": "é uma duplicata de"
+    },
+    "searchLabel": "Buscar um chamado nesta organização",
+    "searchPlaceholder": "Buscar por número ou assunto",
+    "searching": "Buscando…",
+    "searchFailed": "A busca falhou. Tente novamente.",
+    "noResults": "Nenhum chamado correspondente.",
+    "changePick": "Escolher outro chamado",
+    "addSubmit": "Adicionar vínculo",
+    "adding": "Adicionando…",
+    "added": "Chamado vinculado.",
+    "addFailed": "Não foi possível adicionar o vínculo.",
+    "removed": "Vínculo removido.",
+    "removeFailed": "Não foi possível remover o vínculo.",
+    "remove": "Remover o vínculo com {{ticket}}",
+    "removeTitle": "Remover o vínculo?",
+    "removeMessage": "Remover o vínculo com {{ticket}}? Os chamados em si não são alterados.",
+    "removeConfirm": "Remover vínculo",
+    "linkedIncidents": "{{count}} incidentes vinculados",
+    "linkedIncidents_one": "{{count}} incidente vinculado",
+    "linkedIncidents_other": "{{count}} incidentes vinculados",
+    "group": {
+      "caused_by": "Causado por",
+      "causes": "Causa",
+      "resolves": "Resolve",
+      "resolved_by": "Resolvido por",
+      "duplicate_of": "Duplicata de",
+      "duplicates": "Duplicatas",
+      "related": "Relacionados"
+    },
+    "errors": {
+      "ALREADY_LINKED": "Estes chamados já estão vinculados.",
+      "LINK_CYCLE": "Esse vínculo criaria uma cadeia circular de causas.",
+      "LINK_LIMIT": "Um chamado pode ter no máximo 50 vínculos, incluindo vínculos com chamados que você não pode ver. Remova um vínculo antes de adicionar outro.",
+      "SOURCE_ALREADY_DUPLICATE": "Este chamado já está marcado como duplicata de outro chamado (que pode não estar visível para você).",
+      "SOURCE_HAS_DUPLICATES": "Outros chamados (possivelmente alguns que você não pode ver) estão marcados como duplicatas deste chamado, portanto ele não pode ser marcado como duplicata.",
+      "DUPLICATE_TARGET_IS_DUPLICATE": "Esse chamado já é uma duplicata. Vincule o chamado original.",
+      "CROSS_ORG": "Os chamados só podem ser vinculados dentro da mesma organização.",
+      "SELF_LINK": "Um chamado não pode ser vinculado a ele mesmo.",
+      "NOT_FOUND": "Esse chamado não foi encontrado ou não está mais disponível.",
+      "LINK_GONE": "Esse vínculo já foi removido."
+    }
   }
 }

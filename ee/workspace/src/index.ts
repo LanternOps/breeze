@@ -198,7 +198,7 @@ const workspaceExtension: BreezeExtensionV1 = {
     }));
     // Content layer: every route except /content/settings and the admin job
     // endpoints (/content/jobs, /content/jobs/advance) answers
-    // 404 {"error":"not_found"} unless the org has contentEnabled set
+    // 404 {"error":"not found"} unless the org has contentEnabled set
     // (getOrgSettings), default-deny on a missing row. DLP runs
     // unconditionally at ingest — redact before store, block before embed
     // (see README).

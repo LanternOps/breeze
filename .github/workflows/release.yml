@@ -13,7 +13,7 @@ on:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.6'
+  GO_VERSION: '1.26.9'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   # Publisher every Windows signing provider must produce. Asserted by both
@@ -63,7 +63,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=server-api-build
 
       - name: Upload API artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: api-dist
           path: ${{ runner.temp }}/api-release/apps/api/dist
@@ -71,7 +71,7 @@ jobs:
           retention-days: 30
 
       - name: Upload built-in workspace web bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: api-workspace-dist
           path: ${{ runner.temp }}/api-release/ee/workspace/dist
@@ -111,7 +111,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=server-web-build
 
       - name: Upload Web artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: web-dist
           path: ${{ runner.temp }}/web-release/apps/web/dist
@@ -194,7 +194,7 @@ jobs:
             --out "breeze-agent-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
       - name: Upload Agent artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -214,7 +214,7 @@ jobs:
             --out "breeze-backup-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
       - name: Upload breeze-backup artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-backup-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-backup-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -233,7 +233,7 @@ jobs:
             --out "breeze-watchdog-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
       - name: Upload breeze-watchdog artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-watchdog-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-watchdog-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -255,7 +255,7 @@ jobs:
 
       - name: Upload breeze-desktop-helper artifact
         if: matrix.goos == 'darwin'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-desktop-helper-${{ matrix.goos }}-${{ matrix.goarch }}
           path: agent/breeze-desktop-helper-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -318,7 +318,7 @@ jobs:
         run: echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Download breeze-backup (linux/${{ matrix.arch }})
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-backup-linux-${{ matrix.arch }}
           path: dist/
@@ -348,7 +348,7 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" out/
 
       - name: Upload recovery media artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-recovery-linux-${{ matrix.arch }}
           path: out/breeze-recovery-linux-${{ matrix.arch }}.iso*
@@ -537,7 +537,7 @@ jobs:
       # breeze-agent-windows-amd64.exe (and its siblings) by that exact name
       # from the GitHub release (agent/internal/updater/updater.go).
       - name: Upload agent EXE artifact (canonical name)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-windows-amd64
           path: dist/breeze-agent-windows-amd64.exe
@@ -545,7 +545,7 @@ jobs:
           retention-days: 30
 
       - name: Upload backup EXE artifact (canonical name)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-backup-windows-amd64
           path: dist/breeze-backup-windows-amd64.exe
@@ -553,7 +553,7 @@ jobs:
           retention-days: 30
 
       - name: Upload watchdog EXE artifact (canonical name)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-watchdog-windows-amd64
           path: dist/breeze-watchdog-windows-amd64.exe
@@ -563,7 +563,7 @@ jobs:
       # Issue #816: ship the user-helper as a discrete GitHub release asset so
       # the agent's in-place auto-upgrade can fetch it directly.
       - name: Upload user-helper EXE artifact (canonical name)
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-user-helper-windows-amd64
           path: dist/breeze-user-helper-windows-amd64.exe
@@ -582,28 +582,28 @@ jobs:
           }
 
       - name: Upload unsigned agent EXE artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-windows-amd64-unsigned
           path: dist-unsigned/breeze-agent-windows-amd64-unsigned.exe
           retention-days: 30
 
       - name: Upload unsigned backup EXE artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-backup-windows-amd64-unsigned
           path: dist-unsigned/breeze-backup-windows-amd64-unsigned.exe
           retention-days: 30
 
       - name: Upload unsigned watchdog EXE artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-watchdog-windows-amd64-unsigned
           path: dist-unsigned/breeze-watchdog-windows-amd64-unsigned.exe
           retention-days: 30
 
       - name: Upload unsigned user-helper EXE artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-user-helper-windows-amd64-unsigned
           path: dist-unsigned/breeze-user-helper-windows-amd64-unsigned.exe
@@ -642,7 +642,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build-msi.ps1 (SelfHost) failed with exit code $LASTEXITCODE" }
 
       - name: Upload unsigned self-host Windows MSI artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-windows-msi
           path: dist/breeze-agent.msi
@@ -659,6 +659,11 @@ jobs:
     # secrets — it must not run against a tag whose lineage hasn't been
     # validated yet.
     needs: [build-agent, validate-release-lineage, classify-release]
+    # Apple signing material lives only in the signing environments, whose
+    # deployment policy admits v* tags alone. Same selector as the Windows
+    # signing jobs: a prerelease tag (one with a '-') signs in signing-prerelease.
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -666,49 +671,49 @@ jobs:
           persist-credentials: false
 
       - name: Download darwin/amd64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-agent-darwin-amd64
           path: staging/
 
       - name: Download darwin/arm64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-agent-darwin-arm64
           path: staging/
 
       - name: Download backup darwin/amd64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-backup-darwin-amd64
           path: staging/
 
       - name: Download backup darwin/arm64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-backup-darwin-arm64
           path: staging/
 
       - name: Download desktop-helper darwin/amd64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-desktop-helper-darwin-amd64
           path: staging/
 
       - name: Download desktop-helper darwin/arm64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-desktop-helper-darwin-arm64
           path: staging/
 
       - name: Download watchdog darwin/amd64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-watchdog-darwin-amd64
           path: staging/
 
       - name: Download watchdog darwin/arm64 artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-watchdog-darwin-arm64
           path: staging/
@@ -740,28 +745,28 @@ jobs:
           fi
 
       - name: Upload unsigned agent darwin binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-darwin-unsigned
           path: staging-unsigned/breeze-agent-darwin-*-unsigned
           retention-days: 30
 
       - name: Upload unsigned backup darwin binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-backup-darwin-unsigned
           path: staging-unsigned/breeze-backup-darwin-*-unsigned
           retention-days: 30
 
       - name: Upload unsigned desktop-helper darwin binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-desktop-helper-darwin-unsigned
           path: staging-unsigned/breeze-desktop-helper-darwin-*-unsigned
           retention-days: 30
 
       - name: Upload unsigned watchdog darwin binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-watchdog-darwin-unsigned
           path: staging-unsigned/breeze-watchdog-darwin-*-unsigned
@@ -824,7 +829,7 @@ jobs:
           done
 
       - name: Upload signed darwin/amd64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-darwin-amd64
           path: staging/breeze-agent-darwin-amd64
@@ -832,7 +837,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed darwin/arm64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-darwin-arm64
           path: staging/breeze-agent-darwin-arm64
@@ -840,7 +845,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed backup darwin/amd64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-backup-darwin-amd64
           path: staging/breeze-backup-darwin-amd64
@@ -848,7 +853,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed backup darwin/arm64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-backup-darwin-arm64
           path: staging/breeze-backup-darwin-arm64
@@ -856,7 +861,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed desktop-helper darwin/amd64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-desktop-helper-darwin-amd64
           path: staging/breeze-desktop-helper-darwin-amd64
@@ -864,7 +869,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed desktop-helper darwin/arm64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-desktop-helper-darwin-arm64
           path: staging/breeze-desktop-helper-darwin-arm64
@@ -872,7 +877,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed watchdog darwin/amd64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-watchdog-darwin-amd64
           path: staging/breeze-watchdog-darwin-amd64
@@ -880,7 +885,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed watchdog darwin/arm64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-watchdog-darwin-arm64
           path: staging/breeze-watchdog-darwin-arm64
@@ -1003,21 +1008,21 @@ jobs:
           }
 
       - name: Upload .pkg darwin/amd64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-darwin-amd64-pkg
           path: staging/breeze-agent-darwin-amd64.pkg
           retention-days: 30
 
       - name: Upload .pkg darwin/arm64
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-agent-darwin-arm64-pkg
           path: staging/breeze-agent-darwin-arm64.pkg
           retention-days: 30
 
       - name: Upload macOS package publisher attestation
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: macos-pkg-attestation
           path: attest/macos-pkg.tsv
@@ -1037,6 +1042,8 @@ jobs:
       && github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
       && needs.classify-release.outputs.release_kind == 'full'
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1044,13 +1051,13 @@ jobs:
           persist-credentials: false
 
       - name: Download .pkg darwin/amd64
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-agent-darwin-amd64-pkg
           path: installer-pkgs/
 
       - name: Download .pkg darwin/arm64
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-agent-darwin-arm64-pkg
           path: installer-pkgs/
@@ -1116,7 +1123,7 @@ jobs:
           ls -lh build/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-installer-app
           path: build/Breeze Installer.app.zip
@@ -1151,6 +1158,8 @@ jobs:
             asset_name: breeze-viewer-linux.AppImage
             asset_glob: 'src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage'
     runs-on: ${{ matrix.platform }}
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1189,7 +1198,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1278,7 +1287,7 @@ jobs:
           cp "$sig_file" breeze-viewer-linux.AppImage.sig
 
       - name: Upload Viewer artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ matrix.asset_name }}
           path: apps/viewer/${{ matrix.asset_name }}
@@ -1286,7 +1295,7 @@ jobs:
 
       - name: Upload Viewer Linux updater bundle
         if: matrix.platform == 'ubuntu-22.04'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-viewer-linux-updater
           path: |
@@ -1349,7 +1358,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1410,7 +1419,7 @@ jobs:
           echo "path=${{ matrix.asset_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Upload Helper artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ matrix.asset_name }}
           path: apps/helper/${{ matrix.asset_name }}
@@ -1427,6 +1436,8 @@ jobs:
     # + Apple signing identity) and notarizes the DMG — it must not run
     # against a tag whose lineage hasn't been validated yet.
     needs: [validate-release-lineage, classify-release]
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1439,7 +1450,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1543,14 +1554,14 @@ jobs:
           cp "$sig_file" breeze-viewer-macos.app.tar.gz.sig
 
       - name: Upload Viewer macOS artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-viewer-macos.dmg
           path: apps/viewer/breeze-viewer-macos.dmg
           retention-days: 30
 
       - name: Upload Viewer macOS updater bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-viewer-macos-updater
           path: |
@@ -1569,6 +1580,8 @@ jobs:
     # and notarizes the DMG — it must not run against a tag whose lineage
     # hasn't been validated yet.
     needs: [validate-release-lineage, classify-release]
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1581,7 +1594,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -1658,7 +1671,7 @@ jobs:
           xcrun stapler validate breeze-helper-macos.dmg
 
       - name: Upload Helper macOS artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-helper-macos.dmg
           path: apps/helper/breeze-helper-macos.dmg
@@ -1715,13 +1728,13 @@ jobs:
           sparse-checkout: .github/scripts
 
       - name: Download viewer Windows MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-viewer-windows.msi
           path: staging/
 
       - name: Download helper Windows MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-helper-windows.msi
           path: staging/
@@ -1819,7 +1832,7 @@ jobs:
             -AllowUnpinnedLeaf
 
       - name: Upload signed viewer MSI
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-viewer-windows.msi
           path: staging/breeze-viewer-windows.msi
@@ -1827,7 +1840,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed helper MSI
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-helper-windows.msi
           path: staging/breeze-helper-windows.msi
@@ -1857,13 +1870,13 @@ jobs:
             .github/release-provenance/sslcom-tls-rsa-root-ca-2022.pem
 
       - name: Download viewer Windows MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-viewer-windows.msi
           path: staging/
 
       - name: Download helper Windows MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-helper-windows.msi
           path: staging/
@@ -1890,8 +1903,8 @@ jobs:
           # credentials, and the only thing that separates them is which GitHub
           # Environment the secrets live in. Nothing about the YAML differs
           # between the two, so if an operator adds SSLCOM_* at REPOSITORY level
-          # -- the path of least resistance, and how every AZURE_* secret is
-          # stored today -- both environments would silently resolve the same
+          # -- the path of least resistance -- both environments would silently
+          # resolve the same
           # credential and a prerelease tag would be signed with the production
           # certificate. This label can only match one environment, so putting
           # all six at repository level fails one of them loudly instead.
@@ -2014,7 +2027,7 @@ jobs:
             -ExpectedThumbprintSha256 $env:SSLCOM_CERT_SHA256
 
       - name: Upload signed viewer MSI
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-viewer-windows.msi
           path: staging/breeze-viewer-windows.msi
@@ -2022,7 +2035,7 @@ jobs:
           retention-days: 30
 
       - name: Upload signed helper MSI
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-helper-windows.msi
           path: staging/breeze-helper-windows.msi
@@ -2073,6 +2086,8 @@ jobs:
       && needs.classify-release.outputs.release_kind == 'full'
     runs-on: ubuntu-latest
     needs: [sign-windows-tauri, classify-release]
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -2085,7 +2100,7 @@ jobs:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .node-version
           cache: 'pnpm'
@@ -2094,7 +2109,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Download signed viewer MSI
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: breeze-viewer-windows.msi
           path: staging/
@@ -2126,7 +2141,7 @@ jobs:
           fi
 
       - name: Upload Windows updater bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: breeze-viewer-windows-updater
           path: |
@@ -2149,7 +2164,7 @@ jobs:
       && needs.classify-release.outputs.release_kind == 'full'
     steps:
       - name: Download viewer updater bundles
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: updater-bundles
           pattern: 'breeze-viewer-*-updater'
@@ -2235,7 +2250,7 @@ jobs:
           cat latest.json
 
       - name: Upload generated manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: viewer-latest-json
           path: latest.json
@@ -2376,7 +2391,7 @@ jobs:
 
       - name: Upload server-only classification report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: server-only-classification
           path: ${{ runner.temp }}/server-only-classification.json
@@ -2480,7 +2495,7 @@ jobs:
             --output binaries.json
 
       - name: Upload carried binaries image metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-image-binaries
           path: binaries.json
@@ -2518,7 +2533,7 @@ jobs:
 
       - name: Upload carried Viewer update manifest
         if: env.BASE_LATEST_SHA256 != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: viewer-latest-json
           path: carried-latest/latest.json
@@ -2687,6 +2702,9 @@ jobs:
       )
     permissions:
       contents: write
+    # The release-manifest private keys live only in the signing environments.
+    environment:
+      name: ${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}
     env:
       RELEASE_KIND: ${{ needs.classify-release.outputs.release_kind }}
       BINARIES_TAG: ${{ needs.classify-release.outputs.binaries_tag }}
@@ -2698,14 +2716,14 @@ jobs:
           persist-credentials: false
 
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
           pattern: '{api-dist,web-dist,breeze-agent-*,breeze-backup-*,breeze-desktop-helper-*,breeze-user-helper-*,breeze-watchdog-*,breeze-viewer-*,breeze-helper-*,breeze-installer-app,viewer-latest-json,macos-pkg-attestation,breeze-recovery-*}'
           merge-multiple: false
 
       - name: Download release image metadata
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: release-image-metadata
           pattern: 'release-image-*'
@@ -2713,7 +2731,7 @@ jobs:
 
       - name: Download server-only classification report
         if: env.RELEASE_KIND == 'server-only'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: server-only-classification
           path: server-only-classification
@@ -3340,7 +3358,7 @@ jobs:
           sha256sum * > checksums.txt
 
       - name: Upload signed release image manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: signed-release-image-manifest
           path: |
@@ -3476,21 +3494,21 @@ jobs:
         run: mkdir -p staging/agent staging/viewer staging/helper
 
       - name: Download agent artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: staging/agent
           pattern: 'breeze-agent-*'
           merge-multiple: true
 
       - name: Download viewer artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: staging/viewer
           pattern: 'breeze-viewer-*'
           merge-multiple: true
 
       - name: Download helper artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: staging/helper
           pattern: 'breeze-helper-*'
@@ -3552,7 +3570,7 @@ jobs:
             --output binaries.json
 
       - name: Upload binaries image metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-image-binaries
           path: binaries.json
@@ -3580,13 +3598,13 @@ jobs:
           persist-credentials: false
 
       - name: Download API artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: api-dist
           path: ${{ runner.temp }}/release-dist/apps/api/dist
 
       - name: Download built-in workspace web bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: api-workspace-dist
           path: ${{ runner.temp }}/release-dist/ee/workspace/dist
@@ -3644,7 +3662,7 @@ jobs:
             --output api.json
 
       - name: Upload API image metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-image-api
           path: api.json
@@ -3721,7 +3739,7 @@ jobs:
             --output m365-graph-read-executor.json
 
       - name: Upload executor digest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-image-m365-graph-read-executor
           path: m365-graph-read-executor.json
@@ -3798,7 +3816,7 @@ jobs:
             --output m365-graph-actions-executor.json
 
       - name: Upload executor digest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-image-m365-graph-actions-executor
           path: m365-graph-actions-executor.json
@@ -3875,7 +3893,7 @@ jobs:
             --output m365-communications-executor.json
 
       - name: Upload executor digest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-image-m365-communications-executor
           path: m365-communications-executor.json
@@ -3900,7 +3918,7 @@ jobs:
           persist-credentials: false
 
       - name: Download Web artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: web-dist
           path: ${{ runner.temp }}/release-dist/apps/web/dist
@@ -3953,7 +3971,7 @@ jobs:
             --output web.json
 
       - name: Upload Web image metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-image-web
           path: web.json
@@ -4016,7 +4034,7 @@ jobs:
             --output portal.json
 
       - name: Upload Portal image metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-image-portal
           path: portal.json
@@ -4052,7 +4070,7 @@ jobs:
           persist-credentials: false
 
       - name: Download signed release image manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: signed-release-image-manifest
           path: signed-release-image-manifest

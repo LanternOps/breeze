@@ -8,6 +8,7 @@
 import { useEffect, useLayoutEffect } from 'react';
 import { useOrgStore } from '../../stores/orgStore';
 import { isOrgIdForHash } from './orgIdShape';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 const HASH_KEY = 'orgId';
 
@@ -49,7 +50,7 @@ export function useOrgIdFromHash(): void {
       const raw = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
       const remaining = raw.split('&').filter((part) => part && part.split('=', 1)[0] !== HASH_KEY);
       const nextHash = remaining.length > 0 ? `#${remaining.join('&')}` : '';
-      history.replaceState(null, '', `${window.location.pathname}${window.location.search}${nextHash}`);
+      replaceUrl(`${window.location.pathname}${window.location.search}${nextHash}`);
     };
     apply();
     window.addEventListener('hashchange', apply);

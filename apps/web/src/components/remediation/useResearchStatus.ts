@@ -42,6 +42,8 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
   const { t } = useTranslation('common');
   const [status, setStatus] = useState<ResearchStatusDto | null>(null);
   const [denial, setDenial] = useState<{ code: string; message: string } | null>(null);
+  // The start request failed with an HTTP error that had no denial code (retry keeps its depth).
+  const [requestError, setRequestError] = useState<{ depth: 'quick' | 'deep' } | null>(null);
   const [stalled, setStalled] = useState(false);
   const [epoch, setEpoch] = useState(0);
   // Reset everything when the source (type + id + org) changes, during render so a stale banner never paints.
@@ -50,6 +52,7 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
     setScopeQuery(query);
     setStatus(null);
     setDenial(null);
+    setRequestError(null);
     setStalled(false);
     setEpoch((value) => value + 1);
   }
@@ -80,7 +83,10 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
         .then((next) => {
           if (cancelled || !next) return;
           setStatus(next);
-          if (!isActiveResearch(next.status)) onTerminalRef.current();
+          if (!isActiveResearch(next.status)) {
+            setRequestError(null); // the run finished: show its result, not an earlier failed request
+            onTerminalRef.current();
+          }
         })
         .catch(() => undefined)
         .finally(() => { inFlight = false; });
@@ -92,6 +98,7 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
   }, [active, epoch, query]);
 
   const restartPolling = useCallback(() => {
+    setRequestError(null); // Refresh/Retry/new run: a stale request error must not mask the run's state
     setStalled(false);
     setEpoch((value) => value + 1);
   }, []);
@@ -118,5 +125,11 @@ export function useResearchStatus(query: string, onTerminal: () => void) {
     setDenial({ code, message: denialMessage(code, message, t) });
   }, [t]);
 
-  return { status, denial, stalled, applyLoaded, noteOutcome, denyFromError, clearDenial: () => setDenial(null), restartPolling };
+  const failRequest = useCallback((depth: 'quick' | 'deep') => setRequestError({ depth }), []);
+
+  return {
+    status, denial, requestError, stalled, applyLoaded, noteOutcome, denyFromError, failRequest,
+    clearDenial: () => { setDenial(null); setRequestError(null); },
+    restartPolling,
+  };
 }

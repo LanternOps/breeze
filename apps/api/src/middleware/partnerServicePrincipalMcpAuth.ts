@@ -41,11 +41,14 @@ import {
  * Owner = `partner_service_principals.created_by`. Per-tool RBAC over MCP
  * resolves `getUserPermissions(auth.user.id)` (aiGuardrails), exactly as it
  * already does for org service-principal keys, so the principal's per-tool
- * authority is bounded by its owner's LIVE partner role. The owner never logs
- * in through this credential: a password change, logout or MFA change does
- * not affect it. Off-boarding the owner (status not active, partner
- * membership removed, role reduced below the principal's MCP scopes) denies
- * the next request.
+ * authority is bounded by its owner's LIVE partner role. Only the owner issues
+ * or rotates keys (routes/partnerServicePrincipals.ts), and a key issued by
+ * anyone else is refused here. Every key is bound to the owner's credential
+ * state (services/partnerServicePrincipalCredential.ts): the owner's password
+ * change/reset, an admin status change or an MFA factor change ends it, the
+ * same as a human API key; an ordinary logout does not. Off-boarding the
+ * owner (status not active, partner membership removed, role reduced below
+ * the principal's MCP scopes) denies the next request.
  *
  * Fail closed everywhere: an unknown, revoked or expired key, a disabled or
  * expired principal, an inactive or deleted partner, a source-CIDR mismatch,
@@ -151,10 +154,18 @@ export async function partnerServicePrincipalMcpAuthMiddleware(c: Context, next:
   }
 
   // Throws a generic 401 for every credential failure (see the loader).
-  const { credential, ownerUserId } = await loadPartnerServicePrincipalCredential(
+  const { credential, ownerUserId, keyIssuedBy } = await loadPartnerServicePrincipalCredential(
     hashPartnerApiKey(rawKey),
     getTrustedClientIpOrUndefined(c),
   );
+
+  // Over MCP the key acts with its owner's role, so it must be one the owner
+  // issued. Keys another admin issued before issuance became owner-only keep
+  // working on the Partner API (where the principal acts as itself) but are
+  // refused here; the owner rotates them to restore MCP access.
+  if (keyIssuedBy !== ownerUserId) {
+    throw new HTTPException(401, { message: INVALID_CREDENTIALS_MESSAGE });
+  }
 
   const mcpScopes = partnerServicePrincipalMcpScopes(credential.scopes);
   if (mcpScopes.length === 0) {

@@ -7,6 +7,7 @@ import { encryptSecret, decryptSecret } from './secretCrypto';
 import { columnAad, encryptedColumnRegistry } from './encryptedColumnRegistry';
 import { portalBase } from './portalUrl';
 import { captureException } from './sentry';
+import { revokeBillingLinkTokens } from './autopay/linkTokens';
 
 /**
  * The durable public invoice link — the customer's no-login view-and-pay URL
@@ -195,8 +196,11 @@ export async function resetInvoiceLink(row: Pick<LinkColumns, 'id' | 'dueDate'>)
       updatedAt: new Date(),
     })
     .where(eq(invoices.id, row.id))
-    .returning({ id: invoices.id });
+    .returning({ id: invoices.id, orgId: invoices.orgId });
   if (updated.length === 0) throw new Error(`[invoiceLinkToken] reset matched no row for invoice ${row.id}`);
+  // A reset kills every link issued for this invoice, including the automatic-payment
+  // links (skip, confirm, update-method) that were emailed with it.
+  await revokeBillingLinkTokens(db, { orgId: updated[0]!.orgId, invoiceId: row.id });
   return { token, expiresAt, origin: 'reset' };
 }
 

@@ -387,6 +387,9 @@ func (p *cancelAfterFirstUploadProvider) Upload(localPath, remotePath string) er
 // foreign, already-published sibling prefix, and only the former may be
 // deleted.
 func TestAbortCleanup_OnlyDeletesOwnUnpublishedPrefix_NeverAForeignPublishedPrefix(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	tmpDir := t.TempDir()
 	file1 := createTempFile(t, tmpDir, "file1.txt", "content-one")
 	file2 := createTempFile(t, tmpDir, "file2.txt", "content-two")
@@ -958,6 +961,9 @@ func (p *blockAfterNProvider) Delete(remotePath string) error       { return p.b
 // CreateSnapshotContext callers, which never pass a journal): a stopped run
 // still cleans up its partial remote prefix, exactly as before this task.
 func TestCreateSnapshotWithProgress_StopWithoutJournal_CleansUpPrefix(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	backing := newMockProvider()
 	provider := newBlockAfterNProvider(backing, 1) // 1st file succeeds, 2nd blocks
 	files := []backupFile{
@@ -998,6 +1004,9 @@ func TestCreateSnapshotWithProgress_StopWithoutJournal_CleansUpPrefix(t *testing
 // leaves the partial remote prefix AND the journal in place — together they
 // are the resume state for the next run.
 func TestCreateSnapshotWithProgress_StopWithJournal_PreservesPrefixAndJournal(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	backing := newMockProvider()
 	provider := newBlockAfterNProvider(backing, 1) // 1st file succeeds, 2nd blocks
 	files := []backupFile{
@@ -1065,6 +1074,9 @@ func TestCreateSnapshotWithProgress_StopWithJournal_PreservesPrefixAndJournal(t 
 // exactly the 2 missing files, produce a manifest listing all 4, and reuse
 // run 1's snapshot ID.
 func TestCreateSnapshotWithProgress_ResumeAfterInterruption(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	backing := newMockProvider()
 	provider := newBlockAfterNProvider(backing, 2) // 1st 2 files succeed, 3rd blocks
 	tmpDir := t.TempDir()

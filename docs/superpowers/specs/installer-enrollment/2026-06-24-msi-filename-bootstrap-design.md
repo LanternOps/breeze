@@ -197,7 +197,7 @@ capture-then-defer pattern:
 - `/installer/bootstrap` mints a child key with a fresh TTL independent of the parent for the
   Windows-platform token (reuse the existing macOS coverage shape).
 
-### Manual (Windows test VM — Tailscale 100.101.150.55)
+### Manual (Windows test VM — Tailscale `<lab-windows-test-vm-ip>`)
 - Double-click install with `[TOKEN@HOST]` filename → enrolls.
 - Browser `(1)`-suffixed filename → still parses and enrolls.
 - Silent `msiexec /i ... SERVER_URL=... ENROLLMENT_KEY=... /qn` → property fallback enrolls.

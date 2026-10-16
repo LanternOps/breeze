@@ -3,6 +3,7 @@ import "@/lib/i18n";
 import { useCallback, useEffect, useState } from "react";
 import {
   CheckCircle2,
+  CircleHelp,
   Loader2,
   Shield,
   ShieldAlert,
@@ -14,10 +15,16 @@ import { formatDateTime } from "@/lib/dateTimeFormat";
 import { friendlyFetchError } from "@/lib/utils";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import AccessDenied from "../shared/AccessDenied";
+// Provider 'unknown' = collection failed (#8538): render the localized
+// unknown-provider copy instead of the server's English fallback name.
+function knownProvider<T extends { id?: string }>(p: T | null): T | null {
+  return p && p.id !== "unknown" ? p : null;
+}
 type DeviceSecurity = {
   deviceId: string;
   deviceName: string;
   provider: {
+    id?: string;
     name: string;
     vendor: string;
   } | null;
@@ -26,8 +33,9 @@ type DeviceSecurity = {
   definitionsUpdatedAt: string | null;
   lastScanAt: string | null;
   lastScanType: string | null;
-  realTimeProtection: boolean;
-  firewallEnabled: boolean;
+  // null = unknown: the agent's collector failed or never reported (#8252).
+  realTimeProtection: boolean | null;
+  firewallEnabled: boolean | null;
   encryptionStatus: "encrypted" | "partial" | "unencrypted";
   gatekeeperEnabled?: boolean | null;
   status: "protected" | "at_risk" | "unprotected" | "offline";
@@ -140,17 +148,23 @@ export default function DeviceSecurityStatus({
       id: "realtime",
       label: t("securityDeviceSecurityStatus.realTimeProtection"),
       enabled: data.realTimeProtection,
-      detail: data.realTimeProtection
-        ? t("securityDeviceSecurityStatus.running")
-        : t("securityDeviceSecurityStatus.disabled"),
+      detail:
+        data.realTimeProtection === null
+          ? t("securityDeviceSecurityStatus.unknown")
+          : data.realTimeProtection
+            ? t("securityDeviceSecurityStatus.running")
+            : t("securityDeviceSecurityStatus.disabled"),
     },
     {
       id: "firewall",
       label: t("securityDeviceSecurityStatus.firewall"),
       enabled: data.firewallEnabled,
-      detail: data.firewallEnabled
-        ? t("securityDeviceSecurityStatus.policyEnforced")
-        : t("securityDeviceSecurityStatus.disabled"),
+      detail:
+        data.firewallEnabled === null
+          ? t("securityDeviceSecurityStatus.unknown")
+          : data.firewallEnabled
+            ? t("securityDeviceSecurityStatus.policyEnforced")
+            : t("securityDeviceSecurityStatus.disabled"),
     },
     {
       id: "encryption",
@@ -202,11 +216,11 @@ export default function DeviceSecurityStatus({
               {t("securityDeviceSecurityStatus.detectedAV")}
             </p>
             <p className="mt-2 text-sm font-medium">
-              {data.provider?.name ??
+              {knownProvider(data.provider)?.name ??
                 t("securityDeviceSecurityStatus.unknownProvider")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {data.provider?.vendor ??
+              {knownProvider(data.provider)?.vendor ??
                 t("securityDeviceSecurityStatus.unknownVendor")}
             </p>
           </div>
@@ -215,9 +229,11 @@ export default function DeviceSecurityStatus({
               {t("securityDeviceSecurityStatus.firewall")}
             </p>
             <p className="mt-2 text-sm font-medium">
-              {data.firewallEnabled
-                ? t("securityDeviceSecurityStatus.enabled")
-                : t("securityDeviceSecurityStatus.disabled")}
+              {data.firewallEnabled === null
+                ? t("securityDeviceSecurityStatus.unknown")
+                : data.firewallEnabled
+                  ? t("securityDeviceSecurityStatus.enabled")
+                  : t("securityDeviceSecurityStatus.disabled")}
             </p>
           </div>
           <div className="rounded-md border bg-muted/30 p-4">
@@ -263,7 +279,7 @@ export default function DeviceSecurityStatus({
             </h2>
             <p className="text-sm text-muted-foreground">
               {data.deviceName} -{" "}
-              {data.provider?.name ??
+              {knownProvider(data.provider)?.name ??
                 t("securityDeviceSecurityStatus.unknownProvider")}
             </p>
           </div>
@@ -316,7 +332,9 @@ export default function DeviceSecurityStatus({
                 {item.detail}
               </p>
             </div>
-            {item.enabled ? (
+            {item.enabled === null ? (
+              <CircleHelp className="h-5 w-5 text-muted-foreground" />
+            ) : item.enabled ? (
               <CheckCircle2 className="h-5 w-5 text-emerald-600" />
             ) : (
               <XCircle className="h-5 w-5 text-red-500" />

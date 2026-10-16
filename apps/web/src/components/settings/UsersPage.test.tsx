@@ -117,6 +117,20 @@ describe('UsersPage — handleEditSubmit role-change contract', () => {
 // #1629 follow-up: a 403 on the users list is a permission denial, not a
 // transient "Failed to fetch users" error — it must render AccessDenied with
 // no misleading "Try again" retry.
+describe('UsersPage — session timeout pointer (#6111)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    seedUsersAndRoles();
+  });
+
+  it('points at the Security tab where the idle timeout is configured', async () => {
+    render(<UsersPage />);
+    const link = await screen.findByTestId('users-session-timeout-pointer');
+    expect(link).toHaveTextContent('Session idle timeout is configured under Security');
+    expect(link).toHaveAttribute('href', '/settings/partner#security');
+  });
+});
+
 describe('UsersPage — 403 renders access-denied (not the retryable error)', () => {
   beforeEach(() => vi.clearAllMocks());
 

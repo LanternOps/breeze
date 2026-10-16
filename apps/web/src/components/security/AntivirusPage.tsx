@@ -16,8 +16,11 @@ type DeviceStatus = {
   os: string;
   status: string;
   riskLevel: string;
-  realTimeProtection: boolean;
+  // null = unknown: the agent's collector failed or never reported (#8252).
+  realTimeProtection: boolean | null;
   provider: {
+    // 'unknown' = collection failed (#8538); rendered via i18n, not `name`.
+    id?: string;
     name: string;
     vendor: string;
   } | null;
@@ -172,9 +175,13 @@ export default function AntivirusPage() {
   const unprot = dashboard?.unprotectedDevices ?? 0;
   const coveragePercent = total ? Math.round((prot / total) * 100) : 0;
   const stat = (value: number) => (hasDashboard ? formatNumber(value) : "—");
+  // Failed collection is stored as provider 'unknown' (#8538); localize it
+  // here — the server `providerName` is only an English fallback.
+  const providerLabel = (p: { providerId: string; providerName: string }) =>
+    p.providerId === "unknown" ? t("securityAntivirusPage.unknown") : p.providerName;
   const pieData = (dashboard?.providers ?? [])
     .filter((p) => p.deviceCount > 0)
-    .map((p) => ({ name: p.providerName, value: p.deviceCount }));
+    .map((p) => ({ name: providerLabel(p), value: p.deviceCount }));
   return (
     <div className="space-y-6">
       <SecurityPageHeader
@@ -263,7 +270,7 @@ export default function AntivirusPage() {
                         PIE_DOT_CLASSES[i % PIE_DOT_CLASSES.length],
                       )}
                     />
-                    <span className="truncate">{p.providerName}</span>
+                    <span className="truncate">{providerLabel(p)}</span>
                   </div>
                   <span className="font-medium">{p.deviceCount}</span>
                 </div>
@@ -366,7 +373,9 @@ export default function AntivirusPage() {
                         {d.os}
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        {d.provider?.name ?? t("securityAntivirusPage.unknown")}
+                        {d.provider && d.provider.id !== "unknown"
+                          ? d.provider.name
+                          : t("securityAntivirusPage.unknown")}
                       </td>
                       <td className="px-4 py-3">
                         <span
@@ -379,7 +388,11 @@ export default function AntivirusPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        {d.realTimeProtection ? (
+                        {d.realTimeProtection === null ? (
+                          <span className="text-muted-foreground">
+                            {t("securityAntivirusPage.unknown")}
+                          </span>
+                        ) : d.realTimeProtection ? (
                           <span className="text-emerald-600">
                             {t("securityAntivirusPage.active")}
                           </span>

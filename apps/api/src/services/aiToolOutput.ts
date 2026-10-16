@@ -1,6 +1,10 @@
 import { redactLogFields, redactLogMessage, redactToolOutputFields } from './logRedaction';
 import { scrubErrorFieldsDeep } from './aiToolErrors';
 import { sanitizeUntrustedText } from './aiInputSanitizer';
+import { BARE_SECRET_PATTERNS } from './redactionPatterns';
+
+// Re-exported for existing importers; the rule set lives in ./redactionPatterns.
+export { BARE_SECRET_PATTERNS };
 
 type CompactStats = {
   stringsTruncated: number;
@@ -88,13 +92,6 @@ const MAX_DISK_CANDIDATES = 60;
 const MAX_DISK_LIST_ROWS = 30;
 const REDACTED = '[REDACTED]';
 
-const BARE_SECRET_PATTERNS: RegExp[] = [
-  /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}\b/g,
-  /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}\b/g,
-  /\bgithub_pat_[A-Za-z0-9_]{16,}\b/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g,
-];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -993,6 +990,10 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   // Huntress incident text: vendor-authored, but routinely echoes
   // endpoint-chosen artifact names (filenames, process names, paths).
   get_huntress_incidents: new Set(['title', 'description', 'recommendation', 'details']),
+  // EDR-framework detection rows: vendor-authored strings that routinely echo
+  // endpoint-chosen artifact names (threat/file/process names). get_edr_status
+  // is deliberately absent: it carries Breeze-generated labels and notes only.
+  list_edr_detections: new Set(['title', 'threatName', 'filePath', 'processName', 'category', 'vendorDetectionId']),
   // Ticket subject/description can originate from an external requester
   // (portal or inbound email), not only from a technician.
   manage_tickets: new Set(['subject', 'description']),

@@ -9,7 +9,7 @@ import (
 )
 
 // TestIsSensitiveReadPath exercises the OS-agnostic deny-list matching for
-// credential/secret stores (SR5-01 defense-in-depth). Windows-style paths are
+// credential/secret stores (defense in depth). Windows-style paths are
 // checked on any host because matching normalizes separators and case.
 func TestIsSensitiveReadPath(t *testing.T) {
 	cases := []struct {

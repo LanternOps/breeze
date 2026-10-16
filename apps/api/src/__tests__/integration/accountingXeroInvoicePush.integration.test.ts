@@ -47,16 +47,21 @@ async function seed(settings: { exempt?: string | null } = {}): Promise<Fixture>
   });
 }
 
-async function seedInvoice(fx: Fixture, opts: { taxable: boolean; taxTotal: string }): Promise<string> {
+async function seedInvoice(fx: Fixture, opts: {
+  taxable: boolean; taxTotal: string;
+  invoice?: Partial<typeof invoices.$inferInsert>; line?: Partial<typeof invoiceLines.$inferInsert>;
+}): Promise<string> {
   return withSystemDbAccessContext(async () => {
     const total = (Number('100.00') + Number(opts.taxTotal)).toFixed(2);
     const [inv] = await db.insert(invoices).values({
       partnerId: fx.partnerId, orgId: fx.orgId, invoiceNumber: 'INV-2026-0001', status: 'sent', currencyCode: 'GBP',
       issueDate: '2026-09-01', dueDate: '2026-10-01', subtotal: '100.00', taxTotal: opts.taxTotal, total,
+      ...opts.invoice,
     }).returning({ id: invoices.id });
     await db.insert(invoiceLines).values({
       invoiceId: inv!.id, orgId: fx.orgId, sourceType: 'manual', name: 'Managed support', description: 'Managed support',
       quantity: '1.00', unitPrice: '100.00', taxable: opts.taxable, lineTotal: '100.00', sortOrder: 0,
+      ...opts.line,
     });
     return inv!.id;
   });
@@ -79,6 +84,35 @@ const remote = (invoiceId: string, over: Record<string, unknown> = {}) => ({
 
 describe('Xero invoice push and void — real Postgres (Xero W04)', () => {
   afterEach(() => { vi.restoreAllMocks(); });
+
+  // #8605 W04: the work date read from a real `invoice_lines.work_date` row
+  // reaches Xero as description text only when the invoice's FROZEN showDate
+  // is on; with it off the line text is exactly what was sent before W04.
+  const timeLine = {
+    sourceType: 'time_entry' as const, name: null, description: 'Rebuilt the print queue',
+    workedMinutes: 30, workDate: '2026-09-16',
+  };
+  const pushedDescription = async (fx: Fixture, invoiceId: string) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ Invoices: [] }))
+      .mockResolvedValueOnce(json({ Invoices: [remote(invoiceId)] }));
+    await pushInvoiceToAccounting(invoiceId, fx.partnerId, runner(fx));
+    const put = fetchMock.mock.calls.find(([, init]) => (init as RequestInit).method === 'PUT')!;
+    const body = JSON.parse(String((put[1] as RequestInit).body));
+    return (body.Invoices?.[0] ?? body).LineItems[0].Description as string;
+  };
+
+  runDb('frozen showDate on: the work date is appended to the Xero line text (#8605)', async () => {
+    const fx = await seed();
+    const invoiceId = await seedInvoice(fx, { taxable: true, taxTotal: '20.00', invoice: { lineShowDate: true }, line: timeLine });
+    expect(await pushedDescription(fx, invoiceId)).toBe('Rebuilt the print queue — 0.50 h worked, 1.00 h billed — Sep 16, 2026');
+  });
+
+  runDb('frozen showDate off: a dated line pushes the pre-W04 text (#8605)', async () => {
+    const fx = await seed();
+    const invoiceId = await seedInvoice(fx, { taxable: true, taxTotal: '20.00', invoice: { lineShowDate: false }, line: timeLine });
+    expect(await pushedDescription(fx, invoiceId)).toBe('Rebuilt the print queue — 0.50 h worked, 1.00 h billed');
+  });
 
   runDb('pushes an issued invoice: one lookup, one PUT; the mapping is synced with the Xero id and ISO version', async () => {
     const fx = await seed();

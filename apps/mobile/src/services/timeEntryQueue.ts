@@ -703,7 +703,14 @@ async function drainQueue(send: (write: QueuedWrite) => Promise<void>): Promise<
       // Preserve the work for correction and let later writes continue.
       const billingOverrideDenied = write.kind === 'suggestion.confirm'
         && getStatus(error) === 403 && getStringField(error, 'code') === 'MANAGE_BILLING_REQUIRED';
-      if (isPermanentRejection(error) || billingOverrideDenied) {
+      // #8211: an offline site visit whose org or site access was revoked
+      // before reconnect. A 403 is normally retried (a role grant can fix it),
+      // but these codes are a verdict about the payload's org/site; retrying
+      // forever would wedge every billable write behind it.
+      const siteAccessRevoked = write.kind === 'create'
+        && getStatus(error) === 403
+        && (getStringField(error, 'code') === 'ORG_DENIED' || getStringField(error, 'code') === 'SITE_DENIED');
+      if (isPermanentRejection(error) || billingOverrideDenied || siteAccessRevoked) {
         const landed = await parkNeedsAttention({
           write,
           status: getStatus(error) as number,

@@ -63,7 +63,7 @@ memcpy. Frames 1–3 of a session still take the readback path so the black-fram
 content check can validate the converter.
 
 > **History warning:** an old comment claimed hardware MFTs "stall when fed
-> DXGI surface samples (tested on Kit)". That test predated the async fix — the
+> DXGI surface samples (tested on lab-hyperv-host)". That test predated the async fix — the
 > stall was the synchronous driving, not the surface input. Do not reintroduce
 > the readback on the strength of that comment.
 

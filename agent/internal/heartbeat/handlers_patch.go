@@ -294,14 +294,60 @@ func handleScheduleReboot(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	// Custom warning copy (#8030). Absent keys keep the built-in text; invalid
+	// ones are dropped and logged rather than failing the command — see
+	// patching.SanitizeRebootPromptText for why that, and not rejection, is
+	// the safe direction for text.
+	var promptIgnored []string
+	opts.Prompt, promptIgnored = rebootPromptTextFromPayload(cmd.Payload)
+
 	if err := h.rebootMgr.ScheduleWithOptions(delay, deadline, reason, source, opts); err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 
 	state := h.rebootMgr.State()
 	stateMap := rebootStateToMap(state)
+	if len(promptIgnored) > 0 {
+		// The API validates before sending, so this only happens on version
+		// skew or a validator mismatch. Report it on the command result so it
+		// is visible from the console, not only in this agent's log.
+		stateMap["promptTextIgnored"] = promptIgnored
+	}
 
 	return tools.NewSuccessResult(stateMap, time.Since(start).Milliseconds())
+}
+
+// rebootPromptTextFromPayload reads the optional #8030 prompt keys. A key that
+// is present but not a string is treated as absent (and logged), the same
+// fail-safe direction as allowDeferral above: it can only ever fall back to the
+// built-in text. The second result names every field that was present but
+// ignored ("title", "body", "button").
+func rebootPromptTextFromPayload(payload map[string]any) (patching.RebootPromptText, []string) {
+	var ignored []string
+	field := func(key, name string) string {
+		raw, present := payload[key]
+		if !present {
+			return ""
+		}
+		s, ok := raw.(string)
+		if !ok {
+			log.Warn("schedule_reboot prompt text is not a string; using the built-in text",
+				"key", key, "got", fmt.Sprintf("%T", raw))
+			ignored = append(ignored, name)
+			return ""
+		}
+		return s
+	}
+	text, dropped := patching.SanitizeRebootPromptText(patching.RebootPromptText{
+		Title:  field("promptTitle", "title"),
+		Body:   field("promptBody", "body"),
+		Button: field("promptButton", "button"),
+	})
+	if len(dropped) > 0 {
+		log.Warn("schedule_reboot prompt text failed validation; using the built-in text for those fields",
+			"fields", dropped)
+	}
+	return text, append(ignored, dropped...)
 }
 
 func handleCancelReboot(h *Heartbeat, _ Command) tools.CommandResult {
