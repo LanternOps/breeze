@@ -7,8 +7,8 @@ describe('security agent vendor registry (#6960)', () => {
     expect(listVendors().map((v) => v.key).sort()).toEqual([...SECURITY_AGENT_VENDOR_KEYS].sort());
   });
 
-  it('no vendor is enableable in the first wave', () => {
-    for (const vendor of listVendors()) expect(vendor.enableable, vendor.key).toBe(false);
+  it('only Huntress is enableable (W02); SentinelOne and the DNS vendors wait for their waves', () => {
+    expect(listVendors().filter((vendor) => vendor.enableable).map((vendor) => vendor.key)).toEqual(['huntress']);
   });
 
   it('Huntress: Windows supported, macOS needs MDM approval, Linux unsupported, keys from the EDR mapping', () => {

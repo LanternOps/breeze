@@ -11,9 +11,9 @@ import type { SecurityAgentPlatform, SecurityAgentVendorKey } from '@breeze/shar
  * vendors) and are substituted at dispatch.
  *
  * `enableable` gates the link-write path: a link may list a vendor with
- * `enabled: true` only when the vendor's install path is wired end to end. In
- * the first wave no vendor is, so every vendor is listed but none can be
- * switched on (`vendor_not_enableable`).
+ * `enabled: true` only when the vendor's install path is wired end to end.
+ * Huntress is; the others are listed but cannot be switched on yet
+ * (`vendor_not_enableable`).
  */
 
 export type VendorKey = SecurityAgentVendorKey;
@@ -71,7 +71,9 @@ const VENDORS: Readonly<Record<VendorKey, SecurityAgentVendor>> = Object.freeze(
     setupPath: '/integrations#huntress',
     platforms: { windows: 'supported', macos: 'requires_mdm', linux: 'unsupported' },
     presence: {},
-    enableable: false,
+    // W02: generator, readiness preflight, compliance/dispatch checks and the
+    // authoring tab are wired.
+    enableable: true,
   }),
   sentinelone: freezeVendor({
     key: 'sentinelone',
