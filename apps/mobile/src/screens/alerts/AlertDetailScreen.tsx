@@ -96,7 +96,10 @@ export function AlertDetailScreen({ route }: Props) {
   // The full server record, kept regardless of reboot eligibility so the
   // timestamps below come from it rather than from route params (#8891).
   const [record, setRecord] = useState<AlertModel | null>(null);
-  const [lookupFailed, setLookupFailed] = useState(false);
+  // Keyed to the alert id, like rebootSentFor, so a reused screen never shows
+  // the previous alert's failure for one frame.
+  const [lookupFailedFor, setLookupFailedFor] = useState<string | null>(null);
+  const lookupFailed = lookupFailedFor === alert.id;
   const createdAt = resolveCreatedAt(alert, record);
   const fresh = fetched && fetched.id === alert.id ? fetched : null;
   const rebootSent = rebootSentFor === alert.id;
@@ -113,7 +116,7 @@ export function AlertDetailScreen({ route }: Props) {
   useEffect(() => {
     setFetched(null);
     setRecord(null);
-    setLookupFailed(false);
+    setLookupFailedFor(null);
     if (!needsAlertLookup(alert)) return;
     let mounted = true;
     getAlert(alert.id)
@@ -128,7 +131,7 @@ export function AlertDetailScreen({ route }: Props) {
       // Only the Reboot now button depends on this; without it the screen
       // shows Acknowledge alone, as before.
       .catch(() => {
-        if (mounted) setLookupFailed(true);
+        if (mounted) setLookupFailedFor(alert.id);
       });
     return () => {
       mounted = false;
