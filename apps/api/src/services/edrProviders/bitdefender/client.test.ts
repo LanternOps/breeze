@@ -423,6 +423,24 @@ describe('GravityZoneClient write calls', () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  it.each([408, 502, 503, 504])(
+    'PR-B carry-forward: a gateway/proxy %i on a write is outcome_unknown (keeps the in-flight slot), never failed, never retried',
+    async (status) => {
+      const { impl, calls } = makeFetch([{ status, body: '<html>gateway timeout</html>' }]);
+      const { client, sleep } = makeClient(impl);
+      const err = await rejection(client.createIsolateEndpointTask('ep1', ACT));
+      expect(err).toMatchObject({ code: 'outcome_unknown', scope: 'operation', reauth: false });
+      expect(calls).toHaveLength(1);
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it('PR-B carry-forward: a 408 on a READ is transient and retried', async () => {
+    const { impl, calls } = makeFetch([{ status: 408, body: '<html>timeout</html>' }, { body: fx('endpoint-details.json') }]);
+    await makeClient(impl).client.getEndpointDetails('e1');
+    expect(calls).toHaveLength(2);
+  });
+
   it('never retries a write on a network error', async () => {
     const impl: GuardedFetch = vi.fn(async () => { throw new Error(`socket hang up ${API_KEY}`); });
     const { client, sleep } = makeClient(impl);

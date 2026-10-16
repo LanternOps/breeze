@@ -240,7 +240,10 @@ export class GravityZoneClient {
         rateLimitRetried = true;
         continue;
       }
-      if (status >= 500) {
+      // 408 is a proxy/gateway timeout like 502/504: the request may already have
+      // reached the vendor, so on a write it is `outcome_unknown` (the row keeps its
+      // in-flight slot for the reconciler), never a terminal failure; reads retry.
+      if (status >= 500 || status === 408) {
         transient(`HTTP ${status}`, 'upstream_error');
         await this.sleep(BACKOFF_BASE_MS * 2 ** (attempt - 1));
         continue;
