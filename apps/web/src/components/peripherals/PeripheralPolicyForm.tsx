@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X, Plus, Trash2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
-import { useOrgStore } from "../../stores/orgStore";
+import { useFleetOrgOwner } from "@/hooks/useFleetOrgOwner";
 import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
 import { extractApiError } from "@/lib/apiError";
 import { useTranslation } from "react-i18next";
@@ -50,11 +50,13 @@ export default function PeripheralPolicyForm({
   // Ownership axis (#2131, mirrors software PolicyForm #2126): partner-scope
   // creators may own the policy partner-wide ("all orgs"). Gate on the JWT
   // scope; default to partner-wide when viewing All orgs. Create-only.
-  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const [ownerScope, setOwnerScope] = useState<"organization" | "partner">(
     defaultOwnerScope,
   );
+  // An org-owned create must name its org in the body (#8338). Same hook as the
+  // DNS integration and device group create forms (#3563).
+  const fleet = useFleetOrgOwner();
 
   const [name, setName] = useState(policy?.name ?? "");
   const [deviceClass, setDeviceClass] = useState(
@@ -103,6 +105,16 @@ export default function PeripheralPolicyForm({
     } else if (isPartnerScope) {
       // Create-only: updates never move a policy between ownership axes.
       body.ownerScope = ownerScope;
+    }
+
+    // An org-owned create carries its org in the body (#8338); partner-wide carries none.
+    if (!isEdit && ownerScope === "organization") {
+      if (fleet.needsOrgSelection) {
+        setSaving(false);
+        setError(t("common:layout.orgRequired.title"));
+        return;
+      }
+      body.orgId = fleet.bodyOrgId;
     }
 
     try {
@@ -199,6 +211,31 @@ export default function PeripheralPolicyForm({
                 {t("peripheralPolicyForm.thisOrganization")}
               </label>
             </fieldset>
+          )}
+
+          {/* All-organizations view: an org-owned policy needs an owner (#8338). */}
+          {!isEdit && ownerScope === "organization" && fleet.isFleetScope && (
+            <div>
+              <label className="text-sm font-medium" htmlFor="peripheral-policy-org">
+                {t("common:labels.organization")}
+              </label>
+              <select
+                id="peripheral-policy-org"
+                value={fleet.orgId}
+                onChange={(e) => fleet.setOrgId(e.target.value)}
+                className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                data-testid="peripheral-policy-org-picker"
+              >
+                <option value="" disabled>
+                  {t("common:layout.org.noSelection")}
+                </option>
+                {fleet.organizations.map((org) => (
+                  <option key={org.id} value={org.id}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
 
           <div>
@@ -398,7 +435,11 @@ export default function PeripheralPolicyForm({
             </button>
             <button
               type="submit"
-              disabled={saving || !name.trim()}
+              disabled={
+                saving ||
+                !name.trim() ||
+                (!isEdit && ownerScope === "organization" && fleet.needsOrgSelection)
+              }
               className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               {saving

@@ -80,7 +80,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
     2. Verify the download passes Gatekeeper's notarization assessment (`spctl --assess`) before installing it as root
     3. `sudo installer -pkg breeze-agent.pkg -target /`
     4. Read `enrollment.json` via `plutil -extract`
-    5. Invoke `sudo /usr/local/bin/breeze-agent enroll <key> --server <url> [--enrollment-secret <secret>]` (the site comes from the enrollment key; the installer no longer passes the deprecated `--site-id`)
+    5. Invoke `sudo <agent> enroll <key> --server <url> [--enrollment-secret <secret>]`, where `<agent>` is the binary the package installed: `/Library/Breeze/bin/breeze-agent` when the package put it there, otherwise `/usr/local/bin/breeze-agent` (the site comes from the enrollment key; the installer no longer passes the deprecated `--site-id`)
     6. Delete `enrollment.json` and the downloaded pkg
   </TabItem>
 </Tabs>

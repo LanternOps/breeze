@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -340,6 +341,26 @@ func TestIdentityAssertionRefusalIsReportedOnTheNextBeat(t *testing.T) {
 				rollback := &identityRollbackController{}
 				rollback.active.Store(true)
 				h.rollbackController = rollback
+			},
+		},
+		// #8623 — local write failures are retried, not reported as gave_up.
+		"restart marker cannot be written (will retry)": {
+			setup: func(t *testing.T, s *identitySeams, _ *Heartbeat) {
+				t.Setenv("BREEZE_ORG_ID", "")
+				t.Setenv("BREEZE_SITE_ID", "")
+				s.markerPath = filepath.Join(t.TempDir(), "missing-dir", identityRestartMarkerFile)
+			},
+		},
+		"restart marker cannot be written under an environment override (will retry)": {
+			setup: func(t *testing.T, s *identitySeams, _ *Heartbeat) {
+				t.Setenv("BREEZE_ORG_ID", identityTestOrgA)
+				s.markerPath = filepath.Join(t.TempDir(), "missing-dir", identityRestartMarkerFile)
+			},
+		},
+		"agent.yaml cannot be written (will retry)": {
+			setup: func(_ *testing.T, _ *identitySeams, _ *Heartbeat) {
+				// withIdentitySeams restores the real seam on cleanup.
+				persistServerIdentityFn = func(string, string, string, uint64) error { return errors.New("disk full") }
 			},
 		},
 	}

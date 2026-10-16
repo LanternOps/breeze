@@ -1591,11 +1591,11 @@ describe('POST /agents/:id/heartbeat — identity sync refusals (#8382)', () => 
   const oldIdentity = { deviceId: DEVICE_ID, orgId: ORG_A, siteId: SITE_A, nonce: NONCE };
 
   // The row the agent authenticated as now lives in org B / site B.
-  function queueMovedDeviceRow() {
+  function queueMovedDeviceRow(id: string = DEVICE_ID) {
     selectMock.mockReturnValueOnce(
       selectChainResolving([
         {
-          id: DEVICE_ID,
+          id,
           orgId: ORG_B,
           siteId: SITE_B,
           hostname: 'host-1',
@@ -1647,6 +1647,9 @@ describe('POST /agents/:id/heartbeat — identity sync refusals (#8382)', () => 
     await useRedis(null);
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
+    // clearAllMocks keeps queued mockReturnValueOnce rows; one left over by an
+    // earlier test would be read as this test's device row.
+    selectMock.mockReset();
     queueMovedDeviceRow();
     updateMock.mockReturnValue({
       set: vi.fn(() => ({
@@ -1743,6 +1746,23 @@ describe('POST /agents/:id/heartbeat — identity sync refusals (#8382)', () => 
     queueMovedDeviceRow();
     await beat({ ...capable, reportedIdentity: { ...oldIdentity, deviceId: otherDevice } });
     expect(identityWarnings('device id that is not the device its credential belongs to')).toHaveLength(1);
+  });
+
+  // #8623 — the limit is per device: a second device with a copied agent.yaml
+  // is not hidden behind the first one's warning.
+  it('rate-limits the device-id mismatch per device, not fleet-wide', async () => {
+    const SECOND_DEVICE_ID = '00000000-0000-4000-8000-000000000005';
+    const otherDevice = '00000000-0000-4000-8000-000000000099';
+    await beat({ ...capable, reportedIdentity: { ...oldIdentity, deviceId: otherDevice } });
+    queueMovedDeviceRow();
+    await beat({ ...capable, reportedIdentity: { ...oldIdentity, deviceId: otherDevice } });
+    expect(identityWarnings('device id that is not the device its credential belongs to')).toHaveLength(1);
+
+    queueMovedDeviceRow(SECOND_DEVICE_ID);
+    await beat({ ...capable, reportedIdentity: { ...oldIdentity, deviceId: otherDevice } });
+    const mismatch = identityWarnings('device id that is not the device its credential belongs to');
+    expect(mismatch).toHaveLength(2);
+    expect(mismatch[1]?.[1]).toEqual({ agentId: 'device-1', reportedDeviceId: otherDevice, rowDeviceId: SECOND_DEVICE_ID });
   });
 
   it('does not warn about a device id from an agent without the capability', async () => {
@@ -2457,6 +2477,66 @@ describe('shouldLogWatchdogRestartActivity (flap-log dedupe unit)', () => {
     // dev-0 (oldest-inserted) was evicted → no longer suppressed.
     expect(shouldLog('dev-0', 'sig', t0 + 61_000)).toBe(true);
     expect(shouldLog('dev-new', 'sig', t0 + 61_000)).toBe(false);
+  });
+});
+
+// #8623 — the device-id mismatch warning is limited per device, in a map that
+// stays bounded on a 10k+ agent fleet.
+describe('claimIdentityDeviceMismatchWarning (per-device limit unit)', () => {
+  const INTERVAL = 10 * 60 * 1000;
+  const CAP = 10_000;
+
+  beforeEach(async () => {
+    const { resetIdentitySyncLogStateForTests } = await import('./heartbeat');
+    resetIdentitySyncLogStateForTests();
+  });
+
+  it('limits each device on its own and re-arms after the interval', async () => {
+    const { claimIdentityDeviceMismatchWarning: claim } = await import('./heartbeat');
+    const t0 = 1_000_000;
+    expect(claim('dev-a', t0)).toBe(true);
+    // dev-a beating every minute does not use up a fleet-wide limit...
+    for (let i = 1; i < 10; i++) expect(claim('dev-a', t0 + i * 60_000)).toBe(false);
+    // ...so dev-b is still logged.
+    expect(claim('dev-b', t0 + 9 * 60_000)).toBe(true);
+    expect(claim('dev-b', t0 + 9 * 60_000 + 1)).toBe(false);
+    expect(claim('dev-a', t0 + INTERVAL)).toBe(true);
+    // The clock stepped back an hour: the device is not muted until it catches up.
+    expect(claim('dev-a', t0 + INTERVAL - 60 * 60_000)).toBe(true);
+    expect(claim('dev-a', t0 + INTERVAL - 60 * 60_000 + 60_000)).toBe(false);
+  });
+
+  it('bounds the map: a full map drops the entries past the interval', async () => {
+    const {
+      claimIdentityDeviceMismatchWarning: claim,
+      identityDeviceMismatchLogSizeForTests: size,
+    } = await import('./heartbeat');
+    const t0 = 1_000_000;
+    for (let i = 0; i < CAP; i++) claim(`dev-${i}`, t0 + i);
+    expect(size()).toBe(CAP);
+    // dev-0 … dev-4999 are past the interval by now; the rest are not.
+    const now = t0 + INTERVAL + CAP / 2 - 1;
+    expect(claim('dev-new', now)).toBe(true);
+    expect(size()).toBe(CAP / 2 + 1);
+    expect(claim(`dev-${CAP / 2}`, now)).toBe(false);
+    expect(claim(`dev-${CAP - 1}`, now)).toBe(false);
+  });
+
+  it('bounds the map when every entry is recent: drops the one logged longest ago', async () => {
+    const {
+      claimIdentityDeviceMismatchWarning: claim,
+      identityDeviceMismatchLogSizeForTests: size,
+    } = await import('./heartbeat');
+    const t0 = 1_000_000;
+    for (let i = 0; i < CAP; i++) claim(`dev-${i}`, t0);
+    // Logged again after the interval, in reverse: the eviction order follows
+    // the latest log, so dev-(CAP-1) is now the one logged longest ago.
+    for (let i = CAP - 1; i >= 0; i--) expect(claim(`dev-${i}`, t0 + INTERVAL)).toBe(true);
+    expect(claim('dev-new', t0 + INTERVAL + 1)).toBe(true);
+    expect(size()).toBe(CAP);
+    expect(claim('dev-0', t0 + INTERVAL + 2)).toBe(false);
+    expect(claim(`dev-${CAP - 1}`, t0 + INTERVAL + 2)).toBe(true);
+    expect(size()).toBe(CAP);
   });
 });
 
@@ -3822,6 +3902,27 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.peripheralPolicyProtocolVersion).toBe(expectedPeripheral);
     expect(updateArg.rollbackProtocolVersion).toBe(expectedRollback);
     expect(updateArg.pamLifetimeProtocolVersion).toBe(expectedPam);
+  });
+
+  it.each([
+    { capabilities: { pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 1 }, expected: 1 },
+    { capabilities: undefined, expected: 0 },
+    { capabilities: {}, expected: 0 },
+    { capabilities: { pamReconciliationResetProtocolVersion: 0 }, expected: 0 },
+    { capabilities: { pamReconciliationResetProtocolVersion: 2 }, expected: 0 },
+    { capabilities: { pamReconciliationResetProtocolVersion: 1.5 }, expected: 0 },
+    { capabilities: { pamReconciliationResetProtocolVersion: '1' }, expected: 0 },
+  ])('rewrites the independent PAM reset capability without stale or inferred support: %j', async ({ capabilities, expected }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+    const response = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...minimalHeartbeatBody, securityCapabilities: capabilities }),
+    });
+    expect(response.status).toBe(200);
+    const update = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(update.pamReconciliationResetProtocolVersion).toBe(expected);
+    expect(update.pamLifetimeProtocolVersion).toBe(0);
   });
 
   // #5537 — desktopFenceProtocolVersion is recorded non-sticky on
@@ -7238,7 +7339,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         ...minimalHeartbeatBody,
-        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
+        securityCapabilities: { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
       }),
     });
 
@@ -7250,7 +7351,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
       'device-1', 10, 'agent', undefined,
-      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2 },
+      { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
     );
   });
 
@@ -7289,7 +7390,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
       10,
       'agent',
       ['self_uninstall'],
-      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0 },
+      { peripheralPolicyProtocolVersion: 0, rollbackProtocolVersion: 0, pamLifetimeProtocolVersion: 0, pamReconciliationResetProtocolVersion: 0 },
     );
   });
 

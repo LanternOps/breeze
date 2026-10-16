@@ -811,9 +811,9 @@ Network discovery, SNMP polling, and connectivity checks for monitoring.
 
 | Param | Type | Default | Description |
 |---|---|---|---|
-| `subnets` | string[] | -- | CIDR subnets to scan (e.g. `["192.168.1.0/24"]`) |
+| `subnets` | string[] | Required | CIDR subnets to scan (e.g. `["192.168.1.0/24"]`) |
 | `excludeIps` | string[] | -- | IP addresses to skip |
-| `methods` | string[] | -- | Scan methods: `ping`, `arp`, `port` |
+| `methods` | string[] | `arp`, `ping`, `port_scan`, `snmp` | Scan methods: `ping`, `arp`, `port_scan` (or `ports`), `snmp` |
 | `portRanges` | string[] | -- | Port ranges for port scanning (e.g. `["22", "80", "443"]`) |
 | `snmpCommunities` | string[] | -- | SNMPv1/v2c community strings to try |
 | `snmpCredentials` | object | -- | Structured SNMP credential (`version`, `username`, `authProtocol`, `authPassphrase`, `privacyProtocol`, `privacyPassphrase`, `port`, `timeout` in ms, `retries`); tried before `snmpCommunities`. `public` is only used when neither is set |

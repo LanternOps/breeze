@@ -4,6 +4,7 @@ import JSZip from 'jszip';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { Readable } from 'node:stream';
 import {
   buildMacosInstallerZip,
@@ -1259,7 +1260,7 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     const zip = await JSZip.loadAsync(zipBuffer);
     const script = await zip.files['install.sh']!.async('string');
     expect(script).toContain('#!/bin/bash');
-    expect(script).toContain('breeze-agent enroll');
+    expect(script).toContain('sudo "$AGENT_BIN" enroll');
     expect(script).toContain('enrollment.json');
   });
 
@@ -1273,7 +1274,7 @@ describe('buildMacosInstallerZip — install.sh content', () => {
 
     const zip = await JSZip.loadAsync(zipBuffer);
     const script = await zip.files['install.sh']!.async('string');
-    expect(script).toContain('breeze-agent enroll');
+    expect(script).toContain('sudo "$AGENT_BIN" enroll');
     expect(script).not.toContain('--site-id');
   });
 
@@ -1360,6 +1361,69 @@ describe('buildMacosInstallerZip — install.sh content', () => {
     // enrollment.json holds the enrollment secret — the EXIT trap must remove it
     // so a failed/aborted install never leaves it in the extracted download dir.
     expect(script).toMatch(/trap '.*rm -f "\$ENROLLMENT_JSON".*' EXIT/);
+  });
+});
+
+describe('buildMacosInstallerZip — enrolls with the binary the .pkg installed (#8778)', () => {
+  // The .pkg installs to /Library/Breeze/bin or /usr/local/bin
+  // (agent/installer/macos/install-location.sh). Run the script's resolver
+  // against temp directories standing in for the two real ones.
+  let tmp: string;
+  let legacy: string;
+  let trusted: string;
+  let fn: string;
+
+  beforeEach(async () => {
+    const zipBuffer = await buildMacosInstallerZip({
+      serverUrl: 'https://x.com',
+      enrollmentKey: realEnrollmentKey(),
+      enrollmentSecret: '',
+      siteId: '550e8400-e29b-41d4-a716-446655440000',
+    });
+    const script = await (await JSZip.loadAsync(zipBuffer)).files['install.sh']!.async('string');
+    const m = script.match(/^resolve_macos_agent_bin\(\) \{[\s\S]*?^\}$/m);
+    expect(m, 'install.sh defines resolve_macos_agent_bin').not.toBeNull();
+    fn = m![0];
+    expect(script).not.toContain('sudo /usr/local/bin/breeze-agent enroll');
+    tmp = mkdtempSync(join(tmpdir(), 'breeze-mac-zip-bin-'));
+    legacy = join(tmp, 'usr-local-bin');
+    trusted = join(tmp, 'Library-Breeze-bin');
+    mkdirSync(legacy);
+    mkdirSync(trusted);
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function resolve(): { code: number; out: string } {
+    const harness = `${fn}\nMACOS_LEGACY_BIN_DIR='${legacy}'\nMACOS_TRUSTED_BIN_DIR='${trusted}'\nresolve_macos_agent_bin`;
+    try {
+      return { code: 0, out: execFileSync('bash', ['-c', harness]).toString().trim() };
+    } catch (e) {
+      return { code: (e as { status?: number }).status ?? 1, out: '' };
+    }
+  }
+  const agent = (dir: string) => writeFileSync(join(dir, 'breeze-agent'), '#!/bin/sh\n', { mode: 0o755 });
+
+  it('uses /Library/Breeze/bin when the .pkg installed there', () => {
+    agent(trusted);
+    expect(resolve()).toEqual({ code: 0, out: join(trusted, 'breeze-agent') });
+  });
+
+  it('uses /usr/local/bin when the .pkg installed there', () => {
+    agent(legacy);
+    expect(resolve()).toEqual({ code: 0, out: join(legacy, 'breeze-agent') });
+  });
+
+  it('prefers /Library/Breeze/bin over a leftover /usr/local/bin copy', () => {
+    agent(legacy);
+    agent(trusted);
+    expect(resolve()).toEqual({ code: 0, out: join(trusted, 'breeze-agent') });
+  });
+
+  it('fails when neither location has an executable agent', () => {
+    expect(resolve().code).not.toBe(0);
   });
 });
 

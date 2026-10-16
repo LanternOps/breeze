@@ -68,13 +68,19 @@ const relativeTimeValueSchema = z.object({
 // leading means an ISO date string stays a string (harmless — Postgres coerces
 // it against the column), while `z.coerce.date()` only ever fires for a real
 // `Date` instance or inside the range schemas.
+//
+// The arrays MUST come before `z.coerce.date()`: coercion calls `new Date(v)`,
+// and `new Date(['server-1'])` stringifies the one-element array and parses it
+// as 2001-01-01. A single "is any of" / "has" selection such as `['Floor 2']`
+// was turned into a Date, and the filter engine then failed with "Value must
+// be array" (#8760 review).
 export const filterValueSchema = z.union([
   z.string(),
   z.number(),
   z.boolean(),
-  z.coerce.date(),
   z.array(z.string()),
   z.array(z.number()),
+  z.coerce.date(),
   numberRangeValueSchema,
   dateRangeValueSchema,
   relativeTimeValueSchema

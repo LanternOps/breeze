@@ -394,7 +394,16 @@ function candidateUpsertAssignments(): SQL {
  * not used: their window_start is the start of a multi-bucket trend window, not
  * an anomalous bucket (plan deviation 6).
  */
-function openEpisodeBucketsSql(orgId: string, sourceTable: 'device_metrics' | 'device_process_samples'): SQL {
+function openEpisodeBucketsSql(
+  orgId: string,
+  sourceTable: 'device_metrics' | 'device_process_samples',
+  window: { fromIso: string; lookbackHours: number },
+): SQL {
+  // A baseline bucket lies in [r.bucket_start - lookback, r.bucket_start) with
+  // r.bucket_start >= from, so no open row older than `from - lookback` can
+  // ever match the LEFT JOIN. Bounding here keeps stale open rows (US prod
+  // 2026-10-12: 860 three-week-old pre-episode rows on one org) out of the
+  // per-row join entirely instead of being probed and discarded 192k times.
   return sql`
     SELECT ma.device_id, ma.metric_name, ma.window_start
     FROM metric_anomaly_episodes e
@@ -404,6 +413,7 @@ function openEpisodeBucketsSql(orgId: string, sourceTable: 'device_metrics' | 'd
       AND ma.org_id = ${orgId}
       AND ma.source_table = ${sourceTable}
       AND ma.anomaly_type NOT IN ('memory_growth', 'disk_growth')
+      AND ma.window_start >= ${window.fromIso}::timestamp - (${window.lookbackHours} * interval '1 hour')
     UNION
     -- Rows still waiting on the persistence gate (open, no episode yet): left
     -- in, a pending bucket would raise baseline_max and the novelty gate would
@@ -415,6 +425,7 @@ function openEpisodeBucketsSql(orgId: string, sourceTable: 'device_metrics' | 'd
       AND ma.status = 'open'
       AND ma.source_table = ${sourceTable}
       AND ma.anomaly_type NOT IN ('memory_growth', 'disk_growth')
+      AND ma.window_start >= ${window.fromIso}::timestamp - (${window.lookbackHours} * interval '1 hour')
   `;
 }
 
@@ -487,7 +498,7 @@ async function detectBaselineDeviations(options: MetricAnomalyRange): Promise<vo
         AND mr.avg_value IS NOT NULL
         AND mr.sample_count > 0
     ),
-    open_episode_buckets AS (${openEpisodeBucketsSql(options.orgId, 'device_metrics')}),
+    open_episode_buckets AS (${openEpisodeBucketsSql(options.orgId, 'device_metrics', { fromIso, lookbackHours: BASELINE_LOOKBACK_HOURS })}),
     baseline AS (
       SELECT
         r.org_id,
@@ -855,7 +866,7 @@ async function detectProcessSampleRunaways(options: MetricAnomalyRange): Promise
         AND mr.avg_value IS NOT NULL
         AND mr.sample_count > 0
     ),
-    open_episode_buckets AS (${openEpisodeBucketsSql(options.orgId, 'device_process_samples')}),
+    open_episode_buckets AS (${openEpisodeBucketsSql(options.orgId, 'device_process_samples', { fromIso, lookbackHours: BASELINE_LOOKBACK_HOURS })}),
     baseline AS (
       SELECT
         r.org_id,

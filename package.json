@@ -6,6 +6,7 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "dev": "turbo run dev",
+    "dev:app": "turbo run dev --filter=@breeze/api --filter=@breeze/web --filter=@breeze/portal",
     "build": "turbo run build",
     "lint": "node --test scripts/eslint/no-direct-sqlstate.test.mjs && turbo run lint",
     "test": "turbo run test",

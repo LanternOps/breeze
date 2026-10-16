@@ -4280,7 +4280,16 @@
     "partnerCurrencyUnavailable": "İş ortağınızın para birimi yüklenemedi.",
     "retry": "Yeniden dene",
     "priceCouldNotBeSavedRetry": "{{currency}} fiyatı kaydedilemedi. Yeniden deneyin.",
-    "priceCouldNotBeRemovedRetry": "{{currency}} fiyatı kaldırılamadı. Yeniden deneyin."
+    "priceCouldNotBeRemovedRetry": "{{currency}} fiyatı kaldırılamadı. Yeniden deneyin.",
+    "billing": "Faturalandırma",
+    "billingOneTime": "Tek seferlik",
+    "billingRecurring": "Yinelenen",
+    "billingFrequency": "Sıklık",
+    "frequencyMonthly": "Aylık",
+    "frequencyAnnual": "Yıllık",
+    "commitmentTerm": "Taahhüt süresi (ay)",
+    "commitmentTermPlaceholder": "ör. 12",
+    "commitmentTermRange": "Taahhüt süresi: 1 ile 120 ay arasında bir tam sayı girin."
   },
   "catalogItemsTab": {
     "itemArchived": "Öğe arşivlendi",
