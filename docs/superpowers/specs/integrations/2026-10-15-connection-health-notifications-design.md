@@ -10,7 +10,7 @@
   - long-open incidents decay to weekly mentions;
   - customer admins are off by default (open question 1).
 
-**Trigger:** On 2026-10-05 a customer's third-party AI agent had its Breeze OAuth grant revoked automatically for refresh-token reuse. The agent never re-authorized. It retried the dead refresh token about 750 times an hour for ten days. Nobody was told: not the user who owned the grant, not their MSP, and not us. We found it from log volume.
+**Trigger:** A third-party MCP client had its Breeze OAuth grant revoked automatically for refresh-token reuse, never re-authorized, and kept looping on the revoked refresh token. Nobody was told: not the user who owned the grant, not their MSP, and not the operator.
 
 The same silence applies to every outbound integration. Most of them already record a failure (`last_sync_status = 'error'`, `status = 'reauth_required'`, and so on), but nothing reads that column until someone happens to open the right page.
 
@@ -65,7 +65,7 @@ export type HealthObservation = {
   severity: 'permanent' | 'transient';   // permanent = needs a human (reauth, revoked)
   condition: string;                     // stable code: 'reauth_required', 'sync_failed', 'grant_revoked_reuse', …
   detail: string | null;                 // already sanitized by the adapter (§7), at most 300 chars
-  displayName: string;                   // "Huntress", "Hermes Agent (OAuth app)"
+  displayName: string;                   // "Huntress", "Example Agent (OAuth app)"
   fixHref: string;                       // relative path; validated against the CHECK in user_notifications
   viewPermission: Permission;            // who may see it
   repairPermission: Permission;          // who receives it
