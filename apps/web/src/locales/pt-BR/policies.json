@@ -1121,6 +1121,22 @@
         "aboutTitle": "Sobre a Restauração do Sistema",
         "aboutBody": "Aplica-se apenas a dispositivos Windows. A Restauração do Sistema abrange arquivos do sistema, o registro, programas instalados e configurações. Não é um backup e não abrange arquivos pessoais. Por padrão, o Windows limita a criação de pontos de restauração a um a cada 24 horas, e um ponto criado pode ser removido depois pelo Windows ou se tornar inutilizável."
       },
+      "securityAgentsTab": {
+        "title": "Agentes de segurança",
+        "description": "Implante e mantenha instalados agentes de segurança gerenciados nos dispositivos",
+        "deployVendor": "Implantar {{vendor}}",
+        "comingSoon": "Em breve",
+        "platformWindows": "Windows: instalado automaticamente.",
+        "platformMacos": "macOS: exige aprovação de MDM, portanto o Breeze não o instala automaticamente. Esses dispositivos aparecem como não aplicáveis.",
+        "platformLinux": "Linux: sem suporte.",
+        "keysNotice": "As instalações usam as chaves por cliente da integração com a Huntress. Organizações que não estão mapeadas nessa integração são ignoradas e aparecem como não aplicáveis, sem implantações com falha. Desativar um fornecedor interrompe a aplicação, mas nunca desinstala o agente.",
+        "closerWarning": "Uma política de configuração atribuída mais perto do dispositivo (site, grupo ou dispositivo, ou uma política filha que herda) com configurações próprias de agentes de segurança substitui totalmente estas configurações para esses dispositivos. Um fornecedor omitido ali não é aplicado.",
+        "partnerWideBadge": "Aplica-se a todas as organizações",
+        "noneEnabledNote": "Nenhum fornecedor está ativado: os dispositivos alcançados por esta política ficam fora de todos os agentes de segurança.",
+        "catalogMissing": "A Huntress ainda não está configurada para este parceiro. Conecte primeiro a integração com a Huntress e salve novamente.",
+        "catalogMissingLink": "Conectar Huntress",
+        "executeRequired": "Ativar as instalações exige permissão para executar comandos nos dispositivos, com MFA. Peça a um administrador com essa permissão para salvar esta configuração."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Os alertas de garantia são opcionais: dispositivos sem uma política de garantia atribuída nunca geram alertas. Os limites abaixo se aplicam somente à cobertura por prazo determinado — assinaturas ativas do AppleCare são renovadas em vez de expirar, portanto seus alertas de vencimento são sempre suprimidos.",
         "enableWarrantyExpiryAlerts": "Ativar alertas de vencimento da garantia",
@@ -1339,7 +1355,9 @@
       "installSkippedNoCatalog": "Uma regra obrigatória não tem um item de catálogo vinculado, então não há nada para instalar. Adicione um vínculo de catálogo no editor de políticas para corrigir isso.",
       "installSkippedCapOrPlatform": "Não é uma falha — o limite de instalações por passagem foi atingido ou a plataforma deste dispositivo não tem um método de instalação para o software. Pode ser tentado novamente na próxima passagem.",
       "installAttempts": "{{count}} tentativa(s)",
-      "installLastAttempt": "Última tentativa de instalação: "
+      "installLastAttempt": "Última tentativa de instalação: ",
+      "managedByConfigPolicy": "Gerenciada por política de configuração",
+      "managedByConfigPolicyHint": "Esta política é gerada a partir de uma política de configuração e é somente leitura aqui. Altere-a em Políticas de configuração."
     },
     "deploymentList": {
       "running": "Em execução",
