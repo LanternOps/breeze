@@ -1,6 +1,6 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { sqlValue } from '../db/sqlValues';
+import { sqlTextArray, sqlValue } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { devices, deviceCustomFieldValues, deviceHardware, deviceHardwareHealth, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
@@ -596,12 +596,6 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     throw new Error(`Unsupported operator for groupId: ${operator}`);
   }
   throw new Error(`Unsupported table: ${fieldInfo.table}`);
-}
-
-function sqlTextArray(values: readonly unknown[]): SQL {
-  return values.length === 0
-    ? sql`ARRAY[]::text[]`
-    : sql`ARRAY[${sql.join(values.map((v) => sql`${sqlValue(v)}::text`), sql`, `)}]::text[]`;
 }
 
 // Build a SQL predicate applying an operator to a column expression. The

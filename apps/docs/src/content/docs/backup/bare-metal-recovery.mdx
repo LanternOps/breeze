@@ -57,6 +57,13 @@ The media is a Debian live system with the `breeze-backup` binary and nothing el
   supports cross-snapshot references. An older ISO is refused with a
   message telling you to download the current recovery media and boot
   again — the target disk is never touched.
+
+  Recovery media and recovery tools older than v0.120.0 are refused at
+  code exchange and authentication with **This recovery tool is too old to
+  check backup integrity.** Rebuild or download current media before you
+  need it. Recovering from a **Not verified** (unattested) snapshot also
+  needs a technician's two-factor confirmation; see
+  [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore).
 </Aside>
 
 <Aside type="note">

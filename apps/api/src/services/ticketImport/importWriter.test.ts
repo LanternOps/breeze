@@ -1,8 +1,9 @@
 /**
  * The import writer's planning rules (#8313; spec §4.6), without a database:
- * the final-status path, the resume header re-apply (deviation from §4.6 for
- * a cutover's delta pass), and the up-front validation. The transactions
- * themselves run against Postgres in ticketImport.integration.test.ts.
+ * the final-status path and its Breeze-wins rule on resume, the resume header
+ * re-apply (deviation from §4.6 for a cutover's delta pass), comment chunking,
+ * and the up-front validation. The transactions themselves run against
+ * Postgres in ticketImport.integration.test.ts.
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -14,7 +15,15 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(),
 }));
 
-import { finalStatusSteps, headerChanges, importTicket } from './importWriter';
+import {
+  chunkComments,
+  finalStatusSteps,
+  headerChanges,
+  IMPORT_COMMENT_CHUNK_BYTES,
+  IMPORT_COMMENT_CHUNK_SIZE,
+  importTicket,
+  statusSteps,
+} from './importWriter';
 import { parseImportedTicket, type ImportedTicket } from './importedTicket';
 
 const PRINCIPAL = '44444444-4444-4444-8444-444444444444';
@@ -93,6 +102,82 @@ describe('finalStatusSteps — from the current status to the source final statu
 
   it('moves between active statuses at the source update time', () => {
     expect(finalStatusSteps('new', ticket({ finalStatus: 'on_hold' }))).toEqual([{ status: 'on_hold', at: at(300) }]);
+  });
+});
+
+describe('statusSteps — the source status applies only while the import set it last', () => {
+  const closedInSource = ticket({ finalStatus: 'closed', resolvedAt: at(100), closedAt: at(200), resolutionNote: 'Fixed' });
+
+  it('applies the source status when the ticket has no status_change row: a first import, or a pass stopped before its status', () => {
+    expect(statusSteps('new', null, closedInSource, PRINCIPAL)).toEqual({
+      steps: [{ status: 'resolved', at: at(100), resolutionNote: 'Fixed' }, { status: 'closed', at: at(200) }],
+      skipped: false,
+    });
+  });
+
+  it('applies it while this import principal wrote the latest status_change row', () => {
+    expect(statusSteps('open', ourAssignment, closedInSource, PRINCIPAL).steps).toHaveLength(2);
+    // A reopen-then-resolve pair is applied whole.
+    expect(statusSteps('closed', ourAssignment, ticket({ finalStatus: 'resolved', resolvedAt: at(250) }), PRINCIPAL)).toEqual({
+      steps: [{ status: 'open', at: at(250) }, { status: 'resolved', at: at(250) }],
+      skipped: false,
+    });
+  });
+
+  it.each([
+    ['a technician', { kind: 'user', principalId: null }],
+    ["the inbound pipeline's requester reopen (system actor, user origin)", { kind: 'user', principalId: null }],
+    ['an AI agent', { kind: 'ai_agent', principalId: 'agent-1' }],
+    ['another integration', { kind: 'service_principal', principalId: 'other-principal' }],
+  ])('keeps the Breeze status, whole, when %s changed it last', (_label, last) => {
+    expect(statusSteps('resolved', last, closedInSource, PRINCIPAL)).toEqual({ steps: [], skipped: true });
+    expect(statusSteps('pending', last, ticket({ finalStatus: 'resolved', resolvedAt: at(50) }), PRINCIPAL)).toEqual({ steps: [], skipped: true });
+  });
+
+  it('reports nothing skipped when the status already matches the source', () => {
+    expect(statusSteps('closed', { kind: 'user', principalId: null }, closedInSource, PRINCIPAL)).toEqual({ steps: [], skipped: false });
+    expect(statusSteps('open', { kind: 'user', principalId: null }, ticket({ finalStatus: 'new' }), PRINCIPAL)).toEqual({ steps: [], skipped: false });
+  });
+});
+
+describe('chunkComments — at most IMPORT_COMMENT_CHUNK_SIZE comments and IMPORT_COMMENT_CHUNK_BYTES of content per transaction', () => {
+  const comment = (id: string, content: string) => ({
+    sourceId: id, createdAt: at(1), isPublic: false, author: { kind: 'staff' as const, name: 'Tess' }, content,
+  });
+  const ids = (chunks: Array<Array<{ sourceId: string }>>) => chunks.map((chunk) => chunk.map((c) => c.sourceId));
+
+  it('bounds a chunk by count, in order, and returns nothing for no comments', () => {
+    const many = Array.from({ length: 5 }, (_, i) => comment(`c${i}`, 'x'));
+    expect(ids(chunkComments(many, 2, 1_000))).toEqual([['c0', 'c1'], ['c2', 'c3'], ['c4']]);
+    expect(chunkComments([], 2, 1_000)).toEqual([]);
+  });
+
+  it('bounds a chunk by content bytes: a chunk never passes the bound', () => {
+    const list = [comment('a', 'x'.repeat(400)), comment('b', 'x'.repeat(400)), comment('c', 'x'.repeat(200)), comment('d', 'x'.repeat(1))];
+    expect(ids(chunkComments(list, 100, 1_000))).toEqual([['a', 'b', 'c'], ['d']]);
+  });
+
+  it('counts UTF-8 bytes, not characters', () => {
+    // 'é' is 2 bytes and '€' 3 in UTF-8: 300 characters, 600 and 900 bytes.
+    const list = [comment('a', 'é'.repeat(300)), comment('b', '€'.repeat(300)), comment('c', 'x'.repeat(300))];
+    expect(ids(chunkComments(list, 100, 1_000))).toEqual([['a'], ['b'], ['c']]);
+  });
+
+  it('puts a comment larger than the bound in a chunk of its own', () => {
+    const list = [comment('a', 'x'), comment('big', 'x'.repeat(2_000)), comment('b', 'x')];
+    expect(ids(chunkComments(list, 100, 1_000))).toEqual([['a'], ['big'], ['b']]);
+  });
+
+  it('keeps 100 ordinary comments in one chunk, and splits comments of the largest allowed size', () => {
+    const ordinary = Array.from({ length: 100 }, (_, i) => comment(`m${i}`, 'x'.repeat(4_000)));
+    expect(chunkComments(ordinary, IMPORT_COMMENT_CHUNK_SIZE, IMPORT_COMMENT_CHUNK_BYTES)).toHaveLength(1);
+    // 200,000 characters of 3-byte text: 600,000 bytes, one a chunk.
+    const largest = Array.from({ length: 3 }, (_, i) => comment(`l${i}`, '€'.repeat(200_000)));
+    const chunks = chunkComments(largest, IMPORT_COMMENT_CHUNK_SIZE, IMPORT_COMMENT_CHUNK_BYTES);
+    expect(ids(chunks)).toEqual([['l0'], ['l1'], ['l2']]);
+    // 200,000 ASCII characters: five fit in 1 MiB.
+    const ascii = Array.from({ length: 6 }, (_, i) => comment(`s${i}`, 'x'.repeat(200_000)));
+    expect(chunkComments(ascii, IMPORT_COMMENT_CHUNK_SIZE, IMPORT_COMMENT_CHUNK_BYTES).map((c) => c.length)).toEqual([5, 1]);
   });
 });
 

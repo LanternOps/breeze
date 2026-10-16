@@ -15,6 +15,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -977,8 +978,12 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 				// against the rolled-back control plane if that URL answers —
 				// the failure-only reload path below would then never run.
 				failoverBaseURL := cfg.ServerURL
-				if reloaded, rerr := config.Load(""); rerr == nil && reloaded.ServerURL != "" {
-					failoverBaseURL = reloaded.ServerURL
+				if reloaded, rerr := config.Load(""); rerr == nil {
+					// ech.Shared() reads no config; every process configures it.
+					ech.Configure(reloaded.ECH, reloaded.ECHServerEnabled)
+					if reloaded.ServerURL != "" {
+						failoverBaseURL = reloaded.ServerURL
+					}
 				} else if rerr != nil {
 					journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": rerr.Error()})
 				}

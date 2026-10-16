@@ -279,6 +279,10 @@ The tag built images and registered binaries; it does **not** deploy prod or upd
 
 **Read `internal/ops/release-infra.md` now** (main checkout: `~/breeze/internal/ops/release-infra.md`) for the real droplet IPs (`$EU_IP`/`$US_IP`), firewall IDs (`$EU_FW`/`$US_FW`), and jump-host name (`$JUMP`) used below.
 
+### New env vars since the previous release — carry into the droplet compose before deploy
+
+- `AGENT_ECH_ENABLED` (api service; default `true`; added in the release after v0.122.1). `false` makes every agent dial plain on its next connection. It is the kill switch for the ECH rollout (#8869) and never tears down live sockets. Leave unset to ship ECH on. Warning: turning it off strands every device that currently depends on ECH (it dials plain on its next reconnect, goes offline, and turning the switch back on cannot reach it until it is on an unfiltered network).
+
 ### Prerequisite — get SSH access to the droplets
 
 Two access paths, in order of preference:

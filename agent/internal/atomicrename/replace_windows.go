@@ -1,28 +1,17 @@
 //go:build windows
 
-package state
+package atomicrename
 
 import (
 	"os"
 	"unsafe"
 
+	"github.com/breeze-rmm/agent/internal/logging"
 	"golang.org/x/sys/windows"
 )
 
 // FILE_RENAME_INFO flags for the FileRenameInfoEx info class (Windows 10 1607+
-// / Server 2016+). POSIX semantics let a rename atomically replace a
-// destination that another process holds open — the way Unix rename(2) works.
-// os.Rename uses MoveFileEx(REPLACE_EXISTING), which deletes-then-renames and
-// fails with ERROR_ACCESS_DENIED while a reader keeps the old target
-// delete-pending; the watchdog reads agent.state continuously, so os.Rename
-// failed ~78% of the time under load (measured on Server 2022). This primitive
-// succeeds every time on Windows 10 1607+ / Server 2016+.
-//
-// Windows 10 2015 LTSB (build 10240) does not implement FileRenameInfoEx.
-// SetFileInformationByHandle returns ERROR_INVALID_PARAMETER (#8858), and
-// retrying the same call cannot succeed. Those builds use MoveFileEx.
-// renameReplacePlanned owns that choice; the sharing-violation behavior
-// above is unchanged on builds that have the POSIX rename.
+// / Server 2016+). See the package comment for why POSIX semantics matter.
 const (
 	fileRenameReplaceIfExists = 0x1
 	fileRenamePosixSemantics  = 0x2
@@ -30,11 +19,39 @@ const (
 	fileRenameInfoExClass = 22
 )
 
-// renameReplace atomically replaces newpath with oldpath. Builds that support
-// FileRenameInfoEx use POSIX semantics so a concurrent reader never blocks
-// the swap. Older builds, and a kernel that refuses the class, use MoveFileEx.
-func renameReplace(oldpath, newpath string) error {
-	return renameReplacePlanned(windows.RtlGetVersion().BuildNumber, oldpath, newpath, renameWithInfoEx, renameWithMoveFile)
+var log = logging.L("atomicrename")
+
+var defaultPlanner = &planner{
+	infoEx:          renameWithInfoEx,
+	legacy:          renameWithMoveFile,
+	warn:            warnFallback,
+	noteLegacyBuild: noteLegacyBuild,
+}
+
+// Replace atomically replaces newpath with oldpath. Builds that support
+// FileRenameInfoEx use POSIX semantics so a concurrent reader never blocks the
+// swap. Older builds, and a kernel that refuses the class, use MoveFileEx.
+func Replace(oldpath, newpath string) error {
+	return defaultPlanner.replace(windows.RtlGetVersion().BuildNumber, oldpath, newpath)
+}
+
+// warnFallback records that a 1607+ build refused FileRenameInfoEx, so that
+// rename lost POSIX semantics: MoveFileEx still replaces the file, but a
+// concurrent reader can make it fail with ERROR_ACCESS_DENIED. Later renames
+// try FileRenameInfoEx again; only this log line is once per process. The
+// path is logged because the refusal can depend on the volume (FAT, SMB).
+func warnFallback(build uint32, newpath string, err error) {
+	log.Warn("FileRenameInfoEx rename refused on a build that should support it; fell back to MoveFileEx without POSIX rename semantics (logged once per process)",
+		"build", build, "path", newpath, "error", err.Error())
+}
+
+// noteLegacyBuild records once that this OS build predates FileRenameInfoEx, so
+// every rename uses MoveFileEx. A rename that later fails with
+// ERROR_ACCESS_DENIED because a reader held the target open then has a cause
+// in the log.
+func noteLegacyBuild(build uint32) {
+	log.Info("Windows build predates FileRenameInfoEx; file replacement uses MoveFileEx without POSIX rename semantics",
+		"build", build, "minBuild", fileRenameInfoExMinBuild)
 }
 
 func renameWithMoveFile(oldpath, newpath string) error {

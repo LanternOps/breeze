@@ -83,6 +83,9 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `POST` | `/devices/bulk/commands` | Send the same command to many devices. Returns `commands`, `skipped`, and `failed` arrays. |
 | `GET` | `/devices/:id/billing` | Which contract line, if any, bills this device. Requires **partner or system scope** plus both `devices:read` and `contracts:read`. Returns the covering contract and line with how it matched (organization-wide, site, role, or group), or a reason the device is not billable. A device-group evaluation failure is reported as an error rather than as "not covered". |
 | `DELETE` | `/devices/:id` | Decommission device |
+| `GET` | `/devices/:id/placement` | Physical placement (room, rack, rack unit, height in U). Requires `devices:read` |
+| `PUT` | `/devices/:id/placement` | Set the placement; an all-`null` body removes it. Requires `devices:write` and MFA |
+| `DELETE` | `/devices/:id/placement` | Remove the placement. Requires `devices:write` and MFA |
 
 `GET /devices` supports a cursor-based paging mode in addition to the legacy `page`/`limit` shape. Pass `cursor`, `sort` (`hostname` / `lastSeen` / `enrolled`), `sortDir`, `limit` (max 1000), and optional filters like `orgIds`, `siteIds`, `groupIds`, `includeDecommissioned`, and `includeTotal`. The response carries `{ devices, nextCursor, limit, total? }`; pass `nextCursor` back as `cursor` to fetch the next page. The list payload also exposes `mainAgentSilentSince` and `watchdogStatus` per device so callers can render the **Agent silent (watchdog OK)** badge described in [Agent Watchdog](/features/watchdog/).
 
@@ -111,7 +114,8 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `GET` | `/orgs/sites` | List sites |
 | `POST` | `/orgs/sites` | Create site |
 | `GET` | `/orgs/sites/:id` | Get site details |
-| `PATCH` | `/orgs/sites/:id` | Update site |
+| `PATCH` | `/orgs/sites/:id` | Update site. Also accepts `latitude`/`longitude` (both or neither) and `geofenceRadiusM`; requires `sites:write` and MFA |
+| `POST` | `/orgs/sites/:id/location` | Pin the site's coordinate and optional 50–1000 m geofence radius from the field. Requires `sites:set_location`, deliberately no MFA; audited as `site.location_set`. See [Site location](/reference/organizations-and-sites/#site-location) |
 | `DELETE` | `/orgs/sites/:id` | Delete site |
 
 ## Device Groups
@@ -186,7 +190,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `GET` | `/api-keys/:id` | Get API key |
 | `PATCH` | `/api-keys/:id` | Update API key |
 | `DELETE` | `/api-keys/:id` | Revoke API key |
-| `POST` | `/api-keys/:id/rotate` | Rotate API key |
+| `POST` | `/api-keys/:id/rotate` | Rotate API key. Only the key's creator can rotate it (`403 API_KEY_CREATOR_REQUIRED` for anyone else, who can still revoke it). See [API Keys](/reference/api-keys/) |
 
 ## Partner API (Service Principals)
 
@@ -252,7 +256,7 @@ Each route requires the listed scope on the principal.
 | `POST` | `/partner-api/contracts/:id/lines` | `contracts:write` | Add a line. Same field rules as the human editor. |
 | `PATCH` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Patch a line, including `manualQuantity`. |
 | `DELETE` | `/partner-api/contracts/:id/lines/:lineId` | `contracts:write` | Remove a line. This is contract contents, not tenancy deletion. Responds `{ "data": { "ok": true, "retired": <boolean> } }`; `retired` is `true` when a block-hours line with billing history was retired instead of deleted. |
-| `POST` | `/partner-api/tickets` | `tickets:write` | Create a ticket (`source` is always `api`). `orgId` must be in the principal's accessible organizations. Supports `X-Idempotency-Key`; `409 EXTERNAL_ID_CONFLICT` names the ticket already holding `externalTicketId` for this integration (`existingTicketId`, `existingDeleted`). |
+| `POST` | `/partner-api/tickets` | `tickets:write` | Create a ticket (`source` is always `api`). `orgId` must be in the principal's accessible organizations. Supports `X-Idempotency-Key`; `409 EXTERNAL_ID_CONFLICT` names the ticket already holding `externalTicketId` for this integration (`existingTicketId`, `existingDeleted`). `submitterEmail` is stored as given and is not verified. |
 | `PATCH` | `/partner-api/tickets/:id` | `tickets:write` | Update fields (not status/assignee, never SLA targets). Unknown keys are rejected. |
 | `POST` | `/partner-api/tickets/:id/status` | `tickets:write` | Change status (`status` or `statusId`, `resolutionNote` required when resolving). |
 | `POST` | `/partner-api/tickets/:id/assign` | `tickets:write` | Assign (`assigneeId`, or `null` to unassign). |
@@ -643,9 +647,9 @@ A rule matches an elevation candidate on one or more of these fields (`POST`/`PA
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/discovery/profiles` | List scan profiles |
-| `POST` | `/discovery/profiles` | Create profile |
+| `POST` | `/discovery/profiles` | Create profile. A subnet larger than /16 is refused with `400` unless `deepScan` is on |
 | `GET` | `/discovery/profiles/:id` | Get profile |
-| `PATCH` | `/discovery/profiles/:id` | Update profile |
+| `PATCH` | `/discovery/profiles/:id` | Update profile. Same /16 subnet rule as create |
 | `DELETE` | `/discovery/profiles/:id` | Delete profile |
 | `POST` | `/discovery/scan` | Start discovery scan |
 | `GET` | `/discovery/jobs` | List scan jobs |
@@ -660,6 +664,9 @@ A rule matches an elevation candidate on one or more of these fields (`POST`/`PA
 | `GET` | `/discovery/assets/:id/monitoring` | Get monitoring config |
 | `PATCH` | `/discovery/assets/:id/monitoring` | Update monitoring config |
 | `GET` | `/discovery/topology` | Network topology map (classic view) |
+| `GET` | `/discovery/assets/:id/placement` | Physical placement of a discovered asset (room, rack, rack unit, height in U). Requires `devices:read` |
+| `PUT` | `/discovery/assets/:id/placement` | Set the placement; an all-`null` body removes it. Requires `devices:write` and MFA |
+| `DELETE` | `/discovery/assets/:id/placement` | Remove the placement. Requires `devices:write` and MFA |
 
 ## Site Map (Network Topology)
 
@@ -746,6 +753,7 @@ Endpoints for the next-generation, per-site logical topology map (site coverage,
 | `POST` | `/remote/sessions/:id/offer` | WebRTC SDP offer |
 | `POST` | `/remote/sessions/:id/ice` | ICE candidate exchange |
 | `POST` | `/remote/sessions/:id/end` | End session |
+| `GET` | `/remote/devices/:deviceId/active-sessions` | Who is connected to one device right now: every user's live Desktop or Terminal session and live VNC tunnel on it (the "Who's connected" banner). Returns no session or user ids; colleagues' emails only to callers with `users:read`. Requires `remote:access` |
 
 ### Network Proxy
 
@@ -919,6 +927,8 @@ Saved reports schedule via `schedule` (`daily` / `weekly` / `monthly`) plus a `c
 | `GET` | `/webhooks/:id/deliveries` | Delivery log |
 | `POST` | `/webhooks/:id/test` | Test webhook |
 | `POST` | `/webhooks/:id/retry/:deliveryId` | Retry delivery |
+
+Reading webhooks and their delivery log requires `webhooks:read`; creating, updating, deleting, testing and retrying require `organizations:write`. The delivery log lists status and timing only, without the delivery `payload` or the receiver's `responseBody`. See [Webhooks](/features/webhooks/#api-reference).
 
 ### Inbound: QuickBooks Online
 
@@ -1272,6 +1282,12 @@ Canned reply templates are partner-scoped. Management operations require `partne
 | `POST` | `/ticket-response-templates` | Create a canned response template |
 | `PATCH` | `/ticket-response-templates/:id` | Update a canned response template |
 | `DELETE` | `/ticket-response-templates/:id` | Delete a canned response template |
+| `GET` | `/ticketing/approval-settings` | Customer approval of ticket work: the partner default, resolved with the source of each field. Requires `organizations:read` |
+| `PATCH` | `/ticketing/approval-settings` | Update the partner default. Requires `organizations:write`, MFA and all-organization access |
+| `GET` | `/orgs/:orgId/ticketing/approval-settings` | The organization's resolved approval settings (partner default plus org override) |
+| `PATCH` | `/orgs/:orgId/ticketing/approval-settings` | Update the organization override. Requires `organizations:write` and MFA |
+
+Customer approval of ticket work is settings-only in v0.122.1: it is off by default (`enabled: false`), has no dashboard UI, and no approval workflow acts on it yet.
 
 ## PSA Integrations
 
@@ -1308,7 +1324,7 @@ Canned reply templates are partner-scoped. Management operations require `partne
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/enrollment-keys` | List enrollment keys |
-| `POST` | `/enrollment-keys` | Create enrollment key |
+| `POST` | `/enrollment-keys` | Create enrollment key. An `expiresAt` in the past is refused with `400` ("Expiry must be in the future"), here and on rotate |
 | `DELETE` | `/enrollment-keys/:id` | Delete enrollment key |
 | `POST` | `/enrollment-keys/:id/rotate` | Rotate key |
 | `GET` | `/enrollment-keys/:id` | Get key details |
@@ -1372,8 +1388,8 @@ The API behind **Partner Settings → AI Providers & Models** (v0.121.0+). Conne
 | `GET` | `/ai/models/usage` | AI usage by model, feature, technician and organization |
 | `GET` | `/ai/models/usage/quality` | Model quality view |
 
-<Aside type="caution" title="Deprecated in v0.121.0, removed in v0.122.0">
-  `/ai/provider` (`GET`, `PATCH`, `DELETE`, `POST /key`, `POST /endpoint`) is replaced by the registry above: connect a key with `POST /ai/models/connections`, rotate it with `POST /ai/models/connections/:id/key`, set an endpoint with `POST /ai/models/connections/:id/endpoint`, and disconnect with `DELETE /ai/models/connections/:id`. The single partner default model becomes per-feature defaults (`PUT /ai/models/assignments`). Three request fields are retired the same way: `reviewerModel` on the script policy routes (use the `script_reviewer` feature default), `allowedModels` on the AI for Office organization policy (use the `office_chat` feature's permitted models or `PUT /ai/models/orgs/:orgId/assignments`), and `model` on AI agents (send `offeringId`, an enabled model from `GET /ai/models`; `null` follows the AI agents default). In v0.121.0 the retired fields are ignored; from v0.122.0 `/ai/provider` returns `404` and a request carrying a retired field is rejected with `400`.
+<Aside type="caution" title="Deprecated in v0.121.0, removed in v0.122.1">
+  `/ai/provider` (`GET`, `PATCH`, `DELETE`, `POST /key`, `POST /endpoint`) is replaced by the registry above: connect a key with `POST /ai/models/connections`, rotate it with `POST /ai/models/connections/:id/key`, set an endpoint with `POST /ai/models/connections/:id/endpoint`, and disconnect with `DELETE /ai/models/connections/:id`. The single partner default model becomes per-feature defaults (`PUT /ai/models/assignments`). Three request fields are retired the same way: `reviewerModel` on the script policy routes (use the `script_reviewer` feature default), `allowedModels` on the AI for Office organization policy (use the `office_chat` feature's permitted models or `PUT /ai/models/orgs/:orgId/assignments`), and `model` on AI agents (send `offeringId`, an enabled model from `GET /ai/models`; `null` follows the AI agents default). In v0.121.0 the retired fields are ignored; from v0.122.1 `/ai/provider` returns `404` and a request carrying a retired field is rejected with `400`.
 </Aside>
 
 ## MCP Server
@@ -1437,6 +1453,7 @@ A few mounted route groups are documented on their feature pages rather than rep
 | `/backup` | Device backup, restore, boot-media, and SLA endpoints. See [Backup Overview](/backup/overview/). |
 | `/ai/agents`, `/ai/agents/schedules`, `/ai/operator` | Autonomous scheduled AI agents (triage, sweeps, reports) — distinct from the interactive `/ai` chat assistant above. See [AI Agents](/features/ai-agents/). |
 | `/s1`, `/huntress` | SentinelOne and Huntress EDR integration endpoints (credentials, mappings, webhooks, sync). See [EDR Integrations](/features/edr-integrations/). |
+| `/edr` | Provider-framework EDR integrations (Bitdefender GravityZone first): connections, company-to-organization mappings, and synced endpoints with their device links and open detection counts. API only in v0.122.1. See [EDR Integrations](/features/edr-integrations/). |
 | `/m365`, `/onedrive`, `/office-addin` | Microsoft 365 tenant connection, Graph sync, OneDrive helper, and Office add-in endpoints. See [Cloud Tenant Integrations (M365)](/features/identity-integrations/) and [OneDrive Helper](/features/onedrive-helper/). |
 
 ## Search

@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/authstate"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
-	"github.com/breeze-rmm/agent/internal/netcache"
 )
 
 // FailoverCommand is a command returned by the API during failover polling.
@@ -165,15 +165,21 @@ func isResultProcessingFailed(code int, body []byte) bool {
 	return json.Unmarshal(body, &parsed) == nil && parsed.Error == resultProcessingFailedError
 }
 
+// newFailoverTransport is the ECH-capable control-plane transport (netcache
+// DNS fallback, #2288) pinned to HTTP/1.1 as the failover client always was.
+func newFailoverTransport(tlsConfig *tls.Config) *http.Transport {
+	t := ech.NewTransport(tlsConfig)
+	t.ForceAttemptHTTP2 = false
+	t.DialTLSContext = ech.Shared().DialTLS(tlsConfig, []string{"http/1.1"})
+	return t
+}
+
 // NewFailoverClient creates a FailoverClient with a 30-second timeout. If
 // tlsConfig is non-nil it is applied to the underlying transport.
 func NewFailoverClient(baseURL, agentID, token string, tlsConfig *tls.Config) *FailoverClient {
 	// Dials go through the last-known-good DNS cache (#2288) so a pure DNS
 	// outage doesn't blind the watchdog; TLS hostname verification unchanged.
-	transport := &http.Transport{DialContext: netcache.Shared().DialContext}
-	if tlsConfig != nil {
-		transport.TLSClientConfig = tlsConfig
-	}
+	transport := newFailoverTransport(tlsConfig)
 	return &FailoverClient{
 		baseURL: baseURL,
 		agentID: agentID,
