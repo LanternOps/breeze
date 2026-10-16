@@ -1148,8 +1148,9 @@ export async function resolveSecurityAgentsLinkForDevice(
 
 /**
  * #6960 W02: the winning `security_agents` link id for MANY devices, with a
- * fixed number of queries per chunk of devices (devices, their orgs, their
- * group memberships, and every candidate assignment) instead of the per-device
+ * fixed number of queries per chunk of 500 devices (devices, their orgs, their
+ * group memberships, every candidate assignment, plus one execution-safe group
+ * lookup when the chunk has group memberships) instead of the per-device
  * walk {@link resolveSecurityAgentsLinkForDevice} does. A partner-wide policy
  * can reach thousands of devices and the compliance worker resolves its device
  * set every pass, so the per-device form (3+ queries per device) does not
@@ -1164,7 +1165,7 @@ export async function resolveSecurityAgentsLinkForDevice(
  *    twin);
  *  - closest wins via {@link sortByHierarchy}.
  * The integration suite pins it against the per-device resolver on real
- * Postgres. Returns null for a device no link reaches (or that does not exist).
+ * Postgres. A device no link reaches (or that does not exist) maps to null.
  */
 export async function resolveSecurityAgentsLinksForDevices(
   deviceIds: readonly string[],
@@ -1249,7 +1250,10 @@ async function resolveSecurityAgentsLinkChunk(deviceIds: string[]): Promise<Map<
         eq(configPolicyEffectiveFeatureLinks.configPolicyId, configurationPolicies.id),
         eq(configPolicyEffectiveFeatureLinks.featureType, 'security_agents'),
       ),
-    );
+    )
+    // Same ORDER BY as the per-device walk, so sortByHierarchy breaks a full
+    // tie the same way in both.
+    .orderBy(configPolicyAssignments.level, configPolicyAssignments.priority, configPolicyAssignments.createdAt);
 
   for (const device of deviceRows) {
     const partnerId = partnerByOrg.get(device.orgId) ?? null;
@@ -1274,7 +1278,8 @@ async function resolveSecurityAgentsLinkChunk(deviceIds: string[]): Promise<Map<
 
 /**
  * Device ids of every candidate device that holds one of these config-policy
- * assignments. Shared by both resolution dimensions below.
+ * assignments. Used by the managed (security_agents) dimension below; the
+ * customer software_policy path still inlines the same steps.
  */
 async function resolveCandidateDeviceIdsForConfigPolicies(configPolicyIds: string[]): Promise<string[]> {
   if (configPolicyIds.length === 0) return [];

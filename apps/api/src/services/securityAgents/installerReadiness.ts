@@ -60,8 +60,8 @@ export function evaluatePlatformReadiness(
 }
 
 /**
- * Org half of readiness for many orgs at once (three queries for Huntress,
- * whatever the org count). Every requested org gets an answer.
+ * Org half of readiness for many orgs at once (at most three queries for
+ * Huntress, whatever the org count). Every requested org gets an answer.
  *
  * Runs in its own system context: the Huntress tables are partner-axis and an
  * org-scoped caller would read zero rows. The lookups are keyed by the org ids

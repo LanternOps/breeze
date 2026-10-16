@@ -95,6 +95,19 @@ describe('loadManagedRuleApplicability', () => {
     expect(a.filterViolations('d1', [missing(UNKNOWN_CATALOG)]).notApplicable[0]?.reason).toBe('vendor_unavailable');
   });
 
+  it.each([
+    ['missing', []],
+    ['unparseable', [{ inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: true, apiKey: 'x' }] } }]],
+  ])('fails closed when the link is %s (its platform limits are unknown)', async (_name, link) => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    prime({ link: link as unknown[] });
+    orgReadiness.mockResolvedValueOnce(new Map([['org-1', { ok: true }]]));
+    const a = await loadManagedRuleApplicability(POLICY, [{ deviceId: 'd1', orgId: 'org-1', osType: 'windows' }]);
+    expect(a.filterViolations('d1', [missing(HUNTRESS_CATALOG)]).notApplicable[0]?.reason).toBe('vendor_unavailable');
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
   it('leaves unauthorized violations and rules without catalogId alone', async () => {
     prime();
     orgReadiness.mockResolvedValueOnce(new Map([['org-1', { ok: false, reason: 'org_not_mapped' }]]));

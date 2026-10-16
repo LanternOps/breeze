@@ -67,6 +67,16 @@ export async function loadManagedRuleApplicability(
     .where(eq(configPolicyFeatureLinks.id, policy.managedByLinkId))
     .limit(1);
   const parsed = securityAgentsInlineSettingsSchema.safeParse(link?.inlineSettings);
+  // Without readable link settings the per-vendor platform limits are unknown,
+  // so nothing applies (fail closed) rather than "every platform".
+  const linkUnreadable = !parsed.success;
+  if (linkUnreadable) {
+    console.error('[securityAgents] Generated policy link missing or unparseable; treating every rule as not applicable', {
+      policyId: policy.id,
+      managedByLinkId: policy.managedByLinkId,
+      found: !!link,
+    });
+  }
   const platformsByVendor = new Map<VendorKey, readonly string[] | undefined>(
     parsed.success ? parsed.data.agents.map((agent) => [agent.vendor, agent.platforms] as const) : [],
   );
@@ -81,7 +91,7 @@ export async function loadManagedRuleApplicability(
 
   function readiness(deviceId: string, catalogId: string): { vendor: VendorKey | null; result: ReadinessResult } {
     const vendor = vendorByCatalogId.get(catalogId) ?? null;
-    if (!vendor) return { vendor, result: { ok: false, reason: 'vendor_unavailable' } };
+    if (!vendor || linkUnreadable) return { vendor, result: { ok: false, reason: 'vendor_unavailable' } };
     const device = deviceById.get(deviceId);
     if (!device) return { vendor, result: { ok: false, reason: 'org_not_mapped' } };
     const platform = evaluatePlatformReadiness(vendor, device.osType, platformsByVendor.get(vendor));

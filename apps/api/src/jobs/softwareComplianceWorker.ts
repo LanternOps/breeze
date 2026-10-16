@@ -514,7 +514,10 @@ export async function processScanPolicies(): Promise<{ queued: number }> {
   // first, so drift is repaired and a policy activated by the repair is in this
   // scan. Best effort: the scan of every other policy must not depend on it.
   try {
-    await repairManagedSoftwarePolicies();
+    const repair = await repairManagedSoftwarePolicies();
+    if (repair.failed > 0) {
+      console.error('[SoftwareComplianceWorker] Generated software policy repair failed for some links', repair);
+    }
   } catch (error) {
     console.error('[SoftwareComplianceWorker] Generated software policy repair sweep failed', error);
     captureException(error);
@@ -668,6 +671,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     )
     : null;
   const notApplicableByReason: Record<string, number> = {};
+  const notApplicableSample: Array<{ deviceId: string; reasons: string[] }> = [];
   let notApplicableDevices = 0;
   // Contract D11: ONE arming truth, shared with softwareRemediationWorker.ts and
   // the AI compliance tool. Evaluated once per pass — the policy row cannot
@@ -718,6 +722,9 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         evaluatedViolations = filtered.violations;
         if (filtered.notApplicable.length > 0) {
           notApplicableDevices += 1;
+          if (notApplicableSample.length < 10) {
+            notApplicableSample.push({ deviceId, reasons: filtered.notApplicable.map((entry) => entry.reason) });
+          }
           for (const entry of filtered.notApplicable) {
             notApplicableByReason[entry.reason] = (notApplicableByReason[entry.reason] ?? 0) + 1;
           }
@@ -1029,6 +1036,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       managedByLinkId: policy.managedByLinkId,
       devices: notApplicableDevices,
       byReason: notApplicableByReason,
+      sample: notApplicableSample,
     });
   }
 

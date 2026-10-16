@@ -177,6 +177,12 @@ describe('SecurityAgentsTab', () => {
     expect(screen.getByTestId('security-agents-catalog-missing-link')).toHaveAttribute('href', '/integrations#huntress');
   });
 
+  it.each(['//evil.example/x', '/\\evil.example/x', '/ok\\..\\x'])('refuses a protocol-relative setupPath %s', (setupPath) => {
+    m.hook.errorDetail = { status: 400, code: 'security_agents_catalog_missing', body: { setupPath } };
+    render(<SecurityAgentsTab {...props} />);
+    expect(screen.getByTestId('security-agents-catalog-missing-link')).toHaveAttribute('href', '/integrations#huntress');
+  });
+
   it('explains the missing execute permission on 403 security_agents_execute_required', () => {
     m.hook.error = 'Forbidden';
     m.hook.errorDetail = { status: 403, code: 'security_agents_execute_required', body: {} };

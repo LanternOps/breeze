@@ -52,7 +52,8 @@ function readAgents(raw: unknown): Map<Vendor, AgentEntry> {
 /** Only same-site absolute paths may become a link target (server value is untrusted). */
 function safeSetupPath(body: unknown): string {
   const value = (body as { setupPath?: unknown } | null | undefined)?.setupPath;
-  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
+  // Reject protocol-relative forms, including the backslash variants browsers normalize.
+  return typeof value === 'string' && /^\/(?![\/\\])/.test(value) && !value.includes('\\')
     ? value
     : DEFAULT_SETUP_PATH;
 }

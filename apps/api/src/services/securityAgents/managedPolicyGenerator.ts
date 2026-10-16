@@ -3,7 +3,8 @@ import {
   securityAgentsInlineSettingsSchema,
   type SecurityAgentsInlineSettings,
 } from '@breeze/shared/validators';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { captureException } from '../sentry';
 import {
   configPolicyFeatureLinks,
   configurationPolicies,
@@ -189,6 +190,15 @@ export async function syncManagedSoftwarePolicy(
 ): Promise<ManagedPolicySyncResult> {
   const parsed = securityAgentsInlineSettingsSchema.safeParse(link.inlineSettings);
   // An unparseable stored blob installs nothing (same rule as the resolver).
+  // The write path refuses such blobs, so this means a direct DB edit or a
+  // schema change: say so, because it deactivates the generated policy.
+  if (!parsed.success) {
+    console.error('[securityAgents] security_agents link has unparseable settings; generating no rules', {
+      linkId: link.id,
+      configPolicyId: link.configPolicyId,
+      issue: parsed.error.issues[0]?.message,
+    });
+  }
   const settings: SecurityAgentsInlineSettings = parsed.success ? parsed.data : { version: 1, agents: [] };
 
   const [configPolicy] = await executor
@@ -277,7 +287,9 @@ export async function syncManagedSoftwarePolicy(
   await executor.insert(softwarePolicyAudit).values({
     ...auditOwner,
     policyId: existing!.id,
-    action: desired.row.isActive ? 'policy_updated' : 'policy_deactivated',
+    // `policy_deactivated` only on the transition, so a later relabel of an
+    // already-inactive row does not read as another deactivation.
+    action: !desired.row.isActive && existing!.isActive ? 'policy_deactivated' : 'policy_updated',
     ...actor,
     details: {
       managedByLinkId: link.id,
@@ -372,9 +384,13 @@ async function dropCachedViolations(executor: DbExecutor, policyId: string, remo
 /**
  * Periodic repair: re-derive the generated policy of every `security_agents`
  * link, so drift from direct DB edits, a deleted or archived catalog package,
- * or a registry change is corrected. Runs in the caller's (system) context;
- * each link is its own transaction holding the link row, which serializes it
- * against a concurrent link write. A failing link is logged and skipped.
+ * or a registry change is corrected.
+ *
+ * Each link runs in its OWN system transaction (outside any ambient one, so the
+ * caller's job transaction does not hold every link's row lock until it ends).
+ * The transaction locks the link row, which serializes it against a concurrent
+ * link write. A failing link is logged, sent to Sentry and skipped; the caller
+ * sees the count in `failed`.
  */
 export async function repairManagedSoftwarePolicies(): Promise<{ links: number; changed: number; failed: number }> {
   const links = await db
@@ -386,7 +402,7 @@ export async function repairManagedSoftwarePolicies(): Promise<{ links: number; 
   let failed = 0;
   for (const { id } of links) {
     try {
-      const result = await db.transaction(async (tx) => {
+      const result = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.transaction(async (tx) => {
         const [link] = await tx
           .select({
             id: configPolicyFeatureLinks.id,
@@ -399,7 +415,7 @@ export async function repairManagedSoftwarePolicies(): Promise<{ links: number; 
           .for('update');
         if (!link) return null;
         return syncManagedSoftwarePolicy(tx, link, { onMissingCatalog: 'skip' });
-      });
+      })));
       if (!result) continue;
       if (result.action !== 'none') {
         changed += 1;
@@ -410,14 +426,25 @@ export async function repairManagedSoftwarePolicies(): Promise<{ links: number; 
         });
       }
       if (result.skippedVendors.length > 0) {
+        // Enforcement for these vendors has stopped (their rule is gone): an
+        // operator needs to see it, not only a log line.
         console.warn('[securityAgents] Enabled vendor has no catalog package; no rule generated', {
           linkId: id,
           vendors: result.skippedVendors,
         });
+        captureException(
+          new Error('Security agents: enabled vendor has no catalog package; its rule was not generated'),
+          undefined,
+          { area: 'security_agents_repair', vendors: result.skippedVendors.join(',') },
+          { fingerprint: ['security_agents_repair', 'catalog_missing'] },
+        );
       }
     } catch (error) {
       failed += 1;
       console.error('[securityAgents] Failed to repair generated software policy', { linkId: id, error });
+      captureException(error, undefined, { area: 'security_agents_repair' }, {
+        fingerprint: ['security_agents_repair', 'link_failed'],
+      });
     }
   }
   return { links: links.length, changed, failed };

@@ -33,13 +33,15 @@ import {
   deviceCommands,
   huntressIntegrations,
   huntressOrgMappings,
+  softwareCatalog,
   softwareComplianceStatus,
   softwareDeployments,
   softwarePolicies,
 } from '../../db/schema';
 import { encryptSecret } from '../../services/secretCrypto';
 import { ensureBuiltinPackage } from '../../services/builtinDeploymentPackages';
-import { addFeatureLink } from '../../services/configurationPolicy';
+import { addFeatureLink, updateFeatureLink } from '../../services/configurationPolicy';
+import { repairManagedSoftwarePolicies } from '../../services/securityAgents/managedPolicyGenerator';
 import {
   resolveDeviceIdsForSoftwarePolicy,
   resolveSecurityAgentsLinkForDevice,
@@ -231,6 +233,99 @@ describe('partner-wide Huntress fan-out — live Postgres (#6960 W02)', () => {
     expect(await deploymentsForOrg(f.orgs.b.id)).toEqual([]);
     expect(await deploymentsForOrg(f.orgs.c.id)).toEqual([]);
     expect(await deploymentsForOrg(f.orgs.z.id)).toEqual([]);
+  });
+
+  it('the repair sweep is a no-op on a freshly generated row (jsonb round-trip) and repairs drift', async () => {
+    const f = await seed();
+    const readRow = () => withSystemDbAccessContext(async () => {
+      const [r] = await db
+        .select({
+          approvalGeneration: softwarePolicies.approvalGeneration,
+          remediationOptions: softwarePolicies.remediationOptions,
+          isActive: softwarePolicies.isActive,
+        })
+        .from(softwarePolicies)
+        .where(eq(softwarePolicies.id, f.policyId));
+      return r!;
+    });
+
+    const first = await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
+    expect(first).toMatchObject({ changed: 0, failed: 0 });
+    expect((await readRow()).approvalGeneration).toBe(f.generation);
+
+    // Drift: someone armed uninstall directly in the database.
+    await withSystemDbAccessContext(() =>
+      db.update(softwarePolicies)
+        .set({ remediationOptions: { autoInstall: true, autoUninstall: true } })
+        .where(eq(softwarePolicies.id, f.policyId)),
+    );
+    const repaired = await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
+    expect(repaired).toMatchObject({ changed: 1, failed: 0 });
+    const after = await readRow();
+    expect(after.remediationOptions).toEqual({ autoInstall: true, autoUninstall: false });
+    expect(after.approvalGeneration).toBe(f.generation + 1);
+
+    // And it settles: the next sweep changes nothing.
+    expect(await withSystemDbAccessContext(() => repairManagedSoftwarePolicies())).toMatchObject({ changed: 0 });
+  });
+
+  it('disabling the vendor drops its cached violations (real jsonb SQL) and settles those devices to compliant', async () => {
+    const f = await seed();
+    await withSystemDbAccessContext(() => processCheckPolicy({ type: 'check-policy', policyId: f.policyId }));
+    // A row whose violations are not an array must be left alone, not error.
+    await withSystemDbAccessContext(() =>
+      db.update(softwareComplianceStatus)
+        .set({ violations: null })
+        .where(and(eq(softwareComplianceStatus.policyId, f.policyId), eq(softwareComplianceStatus.deviceId, f.dev.b))),
+    );
+
+    await withSystemDbAccessContext(() =>
+      updateFeatureLink(f.linkId, { inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: false }] } }),
+    );
+
+    const rows = await withSystemDbAccessContext(() =>
+      db.select({ deviceId: softwareComplianceStatus.deviceId, status: softwareComplianceStatus.status, violations: softwareComplianceStatus.violations })
+        .from(softwareComplianceStatus)
+        .where(eq(softwareComplianceStatus.policyId, f.policyId)),
+    );
+    const byDevice = new Map(rows.map((r) => [r.deviceId, r]));
+    expect(byDevice.get(f.dev.a)).toMatchObject({ status: 'compliant', violations: [] });
+    expect(byDevice.get(f.dev.b)).toMatchObject({ violations: null });
+    const [policy] = await withSystemDbAccessContext(() =>
+      db.select({ isActive: softwarePolicies.isActive, approvalGeneration: softwarePolicies.approvalGeneration })
+        .from(softwarePolicies).where(eq(softwarePolicies.id, f.policyId)),
+    );
+    expect(policy).toEqual({ isActive: false, approvalGeneration: f.generation + 1 });
+  });
+
+  it('the sweep deactivates (fail closed) when the catalog package is archived or the link blob is unreadable', async () => {
+    const f = await seed();
+    const policyRow = async () => withSystemDbAccessContext(async () => {
+      const [r] = await db.select({ isActive: softwarePolicies.isActive, approvalGeneration: softwarePolicies.approvalGeneration })
+        .from(softwarePolicies).where(eq(softwarePolicies.id, f.policyId));
+      return r!;
+    });
+
+    await withSystemDbAccessContext(() =>
+      db.update(softwareCatalog).set({ deletedAt: new Date() }).where(eq(softwareCatalog.id, f.catalogId)),
+    );
+    expect(await withSystemDbAccessContext(() => repairManagedSoftwarePolicies())).toMatchObject({ changed: 1, failed: 0 });
+    expect(await policyRow()).toEqual({ isActive: false, approvalGeneration: f.generation + 1 });
+
+    // Restore the package: the next sweep re-arms the same row.
+    await withSystemDbAccessContext(() =>
+      db.update(softwareCatalog).set({ deletedAt: null }).where(eq(softwareCatalog.id, f.catalogId)),
+    );
+    await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
+    expect(await policyRow()).toEqual({ isActive: true, approvalGeneration: f.generation + 2 });
+
+    // A stored blob the write path would have refused installs nothing.
+    await withSystemDbAccessContext(() =>
+      db.update(configPolicyFeatureLinks).set({ inlineSettings: { version: 1, agents: [{ vendor: 'huntress', enabled: true, apiKey: 'x' }] } })
+        .where(eq(configPolicyFeatureLinks.id, f.linkId)),
+    );
+    await withSystemDbAccessContext(() => repairManagedSoftwarePolicies());
+    expect((await policyRow()).isActive).toBe(false);
   });
 
   it("an org session of the policy's own partner can SELECT the generated row but never change it; another partner cannot see it", async () => {

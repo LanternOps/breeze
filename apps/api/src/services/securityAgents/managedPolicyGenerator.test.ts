@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 
+const { selectMock, transactionMock, captureMock } = vi.hoisted(() => ({
+  selectMock: vi.fn(),
+  transactionMock: vi.fn(),
+  captureMock: vi.fn(),
+}));
+
 vi.mock('../../db', () => ({
-  db: {},
+  db: { select: selectMock, transaction: transactionMock },
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
+vi.mock('../sentry', () => ({ captureException: captureMock }));
 
-import { desiredManagedPolicy, planManagedPolicySync } from './managedPolicyGenerator';
+import { desiredManagedPolicy, planManagedPolicySync, repairManagedSoftwarePolicies } from './managedPolicyGenerator';
 
 const CATALOG_HUNTRESS = '00000000-0000-4000-8000-0000000000c1';
 const ORG = '00000000-0000-4000-8000-0000000000a1';
@@ -146,5 +153,20 @@ describe('planManagedPolicySync', () => {
       action: 'update',
       bumpGeneration: true,
     });
+  });
+});
+
+describe('repairManagedSoftwarePolicies', () => {
+  it('one failing link is counted, logged and sent to Sentry; the others still run', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    selectMock.mockReturnValueOnce({ from: () => ({ where: async () => [{ id: 'link-a' }, { id: 'link-b' }] }) });
+    transactionMock
+      .mockRejectedValueOnce(new Error('lock timeout'))
+      .mockResolvedValueOnce(null); // link-b deleted between list and lock
+    await expect(repairManagedSoftwarePolicies()).resolves.toEqual({ links: 2, changed: 0, failed: 1 });
+    expect(transactionMock).toHaveBeenCalledTimes(2);
+    expect(captureMock).toHaveBeenCalledTimes(1);
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
   });
 });
