@@ -155,8 +155,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Admission control is shedding standard traffic on {{ $labels.instance }}"
-          description: "{{ $labels.job }} has been at admission level {{ $value }} (2 = shed standard, 3 = critical) for 2m. Check breeze_admission_signal_db_wait_seconds and breeze_admission_signal_lag_seconds for which signal drove it."
+          summary: "Admission controller is at a degraded level on {{ $labels.instance }}"
+          description: "{{ $labels.job }} has been at admission level {{ $value }} (2 = degraded, 3 = critical) for 2m. Standard traffic is refused only when BREEZE_ADMISSION_MODE=enforce (ApiAdmissionShedding fires on actual refusals); in observe mode this is saturation only. Check breeze_admission_signal_db_wait_seconds and breeze_admission_signal_lag_seconds for which signal drove it."
 
       # Only `outcome="shed"` (the request was actually refused) counts;
       # `would_shed` is observe mode and is informational.
