@@ -56,12 +56,14 @@ function withSortedSets<T extends object>(record: T, keys: ReadonlyArray<keyof T
 }
 
 /**
- * The scope fingerprint every preview hash folds in. The access ceilings are
- * sets, but they do not arrive in a stable order: authMiddleware loads a
- * partner user's `accessibleOrgIds` with no ORDER BY, so two requests with
- * identical access can list the same orgs differently and a preview would go
- * stale between preview and confirm with nothing changed (#6888). Hash them
- * sorted; every other field is hashed as it is.
+ * The scope fingerprint folded into the policy, template-group and partner
+ * conversion preview hashes and the preview job key (the network-check preview
+ * hash does not use it). The access ceilings are sets with no guaranteed order:
+ * authMiddleware loads a partner user's `accessibleOrgIds` with no ORDER BY, so
+ * two requests with identical access can list the same orgs differently and a
+ * preview would go stale between preview and confirm with nothing changed
+ * (#6888). Every set-valued ceiling is hashed sorted, the others defensively;
+ * every other field is hashed as it is.
  */
 export const previewScopeHash = (snapshot: PreviewAccessSnapshot): string => sha(canonical({
   ...snapshot,
