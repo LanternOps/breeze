@@ -205,7 +205,8 @@ const runOutsideDbContextSafe = runOutsideDbContext;
  * Why a dispatch did not go out, as a closed set (#8022): the dispatch seam's
  * own refusal codes, plus `cancelled` for a row the push's claim-time
  * eligibility check terminalised. Unlike `error` (free text that can carry
- * ids), this is safe to use as a Sentry tag or metric label.
+ * ids), this is safe to use as a Sentry tag or metric label, as long as the
+ * union stays a closed set of literals.
  */
 export type CommandDispatchRefusal =
   | Extract<DispatchDeviceCommandResult, { ok: false }>['code']
@@ -214,7 +215,11 @@ export type CommandDispatchRefusal =
 export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;
   error?: string;
-  /** Set exactly when `error` is: the refusal's class. See CommandDispatchRefusal. */
+  /**
+   * The class of a refusal from the dispatch seam, set on every one of them.
+   * Other `error` results built outside the seam (the backup-stop immediate
+   * dispatch failure, an AI remote-tools policy block) carry none.
+   */
   refusal?: CommandDispatchRefusal;
   trust?: { capability: 'device_execute'; reason: string };
   /**

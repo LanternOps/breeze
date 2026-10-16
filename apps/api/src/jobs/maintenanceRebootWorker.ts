@@ -279,12 +279,11 @@ export async function processRebootCandidate(
     expectedOrgId: device.orgId,
   });
   if (result.error) {
-    // A refusal, not a throw: report it and let the sweep move on (the next
-    // tick retries). The device id and the free-text reason go to the console
-    // only. scrubEvent redacts every exception value and deletes the message,
-    // so the bounded tags below are all that reaches Sentry. This used to be
-    // `captureException(new Error(<id + reason>))`, which arrived as a bare
-    // "Error" whose top frame was this function (#8022, BREEZE-45).
+    // A refusal, not a throw: report it and let the sweep move on. The device
+    // stays a candidate and is re-evaluated on a later sweep. The device id and
+    // the free-text reason go to the console only: scrubEvent redacts every
+    // exception value and deletes the message, so the bounded tags below are
+    // all that reaches Sentry (#8022).
     console.warn(
       `[MaintenanceReboot] reboot dispatch refused for device ${device.id} `
       + `(${result.refusal ?? 'unclassified'}): ${result.error}`,
@@ -343,9 +342,9 @@ export async function runMaintenanceRebootSweep(
       });
       if (res.issued) issued++;
     } catch (err) {
-      // One candidate's failure never stops the sweep: each candidate runs in
-      // its own transaction, and the rest of this tick carries on. Tagged so
-      // the report survives scrubEvent with more than a stack trace (#8022).
+      // One candidate's failure never stops the sweep: the catch is per
+      // candidate and the loop continues. Tagged so the report survives
+      // scrubEvent with more than a stack trace (#8022).
       console.error(`[MaintenanceReboot] error processing device ${device.id}:`, err);
       captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
         worker: 'maintenanceRebootWorker',

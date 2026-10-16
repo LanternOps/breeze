@@ -280,21 +280,23 @@ describe('processRebootCandidate', () => {
       }),
     } as never);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await processRebootCandidate(winDevice, deps);
 
-    const res = await processRebootCandidate(winDevice, deps);
-
-    expect(res).toEqual({ issued: false, reason: 'TRUST_PROBATION' });
-    expect(captureException).not.toHaveBeenCalled();
-    expect(captureMessage).toHaveBeenCalledTimes(1);
-    expect(captureMessage).toHaveBeenCalledWith('[MaintenanceReboot] reboot dispatch refused', {
-      eventCode: 'maintenance_reboot_dispatch_refused',
-      level: 'warning',
-      tags: { org_id: 'org-1', command_dispatch_refusal: 'trust_denied' },
-    });
-    // The unbounded detail (device id, full reason) stays on the console line.
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dev-1'));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('TRUST_PROBATION'));
-    warn.mockRestore();
+      expect(res).toEqual({ issued: false, reason: 'TRUST_PROBATION' });
+      expect(captureException).not.toHaveBeenCalled();
+      expect(captureMessage).toHaveBeenCalledTimes(1);
+      expect(captureMessage).toHaveBeenCalledWith('[MaintenanceReboot] reboot dispatch refused', {
+        eventCode: 'maintenance_reboot_dispatch_refused',
+        level: 'warning',
+        tags: { org_id: 'org-1', command_dispatch_refusal: 'trust_denied' },
+      });
+      // The unbounded detail (device id, full reason) stays on the console line.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dev-1'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('TRUST_PROBATION'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('tags a refusal that carries no class as unclassified rather than dropping the tag (#8022)', async () => {
@@ -302,16 +304,18 @@ describe('processRebootCandidate', () => {
       queueCommandForExecution: vi.fn().mockResolvedValue({ error: 'something new' }),
     } as never);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await processRebootCandidate(winDevice, deps);
 
-    await processRebootCandidate(winDevice, deps);
-
-    expect(captureMessage).toHaveBeenCalledWith(
-      '[MaintenanceReboot] reboot dispatch refused',
-      expect.objectContaining({
-        tags: { org_id: 'org-1', command_dispatch_refusal: 'unclassified' },
-      }),
-    );
-    warn.mockRestore();
+      expect(captureMessage).toHaveBeenCalledWith(
+        '[MaintenanceReboot] reboot dispatch refused',
+        expect.objectContaining({
+          tags: { org_id: 'org-1', command_dispatch_refusal: 'unclassified' },
+        }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('skips without issuing when the maintenance window is not active (M3)', async () => {
@@ -473,18 +477,20 @@ describe('runMaintenanceRebootSweep', () => {
         .mockResolvedValueOnce({ issued: true, reason: 'issued' }),
     });
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await runMaintenanceRebootSweep(deps);
 
-    const result = await runMaintenanceRebootSweep(deps);
-
-    expect(result).toEqual({ issued: 1, checked: 2 });
-    expect(deps.processRebootCandidate).toHaveBeenNthCalledWith(2, otherOrgCandidate);
-    expect(captureException).toHaveBeenCalledTimes(1);
-    expect(captureException).toHaveBeenCalledWith(boom, undefined, {
-      worker: 'maintenanceRebootWorker',
-      org_id: 'org-1',
-    });
-    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('dev-1'), boom);
-    errSpy.mockRestore();
+      expect(result).toEqual({ issued: 1, checked: 2 });
+      expect(deps.processRebootCandidate).toHaveBeenNthCalledWith(2, otherOrgCandidate);
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(captureException).toHaveBeenCalledWith(boom, undefined, {
+        worker: 'maintenanceRebootWorker',
+        org_id: 'org-1',
+      });
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('dev-1'), boom);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it('calls the reboot-pending emitter for a non-issued candidate with the right args', async () => {
