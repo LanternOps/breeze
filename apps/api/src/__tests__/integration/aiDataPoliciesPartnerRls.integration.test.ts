@@ -1,7 +1,7 @@
 /**
  * ai_data_policies — live RLS, XOR, partner-default SELECT branch, cascade and
  * merge (AI device file read policy, #8852). Policies shipped in
- * 2026-12-28-140000-ai-data-policies.sql. Precedent:
+ * 2026-12-29-110000-ai-data-policies.sql. Precedent:
  * aiScriptPoliciesPartnerRls.integration.test.ts.
  *
  * rls-coverage.integration.test.ts proves the policies EXIST; only driving the
