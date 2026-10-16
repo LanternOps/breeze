@@ -37,3 +37,6 @@ func (d *Dialer) ForceModeForTest(host string, m Mode, signatureAt time.Time) {
 		st.cooldownUntil = d.opts.Now().Add(cooldownDuration)
 	}
 }
+
+// SharedOneShotForTest reports whether the shared dialer is in one-shot mode.
+func SharedOneShotForTest() bool { return Shared().oneShot.Load() }

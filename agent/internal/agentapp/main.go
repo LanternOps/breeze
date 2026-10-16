@@ -21,6 +21,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
@@ -1532,6 +1533,7 @@ func resolveEnrollmentKey(positional string) string {
 }
 
 func enrollDevice(enrollmentKey string) {
+	enableOneShotECH(nil)
 	enrollmentKey = resolveEnrollmentKey(enrollmentKey)
 	enrollmentKey, serverURL, enrollmentSecret = trimEnrollInputs(
 		enrollmentKey, serverURL, enrollmentSecret,
@@ -2150,6 +2152,9 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		slog.Warn("helper config load failed; helper log shipping disabled", "error", err)
 		cfg = config.Default()
 	}
+	// Long-lived process: configure the shared ECH dialer for the log shipper
+	// (no one-shot mode).
+	ech.Configure(cfg.ECH, cfg.ECHServerEnabled)
 
 	socketPath := ipc.DefaultSocketPath()
 	if cfg.IPCSocketPath != "" {
