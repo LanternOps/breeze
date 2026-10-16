@@ -482,7 +482,10 @@
       "createFirst": "Ersten Filter erstellen",
       "created": "Erstellt am {{date}}",
       "deleteConfirm": "Diesen Filter löschen?",
-      "duplicate": "Duplizieren"
+      "duplicate": "Duplizieren",
+      "saveFailed": "Filter konnte nicht gespeichert werden",
+      "deleteFailed": "Filter konnte nicht gelöscht werden",
+      "ownerOrgHint": "Gespeicherte Filter gehören zu einer Organisation. Wählen Sie die Organisation aus, der dieser Filter gehört."
     },
     "targets": {
       "modes": {

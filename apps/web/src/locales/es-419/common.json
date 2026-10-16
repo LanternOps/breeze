@@ -482,7 +482,10 @@
       "createFirst": "Cree su primer filtro",
       "created": "Creado {{date}}",
       "deleteConfirm": "¿Eliminar este filtro?",
-      "duplicate": "Duplicado"
+      "duplicate": "Duplicado",
+      "saveFailed": "No se pudo guardar el filtro",
+      "deleteFailed": "No se pudo eliminar el filtro",
+      "ownerOrgHint": "Los filtros guardados pertenecen a una organización. Elige a cuál pertenece este filtro."
     },
     "targets": {
       "modes": {

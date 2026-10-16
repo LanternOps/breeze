@@ -42,6 +42,8 @@ const TARGET_GLOBS = [
   'src/components/backup/VaultDashboard.tsx',
   'src/components/backup/VaultConfigDialog.tsx',
   'src/components/settings/TicketPushoverSettings.tsx',
+  // #8330: saved-filter create/edit/delete surface the API's error text.
+  'src/components/filters/SavedFilterList.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
   'src/lib/endpointMessages.ts',
   'src/components/endpointMessages/SendMessageDialog.tsx',
@@ -926,7 +928,8 @@ describe('no silent mutations in targeted set', () => {
     // Caller verification W04 (#6354) adds lib/api/callerVerification.ts and
     // callerVerification/{VerifyCallerModal,ContactVerificationDrawer,CallerVerificationPolicyForm}.tsx: 225 → 229.
     // Endpoint messaging W1 (#8741) adds lib/endpointMessages.ts and endpointMessages/SendMessageDialog.tsx: 229 → 231.
-    expect(absoluteFiles.length).toBe(231);
+    // #8330 adds filters/SavedFilterList.tsx: 231 → 232.
+    expect(absoluteFiles.length).toBe(232);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

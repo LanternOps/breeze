@@ -482,7 +482,10 @@
       "createFirst": "İlk filtrenizi oluşturun",
       "created": "Oluşturuldu {{date}}",
       "deleteConfirm": "Bu filtre silinsin mi?",
-      "duplicate": "Çoğalt"
+      "duplicate": "Çoğalt",
+      "saveFailed": "Filtre kaydedilemedi",
+      "deleteFailed": "Filtre silinemedi",
+      "ownerOrgHint": "Kayıtlı filtreler tek bir kuruluşa aittir. Bu filtrenin hangi kuruluşa ait olacağını seçin."
     },
     "targets": {
       "modes": {
