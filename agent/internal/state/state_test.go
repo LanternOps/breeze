@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/atomicrename"
 )
 
 func TestWriteAndRead(t *testing.T) {
@@ -262,7 +264,7 @@ func TestWriteRetriesTransientRenameFailure(t *testing.T) {
 		}
 		return os.Rename(oldpath, newpath)
 	}
-	defer func() { renameStateFile = renameReplace }()
+	defer func() { renameStateFile = atomicrename.Replace }()
 
 	s := &AgentState{Status: StatusRunning, PID: 7, Version: "1.0.0", Timestamp: time.Now()}
 	if err := Write(path, s); err != nil {
@@ -293,7 +295,7 @@ func TestWritePersistentRenameFailure(t *testing.T) {
 		calls++
 		return fmt.Errorf("simulated persistent sharing violation")
 	}
-	defer func() { renameStateFile = renameReplace }()
+	defer func() { renameStateFile = atomicrename.Replace }()
 
 	s := &AgentState{Status: StatusRunning, PID: 7, Version: "1.0.0", Timestamp: time.Now()}
 	err := Write(path, s)

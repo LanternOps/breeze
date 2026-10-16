@@ -1,9 +1,10 @@
-package state
+package atomicrename
 
 import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 )
 
@@ -22,22 +23,39 @@ const (
 	winErrInvalidParameter = syscall.Errno(87)
 )
 
-// renameReplacePlanned picks the rename primitive for this OS build.
+type renameFunc func(oldpath, newpath string) error
+
+// planner picks the rename primitive for an OS build. infoEx is the POSIX
+// rename (FileRenameInfoEx on Windows); legacy is MoveFileEx. warn is called at
+// most once per planner, the first time a 1607+ build has to fall back.
+type planner struct {
+	infoEx   renameFunc
+	legacy   renameFunc
+	warn     func(build uint32, err error)
+	warnOnce sync.Once
+}
+
+// replace renames oldpath over newpath.
 //
-// Builds that predate FileRenameInfoEx go straight to legacy (MoveFileEx on
-// Windows). Newer builds try the POSIX rename first. A result that means
-// "this kernel does not implement the class" falls back once; a sharing
-// failure does not, because that is the case POSIX rename exists to survive
-// and MoveFileEx fails it the same way.
-func renameReplacePlanned(build uint32, oldpath, newpath string, infoEx, legacy func(oldpath, newpath string) error) error {
+// The warning fires before the legacy attempt, so it records the downgrade
+// even when MoveFileEx then fails too.
+//
+// Builds that predate FileRenameInfoEx go straight to legacy. Newer builds try
+// the POSIX rename first. A result that means "this kernel does not implement
+// the class" falls back once; a sharing failure does not, because that is the
+// case POSIX rename exists to survive and MoveFileEx fails it the same way.
+func (p *planner) replace(build uint32, oldpath, newpath string) error {
 	if build < fileRenameInfoExMinBuild {
-		return legacy(oldpath, newpath)
+		return p.legacy(oldpath, newpath)
 	}
-	err := infoEx(oldpath, newpath)
+	err := p.infoEx(oldpath, newpath)
 	if !isUnsupportedRenameClass(err) {
 		return err
 	}
-	if ferr := legacy(oldpath, newpath); ferr != nil {
+	if p.warn != nil {
+		p.warnOnce.Do(func() { p.warn(build, err) })
+	}
+	if ferr := p.legacy(oldpath, newpath); ferr != nil {
 		return fmt.Errorf("%w; legacy rename: %w", err, ferr)
 	}
 	return nil
