@@ -1,5 +1,5 @@
 import './setup';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { evaluateOrgPresence } from '../../services/topology/presenceEvaluator';
 import { prunePresenceDays, runTopologyPresenceTick } from '../../jobs/topologyPresenceWorker';
@@ -7,6 +7,21 @@ import { closeDb, twoSiteOrg, type PresenceDeviceSpec } from './topology-presenc
 import { getTestDb } from './setup';
 
 afterAll(() => closeDb());
+afterEach(() => { vi.useRealTimers(); });
+
+const DAY_MS = 86_400_000;
+/**
+ * #8761: day rows are keyed by the UTC day of the evaluation's `now`, so a test whose evaluations span
+ * `spanMs` must not straddle midnight or it legitimately gets two day rows. Pins `Date` (fixtures' capturedAt
+ * included, so evidence freshness stays consistent) to the real clock, or, when the span would cross midnight,
+ * to just after it: at most `spanMs` + 1 min ahead of Postgres's unfaked now(). Real timers keep running.
+ */
+function pinClockInsideOneUtcDay(spanMs: number): void {
+  const real = Date.now();
+  const nextMidnight = (Math.floor(real / DAY_MS) + 1) * DAY_MS;
+  vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+  vi.setSystemTime(real + spanMs + 60_000 < nextMidnight ? real : nextMidnight + 1_000);
+}
 
 /**
  * Site location W3 Task 3 (#7887): the evaluator writes prospective daily presence rows (S§10.1) and computes
@@ -70,6 +85,7 @@ async function seedVisits(f: Scenario, key: string, count: number, now = new Dat
 
 describe('presence days (S§10.1)', () => {
   it('writes one day row per device per (assigned site, match key), throttled to once per 60 min, in the device org only', async () => {
+    pinClockInsideOneUtcDay(11 * 60_000);
     const f = await scenario();
     const other = await scenario();
     const now = new Date();
@@ -94,6 +110,7 @@ describe('presence days (S§10.1)', () => {
   });
 
   it('the worker fans out per org and is idempotent within the throttle', async () => {
+    pinClockInsideOneUtcDay(2 * 60_000);
     const f = await scenario();
     const other = await scenario();
     // Sort both orgs first among whatever else this shared test database holds.
