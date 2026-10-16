@@ -111,6 +111,20 @@ describe('listIdentityKeyRoots', () => {
     expect(selectMock).toHaveBeenCalledTimes(4);
   });
 
+  it('indexes the organizations with rows under each root, never an erasure target\'s', async () => {
+    queue({
+      snapshots: [{ ...legacy('a1'), orgId: 'org-a' }],
+      reservations: [{ ...prefixed('r1', 'orgB'), orgId: 'org-b' }],
+      retirements: [{ ...prefixed('t1', 'orgB'), orgId: 'org-c' }],
+      erasureTargets: [prefixed('e1', 'other')],
+    });
+    const result = await listIdentityKeyRoots({ storageIdentity: IDENTITY });
+    expect(Object.fromEntries([...result.orgIdsByRootId].map(([id, orgs]) => [id, [...orgs].sort()]))).toEqual({
+      legacy: ['org-a'],
+      'prefixed:orgB': ['org-b', 'org-c'],
+    });
+  });
+
   it('records every root an id is named under', async () => {
     queue({ snapshots: [legacy('x1')], reservations: [prefixed('x1', 'orgB')] });
     const result = await listIdentityKeyRoots({ storageIdentity: IDENTITY });

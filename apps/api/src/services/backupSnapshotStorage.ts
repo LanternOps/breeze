@@ -148,9 +148,9 @@ function normalizeStoragePrefix(
     }
   }
 
-  // #6398: deliberately NOT `providerConfig.prefix`. The agent writes every
-  // snapshot object at `snapshots/<id>/...` verbatim (its providers take no
-  // prefix — see the KNOWN GAP note below), so applying the destination prefix
+  // #6398: deliberately NOT `providerConfig.prefix`. A legacy_flat snapshot's
+  // objects are at `snapshots/<id>/...` verbatim whatever the destination's
+  // prefix (see the note on the GC helpers below), so applying the prefix
   // here pointed immutability and deletion at a region that holds nothing:
   // object lock threw "No snapshot objects found" and deletion silently
   // stranded the real objects. Only a per-snapshot recorded `storagePrefix`
@@ -188,26 +188,15 @@ function keyMatchesSnapshotPrefix(key: string, normalizedPrefix: string): boolea
 // "snapshot root" GC lists once per storage identity, and the manifest key
 // GC expects every retained snapshot to have.
 //
-// KNOWN GAP: these deliberately IGNORE `providerConfig.prefix` entirely — the agent
-// (agent/internal/backup/snapshot.go's snapshotRootDir) writes every object
-// under `snapshots/<id>/...` VERBATIM regardless of any configured prefix,
-// so applying a prefix here made GC 404 on manifest fetches for any
-// destination with a configured prefix. If/when the agent gains real prefix
-// support, this function and the agent's snapshotRootDir usage must change
-// TOGETHER — applying a prefix on only one side either 404s manifest fetches
-// (GC prefixed, agent didn't) or sweeps/lists the wrong bucket region
-// (agent prefixed, GC didn't). This is also why GC groups destinations by
-// storage identity EXCLUDING prefix (see backupRetention.ts) — two configs
-// that only differ by a cosmetically-configured prefix are, in reality, the
-// exact same physical object namespace as far as the agent is concerned.
-//
-// #6398: every OTHER snapshot-key reader now agrees — normalizeStoragePrefix
-// (immutability, deletion) and recoveryDownloadService's
-// deriveRemoteStorageKey (token-mode recovery) no longer apply the prefix
-// either. Making the prefix real later means recording the key layout per
-// snapshot (metadata.storagePrefix already carries one) so pre-change
-// snapshots stay reachable and GC never sweeps across layouts; do not
-// re-introduce a config-level prefix on any one reader.
+// These return LOGICAL keys (`snapshots/...`), the keys the helper writes
+// and manifests reference. Callers compose physical keys through the
+// snapshot's recorded key root (#7081: backupKeyLayout.ts, and
+// backupRootedStorage.ts for GC and reconcile, which list and sweep one root
+// at a time). The destination's `providerConfig.prefix` is never read here;
+// it is read once, when a new snapshot id is reserved (keyRootForNewSnapshot).
+// GC groups destinations by storage identity EXCLUDING the prefix: the
+// prefix selects a key root inside the identity, never another identity.
+// Do not re-introduce a config-level prefix on any one reader.
 
 export function backupSnapshotRootPrefix(): string {
   return BACKUP_SNAPSHOT_ROOT_DIR;

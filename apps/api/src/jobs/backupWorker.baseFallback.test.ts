@@ -169,6 +169,14 @@ describe('classifyMissingBaseReason', () => {
     ).toBe('key_root_changed');
   });
 
+  it('reports base_key_root_unreadable when the newest snapshot records an unreadable root', () => {
+    expect(
+      classifyMissingBaseReason(probe({ keyLayout: 'prefixed_flat', keyPrefix: null }), {
+        storageIdentity: identity, mode: 'file', now, keyRoot: LEGACY,
+      }),
+    ).toBe('base_key_root_unreadable');
+  });
+
   it('does not blame the key root when the newest snapshot shares it', () => {
     expect(
       classifyMissingBaseReason(probe({ keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' }), {

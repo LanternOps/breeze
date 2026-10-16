@@ -35,8 +35,10 @@
  *
  * Every storage key is composed from the reservation's recorded key root
  * (#7081): `object_key` and `snapshots/<id>/` are logical, and their physical
- * keys come from `physicalKeyFor`. A reservation whose root this server cannot
- * read is skipped and logged — never acted on at the bucket root.
+ * keys come from `physicalKeyFor`. A reservation whose root is missing or
+ * unreadable is skipped, logged and reported — never acted on at the bucket
+ * root (an upload row with no upload id needs no storage call and is not
+ * skipped).
  */
 import { Queue, Worker } from 'bullmq';
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
@@ -139,6 +141,17 @@ async function destinationFor(configId: string | null): Promise<Record<string, u
   return result.destination.providerConfig;
 }
 
+/**
+ * An unreadable reservation root is an invariant breach (roots are validated
+ * when reserved and immutable after): reported, with constant text so repeat
+ * runs group as one issue; the ids are in the log line before it.
+ */
+function reportUnreadableRoot(): void {
+  captureException(new Error(
+    '[BackupWriteSessionJanitor] a reservation records a key root this server cannot read; its uploads are left in place',
+  ));
+}
+
 /** Rule 1. */
 async function abortRecordedUploads(deps: JanitorDeps, summary: JanitorSummary): Promise<void> {
   const now = deps.now();
@@ -188,6 +201,7 @@ async function abortRecordedUploads(deps: JanitorDeps, summary: JanitorSummary):
         uploadRowId: row.id,
         snapshotId: row.reservationSnapshotId,
       });
+      reportUnreadableRoot();
       continue;
     }
     try {
@@ -340,6 +354,7 @@ async function sweepFinishedPrefixes(deps: JanitorDeps, summary: JanitorSummary)
       console.warn('[BackupWriteSessionJanitor] not sweeping a snapshot prefix: its reservation\'s key root is unreadable', {
         snapshotId: r.snapshotId,
       });
+      reportUnreadableRoot();
       continue;
     }
     // Listed, compared and aborted as physical keys under the reservation's

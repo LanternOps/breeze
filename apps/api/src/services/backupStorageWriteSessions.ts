@@ -36,10 +36,11 @@ import {
   backupStorageSessions,
   devices,
 } from '../db/schema';
-import { normalizeStorageIdentity } from '../jobs/backupRetention';
+import { normalizeStorageIdentity } from './backupStorageIdentity';
 import { effectiveHelperProtocol } from './backupHelperProtocols';
 import { loadOriginKeyRootRows } from './backupOriginKeyRoots';
 import {
+  keyRootId,
   LEGACY_FLAT_ROOT,
   logicalKeyFrom,
   originKeyRootAllows,
@@ -197,9 +198,10 @@ export type WriteUnbrokeredReason =
   // The job's existing reservation records a key root this server cannot
   // read (fail closed).
   | 'key_root_invalid'
-  // The dispatch base is recorded under a key root other than this run's
-  // (the destination prefix changed between dispatch and delivery): a chain
-  // never spans roots (I4), so the next run takes a full backup instead.
+  // The dispatch base is not recorded under this run's key root (the
+  // destination prefix changed between dispatch and delivery, or the base's
+  // root is unreadable or gone under a prefixed run): a chain never spans
+  // roots (I4), so the next run takes a full backup instead.
   | 'base_key_root_mismatch';
 
 /**
@@ -395,10 +397,12 @@ export type MintKeyRootResult =
  * is what every later storage call of the id uses (redelivery, resume,
  * publication, cleanup).
  *
- * Hard-wired to the legacy root until storage GC, reconcile and the cleanup
- * job list per key root; the release that applies destination prefixes
+ * Hard-wired to the legacy root as a release gate: storage GC, reconcile and
+ * the cleanup job already handle prefixed roots (#7081), but no row may record
+ * `prefixed_flat` until the release that applies destination prefixes
  * replaces this body with `keyRootForNewSnapshot(provider, providerConfig)`.
- * Until then no code path records `prefixed_flat`.
+ * Storage GC and dispatch base selection also read it, as the root each
+ * destination writes now.
  */
 export function resolveMintKeyRoot(_provider: string, _providerConfig: Record<string, unknown>): MintKeyRootResult {
   return { ok: true, root: LEGACY_FLAT_ROOT };
@@ -543,10 +547,13 @@ export async function mintBackupWriteSession(
   const baseRootRefused = async (root: SnapshotKeyRoot): Promise<boolean> => {
     if (!baseSnapshotId) return false;
     const rows = await loadOriginKeyRootRows({ orgId: input.orgId, storageIdentity: identity, originSnapshotIds: [baseSnapshotId] });
-    if (originKeyRootAllows(root, rows.get(baseSnapshotId))) return false;
+    const baseRow = rows.get(baseSnapshotId);
+    if (originKeyRootAllows(root, baseRow)) return false;
     console.warn('[backupStorageWriteSessions] refused a write session: its dispatch base is under another or an unreadable key root', {
       jobId: input.jobId,
       baseSnapshotId,
+      runKeyRoot: keyRootId(root),
+      baseKeyRoot: baseRow ? `${baseRow.keyLayout}:${baseRow.keyPrefix ?? ''}` : 'no row',
     });
     return true;
   };

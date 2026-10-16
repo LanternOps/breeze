@@ -16,6 +16,7 @@ import {
 } from '../../db/schema';
 import { sweepUnreferencedBackupObjects, normalizeStorageIdentity } from '../../jobs/backupRetention';
 import { __setBackupS3ClientFactoryForTests } from '../../services/backupSnapshotStorage';
+import { loadReservationGcState } from '../../services/backupSnapshotIdReservations';
 import { InMemoryS3 } from '../helpers/inMemoryS3';
 
 /**
@@ -261,4 +262,34 @@ runDb('per-root GC: an erasure-fenced prefixed manifest is read under its fence\
     SELECT state, referenced_keys FROM backup_erasure_fence_refs WHERE storage_identity = ${identity} AND snapshot_id = 'e1'
   `)) as unknown as Array<{ state: string; referenced_keys: string[] }>;
   expect(refs).toEqual([{ state: 'resolved', referenced_keys: ['snapshots/e0/files/shared.dat'] }]);
+});
+
+runDb('loadReservationGcState reports each reclaimable reservation\'s recorded key root, null when unreadable (#7081)', async () => {
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const identity = normalizeStorageIdentity('s3', s3Config(`gc-roots-res-${unique}`));
+  const old = new Date(Date.now() - 20 * DAY_MS);
+  const ids = { legacy: `res-l-${unique}`, prefixed: `res-p-${unique}`, bad: `res-x-${unique}` };
+  await withSystemDbAccessContext(async () => {
+    const [partner] = await db.insert(partners).values({
+      name: `Root Partner ${unique}`, slug: `root-partner-${unique}`, type: 'msp', plan: 'pro', status: 'active',
+    }).returning({ id: partners.id });
+    const org = await seedOrg(unique, partner!.id, 'r', s3Config(`gc-roots-res-${unique}`));
+    for (const [id, layout, prefix] of [
+      [ids.legacy, 'legacy_flat', null],
+      [ids.prefixed, 'prefixed_flat', 'orgB'],
+      [ids.bad, 'device_scoped', null],
+    ] as const) {
+      await db.execute(sql`
+        INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, device_id, config_id, storage_identity, source, state, key_layout, key_prefix, updated_at)
+        VALUES (${id}, ${org.orgId}, ${org.deviceId}, ${org.configId}, ${identity}, 'server_minted', 'abandoned', ${layout}, ${prefix}, ${old.toISOString()}::timestamptz)
+      `);
+    }
+  });
+
+  const state = await withSystemDbAccessContext(() => loadReservationGcState(Date.now(), DAY_MS));
+  const byId = new Map(state.reclaimable.map((r) => [r.snapshotId, r.root]));
+  expect(byId.get(ids.legacy)).toEqual({ layout: 'legacy_flat', prefix: null });
+  expect(byId.get(ids.prefixed)).toEqual({ layout: 'prefixed_flat', prefix: 'orgB' });
+  expect(byId.has(ids.bad)).toBe(true);
+  expect(byId.get(ids.bad)).toBeNull();
 });

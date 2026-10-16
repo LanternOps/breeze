@@ -104,14 +104,23 @@ export async function deleteRootedObjectKeys(
   });
   if (storage.root.layout === 'legacy_flat') return result;
   const deletedKeys: string[] = [];
+  const unrequested: string[] = [];
   for (const key of result.deletedKeys) {
     const logical = logicalOf.get(key);
     if (logical !== undefined) deletedKeys.push(logical);
+    else unrequested.push(key);
   }
   const failedKeys: BackupObjectDeleteResult['failedKeys'] = [];
   for (const failure of result.failedKeys) {
     const logical = logicalOf.get(failure.key);
     if (logical !== undefined) failedKeys.push({ key: logical, error: failure.error });
+    else unrequested.push(failure.key);
+  }
+  if (unrequested.length > 0) {
+    console.warn(
+      `[backupRootedStorage] delete under key root ${keyRootId(storage.root)} reported ${unrequested.length} key(s) ` +
+      `that were not requested — ignored (sample: ${unrequested.slice(0, 3).join(', ')})`,
+    );
   }
   return { deletedKeys, failedKeys };
 }

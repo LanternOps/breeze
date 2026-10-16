@@ -170,6 +170,7 @@ const listIdentityKeyRootsMock = vi.fn(async (_input: { storageIdentity: string;
   roots: [{ layout: 'legacy_flat', prefix: null }] as Array<{ layout: 'legacy_flat'; prefix: null } | { layout: 'prefixed_flat'; prefix: string }>,
   invalid: [] as Array<{ source: string; snapshotId: string | null; keyLayout: unknown; keyPrefix: unknown }>,
   rootIdsBySnapshotId: new Map<string, Set<string>>(),
+  orgIdsByRootId: new Map<string, Set<string>>(),
 }));
 vi.mock('../services/backupKeyRoots', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/backupKeyRoots')>()),
@@ -878,11 +879,20 @@ describe('sweepUnreferencedBackupObjects', () => {
     const P: Root = { layout: 'prefixed_flat', prefix: 'orgB' };
     const old = () => new Date(Date.now() - 20 * DAY_MS);
 
-    function rootsAre(roots: Root[], index: Record<string, string[]> = {}, invalid: unknown[] = []) {
+    // `orgsByRoot` defaults every root to the test destination's org (it has
+    // no orgId, so the unit's org is undefined): every unit is in scope.
+    function rootsAre(
+      roots: Root[],
+      index: Record<string, string[]> = {},
+      invalid: unknown[] = [],
+      orgsByRoot?: Record<string, Array<string | undefined>>,
+    ) {
+      const orgs = orgsByRoot ?? Object.fromEntries(roots.map((r) => [r.layout === 'legacy_flat' ? 'legacy' : `prefixed:${r.prefix}`, [undefined]]));
       listIdentityKeyRootsMock.mockResolvedValueOnce({
         roots,
         invalid: invalid as never,
         rootIdsBySnapshotId: new Map(Object.entries(index).map(([id, ids]) => [id, new Set(ids)])),
+        orgIdsByRootId: new Map(Object.entries(orgs).map(([id, ids]) => [id, new Set(ids as string[])])),
       });
     }
 
@@ -936,7 +946,8 @@ describe('sweepUnreferencedBackupObjects', () => {
 
       const result = await sweepUnreferencedBackupObjects();
 
-      expect(listedPrefixes().sort()).toEqual(['orgB/snapshots', 'snapshots']);
+      // Prefixed roots are swept before the legacy root (rule 5).
+      expect(listedPrefixes()).toEqual(['orgB/snapshots', 'snapshots']);
       expect(result.skippedIdentities).toBe(0);
       expect(result.blockedIdentities).toBe(0);
     });
@@ -1043,8 +1054,8 @@ describe('sweepUnreferencedBackupObjects', () => {
         expect(result.skippedIdentities).toBeGreaterThanOrEqual(1);
         expect(error.mock.calls.some(([msg]) => String(msg).includes('cross_root_reference'))).toBe(true);
         expect(captureExceptionMock.mock.calls.some(([e]) => String((e as Error).message).includes('cross_root_reference'))).toBe(true);
-        // The legacy root was never swept after the reference was found.
-        expect(listedPrefixes()).not.toContain('snapshots/zz');
+        // The legacy root was never listed after the reference was found.
+        expect(listedPrefixes()).not.toContain('snapshots');
       } finally {
         error.mockRestore();
       }
@@ -1119,6 +1130,212 @@ describe('sweepUnreferencedBackupObjects', () => {
 
       await sweepUnreferencedBackupObjects();
       expect(vi.mocked(reservations.reclaimAbandonedReservations)).not.toHaveBeenCalled();
+    });
+
+    it('runs a unit under a root only for orgs with rows there or writing there, listing it with such an org\'s destination (rule 10)', async () => {
+      const orgA = { id: 'cfg-a', orgId: 'org-a', provider: 's3', providerConfig: { bucket: 'shared', region: 'us-east-1', accessKey: 'A' } };
+      const orgB = { id: 'cfg-b', orgId: 'org-b', provider: 's3', providerConfig: { bucket: 'shared', region: 'us-east-1', accessKey: 'B' } };
+      rootsAre([LEGACY, P], {}, [], { 'prefixed:orgB': ['org-b'] });
+      pushRunLevel([orgA, orgB]);
+      pushIdentity(); // P: org-b only
+      pushIdentity(); // legacy: org-a
+      pushIdentity(); // legacy: org-b (writes the legacy root now)
+      const listedWith: Array<{ prefix: string; accessKey: unknown }> = [];
+      iterateBackupObjectsMock.mockImplementation(async function* (input: { prefix: string; providerConfig: { accessKey?: unknown } }) {
+        listedWith.push({ prefix: input.prefix, accessKey: input.providerConfig.accessKey });
+      } as never);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(listedWith).toEqual([
+        { prefix: 'orgB/snapshots', accessKey: 'B' },
+        { prefix: 'snapshots', accessKey: 'A' },
+      ]);
+      expect(selectQueue).toEqual([]); // exactly three units loaded state
+      expect(result.skippedIdentities).toBe(0);
+    });
+
+    it('does not list a root no org is in scope for', async () => {
+      rootsAre([LEGACY, P], {}, [], {}); // P recorded only by rows of no current org
+      pushRunLevel([destination]);
+      pushIdentity(); // legacy only
+      bucket([{ key: 'orgB/snapshots/zz/files/old.dat', lastModified: old() }]);
+
+      await sweepUnreferencedBackupObjects();
+
+      expect(listedPrefixes()).toEqual(['snapshots']);
+      expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+    });
+
+    it('a row-less manifest\'s cross-root reference does not stop the identity (rule 5 applies to row-backed snapshots)', async () => {
+      rootsAre([LEGACY, P], { a1: ['legacy'] });
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'ret-b2', snapshotId: 'b2' }] }); // P
+      pushIdentity(); // legacy
+      const young = new Date(Date.now() - DAY_MS);
+      bucket([
+        // A young orphan under P (a root while young) referencing a legacy object.
+        { key: 'orgB/snapshots/o1/manifest.json', lastModified: young },
+        { key: 'orgB/snapshots/b2/files/x.dat', lastModified: old() },
+      ]);
+      manifests({ 'orgB/snapshots/o1/manifest.json': manifestJson([{ backupPath: 'snapshots/a1/files/f.dat' }]) });
+      deletesSucceed();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deletedKeys()).toEqual(['orgB/snapshots/b2/files/x.dat']);
+      expect(result.blockedIdentities).toBe(0);
+    });
+
+    it('never reclaims an id another org owns, listed under a different root with no root recorded for it (rule 7)', async () => {
+      rootsAre([LEGACY, P]);
+      pushRunLevel([destination], [], { live: [{ storageIdentity: identityKeyFor(destination), snapshotId: 'o9', orgId: 'other-org' }] });
+      pushIdentity(); // P
+      pushIdentity(); // legacy
+      bucket([
+        { key: 'orgB/snapshots/o9/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/o9/files/x.dat', lastModified: old() },
+      ]);
+      deletesSucceed();
+
+      await sweepUnreferencedBackupObjects();
+
+      expect(deletedKeys()).toEqual([]);
+    });
+
+    describe('erasure fences under key roots (rule 8)', () => {
+      async function fenceModule() {
+        return import('../services/backupErasureFence');
+      }
+
+      async function fence(
+        fenced: Record<string, Array<{ keyLayout: string | null; keyPrefix: string | null }> | undefined>,
+        objectKeysAtLoad: string[] = [],
+        objectKeysAtRecheck: string[] = [],
+      ) {
+        const mod = await fenceModule();
+        vi.mocked(mod.loadBackupErasureFences).mockImplementation(async (ids, objectKeys) => {
+          const wanted = new Set(ids);
+          const subjects = new Map<string, Set<string>>();
+          const roots = new Map<string, Array<{ keyLayout: string | null; keyPrefix: string | null }>>();
+          for (const [id, rootRows] of Object.entries(fenced)) {
+            if (!wanted.has(id)) continue;
+            subjects.set(id, new Set(['erased-org']));
+            if (rootRows) roots.set(id, rootRows);
+          }
+          const keys = objectKeys === undefined
+            ? new Set(objectKeysAtLoad)
+            : new Set([...objectKeys].filter((k) => objectKeysAtRecheck.includes(k)));
+          return { snapshotSubjects: subjects, snapshotRoots: roots, objectKeys: keys };
+        });
+        vi.mocked(mod.fencedIdsForeignTo).mockImplementation((subjects) => new Set(subjects.keys()));
+      }
+
+      afterEach(async () => {
+        const mod = await fenceModule();
+        vi.mocked(mod.loadBackupErasureFences).mockReset();
+        vi.mocked(mod.loadBackupErasureFences).mockImplementation(async () => ({
+          snapshotSubjects: new Map(), snapshotRoots: new Map(), objectKeys: new Set<string>(),
+        }));
+        vi.mocked(mod.fencedIdsForeignTo).mockReset();
+        vi.mocked(mod.fencedIdsForeignTo).mockImplementation(() => new Set<string>());
+      });
+
+      it.each([
+        ['an unreadable fence root', [{ keyLayout: 'prefixed_flat', keyPrefix: null }]],
+        ['two different fence roots', [{ keyLayout: 'prefixed_flat', keyPrefix: 'orgB' }, { keyLayout: 'legacy_flat', keyPrefix: null }]],
+        ['no fence root entry', undefined],
+      ])('defers reclamation under the root when a fenced manifest has %s', async (_name, rootRows) => {
+        await fence({ e1: rootRows });
+        rootsAre([LEGACY, P], { e1: ['prefixed:orgB'] });
+        pushRunLevel([destination]);
+        pushIdentity({ retirements: [{ id: 'ret-b2', snapshotId: 'b2' }] }); // P
+        pushIdentity(); // legacy
+        // Retired b2 carries a manifest referencing x.dat: only retired
+        // reclamation (which deferral suspends) can remove x.dat.
+        bucket([
+          { key: 'orgB/snapshots/e1/manifest.json', lastModified: old() },
+          { key: 'orgB/snapshots/b2/manifest.json', lastModified: old() },
+          { key: 'orgB/snapshots/b2/files/x.dat', lastModified: old() },
+        ]);
+        manifests({ 'orgB/snapshots/b2/manifest.json': manifestJson([{ backupPath: 'snapshots/b2/files/x.dat' }]) });
+        deletesSucceed();
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        try {
+          const result = await sweepUnreferencedBackupObjects();
+          expect(deletedKeys()).toEqual([]);
+          expect(result.deferredIdentities).toBeGreaterThanOrEqual(1);
+          expect(fetchBackupObjectTextMock).not.toHaveBeenCalledWith(expect.objectContaining({ key: 'orgB/snapshots/e1/manifest.json' }));
+          expect(error.mock.calls.some(([msg]) => String(msg).includes('no single readable key root'))).toBe(true);
+        } finally {
+          error.mockRestore();
+        }
+      });
+
+      it('does not read, under another root, a manifest fenced under the legacy root — and does not defer', async () => {
+        await fence({ e1: [{ keyLayout: null, keyPrefix: null }] }); // NULL reads as legacy
+        rootsAre([LEGACY, P], { e1: ['legacy'] });
+        pushRunLevel([destination]);
+        pushIdentity({ retirements: [{ id: 'ret-b2', snapshotId: 'b2' }] }); // P
+        pushIdentity(); // legacy
+        // Retired b2 carries a manifest referencing x.dat: only retired
+        // reclamation (which deferral suspends) can remove x.dat.
+        bucket([
+          { key: 'orgB/snapshots/e1/manifest.json', lastModified: old() },
+          { key: 'orgB/snapshots/b2/manifest.json', lastModified: old() },
+          { key: 'orgB/snapshots/b2/files/x.dat', lastModified: old() },
+        ]);
+        manifests({ 'orgB/snapshots/b2/manifest.json': manifestJson([{ backupPath: 'snapshots/b2/files/x.dat' }]) });
+        deletesSucceed();
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        try {
+          await sweepUnreferencedBackupObjects();
+          expect(deletedKeys()).toEqual(['orgB/snapshots/b2/files/x.dat', 'orgB/snapshots/b2/manifest.json']);
+          expect(fetchBackupObjectTextMock).not.toHaveBeenCalledWith(expect.objectContaining({ key: 'orgB/snapshots/e1/manifest.json' }));
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('keeps a fenced object key that lies under the unit\'s prefixed root', async () => {
+        await fence({}, ['orgB/snapshots/b2/files/x.dat']);
+        rootsAre([LEGACY, P], { b2: ['prefixed:orgB'] });
+        pushRunLevel([destination]);
+        pushIdentity({ retirements: [{ id: 'ret-b2', snapshotId: 'b2' }] }); // P
+        pushIdentity(); // legacy
+        bucket([
+          { key: 'orgB/snapshots/b2/files/x.dat', lastModified: old() },
+          { key: 'orgB/snapshots/b2/files/y.dat', lastModified: old() },
+        ]);
+        deletesSucceed();
+
+        await sweepUnreferencedBackupObjects();
+
+        expect(deletedKeys()).toEqual(['orgB/snapshots/b2/files/y.dat']);
+      });
+
+      it('drops a candidate whose physical key is fenced by the pre-delete recheck', async () => {
+        await fence({}, [], ['orgB/snapshots/b2/files/x.dat']);
+        rootsAre([LEGACY, P], { b2: ['prefixed:orgB'] });
+        pushRunLevel([destination]);
+        pushIdentity({ retirements: [{ id: 'ret-b2', snapshotId: 'b2' }] }); // P
+        pushIdentity(); // legacy
+        bucket([
+          { key: 'orgB/snapshots/b2/files/x.dat', lastModified: old() },
+          { key: 'orgB/snapshots/b2/files/y.dat', lastModified: old() },
+        ]);
+        deletesSucceed();
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        try {
+          await sweepUnreferencedBackupObjects();
+          expect(deletedKeys()).toEqual(['orgB/snapshots/b2/files/y.dat']);
+        } finally {
+          warn.mockRestore();
+        }
+      });
     });
 
     it('keys the failed-delete skip set per root, leaving the legacy set name unchanged', async () => {

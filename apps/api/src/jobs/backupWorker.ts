@@ -1004,6 +1004,8 @@ export type FullBackupFallbackReason =
   // #7081 (I4): no candidate is recorded under the key root this run writes
   // (the destination prefix changed); chains never span roots.
   | 'key_root_changed'
+  // #7081: the newest snapshot records a key root this server cannot read.
+  | 'base_key_root_unreadable'
   // #7081: the destination's key prefix is invalid, so this run has no key
   // root to match a base against (mint refuses the write itself).
   | 'invalid_destination_prefix';
@@ -1045,7 +1047,8 @@ export function classifyMissingBaseReason(
   if (!probe) return 'no_prior_snapshot';
   if (probe.storageIdentity !== ctx.storageIdentity) return 'storage_identity_changed';
   const probeRoot = snapshotKeyRootOf({ keyLayout: probe.keyLayout, keyPrefix: probe.keyPrefix });
-  if (!probeRoot || !sameKeyRoot(probeRoot, ctx.keyRoot)) return 'key_root_changed';
+  if (!probeRoot) return 'base_key_root_unreadable';
+  if (!sameKeyRoot(probeRoot, ctx.keyRoot)) return 'key_root_changed';
   const typeMatches =
     ctx.mode === 'system_image'
       ? probe.backupType === 'system_image'

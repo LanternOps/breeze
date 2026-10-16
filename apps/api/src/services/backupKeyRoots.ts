@@ -39,9 +39,15 @@ export type IdentityKeyRoots = {
   invalid: InvalidKeyRoot[];
   /** keyRootId of every readable root each snapshot id is recorded under. */
   rootIdsBySnapshotId: Map<string, Set<string>>;
+  /**
+   * keyRootId -> the organizations with a snapshot, reservation or unswept
+   * retirement recorded under that root on the identity. GC runs an org's
+   * unit under a root only when the org has rows there or writes there now.
+   */
+  orgIdsByRootId: Map<string, Set<string>>;
 };
 
-type RootRow = { snapshotId: string | null; keyLayout: unknown; keyPrefix: unknown };
+type RootRow = { snapshotId: string | null; keyLayout: unknown; keyPrefix: unknown; orgId?: string | null };
 
 export async function listIdentityKeyRoots(input: {
   storageIdentity: string;
@@ -50,12 +56,18 @@ export async function listIdentityKeyRoots(input: {
 }): Promise<IdentityKeyRoots> {
   const nullIdentityConfigIds = [...new Set(input.nullIdentityConfigIds ?? [])];
   const sources = await withSystemDbAccessContext(async () => {
+    const snapshotColumns = {
+      snapshotId: backupSnapshots.snapshotId,
+      keyLayout: backupSnapshots.keyLayout,
+      keyPrefix: backupSnapshots.keyPrefix,
+      orgId: backupSnapshots.orgId,
+    };
     const snapshots: RootRow[] = await db
-      .select({ snapshotId: backupSnapshots.snapshotId, keyLayout: backupSnapshots.keyLayout, keyPrefix: backupSnapshots.keyPrefix })
+      .select(snapshotColumns)
       .from(backupSnapshots)
       .where(eq(backupSnapshots.storageIdentity, input.storageIdentity));
     const nullIdentitySnapshots: RootRow[] = nullIdentityConfigIds.length === 0 ? [] : await db
-      .select({ snapshotId: backupSnapshots.snapshotId, keyLayout: backupSnapshots.keyLayout, keyPrefix: backupSnapshots.keyPrefix })
+      .select(snapshotColumns)
       .from(backupSnapshots)
       .where(and(isNull(backupSnapshots.storageIdentity), inArray(backupSnapshots.configId, nullIdentityConfigIds)));
     const reservations: RootRow[] = await db
@@ -63,6 +75,7 @@ export async function listIdentityKeyRoots(input: {
         snapshotId: backupSnapshotIdReservations.snapshotId,
         keyLayout: backupSnapshotIdReservations.keyLayout,
         keyPrefix: backupSnapshotIdReservations.keyPrefix,
+        orgId: backupSnapshotIdReservations.orgId,
       })
       .from(backupSnapshotIdReservations)
       .where(eq(backupSnapshotIdReservations.storageIdentity, input.storageIdentity));
@@ -71,6 +84,7 @@ export async function listIdentityKeyRoots(input: {
         snapshotId: backupSnapshotRetirements.snapshotId,
         keyLayout: backupSnapshotRetirements.keyLayout,
         keyPrefix: backupSnapshotRetirements.keyPrefix,
+        orgId: backupSnapshotRetirements.orgId,
       })
       .from(backupSnapshotRetirements)
       .where(and(
@@ -99,6 +113,7 @@ export async function listIdentityKeyRoots(input: {
   const rootsById = new Map<string, SnapshotKeyRoot>([[keyRootId(LEGACY_FLAT_ROOT), LEGACY_FLAT_ROOT]]);
   const invalid: InvalidKeyRoot[] = [];
   const rootIdsBySnapshotId = new Map<string, Set<string>>();
+  const orgIdsByRootId = new Map<string, Set<string>>();
   for (const [source, rows] of sources) {
     for (const row of rows) {
       const root = source === 'erasure_target'
@@ -110,6 +125,15 @@ export async function listIdentityKeyRoots(input: {
       }
       const id = keyRootId(root);
       if (!rootsById.has(id)) rootsById.set(id, root);
+      // Erasure targets name an erased org, which has no unit to run.
+      if (row.orgId) {
+        let orgs = orgIdsByRootId.get(id);
+        if (!orgs) {
+          orgs = new Set();
+          orgIdsByRootId.set(id, orgs);
+        }
+        orgs.add(row.orgId);
+      }
       if (!row.snapshotId) continue;
       let ids = rootIdsBySnapshotId.get(row.snapshotId);
       if (!ids) {
@@ -120,7 +144,7 @@ export async function listIdentityKeyRoots(input: {
     }
   }
   const roots = [...rootsById.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, root]) => root);
-  return { roots, invalid, rootIdsBySnapshotId };
+  return { roots, invalid, rootIdsBySnapshotId, orgIdsByRootId };
 }
 
 /**

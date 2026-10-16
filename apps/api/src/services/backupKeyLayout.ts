@@ -29,10 +29,10 @@ import { classifyBackupObjectKey } from './backupObjectKey';
  *
  * Readers refuse (fail closed, I5) a layout not listed in `BACKUP_KEY_LAYOUTS`,
  * a row whose `(key_layout, key_prefix)` pair is inconsistent, and a physical
- * key that does not map back under the expected root. Storage GC uses the
- * narrower `GC_SUPPORTED_KEY_LAYOUTS`: it skips a whole storage identity while
- * any of its snapshots has a layout outside that set, since a root-blind sweep
- * could otherwise treat that snapshot's objects as unreferenced.
+ * key that does not map back under the expected root. Storage GC uses
+ * `GC_SUPPORTED_KEY_LAYOUTS` (currently equal to `BACKUP_KEY_LAYOUTS`): it
+ * skips a whole storage identity while any of its snapshots has a layout
+ * outside that set, because it could not locate that snapshot's objects.
  */
 export const BACKUP_KEY_LAYOUTS = ['legacy_flat', 'prefixed_flat'] as const;
 

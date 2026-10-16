@@ -41,8 +41,9 @@ import { fetchRootedObjectText, iterateRootedObjects } from './backupRootedStora
  * mark-and-sweep object GC).
  *
  * TENANCY. The destination is a customer-owned bucket that Breeze does not
- * partition by org — the agent writes `snapshots/<id>/...` verbatim with no
- * org or device prefix (see the KNOWN GAP note in backupSnapshotStorage.ts).
+ * partition by org — snapshots are written under `snapshots/<id>/...` (under
+ * the reservation's key prefix, when it has one) with no org or device
+ * segment.
  * Enumerating it is therefore a cross-tenant read risk whenever two orgs point
  * their `backup_configs` at the same physical bucket. Four defences, in
  * order of strength:
@@ -729,10 +730,11 @@ export function manifestToCommandResult(params: {
 }
 
 /**
- * The key roots reconcile lists for a destination (#7081): the root a new
- * snapshot on it is written under (its prefix, when valid) and always the
- * legacy root. A stored prefix that fails validation lists the legacy root
- * only — never a guessed location.
+ * The key roots reconcile lists for a destination (#7081): the root its
+ * current prefix names (when valid) and always the legacy root. Roots of
+ * earlier prefixes are not listed, so orphans there are not adopted. A stored
+ * prefix that fails validation lists the legacy root only — never a guessed
+ * location.
  */
 function reconcileKeyRoots(provider: string, providerConfig: Record<string, unknown>, configId: string): SnapshotKeyRoot[] {
   const current = keyRootForNewSnapshot(provider, providerConfig);
