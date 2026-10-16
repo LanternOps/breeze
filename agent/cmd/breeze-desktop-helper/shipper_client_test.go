@@ -27,7 +27,7 @@ func TestNewShipperHTTPClient_DialsTLSThroughECH(t *testing.T) {
 		t.Fatalf("GET: %v", err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (421 = TLS dial did not use ECH)", resp.StatusCode)
 	}

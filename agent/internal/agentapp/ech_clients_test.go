@@ -25,7 +25,7 @@ func echGet(t *testing.T, c *http.Client, url string) *http.Response {
 		t.Fatalf("GET %s: %v", url, err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp
 }
 

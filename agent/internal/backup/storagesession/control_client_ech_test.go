@@ -31,7 +31,7 @@ func TestControlClient_DialsTLSThroughECH(t *testing.T) {
 			t.Fatalf("GET %s: %v", path, err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
 	if got := get("/api/v1/backup/storage-session/control"); got != http.StatusOK {
