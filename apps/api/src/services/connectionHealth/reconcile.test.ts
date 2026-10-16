@@ -59,7 +59,7 @@ const src = (kind: string, intervalMinutes: number): HealthSource => ({
 });
 const okCounts = { opened: 0, resolved: 0, pending: 0, observations: 0 };
 const noopsExceptAlert = {
-  deliver: async () => ({ delivered: 0, failed: 0 }),
+  deliver: async () => ({ delivered: 0, failed: 0, zeroRecipients: 0 }),
   retention: async () => 0,
 };
 const noops = { ...noopsExceptAlert, alert: async () => true };
@@ -180,9 +180,9 @@ describe('runReconcile', () => {
     redis.store.set('connection-health:kind:a:last-ok', String(plusMin(T0, -30).getTime()));
     redis.store.set('connection-health:kind:c:last-ok', String(plusMin(T0, -60).getTime()));
     let t = T0.getTime();
-    const runKind = vi.fn(async () => { t += 40_000; return okCounts; });
+    const runKind = vi.fn(async (_source: HealthSource, _now: Date, _seed: boolean) => { t += 40_000; return okCounts; });
     const r = await runReconcile({ sources: [src('a', 15), src('b', 15), src('c', 15)], redis, runKind, now: () => new Date(t), budgetMs: 60_000, ...noops });
-    expect(runKind.mock.calls.map((c) => (c[0] as HealthSource).kind)).toEqual(['b', 'c']);
+    expect(runKind.mock.calls.map((c) => c[0].kind)).toEqual(['b', 'c']);
     expect(r.kinds.map((k) => [k.kind, k.status])).toEqual([['b', 'ok'], ['c', 'ok'], ['a', 'skipped_budget']]);
   });
 
@@ -198,7 +198,7 @@ describe('runReconcile', () => {
     const redis = fakeRedis();
     const order: string[] = [];
     const runKind = vi.fn(async () => { order.push('kind'); return okCounts; });
-    const deliver = vi.fn(async () => { order.push('deliver'); return { delivered: 2, failed: 0 }; });
+    const deliver = vi.fn(async () => { order.push('deliver'); return { delivered: 2, failed: 0, zeroRecipients: 0 }; });
     const retention = vi.fn(async () => { order.push('retention'); return 3; });
     const r = await runReconcile({ sources: [src('a', 15)], redis, runKind, deliver, retention, alert: vi.fn(), now: () => T0 });
     expect(order).toEqual(['kind', 'deliver', 'retention']);
