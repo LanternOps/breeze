@@ -32,7 +32,12 @@ func TestNewClient_UsesECHTransport(t *testing.T) {
 func TestNewClientWithTLS_KeepsTLSAndUsesECH(t *testing.T) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	tr := assertECHTransport(t, NewClientWithTLS("https://example.test", "tok", "agent", tlsCfg))
-	if tr.TLSClientConfig != tlsCfg {
-		t.Fatal("TLSClientConfig was not preserved")
+	// ech.NewTransport clones the base (shared mTLS config, HTTP/2 rewrites
+	// NextProtos), so check the settings survived, not pointer identity.
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("TLSClientConfig settings were not preserved: %+v", tr.TLSClientConfig)
+	}
+	if tr.TLSClientConfig == tlsCfg {
+		t.Fatal("TLSClientConfig must be a clone, not the caller's pointer")
 	}
 }
