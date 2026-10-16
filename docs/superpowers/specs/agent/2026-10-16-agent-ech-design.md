@@ -1,7 +1,7 @@
 # Agent: Encrypted Client Hello (ECH) for control-plane TLS — design
 
 **Issue:** #8869 · **Related:** #8868 (detect ISP filter), #8870 (second domain), #8872 (abuse contact surface)
-**Date:** 2026-10-16 · **Status:** draft for builder check
+**Date:** 2026-10-16 · **Status:** builder check done (7 questions, all settled below as the author's calls); awaiting approval
 
 ## Intent and why
 
@@ -52,7 +52,8 @@ Per host (control-plane host and backup host separately), the dialer has three m
 - In `plain`, dial exactly as today. If the TLS handshake fails with `*tls.RecordHeaderError` whose `RecordHeader` begins with `HTTP/` (a plaintext HTTP answer on the TLS port), record a **filter signature**. After **2 signatures within 10 minutes** (my call; one could be a captive portal), switch the host to `ech` and schedule an ECH config fetch. The signature counter also feeds #8868's health message ("blocked by a network security filter").
 - In `ech`, each dial: TCP connect (via `netcache` as today) → `tls.Client` with the host's normal config **plus** `EncryptedClientHelloConfigList`. On success, stay in `ech` (sticky while it works) and set `ech_active=true`. On `*tls.ECHRejectionError` with a non-empty `RetryConfigList`: persist it and retry **once, immediately** with the new list. On any other ECH-path error (no cached config, DoH failed, rejection with empty retry list, handshake error): **fall back to plain within the same dial** (one more TCP connect), and count an ECH failure.
 - **3 consecutive ECH failures** → `cooldown` for **1 hour** (my call), during which the host is dialled plain only; after cooldown, back to `plain` with the signature counter reset (so the filter must be observed again before ECH re-engages).
-- A successful **plain** handshake while in `ech` mode (e.g. the filter was turned off) moves the host back to `plain`. This keeps the healthy state the default.
+- `ech` is **sticky until restart or cooldown**. The edge accepts ECH whether or not a filter is present, so there is no natural signal that the filter went away; a periodic plain re-probe would cost reconnects for no reachability gain and is out of scope for v1 (noted as a possible follow-up). A restart always starts `plain`, which bounds how long a host stays on ECH after the filter is gone. A plain handshake that *does* succeed inside `ech` mode (the per-dial fallback) moves the host back to `plain`.
+- **Signature counting:** signatures are deduplicated per host into a 30-second window, so one filter event seen by heartbeat, WebSocket and the log shipper at once counts once. The threshold is 2 *events* within 10 minutes; that is what makes the captive-portal rationale hold.
 
 ### 2. Key discovery and caching
 
@@ -61,17 +62,20 @@ Per host (control-plane host and backup host separately), the dialer has three m
 
 ### 3. Kill switch and opt-out
 
-- Server-pushed: a boolean `echEnabled` on the heartbeat response (same channel that already carries `backup_server_url`). Default true when absent (so older API versions don't disable it). When false, all hosts are forced to `plain` and no DoH fetches happen. API side: driven by env `AGENT_ECH_ENABLED` (default `true`), no UI for v1.
-- Local: `ech: false` in `agent.yaml` (default true). Either switch wins when off.
+- Server-pushed: a boolean `echEnabled` on the heartbeat response (same channel that already carries `backup_server_url`). Default true when absent (so older API versions don't disable it). When false, every **new** dial is plain and no DoH fetches happen; live ECH connections are **not** torn down (no `ForceReconnect`) — a fleet-wide kill that force-reconnected every socket would be a reconnect storm on the very metric the rollout watches, and a connection that is working is not the problem the switch exists for. They drain on their own reconnect cycle. API side: driven by env `AGENT_ECH_ENABLED` (default `true`), no UI for v1.
+- The server flag is persisted under its **own** key (`ech_server_enabled`) via the existing `SetAndPersist` path, never under the operator's key, so (a) a server `true` can never overwrite a local opt-out and (b) the **watchdog** — a separate process whose failover response carries no config channel — honours the kill switch when it reloads `agent.yaml` at failover entry. The watchdog otherwise runs the same dialer with its own in-memory state.
+- Local: `ech: false` in `agent.yaml` (default true), operator-owned. Either switch wins when off.
 
 ### 4. Observability
 
-- `ech_active` (bool) and `filter_signature_seen_at` (timestamp, nullable) in the health snapshot sent with the heartbeat; stored with the existing device health JSON. No web UI work in v1 beyond what the existing health JSON viewer shows.
+- The health observation wire schema is **strict v1** on the API (`apps/api/src/routes/agents/schemas.ts`, `agentHealthObservationWireV1Schema.strict()`, `healthStatus: …catch(undefined)`): adding unknown fields inside it would make every older API silently drop the *whole* observation for every upgraded agent. So: (a) the filter block state goes into the existing `components` map as `control_plane` with `state`/`reason` (fits v1 unchanged; this is #8868's "blocked by a network security filter" message), and (b) `echActive` (bool) and `filterSignatureSeenAt` (RFC 3339, nullable) are **new top-level heartbeat keys**, which older servers strip harmlessly (the same additive pattern `HelperInstallIssue` relies on). API change is additive: accept + persist the two keys on the device row's existing health/connection JSON. No agent↔API deploy-order dependency. No web UI work in v1.
 - Logs: one INFO per mode change per host (`plain→ech`, `ech→cooldown`, …), one WARN per filter-signature streak (reuse the `netcache` once-per-streak latch pattern), DEBUG for individual ECH attempts. No per-dial INFO noise.
 
 ### 5. One-shot commands: `enroll`, `bootstrap`, `support`
 
 The 2-signature threshold protects a long-running agent from engaging ECH on a captive-portal blip. A one-shot CLI command has no steady state to protect and no second attempt: on the **first** filter signature it fetches the ECH config (synchronously, bounded to ~5 s total across both DoH resolvers) and retries the request with ECH once, then falls back to plain and reports the normal error. This is what makes the MSI's `BootstrapEnroll` / `EnrollAgent` custom actions succeed on a filtered network: the MSI ships the agent binary, so enrollment is the only network step.
+
+Scope of "the request": **every control-plane call the command makes before it exits** — enrollment POST, bootstrap-token redeem, release/manifest fetches, support-session enroll — not just the first. `pkg/api` currently builds several bare `http.Client`s (`pkg/api/client.go` ~290/403/479/526) and `bootstrap.go` another; they get one transport-injection point so a single `ech.Dialer` serves them all. `enroll` and `bootstrap` run elevated (SYSTEM/root under the MSI/pkg) and **persist** `ech-cache.json` into the service data dir so the service's first ECH dial already has a key; `support` runs in the user workspace and does not persist.
 
 ### 6. Fresh installs on a filtered network — scope boundary
 
@@ -80,6 +84,10 @@ Everything that downloads the agent *before* the agent exists cannot use ECH: th
 ### 7. Where it plugs in
 
 Control-plane transports only: the heartbeat transport (`agent/internal/heartbeat/heartbeat.go` ~1067–1075), the WebSocket dialer (`agent/internal/websocket/client.go` ~386, gorilla `Dialer.NetDialTLSContext`), the watchdog failover probe (`agent/internal/watchdog/failover.go` ~173–175), and the log shipper's transport. Each gets a `DialTLSContext` from one shared `ech.Dialer` that wraps `netcache.Shared().DialContext` and takes the caller's `tls.Config` as the base. `netpolicy` and all other transports are untouched.
+
+## Task 0 — extend the spike before writing agent code
+
+The 2026-10-16 spike proved only a bare TLS 1.3 handshake + one HTTP/1.1 GET under ECH. Before any agent code: repeat it as (1) an authenticated heartbeat-shaped POST over the heartbeat transport settings (h2 via `ForceAttemptHTTP2`), (2) the same with an mTLS client certificate where the deployment uses one (`mtls.BuildTLSConfig`), and (3) a WebSocket upgrade (HTTP/1.1) through the edge. If the edge treats ECH differently on any of these, that is an infrastructure pre-check to resolve first, and the plan changes.
 
 ## Left to the builder
 
