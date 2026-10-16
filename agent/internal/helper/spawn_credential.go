@@ -110,8 +110,11 @@ func spawnCredentialFromIDs(uid, gid string, groupIDs []string, groupIDsErr erro
 
 	// breezeGID is a platform int from the group database; a gid can never
 	// exceed uint32, so anything outside that range counts as unresolved.
+	// The direct comparison (not via uint64) is what CodeQL's
+	// incorrect-integer-conversion check recognises as a bound; it needs a
+	// 64-bit int, and the agent only ships amd64/arm64.
 	breezeGID32, hasBreezeGID := uint32(0), false
-	if breezeGID > 0 && uint64(breezeGID) <= math.MaxUint32 {
+	if breezeGID > 0 && breezeGID <= math.MaxUint32 {
 		breezeGID32, hasBreezeGID = uint32(breezeGID), true
 	}
 
