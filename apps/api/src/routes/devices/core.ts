@@ -440,6 +440,8 @@ export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
 }
 
+// Delete-on-move disposition. Each device-scoped table gets exactly one of restamp / DEVICE_ORG_FK_CASCADE_TABLES /
+// this list; moveOrg.coverage.test.ts ('device org-move disposition (#8634)') enforces it from the schema.
 const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // Site location W2 (#7886): (matched_site_id, org_id) and assigned_site_id name SOURCE-org sites, so a
   // restamp is unrepresentable; the evaluator rebuilds the row in the target org.
