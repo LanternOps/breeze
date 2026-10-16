@@ -79,9 +79,12 @@ export async function readWithPartnerAxisVisibility<T>(fn: () => Promise<T>): Pr
  * SELECT-only policy `partner_id = public.breeze_current_partner_id()`
  * (writes stay on `breeze_has_partner_access`). Today that is ONLY
  * `patch_policies` and `patch_approvals`
- * (2026-11-13-140000-patch-partner-axis-own-partner-select.sql); do not route
- * any other table through here until it has the same branch, or the in-place
- * read returns zero rows silently — the #2822 failure.
+ * (2026-11-13-140000-patch-partner-axis-own-partner-select.sql), and the
+ * partner ceiling rows (`org_id IS NULL`) of the dual-owner `ai_data_policies`
+ * (`ai_data_policies_partner_wide_select`, 2026-12-29-110000-ai-data-policies.sql;
+ * the query must stay pinned to `org_id IS NULL` too). Do not route any other
+ * table through here until it has the same branch, or the in-place read
+ * returns zero rows silently — the #2822 failure.
  *
  * In place when the context is system scope, or its `currentPartnerId` is
  * `partnerId` (the own-partner branch — org-scoped users, agents, API keys),

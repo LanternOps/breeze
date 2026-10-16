@@ -168,6 +168,31 @@ describe('GET /', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).canManage).toBe(false);
   });
+  // canManage must mirror EVERY gate the PUT enforces, or the card offers a
+  // save that 403s. Reads stay open to the partner scope either way.
+  it('reports canManage:false (not 403) without ai_agents:write', async () => {
+    currentPerms = makePerms([PERMISSIONS.AI_AGENTS_READ]);
+    selectQueue = [[]];
+    const res = await getReq();
+    expect(res.status).toBe(200);
+    expect((await res.json()).canManage).toBe(false);
+  });
+
+  it('reports canManage:false (not 403) when no permissions resolve at all (fail closed)', async () => {
+    currentPerms = null;
+    selectQueue = [[]];
+    const res = await getReq();
+    expect(res.status).toBe(200);
+    expect((await res.json()).canManage).toBe(false);
+  });
+
+  it('reports canManage:false (not 403) when MFA is not satisfied', async () => {
+    currentAuth = partnerAuth({ token: { mfa: false, sid: 'sid-1' } });
+    selectQueue = [[]];
+    const res = await getReq();
+    expect(res.status).toBe(200);
+    expect((await res.json()).canManage).toBe(false);
+  });
 });
 
 describe('PUT /', () => {

@@ -8,10 +8,56 @@
  * real driver as `breeze_app` under FORCE RLS proves they enforce anything.
  */
 import './setup';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
+
+/**
+ * Route harness for the org-session tests below: `authMiddleware` is replaced
+ * by one that opens the request transaction EXACTLY the way the real one does
+ * for an organization-session JWT — through the production
+ * `buildDbAccessContext` with `partnerId: null` (org JWTs deliberately carry no
+ * partner, middleware/auth.ts), so `currentPartnerId` is null and the
+ * `ai_data_policies_partner_wide_select` branch cannot match. Everything else
+ * in the module stays real.
+ */
+const routeAuth = vi.hoisted(() => ({ orgId: '', userId: '' }));
+vi.mock('../../middleware/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../middleware/auth')>();
+  const { withDbAccessContext: withCtx } = await import('../../db');
+  return {
+    ...actual,
+    authMiddleware: (c: any, next: any) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: routeAuth.orgId,
+        partnerId: null,
+        accessibleOrgIds: [routeAuth.orgId],
+        user: { id: routeAuth.userId, email: 'org-admin@data.test' },
+        token: { mfa: true },
+        canAccessOrg: (orgId: string) => orgId === routeAuth.orgId,
+        orgCondition: () => undefined,
+      });
+      return withCtx(
+        actual.buildDbAccessContext({
+          scope: 'organization',
+          orgId: routeAuth.orgId,
+          accessibleOrgIds: [routeAuth.orgId],
+          partnerId: null,
+          userId: routeAuth.userId,
+        }),
+        () => next(),
+      );
+    },
+    requirePermission: () => (_c: any, next: any) => next(),
+    requireMfa: () => (_c: any, next: any) => next(),
+  };
+});
+
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { aiDataPolicies } from '../../db/schema';
+import { buildDbAccessContext } from '../../middleware/auth';
+import { aiDataPolicyRoutes } from '../../routes/ai/dataPolicy';
 import { resolveAiDataPolicy, resolveAiDataPolicyCeiling } from '../../services/aiDataPolicy';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { executeOrgMerge } from '../../services/orgMerge';
@@ -238,20 +284,115 @@ describe('resolveAiDataPolicy under RLS', () => {
     expect(effective.source.toolOutputRetentionDays).toBe('default');
   });
 
-  it('fails open to defaults when the DB context carries no currentPartnerId (Wave 2 gate must assert it — see ledger ruling)', async () => {
+  // The REAL organization-session shape: org JWTs carry partnerId=null, so the
+  // production builder yields currentPartnerId=null and the SELECT-only partner
+  // branch cannot match. The resolver must still find the partner ceiling.
+  const orgSessionCtx = (orgId: string): DbAccessContext =>
+    buildDbAccessContext({ scope: 'organization', orgId, accessibleOrgIds: [orgId], partnerId: null, userId: null });
+
+  it('an org-SESSION context (currentPartnerId null) still resolves the partner ceiling, never the looser default', async () => {
     await seedPartnerCeiling();
-    // Context literal built WITHOUT currentPartnerId: the partner SELECT branch cannot match.
-    const noPartnerCtx: DbAccessContext = {
-      scope: 'organization',
-      orgId: a.orgId,
-      accessibleOrgIds: [a.orgId],
-      accessiblePartnerIds: [],
-      userId: null,
-    } as DbAccessContext;
-    const effective = await withDbAccessContext(noPartnerCtx, () => resolveAiDataPolicy(a.orgId));
-    // Pins the current gap: the partner's stricter 'off' is invisible, so the resolver
-    // returns the (looser) default. Wave 2 turns this into a fail-closed assertion.
-    expect(effective.deviceFileReadLevel).toBe('no_user_profiles');
-    expect(effective.source.deviceFileReadLevel).toBe('default');
+    const ctx = orgSessionCtx(a.orgId);
+    expect(ctx.currentPartnerId).toBeNull();
+    const effective = await withDbAccessContext(ctx, () => resolveAiDataPolicy(a.orgId));
+    expect(effective.deviceFileReadLevel).toBe('off');
+    expect(effective.source.deviceFileReadLevel).toBe('partner');
+    expect(effective.toolOutputRetentionDays).toBe(7);
+    const ceiling = await withDbAccessContext(ctx, () => resolveAiDataPolicyCeiling(a.orgId));
+    expect(ceiling.deviceFileReadLevel).toBe('off');
+    expect(ceiling.source.deviceFileReadLevel).toBe('partner');
+    expect(ceiling.toolOutputRetentionDays).toBe(7);
+  });
+
+  it('an org-session context still applies its own tightening org row on top of the partner ceiling', async () => {
+    await withSystemDbAccessContext(() =>
+      db.insert(aiDataPolicies).values({ partnerId: a.partnerId, deviceFileReadLevel: 'any_with_approval', toolOutputRetentionDays: 90 }));
+    await seedOrgRow(a.orgId, { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 14 });
+    const effective = await withDbAccessContext(orgSessionCtx(a.orgId), () => resolveAiDataPolicy(a.orgId));
+    expect(effective).toEqual({
+      deviceFileReadLevel: 'no_user_profiles',
+      toolOutputRetentionDays: 14,
+      source: { deviceFileReadLevel: 'org', toolOutputRetentionDays: 'org' },
+    });
+  });
+
+  it("cross-partner: an org-session context for partner A's org never resolves partner B's ceiling", async () => {
+    await withSystemDbAccessContext(() =>
+      db.insert(aiDataPolicies).values({ partnerId: b.partnerId, deviceFileReadLevel: 'any_with_approval', toolOutputRetentionDays: 365 }));
+    // Org A's own resolution must not pick up B's row.
+    const own = await withDbAccessContext(orgSessionCtx(a.orgId), () => resolveAiDataPolicyCeiling(a.orgId));
+    expect(own.source.deviceFileReadLevel).toBe('default');
+    expect(own.toolOutputRetentionDays).toBe(30);
+    // Naming B's org from A's context: the org row is invisible under A's RLS,
+    // so no partner id is derived and B's ceiling is never read.
+    const foreignEffective = await withDbAccessContext(orgSessionCtx(a.orgId), () => resolveAiDataPolicy(b.orgId));
+    expect(foreignEffective.source.deviceFileReadLevel).toBe('default');
+    expect(foreignEffective.deviceFileReadLevel).toBe('no_user_profiles');
+    const foreignCeiling = await withDbAccessContext(orgSessionCtx(a.orgId), () => resolveAiDataPolicyCeiling(b.orgId));
+    expect(foreignCeiling.source.deviceFileReadLevel).toBe('default');
+    expect(foreignCeiling.toolOutputRetentionDays).toBe(30);
+  });
+});
+
+describe('org data-policy route under a real org-session DB context', () => {
+  const app = () => {
+    const h = new Hono();
+    h.route('/ai', aiDataPolicyRoutes);
+    return h;
+  };
+
+  beforeEach(async () => {
+    const user = await createUser({ partnerId: a.partnerId, orgId: a.orgId, email: `org-admin-${Date.now()}@data.test` });
+    routeAuth.orgId = a.orgId;
+    routeAuth.userId = user.id;
+    await withSystemDbAccessContext(() =>
+      db.insert(aiDataPolicies).values({ partnerId: a.partnerId, deviceFileReadLevel: 'off', toolOutputRetentionDays: 7 }));
+  });
+
+  it('GET reports the partner ceiling, not the built-in default', async () => {
+    const res = await app().request('/ai/data-policy');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ceiling.deviceFileReadLevel).toBe('off');
+    expect(body.ceiling.source.deviceFileReadLevel).toBe('partner');
+    expect(body.ceiling.toolOutputRetentionDays).toBe(7);
+    expect(body.effective.deviceFileReadLevel).toBe('off');
+    expect(body.effective.source.deviceFileReadLevel).toBe('partner');
+  });
+
+  it('PUT of a level looser than the partner ceiling is a 422 and stores nothing', async () => {
+    const res = await app().request('/ai/data-policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceFileReadLevel: 'no_user_profiles' }),
+    });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'above_partner_ceiling', field: 'deviceFileReadLevel' });
+    const stored = await withSystemDbAccessContext(() =>
+      db.select().from(aiDataPolicies).where(eq(aiDataPolicies.orgId, a.orgId)));
+    expect(stored).toHaveLength(0);
+  });
+
+  it('PUT of a retention looser than the partner ceiling is a 422', async () => {
+    const res = await app().request('/ai/data-policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolOutputRetentionDays: 30 }),
+    });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'above_partner_ceiling', field: 'toolOutputRetentionDays' });
+  });
+
+  it('PUT of a value inside the ceiling still saves', async () => {
+    const res = await app().request('/ai/data-policy', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceFileReadLevel: 'off', toolOutputRetentionDays: 3 }),
+    });
+    expect(res.status).toBe(200);
+    const stored = await withSystemDbAccessContext(() =>
+      db.select().from(aiDataPolicies).where(eq(aiDataPolicies.orgId, a.orgId)));
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.toolOutputRetentionDays).toBe(3);
   });
 });

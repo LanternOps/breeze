@@ -8,7 +8,7 @@ import { zValidator } from '../../lib/validation';
 import { PERMISSIONS } from '../../services/permissions';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
 import { createAuditLogAsync } from '../../services/auditService';
-import { levelRank, resolveAiDataPolicy, resolveAiDataPolicyCeiling } from '../../services/aiDataPolicy';
+import { levelRank, resolveAiDataPolicyCeiling, resolveAiDataPolicyWithCeiling } from '../../services/aiDataPolicy';
 import { aiDataPolicyBodySchema, toAiDataPolicyDto } from '../partnerAiDataPolicy';
 
 /**
@@ -18,11 +18,21 @@ import { aiDataPolicyBodySchema, toAiDataPolicyDto } from '../partnerAiDataPolic
  */
 const orgQuerySchema = z.object({ orgId: z.string().guid().optional() });
 
-/** Org tokens act on their own org; partner/system tokens name one with `?orgId=`. */
-function resolveTargetOrgId(auth: AuthContext, queryOrgId: string | undefined): string | null {
-  if (auth.scope === 'organization') return auth.orgId ?? null;
-  if (!queryOrgId) return null;
-  return auth.canAccessOrg(queryOrgId) ? queryOrgId : null;
+type TargetOrg = { orgId: string } | { error: string; status: 400 | 403 };
+
+/**
+ * Org tokens act on their own org; partner/system tokens name one with
+ * `?orgId=`. A missing org is a malformed request (400); a named org the
+ * caller cannot access is a well-formed request it is not allowed to make
+ * (403, the `!canAccessOrg` convention).
+ */
+function resolveTargetOrg(auth: AuthContext, queryOrgId: string | undefined): TargetOrg {
+  if (auth.scope === 'organization') {
+    return auth.orgId ? { orgId: auth.orgId } : { error: 'Organization context required', status: 400 };
+  }
+  if (!queryOrgId) return { error: 'orgId is required', status: 400 };
+  if (!auth.canAccessOrg(queryOrgId)) return { error: 'Access to this organization denied.', status: 403 };
+  return { orgId: queryOrgId };
 }
 
 export const aiDataPolicyRoutes = new Hono();
@@ -35,10 +45,13 @@ aiDataPolicyRoutes.get(
   zValidator('query', orgQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveTargetOrgId(auth, c.req.valid('query').orgId);
-    if (!orgId) return c.json({ error: 'Organization context required' }, 400);
+    const target = resolveTargetOrg(auth, c.req.valid('query').orgId);
+    if ('error' in target) return c.json({ error: target.error }, target.status);
+    const { orgId } = target;
     const [row] = await db.select().from(aiDataPolicies).where(eq(aiDataPolicies.orgId, orgId)).limit(1);
-    const [effective, ceiling] = await Promise.all([resolveAiDataPolicy(orgId), resolveAiDataPolicyCeiling(orgId)]);
+    // One partner-row read for both values: for an org session it is a system
+    // escape (second pooled connection), so never run two of them concurrently.
+    const { effective, ceiling } = await resolveAiDataPolicyWithCeiling(orgId);
     return c.json({ policy: row ? toAiDataPolicyDto(row) : null, effective, ceiling });
   },
 );
@@ -52,8 +65,9 @@ aiDataPolicyRoutes.put(
   zValidator('json', aiDataPolicyBodySchema),
   async (c) => {
     const auth = c.get('auth');
-    const orgId = resolveTargetOrgId(auth, c.req.valid('query').orgId);
-    if (!orgId) return c.json({ error: 'Organization context required' }, 400);
+    const target = resolveTargetOrg(auth, c.req.valid('query').orgId);
+    if ('error' in target) return c.json({ error: target.error }, target.status);
+    const { orgId } = target;
     if (!canMutateOrgWideGovernance(auth)) return c.json({ error: SITE_CEILING_WRITE_DENIED_MESSAGE }, 403);
     const body = c.req.valid('json');
     const ceiling = await resolveAiDataPolicyCeiling(orgId);

@@ -53,6 +53,12 @@ vi.mock('../../services/aiDataPolicy', async (importOriginal) => {
     ...actual,
     resolveAiDataPolicy: (...a: unknown[]) => resolveAiDataPolicy(...a),
     resolveAiDataPolicyCeiling: (...a: unknown[]) => resolveAiDataPolicyCeiling(...a),
+    // The GET reads both from one partner-row read; route it through the two
+    // spies so each test keeps asserting on the value it scripts.
+    resolveAiDataPolicyWithCeiling: async (orgId: string) => ({
+      effective: await resolveAiDataPolicy(orgId),
+      ceiling: await resolveAiDataPolicyCeiling(orgId),
+    }),
   };
 });
 
@@ -177,11 +183,21 @@ describe('GET /data-policy', () => {
     expect(resolveAiDataPolicy).toHaveBeenCalledWith(ORG_A);
   });
 
-  it('400s for a partner token without orgId, and for an inaccessible org', async () => {
+  it('400s for a partner token without orgId', async () => {
     currentAuth = partnerAuth();
-    expect((await getReq('/data-policy')).status).toBe(400);
-    expect((await getReq(`/data-policy?orgId=${ORG_B}`)).status).toBe(400);
+    const res = await getReq('/data-policy');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'orgId is required' });
     expect(resolveAiDataPolicy).not.toHaveBeenCalled();
+  });
+
+  it('403s for an org the caller cannot access (not a 400: the request is well-formed)', async () => {
+    currentAuth = partnerAuth();
+    const res = await getReq(`/data-policy?orgId=${ORG_B}`);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to this organization denied.' });
+    expect(resolveAiDataPolicy).not.toHaveBeenCalled();
+    expect(resolveAiDataPolicyCeiling).not.toHaveBeenCalled();
   });
 
   it('403s without ai_agents:read', async () => {
@@ -259,11 +275,20 @@ describe('PUT /data-policy', () => {
     expect(auditLog[0]).toMatchObject({ orgId: ORG_A });
   });
 
-  it('400s a partner token without orgId or for an inaccessible org', async () => {
+  it('400s a partner token without orgId', async () => {
     currentAuth = partnerAuth();
     expect((await putReq({ deviceFileReadLevel: 'off' }, '/data-policy')).status).toBe(400);
-    expect((await putReq({ deviceFileReadLevel: 'off' }, `/data-policy?orgId=${ORG_B}`)).status).toBe(400);
     expect(writes).toHaveLength(0);
+  });
+
+  it('403s a partner token naming an org it cannot access, and writes nothing', async () => {
+    currentAuth = partnerAuth();
+    const res = await putReq({ deviceFileReadLevel: 'off' }, `/data-policy?orgId=${ORG_B}`);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to this organization denied.' });
+    expect(resolveAiDataPolicyCeiling).not.toHaveBeenCalled();
+    expect(writes).toHaveLength(0);
+    expect(auditLog).toHaveLength(0);
   });
 
   it('403s a site-restricted caller (org-wide governance object)', async () => {
