@@ -781,7 +781,7 @@ Insert values: `sourceKind: source.kind`, `quoteId`/`quoteAcceptanceId` (quote) 
 
 - [ ] **Step 1: Failing tests** — `it("source.kind='request' inserts agreement_request_id, no quote columns, source_kind 'request'")`, `it('externalBytes are stored verbatim with the sniffed mime and rendered_html null')`, `it('evidence columns are written for both sources')`, `it('allowUnresolvedFallback=false throws AGREEMENT_VARIABLES_UNRESOLVED and inserts nothing')`; in `quoteAcceptService.test.ts` extend the snapshot test: `expect(snapshotArgs[7]).toMatchObject({ acceptanceOrigin: 'customer', acceptanceMethod: 'typed-signature', contentHashVersion: 2, acceptanceRenderLocale: 'en' })` and `expect(snapshotArgs[7].contentSha256).toBe(acceptanceValues.quoteSha256)`.
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/contractDocumentService.test.ts src/services/quoteAcceptService.test.ts` → FAIL.
-- [ ] **Step 3: Implement** — build the evidence object in `acceptQuote` right after the acceptance insert (`:424-446` has every field: `captured.*`, `params.ipAddress`, `params.userAgent`, `origin`, `captured.method`, `reference`, `recordedByUserId`, `quoteSha256`, `2`, `renderLocale`, `now`), pass as the 8th arg.
+- [ ] **Step 3: Implement** — build the evidence object in `acceptQuote` right after the acceptance insert (`:424-446` has every field: `captured.*`, `params.ipAddress`, `params.userAgent`, `origin`, `captured.method`, `reference`, `recordedByUserId`, `quoteSha256`, `2`, `renderLocale`); widen the insert's `.returning({ id })` to `.returning({ id, signedAt })` and use the **returned** `signedAt` (the DB `now()` default) so new quote-sourced rows carry exactly what the W1b back-fill copied for legacy ones; pass as the 8th arg.
 - [ ] **Step 4: Run the gate** — the two files above plus `src/services/quoteAcceptanceHash.golden.test.ts`, `src/services/quoteAcceptanceVerify.test.ts`; then integration `quoteAccept.integration.test.ts` + `quoteAcceptOnBehalf.integration.test.ts` (assert in the on-behalf suite that the new `contract_documents` row carries `acceptance_origin='on_behalf'` — add that expectation) → PASS.
 - [ ] **Step 5: Commit** `feat(agreements): request-aware freezeSignedAgreement; quote accepts write the evidence snapshot (#8865 W1b)`
 
@@ -851,7 +851,13 @@ The future-`signedAt` rule lives in the service (Task 13) because it needs `now`
 ```ts
 // contractTemplateRender.ts
 export type TemplateVersionRenderData = Omit<ContractBlockRenderData, 'blockId'>;
-/** System-scoped read of ONE pinned published version (same contract as loadContractBlockRenderData: runOutsideDbContext + withSystemDbAccessContext). */
+/** Read ONE pinned published version + its template through the bare `db` in WHATEVER context the
+ *  caller established — deliberately NOT wrapped in runOutsideDbContext/withSystemDbAccessContext
+ *  (unlike loadContractBlockRenderData). Staff paths (spec §2: create/PATCH/record-signed/preview)
+ *  read templates in the request's own context via the partner-wide SELECT branch
+ *  (2026-10-10-100400-identity-contracts-partner-wide-select.sql:63-70); only W2's public/portal
+ *  accept path wraps this in system scope itself. Throws ContractTemplateServiceError 404
+ *  VERSION_NOT_FOUND when the version is invisible or not published. */
 export async function loadTemplateVersionRenderData(templateVersionId: string, opts?: { includeFileData?: boolean }): Promise<TemplateVersionRenderData>;
 
 // agreementRequestService.ts
@@ -864,6 +870,7 @@ export class AgreementRequestServiceError extends Error {
 }
 export interface RecordSignedAgreementParams {
   input: RecordSignedAgreementInput;                      // validated (Task 12)
+  renderData: TemplateVersionRenderData;                  // loaded by the ROUTE under withAuthDbAccessContext (Task 15) — never inside this system-scoped tx
   partnerId: string;                                      // auth.partnerId
   actorUserId: string | null;
   actorIp: string | null; actorUserAgent: string | null;  // stored as signer_ip / signer_user_agent — the TECH's, as quoteAcceptService.ts:431-436
@@ -871,14 +878,14 @@ export interface RecordSignedAgreementParams {
   now: Date;
 }
 export interface RecordSignedAgreementResult { request: AgreementRequestRow; signedAgreementId: string; contentSha256: string }
-/** MUST be called inside runOutsideDbContext(() => withSystemDbAccessContext(...)) — same wrapping as the on-behalf quote accept (routes/quotes/lifecycle.ts:151). Org access + template visibility are the CALLER's checks (route, Task 15) in the request's own context; this function re-asserts the template guard inside the tx. */
+/** MUST be called inside runOutsideDbContext(() => withSystemDbAccessContext(...)) — same wrapping as the on-behalf quote accept (routes/quotes/lifecycle.ts:151). Org access, the template read (`renderData`) and `assertTemplateVersionUsable` are the CALLER's checks (route, Task 15) in the request's own auth context; this function re-asserts the template guard inside the tx (an explicit orgId/partnerId comparison on rows it selects by id — not an RLS-dependent visibility read). */
 export async function recordSignedAgreement(params: RecordSignedAgreementParams): Promise<RecordSignedAgreementResult>;
 ```
-Pipeline, in order, all inside the tx: (1) `signedAt > now + AGREEMENT_SIGNED_AT_SKEW_MS` → 400 `SIGNED_AT_IN_FUTURE`; (2) blank `signerName` → 400 (same guard as `quoteAcceptService.ts:400-404`); (3) `assertTemplateVersionUsable({ templateId: renderData.templateId, templateVersionId }, { orgId, partnerId })` — let the `ContractTemplateServiceError` propagate unchanged; the route's error mapper (Task 15) turns it into its own 422 status/code; (4) `contractId` → select `contracts.id, orgId`; missing or `orgId !== input.orgId` → 404 `CONTRACT_NOT_FOUND`; (5) file branch: `sniffEvidenceMime` null → 415, `> QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES` → 413, empty → 400; (6) org + partner snapshot: `organizations.name/billing address` via `buildBillToAddress`, `partners` via `buildSellerSnapshot`, `renderLocale = resolvePartnerDocumentLocale(partner)`; (7) `ctx = renderContextFromRequest(snapshot, { effectiveDate: input.effectiveDate ?? signedAt date-only UTC, currencyCode: partner default })`; (8) `findUnresolvedVariables(renderData, input.variableValues, resolveAutoVariables(ctx))` non-empty → 422 `AGREEMENT_VARIABLES_UNRESOLVED` with message `Agreement variables unresolved: a, b` (same marker shape as `AcceptOnBehalfDialog.tsx:34` so the dialog can parse it); (9) insert `agreement_requests` with `status='signed'`, `signed_at`, snapshots, `variable_values`, `created_by`, `expires_at = signedAt` (a signed request has no live link), `label`; (10) `contentSha256 = computeAgreementSha256(file ? { kind:'external', versionSha, bytesSha256, mime } : { kind:'rendered', versionSha, vars: { ...auto, ...manual }, renderLocale, effectiveDate })`; (11) `freezeSignedAgreement({ source: { kind:'request', agreementRequestId }, …, evidence: { acceptanceOrigin:'on_behalf', acceptanceMethod: input.method, acceptanceReference: input.reference, recordedByUserId: actorUserId, contentSha256, contentHashVersion: 1, acceptanceRenderLocale: renderLocale, signedAt, … }, externalBytes: file ? { data, mime } : undefined, allowUnresolvedFallback: false })`; (12) return.
+Pipeline, in order, all inside the tx: (1) `signedAt > now + AGREEMENT_SIGNED_AT_SKEW_MS` → 400 `SIGNED_AT_IN_FUTURE`; (2) blank `signerName` → 400 (same guard as `quoteAcceptService.ts:400-404`); (3) `assertTemplateVersionUsable({ templateId: renderData.templateId, templateVersionId }, { orgId, partnerId })` — let the `ContractTemplateServiceError` propagate unchanged; the route's error mapper (Task 15) turns it into its own 422 status/code; (4) `contractId` → select `contracts.id, orgId`; missing or `orgId !== input.orgId` → 404 `CONTRACT_NOT_FOUND`; (5) file branch: `sniffEvidenceMime` null → 415, `> QUOTE_ACCEPTANCE_EVIDENCE_MAX_BYTES` → 413, empty → 400; (6) org + partner snapshot: `organizations.name/billing address` via `buildBillToAddress`, `partners` via `buildSellerSnapshot`, `renderLocale = resolvePartnerDocumentLocale(partner)`; (7) `ctx = renderContextFromRequest(snapshot, { effectiveDate: input.effectiveDate ?? signedAt date-only UTC, currencyCode: 'USD' })` (unused when `ctx.quote` is absent — no money keys are emitted; stored nowhere); (8) `findUnresolvedVariables(renderData, input.variableValues, resolveAutoVariables(ctx))` non-empty → 422 `AGREEMENT_VARIABLES_UNRESOLVED` with message `Agreement variables unresolved: a, b` (same marker shape as `AcceptOnBehalfDialog.tsx:34` so the dialog can parse it); (9) insert `agreement_requests` with `status='signed'`, `signed_at`, snapshots, `variable_values`, `created_by`, `expires_at = signedAt` (a signed request has no live link), `label`; (10) `contentSha256 = computeAgreementSha256(file ? { kind:'external', versionSha, bytesSha256, mime } : { kind:'rendered', versionSha, vars: { ...auto, ...manual }, renderLocale, effectiveDate })`; (11) `freezeSignedAgreement({ source: { kind:'request', agreementRequestId }, …, evidence: { acceptanceOrigin:'on_behalf', acceptanceMethod: input.method, acceptanceReference: input.reference, recordedByUserId: actorUserId, contentSha256, contentHashVersion: 1, acceptanceRenderLocale: renderLocale, signedAt, … }, externalBytes: file ? { data, mime } : undefined, allowUnresolvedFallback: false })`; (12) return.
 
 `agreementRecordedOnBehalfAudit.ts`: `recordedOnBehalfAuditEvent({ requestId, orgId, signedAgreementId, method, reference, signerName, signerEmail, templateVersionId, external: boolean })` → `RouteAuditInput` with `action: 'billing.agreement.recorded_on_behalf'`, `resourceType: 'agreement_request'`, pattern `quoteAcceptOnBehalfAudit.ts:21-53`.
 
-- [ ] **Step 1: Failing tests** (`../db` chain mock as `contractDocumentService.test.ts:17-37`; mock `./contractTemplateRender` `loadTemplateVersionRenderData`; spy `./contractDocumentService` `freezeSignedAgreement` via `importActual` spread as `quoteAcceptService.test.ts:25-27`; mock `./contractTemplateService` `assertTemplateVersionUsable`):
+- [ ] **Step 1: Failing tests** (`../db` chain mock as `contractDocumentService.test.ts:17-37`; `renderData` is a plain fixture passed in `params` — nothing in `./contractTemplateRender` needs mocking; spy `./contractDocumentService` `freezeSignedAgreement` via `importActual` spread as `quoteAcceptService.test.ts:25-27`; mock `./contractTemplateService` `assertTemplateVersionUsable`):
   - `signedAt` 10 minutes ahead → rejects `{ status: 400, code: 'SIGNED_AT_IN_FUTURE' }`, `db.insert` never called
   - template guard rejection propagates (`ContractTemplateServiceError` instance)
   - contract from another org → `{ status: 404, code: 'CONTRACT_NOT_FOUND' }`, no insert
@@ -889,7 +896,7 @@ Pipeline, in order, all inside the tx: (1) `signedAt > now + AGREEMENT_SIGNED_AT
   - audit payload test: action string, `reference` verbatim, `external` flag
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/agreementRequestService.test.ts src/services/agreementRecordedOnBehalfAudit.test.ts` → FAIL (modules missing).
 - [ ] **Step 3: Implement** per the pipeline (service ≤ 300 lines; put the snapshot loader in a private helper).
-- [ ] **Step 4: Run** the two files + `src/services/contractTemplateRender.test.ts` (add a `loadTemplateVersionRenderData` test: system-context wrapper called, `VERSION_NOT_FOUND` for an unpublished id) → PASS.
+- [ ] **Step 4: Run** the two files + `src/services/contractTemplateRender.test.ts` (add `loadTemplateVersionRenderData` tests: `withSystemDbAccessContext`/`runOutsideDbContext` are **not** called; `VERSION_NOT_FOUND` for an unpublished or invisible id) → PASS.
 - [ ] **Step 5: Commit** `feat(agreements): recordSignedAgreement service + audit payload (#8865 W1c)`
 
 ### Task 14: MIME-correct filename on the signed-agreement download
@@ -915,7 +922,10 @@ export const agreementRequestRoutes = new Hono();
 //   parseBody({ all: true }) → recordSignedAgreementFromForm → recordSignedAgreementSchema.safeParse → 400 VALIDATION_ERROR on failure
 //   auth.canAccessOrg(input.orgId) else 404 { code: 'ORG_NOT_FOUND' } (never 403 — do not reveal the org exists)
 //   file part optional; when present must be a File
-//   res = await runOutsideDbContext(() => withSystemDbAccessContext(() => recordSignedAgreement({ input, partnerId: auth.partnerId, actorUserId: auth.user?.id ?? null, actorIp: resolveClientIp(c), actorUserAgent: c.req.header('user-agent') ?? null, file, now: new Date() })))
+//   renderData = await withAuthDbAccessContext(auth, () => loadTemplateVersionRenderData(input.templateVersionId, { includeFileData: true }))
+//       — the request's OWN context (spec §2 staff path; partner-wide templates are visible through the SELECT branch); an invisible/unpublished version is a 404 VERSION_NOT_FOUND here
+//   await withAuthDbAccessContext(auth, () => assertTemplateVersionUsable({ templateId: renderData.templateId, templateVersionId: input.templateVersionId }, { orgId: input.orgId, partnerId: auth.partnerId }))
+//   res = await runOutsideDbContext(() => withSystemDbAccessContext(() => recordSignedAgreement({ input, renderData, partnerId: auth.partnerId, actorUserId: auth.user?.id ?? null, actorIp: resolveClientIp(c), actorUserAgent: c.req.header('user-agent') ?? null, file, now: new Date() })))
 //   writeRouteAudit(c, recordedOnBehalfAuditEvent({...}))
 //   → 201 { data: { request: serializeRequest(res.request), signedAgreementId, contentSha256 } }   (serializeRequest strips accept_token_* / public_response_* columns)
 // error mapper: AgreementRequestServiceError → its status/code; ContractTemplateServiceError → its status/code; QuoteServiceError (from freeze) → status/code; else rethrow
@@ -926,7 +936,8 @@ export const agreementRequestRoutes = new Hono();
   - JSON body instead of multipart → 400 `INVALID_MULTIPART`
   - `reference` missing → 400 `VALIDATION_ERROR`
   - `orgId` outside `accessibleOrgIds` → 404 `ORG_NOT_FOUND`, service not called
-  - happy multipart with `file` → 201, service called with `file.buffer` of the right length, audit written with `method`+`reference`
+  - `loadTemplateVersionRenderData` and `assertTemplateVersionUsable` are invoked through `withAuthDbAccessContext` (assert the mocked wrapper received `auth`), and the service through `withSystemDbAccessContext`; a `VERSION_NOT_FOUND` from the loader → 404, service not called
+  - happy multipart with `file` → 201, service called with `renderData` and `file.buffer` of the right length, audit written with `method`+`reference`
   - service throws `AgreementRequestServiceError(…, 422, 'AGREEMENT_VARIABLES_UNRESOLVED')` → 422 with that code
   - a non-`File` `file` field → 400
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/routes/contracts/agreementRequests.test.ts` → FAIL. **Step 3:** implement + mount. **Step 4:** run it + `src/routes/contracts/documents.test.ts` → PASS. **Step 5:** commit `feat(api): POST /contracts/agreement-requests/record-signed (#8865 W1c)`.
