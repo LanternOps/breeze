@@ -14,7 +14,8 @@ const DAY_MS = 86_400_000;
  * #8761: day rows are keyed by the UTC day of the evaluation's `now`, so a test whose evaluations span
  * `spanMs` must not straddle midnight or it legitimately gets two day rows. Pins `Date` (fixtures' capturedAt
  * included, so evidence freshness stays consistent) to the real clock, or, when the span would cross midnight,
- * to just after it: at most `spanMs` + 1 min ahead of Postgres's unfaked now(). Real timers keep running.
+ * to 1 s after it: then at most `spanMs` + 61 s ahead of Postgres's unfaked now() (the 60 s margin covers the
+ * fixture setup between the pin and the test's `now`). Only `Date` is faked; real timers keep running.
  */
 function pinClockInsideOneUtcDay(spanMs: number): void {
   const real = Date.now();
