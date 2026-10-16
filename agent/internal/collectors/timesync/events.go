@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/procoutput"
 )
 
 func isSignal(id uint32) bool {
@@ -124,7 +126,9 @@ const maxSafeSequence uint64 = 9007199254740991
 func eventQueryError(err error) error {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		if detail := strings.Join(strings.Fields(string(exitErr.Stderr)), " "); detail != "" {
+		// powershell.exe may write stderr as UTF-16LE; raw bytes would carry a
+		// NUL per character into the heartbeat Warn, which Postgres rejects.
+		if detail := strings.Join(strings.Fields(procoutput.DecodeConsoleText(exitErr.Stderr)), " "); detail != "" {
 			return fmt.Errorf("query Time-Service events: %w: %s", err, limitText(detail, 512))
 		}
 	}

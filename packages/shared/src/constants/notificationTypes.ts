@@ -11,6 +11,7 @@ export const NOTIFICATION_TYPES = [
   'approval',
   'ai',
   'billing',
+  'integration',
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
