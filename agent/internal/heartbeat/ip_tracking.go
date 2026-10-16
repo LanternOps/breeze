@@ -257,23 +257,40 @@ var readDHCPEnabledAliases = readDHCPEnabledAliasesIPHelper
 var readDHCPEnabledAliasesPowerShell = powershellDHCPEnabledAliases
 
 // dhcpInProcessFailureLogged keeps a persistently failing in-process read
-// from logging a warning on every heartbeat for every adapter IP.
+// from logging a warning on every heartbeat for every adapter IP. A
+// successful read re-arms it, so a later, separate failure warns again.
 var dhcpInProcessFailureLogged atomic.Bool
 
 func windowsDHCPLeaseEvidence(ifaceName, ipAddress string) bool {
 	aliases, err := readDHCPEnabledAliases()
-	if err != nil {
-		if dhcpInProcessFailureLogged.CompareAndSwap(false, true) {
-			log.Warn("in-process DHCP state read failed, falling back to PowerShell Get-NetIPInterface", "error", err.Error())
-		} else {
-			log.Debug("in-process DHCP state read failed, falling back to PowerShell Get-NetIPInterface", "error", err.Error())
-		}
-		aliases, err = readDHCPEnabledAliasesPowerShell()
-		if err != nil {
+	if err == nil {
+		dhcpInProcessFailureLogged.Store(false)
+	} else {
+		var fallbackErr error
+		aliases, fallbackErr = readDHCPEnabledAliasesPowerShell()
+		logDHCPInProcessFailure(err, fallbackErr)
+		if fallbackErr != nil {
 			return false
 		}
 	}
 	return aliases[strings.ToLower(strings.TrimSpace(ifaceName))]
+}
+
+// logDHCPInProcessFailure warns once per failure streak, then logs at debug.
+// It names the fallback's outcome too, so "both sources failed" (DHCP then
+// falls to the interface-name heuristic) is distinguishable from a recovery.
+func logDHCPInProcessFailure(inProcessErr, fallbackErr error) {
+	msg := "in-process DHCP state read failed; used PowerShell Get-NetIPInterface fallback"
+	args := []any{"error", inProcessErr.Error()}
+	if fallbackErr != nil {
+		msg = "in-process DHCP state read and PowerShell Get-NetIPInterface fallback both failed; using interface-name heuristic"
+		args = append(args, "fallbackError", fallbackErr.Error())
+	}
+	if dhcpInProcessFailureLogged.CompareAndSwap(false, true) {
+		log.Warn(msg, args...)
+	} else {
+		log.Debug(msg, args...)
+	}
 }
 
 func powershellDHCPEnabledAliases() (map[string]bool, error) {

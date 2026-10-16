@@ -13,6 +13,8 @@ func stubDHCPSources(t *testing.T, inProcess func() (map[string]bool, error), fa
 	t.Cleanup(func() {
 		readDHCPEnabledAliases, readDHCPEnabledAliasesPowerShell = origReader, origFallback
 	})
+	dhcpInProcessFailureLogged.Store(false)
+	t.Cleanup(func() { dhcpInProcessFailureLogged.Store(false) })
 	in, fb := 0, 0
 	readDHCPEnabledAliases = func() (map[string]bool, error) { in++; return inProcess() }
 	readDHCPEnabledAliasesPowerShell = func() (map[string]bool, error) { fb++; return fallback() }
@@ -83,5 +85,42 @@ func TestParseDHCPEnabledAliasesPowerShellOutput(t *testing.T) {
 	got := parseDHCPEnabledAliases([]byte("Ethernet\r\n  Wi-Fi \r\n\r\n"))
 	if !got["ethernet"] || !got["wi-fi"] || len(got) != 2 {
 		t.Fatalf("got %v, want ethernet and wi-fi only", got)
+	}
+}
+
+func TestWindowsDHCPLeaseEvidence_EmptyAdapterListIsAnAnswerNotAFailure(t *testing.T) {
+	// ERROR_NO_DATA (no adapter has IPv4) maps to an empty map, not an error:
+	// no evidence, and no PowerShell spawn.
+	_, fb := stubDHCPSources(t,
+		func() (map[string]bool, error) { return map[string]bool{}, nil },
+		func() (map[string]bool, error) { return map[string]bool{"ethernet": true}, nil },
+	)
+	if windowsDHCPLeaseEvidence("Ethernet", "192.168.1.20") {
+		t.Fatal("empty in-process answer: want false")
+	}
+	if *fb != 0 {
+		t.Fatalf("fallback ran %d times, want 0", *fb)
+	}
+}
+
+func TestWindowsDHCPLeaseEvidence_SuccessReArmsFailureWarning(t *testing.T) {
+	fail := true
+	stubDHCPSources(t,
+		func() (map[string]bool, error) {
+			if fail {
+				return nil, errors.New("in-process failed")
+			}
+			return map[string]bool{}, nil
+		},
+		func() (map[string]bool, error) { return map[string]bool{}, nil },
+	)
+	windowsDHCPLeaseEvidence("Ethernet", "192.168.1.20")
+	if !dhcpInProcessFailureLogged.Load() {
+		t.Fatal("first failure must arm the warn-once gate")
+	}
+	fail = false
+	windowsDHCPLeaseEvidence("Ethernet", "192.168.1.20")
+	if dhcpInProcessFailureLogged.Load() {
+		t.Fatal("a successful read must re-arm the gate so a later failure warns again")
 	}
 }

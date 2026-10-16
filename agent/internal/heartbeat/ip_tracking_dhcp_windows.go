@@ -19,7 +19,7 @@ const ipAdapterDHCPEnabled = 0x00000004
 // readDHCPEnabledAliasesIPHelper reads DHCPv4 state for every adapter with
 // IPv4 enabled through GetAdaptersAddresses, in-process (#7765). This is the
 // same data Get-NetIPInterface -AddressFamily IPv4 exposes as .Dhcp, without
-// spawning PowerShell or a CIM query. Keys are lower-cased, trimmed friendly
+// starting a child process or a CIM query. Keys are lower-cased, trimmed friendly
 // names: the InterfaceAlias that Go's net.Interfaces (and so the inventory
 // collector) reports as the interface name.
 func readDHCPEnabledAliasesIPHelper() (map[string]bool, error) {
@@ -49,7 +49,9 @@ func readDHCPEnabledAliasesIPHelper() (map[string]bool, error) {
 			if name == "" {
 				continue
 			}
-			aliases[name] = a.Flags&ipAdapterDHCPEnabled != 0
+			// Two adapters can share a friendly name; like the old
+			// Where-Object filter, DHCP on either one counts.
+			aliases[name] = aliases[name] || a.Flags&ipAdapterDHCPEnabled != 0
 		}
 		runtime.KeepAlive(buf)
 		return aliases, nil

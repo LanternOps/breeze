@@ -31,7 +31,7 @@ func TestReadDHCPEnabledAliasesIPHelperMatchesGetNetIPInterface(t *testing.T) {
 		t.Fatalf("Get-NetIPInterface failed: %v\n%s", err, out)
 	}
 
-	compared := 0
+	compared, comparedEnabled := 0, 0
 	for _, line := range strings.Split(string(out), "\n") {
 		alias, state, ok := strings.Cut(strings.TrimSpace(line), "|")
 		if !ok {
@@ -48,9 +48,17 @@ func TestReadDHCPEnabledAliasesIPHelperMatchesGetNetIPInterface(t *testing.T) {
 			t.Errorf("alias %q: in-process DHCP=%v, Get-NetIPInterface Dhcp=%s", alias, mine, state)
 		}
 		compared++
+		if want {
+			comparedEnabled++
+		}
 	}
 	if compared == 0 {
 		t.Fatalf("no interface was reported by both sources; in-process=%v powershell=%q", got, out)
 	}
-	t.Logf("compared %d IPv4 interfaces; in-process map: %v", compared, got)
+	// Without a DHCP-enabled interface in common, a reader that always says
+	// "disabled" would pass. CI runners get their address by DHCP.
+	if comparedEnabled == 0 {
+		t.Fatalf("no DHCP-enabled interface was compared, so the check is vacuous; in-process=%v powershell=%q", got, out)
+	}
+	t.Logf("compared %d IPv4 interfaces (%d DHCP-enabled); in-process map: %v", compared, comparedEnabled, got)
 }
