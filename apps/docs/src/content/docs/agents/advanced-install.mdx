@@ -252,12 +252,12 @@ Some home and small-office gateways ship a "security" feature (for example Comca
 
 The agent is **plain-first**. Nothing changes on a network that does not interfere:
 
-- A host flips to ECH only after the agent sees the filter signature (plaintext HTTP answered on the TLS port) twice within 10 minutes.
+- A host flips to ECH only after the agent sees the filter signature (plaintext HTTP answered on the TLS port) twice within 10 minutes, more than 30 seconds apart.
 - In ECH mode the agent fetches the host's ECH config over DNS-over-HTTPS and caches it in `ech-cache.json` in the agent data directory. If ECH fails for any reason except a TCP connect failure (returned as-is, since plain would fail the same way), that same dial falls back to a plain connection, and a plain success returns the host to plain.
 - Three consecutive ECH failures put ECH on a one-hour cooldown (plain only). Mode is kept in memory, so a restart starts plain.
 - `enroll`, `bootstrap` and `support` retry with ECH on the first signature, so a first-run enrollment on a filtered network can succeed.
 
-**How to tell:** the `control_plane` health component shows `warning` with the reason "control plane blocked by a network security filter" when the agent has seen the signature in the last 10 minutes and no plain connection has succeeded since, and `healthy` with "reachable via encrypted client hello" when ECH is carrying the connection. Heartbeats also carry `echActive` (true while the most recent successful connection to the control plane used ECH) and `filterSignatureSeenAt`.
+**How to tell:** the `control_plane` health component shows `warning` with the reason "control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)" when the agent has seen the signature in the last 10 minutes and no plain connection has succeeded since, and `healthy` with "reachable via encrypted client hello" when ECH is carrying the connection. Heartbeats also carry `echActive` (true while the most recent successful connection to the control plane used ECH) and `filterSignatureSeenAt` (the last time a filter answered the handshake with plaintext HTTP; omitted once a plain connection has succeeded since).
 
 **Opt out locally** by adding `ech: false` to `agent.yaml` and restarting the agent.
 

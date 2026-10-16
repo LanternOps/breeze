@@ -1,7 +1,7 @@
 # Agent: Encrypted Client Hello (ECH) for control-plane TLS — design
 
 **Issue:** #8869 · **Related:** #8868 (detect ISP filter), #8870 (second domain), #8872 (abuse contact surface)
-**Date:** 2026-10-16 · **Status:** builder check done (7 questions, all settled below as the author's calls); awaiting approval
+**Date:** 2026-10-16 · **Status:** implemented in PR #8882 (2026-10-16); the "Deviations at implementation" list below records where the shipped code differs from this text.
 
 ## Intent and why
 
@@ -22,7 +22,7 @@ Second, lesser motive: a cheap, generic detector for "a filter answered on 443",
 ## Non-goals
 
 - Privacy as a feature. The hostname is still visible on the first (plain) attempt; the goal is reachability, not hiding the domain from everyone.
-- ECH for policy-gated third-party egress (`netpolicy` clients used by tools), the UniFi collector, backup storage sessions, or the network diagnostic.
+- ECH for policy-gated third-party egress (`netpolicy` clients used by tools), the UniFi collector, backup storage sessions, or the network diagnostic. *(Superseded in part by deviation 9: the UniFi collector's control-plane config fetch and the storage-session control client now use the dialer; the UniFi controller client and the storage client stay plain)*
 - Making the *downloaders* (PowerShell one-liner, macOS installer app, Linux `install.sh`) work on a filtered network — see §6; that is the follow-on wave.
 - Working around DNS-based blocking. If a filter starts poisoning DNS for the hostname, that is #8870's problem (second domain + `backup_server_url`), not this one.
 - QUIC/HTTP3.
@@ -50,7 +50,7 @@ Second, lesser motive: a cheap, generic detector for "a filter answered on 443",
 Per host (control-plane host and backup host separately), the dialer has three modes: `plain` (default), `ech`, `cooldown`.
 
 - In `plain`, dial exactly as today. If the TLS handshake fails with `*tls.RecordHeaderError` whose `RecordHeader` begins with `HTTP/` (a plaintext HTTP answer on the TLS port), record a **filter signature**. After **2 signatures within 10 minutes** (my call; one could be a captive portal), switch the host to `ech` and schedule an ECH config fetch. The signature counter also feeds #8868's health message ("blocked by a network security filter").
-- In `ech`, each dial: TCP connect (via `netcache` as today) → `tls.Client` with the host's normal config **plus** `EncryptedClientHelloConfigList`. On success, stay in `ech` (sticky while it works) and set `ech_active=true`. On `*tls.ECHRejectionError` with a non-empty `RetryConfigList`: persist it and retry **once, immediately** with the new list. On any other ECH-path error (no cached config, DoH failed, rejection with empty retry list, handshake error): **fall back to plain within the same dial** (one more TCP connect), and count an ECH failure.
+- In `ech`, each dial: TCP connect (via `netcache` as today) → `tls.Client` with the host's normal config **plus** `EncryptedClientHelloConfigList`. On success, stay in `ech` (sticky while it works) and set `ech_active=true`. On `*tls.ECHRejectionError` with a non-empty `RetryConfigList`: persist it and retry **once, immediately** with the new list. On any other ECH-path error (no cached config, DoH failed, rejection with empty retry list, handshake error): **fall back to plain within the same dial** (one more TCP connect), and count an ECH failure. *(Superseded by deviations 4 and 8: a cache miss never counts as an ECH failure, and `echActive` is wire truth of the last successful dial)*
 - **3 consecutive ECH failures** → `cooldown` for **1 hour** (my call), during which the host is dialled plain only; after cooldown, back to `plain` with the signature counter reset (so the filter must be observed again before ECH re-engages).
 - `ech` is **sticky until restart or cooldown**. The edge accepts ECH whether or not a filter is present, so there is no natural signal that the filter went away; a periodic plain re-probe would cost reconnects for no reachability gain and is out of scope for v1 (noted as a possible follow-up). A restart always starts `plain`, which bounds how long a host stays on ECH after the filter is gone. A plain handshake that *does* succeed inside `ech` mode (the per-dial fallback) moves the host back to `plain`.
 - **Signature counting:** signatures are deduplicated per host into a 30-second window, so one filter event seen by heartbeat, WebSocket and the log shipper at once counts once. The threshold is 2 *events* within 10 minutes; that is what makes the captive-portal rationale hold.
@@ -62,7 +62,7 @@ Per host (control-plane host and backup host separately), the dialer has three m
 
 ### 3. Kill switch and opt-out
 
-- Server-pushed: a boolean `echEnabled` on the heartbeat response (same channel that already carries `backup_server_url`). Default true when absent (so older API versions don't disable it). When false, every **new** dial is plain and no DoH fetches happen; live ECH connections are **not** torn down (no `ForceReconnect`) — a fleet-wide kill that force-reconnected every socket would be a reconnect storm on the very metric the rollout watches, and a connection that is working is not the problem the switch exists for. They drain on their own reconnect cycle. API side: driven by env `AGENT_ECH_ENABLED` (default `true`), no UI for v1.
+- Server-pushed: a boolean `echEnabled` on the heartbeat response (same channel that already carries `backup_server_url`). Default true when absent (so older API versions don't disable it). When false, every **new** dial is plain and no DoH fetches happen; live ECH connections are **not** torn down (no `ForceReconnect`) — a fleet-wide kill that force-reconnected every socket would be a reconnect storm on the very metric the rollout watches, and a connection that is working is not the problem the switch exists for. They drain on their own reconnect cycle. API side: driven by env `AGENT_ECH_ENABLED` (default `true`), no UI for v1. *(Superseded by deviation 6: the wire key is `ech_enabled`, and an absent key means no change)*
 - The server flag is persisted under its **own** key (`ech_server_enabled`) via the existing `SetAndPersist` path, never under the operator's key, so (a) a server `true` can never overwrite a local opt-out and (b) the **watchdog** — a separate process whose failover response carries no config channel — honours the kill switch when it reloads `agent.yaml` at failover entry. The watchdog otherwise runs the same dialer with its own in-memory state.
 - Local: `ech: false` in `agent.yaml` (default true), operator-owned. Either switch wins when off.
 
@@ -75,7 +75,7 @@ Per host (control-plane host and backup host separately), the dialer has three m
 
 The 2-signature threshold protects a long-running agent from engaging ECH on a captive-portal blip. A one-shot CLI command has no steady state to protect and no second attempt: on the **first** filter signature it fetches the ECH config (synchronously, bounded to ~5 s total across both DoH resolvers) and retries the request with ECH once, then falls back to plain and reports the normal error. This is what makes the MSI's `BootstrapEnroll` / `EnrollAgent` custom actions succeed on a filtered network: the MSI ships the agent binary, so enrollment is the only network step.
 
-Scope of "the request": **every control-plane call the command makes before it exits** — enrollment POST, bootstrap-token redeem, release/manifest fetches, support-session enroll — not just the first. `pkg/api` currently builds several bare `http.Client`s (`pkg/api/client.go` ~290/403/479/526) and `bootstrap.go` another; they get one transport-injection point so a single `ech.Dialer` serves them all. `enroll` and `bootstrap` run elevated (SYSTEM/root under the MSI/pkg) and **persist** `ech-cache.json` into the service data dir so the service's first ECH dial already has a key; `support` runs in the user workspace and does not persist.
+Scope of "the request": **every control-plane call the command makes before it exits** — enrollment POST, bootstrap-token redeem, release/manifest fetches, support-session enroll — not just the first. `pkg/api` currently builds several bare `http.Client`s (`pkg/api/client.go` ~290/403/479/526) and `bootstrap.go` another; they get one transport-injection point so a single `ech.Dialer` serves them all. `enroll` and `bootstrap` run elevated (SYSTEM/root under the MSI/pkg) and **persist** `ech-cache.json` into the service data dir so the service's first ECH dial already has a key; `support` runs in the user workspace and does not persist. *(Superseded by deviation 2: `support` persists the cache in its own user-workspace data dir)*
 
 ### 6. Fresh installs on a filtered network — scope boundary
 
@@ -99,7 +99,7 @@ The 2026-10-16 spike proved only a bare TLS 1.3 handshake + one HTTP/1.1 GET und
 
 ## Rollout
 
-Ships in the next agent release behind the server flag defaulting on. Watch `ech_active` counts and the WS reconnect rate after promote; the kill switch is the rollback. Release note must say: the installer downloaders cannot use ECH yet; on a filtered network, download the MSI/pkg elsewhere and run it (enrollment inside it works).
+Ships in the next agent release behind the server flag defaulting on. Watch `ech_active` counts and the WS reconnect rate after promote; the kill switch is the rollback. Release note must say: the installer downloaders cannot use ECH yet; on a filtered network, download the MSI/pkg elsewhere and run it (enrollment inside it works). *(The heartbeat key is `echActive` (deviation 8))*
 
 ## Deviations at implementation
 

@@ -1343,7 +1343,8 @@ func (c *Client) SendRevocationLeaseRenewWithNonce(sessionID, nonce string) erro
 }
 
 // newDialer builds the WebSocket dialer. The TLS handshake goes through the
-// shared ECH dialer (plain TLS first-class fallback inside it); gorilla passes
+// shared ECH dialer (plain-first; ECH only after the filter signature, with
+// plain as the in-dial fallback); gorilla passes
 // no NextProtos and the dialer sets ServerName itself. gorilla v1.5.3 uses
 // NetDialTLSContext for every wss dial, even when a Proxy is configured, so it
 // never handshakes with TLSClientConfig; the field is kept only for parity

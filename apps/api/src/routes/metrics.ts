@@ -243,7 +243,7 @@ const agentHeartbeatTotal = new Counter({
 // reports `echActive` and `filterSignatureSeenAt` on its heartbeat.
 const agentHeartbeatEchTotal = new Counter({
   name: 'breeze_agent_heartbeat_ech_total',
-  help: 'Heartbeats carrying echActive, by whether the agent is dialing with ECH',
+  help: 'Heartbeats carrying echActive=true: the agent\'s most recent successful control-plane dial was ECH-accepted. Current agents omit the key when false, so active="false" is only ever set by non-agent clients',
   labelNames: ['active'] as const,
   registers: [register]
 });

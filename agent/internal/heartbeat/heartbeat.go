@@ -136,8 +136,9 @@ type HeartbeatPayload struct {
 	// truth, not the dialer's mode, and it stays true after ECH is switched
 	// off until a plain dial succeeds. FilterSignatureSeenAt is when a network
 	// filter last answered the TLS handshake with plaintext HTTP (RFC 3339
-	// UTC). Both omitempty: a healthy device sends neither, and older servers
-	// strip the unknown keys.
+	// UTC), omitted once a plain handshake has succeeded since. Both
+	// omitempty: a healthy device sends neither, and older servers strip the
+	// unknown keys.
 	ECHActive             bool   `json:"echActive,omitempty"`
 	FilterSignatureSeenAt string `json:"filterSignatureSeenAt,omitempty"`
 	WatchdogVersion       string `json:"watchdogVersion,omitempty"`

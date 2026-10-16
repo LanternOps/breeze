@@ -1554,8 +1554,8 @@ func enrollDevice(enrollmentKey string) {
 	// One-shot ECH is armed only now, with the loaded config, so an existing
 	// `ech: false` opt-out or a stored server kill switch is honoured. Nothing
 	// above touches the network (env, trimming, config-folder reclaim and the
-	// config read are all local). A failed load arms it with the dialer's
-	// defaults (nil), not with config.Default().
+	// config read are all local). A failed load leaves the shared dialer's
+	// flags as they are (initially both on), not config.Default().
 	if err != nil {
 		enableOneShotECH(nil)
 		cfg = config.Default()

@@ -189,8 +189,8 @@ func NewClient(policy Policy) (*http.Client, error) {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	if policy.Purpose == ControlPlaneDownload {
-		// Behind an SNI filter the control plane answers only over Encrypted
-		// Client Hello (#8869), and the updater is how the agent updates
+		// Behind an SNI filter the control plane is reachable only over
+		// Encrypted Client Hello (#8869), and the updater is how the agent updates
 		// itself, so its HTTPS dials share the process ECH dialer's per-host
 		// plain-first state. The TCP leg stays pd.DialContext: DialTLSVia
 		// hands it to the ECH dialer through the context and fails closed if

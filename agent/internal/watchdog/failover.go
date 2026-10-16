@@ -166,7 +166,9 @@ func isResultProcessingFailed(code int, body []byte) bool {
 }
 
 // newFailoverTransport is the ECH-capable control-plane transport (netcache
-// DNS fallback, #2288) pinned to HTTP/1.1 as the failover client always was.
+// DNS fallback, #2288) pinned to HTTP/1.1 as the failover client always was,
+// and, via the DefaultTransport clone, it now honours HTTP(S)_PROXY like the
+// heartbeat (the old bare transport had no Proxy).
 func newFailoverTransport(tlsConfig *tls.Config) *http.Transport {
 	t := ech.NewTransport(tlsConfig)
 	t.ForceAttemptHTTP2 = false

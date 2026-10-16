@@ -213,8 +213,11 @@ type Config struct {
 	RequireManifestSigningKeyID bool `mapstructure:"require_manifest_signing_key_id" yaml:"require_manifest_signing_key_id"`
 
 	// ECH is the operator opt-out for Encrypted Client Hello on the control
-	// plane connection (#8869). Default true: the dialer tries plain TLS first
-	// and only uses ECH as an in-dial fallback. Set false to never use ECH.
+	// plane connection (#8869). Default true: the dialer dials plain until it
+	// sees the filter signature (plaintext HTTP answered on the TLS port)
+	// twice, then dials that host with ECH and falls back to plain inside the
+	// same dial. One-shot commands (enroll/bootstrap/support) retry with ECH
+	// on the first signature. Set false to never use ECH.
 	ECH bool `mapstructure:"ech" yaml:"ech"`
 
 	// ECHServerEnabled mirrors the server-side ECH kill switch pushed to the
