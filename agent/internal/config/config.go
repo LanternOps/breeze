@@ -212,6 +212,15 @@ type Config struct {
 	// a manifest can be verified by a key other than the one it names.
 	RequireManifestSigningKeyID bool `mapstructure:"require_manifest_signing_key_id" yaml:"require_manifest_signing_key_id"`
 
+	// ECH is the operator opt-out for Encrypted Client Hello on the control
+	// plane connection (#8869). Default true: the dialer tries plain TLS first
+	// and only uses ECH as an in-dial fallback. Set false to never use ECH.
+	ECH bool `mapstructure:"ech" yaml:"ech"`
+
+	// ECHServerEnabled mirrors the server-side ECH kill switch pushed to the
+	// agent. Default true; the control plane can turn ECH off fleet-wide.
+	ECHServerEnabled bool `mapstructure:"ech_server_enabled" yaml:"ech_server_enabled"`
+
 	// HPWarrantyCollectionEnabled is the control-plane switch for device-side
 	// HP warranty collection via HP's CMSL (#5511). Pushed on the heartbeat as
 	// warranty_settings.hp_cmsl_enabled and persisted so the setting survives a
@@ -384,6 +393,9 @@ func Default() *Config {
 		AuditEnabled:                 true,
 		AuditMaxSizeMB:               50,
 		AuditMaxBackups:              3,
+
+		ECH:              true,
+		ECHServerEnabled: true,
 
 		AutoUpdate:                 true,
 		PatchExcludeFeatureUpdates: true,
@@ -1003,6 +1015,8 @@ func saveToLockedWithIdentity(cfg *Config, cfgFile string, source credentialSour
 	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)
 	viper.Set("require_manifest_signing_key_id", cfg.RequireManifestSigningKeyID)
+	viper.Set("ech", cfg.ECH)
+	viper.Set("ech_server_enabled", cfg.ECHServerEnabled)
 	viper.Set("hp_warranty_collection_enabled", cfg.HPWarrantyCollectionEnabled)
 	viper.Set("manifest_delegation_epoch", cfg.ManifestDelegationEpoch)
 	// helper_auth_token is deliberately NOT set here on any platform: agent.yaml
