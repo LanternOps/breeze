@@ -5,7 +5,11 @@ import RoleManager, { DeleteRoleModal, PermissionMatrix, RoleFormModal, type Per
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  // RoleFormModal's owner-scope hooks (#8370) read the JWT claims and the org
+  // store, which registers an orgId provider at module load.
+  useAuthStore: { getState: () => ({ tokens: null }) },
+  registerOrgIdProvider: vi.fn()
 }));
 
 const navigateToMock = vi.fn();

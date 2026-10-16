@@ -5,6 +5,9 @@ import { cn } from '@/lib/utils';
 import { FilterSelect } from '../shared/FilterSelect';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { useDefaultOwnerScope, type OwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useFleetOrgOwner } from '@/hooks/useFleetOrgOwner';
+import RoleOwnerScopeField from './RoleOwnerScopeField';
 
 export type Permission = {
   resource: string;
@@ -689,6 +692,10 @@ export type RoleFormData = {
   permissions: Permission[];
   parentRoleId: string | null;
   forceMfa: boolean;
+  // Create-only owner axis (#8370). Set only for a partner-scope creator; an
+  // org-scope creator omits both and the API uses its token org.
+  ownerScope?: OwnerScope;
+  orgId?: string;
 };
 
 type RoleFormModalProps = {
@@ -720,6 +727,17 @@ export function RoleFormModal({
   const [catalog, setCatalog] = useState<PermissionCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogReloadKey, setCatalogReloadKey] = useState(0);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  // #8370: the owner axis is an explicit, create-only choice for partner-scope
+  // creators. It defaults to partner regardless of the header org: a partner
+  // role is the one a partner admin can assign on their own Users page, and the
+  // header org used to turn every create into an org role without saying so.
+  const { isPartnerScope } = useDefaultOwnerScope();
+  const fleet = useFleetOrgOwner();
+  const [ownerScope, setOwnerScope] = useState<OwnerScope>('partner');
+  const showOwnerScope = mode === 'create' && isPartnerScope;
+  const needsOwnerOrg = showOwnerScope && ownerScope === 'organization' && fleet.needsOrgSelection;
 
   const reloadCatalog = useCallback(() => setCatalogReloadKey((k) => k + 1), []);
 
@@ -776,6 +794,8 @@ export function RoleFormModal({
     // Clone pre-fills from the source: the server copies force_mfa onto the
     // clone, so the toggle must start from the same value it will get.
     setForceMfa(role?.forceMfa === true);
+    setOwnerScope('partner');
+    setFormError(null);
   }, [isOpen, role, mode]);
 
   if (!isOpen) return null;
@@ -788,11 +808,36 @@ export function RoleFormModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({ name, description, permissions, parentRoleId, forceMfa });
+    if (!showOwnerScope) {
+      onSubmit({ name, description, permissions, parentRoleId, forceMfa });
+      return;
+    }
+    if (ownerScope === 'partner') {
+      onSubmit({ name, description, permissions, parentRoleId, forceMfa, ownerScope });
+      return;
+    }
+    // The disabled submit button covers clicks; this covers Enter-key and
+    // programmatic submits.
+    if (fleet.needsOrgSelection) {
+      setFormError(i18n.t('common:layout.orgRequired.title'));
+      return;
+    }
+    onSubmit({ name, description, permissions, parentRoleId, forceMfa, ownerScope, orgId: fleet.bodyOrgId });
   };
 
-  // Filter out the current role from available parent roles (cannot be own parent)
-  const filteredParentRoles = availableParentRoles.filter((r) => r.id !== role?.id);
+  // Filter out the current role from available parent roles (cannot be own
+  // parent). On create with an explicit owner axis, offer only roles on that
+  // axis: the API rejects a parent from the other one.
+  const filteredParentRoles = availableParentRoles.filter(
+    (r) => r.id !== role?.id && (!showOwnerScope || r.scope === ownerScope)
+  );
+
+  const handleOwnerScopeChange = (next: OwnerScope) => {
+    setOwnerScope(next);
+    setFormError(null);
+    const parent = availableParentRoles.find((r) => r.id === parentRoleId);
+    if (parent && parent.scope !== next) setParentRoleId(null);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
@@ -809,6 +854,21 @@ export function RoleFormModal({
         </div>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-6">
+          {showOwnerScope && (
+            <RoleOwnerScopeField
+              ownerScope={ownerScope}
+              onOwnerScopeChange={handleOwnerScopeChange}
+              fleet={fleet}
+              disabled={loading}
+            />
+          )}
+
+          {formError && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {formError}
+            </div>
+          )}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <label htmlFor="role-name" className="text-sm font-medium">
@@ -919,7 +979,7 @@ export function RoleFormModal({
               {i18n.t('settings:roleManager.cancel')}</button>
             <button
               type="submit"
-              disabled={loading || !name.trim() || !catalog}
+              disabled={loading || !name.trim() || !catalog || needsOwnerOrg}
               title={!catalog ? i18n.t('settings:roleManager.waitingForPermissionCatalog') : undefined}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
