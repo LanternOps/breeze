@@ -229,8 +229,8 @@ describe('normalizeGmailMessage', () => {
   });
 
   it('ignores Exchange organization headers: the intra-tenant signal is Microsoft 365 only (#8299)', () => {
-    // A Gmail mailbox never sees these from inside a Microsoft tenant, so here
-    // they are sender-controlled content and must not verify anything.
+    // A Gmail mailbox can receive these on mail relayed from a Microsoft tenant;
+    // here they are sender-controlled content and must not verify anything.
     const msg = baseMessage([
       { name: 'From', value: 'staff@example.com' },
       { name: 'Authentication-Results', value: 'mx.google.com; dkim=none; dmarc=none' },

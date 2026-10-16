@@ -45,16 +45,17 @@ function trustedAuthResults(
  * the tenant: `X-MS-Exchange-Organization-AuthAs: Internal` AND
  * `X-MS-Exchange-Organization-MessageDirectionality: Originating` (#8299).
  *
- * Why this cannot be spoofed: Exchange Online's header firewall removes every
- * `X-MS-Exchange-Organization-*` header from mail entering the organization from
- * outside, then stamps its own. External mail arrives as AuthAs=Anonymous /
- * MessageDirectionality=Incoming. The `X-MS-Exchange-CrossTenant-*` headers are
+ * Why this cannot be spoofed: per Microsoft's Exchange "header firewall"
+ * documentation, Exchange removes every `X-MS-Exchange-Organization-*` header from
+ * mail entering the organization from outside, then stamps its own. External mail
+ * arrives as AuthAs=Anonymous / MessageDirectionality=Incoming; the intra-tenant
+ * shape was observed on real tenant mail read through Graph (#8299). The `X-MS-Exchange-CrossTenant-*` headers are
  * deliberately NOT read: they describe the SENDING tenant, so another Microsoft
  * 365 tenant's mail can carry `CrossTenant-AuthAs: Internal`.
  *
  * Strict by design: both headers must be present, every instance of each must
- * equal the exact value Exchange writes, and a duplicate with any other value
- * fails the check. This is read only on the Microsoft 365 mailbox path, where
+ * equal the exact value Exchange writes (case-sensitive, after trimming
+ * surrounding whitespace), and a duplicate with any other value fails the check. This is read only on the Microsoft 365 mailbox path, where
  * Graph returns the headers as the mailbox's own tenant stored them; the Gmail
  * and Mailgun normalizers never look at these headers.
  */
@@ -121,6 +122,8 @@ export function normalizeGraphMessage(
     ? (msg.body?.content ?? '')
     : (html ? htmlToText(html) : '') || (msg.bodyPreview ?? '');
 
+  const senderAuth = graphSenderAuth(msg.internetMessageHeaders, mailboxDomain);
+
   return {
     provider: 'm365',
     providerMessageId: msg.id,
@@ -140,7 +143,7 @@ export function normalizeGraphMessage(
     // Loop/bounce signals (ingest-level loop suppression).
     returnPath: header(msg.internetMessageHeaders, 'Return-Path'),
     xLoop: header(msg.internetMessageHeaders, 'X-Loop'),
-    senderAuth: graphSenderAuth(msg.internetMessageHeaders, mailboxDomain),
+    senderAuth,
     // Metadata only across the queue — attachment bytes never go into Redis. The
     // inbound worker fetches them from Graph before processing when this is set
     // (services/ticketMailbox/fetchInboundAttachments.ts, #6688).
@@ -150,6 +153,9 @@ export function normalizeGraphMessage(
       ccRecipients: msg.ccRecipients ?? [],
       graphConversationId: msg.conversationId,
       receivedDateTime: msg.receivedDateTime,
+      // Audit trail for mail that passed the R4 gate on Exchange's intra-tenant stamp
+      // rather than DMARC (#8299); absent for every other message.
+      ...(senderAuth.source ? { senderAuthSource: senderAuth.source } : {}),
       // Persist the normalized body + sender name under the same neutral keys the
       // Gmail normalizer writes. ticket_email_inbound has no body column, and the
       // review queue's "convert to ticket" rebuilds the description and submitter

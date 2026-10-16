@@ -571,8 +571,11 @@ export async function processInboundEmail(
 
     // (6) Sender domain mapped to a customer org (Phase 5) -> ALWAYS create the
     // ticket; optionally onboard a password-less contact so future replies
-    // thread + attribute. This sits behind the senderAuth.verified (DMARC) gate
-    // above, so a forged From: @customer.com can't file into the customer's org.
+    // thread + attribute. This sits behind the senderAuth.verified gate above, so a
+    // forged From: @customer.com from outside can't file into the customer's org.
+    // The one exception is mail verified as intra-tenant on a Microsoft 365 mailbox
+    // (source 'exchange-internal', #8299): that proves the mail came from inside the
+    // mailbox's own tenant, not that the From domain is genuine.
     const domainMatch = await senderResolver.domainOrg();
     if (domainMatch) {
       // `autoCreateContact` is the partner's "onboard people from this domain"

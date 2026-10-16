@@ -174,6 +174,37 @@ describe('normalizeGraphMessage', () => {
       expect(n.senderAuth).toEqual({
         spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', verified: true, source: 'exchange-internal',
       });
+      // Recorded on the inbound audit row so this path is distinguishable from DMARC.
+      expect(n.raw.senderAuthSource).toBe('exchange-internal');
+    });
+
+    it('does not mark DMARC-verified or unverified mail with an audit source', () => {
+      expect(normalizeGraphMessage(msg, 'partner-9', 'support@a.com').raw).not.toHaveProperty('senderAuthSource');
+      expect(normalizeGraphMessage(internal([]), 'partner-9', 'support@a.com').raw).not.toHaveProperty('senderAuthSource');
+    });
+
+    it('tolerates surrounding whitespace on the header values', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: ' Internal ' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating\t' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(true);
+    });
+
+    it('verifies over a trusted dmarc=none verdict, keeping the real verdicts', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'Authentication-Results', value: 'a.com; spf=none; dkim=none; dmarc=none' },
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Internal' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth).toEqual({
+        spf: 'none', dkim: 'none', dmarc: 'none', verified: true, source: 'exchange-internal',
+      });
+    });
+
+    it('stays unverified when Graph returns no headers at all', () => {
+      const n = normalizeGraphMessage({ ...msg, internetMessageHeaders: undefined }, 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(false);
     });
 
     it('matches the header names case-insensitively, as Graph may return any casing', () => {
