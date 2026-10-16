@@ -83,10 +83,12 @@ CVE-2026-85393
 
 # braces — CVE-2026-93687 is the Trivy-DB id for GHSA-vfj7-8cjw-p6xm, which the
 # npm audit gate already excepts (scripts/security/npm-audit-exceptions.json,
-# tracking #7862). No fixed release (<=3.0.3 affected; 3.0.3 is latest). Build
-# tooling only (tailwindcss/chokidar/fast-glob and Expo Metro → micromatch →
-# braces); `pnpm why braces --prod` is empty for every shipped app and no
-# production image deps stage installs it.
+# tracking #7862). No fixed release at the last re-review (see the JSON entry's
+# reason for the date and evidence). Build tooling only (tailwindcss/chokidar/
+# fast-glob and Expo Metro → micromatch → braces). `pnpm why braces --prod` is
+# empty for every shipped server and web package and no production image deps
+# stage installs it; breeze-mobile reaches it through expo, but the Android/iOS
+# bundles contain no braces or micromatch sources.
 # Remove together with that exception; its `expires` date is the re-review
 # deadline for this ignore too.
 #
