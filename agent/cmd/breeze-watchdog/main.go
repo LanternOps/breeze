@@ -96,6 +96,10 @@ func noteFailoverHeartbeatFailure(fc *watchdog.FailoverClient, journal *watchdog
 		journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": err.Error()})
 		return lastDiskURL
 	}
+	// A successful mid-window re-read also refreshes the ECH switches, the
+	// same as the window-start reload (#8869); a failed one keeps the boot
+	// values applied by bootWatchdogConfig.
+	ech.Configure(reloaded.ECH, reloaded.ECHServerEnabled)
 	current := fc.BaseURL()
 	if next := decideWatchdogServerURL(current, lastDiskURL, reloaded, consecutiveFailures); next != current {
 		journal.Log(watchdog.LevelInfo, "failover.server_url_switch", map[string]any{"to": next})
