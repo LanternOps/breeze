@@ -280,7 +280,7 @@ const EXPECTED_NAMES = [
   'topologyTelemetryMaintenance',
   'topologyPresenceWorker',
   'alertWorkers', 'monitorConversionPreviewWorker', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'connectionHealthReconcileWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',

@@ -11,7 +11,7 @@ export const TRUST_DOCUMENTS_MAX = 20;
  * Upper bound on a SANITIZED, stored intro: the sanitizer can expand the
  * editor's raw input (entities, anchor attributes) up to ~6x; 8x bounds the
  * worst case. Mirrored by the trust_pages_intro_len_chk CHECK in
- * migrations/2026-12-28-160100-trust-pages.sql — change both together.
+ * migrations/2026-12-29-130100-trust-pages.sql — change both together.
  */
 export const TRUST_INTRO_STORED_MAX_CHARS = TRUST_INTRO_MAX_CHARS * 8;
 

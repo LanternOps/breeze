@@ -83,8 +83,8 @@ Branch naming after `register_feature`: `feature/<parent#>-trust-center/wave-<w1
 - `src/validators/trustCenter.ts` — `TRUST_SLUG_RE`, `trustSlugSchema`, `trustPagePublicPayloadSchema` (strict), `trustPageUpdateSchema`, `trustPageDocumentsUpdateSchema`, `trustPagePublishSchema`, `trustPagePartnerHomeSchema`; re-exported from `src/validators/index.ts`.
 
 **apps/api**
-- `migrations/2026-12-18-110000-partners-trust-page-unbranded.sql` — partner column.
-- `migrations/2026-12-18-110100-trust-pages.sql` — three tables, enum, RLS, immutability trigger, indexes.
+- `migrations/2026-12-29-130000-partners-trust-page-unbranded.sql` — partner column.
+- `migrations/2026-12-29-130100-trust-pages.sql` — three tables, enum, RLS, immutability trigger, indexes.
 - `src/db/schema/trustPages.ts` — Drizzle tables; barrel line in `src/db/schema/index.ts`; `trustPageUnbranded` column in `src/db/schema/orgs.ts`.
 - `src/services/tenantCascade.ts`, `src/services/orgMergeRegistry.ts`, `src/services/orgMergeCustomExecutors.ts`, `src/services/tenantExportPolicyRegistry.ts` — registrations.
 - `src/services/postureEvidence.ts` — `loadPostureEvidence(scope, policy, asOf)` (extracted from the report) + `postureEvidencePolicyFromReportConfig`.
@@ -982,8 +982,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 4: Migrations, Drizzle schema and tenancy registrations
 
 **Files:**
-- Create: `apps/api/migrations/2026-12-18-110000-partners-trust-page-unbranded.sql`
-- Create: `apps/api/migrations/2026-12-18-110100-trust-pages.sql`
+- Create: `apps/api/migrations/2026-12-29-130000-partners-trust-page-unbranded.sql`
+- Create: `apps/api/migrations/2026-12-29-130100-trust-pages.sql`
 - Create: `apps/api/src/db/schema/trustPages.ts`
 - Modify: `apps/api/src/db/schema/index.ts` (add `export * from './trustPages';`)
 - Modify: `apps/api/src/db/schema/orgs.ts` (partner column after `aiForOfficeEnabled`)
@@ -1008,7 +1008,7 @@ Expected: `2026-12-18-100000-partner-api-idempotency-keys.sql`. If `main` moved,
 - [ ] **Step 2: Write the partner-column migration**
 
 ```sql
--- apps/api/migrations/2026-12-18-110000-partners-trust-page-unbranded.sql
+-- apps/api/migrations/2026-12-29-130000-partners-trust-page-unbranded.sql
 -- Trust Center (spec docs/superpowers/specs/trust-center/2026-10-12-trust-center-design.md §9, §18.3):
 -- operator-granted footer removal for public trust pages. A dedicated column, not
 -- settings JSONB, because settings is partner-writable and the partner must not
@@ -1021,7 +1021,7 @@ ALTER TABLE partners
 - [ ] **Step 3: Write the tables migration**
 
 ```sql
--- apps/api/migrations/2026-12-18-110100-trust-pages.sql
+-- apps/api/migrations/2026-12-29-130100-trust-pages.sql
 -- Trust Center W1 (spec docs/superpowers/specs/trust-center/2026-10-12-trust-center-design.md §7, §9).
 -- Shape 1 (direct org_id) for all three tables. org_id NOT NULL is justified in
 -- spec §9: a trust page is one org's public identity, not an inheritable policy.
@@ -1412,7 +1412,7 @@ Expected: all PASS (shape 1 is auto-discovered; no allowlist entry). Leave the s
 - [ ] **Step 10: Commit**
 
 ```bash
-git add apps/api/migrations/2026-12-18-1100* apps/api/src/db/schema apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/orgMergeCustomExecutors.ts apps/api/src/services/orgMergeCustomExecutors.trustPages.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.trustPages.test.ts
+git add apps/api/migrations/2026-12-29-130* apps/api/src/db/schema apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/orgMergeCustomExecutors.ts apps/api/src/services/orgMergeCustomExecutors.trustPages.test.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.trustPages.test.ts
 git commit -m "feat(api): trust_pages, trust_page_snapshots, trust_page_documents (shape-1 RLS) + partners.trust_page_unbranded; cascade/merge/export registrations
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"

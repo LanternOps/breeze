@@ -10,12 +10,24 @@ const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 // Mocks
 // ---------------------------------------------------------------------------
 
+// Depth of the (mocked) savepoint the route is currently inside, so tests can
+// assert that each insert ran inside `withDbTransaction`.
+const savepointDepth = vi.hoisted(() => ({ value: 0 }));
+
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
   },
+  withDbTransaction: vi.fn(async (fn: () => Promise<unknown>) => {
+    savepointDepth.value += 1;
+    try {
+      return await fn();
+    } finally {
+      savepointDepth.value -= 1;
+    }
+  }),
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -62,7 +74,7 @@ vi.mock('../../services/ingestQuota', () => ({
 const recordAgentIngestSubmission = vi.hoisted(() => vi.fn());
 vi.mock('../metrics', () => ({ recordAgentIngestSubmission }));
 
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { captureException } from '../../services/sentry';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
@@ -508,6 +520,145 @@ describe('agent logs routes', () => {
       expect(recordAgentIngestSubmission).toHaveBeenCalledWith('logs', 'failed');
       expect(JSON.stringify(event.details)).not.toContain('token=');
 
+      consoleError.mockRestore();
+    });
+  });
+
+  // Postgres rejects U+0000 in text (22021) and jsonb (22P05). A Windows
+  // agent's `time sync cycle failed` warn carried UTF-16 command output with
+  // embedded NULs, and that one row made the whole batch insert fail.
+  describe('NUL characters (22P05)', () => {
+    it('strips U+0000 from message, component, agentVersion and nested fields (values and keys) before insert', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          logs: [
+            makeLogEntry({
+              level: 'warn',
+              component: 'time\u0000sync',
+              message: 'time sync cycle failed: S\u0000e\u0000r\u0000',
+              agentVersion: '1.2\u0000.3',
+              fields: {
+                error: 'exit status 0xffff0000: S\u0000e\u0000r\u0000v\u0000i\u0000c\u0000e\u0000',
+                'bad\u0000Key': 'v',
+                nested: {
+                  list: ['a\u0000b', { 'k\u0000ey': 'x\u0000y' }],
+                  count: 3,
+                },
+              },
+            }),
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const row = values.mock.calls[0]![0][0];
+      expect(row.message).toBe('time sync cycle failed: Ser');
+      expect(row.component).toBe('timesync');
+      expect(row.agentVersion).toBe('1.2.3');
+      expect(row.fields).toEqual({
+        error: 'exit status 0xffff0000: Service',
+        badKey: 'v',
+        nested: { list: ['ab', { key: 'xy' }], count: 3 },
+      });
+      expect(JSON.stringify(row)).not.toContain('\\u0000');
+    });
+
+    it('still redacts a secret that a NUL was splitting', async () => {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          logs: [makeLogEntry({ message: 'pass\u0000word=hunter2' })],
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(values.mock.calls[0]![0][0].message).toBe('password=[REDACTED]');
+    });
+  });
+
+  describe('insert isolation', () => {
+    function pgDataException(code = '22P05') {
+      // Drizzle wraps the driver error; the SQLSTATE lives on `.cause`.
+      return Object.assign(new Error('Failed query: insert into "agent_logs"'), {
+        cause: Object.assign(new Error('unsupported Unicode escape sequence'), { code }),
+      });
+    }
+
+    it('runs every chunk insert inside its own savepoint', async () => {
+      mockDeviceLookup(true);
+      const depths: number[] = [];
+      const values = vi.fn(async () => { depths.push(savepointDepth.value); });
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+
+      const logs = Array.from({ length: 150 }, () => makeLogEntry());
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledTimes(2);
+      expect(depths).toEqual([1, 1]);
+      expect(withDbTransaction).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the other rows when one row raises a data exception', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockDeviceLookup(true);
+      const values = vi.fn(async (batch: Array<{ message: string }>) => {
+        if (batch.some((row) => row.message === 'bad')) throw pgDataException();
+      });
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          logs: [
+            makeLogEntry({ message: 'one' }),
+            makeLogEntry({ message: 'bad' }),
+            makeLogEntry({ message: 'three' }),
+          ],
+        }),
+      });
+
+      expect(res.status).toBe(207);
+      expect(await res.json()).toEqual({ received: 2, total: 3, partial: true });
+      // One chunk attempt, then one attempt per row.
+      expect(values).toHaveBeenCalledTimes(4);
+      const inserted = values.mock.calls.slice(1).map((call) => call[0]);
+      expect(inserted).toEqual([
+        [expect.objectContaining({ message: 'one' })],
+        [expect.objectContaining({ message: 'bad' })],
+        [expect.objectContaining({ message: 'three' })],
+      ]);
+      expect(recordAgentIngestSubmission).toHaveBeenCalledWith('logs', 'partial');
+      consoleError.mockRestore();
+    });
+
+    it('does not retry row-by-row on an error that is not a data exception', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockDeviceLookup(true);
+      const values = mockInsertFailure();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logs: [makeLogEntry(), makeLogEntry(), makeLogEntry()] }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(values).toHaveBeenCalledTimes(1);
       consoleError.mockRestore();
     });
   });

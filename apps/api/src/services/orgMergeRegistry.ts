@@ -868,6 +868,10 @@ const REPOINT_TABLES: readonly string[] = [
   "config_policy_onedrive_libraries",
   "config_policy_onedrive_settings",
   "configuration_policies",
+  // Partner-wide rows (org_id NULL) never match the `WHERE org_id = <loser>`
+  // repoint. A connection the merge deduplicates disappears from its source,
+  // and the next reconcile retires the incident (spec §2.1).
+  "connection_health_incidents",
   "contract_billing_period_outcomes",
   "contract_billing_periods",
   "contract_documents",

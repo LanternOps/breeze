@@ -12,6 +12,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   ABUSE_SIGNAL_OVERRIDES: 'abuse heuristic weight overrides',
   // AGENT_*
   AGENT_BINARY_DIR: 'filesystem path',
+  AGENT_BODY_RECEIVE_TIMEOUT_MS: 'agent request body receive deadline',
+  AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS: 'agent request body receive deadline',
   AGENT_CHANGES_MAX_BYTES_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_BYTES_PER_ORG_PER_DAY: 'agent ingest quota knob',
   AGENT_CHANGES_MAX_ROWS_PER_DEVICE_PER_DAY: 'agent ingest quota knob',
