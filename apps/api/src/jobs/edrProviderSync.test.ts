@@ -166,7 +166,13 @@ vi.mock('../services/edrProviders/alerts', () => ({
 }));
 vi.mock('../services/edrProviders/deviceMatching', () => ({ matchEdrEndpoints: m.matchEdrEndpoints }));
 vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
-vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})), getRedis: vi.fn(() => null) }));
+const h = vi.hoisted(() => ({ readEdrHints: vi.fn(), ackEdrHints: vi.fn() }));
+const hintDepths: Record<string, number[]> = { read: [], ack: [] };
+vi.mock('../services/edrProviders/hints', () => ({
+  readEdrHints: (...a: unknown[]) => { hintDepths.read!.push(contextDepth); return h.readEdrHints(...a); },
+  ackEdrHints: (...a: unknown[]) => { hintDepths.ack!.push(contextDepth); return h.ackEdrHints(...a); },
+}));
 vi.mock('../services/bullmqQueue', () => ({
   createInstrumentedQueue: vi.fn(() => ({
     add: vi.fn(async () => ({ id: 'job-1' })),
@@ -233,6 +239,9 @@ beforeEach(() => {
   m.evaluateEdrStaleTenants.mockResolvedValue({ published: 0 });
   m.clearExpiredTenantDenials.mockResolvedValue(0);
   m.pollEdrActionStatus.mockResolvedValue({ checked: 0, settled: 0 });
+  hintDepths.read = []; hintDepths.ack = [];
+  h.readEdrHints.mockResolvedValue({ members: [], hints: [], markerAt: null });
+  h.ackEdrHints.mockResolvedValue({ stillPending: false });
 });
 
 describe('isFinalSyncAttempt', () => {
@@ -270,6 +279,24 @@ describe('selectDueStreams', () => {
     expect(out).toEqual([{ connectionId: 'a', stream: 'detections' }]);
     expect(selectDueStreams([row({ lastInventorySyncAt: ago(61), lastDetectionSyncAt: ago(2) })], NOW))
       .toEqual([{ connectionId: 'a', stream: 'inventory' }]);
+  });
+
+  describe('W03 PR-B: a pending push hint makes detections due (durable fallback when Redis lost the set)', () => {
+    const base = { lastInventorySyncAt: ago(1), detectionIntervalMinutes: 10 };
+    it('a hint newer than the last detection sync -> due inside the interval', () => {
+      expect(selectDueStreams([row({ ...base, lastDetectionSyncAt: ago(3), pendingHintAt: ago(1) })], NOW))
+        .toEqual([{ connectionId: 'a', stream: 'detections' }]);
+    });
+    it('an unacked hint older than a sync >= 5 min ago -> due (its rerun may have coalesced away)', () => {
+      expect(selectDueStreams([row({ ...base, lastDetectionSyncAt: ago(6), pendingHintAt: ago(7) })], NOW))
+        .toEqual([{ connectionId: 'a', stream: 'detections' }]);
+    });
+    it('an unacked hint older than a sync < 5 min ago -> not due (the run that saw it queued the rerun)', () => {
+      expect(selectDueStreams([row({ ...base, lastDetectionSyncAt: ago(2), pendingHintAt: ago(3) })], NOW)).toEqual([]);
+    });
+    it('no hint -> interval only', () => {
+      expect(selectDueStreams([row({ ...base, lastDetectionSyncAt: ago(3), pendingHintAt: null })], NOW)).toEqual([]);
+    });
   });
 });
 
@@ -512,6 +539,90 @@ describe('phase-3 per-tenant fence (review #1)', () => {
     phase3TenantRows = [{ ...MAPPED, orgId: 'org-NEW' }];
     m.enqueueOrReplaceStale.mockRejectedValue(new Error('redis down'));
     await expect(syncEdrDetections(CONNECTION_ID)).resolves.toBeUndefined();
+  });
+});
+
+describe('W03 PR-B: push hints coordinate with the detections run', () => {
+  const SNAP = { members: ['t:v-mapped'], hints: [{ vendorTenantId: 'v-mapped' }], markerAt: '2026-10-16 10:00:00.123456+00' };
+  const rerunCalls = () => m.enqueueOrReplaceStale.mock.calls.filter((c) => c[2] === `edr-detections-${CONNECTION_ID}-rerun`);
+
+  it('snapshots BEFORE the vendor fetch and acks that exact snapshot only AFTER Phase 3, outside any DB context', async () => {
+    h.readEdrHints.mockResolvedValue(SNAP);
+    await syncEdrDetections(CONNECTION_ID);
+    expect(h.readEdrHints).toHaveBeenCalledWith(CONNECTION_ID, null);
+    expect(h.readEdrHints.mock.invocationCallOrder[0]!).toBeLessThan(m.listDetections.mock.invocationCallOrder[0]!);
+    expect(h.ackEdrHints).toHaveBeenCalledTimes(1);
+    expect(h.ackEdrHints).toHaveBeenCalledWith(CONNECTION_ID, SNAP, null);
+    expect(h.ackEdrHints.mock.invocationCallOrder[0]!).toBeGreaterThan(m.persistDetections.mock.invocationCallOrder[0]!);
+    expect(hintDepths.ack).toEqual([0]);
+    expect(hintDepths.read).toEqual([0]);
+    expect(rerunCalls()).toEqual([]);
+  });
+
+  it('a hint that arrived mid-run (marker survives the CAS) -> exactly one rerun enqueue', async () => {
+    h.readEdrHints.mockResolvedValue(SNAP);
+    h.ackEdrHints.mockResolvedValue({ stillPending: true });
+    await syncEdrDetections(CONNECTION_ID);
+    expect(rerunCalls()).toHaveLength(1);
+  });
+
+  it('still pending AND a dropped tenant -> still one rerun enqueue', async () => {
+    h.ackEdrHints.mockResolvedValue({ stillPending: true });
+    phase3TenantRows = [{ ...MAPPED, orgId: 'org-NEW' }];
+    await syncEdrDetections(CONNECTION_ID);
+    expect(rerunCalls()).toHaveLength(1);
+  });
+
+  it('a failed run never acks (the hint survives for the next run)', async () => {
+    m.listDetections.mockRejectedValue(new FakeEdrError('boom', { code: 'upstream_error', reauth: false, scope: 'operation' }));
+    h.readEdrHints.mockResolvedValue(SNAP);
+    await syncEdrDetections(CONNECTION_ID, { isFinalAttempt: false }).catch(() => {});
+    expect(h.ackEdrHints).not.toHaveBeenCalled();
+  });
+
+  it('a fence trip (nothing persisted) never acks', async () => {
+    h.readEdrHints.mockResolvedValue(SNAP);
+    reReadRow = { ...BASE_ROW, isActive: false };
+    await syncEdrDetections(CONNECTION_ID);
+    expect(m.persistDetections).not.toHaveBeenCalled();
+    expect(h.ackEdrHints).not.toHaveBeenCalled();
+  });
+
+  it('a snapshot read failure does not fail the run and skips the ack', async () => {
+    h.readEdrHints.mockRejectedValue(new Error('db blip'));
+    await syncEdrDetections(CONNECTION_ID);
+    expect(m.persistDetections).toHaveBeenCalled();
+    expect(h.ackEdrHints).not.toHaveBeenCalled();
+    expect(lastConnectionUpdate()!.payload).toMatchObject({ lastDetectionSyncStatus: 'success' });
+  });
+
+  it('an ack failure keeps the sync result (the marker stays; sync-all picks it up)', async () => {
+    h.readEdrHints.mockResolvedValue(SNAP);
+    h.ackEdrHints.mockRejectedValue(new Error('db blip'));
+    await expect(syncEdrDetections(CONNECTION_ID)).resolves.toBeUndefined();
+    expect(lastConnectionUpdate()!.payload).toMatchObject({ lastDetectionSyncStatus: 'success' });
+  });
+
+  it('the inventory stream never reads or acks hints', async () => {
+    await syncEdrInventory(CONNECTION_ID);
+    expect(h.readEdrHints).not.toHaveBeenCalled();
+    expect(h.ackEdrHints).not.toHaveBeenCalled();
+  });
+
+  it('sync-all: a pending hint newer than the last detection sync enqueues detections inside the interval', async () => {
+    const recent = new Date(Date.now() - 60_000);
+    connectionRow = {
+      ...BASE_ROW, lastInventorySyncAt: recent, lastDetectionSyncAt: recent,
+      pendingHintAt: new Date(Date.now() - 10_000),
+    };
+    await __testOnly.processSyncAll();
+    const det = m.enqueueOrReplaceStale.mock.calls.filter((c) => c[1] === 'sync-detections');
+    expect(det.map((c) => c[2])).toEqual([`edr-detections-${CONNECTION_ID}`]);
+
+    m.enqueueOrReplaceStale.mockClear();
+    connectionRow = { ...connectionRow, pendingHintAt: null };
+    await __testOnly.processSyncAll();
+    expect(m.enqueueOrReplaceStale.mock.calls.filter((c) => c[1] === 'sync-detections')).toEqual([]);
   });
 });
 

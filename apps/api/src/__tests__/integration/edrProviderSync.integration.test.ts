@@ -55,6 +55,7 @@ vi.mock('../../services/edrProviders/bitdefender/client', async (importOriginal)
     async getIncidentsChangedBetween(from: Date, to: Date) {
       this.note('getIncidentsChangedBetween');
       gz.incidentWindows.push({ from, to });
+      if (midFetch.hook) { const h = midFetch.hook; midFetch.hook = null; await h(); }
       return gz.incidents;
     }
     async getQuarantineBetween() { this.note('getQuarantineBetween'); return []; }
@@ -73,6 +74,20 @@ vi.mock('../../services/eventBus', async (importOriginal) => {
     }),
   };
 });
+// W03 PR-B: record queue enqueues (a hint rerun) instead of touching BullMQ.
+const enqueued = vi.hoisted(() => [] as string[]);
+vi.mock('../../services/bullmqUtils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/bullmqUtils')>();
+  return {
+    ...actual,
+    enqueueOrReplaceStale: vi.fn(async (_q: unknown, _name: string, jobId: string) => {
+      enqueued.push(jobId);
+      return { id: jobId };
+    }),
+  };
+});
+// A seam the hint cases use to land a push in the middle of a run's vendor fetch.
+const midFetch = vi.hoisted(() => ({ hook: null as null | (() => Promise<void>) }));
 // No Redis: a no-op limiter, and a live fetch is a test failure.
 vi.mock('../../services/edrProviders/context', () => ({
   buildEdrAdapterContext: (_adapter: unknown, o: { creds: unknown; baseUrl: string | null; region: string | null }) => ({
@@ -88,7 +103,8 @@ vi.mock('../../services/edrProviders/context', () => ({
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { devices, edrActions, edrConnections, edrDetections, edrEndpoints, edrTenants } from '../../db/schema';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
-import { syncEdrDetections, syncEdrInventory } from '../../jobs/edrProviderSync';
+import { __testOnly, syncEdrDetections, syncEdrInventory } from '../../jobs/edrProviderSync';
+import { recordEdrHint } from '../../services/edrProviders/hints';
 import { encryptEdrSecret } from '../../services/edrProviders/credentials';
 import { matchEdrEndpoints } from '../../services/edrProviders/deviceMatching';
 import { EdrProviderRequestError } from '../../services/edrProviders/types';
@@ -741,5 +757,78 @@ describe('edr sync — device lifecycle on sync-created links', () => {
       SELECT id, breeze_device_id FROM edr_endpoints WHERE id IN (${e1}::uuid, ${conn2.endpointId}::uuid)`);
     expect(linked).toHaveLength(2);
     expect(linked.every((r) => r.breeze_device_id === fx.deviceA.id)).toBe(true);
+  });
+});
+
+describe('edr push hints — durable marker against Postgres (W03 PR-B)', () => {
+  const rerunId = (id: string) => `edr-detections-${id}-rerun`;
+  const marker = async (id: string) => (await adminRows<{ m: string | null }>(sql`
+    SELECT pending_hint_at::text AS m FROM edr_connections WHERE id = ${id}::uuid`))[0]!.m;
+  const enablePush = (id: string) => admin().execute(sql`UPDATE edr_connections SET push_enabled = true WHERE id = ${id}::uuid`);
+
+  runDb('a hint recorded BEFORE the run is cleared by the run (microsecond-exact CAS) and queues no rerun', async () => {
+    const fx = await seedJob();
+    await fx.addTenant(`co-${sfx()}`, fx.orgA.id);
+    await enablePush(fx.connectionId);
+    expect(await recordEdrHint(fx.connectionId, [{ vendorTenantId: 'x' }], null)).toBe(true);
+    // Force a non-zero microsecond component so a JS-Date (ms) compare could never match it.
+    await admin().execute(sql`UPDATE edr_connections SET pending_hint_at = now() - interval '1 second' + interval '123 microseconds' WHERE id = ${fx.connectionId}::uuid`);
+    expect(await marker(fx.connectionId)).toMatch(/\.\d{6}/);
+    enqueued.length = 0;
+
+    await syncEdrDetections(fx.connectionId);
+
+    expect(await marker(fx.connectionId)).toBeNull();
+    expect(enqueued).not.toContain(rerunId(fx.connectionId));
+  });
+
+  runDb('a hint that lands DURING the vendor fetch survives the run and queues exactly one rerun', async () => {
+    const fx = await seedJob();
+    await fx.addTenant(`co-${sfx()}`, fx.orgA.id);
+    await enablePush(fx.connectionId);
+    await recordEdrHint(fx.connectionId, [{ vendorTenantId: 'x' }], null);
+    const before = await marker(fx.connectionId);
+    midFetch.hook = async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      await recordEdrHint(fx.connectionId, [{ vendorTenantId: 'y' }], null);
+    };
+    enqueued.length = 0;
+
+    await syncEdrDetections(fx.connectionId);
+
+    const after = await marker(fx.connectionId);
+    expect(after).not.toBeNull();
+    expect(after).not.toBe(before);
+    expect(enqueued.filter((j) => j === rerunId(fx.connectionId))).toHaveLength(1);
+  });
+
+  runDb('a failed run leaves the marker; sync-all treats the connection as due from the DB marker alone', async () => {
+    const fx = await seedJob();
+    const co = `co-${sfx()}`;
+    await fx.addTenant(co, fx.orgA.id);
+    await enablePush(fx.connectionId);
+    await recordEdrHint(fx.connectionId, [{ vendorTenantId: co }], null);
+    const before = await marker(fx.connectionId);
+    midFetch.hook = async () => { throw new EdrProviderRequestError('vendor down', { code: 'upstream_error', reauth: false, scope: 'connection' }); };
+
+    await syncEdrDetections(fx.connectionId, { isFinalAttempt: false }).catch(() => {});
+    expect(await marker(fx.connectionId)).toBe(before);
+
+    // A just-synced connection with an unacked newer hint is due on the next tick.
+    await admin().execute(sql`UPDATE edr_connections SET last_detection_sync_at = now() - interval '1 minute',
+      last_inventory_sync_at = now(), pending_hint_at = now() WHERE id = ${fx.connectionId}::uuid`);
+    enqueued.length = 0;
+    await __testOnly.processSyncAll();
+    expect(enqueued).toContain(`edr-detections-${fx.connectionId}`);
+  });
+
+  runDb('a hint for a push-disabled or inactive connection records nothing', async () => {
+    const fx = await seedJob();
+    expect(await recordEdrHint(fx.connectionId, [{ vendorTenantId: 'x' }], null)).toBe(false);
+    expect(await marker(fx.connectionId)).toBeNull();
+    await enablePush(fx.connectionId);
+    await admin().execute(sql`UPDATE edr_connections SET is_active = false WHERE id = ${fx.connectionId}::uuid`);
+    expect(await recordEdrHint(fx.connectionId, [{ vendorTenantId: 'x' }], null)).toBe(false);
+    expect(await marker(fx.connectionId)).toBeNull();
   });
 });
