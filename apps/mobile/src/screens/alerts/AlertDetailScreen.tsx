@@ -10,7 +10,7 @@ import {
   sendDeviceAction,
   type Alert as AlertModel,
 } from '../../services/api';
-import { needsAlertLookup, rebootPlan } from './alertActions';
+import { needsAlertLookup, rebootPlan, resolveCreatedAt } from './alertActions';
 import { relativeTime } from '../../lib/relativeTime';
 import {
   useApprovalTheme,
@@ -93,6 +93,11 @@ export function AlertDetailScreen({ route }: Props) {
   // the previous alert must not carry over to it.
   const [rebootSentFor, setRebootSentFor] = useState<string | null>(null);
   const [fetched, setFetched] = useState<AlertModel | null>(null);
+  // The full server record, kept regardless of reboot eligibility so the
+  // timestamps below come from it rather than from route params (#8891).
+  const [record, setRecord] = useState<AlertModel | null>(null);
+  const [lookupFailed, setLookupFailed] = useState(false);
+  const createdAt = resolveCreatedAt(alert, record);
   const fresh = fetched && fetched.id === alert.id ? fetched : null;
   const rebootSent = rebootSentFor === alert.id;
   const currentAlertId = useRef(alert.id);
@@ -107,10 +112,13 @@ export function AlertDetailScreen({ route }: Props) {
 
   useEffect(() => {
     setFetched(null);
+    setRecord(null);
+    setLookupFailed(false);
     if (!needsAlertLookup(alert)) return;
     let mounted = true;
     getAlert(alert.id)
       .then(async (read) => {
+        if (mounted) setRecord(read);
         // The alert can outlive the restart it asked for, so the button also
         // needs the device to still report a pending restart.
         const plan = rebootPlan(read);
@@ -119,7 +127,9 @@ export function AlertDetailScreen({ route }: Props) {
       })
       // Only the Reboot now button depends on this; without it the screen
       // shows Acknowledge alone, as before.
-      .catch(() => undefined);
+      .catch(() => {
+        if (mounted) setLookupFailed(true);
+      });
     return () => {
       mounted = false;
     };
@@ -258,7 +268,13 @@ export function AlertDetailScreen({ route }: Props) {
       ) : null}
       <DetailRow
         label="CREATED"
-        value={formatTimestamp(alert.createdAt)}
+        value={
+          createdAt
+            ? formatTimestamp(createdAt)
+            : lookupFailed || !needsAlertLookup(alert)
+              ? 'Unavailable'
+              : 'Loading…'
+        }
         textHi={theme.textHi}
         textLo={theme.textLo}
       />
