@@ -1067,6 +1067,13 @@
         "business": "Negocio",
         "general": "Otros",
         "businessDescription": "Cifras internas del MSP — cumplimiento de SLA, facturabilidad de técnicos y cuentas por cobrar — solo para el personal."
+      },
+      "delivery": {
+        "contactsLoading": "Cargando los contactos de la organización…",
+        "contactsFailed": "No se pudieron cargar los contactos de esta organización. Aún puede agregar direcciones de correo electrónico.",
+        "noContacts": "Esta organización no tiene contactos con dirección de correo electrónico.",
+        "removeEmail": "Quitar {{email}}",
+        "recipientsFailed": "Se creó el informe \"{{name}}\", pero no se pudieron agregar todos sus destinatarios. Agréguelos desde el informe."
       }
     },
     "threatDetectionOptions": {

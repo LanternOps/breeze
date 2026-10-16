@@ -83,11 +83,15 @@ import {
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { OrgPickerField, useReportTargetOrg } from './OrgPickerField';
-import { CoversControl } from './series/CoversControl';
 import { createSeries } from './series/seriesApi';
-import { SeriesScheduleField } from './series/SeriesScheduleField';
-import { isSeriesEligibleReportType, isSeriesSchedule, stripSeriesConfig } from './series/seriesConfig';
-import type { CoversValue, SeriesSchedule } from './series/types';
+import { isSeriesEligibleReportType, stripSeriesConfig } from './series/seriesConfig';
+import {
+  TemplateDeliveryFields,
+  initialTemplateDelivery,
+  singleOrgDeliveryOf,
+  type TemplateDeliveryValue,
+} from './TemplateDeliveryFields';
+import { hasTemplateOptionsForm } from './templateReportTypes';
 import { showToast } from '../shared/Toast';
 import { runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
@@ -650,13 +654,11 @@ export default function ReportTemplates() {
   const [postureTemplate, setPostureTemplate] = useState<ReportTemplate | null>(null);
   const [backupRequired, setBackupRequired] = useState(false);
   const [lifecycleTemplate, setLifecycleTemplate] = useState<ReportTemplate | null>(null);
-  // W03: Covers for the posture / lifecycle modals (the two curated
-  // direct-create types a series supports). Reset on every modal open. The
+  // #8796: who a curated template's report is for and where it is sent —
+  // Covers (W03), the single-org schedule, contacts and addresses. One value
+  // for whichever curated modal is open; reset on every modal open. The
   // single-org target stays W01's page-level orgTarget.
-  const [templateCovers, setTemplateCovers] = useState<CoversValue>({ mode: 'org' });
-  // Recurring-only (Contract concern 7c): pre-filled from a recurring template,
-  // empty for a one-time one; never substituted.
-  const [templateSeriesSchedule, setTemplateSeriesSchedule] = useState<SeriesSchedule | ''>('');
+  const [templateDelivery, setTemplateDelivery] = useState<TemplateDeliveryValue>(() => initialTemplateDelivery(undefined));
   const [seriesScheduleMissing, setSeriesScheduleMissing] = useState(false);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
   const [threatTemplate, setThreatTemplate] = useState<ReportTemplate | null>(null);
@@ -722,6 +724,32 @@ export default function ReportTemplates() {
     setBuilderOpen(true);
   }, []);
 
+  /** Attach org contacts to a just-created report, in order; false on the
+   *  first failure (that one is reported once by the caller, not per contact). */
+  const attachContactRecipients = useCallback(
+    async (reportId: string | undefined, contactIds: string[]): Promise<boolean> => {
+      if (!reportId) return false;
+      for (const contactId of contactIds) {
+        try {
+          await runAction({
+            request: () =>
+              fetchWithAuth(`/reports/${reportId}/recipients`, {
+                method: 'POST',
+                body: JSON.stringify({ contactId })
+              }),
+            errorFallback: t('reports.reportBuilder.recipients.updateFailed'),
+            suppressErrorToast: () => true
+          });
+        } catch (err) {
+          console.warn('[ReportTemplates] could not attach a report recipient', { reportId, contactId, err });
+          return false;
+        }
+      }
+      return true;
+    },
+    [t]
+  );
+
   // Reports whose type the freeform builder would downgrade are saved directly
   // with their true type instead of being routed through it.
   const handleCreateDirect = useCallback(
@@ -729,9 +757,9 @@ export default function ReportTemplates() {
       template: ReportTemplate,
       postureConfig: Record<string, unknown> = {},
       owner: ReportOwnerScope = 'organization',
-      covers?: CoversValue,
-      seriesSchedule?: SeriesSchedule | '',
+      delivery?: TemplateDeliveryValue,
     ) => {
+      const covers = delivery?.covers;
       // Defense in depth — handleUseTemplate already refuses to open a
       // template without an org; nothing that would 400 is ever sent.
       if (owner === 'organization' && covers?.mode !== 'series' && orgTarget.missing) {
@@ -748,6 +776,7 @@ export default function ReportTemplates() {
           }
           // Recurring-only: the user must have picked a schedule (never defaulted
           // from a one-time template). The field shows the required message.
+          const seriesSchedule = delivery?.seriesSchedule;
           if (!seriesSchedule) {
             setSeriesScheduleMissing(true);
             return;
@@ -773,14 +802,19 @@ export default function ReportTemplates() {
           void navigateTo(created?.series?.id ? `/reports#series/${created.series.id}` : '/reports');
           return;
         }
-        await runAction({
+        // #8796: a curated dialog says when the report runs and who receives
+        // it; a template without one (executive summary, business) keeps its
+        // own cadence and no recipients.
+        const singleOrg = delivery ? singleOrgDeliveryOf(delivery) : null;
+        const name = template.defaults.name ?? template.name;
+        const created = await runAction<{ id?: string } | null>({
           request: () =>
             fetchWithAuth('/reports', {
               method: 'POST',
               body: JSON.stringify({
-                name: template.defaults.name ?? template.name,
+                name,
                 type: template.defaults.type,
-                schedule: template.defaults.schedule ?? 'one_time',
+                schedule: singleOrg?.schedule ?? template.defaults.schedule ?? 'one_time',
                 format: template.defaults.format ?? 'pdf',
                 // Ownership. A business create states it explicitly: `ownerScope`
                 // is the only ownership input — the partner id is derived
@@ -804,16 +838,32 @@ export default function ReportTemplates() {
                   ? { ...postureConfig }
                   : {
                       dateRange: template.defaults.dateRange ?? { preset: 'last_30_days' },
-                      ...postureConfig
+                      ...postureConfig,
+                      ...(singleOrg && singleOrg.emailRecipients.length > 0
+                        ? { emailRecipients: singleOrg.emailRecipients }
+                        : {})
                     }
               })
           }),
           errorFallback: t('reports.reportTemplates.errors.createReport'),
-          successMessage: t('reports.reportTemplates.success.created', { name: template.defaults.name ?? template.name }),
+          successMessage: t('reports.reportTemplates.success.created', { name }),
           onUnauthorized: () => {
             void navigateTo('/login', { replace: true });
           }
         });
+        // Contact recipients hang off the saved report (POST
+        // /reports/:id/recipients), so they attach once it exists. A failure
+        // there leaves a report without the recipients the user asked for:
+        // say so and open that report, where its delivery section can finish
+        // the job, instead of landing on the list as if all went well.
+        if (singleOrg && singleOrg.contactIds.length > 0) {
+          const attached = await attachContactRecipients(created?.id, singleOrg.contactIds);
+          if (!attached) {
+            showToast({ type: 'error', message: t('reports.reportTemplates.delivery.recipientsFailed', { name }) });
+            void navigateTo(created?.id ? `/reports/${created.id}/edit` : '/reports');
+            return;
+          }
+        }
         void navigateTo('/reports');
       } catch {
         // runAction already surfaced the failure (toast, or redirect on 401).
@@ -821,7 +871,7 @@ export default function ReportTemplates() {
         setCreatingId(null);
       }
     },
-    [orgTarget.orgId, orgTarget.missing, t]
+    [attachContactRecipients, orgTarget.orgId, orgTarget.missing, t]
   );
 
   const handleUseTemplate = useCallback(
@@ -837,30 +887,27 @@ export default function ReportTemplates() {
       // is still required (handleCreateDirect, and the builder's own guard)
       // if they keep it to one organization.
       // Only templates whose modal shows the Covers control can fan out: the
-      // posture/lifecycle modals and the builder (builder-representable
-      // types). Others (e.g. backup status) keep W01's org-first rule.
+      // curated template modals (#8796) and the builder (builder-representable
+      // types). Business types have their own ownership control.
       const showsCovers =
-        type === 'security_compliance_posture'
-        || type === 'hardware_lifecycle'
+        hasTemplateOptionsForm(type)
         || (type !== undefined && reportTypeSurvivesBuilder(type));
       const mayFanOut = canChooseOwnerScope && isSeriesEligibleReportType(type) && showsCovers;
       if (!isBusinessReportType(type) && orgTarget.missing && !mayFanOut) {
         setError(t('reports.orgPicker.chooseFirst'));
         return;
       }
+      if (hasTemplateOptionsForm(type)) {
+        setTemplateDelivery(initialTemplateDelivery(template.defaults.schedule));
+        setSeriesScheduleMissing(false);
+      }
       if (type === 'security_compliance_posture') {
         setBackupRequired(false);
-        setTemplateCovers({ mode: 'org' });
-        setTemplateSeriesSchedule(isSeriesSchedule(template.defaults.schedule) ? template.defaults.schedule : '');
-        setSeriesScheduleMissing(false);
         setPostureTemplate(template);
         return;
       }
       if (type === 'hardware_lifecycle') {
         setLifecycleOptions(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
-        setTemplateCovers({ mode: 'org' });
-        setTemplateSeriesSchedule(isSeriesSchedule(template.defaults.schedule) ? template.defaults.schedule : '');
-        setSeriesScheduleMissing(false);
         setLifecycleTemplate(template);
         return;
       }
@@ -969,6 +1016,38 @@ export default function ReportTemplates() {
         return null;
     }
   };
+
+  /**
+   * The modal shell every curated template shares (#8796): the template's name,
+   * who the report is for and where it is sent (TemplateDeliveryFields), then
+   * the template's own options form with its Create / Cancel buttons. It
+   * scrolls, because Covers + recipients outgrow a laptop viewport.
+   */
+  const renderTemplateModal = (template: ReportTemplate, optionsForm: ReactNode) => (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div
+        data-testid={`template-modal-${template.defaults.type}`}
+        className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-lg"
+      >
+        <h2 className="text-lg font-semibold">
+          {t('reports.reportTemplates.useTemplateTitle', { name: getTemplateDisplayName(template) })}
+        </h2>
+        <div className="mt-5 space-y-4">
+          <TemplateDeliveryFields
+            reportType={template.defaults.type ?? ''}
+            value={templateDelivery}
+            onChange={(next) => {
+              setTemplateDelivery(next);
+              if (next.seriesSchedule) setSeriesScheduleMissing(false);
+            }}
+            orgTarget={orgTarget}
+            seriesScheduleMissing={seriesScheduleMissing}
+          />
+          {optionsForm}
+        </div>
+      </div>
+    </div>
+  );
 
   const handleCloseBuilder = useCallback(() => {
     setBuilderOpen(false);
@@ -1198,173 +1277,88 @@ export default function ReportTemplates() {
         </div>
       )}
 
-      {lifecycleTemplate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">
-              {t('reports.reportTemplates.useTemplateTitle', {
-                name: getTemplateDisplayName(lifecycleTemplate),
-              })}
-            </h2>
-            <div className="mt-5 space-y-4">
-              <div data-testid={`template-covers-${lifecycleTemplate.defaults.type}`}>
-                <CoversControl
-                  reportType="hardware_lifecycle"
-                  value={templateCovers}
-                  onChange={setTemplateCovers}
-                  withSeriesRecipients
-                  seriesExtra={
-                    <SeriesScheduleField
-                      value={templateSeriesSchedule}
-                      onChange={(next) => {
-                        setTemplateSeriesSchedule(next);
-                        setSeriesScheduleMissing(false);
-                      }}
-                      showRequired={seriesScheduleMissing}
-                    />
-                  }
-                  orgField={
-                    orgTarget.missing ? (
-                      <p data-testid="template-covers-org-hint" role="status" className="text-xs text-muted-foreground">
-                        {t('reports.orgPicker.chooseFirst')}
-                      </p>
-                    ) : null
-                  }
-                />
-              </div>
-              <HardwareLifecycleOptionsForm
-                value={lifecycleOptions}
-                onChange={setLifecycleOptions}
-                busy={creatingId === lifecycleTemplate.id}
-                submitLabel={t('reports.lifecycleOptions.createReport')}
-                onCancel={() => setLifecycleTemplate(null)}
-                onSubmit={() => {
-                  void handleCreateDirect(lifecycleTemplate, { ...lifecycleOptions }, 'organization', templateCovers, templateSeriesSchedule);
-                }}
-              />
-            </div>
-          </div>
-        </div>
+      {lifecycleTemplate && renderTemplateModal(
+        lifecycleTemplate,
+        <HardwareLifecycleOptionsForm
+          value={lifecycleOptions}
+          onChange={setLifecycleOptions}
+          busy={creatingId === lifecycleTemplate.id}
+          submitLabel={t('reports.lifecycleOptions.createReport')}
+          onCancel={() => setLifecycleTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(lifecycleTemplate, { ...lifecycleOptions }, 'organization', templateDelivery);
+          }}
+        />
       )}
 
-      {threatTemplate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">
-              {t('reports.reportTemplates.useTemplateTitle', {
-                name: getTemplateDisplayName(threatTemplate),
-              })}
-            </h2>
-            <div className="mt-5">
-              <ThreatDetectionOptionsForm
-                value={threatOptions}
-                onChange={setThreatOptions}
-                busy={creatingId === threatTemplate.id}
-                submitLabel={t('reports.threatDetectionOptions.createReport')}
-                onCancel={() => setThreatTemplate(null)}
-                onSubmit={() => {
-                  void handleCreateDirect(threatTemplate, { ...threatOptions });
-                }}
-              />
-            </div>
-          </div>
-        </div>
+      {threatTemplate && renderTemplateModal(
+        threatTemplate,
+        <ThreatDetectionOptionsForm
+          value={threatOptions}
+          onChange={setThreatOptions}
+          busy={creatingId === threatTemplate.id}
+          submitLabel={t('reports.threatDetectionOptions.createReport')}
+          onCancel={() => setThreatTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(threatTemplate, { ...threatOptions }, 'organization', templateDelivery);
+          }}
+        />
       )}
 
-      {endpointManagementTemplate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">
-              {t('reports.reportTemplates.useTemplateTitle', {
-                name: getTemplateDisplayName(endpointManagementTemplate),
-              })}
-            </h2>
-            <div className="mt-5">
-              <EndpointManagementOptionsForm
-                value={endpointManagementOptions}
-                onChange={setEndpointManagementOptions}
-                busy={creatingId === endpointManagementTemplate.id}
-                submitLabel={t('reports.endpointManagementOptions.createReport')}
-                onCancel={() => setEndpointManagementTemplate(null)}
-                onSubmit={() => {
-                  void handleCreateDirect(endpointManagementTemplate, { ...endpointManagementOptions });
-                }}
-              />
-            </div>
-          </div>
-        </div>
+      {endpointManagementTemplate && renderTemplateModal(
+        endpointManagementTemplate,
+        <EndpointManagementOptionsForm
+          value={endpointManagementOptions}
+          onChange={setEndpointManagementOptions}
+          busy={creatingId === endpointManagementTemplate.id}
+          submitLabel={t('reports.endpointManagementOptions.createReport')}
+          onCancel={() => setEndpointManagementTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(endpointManagementTemplate, { ...endpointManagementOptions }, 'organization', templateDelivery);
+          }}
+        />
       )}
 
-      {vulnerabilityTemplate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">
-              {t('reports.reportTemplates.useTemplateTitle', {
-                name: getTemplateDisplayName(vulnerabilityTemplate),
-              })}
-            </h2>
-            <div className="mt-5">
-              <VulnerabilityManagementOptionsForm
-                value={vulnerabilityOptions}
-                onChange={setVulnerabilityOptions}
-                busy={creatingId === vulnerabilityTemplate.id}
-                submitLabel={t('reports.vulnerabilityManagementOptions.createReport')}
-                onCancel={() => setVulnerabilityTemplate(null)}
-                onSubmit={() => {
-                  void handleCreateDirect(vulnerabilityTemplate, { ...vulnerabilityOptions });
-                }}
-              />
-            </div>
-          </div>
-        </div>
+      {vulnerabilityTemplate && renderTemplateModal(
+        vulnerabilityTemplate,
+        <VulnerabilityManagementOptionsForm
+          value={vulnerabilityOptions}
+          onChange={setVulnerabilityOptions}
+          busy={creatingId === vulnerabilityTemplate.id}
+          submitLabel={t('reports.vulnerabilityManagementOptions.createReport')}
+          onCancel={() => setVulnerabilityTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(vulnerabilityTemplate, { ...vulnerabilityOptions }, 'organization', templateDelivery);
+          }}
+        />
       )}
 
-      {backupStatusTemplate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">
-              {t('reports.reportTemplates.useTemplateTitle', {
-                name: getTemplateDisplayName(backupStatusTemplate),
-              })}
-            </h2>
-            <div className="mt-5">
-              <BackupStatusOptionsForm
-                value={backupStatusOptions}
-                onChange={setBackupStatusOptions}
-                busy={creatingId === backupStatusTemplate.id}
-                submitLabel={t('reports.backupStatusOptions.createReport')}
-                onCancel={() => setBackupStatusTemplate(null)}
-                onSubmit={() => {
-                  void handleCreateDirect(backupStatusTemplate, { ...backupStatusOptions });
-                }}
-              />
-            </div>
-          </div>
-        </div>
+      {backupStatusTemplate && renderTemplateModal(
+        backupStatusTemplate,
+        <BackupStatusOptionsForm
+          value={backupStatusOptions}
+          onChange={setBackupStatusOptions}
+          busy={creatingId === backupStatusTemplate.id}
+          submitLabel={t('reports.backupStatusOptions.createReport')}
+          onCancel={() => setBackupStatusTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(backupStatusTemplate, { ...backupStatusOptions }, 'organization', templateDelivery);
+          }}
+        />
       )}
 
-      {identityTemplate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">
-              {t('reports.reportTemplates.useTemplateTitle', {
-                name: getTemplateDisplayName(identityTemplate),
-              })}
-            </h2>
-            <div className="mt-5">
-              <IdentityAccessOptionsForm
-                value={identityOptions}
-                onChange={setIdentityOptions}
-                busy={creatingId === identityTemplate.id}
-                submitLabel={t('reports.identityAccessOptions.createReport')}
-                onCancel={() => setIdentityTemplate(null)}
-                onSubmit={() => {
-                  void handleCreateDirect(identityTemplate, { ...identityOptions });
-                }}
-              />
-            </div>
-          </div>
-        </div>
+      {identityTemplate && renderTemplateModal(
+        identityTemplate,
+        <IdentityAccessOptionsForm
+          value={identityOptions}
+          onChange={setIdentityOptions}
+          busy={creatingId === identityTemplate.id}
+          submitLabel={t('reports.identityAccessOptions.createReport')}
+          onCancel={() => setIdentityTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(identityTemplate, { ...identityOptions }, 'organization', templateDelivery);
+          }}
+        />
       )}
 
       {businessTemplate && (
@@ -1406,53 +1400,18 @@ export default function ReportTemplates() {
         </div>
       )}
 
-      {postureTemplate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-lg">
-            <h2 className="text-lg font-semibold">
-              {t('reports.reportTemplates.useTemplateTitle', {
-                name: getTemplateDisplayName(postureTemplate),
-              })}
-            </h2>
-            <div className="mt-5 space-y-4">
-              <div data-testid={`template-covers-${postureTemplate.defaults.type}`}>
-                <CoversControl
-                  reportType="security_compliance_posture"
-                  value={templateCovers}
-                  onChange={setTemplateCovers}
-                  withSeriesRecipients
-                  seriesExtra={
-                    <SeriesScheduleField
-                      value={templateSeriesSchedule}
-                      onChange={(next) => {
-                        setTemplateSeriesSchedule(next);
-                        setSeriesScheduleMissing(false);
-                      }}
-                      showRequired={seriesScheduleMissing}
-                    />
-                  }
-                  orgField={
-                    orgTarget.missing ? (
-                      <p data-testid="template-covers-org-hint" role="status" className="text-xs text-muted-foreground">
-                        {t('reports.orgPicker.chooseFirst')}
-                      </p>
-                    ) : null
-                  }
-                />
-              </div>
-              <PostureReportOptionsForm
-                backupRequired={backupRequired}
-                busy={creatingId === postureTemplate.id}
-                submitLabel={t('reports.postureOptions.createReport')}
-                onBackupRequiredChange={setBackupRequired}
-                onCancel={() => setPostureTemplate(null)}
-                onSubmit={() => {
-                  void handleCreateDirect(postureTemplate, { backupRequired }, 'organization', templateCovers, templateSeriesSchedule);
-                }}
-              />
-            </div>
-          </div>
-        </div>
+      {postureTemplate && renderTemplateModal(
+        postureTemplate,
+        <PostureReportOptionsForm
+          backupRequired={backupRequired}
+          busy={creatingId === postureTemplate.id}
+          submitLabel={t('reports.postureOptions.createReport')}
+          onBackupRequiredChange={setBackupRequired}
+          onCancel={() => setPostureTemplate(null)}
+          onSubmit={() => {
+            void handleCreateDirect(postureTemplate, { backupRequired }, 'organization', templateDelivery);
+          }}
+        />
       )}
     </div>
   );

@@ -71,10 +71,26 @@ describe('ReportTemplates — one report per organization (W03)', () => {
     const user = userEvent.setup();
     render(<ReportTemplates />);
     await useTemplate('Hardware Lifecycle Report');
-    expect(within(screen.getByTestId('template-covers-hardware_lifecycle')).getByTestId('template-covers-org-hint')).toBeInTheDocument();
+    // #8796: the dialog itself asks which organization the report is for.
+    expect(within(screen.getByTestId('template-covers-hardware_lifecycle')).getByTestId('template-org-picker')).toBeInTheDocument();
     await user.click(screen.getByTestId('lifecycle-create-report'));
     expect(posts('/reports')).toHaveLength(0);
     expect(posts('/reports/series')).toHaveLength(0);
+  });
+
+  it('an organization picked inside the dialog owns the report (#8796)', async () => {
+    const user = userEvent.setup();
+    fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
+      if (url === '/reports' && init?.method === 'POST') return ok({ id: 'rep-2' }, 201);
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+    });
+    render(<ReportTemplates />);
+    await useTemplate('Hardware Lifecycle Report');
+    const picker = within(screen.getByTestId('template-org-picker')).getByRole('combobox');
+    await user.selectOptions(picker, 'o-2');
+    await user.click(screen.getByTestId('lifecycle-create-report'));
+    await waitFor(() => expect(posts('/reports')).toHaveLength(1));
+    expect(JSON.parse((posts('/reports')[0]![1] as { body: string }).body)).toMatchObject({ type: 'hardware_lifecycle', orgId: 'o-2' });
   });
 
   it('a one-time posture template leaves the series schedule empty and refuses to create until one is picked', async () => {
@@ -96,13 +112,26 @@ describe('ReportTemplates — one report per organization (W03)', () => {
     expect(JSON.parse((posts('/reports/series')[0]![1] as { body: string }).body).schedule).toBe('weekly');
   });
 
-  // W03 final review: a series-eligible type whose modal has no Covers control
-  // (backup status) must still require an org up front, as before W03.
-  it('a template without a Covers control still asks for an organization first', async () => {
+  // W03 final review: a type that cannot fan out (a managed-evidence type)
+  // must still require an org up front, as before W03.
+  it('a template that cannot fan out still asks for an organization first', async () => {
+    render(<ReportTemplates />);
+    await userEvent.setup().click(await screen.findByTestId('report-template-use-threat_detection_review'));
+    expect(await screen.findByText('Choose an organization above before using a template.')).toBeInTheDocument();
+    expect(screen.queryByTestId('template-covers-threat_detection_review')).toBeNull();
+    expect(posts('/reports')).toHaveLength(0);
+  });
+
+  // #8796: backup status now carries the shared Covers block, and it is
+  // series-eligible, so it opens with no org picked like lifecycle does.
+  it('backup status offers one report per organization from its own dialog', async () => {
+    const user = userEvent.setup();
     render(<ReportTemplates />);
     await useTemplate('Backup Status Report');
-    expect(await screen.findByText('Choose an organization above before using a template.')).toBeInTheDocument();
-    expect(posts('/reports')).toHaveLength(0);
+    const covers = screen.getByTestId('template-covers-backup_status');
+    await user.click(within(covers).getByTestId('covers-mode-series'));
+    // One-time template: the series schedule is never defaulted.
+    expect(within(covers).getByTestId('series-schedule-select')).toHaveValue('');
   });
 
   // Stack check: the Covers + recipients fields make the modal taller than a
