@@ -137,7 +137,7 @@ export function registerMessagingTools(aiTools: Map<string, AiTool>): void {
           expiresInMinutes: { type: 'number', description: 'send: lifetime in minutes (default 1440, max 10080; null = until closed)' },
           confirmedCount: { type: 'number', description: 'send: required above 100 devices; must equal the resolved device count' },
           orgId: { type: 'string', description: 'list: filter to one organization' },
-          limit: { type: 'number', description: 'list: page size (max 100)' },
+          limit: { type: 'number', description: 'Max messages to return (default 50, max 100)' },
           cursor: { type: 'string', description: 'list: cursor from the previous page' },
           messageId: { type: 'string', description: 'get: message UUID from list' },
         },
