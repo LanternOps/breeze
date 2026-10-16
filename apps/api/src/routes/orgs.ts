@@ -81,7 +81,7 @@ import { syncBillingContactRow, syncSiteContactRow } from '../services/contacts/
 import { escapeLike } from '../utils/sql';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
-import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlValue, httpUrlField, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
+import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
@@ -731,14 +731,12 @@ const supportedLocales = SUPPORTED_LOCALES;
  * The partner settings editor echoes a saved notification destination back as
  * the masked marker ("keep the stored value" — settingsSecretMasking.ts; a
  * list entry carries a key naming the stored entry, `********:<key>`), which
- * the URL validator would otherwise reject. Accept the marker alongside a
- * valid URL; a typed replacement is still validated.
+ * the URL validator would otherwise reject. The slackWebhookUrl/webhooks
+ * fields below use `keptSecretOrHttpUrlValue` (`@breeze/shared`), which
+ * accepts the marker alongside a valid URL; a typed replacement is still
+ * validated, and a rejection carries the human message only — never the
+ * marker regex (#8369).
  */
-const maskedSettingsSecretMarker = z.string().regex(/^\*+(?::[0-9a-f]+)?$/);
-
-function keptSecretOrHttpUrl(label: string) {
-  return z.union([maskedSettingsSecretMarker, httpUrlValue(label)]);
-}
 
 export const mlSettingsSchema = z.object({
   anomalies: z.object({
@@ -821,11 +819,11 @@ const partnerSettingsSchema = z.object({
     smtpEncryption: z.enum(['tls', 'ssl', 'none']).optional(),
     // Server dials this outbound; `file://`/internal targets are SSRF.
     // Stored sealed and returned masked; the marker keeps the stored value.
-    slackWebhookUrl: keptSecretOrHttpUrl('Slack webhook URL').optional(),
+    slackWebhookUrl: keptSecretOrHttpUrlValue('Slack webhook URL').optional(),
     slackChannel: z.string().optional(),
     // Each saved entry comes back as a keyed marker; sending it keeps that
     // entry, leaving it out removes it, and a typed URL is added.
-    webhooks: z.array(keptSecretOrHttpUrl('Webhook URL')).optional(),
+    webhooks: z.array(keptSecretOrHttpUrlValue('Webhook URL')).optional(),
     preferences: z.record(z.string(), z.record(z.string(), z.boolean())).optional(),
     pushoverAppToken: z.string().max(30).optional(),
     pushoverDefaultUser: z.string().max(30).optional(),

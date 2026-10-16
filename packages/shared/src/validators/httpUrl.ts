@@ -59,6 +59,29 @@ export function httpUrlValue(label: string, maxLength: number = HTTP_URL_MAX_LEN
     .refine((v) => v === '' || isHttpUrl(v), httpUrlErrorMessage(label));
 }
 
+/**
+ * The masked marker a settings editor echoes back for a saved secret URL
+ * ("keep the stored value"; a list entry carries a key naming the stored entry,
+ * `********:<key>`). See apps/api/src/services/settingsSecretMasking.ts.
+ */
+const MASKED_SECRET_MARKER = /^\*+(?::[0-9a-f]+)?$/;
+
+/**
+ * Either the masked keep-stored marker or a typed http(s) URL (validated like
+ * {@link httpUrlValue}).
+ *
+ * Both union branches carry the SAME human message on purpose: the API's 400
+ * formatter surfaces every union branch's failure, and a message-less
+ * `.regex()` would leak zod's default "Invalid string: must match pattern
+ * /^\*+.../" to the user (#8369). Identical messages also collapse into one.
+ */
+export function keptSecretOrHttpUrlValue(label: string, maxLength: number = HTTP_URL_MAX_LENGTH) {
+  return z.union([
+    z.string().regex(MASKED_SECRET_MARKER, httpUrlErrorMessage(label)),
+    httpUrlValue(label, maxLength),
+  ]);
+}
+
 /** Optional/clearable form of {@link httpUrlValue}, for standalone fields. */
 export function httpUrlField(label: string, maxLength: number = HTTP_URL_MAX_LENGTH) {
   return httpUrlValue(label, maxLength).optional().or(z.literal(''));

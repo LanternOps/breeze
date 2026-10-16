@@ -24,8 +24,10 @@
  * The web client's `extractApiError` (apps/web/src/lib/apiError.ts) already
  * understands both `{error: string}` and the flattened `details` shape — the
  * `error` string here is built with the same ordering and `'; '` join rules
- * as its `joinZodFlatten` helper so the two render identically and dedupe
- * into a single toast line (pinned by a contract test in apiError.test.ts).
+ * as its `joinZodFlatten(details, rawPaths)` helper, which is how the web
+ * recognises it and renders the details once with readable field labels
+ * instead of these dotted paths (#8369; pinned by a contract test in
+ * apiError.test.ts). Keep the two in step.
  *
  * Route files must import `zValidator` from this module, not from
  * `@hono/zod-validator` directly (guarded by validation.imports.test.ts).
@@ -56,8 +58,29 @@ type ZodIssueLike = {
   path: ReadonlyArray<PropertyKey>;
   message: string;
   code?: string;
+  format?: string;
   errors?: ReadonlyArray<ReadonlyArray<ZodIssueLike>>;
 };
+
+/**
+ * zod v4's default message for a `.regex()` declared without one is
+ * "Invalid string: must match pattern /^…$/" — the raw pattern is an
+ * implementation detail, not user copy, and dozens of schemas still omit the
+ * message. Scrub it here, at the single 400 choke point, so no regex reaches
+ * a user (#8369). An explicit `.regex(re, 'message')` is passed through as-is.
+ */
+const DEFAULT_REGEX_MESSAGE_PREFIX = 'Invalid string: must match pattern';
+
+function userFacingMessage(issue: ZodIssueLike): string {
+  if (
+    issue.code === 'invalid_format' &&
+    issue.format === 'regex' &&
+    issue.message.startsWith(DEFAULT_REGEX_MESSAGE_PREFIX)
+  ) {
+    return 'Invalid format';
+  }
+  return issue.message;
+}
 
 type ZodErrorLike = {
   issues: ReadonlyArray<ZodIssueLike>;
@@ -86,7 +109,8 @@ function collectIssues(
 
     const path = fullPath.map((segment) => String(segment)).join('.');
     const bucket = path ? (fieldErrors[path] ??= []) : formErrors;
-    if (!bucket.includes(issue.message)) bucket.push(issue.message);
+    const message = userFacingMessage(issue);
+    if (!bucket.includes(message)) bucket.push(message);
   }
 }
 

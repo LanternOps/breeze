@@ -247,7 +247,10 @@ export const rolloutConfigSchema = z.object({
   type: z.enum(['immediate', 'staggered']),
   staggered: z
     .object({
-      batchSize: z.union([z.number().positive(), z.string().regex(/^\d+%$/)]),
+      batchSize: z.union([
+        z.number().positive(),
+        z.string().regex(/^\d+%$/, 'Batch size must be a positive number or a percentage such as 25%'),
+      ]),
       batchDelayMinutes: z.number().min(0),
       pauseOnFailureCount: z.number().min(1).optional(),
       pauseOnFailurePercent: z.number().min(1).max(100).optional()
