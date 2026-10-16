@@ -130,7 +130,7 @@ draft ──send──▶ sent ──first open──▶ viewed ──sign──
 |---|---|---|
 | sent / remind | request recipients | new `services/agreementRequestEmail.ts` `buildAgreementRequestTemplate` shaped after `buildQuoteTemplate` (`services/quoteEmail.ts:36`), rendered through `emailTemplates/renderPartnerEmail.ts` with partner branding; link = `portalBase()` (`services/portalUrl.ts:35`) + `/agreement/<token>` |
 | signed (customer) | creator, else partner billing inbox | `services/agreementOutcomeNotify.ts` cloned from `notifyQuoteOutcome` (`services/quoteOutcomeNotify.ts:30`): bus event `agreement.signed` + email; no email for an MSP-recorded outcome (same rule) |
-| signed | signer email (captured at signing, §3.2) + every request recipient | "Your signed copy" email with the file attached (≤ 10 MB). No portal account is needed and the signing token is already consumed, so the attachment is the delivery; an org that has portal users can also download it from the portal (§5). |
+| signed | signer email (captured at signing, §3.2) + every request recipient | "Your signed copy" email with the **certified copy** attached (agreement + signature certificate, §3.8; ≤ 10 MB). No portal account is needed and the signing token is already consumed, so the attachment is the delivery; an org that has portal users can also download it from the portal (§5). |
 | declined / expired | creator | bus event + email, as above |
 
 Events `agreement.sent|viewed|signed|declined|voided|expired` ride the quote-events bus pattern (`services/quoteEvents.ts`) so webhooks/integrations see them. **No new setting is introduced** (expiry is a per-request field with a hard-coded default, reminders are manual), so settings rule 9 does not fire in this spec; the first setting (default expiry, auto-reminder cadence) would be partner-level under Billing → Agreements and is noted in Open Decision 8.
@@ -167,6 +167,43 @@ export async function freezeSignedAgreement(input: {
 }): Promise<{ id: string; sha256: string }>
 ```
 `createExecutedDocuments` becomes a loop over quote contract blocks calling `freezeSignedAgreement` — same inputs, same `rendered_html`/PDF bytes, so existing acceptance hashes keep verifying (`services/quoteAcceptanceVerify.ts:46`). `renderAuthoredContractPdf` takes `ctx` instead of `quote` (it only reads `sellerSnapshot.name` and `billToName`, `contractDocumentService.ts:167-171`). Both callers keep the invariant in the file header: the freeze runs **inside the caller's transaction**, a failure rolls the acceptance back, and it uses the bare `db` under the caller's system context.
+
+### 3.8 Signature certificate (certified copy) — Open Decision 10
+
+Today the "signed copy" is the frozen agreement with no mark of who signed it. A BAA that looks unsigned is the first thing an auditor or the client's counsel asks about. Add a **signature certificate page** appended to the agreement, in the e-signature-record model (typed name + audit trail, like a DocuSign certificate of completion) — **not** a cryptographic PDF signature (§6).
+
+**Derived, never stored.** `contract_documents.pdf_data` stays the exact frozen bytes, so `contract_documents.sha256` and `content_sha256` keep verifying. The certified copy is produced on demand by `services/agreementCertificate.ts`:
+
+```ts
+export async function renderCertifiedAgreementPdf(doc: ContractDocumentRow & EvidenceSnapshot,
+  branding: PartnerBranding): Promise<Buffer>
+```
+
+1. Normalise the original to PDF pages: `application/pdf` as-is; PNG/JPEG externally-signed uploads (§3.4) are placed one image per page with pdf-lib `embedPng`/`embedJpg`, scaled to fit Letter/A4 by the partner's locale.
+2. Draw the certificate page with pdfkit, using the document theme fonts (`services/documentThemes.ts:75-79`) and partner branding, then append it with pdf-lib, alongside `mergeUploadedContractPdfs` in `services/pdfMerge.ts` (respect `MAX_MERGED_PAGES`, `:45`; reuse `PdfMergeError`).
+3. **Deterministic**: the certificate reads only stored columns and pins the PDF `CreationDate`/`ModDate` to `signed_at`, with no "generated at" line. The same document always yields the same bytes, which is testable and cacheable.
+
+**Certificate content** (every value from the §4.2 evidence snapshot; nothing recomputed from live rows):
+
+| Field | Source |
+|---|---|
+| Agreement | template name + `v{n}`, label, document id |
+| Parties | partner (seller snapshot name) · client org billing name snapshot |
+| Accepted by | `signer_name` set in the body-italic face with the name printed again beneath it, `signer_email` |
+| When / where | `signed_at` (UTC, ISO 8601, plus the partner's locale rendering), `signer_ip`, `signer_user_agent` (truncated) |
+| How | customer: "Electronically accepted via {portal \| emailed link}: typed full legal name + consent checkbox". on_behalf: "Recorded by {recorded_by name} on behalf of the client — method {acceptance_method}, reference {acceptance_reference}". external upload: "Signed outside Breeze; copy uploaded by {recorded_by} on {signed_at}". The certificate attests the upload, not the signature on it. |
+| Source | quote number (quote-sourced) or request id (request-sourced) |
+| Integrity | `sha256` of the original bytes (the pages before this certificate) + `content_sha256` and `content_hash_version`, with one line: "Verify: the SHA-256 of the original file downloaded from Breeze matches the value above." |
+
+Wording rule: "electronically accepted by", never "signed by", and no drawn or handwritten-looking signature. That keeps the vocabulary spec §8 rule that the UI must never imply the PDF carries a signature. The certificate *is* the stated evidence, not a fake mark.
+
+**Legacy rows without evidence** (a quote deleted before the W1 back-fill): the certificate is still appended, with "Acceptance record unavailable — this agreement was accepted on {created_at} via quote, but the acceptance evidence was deleted before Breeze retained it." Never fabricate or omit silently.
+
+**Where it is served:**
+- `GET /contracts/contract-documents/:id/pdf` gains `?copy=certified|original`, default **certified**. `original` returns today's stored bytes for hash verification. The filename is MIME-correct per §3.4: certified is always `.pdf`; original keeps the stored MIME. Both keep `auditSensitiveRead` (`documents.ts:83`), with `format: 'pdf-certified' | 'original'`.
+- Portal `GET /portal/signed-agreements/:documentId/file` takes the same parameter and default.
+- The "Your signed copy" email (§3.6) attaches the certified copy. If rendering fails (`PdfMergeError`), it falls back to the original plus a portal link, and logs a warning. Delivery is never blocked on the certificate.
+- Quote-sourced signed agreements get the certificate for free, through the same route (OD9).
 
 ## 4. Tenancy & data model impact
 
@@ -255,7 +292,7 @@ Public (unauthenticated, mounted **before** authed routers as `/quotes/public` i
 
 Portal (`routes/portal/agreements.ts`, `portalAuth`): `GET /portal/agreements` (pending requests for the org), `GET /portal/agreements/:id`, `GET …/:id/file`, `POST …/:id/accept`, `POST …/:id/decline` — accept/decline require a recipient-email match (`routes/portal/quotes.ts:249-254`). Signed copies are addressed by **document id, not request id**, so quote-sourced agreements are served too: `GET /portal/signed-agreements` lists the org's `contract_documents` (both `source_kind`s, metadata only) and `GET /portal/signed-agreements/:documentId/file` streams the bytes with a MIME-correct filename. This is a new read model beside the document library — `services/portal/documentsReadModel.ts:34` reads only `org_documents` and is not widened.
 
-Existing `GET /contracts/contract-documents` list rows gain `sourceKind`, `agreementRequestId`, and the evidence snapshot fields; the PDF stream and link endpoints are unchanged. `auditSensitiveRead` stays on every byte download (`documents.ts:83`).
+Existing `GET /contracts/contract-documents` list rows gain `sourceKind`, `agreementRequestId`, and the evidence snapshot fields. The PDF stream gains `?copy=certified|original` (default certified, §3.8); the link endpoint is unchanged. `auditSensitiveRead` stays on every byte download (`documents.ts:83`).
 
 ## 6. Out of scope
 
@@ -267,6 +304,7 @@ Existing `GET /contracts/contract-documents` list rows gain `sourceKind`, `agree
 - Changing how quote-embedded agreements are *presented* (#7040 stays).
 - Drawn/image signatures, third-party e-sign providers; the `AcceptanceProvider` seam (`acceptanceProvider.ts:16`) remains the place for that.
 - Renaming DB tables, enums or API mounts (vocabulary spec D4/D5).
+- Cryptographic PDF signatures (PAdES / X.509 digital signatures, signing keys, timestamp authority). The §3.8 certificate is an e-signature record, not a digital signature; revisit only on a concrete customer requirement.
 
 ## 7. Open Decisions
 
@@ -318,6 +356,13 @@ Existing `GET /contracts/contract-documents` list rows gain `sourceKind`, `agree
 - B. Leave the quote path alone. Con: two writers to keep in lockstep; the §8 gap stays for quote-sourced agreements.
 - **Recommend A.**
 
+**OD10 — Signature on the signed copy (added 2026-10-15 at Todd's request).**
+- A. **Signature certificate page, derived on demand and never stored; certified copy is the default download and the email attachment, original still downloadable (§3.8).** Pro: the signed copy carries its evidence; the stored bytes and both hashes stay verifiable; no schema; works for quote-sourced, request-sourced and externally-signed rows. Con: render cost per download (one page), and a second variant for every download route.
+- B. Stamp the certificate at freeze time and store the stamped bytes. Pro: a single file. Con: `sha256` then covers the certificate rather than what was agreed; legacy rows need a re-stamp migration; any wording fix means rewriting legal records.
+- C. Cryptographic PDF signature (PAdES). Pro: tamper-evident in Acrobat. Con: certificate procurement, key custody per deployment, long-term validation; disproportionate for the use case (§6).
+- D. No signature mark (spec as drafted). Con: the signed copy looks unsigned.
+- **Recommend A.**
+
 ## 8. Test & rollout notes
 
 **Contract / integration suites (Integration Tests job, 8 shards — never Test API):**
@@ -331,7 +376,7 @@ Existing `GET /contracts/contract-documents` list rows gain `sourceKind`, `agree
 - `migrationRlsScope.test.ts` — the back-fill elects system scope first.
 - New `contractDocumentsSourceCheck.integration.test.ts` — the one-source CHECK: both FKs set → 23514; deleting a quote leaves the snapshot intact and `source_kind='quote'`; deleting a draft request works, a signed one is refused by the service.
 
-**Unit (Test API):** `agreementRequestAcceptService.test.ts` (status guard incl. draft-only-for-on-behalf, replay 401, revoked-link 410, expiry 410 at the instant boundary, on-behalf capture guard, unresolved variables refused before freeze, freeze called inside tx, first-response-wins); `agreementContentHash.test.ts` (determinism, key ordering, external branch binds bytes); `contractTemplateRender.test.ts` additions (`renderContextFromRequest` omits quote-only keys; quote context map byte-identical to today's); `assertTemplateVersionUsable` rejects another partner's template, an unpublished version, a version of a different template; `quoteAcceptService.test.ts` unchanged expectations through the extracted freeze; route tests per `documents.test.ts` shape, including every public route going through the shared `resolve()`/`isPublicLinkDead` (enumeration test); `agreementsSendPermission` seed/catalog/RBAC tests as in the vocabulary spec §4. Web: `SendAgreementDialog.test.tsx`, `SignedAgreementsPage.test.tsx` status chips (`#status=`), `no-silent-mutations.test.ts` passes without allowlist additions. Portal: `PublicAgreementView.test.tsx`, `AgreementDetailView.test.tsx`.
+**Unit (Test API):** `agreementRequestAcceptService.test.ts` (status guard incl. draft-only-for-on-behalf, replay 401, revoked-link 410, expiry 410 at the instant boundary, on-behalf capture guard, unresolved variables refused before freeze, freeze called inside tx, first-response-wins); `agreementContentHash.test.ts` (determinism, key ordering, external branch binds bytes); `contractTemplateRender.test.ts` additions (`renderContextFromRequest` omits quote-only keys; quote context map byte-identical to today's); `assertTemplateVersionUsable` rejects another partner's template, an unpublished version, a version of a different template; `quoteAcceptService.test.ts` unchanged expectations through the extracted freeze; route tests per `documents.test.ts` shape, including every public route going through the shared `resolve()`/`isPublicLinkDead` (enumeration test); `agreementsSendPermission` seed/catalog/RBAC tests as in the vocabulary spec §4. Web: `SendAgreementDialog.test.tsx`, `SignedAgreementsPage.test.tsx` status chips (`#status=`), `no-silent-mutations.test.ts` passes without allowlist additions. Portal: `PublicAgreementView.test.tsx`, `AgreementDetailView.test.tsx`. Certificate (§3.8): `agreementCertificate.test.ts`: deterministic bytes for a fixed row; page count = original + 1; a PNG/JPEG upload becomes PDF pages; the stored `pdf_data` is unchanged after rendering; the printed hash equals `contract_documents.sha256`; one case per origin (customer, on_behalf, external upload) asserts the "How" wording, and no case contains "signed by"; a legacy row with no evidence renders the "Acceptance record unavailable" text; a `PdfMergeError` on the email path falls back to the original. Route tests: `?copy=original` returns the stored bytes byte-for-byte, the default is certified, and the audit `format` differs per variant.
 
 **E2E (Playwright, `data-testid` only):** `e2e-tests/tests/agreement-standalone-signing.spec.ts` modelled on `quote-contract-proposal.spec.ts`: send from contract workspace → open public link → agreement expanded, no price → sign → signed agreement appears on the contract's Signed agreements section; record-signed-elsewhere with upload; void kills the link (401 page). Testids use the `agreements-` prefix (`agreements-send-dialog`, `agreements-status-filter`, `public-agreement-sign-*`).
 
@@ -340,7 +385,7 @@ Existing `GET /contracts/contract-documents` list rows gain `sourceKind`, `agree
 | Wave | Scope | Ships value on its own | Rigor |
 |---|---|---|---|
 | W1 | Migration (tables, `contract_documents` columns, CHECK, back-fill), registrations, `freezeSignedAgreement` extraction with the quote path delegating to it, `AgreementRenderContext`, `computeAgreementSha256`, `assertTemplateVersionUsable`, verifier golden fixtures; `record-signed` endpoint + web **Record signed agreement** dialog (gated on `agreements:write` until W2 ships the permission — stated in the PR) | Yes — an MSP can file an externally-signed BAA against a contract today; retention fix lands for all existing signed agreements | **high** (migration, tenancy, accept path) |
-| W2 | `agreements:send` permission migration + RBAC; create/send/preview/link/void endpoints, `agreementAcceptToken`, public signing page (`SignaturePanel` props) + emails incl. signed-copy delivery, `agreementOutcomeNotify`, Send dialog at the three entry points, status chips | Yes — the headline flow | high (public token path, permission migration) |
+| W2 | `agreements:send` permission migration + RBAC; create/send/preview/link/void endpoints, `agreementAcceptToken`, public signing page (`SignaturePanel` props) + emails incl. signed-copy delivery, signature certificate + `?copy=` on the staff download (§3.8, OD10), `agreementOutcomeNotify`, Send dialog at the three entry points, status chips | Yes — the headline flow | high (public token path, permission migration) |
 | W3 | Portal logged-in list/detail/sign, `/portal/signed-agreements` read model + download, remind endpoint + UI, expiry reaper, `agreement.*` bus events, docs (`apps/docs/.../agreements.mdx`) | Yes | medium |
 | W4 (optional) | OD8 settings + auto reminders, OD2 append-only | Yes | high (settings rule 9) |
 
@@ -363,5 +408,7 @@ Codex `gpt-6-astra`, `model_reasoning_effort=xhigh`, `codex exec -s read-only` a
 | OD9 quote path on shared writer | yes + back-fill | AGREE; byte-identical output is not hash compatibility — preserve inputs, add real-resolver golden fixtures (`quoteAcceptanceVerify.test.ts:30` mocks it) | Applied (§3.7, §8) |
 
 Mechanical corrections from the critique, all applied: template partner-wide SELECT branch already exists so no system escalation on staff paths, and staff writes need the quote writer's template guard (`quoteService.ts:1581`); `findUnresolvedVariables` is key-presence (`contractTemplateRender.ts:379`) so the request auto map omits quote-only keys and freeze fails closed instead of blanking (`contractDocumentService.ts:246`); on-behalf may settle a `draft` (`quoteAcceptService.ts:206-214`); token = sibling module, not a generalisation (`quoteAcceptToken.ts:29` claim order is contractual), with cross-rejection; void writes `public_link_revoked_at` and every token route shares one `resolve()`/`isPublicLinkDead` (`quotesPublic.ts:60-89`); signed-copy delivery by email to a captured signer email + recipients (`SignaturePanel` gains props; `:14,:76`); portal downloads keyed by document id (`documentsReadModel.ts:34` is `org_documents`-only); `accept_token_*_at` classified `excludedSensitive` (`tenantExportPolicy.ts:230`).
+
+OD10 (§3.8) was added after the quorum at Todd's request and has not been through Codex. It is reversible: a derived artifact with no schema change and no stored bytes, so it was not re-convened. The implementation PR's review covers it.
 
 No open disagreement remains between the two advisors. Decisions still open for Todd are the recommendations in §7 themselves (none is blocked on an advisor split).
