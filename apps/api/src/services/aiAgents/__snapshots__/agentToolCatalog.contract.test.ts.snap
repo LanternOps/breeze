@@ -37,6 +37,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "manage_software_policy",
   "manage_tags",
   "manage_tickets",
+  "operator_plan",
   "query_c2c_jobs",
   "registry_operations",
   "remediate_sensitive_data",

@@ -1,15 +1,12 @@
+// The assignment rules live in the leaf module ./redactionPatterns (shared
+// with diagnostic-read redaction); re-exported here for existing importers.
+import { SECRET_ASSIGNMENT_PATTERNS } from './redactionPatterns';
+export { SECRET_ASSIGNMENT_PATTERNS };
+
 const REDACTED = '[REDACTED]';
 
 const SECRET_KEY_PATTERN = /password|passwd|pwd|token|secret|api.*key|access.*key|private.*key|client.*secret|authorization|cookie|session|credential|community|authpassphrase|privacypassphrase|connection.?string|conn.?string|sas.?token|shared.?key/i;
 
-const SECRET_ASSIGNMENT_PATTERNS: RegExp[] = [
-  /\b(authorization\s*:\s*bearer\s+)[^\s,;]+/gi,
-  // Includes `auth=` to catch Pi-hole's URL pattern `?auth=<apiKey>` —
-  // these can leak into Node fetch error messages whose .cause echoes
-  // the URL verbatim.
-  /\b((?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|community|authpassphrase|privacypassphrase|auth)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi,
-  /\b(Cookie\s*:\s*)[^\r\n]+/g,
-];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);

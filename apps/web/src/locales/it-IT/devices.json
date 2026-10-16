@@ -292,7 +292,7 @@
     "n30Days": "30 giorni",
     "n90Days": "90 giorni",
     "n1Year": "1 anno",
-    "afterThisWindowTheDownloadedInstaller": "Trascorso questo periodo, il programma di installazione scaricato e il link condiviso non accetteranno più nuove registrazioni. I dispositivi già registrati resteranno connessi.",
+    "afterThisWindowTheDownloadedInstaller": "Trascorso questo periodo, il programma di installazione scaricato e il link condiviso non accetteranno più nuove registrazioni. Un programma di installazione scaricato funziona al massimo per 30 giorni e ogni download dal link condiviso contiene un token valido fino a 30 giorni. I dispositivi già registrati resteranno connessi.",
     "generatingInstaller": "Generazione del programma di installazione…",
     "downloaded": "Scaricato",
     "generatingLink": "Generazione del link…",
@@ -358,7 +358,9 @@
     "current": "(corrente)",
     "cancel": "Annulla",
     "moving": "Spostamento...",
-    "toADifferentSite": "in un sito diverso."
+    "toADifferentSite": "in un sito diverso.",
+    "deviceMovedByOther": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale",
+    "policyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a {{device}}. Breeze non lo riporterà indietro automaticamente."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossibile creare il gruppo",
@@ -912,6 +914,7 @@
     "diskCleanup": "Pulizia disco",
     "diskUsageAnalysisAndCleanup": "Analisi dell'utilizzo del disco e pulizia",
     "bootPerf": "Prestazioni di avvio",
+    "systemRestore": "Ripristino configurazione di sistema",
     "startupTimeAndBootProcessAnalysis": "Analisi del tempo di avvio e del processo di boot",
     "backup": "Backup",
     "backupStatusJobsSnapshotsAndVerification": "Stato backup, processi, snapshot e verifica",
@@ -945,7 +948,9 @@
       "management": "Gestione",
       "history": "Cronologia e rete",
       "extensions": "Estensioni"
-    }
+    },
+    "workloads": "Carichi di lavoro",
+    "workloadsTitle": "Container e macchine virtuali su questo host"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",
@@ -1360,6 +1365,50 @@
       "awaitingServerOffer": "Breeze Assist è abilitato ma non installato (dal {{since}}): il server non ha offerto una versione di Breeze Assist da installare su questo dispositivo, che quindi resta senza installazione. Verifica che sia pubblicata una build di Breeze Assist per la piattaforma di questo dispositivo.",
       "installAbandoned": "Breeze Assist è abilitato ma non installato (dal {{since}}): l’installazione della versione offerta non è riuscita più volte, quindi l’agente ha sospeso i tentativi. Riproverà dopo alcune ore o quando verrà offerta una versione più recente; il log dell’agente contiene l’errore di installazione.",
       "unknown": "Breeze Assist è abilitato ma non installato (dal {{since}})."
+    },
+    "watchdogInstall": {
+      "gaveUp": "Non è stato possibile installare automaticamente il watchdog (dal {{since}}): {{reason}}. Esegui `breeze-agent service install --watchdog` sull’host per riprovare.",
+      "unsupported": "L’installazione automatica del watchdog non è supportata su questo host (dal {{since}}).",
+      "reason": {
+        "network": "il download non era raggiungibile",
+        "server": "il server ha rifiutato il download",
+        "policy": "il download è stato bloccato dai criteri di rete",
+        "signature": "il watchdog scaricato non ha superato la verifica della firma",
+        "checksum": "il watchdog scaricato non ha superato il controllo di integrità",
+        "devBuild": "questa è una build di sviluppo",
+        "unsupportedOs": "questo sistema operativo non è supportato",
+        "installCmd": "il comando di installazione non è riuscito",
+        "locked": "un’altra installazione era già in corso",
+        "unknown": "si è verificato un errore non riconosciuto"
+      }
+    },
+    "logShipping": {
+      "label": "Invio dei log",
+      "state": {
+        "healthy": "Regolare",
+        "quiet": "Inattivo",
+        "failing": "In errore"
+      },
+      "tooltip": {
+        "healthy": "L'agente sta inviando i propri log normalmente.",
+        "quiet": "L'agente non ha effettuato tentativi di invio recenti, quindi non c'è nulla da segnalare.",
+        "failing": "L'invio dei log non riesce dal {{since}}. Motivo: {{reason}}"
+      },
+      "reason": {
+        "http": "Il server ha restituito HTTP {{status}}",
+        "timeout": "La richiesta è scaduta",
+        "dns": "Impossibile risolvere il nome del server",
+        "connectionRefused": "La connessione è stata rifiutata",
+        "tls": "La connessione sicura non è riuscita",
+        "authRejected": "Il server ha rifiutato le credenziali dell'agente",
+        "urlUnresolved": "Impossibile determinare l'indirizzo del server",
+        "other": "Altro errore di invio",
+        "unspecified": "Non specificato"
+      }
+    },
+    "logsNotArriving": {
+      "label": "Log dopo l'aumento del livello",
+      "text": "Nessun log ricevuto da quando il livello di log è stato aumentato ({{since}})."
     },
     "gpu": "GPU",
     "text": "—",
@@ -1826,7 +1875,11 @@
       "description": "Aggiornamenti in sospeso rispetto a quelli installati",
       "installed": "{{count}} installati",
       "pending": "{{count}} in sospeso",
-      "title": "Conformità patch"
+      "title": "Conformità patch",
+      "imagesNotChecked_one": "{{count}} immagine container non verificata",
+      "imagesNotChecked_other": "{{count}} immagini container non verificate",
+      "imagesBehind_one": "{{count}} immagine container non aggiornata",
+      "imagesBehind_other": "{{count}} immagini container non aggiornate"
     },
     "confirm": {
       "install": "Installa",
@@ -1938,7 +1991,8 @@
       "excluded": "Esclusa dal criterio",
       "excludedSourceTitle": "Le origini del criterio patch non includono questa patch, quindi le esecuzioni pianificate la saltano.",
       "excludedCategoryTitle": "L'anello di aggiornamento {{ring}} esclude la categoria di questa patch, quindi le esecuzioni pianificate la saltano.",
-      "excludedAppRuleTitle": "Una regola di blocco o di fissaggio app del criterio patch trattiene questa patch, quindi le esecuzioni pianificate la saltano.",
+      "excludedAppRuleTitle": "Una regola di blocco o di fissaggio app dell'anello di aggiornamento collegato trattiene questa patch, quindi le esecuzioni pianificate la saltano.",
+      "excludedRingReferenceTitle": "Trattenuta: il criterio patch di questo dispositivo collega un anello di aggiornamento che non esiste più o non è disponibile per questo partner. Correggi l'anello di aggiornamento del criterio per riprendere l'applicazione delle patch.",
       "pending": "Approvazione in sospeso",
       "needsApprovalRingTitle": "L'anello di aggiornamento {{ring}} non approva automaticamente questa patch. Approvala manualmente per installarla.",
       "needsApprovalNoRingTitle": "Nessun anello di aggiornamento è collegato al criterio patch di questo dispositivo, quindi questa patch si installa solo dopo un'approvazione manuale.",
@@ -2095,7 +2149,7 @@
     "severity": {
       "critical": "Critico",
       "error": "Errore",
-      "info": "Info",
+      "info": "Informazione",
       "warning": "Avviso"
     },
     "showOffenders": "Mostra servizi e componenti problematici",
@@ -2108,7 +2162,50 @@
     },
     "updated": "Aggiornato {{date}}",
     "uptimeWindow": "{{days}} g di attività",
-    "youngDeviceTooltip": "Questo dispositivo è stato registrato {{age}} giorni fa, quindi le finestre di {{days}} giorni coprono solo la sua vita utile finora."
+    "youngDeviceTooltip": "Questo dispositivo è stato registrato {{age}} giorni fa, quindi le finestre di {{days}} giorni coprono solo la sua vita utile finora.",
+    "baseline": {
+      "reasons": {
+        "reimaged": "Reinstallato",
+        "remediated": "Risolto",
+        "hardware_replaced": "Hardware sostituito"
+      },
+      "bannerProvisional": "Punteggio dal {{date}} ({{reason}}) da parte di {{who}} — provvisorio, {{days}} di {{required}} giorni riportati",
+      "bannerMature_one": "Punteggio dal {{date}} ({{reason}}) da parte di {{who}} ({{count}} giorno)",
+      "bannerMature_other": "Punteggio dal {{date}} ({{reason}}) da parte di {{who}} ({{count}} giorni)",
+      "system": "Breeze (automatico)",
+      "someone": "un tecnico",
+      "provisional": "Provvisorio",
+      "beforeAfterTitle": "Prima → da allora",
+      "basedOnDays_one": "Valore precedente basato su {{count}} giorno di cronologia",
+      "basedOnDays_other": "Valore precedente basato su {{count}} giorni di cronologia",
+      "history": "Cronologia dei marcatori",
+      "historyLoadError": "Impossibile caricare la cronologia dei marcatori.",
+      "retry": "Riprova",
+      "cleared": "Disattivato",
+      "markWorkDone": "Segna intervento completato",
+      "dialogTitle": "Segna intervento completato su questo dispositivo",
+      "dialogDescription": "Il punteggio di affidabilità riparte da questo momento, quindi crash ed errori precedenti all’intervento non contano più. Il punteggio resta provvisorio finché non vengono riportati 14 giorni di dati.",
+      "reasonLabel": "Cosa è stato fatto",
+      "whenLabel": "Fine dell’intervento",
+      "noteLabel": "Nota",
+      "noteRequiredHint": "Obbligatoria per Risolto: descrivi cosa è stato risolto.",
+      "save": "Salva marcatore",
+      "saved": "Marcatore salvato: il punteggio riparte da questo momento",
+      "saveError": "Impossibile salvare il marcatore",
+      "tooOld": "Il marcatore può risalire al massimo a 30 giorni fa.",
+      "inFuture": "Il marcatore non può essere nel futuro.",
+      "noteRequired": "Descrivi l’intervento di risoluzione nella nota.",
+      "clear": "Disattiva",
+      "clearTitle": "Disattivare questo marcatore?",
+      "clearMessage": "Il punteggio non usa più questo marcatore e torna al marcatore precedente o all’intera cronologia del dispositivo. Il marcatore resta nella cronologia come disattivato.",
+      "clearConfirm": "Disattiva marcatore",
+      "clearError": "Impossibile disattivare il marcatore",
+      "clearedToast": "Marcatore disattivato",
+      "activeBadge": "Attivo",
+      "savedNotActive": "Marcatore salvato. Un marcatore successivo è ancora in vigore, quindi il punteggio non è cambiato.",
+      "clearNotFound": "Questo marcatore non esiste più.",
+      "clearAlreadyCleared": "Questo marcatore è già stato disattivato."
+    }
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copia negli appunti",
@@ -2126,20 +2223,29 @@
     "noOutput": "Nessun output",
     "output": "Output",
     "refreshing": "Aggiornamento...",
-    "running": "In esecuzione...",
     "runAgain": "Esegui di nuovo",
+    "runCount_one": "{{count}} esecuzione",
+    "runCount_other": "{{count}} esecuzioni",
+    "running": "In esecuzione...",
     "scriptFallback": "Script",
     "stderr": "Errore standard (stderr)",
     "stdout": "Output standard (stdout)",
     "table": {
       "completed": "Completato",
       "duration": "Durata",
+      "lastOutput": "Ultimo output",
+      "lastRun": "Ultima esecuzione",
       "script": "Script",
       "started": "Avviato",
       "status": "Stato"
     },
     "title": "Cronologia esecuzioni script",
-    "unnamedScript": "Script senza nome"
+    "unnamedScript": "Script senza nome",
+    "view": {
+      "all": "Tutte le esecuzioni",
+      "label": "Vista degli script",
+      "latest": "Ultimo per script"
+    }
   },
   "deviceSecurityTab": {
     "detected": "Rilevato: {{date}}",
@@ -2191,9 +2297,11 @@
     "displayName": "Nome visualizzato",
     "errors": {
       "loadSites": "Impossibile caricare i siti",
-      "saveSettings": "Impossibile salvare le impostazioni"
+      "saveSettings": "Impossibile salvare le impostazioni",
+      "siteChanged": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale"
     },
     "hostname": "Nome host: {{hostname}}",
+    "saved": "Impostazioni del dispositivo salvate",
     "permanentlyDelete": "Elimina definitivamente",
     "restoreDevice": "Ripristina dispositivo",
     "saveChanges": "Salva modifiche",
@@ -2256,9 +2364,13 @@
     "updatesAvailable_other": "{{count}} aggiornamenti disponibili"
   },
   "deviceUserIdleStat": {
+    "active": "Attivo",
+    "asOf": "alle {{time}}",
     "label": "Inattività utente",
+    "locked": "Bloccato",
     "retryAria": "Impossibile caricare lo stato di inattività — riprova",
-    "retryTitle": "Impossibile caricare lo stato di inattività — fai clic per riprovare"
+    "retryTitle": "Impossibile caricare lo stato di inattività — fai clic per riprovare",
+    "unknown": "Sconosciuto"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {
@@ -2575,7 +2687,8 @@
       "software": {
         "installed": "Software installato",
         "notInstalled": "Software mancante"
-      }
+      },
+      "logShippingFailing": "Invio dei log non riuscito"
     }
   },
   "filterChipBar": {
@@ -2644,7 +2757,8 @@
       "software": {
         "installed": "Software installato",
         "notInstalled": "Software mancante"
-      }
+      },
+      "logShippingFailing": "Invio dei log non riuscito"
     }
   },
   "filterHelpPopover": {
@@ -2730,7 +2844,8 @@
       "software": {
         "installed": "Software installato",
         "notInstalled": "Software mancante"
-      }
+      },
+      "logShippingFailing": "Invio dei log non riuscito"
     }
   },
   "filterValueEditor": {
@@ -3346,6 +3461,7 @@
     "ariaLabel": "Filtri di aggiunta rapida",
     "chips": {
       "critical": "Critici",
+      "logShippingFailing": "Invio dei log non riuscito",
       "lowDisk": "Spazio disco basso",
       "needsPatches": "Patch necessarie",
       "notSeen7d": "Non visti da 7 giorni",
@@ -3643,7 +3759,15 @@
     "cancelled": "Azione in coda annullata",
     "cancelFailed": "Impossibile annullare l'azione in coda",
     "loadFailed": "Impossibile caricare le azioni in coda.",
-    "empty": "Nessuna azione in coda"
+    "empty": "Nessuna azione in coda",
+    "powerHold": {
+      "title": "{{action}} è in attesa di un comando in esecuzione",
+      "body": "{{action}} verrà inviato quando il dispositivo avrà terminato i comandi in esecuzione. {{command}} è in esecuzione da {{minutes}} min senza risultato.",
+      "markFailed": "Segna come non riuscito",
+      "markFailedIn": "Potrai segnarlo come non riuscito tra {{minutes}} min.",
+      "markedFailed": "Comando segnato come non riuscito",
+      "markFailedFailed": "Impossibile segnare il comando come non riuscito"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Aggiungi risorsa manuale",
@@ -3905,6 +4029,215 @@
       "pdc_emulator": "Emulatore PDC del dominio",
       "forest_root_pdc_emulator": "Emulatore PDC della radice della foresta",
       "unknown": "Sconosciuto"
+    }
+  },
+  "workloads": {
+    "loadFailed": "Impossibile caricare i carichi di lavoro per questo dispositivo.",
+    "retry": "Riprova",
+    "agentTooOld": "Agente troppo vecchio: aggiorna l’agente per segnalare i carichi di lavoro.",
+    "noRuntimes": "Nessun runtime di container o VM rilevato su questo dispositivo.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Versione {{version}}",
+    "versionUnknown": "Versione sconosciuta",
+    "detection": {
+      "absent": "Non installato",
+      "unknown": "Rilevamento non conclusivo"
+    },
+    "status": {
+      "ok": "Raccolta in corso",
+      "disabled": "La raccolta è disattivata: abilita Inventario dei carichi di lavoro in un criterio di configurazione",
+      "unavailable": "Runtime non in esecuzione",
+      "permission_denied": "Autorizzazione negata",
+      "error": "Raccolta non riuscita",
+      "unsupported": "Non supportato su questo dispositivo"
+    },
+    "detectOnly": "Solo rilevato: i carichi di lavoro di questo runtime non sono elencati.",
+    "counts": "{{total}} carichi di lavoro · {{running}} in esecuzione · {{stopped}} arrestati",
+    "partial": "Snapshot parziale: alcuni dettagli non sono stati letti, quindi vengono mostrati i dati raccolti.",
+    "truncated": "Vengono mostrati {{reported}} di {{observed}} carichi di lavoro segnalati dal runtime.",
+    "lastError": "Ultimo errore: {{error}}",
+    "lastCollected": "Ultima raccolta {{time}}",
+    "empty": "Nessun carico di lavoro segnalato.",
+    "columns": {
+      "name": "Nome",
+      "state": "Stato",
+      "image": "Immagine / OS guest",
+      "compose": "Progetto Compose",
+      "started": "Avviato",
+      "imageStatus": "Stato dell'immagine"
+    },
+    "states": {
+      "running": "In esecuzione",
+      "stopped": "Arrestato",
+      "paused": "In pausa",
+      "restarting": "Riavvio in corso",
+      "other": "Altro"
+    },
+    "policy": {
+      "title": "Inventario dei carichi di lavoro",
+      "description": "Elenca i container e le macchine virtuali sugli host di container e VM",
+      "offNote": "I runtime vengono sempre rilevati, ma l’elenco dei carichi di lavoro resta disattivato finché un criterio non lo abilita.",
+      "enabled": "Elenca i carichi di lavoro",
+      "runtimesHeading": "Runtime da elencare",
+      "laterRelease": "L’elenco di Hyper-V e Proxmox VE arriverà con una release successiva dell’agente; questi interruttori avranno effetto allora.",
+      "interval": "Intervallo di raccolta (minuti)",
+      "invalidInterval": "L’intervallo deve essere un numero intero di minuti compreso tra {{min}} e {{max}}."
+    },
+    "imageStatus": {
+      "behind": "Non aggiornata",
+      "current": "Aggiornata",
+      "pinned": "Fissata",
+      "local": "Build locale",
+      "not_found": "Tag non trovato",
+      "not_checked": "Non verificata"
+    },
+    "imageStatusReason": {
+      "pending": "Non ancora verificata",
+      "private": "Registro privato: credenziali richieste",
+      "unsupported_registry": "Registro non supportato",
+      "error": "Verifica del registro non riuscita: verrà ritentata",
+      "behind": "Per questo tag è pubblicata un'immagine più recente",
+      "current": "Corrisponde al registro",
+      "pinned": "Fissata a un digest: niente da confrontare",
+      "local": "Compilata localmente: nessun digest del registro",
+      "not_found": "Il tag non esiste più nel registro"
+    },
+    "imageFilter": {
+      "label": "Stato dell'immagine",
+      "all": "Tutte",
+      "empty": "Nessun carico di lavoro corrisponde a questo stato dell'immagine."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Altri provider EDR",
+    "loadError": "Impossibile caricare alcuni dati dei provider EDR.",
+    "duplicateNotice": "Collegato da due console: questo dispositivo compare in più di una connessione {{provider}}.",
+    "openDetections": "Rilevamenti aperti",
+    "coverageHeading": "La copertura potrebbe essere incompleta",
+    "fields": {
+      "health": "Stato di salute",
+      "status": "Stato",
+      "isolation": "Isolamento",
+      "agentVersion": "Versione agente",
+      "lastSeen": "Ultimo accesso"
+    },
+    "health": {
+      "healthy": "Integro",
+      "degraded": "Degradato",
+      "unhealthy": "Non integro",
+      "unknown": "Sconosciuto"
+    },
+    "online": {
+      "online": "Online",
+      "offline": "Offline",
+      "unknown": "Sconosciuto"
+    },
+    "isolation": {
+      "isolated": "Isolato",
+      "not_isolated": "Non isolato",
+      "pending": "In attesa",
+      "unknown": "Sconosciuto"
+    },
+    "severity": {
+      "critical": "Critica",
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Bassa",
+      "info": "Informazione",
+      "unknown": "Sconosciuta"
+    },
+    "detectionStatus": {
+      "open": "Aperto",
+      "in_progress": "In corso",
+      "mitigated": "Mitigato",
+      "resolved": "Risolto",
+      "false_positive": "Falso positivo",
+      "dismissed": "Ignorato",
+      "unknown": "Sconosciuto"
+    }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Invia messaggio agli utenti",
+    "sendAction": "Invia messaggio",
+    "fields": {
+      "title": "Titolo",
+      "body": "Messaggio",
+      "severity": "Gravità",
+      "requiresAck": "Richiedi conferma di lettura",
+      "expiry": "Scade"
+    },
+    "severity": {
+      "info": "Informazione",
+      "warning": "Avviso",
+      "critical": "Critico"
+    },
+    "expiry": {
+      "h1": "1 ora",
+      "h4": "4 ore",
+      "h24": "24 ore",
+      "h72": "72 ore",
+      "untilClosed": "Fino alla chiusura (max 7 giorni)"
+    },
+    "preview": {
+      "heading": "Anteprima",
+      "sender": "Dalla tua azienda",
+      "footer": "Inviato dal tuo fornitore IT",
+      "acknowledge": "Conferma"
+    },
+    "recipients": "Destinatari: {{count}} dispositivi",
+    "columns": {
+      "device": "Dispositivo",
+      "delivery": "Consegna"
+    },
+    "capability": {
+      "assist_card": "Scheda Assist (sessione console) o notifica nativa di riserva",
+      "native": "Notifica nativa",
+      "unsupported": "Versione agente non supportata - non verrà consegnato"
+    },
+    "confirm": {
+      "text": "Questo messaggio verrà inviato a {{count}} dispositivi. Controlla la scheda esatta qui sotto.",
+      "send": "Invia a {{count}} dispositivi"
+    },
+    "result": {
+      "summary": "{{queued}} in coda, {{failed}} non riusciti",
+      "queued": "In coda",
+      "failed": "Non riuscito"
+    },
+    "actions": {
+      "send": "Invia messaggio",
+      "sending": "Invio...",
+      "cancel": "Annulla",
+      "back": "Indietro",
+      "close": "Chiudi"
+    },
+    "errors": {
+      "send_failed": "Impossibile inviare il messaggio. Riprova.",
+      "agent_unsupported": "L'agente su questo dispositivo non supporta ancora i messaggi.",
+      "no_permission": "Non hai l'autorizzazione per inviare messaggi a questo dispositivo.",
+      "offline_rejected": "Il dispositivo è offline e il messaggio non è stato messo in coda.",
+      "rate_limited": "Troppi messaggi inviati di recente. Riprova più tardi.",
+      "cap_exceeded": "Questo invio supera il limite consentito.",
+      "feature_disabled": "I messaggi agli endpoint non sono abilitati per questa organizzazione.",
+      "queue_failed": "Impossibile mettere in coda il messaggio per questo dispositivo.",
+      "in_progress": "Questo messaggio è già in corso di invio. Attendi un momento, poi controlla il risultato.",
+      "unavailable": "L'invio dei messaggi è temporaneamente non disponibile. Riprova tra poco.",
+      "no_devices_resolved": "Nessun dispositivo corrisponde a questa selezione.",
+      "idempotency_conflict": "Questo ID messaggio è già stato usato per un messaggio diverso. Modifica il messaggio e invialo di nuovo."
+    },
+    "issues": {
+      "html": "L'HTML non è consentito nel corpo del messaggio.",
+      "images": "Le immagini non sono consentite nel corpo del messaggio.",
+      "httpsLinks": "I link nel corpo del messaggio devono usare https.",
+      "referenceLinks": "I link di riferimento non sono consentiti. Usa invece link inline.",
+      "titleHtml": "L'HTML non è consentito nel titolo.",
+      "titleLinks": "I link non sono consentiti nel titolo.",
+      "invalid": "Il messaggio contiene contenuti non consentiti."
     }
   }
 }

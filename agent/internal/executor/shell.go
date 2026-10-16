@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/psscript"
 	"github.com/breeze-rmm/agent/internal/securefs"
 )
 
@@ -90,9 +91,14 @@ func GetScriptExtension(scriptType string) string {
 // simple command lines, silently passes a trailing \r into arguments.
 // PowerShell and cmd handle (and in .bat's case, sometimes require) CRLF,
 // so Windows-native script types are left untouched.
+//
+// The same editors also save a leading UTF-8 BOM, which for bash hides the
+// shebang and runs as a garbage first command (#3581). It is stripped for
+// bash/python — the mirror image of the BOM WriteScriptFile adds to .ps1.
 func normalizeLineEndings(content, scriptType string) string {
 	switch strings.ToLower(scriptType) {
 	case ScriptTypeBash, ScriptTypePython:
+		content = strings.TrimPrefix(content, utf8BOM)
 		content = strings.ReplaceAll(content, "\r\n", "\n")
 		return strings.ReplaceAll(content, "\r", "\n")
 	default:
@@ -100,22 +106,16 @@ func normalizeLineEndings(content, scriptType string) string {
 	}
 }
 
-// utf8BOM is prepended to PowerShell scripts on write. Windows PowerShell 5.1
-// decodes a BOM-less .ps1 as the system ANSI codepage, so non-ASCII UTF-8
-// content turns into mojibake: accented letters merely garble output, but
-// mis-decoded curly quotes lose their delimiter role and the parser reports
-// cascading "Unexpected token" / "missing terminator" errors. The BOM forces
-// UTF-8 decoding; pwsh on all platforms handles it too. Only .ps1 gets one:
-// a BOM keeps bash from recognizing the shebang and its bytes run as a
-// garbage first command, cmd likewise feeds it to the first command, and
-// python skips a BOM anyway so there is no reason to add it.
-const utf8BOM = "\xEF\xBB\xBF"
+// utf8BOM is the BOM WriteScriptFile prepends to PowerShell scripts (and
+// strips from bash/python). The encoding rule — why only .ps1 gets one — is
+// documented on the psscript package, its single home.
+const utf8BOM = psscript.BOM
 
 // WriteScriptFile writes script content to a temporary file with the appropriate extension
 func WriteScriptFile(content, scriptType string) (string, error) {
 	content = normalizeLineEndings(content, scriptType)
-	if strings.ToLower(scriptType) == ScriptTypePowerShell && !strings.HasPrefix(content, utf8BOM) {
-		content = utf8BOM + content
+	if strings.ToLower(scriptType) == ScriptTypePowerShell {
+		content = psscript.WithBOM(content)
 	}
 	// Each execution owns a fresh private directory (see createPrivateScriptDir
 	// — 0700 from the OS on unix, an explicit protected DACL on Windows).

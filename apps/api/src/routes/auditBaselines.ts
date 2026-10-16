@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
-import { and, desc, eq, inArray, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
@@ -9,7 +9,7 @@ import {
   auditBaselineResults,
   devices,
 } from '../db/schema';
-import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
 import { getTemplateSettings } from '../services/auditBaselineService';
@@ -107,6 +107,15 @@ function mapApplyApprovalRow(row: ApplyApprovalRow) {
 
 function normalizeDeviceIds(deviceIds: string[]): string[] {
   return Array.from(new Set(deviceIds)).sort((left, right) => left.localeCompare(right));
+}
+
+/** Distinct, sorted device ids stored on an apply request; [] when absent or malformed. */
+function approvedDeviceIdsFromPayload(approval: Pick<ApplyApprovalRow, 'requestPayload'>): string[] {
+  const payload = approval.requestPayload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
+  const deviceIds = (payload as Record<string, unknown>).deviceIds;
+  if (!Array.isArray(deviceIds)) return [];
+  return normalizeDeviceIds(deviceIds.filter((id): id is string => typeof id === 'string'));
 }
 
 function inaccessibleDeviceIdsForSites(
@@ -696,6 +705,13 @@ auditBaselineRoutes.post(
     const { approvalId } = c.req.valid('param');
     const body = c.req.valid('json');
 
+    // Approving authorizes a configuration change on every target device, so
+    // it needs a satisfied MFA step. Checked before any lookup so a refusal
+    // touches no rows. Rejecting grants nothing and stays available without it.
+    if (body.decision === 'approved' && !hasSatisfiedMfa(auth)) {
+      return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+    }
+
     const orgResult = resolveOrgId(auth, body.orgId);
     if ('error' in orgResult) {
       return c.json({ error: orgResult.error }, orgResult.status);
@@ -741,27 +757,39 @@ auditBaselineRoutes.post(
       return c.json({ error: 'Requester cannot approve their own apply request' }, 400);
     }
 
-    // Separation-of-duties: a site-restricted approver may only approve a
-    // request whose target devices fall entirely within their site scope.
-    // (Denying grants nothing, so the deny path is intentionally not site-gated.)
+    // Approval is a decision about a specific device set, so every requested
+    // device must still resolve within the request's org; a target removed
+    // (decommissioned or deleted) or moved away since the request was made
+    // fails closed. Separation-of-duties: a site-restricted approver may only
+    // approve a request whose target devices fall entirely within their site
+    // scope. (Denying grants nothing, so the deny path is intentionally
+    // neither site- nor target-gated.)
     if (body.decision === 'approved') {
-      const payload = (approval.requestPayload ?? {}) as { deviceIds?: unknown };
-      const targetDeviceIds = Array.isArray(payload.deviceIds)
-        ? payload.deviceIds.filter((id): id is string => typeof id === 'string')
-        : [];
+      const targetDeviceIds = approvedDeviceIdsFromPayload(approval);
 
-      if (targetDeviceIds.length > 0) {
-        const targetDevices = await db
-          .select({ id: devices.id, siteId: devices.siteId })
-          .from(devices)
-          .where(and(
-            eq(devices.orgId, approval.orgId),
-            inArray(devices.id, targetDeviceIds),
-          ));
+      if (targetDeviceIds.length === 0) {
+        return c.json({
+          error: 'Apply request has no target devices; ask the requester to submit a new apply request',
+        }, 409);
+      }
 
-        if (inaccessibleDeviceIdsForSites(targetDevices, c.get('permissions') as UserPermissions | undefined).length > 0) {
-          return c.json({ error: 'Access to one or more device sites denied' }, 403);
-        }
+      const targetDevices = await db
+        .select({ id: devices.id, siteId: devices.siteId })
+        .from(devices)
+        .where(and(
+          eq(devices.orgId, approval.orgId),
+          inArray(devices.id, targetDeviceIds),
+          ne(devices.status, 'decommissioned'),
+        ));
+
+      if (targetDevices.length !== targetDeviceIds.length) {
+        return c.json({
+          error: 'One or more target devices no longer exist in this organization; ask the requester to submit a new apply request',
+        }, 409);
+      }
+
+      if (inaccessibleDeviceIdsForSites(targetDevices, c.get('permissions') as UserPermissions | undefined).length > 0) {
+        return c.json({ error: 'Access to one or more device sites denied' }, 403);
       }
     }
 
@@ -773,11 +801,16 @@ auditBaselineRoutes.post(
         approvedAt: body.decision === 'approved' ? now : null,
         updatedAt: now,
       })
-      .where(eq(auditBaselineApplyApprovals.id, approval.id))
+      // Only a still-pending row may be decided: a concurrent decision or the
+      // expiry flip that landed first wins, and this one is refused.
+      .where(and(
+        eq(auditBaselineApplyApprovals.id, approval.id),
+        eq(auditBaselineApplyApprovals.status, 'pending'),
+      ))
       .returning();
 
     if (!updated) {
-      return c.json({ error: 'Failed to update apply approval request' }, 500);
+      return c.json({ error: 'Apply request was already decided' }, 409);
     }
 
     writeRouteAudit(c, {
@@ -850,6 +883,7 @@ auditBaselineRoutes.post(
       .where(and(
         eq(devices.orgId, baseline.orgId),
         inArray(devices.id, body.deviceIds),
+        ne(devices.status, 'decommissioned'),
       ));
 
     if (targetDevices.length === 0) {
@@ -923,22 +957,18 @@ auditBaselineRoutes.post(
       return c.json({ error: 'Apply approval request has expired' }, 409);
     }
 
-    let approvedDeviceIds: string[] | null = null;
-    if (
-      approval.requestPayload &&
-      typeof approval.requestPayload === 'object' &&
-      !Array.isArray(approval.requestPayload)
-    ) {
-      const payload = approval.requestPayload as Record<string, unknown>;
-      if (Array.isArray(payload.deviceIds)) {
-        approvedDeviceIds = normalizeDeviceIds(
-          payload.deviceIds.filter((value): value is string => typeof value === 'string')
-        );
-      }
+    const approvedDeviceIds = approvedDeviceIdsFromPayload(approval);
+    if (approvedDeviceIds.length === 0 || !sameDeviceSet(approvedDeviceIds, normalizedDeviceIds)) {
+      return c.json({ error: 'Apply request targets do not match the approved device set' }, 409);
     }
 
-    if (!approvedDeviceIds || !sameDeviceSet(approvedDeviceIds, normalizedDeviceIds)) {
-      return c.json({ error: 'Apply request targets do not match the approved device set' }, 409);
+    // The approval covered this exact device set; if any of it no longer
+    // resolves (removed or moved since approval), refuse rather than apply to
+    // a smaller set. The approval stays unconsumed.
+    if (targetDevices.length !== approvedDeviceIds.length) {
+      return c.json({
+        error: 'One or more target devices no longer exist in this organization; ask the requester to submit a new apply request',
+      }, 409);
     }
 
     // Atomically consume the approval before queuing commands to prevent double-consume (TOCTOU).

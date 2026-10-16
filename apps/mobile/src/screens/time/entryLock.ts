@@ -42,5 +42,17 @@ export function entryLock(entry: Pick<TimeEntry, 'isApproved' | 'billingStatus'>
     };
   }
 
+  // #8196: recorded but held from billing until the customer approves. The
+  // server still accepts every edit to a held entry (it re-gates on write), so
+  // nothing is locked; the badge only explains why it is not billable yet.
+  if (entry.billingStatus === 'awaiting_approval') {
+    return {
+      canEditDescription: true,
+      canToggleBillable: true,
+      badge: 'Awaiting approval',
+      note: 'Held pending customer approval — it will not be billed until the customer approves.',
+    };
+  }
+
   return { canEditDescription: true, canToggleBillable: true, badge: null, note: null };
 }

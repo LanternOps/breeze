@@ -2,7 +2,8 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { fetchWithAuth } from '../../stores/auth';
 import OrgAutopayCard from './OrgAutopayCard';
-const h = vi.hoisted(() => ({ toast: vi.fn() }));
+const h = vi.hoisted(() => ({ toast: vi.fn(), mint: vi.fn() }));
+vi.mock('../../lib/mfaStepUp', () => ({ mintStepUpGrant: h.mint }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: h.toast }));
@@ -190,4 +191,30 @@ it('explains a needs-attention reason instead of printing its code', async () =>
   const reason = await screen.findByTestId('autopay-attention-reason');
   expect(reason).toHaveTextContent("The saved payment method can't be charged.");
   expect(reason).not.toHaveTextContent('method_unusable');
+});
+
+it('confirms a request sent to another address with a second factor and resubmits it', async () => {
+  const orgId = '11111111-1111-4111-8111-111111111111';
+  h.mint.mockResolvedValue('grant-r');
+  const resource = { orgIds: [orgId], recipientOverride: 'accounts@example.com' };
+  vi.mocked(fetchWithAuth).mockImplementation(async (url, init) => {
+    if (url === '/users/me') return Response.json({ mfaEnabled: true, mfaMethod: 'totp' });
+    if (url === '/auth/passkeys') return Response.json([]);
+    if (init?.method === 'POST') return JSON.parse(init.body as string).stepUpGrant
+      ? Response.json({ requested: [orgId], skipped: [] })
+      : Response.json({ error: 'Step-up required', code: 'STEP_UP_REQUIRED', stepUp: { operation: 'autopay_request_recipient', resource } }, { status: 403 });
+    return Response.json({ orgId, orgName: 'Example client', billingContact: { email: 'billing@example.com' },
+      status: 'not_requested', enrollment: null, method: null, stripeReadiness: { ready: true, missing: [] } });
+  });
+  render(<OrgAutopayCard orgId={orgId} />);
+  fireEvent.change(await screen.findByTestId('autopay-recipient'), { target: { value: 'accounts@example.com' } });
+  fireEvent.click(screen.getByTestId('autopay-request'));
+  fireEvent.change(await screen.findByTestId('billing-stepup-code'), { target: { value: '111222' } });
+  expect(h.toast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  fireEvent.click(screen.getByTestId('billing-stepup-confirm'));
+  expect(await screen.findByTestId('autopay-org-result')).toHaveTextContent('accounts@example.com');
+  expect(h.mint).toHaveBeenCalledWith({ operation: 'autopay_request_recipient', resource, reauth: { method: 'totp', code: '111222' } });
+  const posts = vi.mocked(fetchWithAuth).mock.calls.filter(([, i]) => i?.method === 'POST').map(([, i]) => JSON.parse(i!.body as string));
+  expect(posts).toEqual([{ orgIds: [orgId], recipientOverride: 'accounts@example.com' },
+    { orgIds: [orgId], recipientOverride: 'accounts@example.com', stepUpGrant: 'grant-r' }]);
 });

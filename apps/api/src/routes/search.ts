@@ -14,13 +14,8 @@ const searchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).optional()
 });
 
-const SETTINGS_ENTRIES = [
-  { id: 'settings-profile', type: 'settings', title: 'Profile settings', description: 'Manage your profile', href: '/settings/profile' },
-  // MFA, passkeys and password live on the profile page. There is no
-  // /settings/security page; linking there 404'd (#6748).
-  { id: 'settings-security', type: 'settings', title: 'Security settings', description: 'Manage MFA and account security', href: '/settings/profile' },
-  { id: 'settings-users', type: 'settings', title: 'User management', description: 'Manage users and roles', href: '/settings/users' }
-] as const;
+// Settings results are intentionally NOT served here (#8365): the web palette
+// builds them from its settings page catalogue (localized, gated like the nav).
 
 type DeviceSearchRow = {
   id: string;
@@ -70,9 +65,6 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
   );
   const canReadAlerts = Boolean(
     userPerms && hasPermission(userPerms, PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action),
-  );
-  const canReadUsers = Boolean(
-    userPerms && hasPermission(userPerms, PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   );
 
   const orgConditionFor = (column: PgColumn) => {
@@ -199,23 +191,6 @@ searchRoutes.get('/', zValidator('query', searchQuerySchema), async (c) => {
       description: row.severity || row.message || undefined
     }))
   ];
-
-  const loweredQuery = q.toLowerCase();
-  for (const entry of SETTINGS_ENTRIES) {
-    if (entry.id === 'settings-users' && !canReadUsers) {
-      continue;
-    }
-    const haystack = `${entry.title} ${entry.description}`.toLowerCase();
-    if (haystack.includes(loweredQuery)) {
-      results.push({
-        id: entry.id,
-        type: entry.type,
-        title: entry.title,
-        description: entry.description,
-        href: entry.href
-      });
-    }
-  }
 
   return c.json({ results: results.slice(0, limit) });
 });

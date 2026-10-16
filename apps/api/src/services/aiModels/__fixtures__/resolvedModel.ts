@@ -4,7 +4,7 @@
  * pass-through assertions because its `partner_key` funding differs from
  * every platform default.
  */
-import type { ModelRates } from '@breeze/shared';
+import type { AiConnectionKind, ModelRates } from '@breeze/shared';
 import type { UsableLlmConfig } from '../../llm/llmConfigResolver';
 import type { ResolvedModel } from '../resolveModel';
 
@@ -12,7 +12,7 @@ export const FIXTURE_STD_RATES: ModelRates = {
   inputCentsPerM: 200, outputCentsPerM: 1000, cacheReadCentsPerM: 20, cacheWriteCentsPerM: 250,
 };
 
-export type FixtureConnectionKind = 'platform' | 'anthropic_byok' | 'catalog' | 'openai_compatible';
+export type FixtureConnectionKind = AiConnectionKind;
 
 /** W06: a verified openai_compatible offering reached through the loopback model gateway. */
 function gatewayResolvedModel(over: Partial<ResolvedModel>): ResolvedModel {

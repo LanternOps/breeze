@@ -61,6 +61,8 @@ export const PERMISSION_GRANTS = {
   TICKETS_READ: { resource: 'tickets', action: 'read' },
   TICKETS_WRITE: { resource: 'tickets', action: 'write' },
   TICKETS_MANAGE: { resource: 'tickets', action: 'manage' },
+  // #4617: record a customer's approval/denial of held work on their behalf.
+  TICKETS_RECORD_APPROVAL: { resource: 'tickets', action: 'record_approval' },
 
   // Microsoft 365 partner-global ticket mailbox administration
   TICKET_MAILBOX_READ: { resource: 'ticket_mailbox', action: 'read' },
@@ -132,6 +134,12 @@ export const PERMISSION_GRANTS = {
   ORGS_WRITE: { resource: 'organizations', action: 'write' },
   ORGS_DELETE: { resource: 'organizations', action: 'delete' },
 
+  // Outbound webhooks: reading endpoint configuration and delivery history.
+  // Kept apart from organizations:read so a role that can see an organization
+  // does not thereby see where its events are sent. Managing webhooks stays on
+  // organizations:write, so there is no webhooks:write.
+  WEBHOOKS_READ: { resource: 'webhooks', action: 'read' },
+
   // Partner-wide OAuth/MCP connected applications. These are deliberately
   // separate from organization administration: one disconnect revokes every
   // grant for the shared client under the partner.
@@ -146,6 +154,13 @@ export const PERMISSION_GRANTS = {
   SITES_READ: { resource: 'sites', action: 'read' },
   SITES_WRITE: { resource: 'sites', action: 'write' },
   SITES_DELETE: { resource: 'sites', action: 'delete' },
+  SITES_SET_LOCATION: { resource: 'sites', action: 'set_location' },
+
+  // Endpoint messaging (#8293): push a message to the person at a device.
+  // Deliberately separate from devices:execute ("may talk to a user" is not
+  // "may run code").
+  ENDPOINT_MESSAGES_SEND: { resource: 'endpoint_messages', action: 'send' },
+  ENDPOINT_MESSAGES_READ: { resource: 'endpoint_messages', action: 'read' },
 
   // Automations
   AUTOMATIONS_READ: { resource: 'automations', action: 'read' },
@@ -191,6 +206,13 @@ export const PERMISSION_GRANTS = {
   // widen what the role can do through it. Org budget settings stay on
   // organizations:write.
   AI_SESSIONS_USE: { resource: 'ai_sessions', action: 'use' },
+
+  // AI for Office prompt templates (the admin template manager). Dedicated so
+  // that viewing or authoring the prompts offered to every add-in user does not
+  // ride on the generic organizations grants. Writes additionally require an
+  // MFA-assured session at the route.
+  CLIENT_AI_TEMPLATES_READ: { resource: 'client_ai_templates', action: 'read' },
+  CLIENT_AI_TEMPLATES_WRITE: { resource: 'client_ai_templates', action: 'write' },
 
   // AI agents (#3821) — authoring an agent policy is what will eventually
   // authorize autonomous action on customer machines, so it gets its own

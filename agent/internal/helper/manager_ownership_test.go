@@ -124,8 +124,8 @@ func TestApplyNonOwnerNeverMutatesMachineAssist(t *testing.T) {
 				mgr.CheckUpdate(tc.pending)
 			}
 
-			mgr.Apply(&Settings{Enabled: tc.enabled, ShowTrayIcon: true})
-			mgr.Apply(&Settings{Enabled: tc.enabled, ShowTrayIcon: true})
+			mgr.Apply(&Settings{Enabled: tc.enabled, ShowOpenPortal: true})
+			mgr.Apply(&Settings{Enabled: tc.enabled, ShowOpenPortal: true})
 
 			if calls != (ownershipCalls{}) {
 				t.Fatalf("non-owner touched machine-wide Assist state: %+v", calls)

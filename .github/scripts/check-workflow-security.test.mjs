@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   inspectWorkflowDirectory,
@@ -654,13 +655,13 @@ jobs:
   );
 });
 
-function developerSigningWorkflow(signingSteps) {
+function developerSigningWorkflow(signingSteps, { environment = '' } = {}) {
   return `name: Developer signing
 on: workflow_dispatch
 jobs:
   sign-notarize:
     runs-on: macos-15
-    steps:
+${environment ? `    environment: ${environment}\n` : ''}    steps:
 ${signingSteps}
 `;
 }
@@ -1164,7 +1165,7 @@ test('accepts an Apple-secret developer signing job that only verifies and signs
         env:
           APPLE_SIGNING_IDENTITY: \${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: codesign --sign "$APPLE_SIGNING_IDENTITY" breeze-agent
-`);
+`, { environment: 'signing-production' });
 
   assert.deepEqual(inspectWorkflowText('dev-build-agent.yml', text), []);
 });
@@ -1182,6 +1183,7 @@ jobs:
     if: >-
       github.ref_type == 'tag'
       && startsWith(github.ref, 'refs/tags/v')
+    environment: signing-production
     steps:
       - uses: ${pinnedCheckout}
       - name: Build and sign release
@@ -1331,20 +1333,6 @@ test('rejects shell-continuation build commands in developer signing jobs', () =
   }
 });
 
-test('developer signing requires global and developer-specific kill switches', () => {
-  const workflowText = readFileSync(
-    new URL('../workflows/dev-build-agent.yml', import.meta.url),
-    'utf8',
-  );
-  const signingCondition = workflowText.slice(
-    workflowText.indexOf('  sign-notarize:'),
-    workflowText.indexOf('    environment: macos-signing'),
-  );
-
-  assert.match(signingCondition, /vars\.ENABLE_MACOS_SIGNING == 'true'/u);
-  assert.match(signingCondition, /vars\.ENABLE_DEV_MACOS_SIGNING == 'true'/u);
-});
-
 test('pull requests run the confidential pattern scan without repository secrets', () => {
   const workflowText = readFileSync(
     new URL('../workflows/secret-scan.yml', import.meta.url),
@@ -1430,4 +1418,281 @@ test('community README refresh never writes to the repository', () => {
   // string in prose.
   assert.doesNotMatch(workflowText, /^\s*contents: write\s*$/mu);
   assert.match(workflowText, /^permissions:\n  contents: read$/mu);
+});
+
+// Signing material is scoped to the protected signing environments, whose
+// deployment policy only admits v* tags. A job that names one of these secrets
+// must declare one of those environments, or it would resolve a repository-level
+// copy instead.
+const SIGNING_ENVIRONMENT_RULE = 'signing-secrets-must-use-signing-environment';
+const PROTECTED_SIGNING_SECRET_NAMES = [
+  'RELEASE_MANIFEST_ED25519_PRIVATE_KEY',
+  'RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY',
+  'TAURI_SIGNING_PRIVATE_KEY',
+  'TAURI_SIGNING_PRIVATE_KEY_PASSWORD',
+  'APPLE_CERTIFICATE',
+  'APPLE_CERTIFICATE_PASSWORD',
+  'APPLE_ID',
+  'APPLE_PASSWORD',
+  'APPLE_TEAM_ID',
+  'APPLE_SIGNING_IDENTITY',
+  'APPLE_INSTALLER_IDENTITY',
+  'AZURE_CLIENT_ID',
+  'AZURE_TENANT_ID',
+  'AZURE_SIGNING_ENDPOINT',
+  'AZURE_SIGNING_ACCOUNT_NAME',
+  'AZURE_CERT_PROFILE_PROD',
+  'AZURE_CERT_PROFILE_PRERELEASE',
+  'SSLCOM_PASSWORD',
+  'SSLCOM_TOTP_SECRET',
+];
+const SIGNING_ENVIRONMENT_SELECTOR = "${{ contains(github.ref_name, '-') && 'signing-prerelease' || 'signing-production' }}";
+
+function signingJobWorkflow({ environment = '', secretLine }) {
+  return `name: Signing
+on:
+  push:
+    tags:
+      - 'v*'
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+${environment}    steps:
+      - name: Use signing material
+        env:
+          ${secretLine}
+        run: echo signing
+`;
+}
+
+function signingEnvironmentViolations(file, text) {
+  return inspectWorkflowText(file, text)
+    .filter(({ rule }) => rule === SIGNING_ENVIRONMENT_RULE);
+}
+
+for (const secret of PROTECTED_SIGNING_SECRET_NAMES) {
+  test(`signing environment rule rejects ${secret} outside a signing environment`, () => {
+    const violations = signingEnvironmentViolations('sign.yml', signingJobWorkflow({
+      secretLine: `VALUE: \${{ secrets.${secret} }}`,
+    }));
+    assert.equal(violations.length, 1, JSON.stringify(violations));
+    assert.equal(violations[0].line, 12);
+    assert.match(violations[0].message, new RegExp(`job "sign"[\\s\\S]*\\b${secret}\\b`, 'u'));
+  });
+}
+
+test('signing environment rule accepts each protected-environment spelling', () => {
+  const spellings = [
+    '    environment: signing-production\n',
+    '    environment: signing-prerelease\n',
+    "    environment: 'signing-production'\n",
+    '    environment:\n      name: signing-production\n',
+    '    environment:\n      name: "signing-prerelease"\n',
+    `    environment:\n      name: ${SIGNING_ENVIRONMENT_SELECTOR}\n`,
+    `    environment: ${SIGNING_ENVIRONMENT_SELECTOR}\n`,
+    '    environment: { name: signing-prerelease }\n',
+  ];
+  for (const environment of spellings) {
+    for (const secret of PROTECTED_SIGNING_SECRET_NAMES) {
+      assert.deepEqual(
+        signingEnvironmentViolations('sign.yml', signingJobWorkflow({
+          environment,
+          secretLine: `VALUE: \${{ secrets.${secret} }}`,
+        })),
+        [],
+        `${JSON.stringify(environment)} / ${secret}`,
+      );
+    }
+  }
+});
+
+test('signing environment rule rejects any other environment', () => {
+  const spellings = [
+    '    environment: macos-signing\n',
+    '    environment: production\n',
+    '    environment: signing-production-copy\n',
+    '    environment: ${{ inputs.environment }}\n',
+    "    environment: ${{ github.event_name == 'push' && 'signing-production' || 'scratch' }}\n",
+    '    environment:\n      name: scratch\n      url: https://example.invalid/signing-production\n',
+    '    environment:\n      url: https://example.invalid\n',
+    '    environment: { name: scratch }\n',
+    '    # environment: signing-production\n',
+  ];
+  for (const environment of spellings) {
+    assert.equal(
+      signingEnvironmentViolations('sign.yml', signingJobWorkflow({
+        environment,
+        secretLine: 'VALUE: ${{ secrets.APPLE_CERTIFICATE }}',
+      })).length,
+      1,
+      JSON.stringify(environment),
+    );
+  }
+});
+
+test('signing environment rule only counts the job-level environment key', () => {
+  const text = `name: Signing
+on: workflow_dispatch
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Looks like an environment
+        uses: ./local-action
+        with:
+          environment: signing-production
+      - name: Use signing material
+        env:
+          VALUE: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: echo signing
+`;
+  assert.equal(signingEnvironmentViolations('nested.yml', text).length, 1);
+});
+
+test('signing environment rule scopes the environment to its own job', () => {
+  const text = `name: Signing
+on:
+  push:
+    tags:
+      - 'v*'
+jobs:
+  protected:
+    runs-on: ubuntu-latest
+    environment: signing-production
+    steps:
+      - run: echo protected
+  unprotected:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Use signing material
+        env:
+          VALUE: \${{ secrets.RELEASE_MANIFEST_ED25519_PRIVATE_KEY }}
+        run: echo signing
+`;
+  const violations = signingEnvironmentViolations('siblings.yml', text);
+  assert.equal(violations.length, 1);
+  assert.match(violations[0].message, /job "unprotected"/u);
+});
+
+test('signing environment rule sees bracket, folded and run-script references', () => {
+  const cases = [
+    "VALUE: ${{ secrets['APPLE_PASSWORD'] }}",
+    'VALUE: ${{ secrets["AZURE_CLIENT_ID"] }}',
+    'VALUE: >-\n            ${{ secrets\n            .TAURI_SIGNING_PRIVATE_KEY }}',
+  ];
+  for (const secretLine of cases) {
+    assert.equal(
+      signingEnvironmentViolations('variants.yml', signingJobWorkflow({ secretLine })).length,
+      1,
+      secretLine,
+    );
+  }
+
+  const runScript = `name: Signing
+on: workflow_dispatch
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          printf '%s' "\${{ secrets.RELEASE_MANIFEST_MINISIGN_PRIVATE_KEY }}" > key
+`;
+  assert.equal(signingEnvironmentViolations('run.yml', runScript).length, 1);
+});
+
+test('signing environment rule matches secret names case-insensitively, as GitHub does', () => {
+  for (const [secretLine, name] of [
+    ['VALUE: ${{ secrets.apple_id }}', 'APPLE_ID'],
+    ['VALUE: ${{ secrets.Tauri_Signing_Private_Key }}', 'TAURI_SIGNING_PRIVATE_KEY'],
+    ["VALUE: ${{ secrets['release_manifest_ed25519_private_key'] }}", 'RELEASE_MANIFEST_ED25519_PRIVATE_KEY'],
+  ]) {
+    const violations = signingEnvironmentViolations('case.yml', signingJobWorkflow({ secretLine }));
+    assert.equal(violations.length, 1, secretLine);
+    assert.match(violations[0].message, new RegExp(`\\b${name}\\b`, 'u'), secretLine);
+  }
+  assert.deepEqual(
+    signingEnvironmentViolations('case.yml', signingJobWorkflow({
+      secretLine: 'VALUE: ${{ secrets.release_manifest_ed25519_public_key }}',
+    })),
+    [],
+  );
+});
+
+test('signing environment rule rejects whole-context and dynamic secret access outside the environment', () => {
+  for (const secretLine of [
+    'VALUE: ${{ toJSON(secrets) }}',
+    'VALUE: ${{ secrets.* }}',
+    "VALUE: ${{ join(secrets.*, ',') }}",
+    "VALUE: ${{ secrets[format('{0}_KEY', 'TAURI_SIGNING_PRIVATE')] }}",
+    'VALUE: ${{ secrets[env.NAME] }}',
+  ]) {
+    assert.equal(
+      signingEnvironmentViolations('dynamic.yml', signingJobWorkflow({ secretLine })).length,
+      1,
+      secretLine,
+    );
+  }
+
+  const inherit = `name: Signing
+on: workflow_dispatch
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    secrets: inherit
+`;
+  assert.equal(signingEnvironmentViolations('inherit.yml', inherit).length, 1);
+});
+
+test('signing environment rule rejects signing material in workflow-level env', () => {
+  const text = `name: Signing
+on:
+  push:
+    tags:
+      - 'v*'
+env:
+  APPLE_ID: \${{ secrets.APPLE_ID }}
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: signing-production
+    steps:
+      - run: echo signing
+`;
+  const violations = signingEnvironmentViolations('top-level.yml', text);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].line, 7);
+});
+
+test('signing environment rule leaves public keys and unrelated secrets alone', () => {
+  for (const secret of [
+    'RELEASE_MANIFEST_ED25519_PUBLIC_KEY',
+    'RELEASE_MANIFEST_MINISIGN_PUBLIC_KEY',
+    'GITHUB_TOKEN',
+    'AI_TOOL_EVAL_KEY',
+  ]) {
+    assert.deepEqual(
+      signingEnvironmentViolations('public.yml', signingJobWorkflow({
+        secretLine: `VALUE: \${{ secrets.${secret} }}`,
+      })),
+      [],
+      secret,
+    );
+  }
+});
+
+test('every workflow in the repository keeps signing material inside the signing environments', () => {
+  assert.deepEqual(
+    inspectWorkflowDirectory(fileURLToPath(new URL('../workflows/', import.meta.url)))
+      .filter(({ rule }) => rule === SIGNING_ENVIRONMENT_RULE),
+    [],
+  );
+});
+
+test('the developer agent build carries no signing material', () => {
+  const workflowText = readFileSync(
+    new URL('../workflows/dev-build-agent.yml', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(workflowText, /\bsecrets\s*[.[]/u);
+  assert.doesNotMatch(workflowText, /^\s*environment:/mu);
 });

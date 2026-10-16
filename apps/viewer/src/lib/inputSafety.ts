@@ -31,16 +31,23 @@ export function defaultRemapCmdCtrl(viewerOs: ViewerOs, remoteOs: string | null)
   return viewerIsMac !== remoteIsMac;
 }
 
+export type AgentMouseButton = 'left' | 'middle' | 'right' | 'back' | 'forward';
+
 /**
- * DOM MouseEvent.button → agent button name. Back (3) and forward (4) have no
- * agent equivalent yet; returning null drops them instead of the old fallback,
- * which sent them as a left click (M1).
+ * DOM MouseEvent.button → agent button name. Back (3) and forward (4) map only
+ * when the agent advertised support for them (W2c); otherwise null drops them
+ * instead of the old fallback, which sent them as a left click (M1).
  */
-export function mouseButtonName(button: number): 'left' | 'middle' | 'right' | null {
+export function mouseButtonName(
+  button: number,
+  opts: { extraButtons?: boolean } = {},
+): AgentMouseButton | null {
   switch (button) {
     case 0: return 'left';
     case 1: return 'middle';
     case 2: return 'right';
+    case 3: return opts.extraButtons ? 'back' : null;
+    case 4: return opts.extraButtons ? 'forward' : null;
     default: return null;
   }
 }
@@ -116,6 +123,12 @@ export interface RemoteClipboardState {
   channelOpenedAt: number | null;
   /** Remote pushes received on this channel before this one. */
   pushesSeen: number;
+  /**
+   * The agent's clipboard status said it records the connect-time clipboard
+   * instead of sending it (W4a). The baseline skip is then only a fallback for
+   * agents that predate it, and skipping would drop a real copy.
+   */
+  suppressesBaseline?: boolean;
 }
 
 /**
@@ -137,6 +150,7 @@ export function remoteClipboardDecision(
   s: RemoteClipboardState,
 ): 'apply' | 'skip-baseline' | 'skip-unfocused' {
   if (
+    !s.suppressesBaseline &&
     s.pushesSeen === 0 &&
     s.channelOpenedAt !== null &&
     s.now - s.channelOpenedAt < REMOTE_CLIPBOARD_BASELINE_WINDOW_MS

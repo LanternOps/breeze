@@ -1,16 +1,16 @@
 import './setup';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { Database } from '../../db';
-import { organizations, partnerServicePrincipals } from '../../db/schema';
+import { organizations, partnerServicePrincipals, users } from '../../db/schema';
 import {
   partnerApiAuthMiddleware,
   type PartnerApiPrincipalContext,
 } from '../../middleware/partnerApiAuth';
 import { partnerOrganizationRoutes } from '../../routes/partnerApi/organizations';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import { createOrganization, createPartner, createUser, userEpochs } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -95,6 +95,36 @@ describe('partner API authentication database context', () => {
     const followingBody = await following.json() as { data: Array<{ id: string }> };
     expect(followingBody.data.map((row) => row.id)).toContain(created.id);
   }, 15_000);
+
+  runDb('a key keeps working after its owner signs out and ends when their password or MFA changes', async () => {
+    const partner = await createPartner();
+    const user = await createUser({ partnerId: partner.id });
+    await createOrganization({ partnerId: partner.id });
+    const app = actualAuthApp(async () => {});
+    const call = async (rawKey: string) =>
+      (await app.request('/organizations', { headers: { 'X-API-Key': rawKey } })).status;
+
+    const first = await issueKey(partner.id, user.id);
+    expect(await call(first)).toBe(200);
+
+    // Ordinary (global) logout advances only the session epoch.
+    await getTestDb().update(users).set({ authEpoch: sql`${users.authEpoch} + 1` }).where(eq(users.id, user.id));
+    expect(await call(first)).toBe(200);
+
+    // Password change/reset: credential epoch.
+    await getTestDb().update(users)
+      .set({ authEpoch: sql`${users.authEpoch} + 1`, credentialEpoch: sql`${users.credentialEpoch} + 1` })
+      .where(eq(users.id, user.id));
+    expect(await call(first)).toBe(401);
+
+    // MFA factor change: MFA epoch.
+    const second = await issueKey(partner.id, user.id);
+    expect(await call(second)).toBe(200);
+    await getTestDb().update(users)
+      .set({ authEpoch: sql`${users.authEpoch} + 1`, mfaEpoch: sql`${users.mfaEpoch} + 1` })
+      .where(eq(users.id, user.id));
+    expect(await call(second)).toBe(401);
+  }, 15_000);
 });
 
 function actualAuthApp(
@@ -129,6 +159,7 @@ async function issueKey(partnerId: string, userId: string): Promise<string> {
     partnerId,
     name: 'Integration key',
     actorId: userId,
+    actorSessionEpochs: await userEpochs(userId),
   });
   return issued.rawKey;
 }

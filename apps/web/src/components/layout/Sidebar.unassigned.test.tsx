@@ -61,7 +61,7 @@ beforeEach(() => {
     ? { ok: true, status: 200, json: async () => ({ features: { preAssignmentEnrollment: flag.preAssignmentEnrollment } }) }
     : { ok: false, status: 404, json: async () => ({}) }) as Response);
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false },
+    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false },
     loaded: false,
   });
   state.user.isPlatformAdmin = false;

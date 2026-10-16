@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { HTTPException } from 'hono/http-exception';
 import { and, eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
-import { partners, partnerServicePrincipalKeys, partnerServicePrincipals } from '../db/schema';
+import { partners, partnerServicePrincipalKeys, partnerServicePrincipals, users } from '../db/schema';
 import { ipMatchesAny, isValidIpOrCidr } from './ipMatch';
 import {
   type PartnerServicePrincipalScope,
@@ -30,13 +30,16 @@ export interface PartnerServicePrincipalCredentialFields {
 
 /**
  * A validated credential plus the principal's owner
- * (`partner_service_principals.created_by`). The owner is NOT part of the
- * Partner API context; only the MCP path uses it, as the accountable human
- * whose live RBAC bounds the principal's per-tool authority there.
+ * (`partner_service_principals.created_by`) and the user who issued this key
+ * (`partner_service_principal_keys.created_by`). Neither is part of the
+ * Partner API context. The MCP path uses the owner as the accountable human
+ * whose live RBAC bounds the principal's per-tool authority there, and admits
+ * only keys the owner issued.
  */
 export interface PartnerServicePrincipalCredential {
   credential: PartnerServicePrincipalCredentialFields;
   ownerUserId: string;
+  keyIssuedBy: string;
 }
 
 const PARTNER_SERVICE_PRINCIPAL_KEY_PATTERN = /^brz_sp_[A-Za-z0-9_-]{43}$/;
@@ -73,7 +76,8 @@ function isExpired(value: Date | string | null | undefined, now: number): boolea
 /**
  * Look up and fully validate a key by its SHA-256 digest: key active and
  * unexpired, principal active and unexpired, owning partner active and not
- * deleted, stored scopes valid, and the source-CIDR allowlist (when set)
+ * deleted, the owner's credential and MFA epochs unchanged since the key was
+ * issued, stored scopes valid, and the source-CIDR allowlist (when set)
  * matching the trusted client IP. Every failure throws the same generic 401,
  * so a caller cannot tell a revoked key from a disabled principal or an
  * unknown key. Nothing is cached.
@@ -88,6 +92,9 @@ export async function loadPartnerServicePrincipalCredential(
         keyId: partnerServicePrincipalKeys.id,
         keyStatus: partnerServicePrincipalKeys.status,
         keyExpiresAt: partnerServicePrincipalKeys.expiresAt,
+        keyCreatedBy: partnerServicePrincipalKeys.createdBy,
+        keyOwnerCredentialEpoch: partnerServicePrincipalKeys.ownerCredentialEpoch,
+        keyOwnerMfaEpoch: partnerServicePrincipalKeys.ownerMfaEpoch,
         rateLimit: partnerServicePrincipalKeys.rateLimit,
         partnerServicePrincipalId: partnerServicePrincipals.id,
         partnerId: partnerServicePrincipals.partnerId,
@@ -99,6 +106,9 @@ export async function loadPartnerServicePrincipalCredential(
         sourceCidrs: partnerServicePrincipals.sourceCidrs,
         partnerStatus: partners.status,
         partnerDeletedAt: partners.deletedAt,
+        ownerStatus: users.status,
+        ownerCredentialEpoch: users.credentialEpoch,
+        ownerMfaEpoch: users.mfaEpoch,
       })
       .from(partnerServicePrincipalKeys)
       .innerJoin(
@@ -109,6 +119,7 @@ export async function loadPartnerServicePrincipalCredential(
         ),
       )
       .innerJoin(partners, eq(partners.id, partnerServicePrincipals.partnerId))
+      .innerJoin(users, eq(users.id, partnerServicePrincipals.createdBy))
       .where(eq(partnerServicePrincipalKeys.keyHash, keyHash))
       .limit(1);
 
@@ -121,6 +132,18 @@ export async function loadPartnerServicePrincipalCredential(
       || isExpired(credential.principalExpiresAt, now)
       || credential.partnerStatus !== 'active'
       || credential.partnerDeletedAt
+      // Bound to the owner's credential state, like a human API key
+      // (middleware/apiKeyAuth.ts): the owner's password change/reset, invite
+      // acceptance or admin status change (credential_epoch), or an MFA factor
+      // change (mfa_epoch), ends every key issued before it. Ordinary logout
+      // advances only auth_epoch and does not (services/authLifecycle.ts).
+      // A disabled owner also ends them directly, independent of which
+      // epochs the disabling path advanced.
+      || credential.ownerStatus !== 'active'
+      || typeof credential.keyOwnerCredentialEpoch !== 'number'
+      || typeof credential.keyOwnerMfaEpoch !== 'number'
+      || credential.keyOwnerCredentialEpoch !== credential.ownerCredentialEpoch
+      || credential.keyOwnerMfaEpoch !== credential.ownerMfaEpoch
     ) {
       throw invalidCredentials();
     }
@@ -155,6 +178,7 @@ export async function loadPartnerServicePrincipalCredential(
         sourceCidrs,
       },
       ownerUserId: credential.principalCreatedBy,
+      keyIssuedBy: credential.keyCreatedBy,
     };
   });
 }

@@ -1,0 +1,18 @@
+-- #7773 round 2: the turn-time rate of each unbound BYOK refusal-fallback key,
+-- attested on the reservation the turn holds.
+--
+-- settleInvocation prices a BYOK usage key the turn never bound (the Agent SDK
+-- CLI's own refusal swap) at the rate of that model's enabled offering on the
+-- binding's own connection, and records that decision here (a miss as a null
+-- rate, i.e. the bound rate), keyed by connection and model:
+-- { "<connectionId>:<model>": { "connectionId", "offeringId", "rate" } }.
+-- First write wins; a quote, retry or replay of the turn reads the same entry.
+-- reserveAiBudget clears it when a stable-key retry rebinds the reservation.
+-- The settlement transaction verifies the ledger row's rate against this entry
+-- (read FOR UPDATE on the same connection), so a settlement deferred by
+-- org-lock contention and replayed after the partner repriced, disabled or
+-- deleted that offering still settles at the rate the turn ran at instead of
+-- dead-lettering.
+--
+-- Additive, nullable, no data writes. Idempotent.
+ALTER TABLE ai_budget_reservations ADD COLUMN IF NOT EXISTS unbound_rate_attestations jsonb NULL;

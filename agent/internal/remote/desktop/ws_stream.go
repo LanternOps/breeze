@@ -274,6 +274,10 @@ func (s *WsStreamSession) Stop() {
 	s.mu.Unlock()
 
 	close(s.done)
+	// Nothing this stream pressed may stay pressed after it ends.
+	if si, ok := s.inputHandler.(*SafeInput); ok {
+		si.Close()
+	}
 	if s.capturer != nil {
 		s.capturer.Close()
 	}

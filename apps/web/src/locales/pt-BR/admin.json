@@ -891,6 +891,7 @@
       "empty": "Nenhum log de auditoria encontrado.",
       "viewDetails": "Ver detalhes",
       "errors": {
+        "export": "Falha ao exportar os logs de auditoria",
         "fetch": "Falha ao buscar logs de auditoria",
         "load": "Falha ao carregar logs de auditoria"
       },

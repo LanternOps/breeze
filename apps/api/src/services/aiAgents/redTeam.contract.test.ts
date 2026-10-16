@@ -967,6 +967,7 @@ describe('K. hostile ticket content — bounded context and device-less shadow d
           + PII_MARKER,
         status: 'open',
         priority: 'urgent',
+        ticketType: 'incident',
         category: 'security',
         tags: ['injection-attempt'],
         dueDate: null,

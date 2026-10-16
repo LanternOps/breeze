@@ -58,6 +58,7 @@ import {
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 // Derived from the canonical tuple in `@breeze/shared`
 // (`packages/shared/src/reportTypes.ts`) rather than hand-listed. The
@@ -221,7 +222,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
     setView(next);
     const hash = formatReportsListHash(next);
     if (hash) window.location.hash = hash;
-    else window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    else replaceUrl(`${window.location.pathname}${window.location.search}`);
   }, [setView]);
   const [partnerWideIncomplete, setPartnerWideIncomplete] = useState(false);
 

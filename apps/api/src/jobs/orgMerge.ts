@@ -62,6 +62,7 @@ import { enqueueTenantErasure } from './tenantErasure';
 import { createAuditLog, type CreateAuditLogParams } from '../services/auditService';
 import { removeOrgFromPartnerOrder } from '../services/orgOrdering';
 import { resolveMergePerformerRefusal } from '../services/orgMergePerformerAuthority';
+import { EVIDENCE_HOLD_DEFERRED_ACTION, findEvidenceHold } from '../services/orgEvidenceHold';
 import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'org-merge';
@@ -180,7 +181,30 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
   // merge that did not commit.
   const result: OrgMergeResult = await executeOrgMerge(input);
 
-  // Phase C — dispose.
+  await runMergePhaseC(input, result);
+
+  return { ...result, jobId: job.id };
+}
+
+/**
+ * Phase C — dispose. Runs only after `executeOrgMerge` committed Phase B.
+ *
+ * Exported as the engine test hook for PAM ownership epochs W5 (#8207): until
+ * W6 the `blocks-merge` refusal keeps Phase B from ever committing a merge
+ * whose loser owns `pam_actuations`/`pam_actuation_results`, so the
+ * evidence-hold tests build the
+ * post-Phase-B state by hand and drive this directly.
+ *
+ * Every loser is handed to erasure. A loser kept as an evidence-hold shell is
+ * erased SCOPED by `cascadeDeleteOrg` itself (#8746): its PAM evidence and its
+ * organizations row stay, everything else goes. The deferral of the evidence
+ * is audited here (`tenant.erasure.deferred_evidence_hold`, org-less). The
+ * hold is re-read from the database only to word the audit: the scoping is
+ * decided by `cascadeDeleteOrg`'s own read, so no `result` built by another
+ * path can talk erasure out of it.
+ */
+export async function runMergePhaseC(input: ExecuteOrgMergeInput, result: OrgMergeResult): Promise<void> {
+  const { loserOrgId, survivorOrgId, partnerId, performedBy, performedByEmail } = input;
   await writeAudit({
     orgId: null,
     actorType: 'user',
@@ -198,7 +222,31 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
     result: 'success',
   });
 
+  const hold = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => findEvidenceHold(loserOrgId)),
+  );
+  // Enqueue first: both audits below claim the erasure is under way.
   const erasureJob = await enqueueTenantErasure({ orgId: loserOrgId, performedBy, performedByEmail });
+
+  if (hold) {
+    await writeAudit({
+      orgId: null,
+      actorType: 'user',
+      actorId: performedBy,
+      actorEmail: performedByEmail,
+      action: EVIDENCE_HOLD_DEFERRED_ACTION,
+      resourceType: 'organization',
+      resourceId: loserOrgId,
+      details: {
+        stage: 'merge_phase_c',
+        survivorOrgId: hold.survivorOrgId,
+        mergeEventId: hold.mergeEventId,
+        holdReason: hold.reason,
+        note: 'the merged-away organization still owns privileged-access evidence; erasure removes everything else now, and the evidence and the (deleted, non-operational) organization row are erased with the surviving organization or once retention empties the evidence',
+      },
+      result: 'success',
+    });
+  }
 
   await writeAudit({
     orgId: null,
@@ -208,7 +256,7 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
     action: 'org.merge.erasure_enqueued',
     resourceType: 'organization',
     resourceId: loserOrgId,
-    details: { erasureJobId: erasureJob.id },
+    details: { erasureJobId: erasureJob.id, ...(hold ? { evidenceHoldScoped: true } : {}) },
     result: 'success',
   });
 
@@ -222,8 +270,6 @@ export async function processOrgMergeJob(job: Pick<Job<OrgMergeJobPayload>, 'nam
       err,
     );
   }
-
-  return { ...result, jobId: job.id };
 }
 
 export function createOrgMergeWorker(): Worker {

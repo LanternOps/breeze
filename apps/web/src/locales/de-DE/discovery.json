@@ -269,11 +269,15 @@
       "time": "Zeit",
       "timeout": "Timeout (ms)",
       "timezone": "Zeitzone",
-      "username": "Benutzername"
+      "username": "Benutzername",
+      "scanAgent": "Scan-Agent"
     },
     "options": {
       "everyHours": "Alle {{count}} Stunden",
-      "selectSite": "Wählen Sie eine Standort aus..."
+      "selectSite": "Wählen Sie eine Standort aus...",
+      "automaticAgent": "Automatisch (Agent in diesen Subnetzen bevorzugen)",
+      "agentOffline": "{{name}} (nicht online)",
+      "pinnedAgentUnlisted": "Fest zugewiesener Agent (nicht an diesem Standort)"
     },
     "placeholders": {
       "profileName": "Scan des Hauptquartiers",
@@ -296,7 +300,8 @@
       "invalidCidr": "„{{value}}“: kein gültiger CIDR-Bereich oder keine gültige IP-Adresse",
       "octet": "„{{value}}“: Oktettwert überschreitet 255",
       "prefix": "„{{value}}“: Die Präfixlänge muss 0–32 betragen",
-      "subnetRequired": "Es ist mindestens ein Subnetz oder eine IP-Adresse erforderlich."
+      "subnetRequired": "Es ist mindestens ein Subnetz oder eine IP-Adresse erforderlich.",
+      "subnetTooLarge": "\"{{value}}\": Subnetz ist zu groß. Der Agent überspringt Subnetze mit mehr als {{limit}} Adressen (größer als /16); teilen Sie es in kleinere Bereiche auf"
     },
     "actions": {
       "saveProfile": "Profil speichern"
@@ -312,7 +317,13 @@
       "moveAssets_one": "Auch das {{count}} von diesem Profil erkannte Netzwerkgerät an den neuen Standort verschieben",
       "moveAssets_other": "Auch die {{count}} von diesem Profil erkannten Netzwerkgeräte an den neuen Standort verschieben",
       "moveAssetsUnknown": "Auch die von diesem Profil erkannten Netzwerkgeräte an den neuen Standort verschieben"
-    }
+    },
+    "scanAgentHelp": {
+      "automatic": "Bevorzugt wird ein Online-Agent an diesem Standort mit einer Adresse in einem der Subnetze.",
+      "pinned": "Scans laufen nur über diesen Agenten. Ist er offline, schlägt der Scan fehl, statt einen anderen Agenten zu verwenden.",
+      "loadError": "Die Agenten dieses Standorts konnten nicht geladen werden. Die automatische Auswahl ist weiterhin verfügbar."
+    },
+    "subnetTopologyNote": "Die Subnetze hier identifizieren auch die Netzwerke dieses Standorts auf der Topologiekarte."
   },
   "discoveryProfileList": {
     "actions": {
@@ -426,7 +437,8 @@
       "interval": "Das Scanintervall muss zwischen 1 und 168 Stunden liegen.",
       "selectSite": "Wählen Sie vor dem Speichern eine Standort aus."
     },
-    "configuredCount": "{{count}} Baselines konfiguriert"
+    "configuredCount": "{{count}} Baselines konfiguriert",
+    "subnetTopologyNote": "Die Subnetze hier identifizieren auch die Netzwerke dieses Standorts auf der Topologiekarte."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Ereignis bestätigen",

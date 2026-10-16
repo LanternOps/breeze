@@ -689,6 +689,27 @@ describe('convertEmailInbound', () => {
     expect(row.ticketId).toBe('t-9');
     expect(row.parseStatus).toBe('created');
   });
+  it('converts a MICROSOFT 365 row with its body and sender name (#8299)', async () => {
+    // Build `raw` with the real Graph normalizer, so the Convert path and the
+    // normalizer cannot drift apart again: Convert must read what Graph writes.
+    const { normalizeGraphMessage } = await import('./ticketMailbox/normalizeGraphMessage');
+    const raw = normalizeGraphMessage({
+      id: 'graph-1',
+      subject: 'printer down',
+      from: { emailAddress: { address: 'cust@client.example', name: 'Chris Customer' } },
+      body: { contentType: 'html', content: '<p>the printer is on fire</p>' },
+    }, 'p-1', 'help@client.example').raw;
+    dbMocks.selectResults.push([{ id: 'm-1', partnerId: 'p-1', parseStatus: 'quarantined', fromAddress: 'cust@client.example', subject: 'printer down', toAddress: 'help@client.example', raw }]);
+    dbMocks.selectResults.push([{ id: 'o-1' }]);
+    dbMocks.updateResult = [{ id: 'm-1', fromAddress: 'cust@client.example', toAddress: 'help@client.example', subject: 'printer down', parseStatus: 'created', error: null, ticketId: 't-9', createdAt: new Date() }];
+    createTicketMock.mockResolvedValue({ id: 't-9' });
+    await convertEmailInbound('p-1', 'm-1', 'o-1', ACTOR);
+    expect(createTicketMock).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'the printer is on fire', submitterName: 'Chris Customer', submitterEmail: 'cust@client.example' }),
+      ACTOR,
+    );
+  });
+
   it('converts a GMAIL row from its neutral raw keys (bodyText/fromName), not the Mailgun keys', async () => {
     // A Gmail row's raw has no stripped-text/body-plain/from; it carries neutral
     // bodyText + fromName (normalizeGmailMessage). Reading only the Mailgun keys

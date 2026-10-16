@@ -206,23 +206,31 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
     expect(payloadArg).toEqual({ ticketId: 'ticket-1', from: 'open', to: 'resolved' });
   });
 
-  it('drains an unmapped event type (ticket.updated) — marks published WITHOUT calling publishEvent', async () => {
+  it('publishes ticket.updated (field names only) and ticket.assigned (assignee id) onto the bus', async () => {
     executeMock.mockResolvedValueOnce({ rows: [] });
     executeMock.mockResolvedValueOnce({
-      rows: [claimedRow({ id: 4, event_type: 'ticket.updated', payload: {} })],
+      rows: [
+        claimedRow({ id: 4, event_type: 'ticket.updated', payload: { changed: ['subject', 'priority'] } }),
+        claimedRow({ id: 5, event_type: 'ticket.assigned', payload: { assigneeId: 'u-1' } }),
+      ],
     });
     const chain = makeUpdateChain();
     updateMock.mockReturnValue({ set: chain.set });
 
     const result = await publishOutboxRows();
 
-    expect(result).toEqual({ published: 1, skipped: 0 });
-    expect(publishEventMock).not.toHaveBeenCalled();
-    // Still drained: the row is marked published even with no bus target.
+    expect(result).toEqual({ published: 2, skipped: 0 });
+    expect(publishEventMock).toHaveBeenCalledTimes(2);
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'ticket.updated', 'org-1', { ticketId: 'ticket-1', changed: ['subject', 'priority'] }, 'ticket-outbox-publisher',
+    );
+    expect(publishEventMock).toHaveBeenCalledWith(
+      'ticket.assigned', 'org-1', { ticketId: 'ticket-1', assigneeId: 'u-1' }, 'ticket-outbox-publisher',
+    );
     expect(updateMock).toHaveBeenCalledTimes(1);
   });
 
-  it('drains ticket.restored the unmapped way', async () => {
+  it('drains the unmapped ticket.restored — marks published WITHOUT calling publishEvent', async () => {
     executeMock.mockResolvedValueOnce({ rows: [] });
     executeMock.mockResolvedValueOnce({
       rows: [claimedRow({ id: 6, event_type: 'ticket.restored', payload: {} })],
@@ -234,6 +242,8 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
     expect(result).toEqual({ published: 1, skipped: 0 });
     expect(publishEventMock).not.toHaveBeenCalled();
     expect(enqueueTicketEventMock).not.toHaveBeenCalled();
+    // Still drained: the row is marked published even with no bus target.
+    expect(updateMock).toHaveBeenCalledTimes(1);
   });
 
   // #7963: the assignee notification is queued from the COMMITTED outbox row,
@@ -243,7 +253,7 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
       assigneeId: 'u-2', actorUserId: 'u-1', actorPrincipalId: null, partnerId: 'p-1',
     };
 
-    it('queues ticket.assigned with a deterministic eventId and the recorded actor, then marks published', async () => {
+    it('queues ticket.assigned with a deterministic eventId and the recorded actor, publishes it, then marks published', async () => {
       executeMock.mockResolvedValueOnce({ rows: [] });
       executeMock.mockResolvedValueOnce({
         rows: [claimedRow({ id: 5, event_type: 'ticket.assigned', payload: assignedPayload })],
@@ -265,8 +275,14 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
         eventId: 'ticket-outbox-5',
         payload: { assigneeId: 'u-2' },
       });
-      // Not bridged onto the eventBus, and not via the swallow-errors emitter.
-      expect(publishEventMock).not.toHaveBeenCalled();
+      // Also bridged onto the eventBus (webhooks, automations), but never
+      // through the swallow-errors emitter.
+      expect(publishEventMock).toHaveBeenCalledTimes(1);
+      expect(publishEventMock).toHaveBeenCalledWith(
+        'ticket.assigned', 'org-1', { ticketId: 'ticket-1', ...assignedPayload }, 'ticket-outbox-publisher',
+      );
+      expect(enqueueTicketEventMock.mock.invocationCallOrder[0]!)
+        .toBeLessThan(publishEventMock.mock.invocationCallOrder[0]!);
       expect(emitTicketEventMock).not.toHaveBeenCalled();
       expect(updateMock).toHaveBeenCalledTimes(1);
     });
@@ -303,6 +319,8 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
 
       expect(result).toEqual({ published: 1, skipped: 0 });
       expect(captureException).toHaveBeenCalledTimes(1);
+      // Nothing reached the bus for row 5 either: the queue runs first.
+      expect(publishEventMock).not.toHaveBeenCalled();
       // Only row 6 is marked published; row 5 stays NULL for the next pass.
       expect(chain.where).toHaveBeenCalledTimes(1);
       expect(chain.where).toHaveBeenCalledWith({ markedPublishedIds: [6] });
@@ -326,6 +344,84 @@ describe('ticketOutboxPublisher.publishOutboxRows', () => {
 
       expect(result).toEqual({ published: 3, skipped: 0 });
       expect(enqueueTicketEventMock).not.toHaveBeenCalled();
+      // The bus still hears about all three (an unassign is a change too).
+      expect(publishEventMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('leaves the row unpublished when the bus publish fails after the job was queued', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      executeMock.mockResolvedValueOnce({
+        rows: [claimedRow({ id: 5, event_type: 'ticket.assigned', payload: assignedPayload })],
+      });
+      const chain = makeUpdateChain();
+      updateMock.mockReturnValue({ set: chain.set });
+      publishEventMock.mockRejectedValueOnce(new Error('redis down'));
+
+      const result = await publishOutboxRows();
+
+      // The next pass queues the job again under the same eventId
+      // (ticket-outbox-5), which the worker's dedupe key suppresses.
+      expect(enqueueTicketEventMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ published: 0, skipped: 0 });
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(chain.where).not.toHaveBeenCalled();
+    });
+  });
+
+  // A rolled-back create must notify nobody, so ticket.created's job is queued
+  // from the COMMITTED row too (#7963's rule, applied to creates).
+  describe('ticket.created → assignee notification job', () => {
+    const createdPayload = {
+      internalNumber: 'T-2026-0042', source: 'api', assigneeId: 'u-2',
+      actorUserId: null, actorPrincipalId: 'sp-1', partnerId: 'p-1',
+    };
+
+    it('queues ticket.created with a deterministic eventId and the recorded actor, then publishes it', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      executeMock.mockResolvedValueOnce({
+        rows: [claimedRow({ id: 7, event_type: 'ticket.created', payload: createdPayload })],
+      });
+      updateMock.mockReturnValue({ set: makeUpdateChain().set });
+
+      const result = await publishOutboxRows();
+
+      expect(result).toEqual({ published: 1, skipped: 0 });
+      expect(enqueueTicketEventMock).toHaveBeenCalledTimes(1);
+      expect(enqueueTicketEventMock).toHaveBeenCalledWith({
+        type: 'ticket.created',
+        ticketId: 'ticket-1',
+        orgId: 'org-1',
+        partnerId: 'p-1',
+        actorUserId: null,
+        actorPrincipalId: 'sp-1',
+        eventId: 'ticket-outbox-7',
+        payload: { internalNumber: 'T-2026-0042', assigneeId: 'u-2', source: 'api' },
+      });
+      expect(publishEventMock).toHaveBeenCalledWith(
+        'ticket.created', 'org-1', { ticketId: 'ticket-1', ...createdPayload }, 'ticket-outbox-publisher',
+      );
+      expect(enqueueTicketEventMock.mock.invocationCallOrder[0]!)
+        .toBeLessThan(publishEventMock.mock.invocationCallOrder[0]!);
+      expect(emitTicketEventMock).not.toHaveBeenCalled();
+    });
+
+    it('queues nothing for an unassigned create, or for a row written before the change, but still publishes both', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      executeMock.mockResolvedValueOnce({
+        rows: [
+          claimedRow({ id: 8, event_type: 'ticket.created', payload: { ...createdPayload, assigneeId: null } }),
+          // pre-change rows: createTicket already queued their job itself
+          claimedRow({ id: 9, event_type: 'ticket.created', payload: {} }),
+          claimedRow({ id: 10, event_type: 'ticket.created', payload: { internalNumber: 'T-1', source: 'manual', assigneeId: 'u-2' } }),
+        ],
+      });
+      updateMock.mockReturnValue({ set: makeUpdateChain().set });
+
+      const result = await publishOutboxRows();
+
+      expect(result).toEqual({ published: 3, skipped: 0 });
+      expect(enqueueTicketEventMock).not.toHaveBeenCalled();
+      expect(publishEventMock).toHaveBeenCalledTimes(3);
     });
   });
 

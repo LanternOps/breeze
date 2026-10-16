@@ -1,0 +1,11 @@
+{ "public": {
+  "title": "Review a support request", "loading": "Loading request…", "hello": "Hello, {{name}}",
+  "request": "{{technician}} from {{partner}} wants to:",
+  "reset_password": "Reset the password for {{target}}", "disable_user": "Disable the account for {{target}}",
+  "any": "Confirm a support request for {{target}}", "target": "the requested account", "provider": "your support provider",
+  "reverse": "Request code", "choose": "Tap the number your technician asks you to select. Never read a code back.",
+  "notMe": "This is not me", "caution": "Only tap a number if you are on the phone with {{technician}} right now. If you are not sure, hang up and call {{partner}} on the number you already have.",
+  "expires": "Expires in {{seconds}} seconds", "expired": "This request is unavailable or has expired.",
+  "received": "Your response has been received.", "failed": "Could not send your response. Please try again.",
+  "loadFailed": "Could not load the request. Please try again.", "retry": "Try again", "sending": "Sending…"
+} }

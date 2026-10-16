@@ -28,6 +28,7 @@ import {
   type SsoReauthIntent,
   type SsoReauthManageIntent,
 } from '@/lib/ssoReauthIntent';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 /**
  * #4045: the API's two factor-management rejections that mean "the SSO re-auth
@@ -114,11 +115,7 @@ function takeSsoReauthErrorFromQuery(): string | null {
   if (!code) return null;
   params.delete(SSO_REAUTH_ERROR_PARAM);
   const qs = params.toString();
-  window.history.replaceState(
-    null,
-    '',
-    `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`,
-  );
+  replaceUrl(`${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`);
   return code;
 }
 
@@ -133,7 +130,7 @@ function takeSsoReauthGrantFromHash(): string | null {
   const match = /^#ssoReauthGrant=(.+)$/.exec(window.location.hash);
   if (!match) return null;
   const grantId = decodeURIComponent(match[1]);
-  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  replaceUrl(`${window.location.pathname}${window.location.search}`);
   return grantId;
 }
 

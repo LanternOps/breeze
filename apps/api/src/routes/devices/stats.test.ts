@@ -27,6 +27,8 @@ vi.mock('../../db/schema', () => ({
     siteId: 'devices.siteId',
     status: 'devices.status',
     migrationRequired: 'devices.migrationRequired',
+    logShippingState: 'devices.logShippingState',
+    logShippingFailureStartedAt: 'devices.logShippingFailureStartedAt',
   },
 }));
 
@@ -57,7 +59,12 @@ const registeredPermissionCalls = [...requirePermissionMock.mock.calls];
 let lastWhereArg: unknown;
 
 function mockGroupByRows(
-  rows: Array<{ status: string; count: number | string; migrationRequiredCount?: number | string }>
+  rows: Array<{
+    status: string;
+    count: number | string;
+    migrationRequiredCount?: number | string;
+    logShippingFailingCount?: number | string;
+  }>
 ) {
   lastWhereArg = undefined;
   vi.mocked(db.select).mockReturnValueOnce({
@@ -118,6 +125,7 @@ describe('device stats route', () => {
       offline: 3,
       byStatus: { online: 3, offline: 2, maintenance: 1 },
       migrationRequiredCount: 0,
+      logShippingFailingCount: 0,
     });
   });
 
@@ -136,6 +144,7 @@ describe('device stats route', () => {
       offline: 0,
       byStatus: {},
       migrationRequiredCount: 0,
+      logShippingFailingCount: 0,
     });
   });
 
@@ -197,6 +206,7 @@ describe('device stats route', () => {
       offline: 0,
       byStatus: {},
       migrationRequiredCount: 0,
+      logShippingFailingCount: 0,
     });
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
   });
@@ -216,5 +226,22 @@ describe('device stats route', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.migrationRequiredCount).toBe(2);
+  });
+
+  // #8611: the failing count is filtered per status group in SQL (online only,
+  // episode >= 30 min) and summed here; offline groups contribute zero.
+  it('sums logShippingFailingCount across status groups', async () => {
+    mockGroupByRows([
+      { status: 'online', count: '5', logShippingFailingCount: '2' },
+      { status: 'offline', count: '3', logShippingFailingCount: '0' },
+    ]);
+
+    const res = await app.request('/devices/stats', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.logShippingFailingCount).toBe(2);
   });
 });

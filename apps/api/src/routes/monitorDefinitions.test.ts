@@ -291,14 +291,14 @@ describe('GET /monitor-definitions', () => {
 });
 
 describe('GET /monitor-definitions/kinds', () => {
-  it('returns twenty-one monitor kinds with kind/overridableKeys/defaultSeverity/agentDelivered', async () => {
+  it('returns twenty-two monitor kinds with kind/overridableKeys/defaultSeverity/agentDelivered', async () => {
     const res = await jsonRequest(buildApp(), 'GET', '/kinds');
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       data: Array<{ kind: string; overridableKeys: string[]; defaultSeverity: string; agentDelivered: boolean }>;
     };
-    expect(body.data).toHaveLength(21);
+    expect(body.data).toHaveLength(22);
     expect(body.data).toHaveLength(MONITOR_KINDS.length);
     expect(new Set(body.data.map((d) => d.kind))).toEqual(new Set(MONITOR_KINDS));
     for (const entry of body.data) {
@@ -379,6 +379,52 @@ describe('POST /monitor-definitions', () => {
       error: 'INVALID_MONITOR',
       details: 'condition does not match kind cpu',
     });
+  });
+});
+
+describe('event_log collection warnings at save (#8174)', () => {
+  const infoCondition = (sourcePattern: string) => ({
+    category: 'application',
+    level: 'info',
+    sourcePattern,
+    countThreshold: 1,
+    windowMinutes: 60,
+  });
+
+  it('POST returns warnings for an info-level Application source outside the agent allowlist', async () => {
+    const created = { ...monitorRow(), kind: 'event_log', condition: infoCondition('Application Error') };
+    createMonitorDefinitionMock.mockResolvedValue(created);
+
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.data).toEqual(created);
+    expect(body.warnings).toHaveLength(1);
+    expect(body.warnings[0]).toContain('Application Error');
+    expect(body.warnings[0]).toContain('MsiInstaller');
+  });
+
+  it('POST omits warnings for an allowlisted provider', async () => {
+    const created = { ...monitorRow(), kind: 'event_log', condition: infoCondition('MsiInstaller') };
+    createMonitorDefinitionMock.mockResolvedValue(created);
+
+    const res = await jsonRequest(buildApp(), 'POST', '', validCreateBody());
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ data: created });
+  });
+
+  it('PATCH returns warnings computed from the saved row (a partial patch carries no kind)', async () => {
+    const updated = { ...monitorRow(), kind: 'event_log', condition: infoCondition('VSS') };
+    updateMonitorDefinitionMock.mockResolvedValue(updated);
+
+    const res = await jsonRequest(buildApp(), 'PATCH', `/${MONITOR_ID}`, { name: 'Renamed' });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.warnings).toHaveLength(1);
+    expect(body.warnings[0]).toContain('VSS');
   });
 });
 

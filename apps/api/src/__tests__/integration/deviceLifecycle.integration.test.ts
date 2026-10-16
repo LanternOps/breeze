@@ -834,12 +834,16 @@ describe('deviceLifecycle (integration)', () => {
     } catch (err) {
       caught = err;
     }
-    // Pin the SQLSTATE, not just "it threw": a vacuous `rejects.toThrow()`
+    // Pin the failure, not just "it threw": a vacuous `rejects.toThrow()`
     // would also pass if the fixture were wrong for an unrelated reason.
-    // Drizzle wraps the postgres-js PostgresError in a DrizzleQueryError
-    // whose own `.code` is undefined — the SQLSTATE lives on `.cause` (same
-    // unwrap hazard `routes/devices/core.ts` documents for this route).
-    expect((caught as { cause?: { code?: string } } | undefined)?.cause?.code).toBe('23503');
+    // Since #7278 the cascade's fix-memory step (fixMemory/store
+    // deleteDeviceFixOutcomes) refuses any non-system scope, so an org-scoped
+    // cascade now stops there, before the parent DELETE could reach the
+    // NO ACTION FK (23503) it used to hit. Either way the transaction rolls
+    // back and nothing is removed, which is what the assertions below pin.
+    expect((caught as Error | undefined)?.message).toMatch(
+      /deleteDeviceFixOutcomes: requires an open system-scoped DB context \(ambient scope: organization\)/,
+    );
     expect(await deviceExists(device.id)).toBe(true);
     expect(
       await getTestDb().select({ id: alerts.id }).from(alerts).where(eq(alerts.deviceId, device.id)),

@@ -317,6 +317,42 @@ describe('parts routes', () => {
     expect(body).toHaveProperty('total', 0);
   });
 
+  // QA sweep 2026-10-09: the web client's fetchWithAuth injects the header
+  // org selector as `?orgId=`. When that org differs from the ticket's org,
+  // the list filtered time_entries.org_id by the header org and came back
+  // empty while the billing summary (ticket-scoped) still counted the entries.
+  it('GET /:id/time-entries scopes by the ticket org, not a different ?orgId= the caller can also access', async () => {
+    const ORG_A = '11111111-1111-4111-8111-111111111111'; // header org selector
+    const ORG_B = '22222222-2222-4222-8222-222222222222'; // the ticket's org
+    authRef.current.accessibleOrgIds = [ORG_A, ORG_B];
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: ORG_B, deviceId: null });
+    const fixture = [{ id: 'te-1', ticketId: TICKET_ID, orgId: ORG_B }];
+    timeServiceMocks.listTimeEntries.mockImplementation(async (f: { ticketId?: string; orgId?: string }) => {
+      const entries = fixture.filter((e) => (!f.ticketId || e.ticketId === f.ticketId) && (!f.orgId || e.orgId === f.orgId));
+      return { entries, total: entries.length };
+    });
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/time-entries?orgId=${ORG_A}&limit=5`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.total).toBe(1);
+    expect(body.data.map((e: { id: string }) => e.id)).toEqual(['te-1']);
+    expect(timeServiceMocks.listTimeEntries).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketId: TICKET_ID, orgId: ORG_B, limit: 5 })
+    );
+  });
+
+  it('GET /:id/time-entries still 404s when the ticket org is not accessible, even with an accessible ?orgId=', async () => {
+    const ORG_A = '11111111-1111-4111-8111-111111111111';
+    authRef.current.accessibleOrgIds = [ORG_A];
+    getScopedTicketOr404Mock.mockResolvedValue(null); // ticket lives in an org outside the allowlist
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/time-entries?orgId=${ORG_A}`);
+    expect(res.status).toBe(404);
+    expect(getScopedTicketOr404Mock).toHaveBeenCalledWith(authRef.current, TICKET_ID);
+    expect(timeServiceMocks.listTimeEntries).not.toHaveBeenCalled();
+  });
+
   it('GET /:id/billing-summary 404s for out-of-scope ticket', async () => {
     getScopedTicketOr404Mock.mockResolvedValue(null);
     const res = await ticketsRoutes.request(`/${TICKET_ID}/billing-summary`);

@@ -83,6 +83,21 @@ vi.mock('./ticketMoveCurrencyGuard', async () => {
   const actual = await vi.importActual<typeof import('./ticketMoveCurrencyGuard')>('./ticketMoveCurrencyGuard');
   return { ...actual, assertTicketMoveCurrencyCompatible: guardMock };
 });
+// #8181: the block-drawn guard runs real Postgres in hourBlockOrgMove.integration.test.ts;
+// here it is a mock so its placement relative to the currency guard can be pinned.
+const { hourBlockGuardMock, approvalGuardMock } = vi.hoisted(() => ({
+  hourBlockGuardMock: vi.fn().mockResolvedValue(undefined),
+  approvalGuardMock: vi.fn().mockResolvedValue(undefined),
+}));
+// #4617: the pending-approval move guard (real-DB behaviour in ticketApprovalRequests.integration.test.ts).
+vi.mock('./ticketMoveApprovalGuard', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMoveApprovalGuard')>('./ticketMoveApprovalGuard');
+  return { ...actual, assertNoPendingApprovalRequest: approvalGuardMock };
+});
+vi.mock('./ticketMoveHourBlockGuard', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMoveHourBlockGuard')>('./ticketMoveHourBlockGuard');
+  return { ...actual, assertNoHourBlockDrawnTime: hourBlockGuardMock };
+});
 vi.mock('./ticketConfigService', () => ({
   getOrgSlaOverride: (...args: unknown[]) => configMocks.getOrgSlaOverride(...args),
   getPartnerPrioritySla: (...args: unknown[]) => configMocks.getPartnerPrioritySla(...args),
@@ -248,7 +263,8 @@ vi.mock('../db/schema', () => ({
     createdAt: 'createdAt',
     submitterEmail: 'submitterEmail',
     requesterContactId: 'requesterContactId',
-    deletedAt: 'deletedAt'
+    deletedAt: 'deletedAt',
+    ticketType: 'ticketType'
   },
   // #4524: moveTicketOrg nulls the reverse pointer ticket_comments.agent_run_id,
   // so these two columns must exist on the mock or the WHERE builds on undefined.
@@ -348,15 +364,18 @@ describe('createTicket', () => {
     });
   });
 
-  it('resolves partnerId from the org, allocates a number, inserts, emits ticket.created', async () => {
+  it('resolves partnerId from the org, allocates a number, inserts; queues no ticket.created job itself', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
-    const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual' }, actor);
+    const t = await createTicket({ orgId: 'o-1', subject: 'Printer offline', source: 'manual', assigneeId: 'u-2' }, actor);
 
     expect(allocateMock).toHaveBeenCalledWith('p-1');
     expect(t.internalNumber).toBe('T-2026-0042');
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created', ticketId: 't-1' }));
+    // #7963's rule, applied to creates: a job queued inside this transaction
+    // would survive its rollback. ticketOutboxPublisher queues it from the
+    // committed outbox row instead.
+    expect(emitMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created' }));
     expect(auditMock).toHaveBeenCalled();
   });
 
@@ -371,8 +390,12 @@ describe('createTicket', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.created' });
-    // id-only: no subject/description ever reaches the outbox payload.
-    expect(outboxPayload.payload).toEqual({});
+    // id-only: no subject/description ever reaches the outbox payload. The
+    // actor and partner ride the row for the publisher's assignee job.
+    expect(outboxPayload.payload).toEqual({
+      internalNumber: 'T-2026-0042', source: 'manual', assigneeId: null,
+      actorUserId: 'u-1', actorPrincipalId: null, partnerId: 'p-1',
+    });
     expect(JSON.stringify(outboxPayload)).not.toContain('SECRET');
   });
 
@@ -1094,7 +1117,7 @@ describe('changeTicketStatus', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.status_changed' });
-    expect(outboxPayload.payload).toEqual({ from: 'open', to: 'resolved' });
+    expect(outboxPayload.payload).toEqual({ from: 'open', to: 'resolved', statusId: null });
     expect(JSON.stringify(outboxPayload)).not.toContain('SECRET');
   });
 
@@ -1747,8 +1770,9 @@ describe('assignTicket', () => {
 
     await assignTicket('t-1', 'u-2', actor);
 
-    // call 0 is the assignment feed comment; call 1 is the outbox row.
-    expect(valuesMock).toHaveBeenCalledTimes(2);
+    // call 0 is the assignment feed comment; call 1 is the assigned outbox row;
+    // call 2 is the implicit new->open ticket.status_changed row (#8367).
+    expect(valuesMock).toHaveBeenCalledTimes(3);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.assigned' });
     expect(outboxPayload.payload).toEqual({
@@ -1809,7 +1833,8 @@ describe('addTicketComment', () => {
   // — the comment CONTENT never reaches the outbox, only its id + visibility.
   it('writes a ticket_outbox row (commented) with commentId + isPublic, never the comment content', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', firstResponseAt: null }]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+    // The inserted row, as Postgres returns it: the outbox origin is read off it.
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true, originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1' }]);
 
     await addTicketComment('t-1', { content: 'SECRET: customer is a flight risk', isPublic: true }, actor);
@@ -1819,7 +1844,7 @@ describe('addTicketComment', () => {
     expect(valuesMock).toHaveBeenCalledTimes(2);
     const outboxPayload = valuesMock.mock.calls[1]![0];
     expect(outboxPayload).toMatchObject({ orgId: 'o-1', ticketId: 't-1', eventType: 'ticket.commented' });
-    expect(outboxPayload.payload).toEqual({ commentId: 'c-1', isPublic: true });
+    expect(outboxPayload.payload).toEqual({ commentId: 'c-1', isPublic: true, originPrincipalKind: 'user', originPrincipalId: null });
     expect(JSON.stringify(outboxPayload)).not.toContain('SECRET');
   });
 
@@ -2179,6 +2204,68 @@ describe('assignTicket — additional status cases', () => {
     expect(updatePayload).toMatchObject({ assignedTo: 'u-2' });
     expect(updatePayload).not.toHaveProperty('status');
   });
+
+  // #8367: the implicit new -> open move must reach webhook / Partner API
+  // consumers as ticket.status_changed, in the same transaction as
+  // ticket.assigned.
+  const outboxRows = () =>
+    valuesMock.mock.calls
+      .map((c) => c[0])
+      .filter((v) => v && typeof v.eventType === 'string');
+
+  it('assigns on new ticket: writes ticket.assigned AND ticket.status_changed (new->open) outbox rows (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open', statusId: null }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    const rows = outboxRows();
+    expect(rows.map((r) => r.eventType)).toEqual(['ticket.assigned', 'ticket.status_changed']);
+    expect(rows[1]).toMatchObject({ orgId: 'o-1', ticketId: 't-1' });
+    expect(rows[1].payload).toEqual({ from: 'new', to: 'open', statusId: null });
+  });
+
+  it('stamps the open system statusId on the ticket and carries it in the status_changed row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', statusId: 's-new', assignedTo: null
+    }]);
+    configMocks.getSystemStatusId.mockResolvedValueOnce('s-open');
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open', statusId: 's-open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    expect(configMocks.getSystemStatusId).toHaveBeenCalledWith('p-1', 'open');
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ status: 'open', statusId: 's-open' });
+    expect(outboxRows()[1].payload).toEqual({ from: 'new', to: 'open', statusId: 's-open' });
+  });
+
+  it('assigns on open ticket: no ticket.status_changed outbox row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: 'u-2', status: 'open' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', 'u-2', actor);
+
+    expect(outboxRows().map((r) => r.eventType)).toEqual(['ticket.assigned']);
+  });
+
+  it('unassigning a new ticket: no ticket.status_changed outbox row (#8367)', async () => {
+    dbMocks.selectResult.mockResolvedValue([{
+      id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'new', assignedTo: null
+    }]);
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: null, status: 'new' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await assignTicket('t-1', null, actor);
+
+    expect(outboxRows().map((r) => r.eventType)).toEqual(['ticket.assigned']);
+  });
 });
 
 describe('updateTicketFields', () => {
@@ -2227,7 +2314,9 @@ describe('updateTicketFields', () => {
       ticketId: 't-1',
       eventType: 'ticket.updated'
     });
-    expect(outboxPayload.payload).toEqual({});
+    // Field NAMES only — never the new values.
+    expect(outboxPayload.payload).toEqual({ changed: ['subject', 'priority'] });
+    expect(JSON.stringify(outboxPayload)).not.toContain('New subject');
 
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
       type: 'ticket.updated',
@@ -2726,7 +2815,9 @@ describe('createTicketFromAlert', () => {
 
     const t = await createTicketFromAlert('a-1', actor);
     expect(t.id).toBe('t-9');
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created' }));
+    expect(valuesMock.mock.calls.map((c) => c[0])).toContainEqual(
+      expect.objectContaining({ ticketId: 't-9', eventType: 'ticket.created' }),
+    );
 
     // Assert createTicket's insert payload got priority: 'high' for severity: 'high'
     const ticketInsertPayload = valuesMock.mock.calls[0]![0];
@@ -4102,7 +4193,7 @@ describe('moveTicketOrg', () => {
 
     const texts = executedSqlTexts();
     expect(texts[0]).toBe(
-      'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk DEFERRED'
+      'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk DEFERRED'
     );
     // Never `SET CONSTRAINTS ALL DEFERRED` — that would also defer the three
     // constraints this path relies on failing fast.
@@ -4112,15 +4203,22 @@ describe('moveTicketOrg', () => {
     // statement, is visible here — executedTableNames() only counts
     // statements with a table identifier chunk and would not catch either.
     // 1 SET CONSTRAINTS + 1 ai_operator_task_targets ticket detach (#6167,
-    // recipe library E2) + 9 child-table rewrites (time_entries, ticket_parts,
+    // recipe library E2) + 10 child-table rewrites (time_entries, ticket_parts,
     // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links,
-    // ticket_checklist_items, ticket_external_refs, partner_api_idempotency_keys
-    // — same 9 tables as the 'moves ticket to a same-partner org' test below).
-    expect(texts).toHaveLength(11);
+    // ticket_checklist_items, ticket_external_refs, partner_api_idempotency_keys,
+    // ticket_approval_requests — same 10 tables as the 'moves ticket to a
+    // same-partner org' test below) + 1 ticket_links delete on both legs
+    // (#7900 W02, the TICKET_ORG_MOVE_DELETE_TABLES tail, after the rewrites).
+    // + 1 shared ticket_links advisory lock right after SET CONSTRAINTS
+    // (services/ticketLinkLock.ts), before any row lock.
+    expect(texts).toHaveLength(14);
+    expect(texts[1]).toMatch(/^SELECT pg_advisory_xact_lock_shared\(hashtextextended\(/);
+    const linkDelete = texts.findIndex((t) => /DELETE FROM ticket_links WHERE source_ticket_id = .* OR target_ticket_id = /.test(t));
+    expect(linkDelete).toBe(texts.length - 1);
     // The Operator target detach severs the plain ticket_id FK and stamps the
     // detach in the same statement (one_pointer_chk).
     expect(texts.filter((t) => /UPDATE ai_operator_task_targets\s+SET ticket_id = NULL/.test(t))).toHaveLength(1);
-    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk DEFERRED')).toHaveLength(1);
+    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk DEFERRED')).toHaveLength(1);
   });
 
   it('#5573 W02: refuses to move a ticket pinned to a deliverable occurrence, before the ticket UPDATE', async () => {
@@ -4187,6 +4285,17 @@ describe('moveTicketOrg', () => {
     // #4657 fixed on the device axis, which moveOrg.test.ts pins the same way.
     // Compared against the shared constant so the two stay coupled.
     expect(executedTableNames()).toEqual([...TICKET_ORG_DENORMALIZED_TABLES]);
+
+    // #8356: time_entries.site_id is a plain FK to sites and tickets carry no
+    // site, so the moved entries must drop their source-org site link in the
+    // SAME statement that re-stamps org_id (one UPDATE keeps the shared lock
+    // order unchanged). Every other child table keeps the org_id-only rewrite.
+    const rewrites = executedSqlTexts().filter((t) => t.startsWith('UPDATE '));
+    const timeEntryRewrites = rewrites.filter((t) => t.startsWith('UPDATE time_entries '));
+    expect(timeEntryRewrites).toEqual(['UPDATE time_entries SET org_id = ::uuid, site_id = NULL WHERE ticket_id = ::uuid']);
+    for (const t of rewrites.filter((r) => !r.startsWith('UPDATE time_entries '))) {
+      expect(t, 'only time_entries carries a site_id to re-point').not.toContain('site_id');
+    }
 
     // System feed comment inserted with "Moved to <org name>"
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -4294,9 +4403,11 @@ describe('moveTicketOrg', () => {
     // ticket-linked tables in the same relative order. The shared order lives
     // in ticketOrgMoveLockOrder.ts.
     // ticket_external_refs and partner_api_idempotency_keys (Partner API
-    // tickets) are appended last after it, in that order.
-    expect(tables[tables.length - 1]).toBe('partner_api_idempotency_keys');
+    // tickets) follow it, in that order, and ticket_approval_requests (#4617)
+    // is appended last after them.
+    expect(tables[tables.length - 1]).toBe('ticket_approval_requests');
     expect(tables.indexOf('ticket_external_refs')).toBeLessThan(tables.indexOf('partner_api_idempotency_keys'));
+    expect(tables.indexOf('partner_api_idempotency_keys')).toBeLessThan(tables.indexOf('ticket_approval_requests'));
     expect(tables.indexOf('ticket_attachments')).toBeLessThan(tables.indexOf('ticket_email_links'));
     expect(tables.indexOf('ticket_email_links')).toBeLessThan(tables.indexOf('ticket_checklist_items'));
     expect(tables.indexOf('ticket_checklist_items')).toBeLessThan(tables.indexOf('ticket_external_refs'));
@@ -4397,7 +4508,7 @@ describe('moveTicketOrg', () => {
     const result = await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' }, { acceptCurrencyMismatch: true });
     expect(result.orgId).toBe('oB');
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
-    expect(executedTableNames()).toHaveLength(9); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items, Partner API tickets added ticket_external_refs + partner_api_idempotency_keys; #4596 SET CONSTRAINTS is not a rewrite
+    expect(executedTableNames()).toHaveLength(10); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items, Partner API tickets added ticket_external_refs + partner_api_idempotency_keys, #4617 added ticket_approval_requests; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       commentType: 'system',
       content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
@@ -4436,7 +4547,7 @@ describe('moveTicketOrg', () => {
 
     await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' });
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
-    expect(executedTableNames()).toHaveLength(9); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items, Partner API tickets added ticket_external_refs + partner_api_idempotency_keys; #4596 SET CONSTRAINTS is not a rewrite
+    expect(executedTableNames()).toHaveLength(10); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items, Partner API tickets added ticket_external_refs + partner_api_idempotency_keys, #4617 added ticket_approval_requests; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
     const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
     expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');
@@ -4452,6 +4563,49 @@ describe('moveTicketOrg', () => {
     const firstRewriteOrder = firstRewriteInvocationOrder();
     expect(updateOrder).toBeLessThan(guardOrder);
     expect(guardOrder).toBeLessThan(firstRewriteOrder);
+  });
+
+  it('(e) #8181: the block-drawn guard runs on the moving ticket after tx.update(tickets), BEFORE the currency guard', async () => {
+    seedCrossCurrencyMove();
+    guardMock.mockResolvedValueOnce({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+
+    await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' });
+    expect(hourBlockGuardMock).toHaveBeenCalledWith(expect.anything(), { ticketIds: ['t1'] });
+    const updateOrder = setMock.mock.invocationCallOrder[0]!;
+    const blockOrder = hourBlockGuardMock.mock.invocationCallOrder.at(-1)!;
+    const guardOrder = guardMock.mock.invocationCallOrder[0]!;
+    expect(updateOrder).toBeLessThan(blockOrder);
+    expect(blockOrder).toBeLessThan(guardOrder);
+  });
+
+  it('(g) #4617: the pending-approval guard runs on the moving ticket after tx.update(tickets), before the other guards', async () => {
+    seedCrossCurrencyMove();
+    guardMock.mockResolvedValueOnce({ sourceCurrency: 'USD', targetCurrency: 'EUR', unbilledTimeEntries: 0, unbilledParts: 0, accepted: false });
+    await moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' });
+    expect(approvalGuardMock).toHaveBeenCalledWith(expect.anything(), { ticketIds: ['t1'] });
+    const updateOrder = setMock.mock.invocationCallOrder[0]!;
+    const approvalOrder = approvalGuardMock.mock.invocationCallOrder.at(-1)!;
+    expect(updateOrder).toBeLessThan(approvalOrder);
+    expect(approvalOrder).toBeLessThan(hourBlockGuardMock.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it('(h) #4617: a pending-approval refusal is a 409 that aborts before any child rewrite', async () => {
+    const { TicketMoveApprovalPendingError } = await vi.importActual<typeof import('./ticketMoveApprovalGuard')>('./ticketMoveApprovalGuard');
+    seedCrossCurrencyMove();
+    approvalGuardMock.mockRejectedValueOnce(new TicketMoveApprovalPendingError({ pendingApprovalRequests: 1 }));
+    await expect(moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' }))
+      .rejects.toMatchObject({ status: 409, code: 'APPROVAL_REQUEST_PENDING', details: { pendingApprovalRequests: 1 } });
+    expect(guardMock).not.toHaveBeenCalled();
+    expect(hourBlockGuardMock).not.toHaveBeenCalled();
+  });
+
+  it('(f) #8181: a block-drawn refusal aborts before the currency guard and any child rewrite', async () => {
+    const { TicketMoveHourBlockError } = await vi.importActual<typeof import('./ticketMoveHourBlockGuard')>('./ticketMoveHourBlockGuard');
+    seedCrossCurrencyMove();
+    hourBlockGuardMock.mockRejectedValueOnce(new TicketMoveHourBlockError({ drawnTimeEntries: 2 }));
+    await expect(moveTicketOrg('t1', 'oB', { kind: 'user' as const, userId: 'admin' }))
+      .rejects.toMatchObject({ status: 409, code: 'HOUR_BLOCK_DRAWN_TIME', details: { drawnTimeEntries: 2 } });
+    expect(guardMock).not.toHaveBeenCalled();
   });
 });
 
@@ -4684,7 +4838,7 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
 
   it('sendTicketDraft writes the aiDraft claim (draft, run, trigger) into the ticket.commented outbox payload', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([replyDraft]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
 
     await sendTicketDraft('t-1', 'draft-1', undefined, actor);
@@ -4692,18 +4846,20 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
     expect(outboxPayload('ticket.commented')).toEqual({
       commentId: 'c-1',
       isPublic: true,
+      originPrincipalKind: 'user',
+      originPrincipalId: null,
       aiDraft: { draftId: 'draft-1', runId: 'run-1', trigger: 'draft_sent' },
     });
   });
 
   it('sendTicketDraft writes no claim for a draft with no run', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([{ ...replyDraft, runId: null }]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', originPrincipalKind: 'user', originPrincipalId: null }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
 
     await sendTicketDraft('t-1', 'draft-1', undefined, actor);
 
-    expect(outboxPayload('ticket.commented')).toEqual({ commentId: 'c-1', isPublic: true });
+    expect(outboxPayload('ticket.commented')).toEqual({ commentId: 'c-1', isPublic: true, originPrincipalKind: 'user', originPrincipalId: null });
   });
 
   it('resolving with an aiDraftId writes the resolved_with_ai_note claim into the ticket.status_changed outbox payload', async () => {
@@ -4720,6 +4876,7 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
     expect(outboxPayload('ticket.status_changed')).toEqual({
       from: 'open',
       to: 'resolved',
+      statusId: null,
       aiDraft: { draftId: 'draft-1', runId: 'run-9', trigger: 'resolved_with_ai_note' },
     });
   });
@@ -4731,7 +4888,7 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
 
     await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'Replaced toner' }, actor);
 
-    expect(outboxPayload('ticket.status_changed')).toEqual({ from: 'open', to: 'resolved' });
+    expect(outboxPayload('ticket.status_changed')).toEqual({ from: 'open', to: 'resolved', statusId: null });
   });
 
   it('ticketService never imports the action-intent graph (worker closure contract)', async () => {
@@ -5014,14 +5171,17 @@ describe('service-principal actor (Partner API tickets, Wave 1)', () => {
     expect(actorProvenance({ kind: 'system', source: 'planned_work' })).toBe('system');
   });
 
-  it('createTicket: audited as api_key keyed by the principal, event actorUserId null', async () => {
+  it('createTicket: audited as api_key keyed by the principal, outbox actorUserId null', async () => {
     dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
     dbMocks.insertReturning.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
 
     const t = await createTicket({ orgId: 'o-1', subject: 'From PSA', source: 'api' }, spActor);
     expect(t.id).toBe('t-1');
     expect(valuesMock.mock.calls[0]![0]).toMatchObject({ source: 'api', submitterName: 'PSA Bridge' });
-    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'ticket.created', actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID }));
+    expect(valuesMock.mock.calls.map((c) => c[0])).toContainEqual(expect.objectContaining({
+      eventType: 'ticket.created',
+      payload: expect.objectContaining({ actorUserId: null, actorPrincipalId: SP_PRINCIPAL_ID }),
+    }));
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
       action: 'ticket.create', actorType: 'api_key', actorId: SP_PRINCIPAL_ID,
       details: expect.objectContaining({ source: 'api', partnerServicePrincipalName: 'PSA Bridge' }),
@@ -5040,5 +5200,188 @@ describe('service-principal actor (Partner API tickets, Wave 1)', () => {
     expect(audit.actorId).toBe('u-1');
     expect('actorType' in audit).toBe(false);
     expect('initiatedBy' in audit).toBe(false);
+  });
+});
+
+
+// ─── #7900 / #8592 W01: ticket_type ────────────────────────────────────────────
+
+describe('ticket_type — create-path defaults and provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    allocateMock.mockResolvedValue('T-2026-0042');
+    assertTicketCreationAllowedMock.mockReset().mockResolvedValue(undefined);
+    assigneeEligibleMock.mockResolvedValue(true);
+  });
+
+  it.each(['manual', 'api', 'ai'] as const)('a %s ticket with no explicit type defaults to incident and stamps no provenance', async (source) => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-tt-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Type default', source }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload.ticketType).toBe('incident');
+    expect(insertPayload.fieldProvenance).toBeUndefined();
+  });
+
+  it('a portal ticket defaults to incident', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]).mockResolvedValueOnce([]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-tt-2', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Portal', source: 'portal', submittedBy: 'pu-1', submitterEmail: 'a@example.com' }, actor);
+
+    expect(valuesMock.mock.calls[0]![0].ticketType).toBe('incident');
+  });
+
+  it('honours an explicit ticketType and stamps it with the caller provenance', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-tt-3', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Explicit', source: 'manual', ticketType: 'problem' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload.ticketType).toBe('problem');
+    expect(insertPayload.fieldProvenance).toEqual({ ticketType: 'user' });
+  });
+
+  it('planned work (non-support work kind) defaults to service_request with no provenance', async () => {
+    dbMocks.selectResult.mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-tt-4', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    const { createPlannedWorkTicket } = await import('./plannedWorkTicket');
+    const result = await createPlannedWorkTicket(
+      { orgId: 'o-1', workKind: 'deliverable', subject: 'Monthly review', dueDate: new Date('2026-11-01T00:00:00Z'), assigneeId: null, categoryId: null },
+      { kind: 'system', source: 'planned_work' } as never,
+      {},
+    );
+
+    expect(result.kind).toBe('created');
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({ workKind: 'deliverable', ticketType: 'service_request' });
+    expect(insertPayload.fieldProvenance).toBeUndefined();
+  });
+
+  it('an alert-created ticket is an incident (no explicit value, so no provenance)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'a-1', orgId: 'o-1', deviceId: null, title: 'Disk 90%', message: 'C: at 92%', severity: 'high' }])
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 't-tt-5', orgId: 'o-1', partnerId: 'p-1', status: 'new' }])
+      .mockResolvedValueOnce([{ id: 'a-1', orgId: 'o-1', title: 'Disk 90%' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-tt-5', orgId: 'o-1', internalNumber: 'T-2026-0042' }]);
+
+    await createTicketFromAlert('a-1', actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload.ticketType).toBe('incident');
+    expect(insertPayload.fieldProvenance).toBeUndefined();
+  });
+});
+
+describe('ticket_type — updateTicketFields', () => {
+  const BASE_TICKET = {
+    id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: null,
+    subject: 'Printer offline', description: null, categoryId: null,
+    priority: 'normal', dueDate: null, deviceId: null, tags: [], ticketType: 'incident',
+    responseSlaMinutes: 60, resolutionSlaMinutes: 480, workKind: 'support', fieldProvenance: {},
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    setMock.mockClear();
+    matchContactMock.mockResolvedValue({ kind: 'no-match' });
+  });
+
+  it('changes the type: ONE internal system comment with old/new, ticket.updated changed=[ticketType], provenance, no SLA/due-date restamp', async () => {
+    dbMocks.selectResult.mockResolvedValue([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, ticketType: 'problem' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    const t = await updateTicketFields('t-1', { ticketType: 'problem' }, actor);
+    expect(t).toMatchObject({ ticketType: 'problem' });
+
+    const updatePayload = setMock.mock.calls[0]![0];
+    expect(updatePayload.ticketType).toBe('problem');
+    for (const key of ['responseSlaMinutes', 'resolutionSlaMinutes', 'dueDate', 'categoryId', 'priority']) {
+      expect(updatePayload).not.toHaveProperty(key);
+    }
+    // Provenance is stamped in the same statement (a SQL jsonb merge).
+    expect(updatePayload.fieldProvenance).toBeDefined();
+
+    // Exactly one feed comment (then the outbox row).
+    expect(valuesMock).toHaveBeenCalledTimes(2);
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({
+      ticketId: 't-1',
+      commentType: 'system',
+      isPublic: false,
+      content: 'Updated type',
+      oldValue: 'incident',
+      newValue: 'problem',
+    });
+
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'ticket.updated',
+      payload: { changed: ['ticketType'] },
+    }));
+    // No category/priority triage feedback for a classification edit.
+    expect(emitTriageFeedbackMock).not.toHaveBeenCalled();
+  });
+
+  it('a type change mixed with another field keeps a single comment', async () => {
+    dbMocks.selectResult.mockResolvedValue([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, subject: 'New', ticketType: 'change' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { subject: 'New', ticketType: 'change' }, actor);
+
+    expect(valuesMock).toHaveBeenCalledTimes(2);
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({ content: 'Updated subject, type', oldValue: 'incident', newValue: 'change' });
+    expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({ payload: { changed: ['subject', 'ticketType'] } }));
+  });
+
+  it('an unchanged type is a no-op (no write, no comment, no event)', async () => {
+    dbMocks.selectResult.mockResolvedValue([BASE_TICKET]);
+
+    await updateTicketFields('t-1', { ticketType: 'incident' }, actor);
+
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('a non-type edit leaves oldValue/newValue unset on the feed comment', async () => {
+    dbMocks.selectResult.mockResolvedValue([BASE_TICKET]);
+    dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, subject: 'New' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
+
+    await updateTicketFields('t-1', { subject: 'New' }, actor);
+
+    const comment = valuesMock.mock.calls[0]![0];
+    expect(comment.oldValue).toBeUndefined();
+    expect(comment.newValue).toBeUndefined();
+  });
+});
+
+describe('ticket_type — listOrgTicketsForAddin (additive field)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('selects ticketType for both lists and returns it on each summary', async () => {
+    const row = {
+      id: 't-1', internalNumber: 'T-1', subject: 'S', status: 'open', priority: 'normal',
+      updatedAt: new Date('2026-08-14T00:00:00Z'), submitterEmail: null, ticketType: 'problem',
+    };
+    dbMocks.selectResult.mockResolvedValueOnce([row]).mockResolvedValueOnce([row]);
+
+    const result = await listOrgTicketsForAddin({ orgId: 'org-1', partnerId: 'partner-1' });
+
+    const { db } = await import('../db');
+    const selections = (db.select as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => c[0]);
+    expect(selections).toHaveLength(2);
+    for (const sel of selections) expect(sel).toMatchObject({ ticketType: 'ticketType' });
+    expect(result.openTickets[0]!.ticketType).toBe('problem');
+    expect(result.recentTickets[0]!.ticketType).toBe('problem');
   });
 });

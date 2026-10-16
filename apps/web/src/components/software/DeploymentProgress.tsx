@@ -20,6 +20,7 @@ import type {
 } from "./DeploymentList";
 import { SOFTWARE_INSTALL_SERVER_TIMEOUT_MS } from "@breeze/shared";
 import { describeInFlight, type InFlightStage } from "./deploymentInFlight";
+import RestorePointBadge, { type RestorePointBadgeOutcome } from "../restorePoints/RestorePointBadge";
 
 export const DEPLOYMENT_POLL_INTERVAL_MS = 5000;
 const RESULTS_LIMIT = 200;
@@ -54,6 +55,8 @@ type DeploymentResultRow = {
   /** #3578: last in-flight stage the agent reported, and when (newer agents only). */
   agentStage?: string | null;
   agentStageAt?: string | null;
+  /** #4759 W08: newest System Restore ledger row for this device's install (null when Breeze never asked). */
+  restorePoint?: RestorePointBadgeOutcome | null;
 };
 
 export interface DeploymentProgressProps {
@@ -560,6 +563,11 @@ export default function DeploymentProgress({
                           ? t(/* i18n-dynamic */ style.labelKey)
                           : result.status}
                       </span>
+                      {result.restorePoint && (
+                        <div className="mt-1">
+                          <RestorePointBadge outcome={result.restorePoint} />
+                        </div>
+                      )}
                       {inFlight && (
                         <p
                           className="mt-1 text-xs text-muted-foreground"

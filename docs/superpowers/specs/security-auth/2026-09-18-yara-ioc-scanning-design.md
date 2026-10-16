@@ -231,7 +231,7 @@ policy `USING (is_builtin)`; write access to them is system-scope only.
 ## 10. Performance budget and gates
 
 - Quick scan (Temp / Downloads / autoruns) with the core pack: ≤ 2 minutes, ≤ 25 % of one
-  core on the Windows lab rig `WIN-IMDR2GAIDMV`.
+  core on the Windows lab rig `lab-windows-server-vm`.
 - Full scan: bounded by `scanTimeoutMinutes` (default 120), partial results reported.
 - W02 publishes wasm vs native numbers; the sidecar decision is made on those.
 
@@ -268,6 +268,42 @@ W04 and W05 depend on W03.
 
 ## 14. Quorum record
 
-Pending. Codex xhigh read-only review to be run before W02; expected challenge areas: D1
+Pending at drafting. Codex xhigh read-only review to be run before W02; expected challenge areas: D1
 (wasm vs sidecar now), D3 (riding `security` vs a new feature type), §5 step 1 (where to
 compile).
+
+### 14.1 Owner decision, 2026-10-13 (binding; supersedes D2 and §5 step 1)
+
+Rules compile **in the agent**, via a Go `breeze-yarac` on YARA-X. Consequences, as worked out in the
+W02/W03 plans (`docs/superpowers/plans/security-auth/2026-10-13-yara-ioc-scanning-w02-agent-engine.md`,
+`…-w03-rule-sets.md`):
+
+- The server ships a canonical rule **source bundle** (W02 plan §C2) over device-authenticated TLS,
+  sha256-pinned in the scan payload. The server never produces or ships compiled rules. D2's
+  "never as source on disk" becomes "never explicitly persisted on the device": source lives in
+  agent memory during compile; only an XOR-obfuscated, integrity-checked compiled cache is written.
+- `breeze-yarac` is one Go package in the agent module (`agent/internal/yarascan/yarac`) used
+  in-process by the agent, plus a thin CLI (`agent/cmd/breeze-yarac`) that the API image runs as the
+  server-side **pre-check** (W03) and CI runs for the pack pipeline. Same code, same policy version.
+- §4's `yara_rule_sets.compiled bytea` is replaced by a published-bundle snapshot
+  (`published_bundle`, `published_sha256`, `published_version`) — §5.2's "last good, flagged stale"
+  now refers to the last pre-checked bundle.
+- Q2 is answered: `breeze-yarac` goes into the API image as a pre-check binary only (W03 Open Decision 2
+  keeps a Node-only fallback on the table).
+
+### 14.2 Codex quorum, 2026-10-13 (gpt-6-astra, xhigh, read-only)
+
+Run against the W02/W03 position. Agreed: source-bundle delivery (P1), one shared Go compiler + thin
+CLI (P2), the W03a/W03b split. Findings adopted into the plans: upstream yaraxwasm enables `include`
+by default (must be disabled explicitly); compile-policy version must be part of cache identity and
+diagnostics; the built-in CHECK must be `built-in ⇔ both owners NULL` (the drafted
+`is_builtin OR XOR` would let a tenant mint a globally readable "built-in"); children must not drift
+from the parent's owner; quarantine once per file with an identity re-check; a requested rule set that
+fails, or an agent too old to use it, must be recorded as an explicit degraded/legacy outcome, not as a
+silent legacy scan. Disagreements: none left open — both of Codex's DISAGREE points were resolved by
+adopting its correction.
+
+### 14.3 W02 benchmark and sidecar go/no-go
+
+To be recorded by W02 Task 11 (Windows lab rig; quick scan ≤ 2 min and ≤ 25 % of one core; peak
+working set ≤ 300 MB with 2 workers).

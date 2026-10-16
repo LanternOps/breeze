@@ -20,6 +20,14 @@ import { useQueueKeyboard } from './useQueueKeyboard';
 import { type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { fetchTicketConfig, type TicketConfig } from '../../lib/ticketConfigApi';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { replaceUrl } from '../../lib/replaceUrl';
+import {
+  TICKET_TYPE_ORDER,
+  isTicketType,
+  ticketTypeFromHash,
+  ticketTypeLabelKey,
+  type TicketType,
+} from './ticketType';
 
 // Aggregate outcome of a POST /tickets/bulk call.
 interface BulkResult { updated: number; skipped: number; failed: number; total: number; skippedReasons?: Record<string, number> }
@@ -118,30 +126,38 @@ function tabQuery(tab: Exclude<Tab, 'review' | 'archived'>): string {
   }
 }
 
-// Hash layout (hash-based UI state per CLAUDE.md): `#<selection>&sort=<sort>`.
+// Hash layout (hash-based UI state per CLAUDE.md):
+// `#<selection>&sort=<sort>&type=<type>`.
 // The bare segment is the selected ticket key (internal number or id); the
-// `sort=` segment carries the queue sort. Both are optional, and the default
-// sort ('triage') is omitted so plain `#T-2026-0001` hashes keep working.
+// `sort=` segment carries the queue sort and `type=` the ticket-type filter
+// (#7900). All are optional, and the default sort ('triage') is omitted so
+// plain `#T-2026-0001` hashes keep working. A `type=` segment is matched
+// BEFORE the selection fallback, so it can never be read as a ticket key; an
+// unknown type value is dropped, not turned into a selection.
 // Pure: takes the raw hash (leading `#` already stripped by useHashState, #2421).
-function parseHash(hash: string): { selection: string | null; sort: TicketSort } {
+function parseHash(hash: string): { selection: string | null; sort: TicketSort; type: TicketType | null } {
   let selection: string | null = null;
   let sort: TicketSort = 'triage';
+  let type: TicketType | null = null;
   for (const part of hash.split('&')) {
     if (!part) continue;
     if (part.startsWith('sort=')) {
       const value = part.slice('sort='.length);
       if (isTicketSort(value)) sort = value;
-    } else {
+    } else if (!part.startsWith('type=')) {
       selection = part;
     }
   }
-  return { selection, sort };
+  // Same helper as the sidebar, over the whole hash, so a repeated `type=`
+  // segment resolves identically in the list filter and the nav highlight.
+  return { selection, sort, type: ticketTypeFromHash(hash) };
 }
 
-function hashFor(selection: string | null, sort: TicketSort): string {
+function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null): string {
   const parts: string[] = [];
   if (selection) parts.push(selection);
   if (sort !== 'triage') parts.push(`sort=${sort}`);
+  if (type) parts.push(`type=${type}`);
   return parts.length > 0 ? `#${parts.join('&')}` : '';
 }
 
@@ -164,6 +180,9 @@ export default function TicketsPage() {
   // parse → undefined falls back to the null default, preserving "no selection".
   const [selectedNumber, setSelectedNumber] = useHashState<string | null>(null, (h) => parseHash(h).selection ?? undefined);
   const [sort, setSort] = useHashState<TicketSort>('triage', (h) => parseHash(h).sort);
+  // Ticket-type filter (#7900): '' = All. Hash-backed so the Service Desk nav
+  // entries (`/tickets#type=<type>`) and bookmarks deep-link into it.
+  const [typeFilter, setTypeFilter] = useHashState<TicketType | ''>('', (h) => parseHash(h).type ?? '');
   const [search, setSearch] = useState('');
   // Debounced twin of `search` — only this drives the list fetch, so typing
   // doesn't fire a 100-row query per keystroke (the input itself stays instant).
@@ -196,13 +215,23 @@ export default function TicketsPage() {
 
   // 'mine'/'unassigned' tabs already pin the assignee param; the filter select is locked there.
   const assigneeLocked = tab === 'mine' || tab === 'unassigned';
-  const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter);
+  const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter || typeFilter);
+
+  // Single writer for the hash so selection, sort and type never clobber each
+  // other. Declared before clearFilters, which rewrites it.
+  const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '') => {
+    replaceUrl(hashFor(selection, sortValue, typeValue || null) || window.location.pathname + window.location.search);
+  }, []);
 
   const clearFilters = useCallback(() => {
     setPriorityFilter('');
     setCategoryFilter('');
     setAssigneeFilter('');
-  }, []);
+    if (typeFilter) {
+      setTypeFilter('');
+      writeHash(selectedNumber, sort, '');
+    }
+  }, [typeFilter, selectedNumber, sort, writeHash]);
 
   // Filter options load once; failures degrade per-select (these are filters, not critical path).
   useEffect(() => {
@@ -244,6 +273,8 @@ export default function TicketsPage() {
       if (debouncedSearch) params.set('search', debouncedSearch);
       if (priorityFilter) params.set('priority', priorityFilter);
       if (categoryFilter) params.set('categoryId', categoryFilter);
+      // Omit for "All": the API rejects a blank ticketType= with 400.
+      if (typeFilter) params.set('ticketType', typeFilter);
       // The 'mine'/'unassigned' tabs already set assignee; the filter applies only on the other tabs.
       if (assigneeFilter && tab !== 'mine' && tab !== 'unassigned') params.set('assignee', assigneeFilter);
       // 'triage' is the server default, so it's omitted — which also lets the
@@ -264,7 +295,7 @@ export default function TicketsPage() {
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, sort, stableT]);
+  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort, stableT]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -339,12 +370,7 @@ export default function TicketsPage() {
     setBulkSelectedIds(new Set());
     setBulkAssignee('');
     setBulkStatus('');
-  }, [search, priorityFilter, categoryFilter, assigneeFilter]);
-
-  // Single writer for the hash so selection and sort never clobber each other.
-  const writeHash = useCallback((selection: string | null, sortValue: TicketSort) => {
-    history.replaceState(null, '', hashFor(selection, sortValue) || window.location.pathname + window.location.search);
-  }, []);
+  }, [search, priorityFilter, categoryFilter, assigneeFilter, typeFilter]);
 
   const selected = useMemo(
     () => tickets.find((t) => t.internalNumber === selectedNumber || t.id === selectedNumber) ?? null,
@@ -358,10 +384,10 @@ export default function TicketsPage() {
     if (!loading && tickets.length > 0 && !selected) {
       const first = tickets[0];
       const key = first.internalNumber ?? first.id;
-      writeHash(key, sort);
+      writeHash(key, sort, typeFilter);
       setSelectedNumber(key);
     }
-  }, [tab, loading, tickets, selected, sort, writeHash]);
+  }, [tab, loading, tickets, selected, sort, typeFilter, writeHash]);
 
   const select = useCallback((t: TicketSummary) => {
     // Below the split-pane breakpoint the workbench pane is hidden; navigate
@@ -371,9 +397,9 @@ export default function TicketsPage() {
       return;
     }
     const key = t.internalNumber ?? t.id;
-    writeHash(key, sort);
+    writeHash(key, sort, typeFilter);
     setSelectedNumber(key);
-  }, [sort, writeHash]);
+  }, [sort, typeFilter, writeHash]);
 
   const move = useCallback((delta: 1 | -1) => {
     if (tickets.length === 0) return;
@@ -609,6 +635,23 @@ export default function TicketsPage() {
             <option key={cat.id} value={cat.id}>{cat.name}</option>
           ))}
         </select>
+        <select
+          value={typeFilter}
+          onChange={(e) => {
+            const value = e.target.value;
+            const next: TicketType | '' = isTicketType(value) ? value : '';
+            setTypeFilter(next);
+            writeHash(selectedNumber, sort, next);
+          }}
+          aria-label={t('ticketsPage.filterByType')}
+          data-testid="tickets-filter-type"
+          className={filterSelectClass(!!typeFilter)}
+        >
+          <option value="">{t('ticketsPage.allTypes')}</option>
+          {TICKET_TYPE_ORDER.map((type) => (
+            <option key={type} value={type}>{t(/* i18n-dynamic */ ticketTypeLabelKey(type))}</option>
+          ))}
+        </select>
         {assignees !== null && (
           <select
             value={assigneeFilter}
@@ -631,7 +674,7 @@ export default function TicketsPage() {
             const value = e.target.value;
             if (!isTicketSort(value)) return;
             setSort(value);
-            writeHash(selectedNumber, value);
+            writeHash(selectedNumber, value, typeFilter);
           }}
           aria-label={t('ticketsPage.sortTickets')}
           data-testid="ticket-sort"

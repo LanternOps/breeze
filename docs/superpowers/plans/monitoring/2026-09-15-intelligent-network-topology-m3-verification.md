@@ -109,7 +109,7 @@ What `topology-operations.spec.ts` asserts:
 
 This run closes the "Native Windows traceroute" item above for IPv4. IPv6 is partly covered: see the last list in this section.
 
-**Host.** The two Server 2022 lab VMs (`WIN-IMDR2GAIDMV`, `WIN-DHQNR1F8LO2`) were offline on Tailscale, so the run used `dell70601`. This is the physical Windows 11 Pro test workstation, build 10.0.26200.8653. It sits on Ethernet `192.168.10.103/24` behind gateway `192.168.10.1`. It has Tailscale IPv6 (ULA `fd7a:115c:a1e0::/48`) but no global IPv6. Its installed Breeze agent was not touched, and no second agent ran. Only a `go test` binary ran, from the scratch directory `C:\tmp\trace-lab-20260927`, which was deleted afterwards.
+**Host.** The two Server 2022 lab VMs (`lab-windows-server-vm`, `lab-windows-server-vm-2`) were offline on Tailscale, so the run used `lab-windows-11-host`. This is the physical Windows 11 Pro test workstation, build 10.0.26200.8653. It sits on Ethernet `<lab-windows-11-host-lan-ip>/24` behind gateway `<lab-lan-gateway-ip>`. It has Tailscale IPv6 (ULA `fd7a:115c:a1e0::/48`) but no global IPv6. Its installed Breeze agent was not touched, and no second agent ran. Only a `go test` binary ran, from the scratch directory `C:\tmp\trace-lab-20260927`, which was deleted afterwards.
 
 **Method.** Test binaries were cross-compiled on the Mac (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c`, Go 1.26.6 per `agent/go.mod`) and copied to the host with `scp`. An ASCII `.cmd` file ran them. Shared vector JSON was staged at the relative path the tests read. The lab suite is `agent/internal/networkdiagnostic/traceroute_lab_windows_test.go`. It is gated by `//go:build windows` and `BREEZE_LAB_TRACE`, so CI skips it. Each case takes the production path: `networkcontext.NewReader` → `NativeIO` → sealed `trace_route` command → `Run` → `executeTrace` → `windowsICMPTraceTransport`. Rerun it with:
 
@@ -124,9 +124,9 @@ networkdiagnostic.test.exe -test.v -test.count=1 -test.run TestLabWindows
 
 | Probe | Decoded | Raw |
 |---|---|---|
-| IPv4 → 1.1.1.1, TTL 1 | responder 192.168.10.1, status 11013, RTT 0 ms | `c0a80a01 052b0000 00000000 00000000 …` |
+| IPv4 → 1.1.1.1, TTL 1 | responder `<lab-lan-gateway-ip>`, status 11013, RTT 0 ms | `c0a80a01 052b0000 00000000 00000000 …` |
 | IPv4 → 1.1.1.1, TTL 64 | responder 1.1.1.1, status 0, RTT 13 ms | `01010101 00000000 0d000000 20000000 …` |
-| IPv6 → fd7a:…:903a:5777, hop limit 64 | responder = destination, status 0, RTT 4 ms | `0000 00000000 fd7a115ca1e0000000000000903a5777 00000000 0000 00000000 04000000 …` |
+| IPv6 → `<lab-macos-host-tailscale-ipv6>`, hop limit 64 | responder = destination, status 0, RTT 4 ms | `0000 00000000 <lab-macos-host-tailscale-ipv6-bytes> 00000000 0000 00000000 04000000 …` |
 
 IPv4: Address@0, Status@4 and RoundTripTime@8 match `ipexport.h`. IPv6: sin6_port@0, flowinfo@2, sin6_addr@6–22 and scope@22 are followed by 2 bytes of padding, then Status@28 and RoundTripTime@32. The 4 ms read at @32 matches `ping -6` (3–5 ms). Status@28 was only seen with a value of 0.
 
@@ -135,11 +135,11 @@ IPv4: Address@0, Status@4 and RoundTripTime@8 match `ipexport.h`. IPv6: sin6_por
 | Case | Result | Evidence |
 |---|---|---|
 | Capability: `TraceSupported()` and `NativeIO.TraceTransport()` | PASS | true and non-nil |
-| (a) Default gateway 192.168.10.1, max 4 hops | PASS | `succeeded`: 1 hop, `192.168.10.1`, 1.08 ms, `observed` |
-| (b) 1.1.1.1, 30×2 | PASS | `succeeded` in 2.1 s. 21 hops: `192.168.10.1` → `10.27.29.3` → `68.85.220.5` → `68.85.89.229` → `68.86.103.37` → `96.216.22.245` → `96.110.43.245` → `96.110.33.126` → TTL 9 **both probes `address:null, rttMs:null, outcome:timeout, unknown`** → `172.68.32.12` → `1.1.1.1` (destination confirmed at TTL 11, attempt 1, 22 ms) |
-| (c) 192.0.2.1 blackhole, 8×1 | PASS | `failed_check / trace_destination_unreachable`. Hops 1–6 replied. TTL 7 `96.110.43.253` answered **destination unreachable**, and the trace stopped at that router. No hop claimed 192.0.2.1 |
-| (d) IPv6 `fd7a:115c:a1e0::903a:5777` (the Mac over Tailscale), 30×1 | PASS **after the fix below** | `succeeded`: 1 hop, destination, 3 ms, `observed`, source `fd7a:115c:a1e0::6c3a:7c71` |
-| (e) Unused on-link address 192.168.10.250, 2×1 (observational) | PASS | Run 1: both hops `null` + `timeout` (ARP had not failed within the 1 s hop budget). Run 2: TTL 1 `unreachable` from **the host's own address** `192.168.10.103`, 987 ms, then stop |
+| (a) Default gateway `<lab-lan-gateway-ip>`, max 4 hops | PASS | `succeeded`: 1 hop, `<lab-lan-gateway-ip>`, 1.08 ms, `observed` |
+| (b) 1.1.1.1, 30×2 | PASS | `succeeded` in 2.1 s. 21 hops: `<lab-lan-gateway-ip>` → `<isp-hop-2>` → `<isp-hop-3>` → `<isp-hop-4>` → `<isp-hop-5>` → `<isp-hop-6>` → `<isp-hop-7>` → `<isp-hop-8>` → TTL 9 **both probes `address:null, rttMs:null, outcome:timeout, unknown`** → `172.68.32.12` → `1.1.1.1` (destination confirmed at TTL 11, attempt 1, 22 ms) |
+| (c) 192.0.2.1 blackhole, 8×1 | PASS | `failed_check / trace_destination_unreachable`. Hops 1–6 replied. TTL 7 `<isp-hop-7>` answered **destination unreachable**, and the trace stopped at that router. No hop claimed 192.0.2.1 |
+| (d) IPv6 `<lab-macos-host-tailscale-ipv6>` (the Mac over Tailscale), 30×1 | PASS **after the fix below** | `succeeded`: 1 hop, destination, 3 ms, `observed`, source `<lab-windows-11-host-tailscale-ipv6>` |
+| (e) Unused on-link address `<lab-lan-unused-ip>`, 2×1 (observational) | PASS | Run 1: both hops `null` + `timeout` (ARP had not failed within the 1 s hop budget). Run 2: TTL 1 `unreachable` from **the host's own address** `<lab-windows-11-host-lan-ip>`, 987 ms, then stop |
 
 Across all runs, every answered hop had a valid responder in the destination's family, and every RTT was in (0, 1000] ms. No panics. The `nd` unit suite ran natively: every assertion passed. The 16–18 reds were all `TempDir RemoveAll cleanup: … journal.lock … being used by another process` (see the findings), plus the vector-path reds before the vector files were staged.
 

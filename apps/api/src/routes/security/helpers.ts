@@ -128,13 +128,18 @@ export function computePosture(row: StatusRow): { status: SecurityState; riskLev
 
   let riskScore = 0;
 
-  if (!row.realTimeProtection) riskScore += 2;
-  if (!row.firewallEnabled) riskScore += 1;
+  // Only a reported `false` is "off". A null reading is unknown (#8252): it adds
+  // no penalty, but it cannot confirm protection either.
+  if (row.realTimeProtection === false) riskScore += 2;
+  if (row.firewallEnabled === false) riskScore += 1;
   if (normalizeEncryption(row.encryptionStatus) === 'unencrypted') riskScore += 1;
   riskScore += Math.min(3, row.threatCount);
 
   if (riskScore === 0) {
-    return { status: 'protected', riskLevel: 'low' };
+    const unverified = row.realTimeProtection === null || row.firewallEnabled === null;
+    return unverified
+      ? { status: 'at_risk', riskLevel: 'low' }
+      : { status: 'protected', riskLevel: 'low' };
   }
 
   if (riskScore >= 5) {
@@ -182,7 +187,7 @@ export function computeSecurityScore(statuses: ReturnType<typeof toStatusRespons
   if (statuses.length === 0) return 0;
 
   const protectedPct = (statuses.filter((s) => s.status === 'protected').length / statuses.length) * 100;
-  const firewallPct = (statuses.filter((s) => s.firewallEnabled).length / statuses.length) * 100;
+  const firewallPct = (statuses.filter((s) => s.firewallEnabled === true).length / statuses.length) * 100;
   const encryptionPct = (statuses.filter((s) => s.encryptionStatus !== 'unencrypted').length / statuses.length) * 100;
   const activeThreatPenalty = Math.min(25, threatRows.filter((t) => t.status === 'active').length * 4);
 
@@ -247,9 +252,9 @@ export async function listStatusRows(auth: AuthContext, orgId?: string): Promise
     providerVersion: row.providerVersion,
     definitionsVersion: row.definitionsVersion,
     definitionsDate: row.definitionsDate,
-    realTimeProtection: row.realTimeProtection ?? false,
+    realTimeProtection: row.realTimeProtection ?? null,
     threatCount: row.threatCount ?? 0,
-    firewallEnabled: row.firewallEnabled ?? false,
+    firewallEnabled: row.firewallEnabled ?? null,
     encryptionStatus: row.encryptionStatus ?? 'unknown',
     encryptionDetails: row.encryptionDetails ?? null,
     localAdminSummary: row.localAdminSummary ?? null,

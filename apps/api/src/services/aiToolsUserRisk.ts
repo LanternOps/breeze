@@ -47,6 +47,7 @@ function shapeReliabilityRow(row: ReliabilityListItem, includeTopIssues: boolean
     topIssueCount: Array.isArray(topIssues) ? topIssues.length : 0,
     ...(includeTopIssues ? { topIssues } : {}),
     ...rest,
+    provisional: row.provisional,
   };
 }
 

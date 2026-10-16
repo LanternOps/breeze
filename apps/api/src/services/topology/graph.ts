@@ -70,7 +70,7 @@ function emptyGraph(ctx: TopologyRequestContext, query: GraphQuery, authority: A
     layout: { algorithm: 'none', version: 0, positions: [] },
     counts: { totalNodes: 0, totalRelationships: 0, visibleNodes: 0, visibleRelationships: 0, omittedNodes: 0, omittedRelationships: 0 },
     coverage: { state: 'unknown', reasons: [{ code: 'topology_preparing', message: 'No topology snapshot has been published.' }] },
-    frontier: [], permissions: { canEdit: authority.canEdit, canDiagnose: false, canConfigureMonitoring: false } };
+    frontier: [], permissions: { canEdit: authority.canEdit, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: authority.canMoveDevices } };
 }
 /** `presentationGroups: false` skips the complete-site grouping read for callers that never render cards (AI reads). */
 export type GraphReadOptions = { presentationGroups?: boolean };

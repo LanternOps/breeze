@@ -4,7 +4,11 @@ const mocks = vi.hoisted(() => ({ transaction: vi.fn(), execute: vi.fn() }));
 
 vi.mock('../db', () => ({ db: { transaction: mocks.transaction } }));
 
-import { recordPamActuationResult, type PamAgentResultV2 } from './pamActuationResult';
+import {
+  recordPamActuationResult,
+  toV1PamResultClassification,
+  type PamAgentResultV2,
+} from './pamActuationResult';
 
 const baseResult: PamAgentResultV2 = {
   protocolVersion: 2,
@@ -18,6 +22,7 @@ const baseResult: PamAgentResultV2 = {
 
 const current = {
   id: baseResult.actuationId,
+  device_epoch: 1,
   org_id: '10000000-0000-4000-8000-000000000003',
   device_id: '10000000-0000-4000-8000-000000000004',
   elevation_request_id: '10000000-0000-4000-8000-000000000005',
@@ -35,6 +40,7 @@ describe('recordPamActuationResult', () => {
 
   it('persists a current verified-active observation and advances the session', async () => {
     mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [current] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 'result-1' }] })
@@ -46,42 +52,84 @@ describe('recordPamActuationResult', () => {
       agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
       result: baseResult,
     })).resolves.toBe('applied');
-    expect(mocks.execute).toHaveBeenCalledTimes(6);
+    expect(mocks.execute).toHaveBeenCalledTimes(7);
   });
 
   it('classifies repeated observation identity as duplicate without mutation', async () => {
     mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [current] })
       .mockResolvedValueOnce({ rows: [{ id: 'existing-result' }] });
     await expect(recordPamActuationResult({
       agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
       result: baseResult,
     })).resolves.toBe('duplicate');
-    expect(mocks.execute).toHaveBeenCalledTimes(2);
+    expect(mocks.execute).toHaveBeenCalledTimes(3);
   });
 
   it('rejects foreign command/device identity and classifies lower generations as stale', async () => {
-    mocks.execute.mockResolvedValueOnce({ rows: [] });
+    mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ status: 'unresolved' }] });
     await expect(recordPamActuationResult({
       agentId: 'agent-foreign', deviceId: current.device_id, commandId: current.current_command_id,
       result: baseResult,
     })).resolves.toBe('rejected');
 
-    mocks.execute.mockReset().mockResolvedValueOnce({ rows: [{ ...current, generation: 4 }] });
+    mocks.execute.mockReset().mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ ...current, generation: 4 }] });
     await expect(recordPamActuationResult({
       agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
       result: baseResult,
     })).resolves.toBe('stale');
   });
 
+  // PAM ownership epochs W3 (#8205): no current-epoch actuation matched, so
+  // the lineage definer function decides. Only `retired` short-circuits, and
+  // nothing after it is written.
+  it.each([
+    ['retired', 'retired'],
+    ['stale', 'rejected'],
+    ['bound', 'rejected'],
+    ['unresolved', 'rejected'],
+  ])('maps a lineage disposition of %s to %s and writes nothing', async (lineage, expected) => {
+    mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ status: lineage }] });
+    await expect(recordPamActuationResult({
+      agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
+      result: baseResult,
+    })).resolves.toBe(expected);
+    expect(mocks.execute).toHaveBeenCalledTimes(3);
+  });
+
+  it('treats an empty lineage answer as rejected', async () => {
+    mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+    await expect(recordPamActuationResult({
+      agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
+      result: baseResult,
+    })).resolves.toBe('rejected');
+  });
+
+  it('never acknowledges retired to a protocol-v1 agent', () => {
+    expect(toV1PamResultClassification('retired')).toBe('stale');
+    for (const value of ['applied', 'duplicate', 'stale', 'rejected'] as const) {
+      expect(toV1PamResultClassification(value)).toBe(value);
+    }
+  });
+
   it('rejects verified-active after cleanup and cleaned without independent negative evidence', async () => {
-    mocks.execute.mockResolvedValueOnce({ rows: [{ ...current, desired_state: 'cleanup' }] });
+    mocks.execute.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ ...current, desired_state: 'cleanup' }] });
     await expect(recordPamActuationResult({
       agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
       result: baseResult,
     })).resolves.toBe('rejected');
 
-    mocks.execute.mockReset().mockResolvedValueOnce({ rows: [{ ...current, desired_state: 'cleanup' }] });
+    mocks.execute.mockReset().mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ ...current, desired_state: 'cleanup' }] });
     await expect(recordPamActuationResult({
       agentId: 'agent-1', deviceId: current.device_id, commandId: current.current_command_id,
       result: { ...baseResult, state: 'cleaned', evidence: { bootId: 'boot-1', jobMemberCount: 1 } },
@@ -92,6 +140,7 @@ describe('recordPamActuationResult', () => {
   // carries jobObjectAbsent alongside the same four independent negatives.
   it('applies a crash-recovered cleaned result that carries jobObjectAbsent with independent evidence', async () => {
     mocks.execute
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ ...current, desired_state: 'cleanup' }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 'result-2' }] })
@@ -110,7 +159,7 @@ describe('recordPamActuationResult', () => {
         },
       },
     })).resolves.toBe('applied');
-    expect(mocks.execute).toHaveBeenCalledTimes(6);
+    expect(mocks.execute).toHaveBeenCalledTimes(7);
   });
 
   it('still rejects an unknown evidence key before opening a transaction', async () => {

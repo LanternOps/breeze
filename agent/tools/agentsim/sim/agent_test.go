@@ -57,6 +57,53 @@ func TestAgentReenrollsWhenTheStoredTokenIs401(t *testing.T) {
 	}
 }
 
+// A heartbeat cut off by the run ending is not a lost heartbeat: the error
+// budget counts only failures the server or network caused.
+func TestCancelledHeartbeatIsNotLost(t *testing.T) {
+	f := newFakeAPI(t)
+	hold := make(chan struct{})
+	f.setHoldHeartbeat(hold)
+	t.Cleanup(func() { close(hold) }) // registered after newFakeAPI: runs before srv.Close
+	cfg := testConfig(f, t.TempDir())
+	cfg.WSEnabled = false
+	cfg.Cadence = Cadence{Heartbeat: 50 * ms}
+	id := f.preEnroll(0)
+	rec := newTestRecorder()
+	rec.EnableTimeline(time.Second, time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { NewAgent(&cfg, rec, id, nil).Run(ctx); close(done) }()
+	eventually(t, 2*time.Second, func() bool { return f.count(RouteHeartbeat) >= 1 }, "no heartbeat reached the fake")
+	cancel()
+	<-done
+	for i, b := range rec.timeline.Buckets() {
+		if b.HeartbeatsLost != 0 || b.RequestsLost != 0 {
+			t.Fatalf("bucket %d: a heartbeat cancelled by the run end was counted as lost: %+v", i, b)
+		}
+	}
+}
+
+// A heartbeat that fails after the agent's own retries is lost.
+func TestRefusedHeartbeatIsLost(t *testing.T) {
+	f := newFakeAPI(t)
+	cfg := testConfig(f, t.TempDir())
+	cfg.WSEnabled = false
+	cfg.Cadence = Cadence{Heartbeat: 50 * ms}
+	id := Identity{Index: 0, AgentID: "unknown", AuthToken: "brz_nope"} // 401 on every beat
+	rec := newTestRecorder()
+	rec.EnableTimeline(time.Second, time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*ms)
+	defer cancel()
+	NewAgent(&cfg, rec, id, nil).Run(ctx)
+	var lost uint64
+	for _, b := range rec.timeline.Buckets() {
+		lost += b.HeartbeatsLost
+	}
+	if lost == 0 {
+		t.Fatal("401 heartbeats must count as lost")
+	}
+}
+
 func TestHeartbeatCommandIsAnsweredOverHTTPWithoutASocket(t *testing.T) {
 	f := newFakeAPI(t)
 	cfg := testConfig(f, t.TempDir())

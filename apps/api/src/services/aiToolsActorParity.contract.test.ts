@@ -246,8 +246,8 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   TicketActor: 'write provenance; ticket site scope lives in routes/tickets/siteScope.ts',
   // `time_entries` carry no site column; they hang off a ticket, whose own site
   // scope is enforced on the ticket query.
-  TimeEntryActor: 'time entries are ticket-keyed — no site_id',
-  SuggestionActor: 'extends TimeEntryActor — same reason',
+  // TimeEntryActor carries allowedSiteIds since #4186 (time_entries.site_id).
+  SuggestionActor: 'extends TimeEntryActor, which declares the site axis; the interface body itself adds none',
   // Recipe library E2 (#6167). Not an authorization actor at all: it is the
   // `actor_kind` (+ user id for a human) recorded on an append-only AI
   // Operator task event. Every writer runs under the coordinator's system
@@ -261,6 +261,10 @@ const ACTORS_WITHOUT_SITE_AXIS: Readonly<Record<string, string>> = {
   ChecklistActor: 'ticket checklist write provenance — { userId } only, no allowlist',
   ContactActor: 'contact write provenance — { userId } only, no allowlist',
   ContactImportActor: 'contact import provenance — { userId } only, no allowlist',
+  // #4617 W02. ticket_approval_requests is ticket-scoped (org_id + ticket_id,
+  // no site column); the decider is a frozen approver email or a staff
+  // on-behalf recorder, and the route gates ticket access before the call.
+  DecisionActor: 'customer approval decision on a ticket-scoped request — no site_id on ticket_approval_requests',
   DefinitionImportActor: 'custom-field definition import provenance — { userId } only',
   OrgImportActor: 'org import provenance — { userId } only, no allowlist',
   ValueImportActor: 'custom-field value import provenance — { userId } only',

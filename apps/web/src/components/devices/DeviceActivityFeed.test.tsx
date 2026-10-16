@@ -39,6 +39,15 @@ describe('DeviceActivityFeed', () => {
     expect(url).not.toContain('agent.command');
   });
 
+  it('requests device.reliability baseline events in the server-side action filter (#5876)', async () => {
+    mockFeed([]);
+    render(<DeviceActivityFeed deviceId="dev-1" />);
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalled());
+    const eventsCall = fetchWithAuthMock.mock.calls.find(([url]) => String(url).includes('/events'));
+    const actions = new URL(String(eventsCall![0]), 'http://x').searchParams.get('actions') ?? '';
+    expect(actions.split(',')).toContain('device.reliability');
+  });
+
   it('shows an Automated chip for an automated row and drops the redundant "System" label', async () => {
     mockFeed([
       {

@@ -51,6 +51,8 @@ vi.mock('../db', () => ({
 // ─── Mock DB schema (prevents Drizzle from trying to connect) ─────────────────
 
 vi.mock('../db/schema', () => ({
+  deviceReliability: { deviceId: 'deviceId', details: 'details', reliabilityScore: 'reliabilityScore', trendDirection: 'trendDirection' },
+  deviceReliabilityBaselines: { id: 'id', deviceId: 'deviceId', baselineAt: 'baselineAt', createdAt: 'createdAt', clearedAt: 'clearedAt', reason: 'reason', source: 'source' },
   devices:                  { id: 'id', orgId: 'orgId', siteId: 'siteId', status: 'status', osType: 'osType', agentId: 'agentId' },
   deviceHardware:           { deviceId: 'deviceId' },
   deviceNetwork:            { deviceId: 'deviceId' },

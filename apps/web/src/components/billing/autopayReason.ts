@@ -60,7 +60,10 @@ export function chargeNowAttempted(body: unknown): boolean {
 }
 /** No usable answer from Charge now (network failure, 5xx, unreadable or missing body): whether
  * the provider charged is unknown, so the caller must not suggest retrying and must refresh. */
+/** The second-factor check could not run (routes/billingStepUp.ts): refused before any provider call. */
+export const STEP_UP_UNAVAILABLE = 'STEP_UP_UNAVAILABLE';
 export function chargeNowResultUnknown(error: { status: number; body?: unknown }): boolean {
+  if ((error.body as { code?: unknown } | null | undefined)?.code === STEP_UP_UNAVAILABLE) return false;
   return error.status !== 401 && (error.status === 0 || error.status >= 500 || error.body == null);
 }
 export function chargeNowSuccessKey(body: unknown): string {

@@ -178,6 +178,10 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         // columns (neither is in SENSITIVE_DEVICE_FIELDS).
         linkGroupId: data.linkGroupId ?? null,
         linkGroupRole: data.linkGroupRole ?? null,
+        // Workload host axis (#8193) — the ONLY input to the Workloads tab's
+        // visibility. Same dropped-field hazard as the link-group fields: this
+        // transform is a whitelist, so omitting it silently hides the tab.
+        hostsWorkloads: data.hostsWorkloads === true,
         // What became of the agent-uninstall a Remove queued (#3987 item 7) —
         // the ONLY input to UninstallStateBadge, and the same dropped-field
         // mode as the three fields above: the badge's `undefined` guard means

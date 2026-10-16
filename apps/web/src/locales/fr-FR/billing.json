@@ -24,7 +24,8 @@
         "perDeviceRole": "Par rôle d'appareil",
         "perDeviceGroup": "Par groupe d'appareils",
         "perSeat": "Par utilisateur",
-        "manual": "Quantité manuelle"
+        "manual": "Quantité manuelle",
+        "hourBlock": "Forfait d'heures"
       },
       "dynamicGroup": "dynamique",
       "deletedGroup": "{{name}} (groupe supprimé)",
@@ -588,6 +589,62 @@
       "warnings": {
         "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des conventions prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
       }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Heures incluses par période",
+        "extraRate": "Prix par heure supplémentaire",
+        "rolloverMode": "Heures non utilisées en fin de période",
+        "rolloverExpire": "Expirent",
+        "rolloverCarry": "Reportées",
+        "carryCap": "Plafond de report en heures (vide pour illimité)",
+        "alertPct": "Alerter à ce % du forfait consommé (facultatif)",
+        "required": "Saisissez les heures incluses et le prix par heure supplémentaire.",
+        "firstPeriod": "Les heures comptent à partir de la première période de facturation encore à facturer ; pour un contrat brouillon, elle est fixée à l'activation. Le temps antérieur est facturé comme d'habitude.",
+        "midPeriodEdit": "Les modifications s'appliquent à la période en cours ({{start}} – {{end}}) à sa clôture.",
+        "midPeriodEditNoDates": "Les modifications s'appliquent à la période en cours à sa clôture.",
+        "onlyOne": "Cette organisation a déjà un forfait actif. Retirez-le avant d'en ajouter un autre."
+      },
+      "row": {
+        "perPeriod": "{{hours}} heures par période",
+        "retiredBadge": "Retiré",
+        "startsOn": "Compte à partir du {{date}}"
+      },
+      "errors": {
+        "exists": "Cette organisation a déjà une ligne de forfait d'heures active. Retirez-la d'abord, puis ajoutez la nouvelle.",
+        "locked": "Ce champ ne peut pas être modifié sur une ligne de forfait d'heures."
+      },
+      "retire": {
+        "title": "Retirer le forfait d'heures",
+        "message": "« {{description}} » a un historique de facturation ; il est donc retiré au lieu d'être supprimé. Plus de nouvelles périodes ; les périodes déjà facturées sont toujours réglées. Les périodes clôturées restent dans le contrat.",
+        "confirm": "Retirer le forfait",
+        "toast": "Forfait d'heures retiré"
+      },
+      "detail": {
+        "title": "Forfait d'heures",
+        "usage": "{{used}} heures utilisées sur {{included}} · {{remaining}} restantes · la période se termine le {{end}}",
+        "carried": "Comprend {{hours}} heures reportées.",
+        "unapproved": "{{hours}} heures de ce temps ne sont pas encore approuvées.",
+        "foreign": "{{hours}} heures ont été saisies dans une autre devise ; elles décomptent quand même le forfait.",
+        "over": "{{hours}} heures au-delà du forfait → {{amount}} à la clôture de la période",
+        "advanceNote": "Le dépassement est facturé sur la facture suivante.",
+        "arrearsNote": "Le dépassement est facturé sur la facture de cette période.",
+        "lateEntry": "{{hours}} heures ont été saisies après la clôture de leur période et sont facturées séparément.",
+        "startsLater": "Le forfait commence le {{date}}.",
+        "extraRate": "Heures supplémentaires : {{rate}} chacune",
+        "loadFailed": "Impossible de charger la consommation du forfait."
+      },
+      "history": {
+        "title": "Périodes de forfait clôturées",
+        "empty": "Aucune période de forfait n'a encore été clôturée.",
+        "included": "Incluses",
+        "carriedIn": "Reportées en entrée",
+        "used": "Utilisées",
+        "over": "Dépassement",
+        "carriedOut": "Reportées en sortie",
+        "loadMore": "Charger plus",
+        "invoiceRemoved": "Facture du dépassement supprimée — heures non facturées"
+      }
     }
   },
   "agreements": {
@@ -911,7 +968,8 @@
         "skuHelp": "Votre référence de catalogue ou de distributeur pour cet article.",
         "skuOptional": "SKU (facultatif)",
         "tidyWithAi": "Peaufiner avec l'IA",
-        "unitCost": "Coût unitaire"
+        "unitCost": "Coût unitaire",
+        "partNumberRequiredHint": "Ajoutez une référence fabricant pour inclure cette ligne dans la commande de pièces."
       },
       "liveTotals": {
         "annualRecurring": "Récurrent annuel",
@@ -1148,7 +1206,10 @@
         "tooManyRecipients": "Utilisez au maximum {{max}} adresses.",
         "zeroTotalWarning": "Ce devis totalise {{zero}} — vérifiez que ses lignes sont tarifées avant l'envoi.",
         "noBillingContactHint": "Aucun contact de facturation n'est enregistré pour cette organisation — saisissez un e-mail ou ajoutez-en un dans les <orgLink>paramètres de l'organisation</orgLink>.",
-        "revisionWarning": "L’envoi remplace {{number}} et désactive le lien que le client possède déjà."
+        "revisionWarning": "L’envoi remplace {{number}} et désactive le lien que le client possède déjà.",
+        "noPartNumberWarning_one": "{{count}} ligne de produit n'a pas de référence fabricant et ne sera pas ajoutée à la commande de pièces.",
+        "noPartNumberWarning_other": "{{count}} lignes de produit n'ont pas de référence fabricant et ne seront pas ajoutées à la commande de pièces.",
+        "sendAnyway": "Envoyer quand même"
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposition marquée comme Envoyée, mais aucun e-mail n'a été remis — {{orgName}} n'a pas d'adresse e-mail de contact de facturation. Ajoutez-en une dans les paramètres de l'organisation, puis renvoyez.",
@@ -1321,7 +1382,9 @@
           "vendor": "Fournisseur"
         },
         "title": "À commander",
-        "unknownVendor": "Autre / fournisseur inconnu"
+        "unknownVendor": "Autre / fournisseur inconnu",
+        "excluded": "Absent de cette commande (aucune référence fabricant) : {{names}}",
+        "untitledLine": "Ligne sans titre"
       },
       "pax8Order": {
         "message_one": "Ce devis a préparé une commande Pax8 ({{count}} article) en attente des détails de provisionnement",
@@ -1708,7 +1771,8 @@
       "saveNotes": "Impossible d'enregistrer les notes.",
       "saveTerms": "Impossible d'enregistrer les conditions.",
       "updateLine": "Impossible de mettre à jour la ligne.",
-      "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un dans le catalogue ou saisissez une ligne manuelle."
+      "noPriceForCurrency": "Aucun prix en {{currency}} pour cet article. Ajoutez-en un dans le catalogue ou saisissez une ligne manuelle.",
+      "saveLineDetail": "Impossible de mettre à jour l’impression des saisies de temps"
     },
     "fields": {
       "descriptionOptional": "Description (facultatif)",
@@ -1775,6 +1839,35 @@
     "linesScrollAria": "Lignes de la facture — faites défiler horizontalement pour plus de colonnes",
     "unsavedField": {
       "lines": "Lignes"
+    },
+    "lineDetail": {
+      "default": "Valeur par défaut de la facturation",
+      "grouping": "Présentation",
+      "groupingDay": "Regrouper par jour",
+      "groupingEntry": "Une ligne par saisie",
+      "help": "Remplace votre valeur de facturation par défaut pour ce brouillon uniquement.",
+      "hide": "Masquer",
+      "show": "Afficher",
+      "showDate": "Date du travail",
+      "showNote": "Note du technicien",
+      "showWorkedTime": "Temps travaillé et facturé",
+      "title": "Lignes de saisie de temps"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} lignes bloqueront l'émission : leurs saisies de temps ont été facturées sur une autre facture. Supprimez-les avant d'émettre :",
+      "billedElsewhere_one": "{{count}} ligne bloquera l'émission : sa saisie de temps a été facturée sur une autre facture. Supprimez-la avant d'émettre :",
+      "billedElsewhere_other": "{{count}} lignes bloqueront l'émission : leurs saisies de temps ont été facturées sur une autre facture. Supprimez-les avant d'émettre :",
+      "button": "Actualiser depuis les saisies de temps",
+      "drifted": "{{count}} lignes inchangées : le temps facturé de leurs saisies ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "drifted_one": "{{count}} ligne inchangée : le temps facturé de sa saisie ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "drifted_other": "{{count}} lignes inchangées : le temps facturé de leurs saisies ne correspond plus à la quantité. Modifiez la quantité ou créez un nouveau brouillon.",
+      "error": "Impossible d'actualiser depuis les saisies de temps",
+      "help": "Met à jour les notes, les dates travaillées et l'approbation depuis les saisies de temps. Les quantités, les prix et les descriptions modifiées à la main ne changent jamais.",
+      "running": "Actualisation…",
+      "skipped": "{{count}} lignes ignorées : leurs saisies de temps ont été facturées ailleurs, supprimées ou ne sont plus facturables sur ce brouillon.",
+      "skipped_one": "{{count}} ligne ignorée : sa saisie de temps a été facturée ailleurs, supprimée ou n'est plus facturable sur ce brouillon.",
+      "skipped_other": "{{count}} lignes ignorées : leurs saisies de temps ont été facturées ailleurs, supprimées ou ne sont plus facturables sur ce brouillon.",
+      "summary": "Actualisées : {{refreshed}} · Déjà à jour : {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2022,6 +2115,7 @@
     "empty": "Cette facture ne contient encore aucune ligne.",
     "fallbackTitle": "Facture",
     "issued": "Émise",
+    "laborLine": "Main-d’œuvre",
     "preview": {
       "description": "Voici ce que votre client voit sur sa facture.",
       "downloadError": "Impossible de télécharger le PDF de la facture.",
@@ -2118,7 +2212,9 @@
       "sourceAria": "Source de facture",
       "title": "Nouvelle facture",
       "to": "À",
-      "working": "Traitement…"
+      "working": "Traitement…",
+      "heldForHourBlock_one": "{{count}} saisie de temps ({{hours}} heures) est retenue pour le forfait d'heures de cette organisation et sera facturée à la clôture de la période du forfait.",
+      "heldForHourBlock_other": "{{count}} saisies de temps ({{hours}} heures) sont retenues pour le forfait d'heures de cette organisation et seront facturées à la clôture de la période du forfait."
     },
     "empty": {
       "description": "Assemblez le temps et les pièces non facturés dans un brouillon ou démarrez une facture vierge.",
@@ -2286,7 +2382,18 @@
       "invoiceNumberPrefix": "Préfixe de numéro de facture",
       "markupHelp": "Marge par défaut sur le coût distributeur, utilisée pour préremplir le prix de vente lors de l'import d'articles du catalogue. La marge brute résultante est affichée pendant l'import.",
       "paymentTermsDays": "Délai de paiement (jours)",
-      "title": "Valeurs par défaut de facturation"
+      "prefixInvalid": "Saisissez un préfixe de 1 à 12 caractères.",
+      "taxRateInvalid": "Saisissez un taux de taxe de 0 à 100.",
+      "termsDaysInvalid": "Saisissez un nombre entier de jours de 0 à 365.",
+      "title": "Valeurs par défaut de facturation",
+      "lineDetailTitle": "Lignes de saisie de temps sur les factures",
+      "lineDetailHelp": "Choisissez ce que les clients voient pour les saisies de temps. Un brouillon de facture peut remplacer ce choix ; il est figé à l’émission de la facture.",
+      "lineShowDate": "Afficher la date du travail",
+      "lineShowNote": "Afficher la note du technicien",
+      "lineShowWorkedTime": "Afficher le temps travaillé et le temps facturé",
+      "lineGrouping": "Présentation",
+      "lineGroupingEntry": "Une ligne par saisie",
+      "lineGroupingDay": "Regrouper par jour"
     },
     "loadError": "Échec du chargement des paramètres de facturation.",
     "loading": "Chargement des paramètres de facturation…",
@@ -2636,6 +2743,23 @@
       "schedule_inactive": "Cette facture n’est plus planifiée pour un paiement automatique.",
       "generic": "Le paiement automatique n’a pas pu démarrer. Actualisez la facture pour voir son état actuel.",
       "excluded_contract": "Le contrat de cette facture est exclu des paiements automatiques, donc rien n'a été prélevé. Si le client avait été prévenu de ce paiement, il a reçu un e-mail indiquant qu'il n'aura pas lieu."
+    },
+    "stepUp": {
+      "heading": "Confirmez que c'est bien vous",
+      "intro": {
+        "autopay_charge_now": "Prélever cette facture maintenant nécessite une nouvelle vérification à deux facteurs.",
+        "partner_payment_settings_update": "Modifier les paramètres de paiement nécessite une nouvelle vérification à deux facteurs pour ces valeurs précises.",
+        "org_payment_settings_update": "Modifier les paramètres de paiement de cette organisation nécessite une nouvelle vérification à deux facteurs pour ces valeurs précises.",
+        "autopay_request_recipient": "Envoyer la demande d'autorisation à une adresse autre que celle du contact de facturation nécessite une nouvelle vérification à deux facteurs."
+      },
+      "code": "Code d'authentification",
+      "passkey": "Vous confirmerez avec votre clé d'accès.",
+      "noFactor": "Ajoutez d'abord une application d'authentification ou une clé d'accès à votre compte.",
+      "noFactorSmsOnly": "Les codes par SMS ne peuvent pas confirmer cette action. Ajoutez d'abord une application d'authentification ou une clé d'accès à votre compte.",
+      "enrollLink": "Configurer un second facteur",
+      "confirm": "Confirmer",
+      "failed": "Échec de la vérification. Réessayez.",
+      "unavailable": "Impossible de démarrer la vérification"
     }
   },
   "reminders": {

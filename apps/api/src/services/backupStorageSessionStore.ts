@@ -19,6 +19,7 @@ import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestati
 import { resolveBackupProviderConfig } from './backupProviderConfig';
 import { attestationJoinColumns, boundIndexCondition, joinedAttestation } from './backupRestoreIntegrity';
 import { evaluateStorageSessionBudget } from './backupStorageSessionBudget';
+import { loadOriginKeyRootRows, type KeyRootPair } from './backupOriginKeyRoots';
 import { isSnapshotWriteInFlight } from './backupSnapshotIdReservations';
 import type { BrokeredReadStore, StorageSessionRow, StorageSnapshotRow } from './backupStorageSessions';
 
@@ -33,6 +34,7 @@ const snapshotColumns = () => ({
   snapshotId: backupSnapshots.snapshotId,
   storageIdentity: backupSnapshots.storageIdentity,
   keyLayout: backupSnapshots.keyLayout,
+  keyPrefix: backupSnapshots.keyPrefix,
   fileIndexStatus: backupSnapshots.fileIndexStatus,
   fileIndexManifestSha256: backupSnapshots.fileIndexManifestSha256,
   fileIndexError: backupSnapshots.fileIndexError,
@@ -205,7 +207,7 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
 
   async loadVerifiedOrigins(snapshotDbId, originSnapshotIds) {
     if (originSnapshotIds.length === 0) return [];
-    return db
+    const origins = await db
       .select({
         originSnapshotId: backupSnapshotOrigins.originSnapshotId,
         originOrgId: backupSnapshotOrigins.originOrgId,
@@ -217,6 +219,23 @@ export const drizzleBrokeredReadStore: BrokeredReadStore = {
         eq(backupSnapshotOrigins.snapshotDbId, snapshotDbId),
         inArray(backupSnapshotOrigins.originSnapshotId, originSnapshotIds),
       ));
+    // Each origin's recorded key root (#7081), read per (org, identity) it
+    // was verified under.
+    const groups = new Map<string, { orgId: string; storageIdentity: string; ids: string[] }>();
+    for (const o of origins) {
+      const k = `${o.originOrgId}\u0000${o.originStorageIdentity}`;
+      const g = groups.get(k) ?? { orgId: o.originOrgId, storageIdentity: o.originStorageIdentity, ids: [] };
+      g.ids.push(o.originSnapshotId);
+      groups.set(k, g);
+    }
+    const roots = new Map<string, Map<string, KeyRootPair>>();
+    for (const [k, g] of groups) {
+      roots.set(k, await loadOriginKeyRootRows({ orgId: g.orgId, storageIdentity: g.storageIdentity, originSnapshotIds: g.ids }));
+    }
+    return origins.map((o) => {
+      const originKeyRoot = roots.get(`${o.originOrgId}\u0000${o.originStorageIdentity}`)?.get(o.originSnapshotId);
+      return originKeyRoot ? { ...o, originKeyRoot } : o;
+    });
   },
 
   async consumeBudget(sessionId, request, now) {

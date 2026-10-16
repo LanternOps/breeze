@@ -352,6 +352,10 @@ non-operational, and stays out of every org list, but it is not erased. The
 skip writes a `tenant.erasure.deferred_evidence_hold` audit, following the
 legal-hold precedent.
 
+> **Amended by W6-pre (#8746):** the hold scopes erasure; it does not skip it. Phase C, the
+> sweeper and an operator erasure erase the held shell except for its `organizations` row and
+> the retained PAM evidence (chain + ownership-epoch tables). See the plan's "W6-pre shipped" note.
+
 ### 7.2 Hold release
 
 Releasing a hold is an explicit erasure-path action and never a merge action.

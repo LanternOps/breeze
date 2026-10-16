@@ -110,6 +110,15 @@ export async function createPamDecisionIntent(tx: PamLifecycleTx, input: {
     throw new Error('approved PAM actuation requires a future expiry');
   }
 
+  // Lock order (PAM ownership epochs spec §9): the device row FOR SHARE first,
+  // then the request, then the actuation insert (whose epoch guard re-reads the
+  // device FOR SHARE and refuses a non-current epoch or org). The actuation is
+  // anchored to the epoch read here, so a move that commits between this read
+  // and the insert fails the insert instead of re-homing the decision.
+  const device = rows<{ ownership_epoch: number }>(await tx.execute<{ ownership_epoch: number }>(sql`
+    SELECT ownership_epoch FROM devices WHERE id = ${input.request.deviceId} FOR SHARE
+  `))[0];
+  if (!device) throw new Error('PAM request device not found');
   const lockedRequest = rows<RequestRow>(await tx.execute<RequestRow>(sql`
     SELECT id, org_id, device_id, revision
     FROM elevation_requests
@@ -173,11 +182,11 @@ export async function createPamDecisionIntent(tx: PamLifecycleTx, input: {
   const observedState = active ? 'pending_dispatch' : 'cleanup_pending';
   const inserted = rows<ActuationRow>(await tx.execute<ActuationRow>(sql`
     INSERT INTO pam_actuations (
-      org_id, device_id, elevation_request_id, request_revision, generation,
+      org_id, device_id, device_epoch, elevation_request_id, request_revision, generation,
       desired_state, observed_state, target_executable_path,
       target_executable_hash, subject_username, expires_at, cleanup_requested_at
     ) VALUES (
-      ${input.request.orgId}, ${input.request.deviceId}, ${input.request.id},
+      ${input.request.orgId}, ${input.request.deviceId}, ${device.ownership_epoch}::integer, ${input.request.id},
       ${input.requestRevision}, 1, ${desiredState}, ${observedState},
       ${input.request.targetExecutablePath}, ${input.request.targetExecutableHash},
       ${input.request.subjectUsername}, ${input.expiresAt?.toISOString() ?? null}::timestamptz,

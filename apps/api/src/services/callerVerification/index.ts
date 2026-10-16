@@ -12,3 +12,5 @@ export * from './destinations';
 export * from './service';
 export * from './gate';
 export * from './rejection';
+export * from './mailboxReader';
+export { fetchTargetMailboxes } from './mailboxes';

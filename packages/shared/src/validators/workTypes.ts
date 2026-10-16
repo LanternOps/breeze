@@ -18,6 +18,8 @@ const nameSchema = z
 export const createWorkTypeSchema = z.object({
   name: nameSchema,
   sortOrder: z.number().int().min(0).max(9999).optional(),
+  /** #4617 spec §4.5: work on this type needs customer approval when the policy is enabled. */
+  isAfterHours: z.boolean().optional(),
 });
 
 export const updateWorkTypeSchema = z
@@ -25,6 +27,7 @@ export const updateWorkTypeSchema = z
     name: nameSchema.optional(),
     sortOrder: z.number().int().min(0).max(9999).optional(),
     isActive: z.boolean().optional(),
+    isAfterHours: z.boolean().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'At least one field is required' });
 

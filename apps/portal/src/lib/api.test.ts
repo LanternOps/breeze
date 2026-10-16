@@ -471,3 +471,30 @@ describe('error details', () => {
     expect(result.data).toBeUndefined();
   });
 });
+
+describe('portalApi approvals (#8200)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('getApprovals hits /portal/approvals, with ?status=pending when pendingOnly', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await portalApi.getApprovals();
+    await portalApi.getApprovals({}, { pendingOnly: true });
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/portal\/approvals$/);
+    expect(String(fetchMock.mock.calls[1][0])).toMatch(/\/portal\/approvals\?status=pending$/);
+  });
+
+  it('approve and deny POST the decision body to the right path', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: { status: 'approved' } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const body = { revision: 3, signerName: 'Pat Doe', note: 'ok' };
+    await portalApi.approveApproval('abc', body);
+    await portalApi.denyApproval('abc', body);
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/portal\/approvals\/abc\/approve$/);
+    expect(String(fetchMock.mock.calls[1][0])).toMatch(/\/portal\/approvals\/abc\/deny$/);
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(body);
+  });
+});

@@ -22,6 +22,11 @@ export const ticketExternalRefs = pgTable('ticket_external_refs', {
   partnerServicePrincipalId: uuid('partner_service_principal_id').notNull(),
   externalId: varchar('external_id', { length: 255 }).notNull(),
   externalUrl: text('external_url'),
+  // The source's human-facing number (#8313, 2026-12-25-120000), e.g. a
+  // helpdesk's "#41023", which is not its id. Searchable through the partial
+  // index idx_ticket_external_refs_org_external_number (org_id,
+  // lower(external_number)); externalId stays the stable resume key.
+  externalNumber: varchar('external_number', { length: 255 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [

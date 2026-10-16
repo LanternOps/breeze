@@ -981,7 +981,7 @@ After scaffolding:
 1. `pnpm install` - Dependencies install successfully
 2. `pnpm dev` - Web + API start without errors
 3. `docker-compose up -d` - Postgres + Redis start
-4. `pnpm db:push` - Schema pushes to database
+4. `pnpm db:migrate` - Migrations apply to the database
 5. API health check: `curl http://localhost:3001/health`
 6. Web loads at `http://localhost:4321`
 7. `cd agent && go build ./...` - Agent compiles

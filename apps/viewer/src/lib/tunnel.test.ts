@@ -44,6 +44,24 @@ describe('createVncTunnel', () => {
     expect((calls[1][1].headers as Record<string, string>).Authorization).toBe('Bearer token-xyz');
   });
 
+  it('carries the clipboard policy the API reported with the tunnel', async () => {
+    vi.stubGlobal('fetch', makeFetch([
+      { status: 201, body: { id: 'tun-1' } },
+      { status: 200, body: { ticket: 't', clipboard: { hostToViewer: true, viewerToHost: false } } },
+    ]));
+    const res = await createVncTunnel('dev-1', { apiUrl: 'https://api.example.com', accessToken: 'x' });
+    expect(res.clipboard).toEqual({ hostToViewer: true, viewerToHost: false });
+  });
+
+  it('reports no clipboard policy when the API sent none', async () => {
+    vi.stubGlobal('fetch', makeFetch([
+      { status: 201, body: { id: 'tun-1' } },
+      { status: 200, body: { ticket: 't' } },
+    ]));
+    const res = await createVncTunnel('dev-1', { apiUrl: 'https://api.example.com', accessToken: 'x' });
+    expect(res.clipboard).toBeUndefined();
+  });
+
   it('uses ws:// when apiUrl is http://', async () => {
     vi.stubGlobal('fetch', makeFetch([
       { status: 201, body: { id: 'tun-9' } },

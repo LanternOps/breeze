@@ -16,17 +16,18 @@ import type {
 /**
  * The subset of a loaded policy-local patch config the snapshot reads.
  *
- * The auto-approve fields and `apps` are optional here (unlike the
- * normalized `PatchInlineSettings`) because legacy rows stored before
- * those fields existed may surface settings without them — the `?? false`
- * / `?? []` / `?? 0` fallbacks mirror the schema defaults on purpose.
+ * The auto-approve fields are optional here (unlike the normalized
+ * `PatchInlineSettings`) because legacy rows stored before those fields
+ * existed may surface settings without them — the `?? false` / `?? []` /
+ * `?? 0` fallbacks mirror the schema defaults on purpose. The policy's own
+ * inline `apps` list is deliberately absent: the ring owns app rules (#8186).
  */
 export interface PatchesSnapshotInput {
   settings: Pick<PatchInlineSettings, 'sources'> &
     Partial<
       Pick<
         PatchInlineSettings,
-        'autoApprove' | 'autoApproveSeverities' | 'autoApproveDeferralDays' | 'apps'
+        'autoApprove' | 'autoApproveSeverities' | 'autoApproveDeferralDays'
       >
     >;
   ring: PatchRingResolution;
@@ -46,7 +47,17 @@ export interface PatchesSnapshot {
     severities: PatchInlineSettings['autoApproveSeverities'];
     deferralDays: number;
   };
-  apps: PatchInlineSettings['apps'];
+  /**
+   * The legacy app-rule key every executor version reads. Since #8186 it
+   * mirrors `ringAppRules`, written for executors that predate that key
+   * (rolling deploy); W04 stops writing it.
+   */
+  apps: PatchRingResolution['appRules'];
+  /**
+   * The ring's per-app rules (#8184). The executor enforces both keys,
+   * stricter verdict winning, and keeps parsing both for frozen snapshots.
+   */
+  ringAppRules: PatchRingResolution['appRules'];
   ringValidation: {
     classification: PatchRingResolution['classification'];
     valid: boolean;
@@ -67,7 +78,9 @@ export function buildPatchesSnapshot(policyLocal: PatchesSnapshotInput): Patches
       severities: policyLocal.settings.autoApproveSeverities ?? [],
       deferralDays: policyLocal.settings.autoApproveDeferralDays ?? 0,
     },
-    apps: policyLocal.settings.apps ?? [],
+    // Written for executors that predate `ringAppRules`; W04 removes it.
+    apps: policyLocal.ring.appRules,
+    ringAppRules: policyLocal.ring.appRules,
     ringValidation: {
       classification: policyLocal.ring.classification,
       valid: policyLocal.ring.valid,

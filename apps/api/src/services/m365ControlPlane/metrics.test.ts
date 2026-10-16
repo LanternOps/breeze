@@ -55,6 +55,8 @@ describe('M365 customer Graph read observability', () => {
       'm365.customer_graph_actions.admin_identity_verified',
       // #7913 W03 confirm-tenant interstitial, appended last.
       'm365.customer_graph_actions.tenant_confirmed',
+      // #8745 actions manifest upgrade consent, appended last.
+      'm365.customer_graph_actions.upgrade_consent_initiated',
     ]);
     expect(M365_CUSTOMER_GRAPH_READ_OUTCOMES).toEqual([
       'initiated',

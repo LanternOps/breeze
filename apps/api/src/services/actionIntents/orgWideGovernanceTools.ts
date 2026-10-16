@@ -99,6 +99,10 @@ const IDENTITY_TENANT_WRITE_TOOLS = [
 
 export const ORG_WIDE_GOVERNANCE_TOOL_ACTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['manage_ai_agents', new Set(['authorize_supervised_key'])],
+  // A plan approval authorizes effects on the org's identity tenants (M365 /
+  // Google) as one set; no per-site slice exists, so a site-restricted user
+  // can neither raise nor approve it.
+  ['operator_plan', new Set<string>()],
   ...IDENTITY_TENANT_WRITE_TOOLS.map(
     (name) => [name, new Set<string>()] as [string, ReadonlySet<string>],
   ),

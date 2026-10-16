@@ -56,7 +56,7 @@ import {
 } from '../../routes/partnerApi/schemas';
 import { issuePartnerServicePrincipalKey } from '../../services/partnerServicePrincipalKeys';
 import type { PartnerServicePrincipalScope } from '../../services/partnerServicePrincipalScopes';
-import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, userEpochs } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
 
 vi.mock('../../config/env', async (importOriginal) => {
@@ -1300,6 +1300,7 @@ async function issueKey(
     partnerId,
     name: 'Integration traversal key',
     actorId: userId,
+    actorSessionEpochs: await userEpochs(userId),
   })).rawKey;
 }
 

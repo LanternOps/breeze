@@ -21,6 +21,7 @@
  */
 
 import type { PatchIneligibleReason } from '@breeze/shared';
+import { canonicalAppRuleKey, policyAppRuleSchema } from '@breeze/shared/validators';
 import { captureException } from './sentry';
 
 // ============================================
@@ -66,8 +67,10 @@ export interface ApprovalEvaluationConfig {
   /**
    * The partner that owns the ring referenced by ringId. Used to guard against
    * a config policy that links a ring from another partner (featurePolicyId is
-   * an unconstrained uuid). If ringPartnerId !== device-org's partner, the ring
-   * is ignored (treated as ringId = null).
+   * an unconstrained uuid). If ringPartnerId !== device-org's partner, the
+   * reference is invalid and fails closed: every candidate is denied with
+   * 'ring_reference_invalid' (#8186). Never fall back to "no ring", or a manual
+   * approval could install an app the ring blocks.
    */
   ringPartnerId?: string | null;
   categoryRules: CategoryRule[];
@@ -94,10 +97,27 @@ export interface ApprovalEvaluationConfig {
    */
   policyAutoApprove?: PolicyAutoApproveConfig;
   /**
-   * Policy-level per-app block/pin rules. Applied to every job approval path;
-   * manual per-device installs do not pass through this evaluator.
+   * Legacy per-app block/pin rules from a configuration policy. Since the
+   * #8186 cutover the live resolver no longer fills this; it is read only from
+   * job snapshots (frozen pre-cutover jobs carry their rules here, and W02+
+   * snapshots mirror the ring rules here for older executors). Applied to
+   * every job approval path; manual per-device installs do not pass through
+   * this evaluator.
    */
   apps?: PolicyAppRule[];
+  /**
+   * Update Ring per-app block/pin rules (`patch_policies.app_rules`, #8184).
+   * Evaluated alongside `apps` with the stricter verdict winning
+   * (`evaluateAppRuleSets`); same position in the pipeline and the same
+   * "overrides a manual approval" semantics.
+   */
+  ringAppRules?: PolicyAppRule[];
+  /**
+   * The policy links a ring reference that does not resolve (#8186). The
+   * evaluator then denies every outstanding candidate with
+   * 'ring_reference_invalid', manual approvals included.
+   */
+  ringReferenceInvalid?: boolean;
 }
 
 /** @deprecated Use ApprovalEvaluationConfig — kept for existing importers. */
@@ -288,11 +308,11 @@ export function comparePatchVersions(
  * Canonical lookup key for app rules. The UI presents 'third_party' and
  * 'custom' patch sources as one bucket (manual UI entries hardcode
  * 'third_party'), so both collapse to a canonical 'third_party' key; other
- * sources keep their own key.
+ * sources keep their own key. Delegates to the shared implementation so the
+ * ring app-rule validator's uniqueness check uses the same identity.
  */
 export function appRuleKey(source: string, packageId: string): string {
-  const bucket = isThirdPartyPatchSource(source) ? 'third_party' : source;
-  return `${bucket}|${packageId.toLowerCase()}`;
+  return canonicalAppRuleKey(source, packageId);
 }
 
 /**
@@ -326,6 +346,72 @@ export function evaluateAppRule(
   const cmp = comparePatchVersions(patch.version, rule.pinnedVersion);
   if (cmp === null) return 'held';
   return cmp > 0 ? 'held' : 'allowed';
+}
+
+const APP_RULE_VERDICT_RANK: Record<AppRuleVerdict, number> = { allowed: 0, held: 1, blocked: 2 };
+
+/**
+ * Worst verdict across several rule sets (`blocked` > `held` > `allowed`).
+ * Used while app rules are read from both the Update Ring and the policy link
+ * (#8184): a candidate is denied if either set denies it.
+ */
+export function evaluateAppRuleSets(
+  patch: { source: string; packageId: string | null; version: string | null },
+  maps: AppRuleMap[]
+): AppRuleVerdict {
+  let worst: AppRuleVerdict = 'allowed';
+  for (const m of maps) {
+    const v = evaluateAppRule(patch, m);
+    if (APP_RULE_VERDICT_RANK[v] > APP_RULE_VERDICT_RANK[worst]) worst = v;
+  }
+  return worst;
+}
+
+/**
+ * Normalise a stored app-rule list (a job snapshot key, or a ring's
+ * `app_rules` column) into evaluator rules. Returns null when `raw` is not an
+ * array — the caller decides how to report that.
+ *
+ * Valid entries lose their display-only fields. A malformed entry whose
+ * identity is usable (non-empty `source` + `packageId`) is coerced to `block`:
+ * dropping a restriction would silently widen install scope, so the admin's
+ * intent to restrict that app wins. An entry with no usable identity is
+ * dropped, loudly. `context` prefixes every log line.
+ */
+export function coerceAppRuleList(raw: unknown, context: string): PolicyAppRule[] | null {
+  if (!Array.isArray(raw)) return null;
+  const rules: PolicyAppRule[] = [];
+  for (const entry of raw) {
+    const parsed = policyAppRuleSchema.safeParse(entry);
+    if (parsed.success) {
+      const { source, packageId, action, pinnedVersion } = parsed.data;
+      if (action === 'pin' && pinnedVersion) {
+        rules.push({ source, packageId, action: 'pin', pinnedVersion });
+      } else {
+        // action === 'block' (pin without pinnedVersion is rejected by the schema).
+        rules.push({ source, packageId, action: 'block' });
+      }
+      continue;
+    }
+
+    const e = entry as { source?: unknown; packageId?: unknown } | null;
+    if (
+      e !== null &&
+      typeof e === 'object' &&
+      typeof e.source === 'string' &&
+      e.source.length > 0 &&
+      typeof e.packageId === 'string' &&
+      e.packageId.length > 0
+    ) {
+      console.warn(`${context} coercing malformed app rule to block (fail-closed):`, JSON.stringify(entry));
+      rules.push({ source: e.source, packageId: e.packageId, action: 'block' });
+    } else {
+      const message = `${context} dropping malformed app rule with unusable identity`;
+      console.warn(`${message}:`, JSON.stringify(entry));
+      captureException(new Error(message));
+    }
+  }
+  return rules;
 }
 
 // ============================================
@@ -362,7 +448,7 @@ export type PatchApprovalDecision =
    * is held until it can.
    */
   | { denied: 'held_by_deferral'; holdUntil: Date | null }
-  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'device_not_in_org' | 'held_by_deferral'> };
+  | { denied: Exclude<PatchIneligibleReason, 'not_outstanding' | 'superseded' | 'blocked_by_source' | 'blocked_by_category' | 'blocked_by_app_rule' | 'device_not_in_org' | 'held_by_deferral' | 'ring_reference_invalid'> };
 
 export function evaluatePatchApproval(
   patch: PatchCandidate,

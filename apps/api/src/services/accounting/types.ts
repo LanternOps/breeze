@@ -168,7 +168,21 @@ export interface AccountingItemPayload {
 
 export interface AccountingInvoiceLinePayload {
   invoiceLineId: string;
+  /** The full line text: the title, then `descriptionSuffix` (if any). */
   description: string;
+  /**
+   * #8605: the tail of `description` that a provider's length cap must keep
+   * whole (the worked-vs-billed disclosure). Absent or '' when there is none.
+   * A provider truncating an over-limit description cuts the text BEFORE it.
+   */
+  descriptionSuffix?: string;
+  /**
+   * #8605: ISO date (YYYY-MM-DD) the line's work was done, partner-local.
+   * Set only when the invoice's frozen line detail shows dates and the line
+   * has a work date; absent otherwise. Each provider maps it (QuickBooks
+   * `ServiceDate`, Xero description text).
+   */
+  serviceDate?: string | null;
   /** Decimal string; never a float, so no binary rounding enters at this seam. */
   quantity: string;
   unitPrice: string;

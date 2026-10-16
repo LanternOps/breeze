@@ -13,9 +13,20 @@ import { coreRequest } from './api';
  * from `CreateTimeEntryInput` — rates are never computed on the phone.
  */
 
-export type BillingStatus = 'not_billed' | 'billed' | 'no_charge' | 'contract';
+export type BillingStatus = 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
 
-export interface RunningTimer {
+/**
+ * #8211 — where an entry came from. The server returns all three on every
+ * entry; they are ABSENT on values built on-device before a response exists.
+ * `source` is informational provenance, never an authority.
+ */
+export interface TimeEntryProvenance {
+  orgId?: string | null;
+  siteId?: string | null;
+  source?: string | null;
+}
+
+export interface RunningTimer extends TimeEntryProvenance {
   /**
    * The server entry id, or null for a timer that exists only on this device
    * because it was started while offline (see services/localTimer.ts). A null
@@ -40,7 +51,7 @@ export interface RunningTimer {
   description: string | null;
 }
 
-export interface TimeEntry {
+export interface TimeEntry extends TimeEntryProvenance {
   id: string;
   ticketId: string | null;
   /** See RunningTimer.ticketNumber. */
@@ -71,6 +82,10 @@ export interface CreateTimeEntryInput {
   billingStatus?: BillingStatus;
   /** See WorkTypeChoice. */
   workTypeId?: string | null;
+  /** #8211 — an offline arrival-prompt visit replays with its org, site and provenance. */
+  orgId?: string;
+  siteId?: string;
+  source?: 'location';
 }
 
 export interface TimesheetDay {
@@ -114,7 +129,8 @@ interface ErrorPayload {
 /**
  * Time-entry errors that reach the phone include ENTRY_RUNNING (409),
  * NO_RUNNING_TIMER (404), ENTRY_BILLED (409), APPROVED_IMMUTABLE,
- * NOT_OWN_ENTRY, and ADMIN_REQUIRED.
+ * NOT_OWN_ENTRY, ADMIN_REQUIRED, and APPROVAL_REQUIRED (409, a billable timer
+ * START refused by the customer-approval gate — #8196).
  */
 function asTimeEntryError(error: unknown): TimeEntryError {
   if (error instanceof TimeEntryError) return error;
@@ -131,8 +147,16 @@ function compact(input: object): Record<string, unknown> {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
+/** Only when the row carries them: values built before a response exists stay key-free. */
+function provenanceOf(row: ServerTimeEntry): TimeEntryProvenance {
+  if (!('orgId' in row) && !('siteId' in row) && !('source' in row)) return {};
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  return { orgId: str(row.orgId), siteId: str(row.siteId), source: str(row.source) };
+}
+
 function narrowRunningTimer(row: ServerTimeEntry): RunningTimer {
   return {
+    ...provenanceOf(row),
     id: row.id,
     localId: null,
     ticketId: row.ticketId ?? null,
@@ -145,6 +169,7 @@ function narrowRunningTimer(row: ServerTimeEntry): RunningTimer {
 
 function narrowTimeEntry(row: ServerTimeEntry): TimeEntry {
   return {
+    ...provenanceOf(row),
     id: row.id,
     ticketId: row.ticketId ?? null,
     ticketNumber: row.ticketNumber ?? null,
@@ -175,6 +200,12 @@ export async function startTimer(input: {
   description?: string;
   /** See WorkTypeChoice. Timers are priced at START (§3.7). */
   workTypeId?: string | null;
+  /** #8196 — `false` for the "log as non-billable" retry after a 409 APPROVAL_REQUIRED. */
+  isBillable?: boolean;
+  /** #8211 — a site-visit start. A ticket's org wins on the server; the site must belong to the org. */
+  orgId?: string;
+  siteId?: string;
+  source?: 'timer' | 'location';
 }): Promise<TimeEntry> {
   try {
     const response = await coreRequest<{ data: ServerTimeEntry }>('/time-entries/start', {

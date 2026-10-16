@@ -1,4 +1,4 @@
-import { and, eq, lt, ne } from 'drizzle-orm';
+import { and, eq, lt, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { logCorrelationRules, logCorrelations, type LogCorrelationAffectedDevice } from '../../db/schema/eventLogs';
 import { devices } from '../../db/schema/devices';
@@ -7,6 +7,7 @@ import { deviceReliability } from '../../db/schema/reliability';
 import { metricFamilyLabel } from '../metricAnomalyEpisodeKeys';
 import type { CandidateFinding, CandidateMember } from './types';
 import { notParkedDeviceCondition } from '../unassignedPool/selectorPredicate';
+import { reliabilityProvisionalSql } from '../reliabilityBaselineQueries';
 
 // Anomaly scores are sigma-like; >=4 matches the detectors' own hard-threshold
 // tier for "critical" (see spec §5 / task-4 brief judgment calls).
@@ -265,6 +266,8 @@ export async function produceReliabilityOffenders(orgId: string): Promise<Candid
       eq(devices.isEphemeral, false),
       notParkedDeviceCondition(),
       ne(devices.status, 'decommissioned'),
+      // #5876: a provisional score rests on <14 reported days since a fix — not yet evidence either way.
+      sql`NOT ${reliabilityProvisionalSql}`,
     ));
 
   if (rows.length === 0) return [];

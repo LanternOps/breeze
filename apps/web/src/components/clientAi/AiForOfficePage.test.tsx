@@ -24,11 +24,20 @@ vi.mock('./SessionsTab', () => ({ default: () => <div data-testid="stub-sessions
 vi.mock('./UsageTab', () => ({ default: () => <div data-testid="stub-usage" /> }));
 vi.mock('./TemplatesTab', () => ({ default: () => <div data-testid="stub-templates" /> }));
 
+const grants = vi.hoisted(() => ({
+  current: undefined as { resource: string; action: string }[] | undefined,
+}));
+vi.mock('../../stores/auth', () => ({
+  useAuthStore: (selector: (s: { user: { permissions?: { resource: string; action: string }[] } }) => unknown) =>
+    selector({ user: { permissions: grants.current } }),
+}));
+
 import AiForOfficePage, { getStateFromHash } from './AiForOfficePage';
 
 describe('AiForOfficePage', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', '/ai-for-office');
+    grants.current = [{ resource: 'client_ai_templates', action: 'read' }];
   });
 
   it('defaults to the orgs tab', () => {
@@ -79,5 +88,43 @@ describe('AiForOfficePage', () => {
     // #2421: the parser is pure — it takes the already-#-stripped hash string.
     expect(getStateFromHash('nonsense')).toEqual({ tab: 'orgs' });
     expect(getStateFromHash('policy/')).toEqual({ tab: 'orgs' });
+  });
+
+  describe('templates tab gating', () => {
+    it('hides the templates tab without client_ai_templates:read', () => {
+      grants.current = [{ resource: 'organizations', action: 'read' }];
+      render(<AiForOfficePage />);
+      expect(screen.getByTestId('ai-office-tab-usage')).toBeInTheDocument();
+      expect(screen.queryByTestId('ai-office-tab-templates')).toBeNull();
+    });
+
+    it('falls back to the orgs tab on a #templates deep link without the grant and rewrites the hash', () => {
+      grants.current = [{ resource: 'organizations', action: 'read' }];
+      window.location.hash = '#templates';
+      render(<AiForOfficePage />);
+      expect(screen.queryByTestId('stub-templates')).toBeNull();
+      expect(screen.getByTestId('stub-orgs')).toBeInTheDocument();
+      expect(window.location.hash).toBe('#orgs');
+      expect(screen.getByTestId('ai-office-tab-orgs').className).toContain('border-primary');
+    });
+
+    it('shows a loading state for #templates while permissions are still loading', () => {
+      grants.current = undefined;
+      window.location.hash = '#templates';
+      render(<AiForOfficePage />);
+      expect(screen.getByTestId('ai-office-tab-loading')).toBeInTheDocument();
+      expect(screen.getByTestId('ai-office-tab-templates').className).toContain('border-primary');
+      expect(screen.queryByTestId('stub-templates')).toBeNull();
+      expect(screen.queryByTestId('stub-orgs')).toBeNull();
+      expect(window.location.hash).toBe('#templates');
+    });
+
+    it('shows the templates tab to the wildcard grant', () => {
+      grants.current = [{ resource: '*', action: '*' }];
+      window.location.hash = '#templates';
+      render(<AiForOfficePage />);
+      expect(screen.getByTestId('ai-office-tab-templates')).toBeInTheDocument();
+      expect(screen.getByTestId('stub-templates')).toBeInTheDocument();
+    });
   });
 });

@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
 } from '../../db/schema';
+import { aiOperatorPlanApprovalEffects } from '../../db/schema/aiOperatorPlanApprovals';
+import { canonicalizeEffectSet } from '@breeze/shared/canonicalize/effectSet';
 import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
 import { resolvePatchInstallEligibility } from '../patchEligibility';
@@ -254,6 +256,45 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     const resolved = await resolveTopologyDiagnosticEffect(args, database);
     if (resolved.kind !== 'material') return resolved.kind === 'missing_arg' ? MISSING_ARG : TARGET_ABSENT;
     return { kind: 'material', material: resolved.material, verifiedTopologyDiagnostic: resolved.verified };
+  },
+
+  // operator_plan (Tier 3, FOUR_EYES) — Recipe Library spec §6.4. Unlike the
+  // m365_/google_ surfaces (DELIBERATELY_UNPINNED: their target lives in
+  // someone else's system) everything this tool references is a LOCAL row, so
+  // the release path can prove the approved effect rows have not moved. The
+  // pin is mandatory (`requiresPinnedEffectDigest`). Material is the canonical
+  // effect set over the stored rows, the same canonicalizer
+  // `effect_set_digest` uses; a malformed set (no rows, bad ordinals) is
+  // `target_absent`, never a throw.
+  operator_plan: async (args, database) => {
+    const taskId = typeof args.taskId === 'string' ? args.taskId : null;
+    const planRevision = typeof args.planRevision === 'number' ? args.planRevision : null;
+    if (!taskId || planRevision === null) return MISSING_ARG;
+
+    const rows = await database
+      .select({
+        ordinal: aiOperatorPlanApprovalEffects.ordinal,
+        toolName: aiOperatorPlanApprovalEffects.toolName,
+        provider: aiOperatorPlanApprovalEffects.provider,
+        targetId: aiOperatorPlanApprovalEffects.targetId,
+        accountExternalId: aiOperatorPlanApprovalEffects.accountExternalId,
+        argumentDigest: aiOperatorPlanApprovalEffects.argumentDigest,
+      })
+      .from(aiOperatorPlanApprovalEffects)
+      .where(and(
+        eq(aiOperatorPlanApprovalEffects.taskId, taskId),
+        eq(aiOperatorPlanApprovalEffects.planRevision, planRevision),
+      ))
+      .orderBy(asc(aiOperatorPlanApprovalEffects.ordinal));
+    if (rows.length === 0) return TARGET_ABSENT;
+
+    // Loaded on demand: planApproval pulls the db + outbox graph.
+    const { rowsToDigestProjection } = await import('../aiOperator/planApproval');
+    try {
+      return material(canonicalizeEffectSet({ taskId, planRevision, effects: rowsToDigestProjection(rows) }));
+    } catch {
+      return TARGET_ABSENT;
+    }
   },
 
   // manage_quotes:send: pin the quote's revision (updated_at) plus a

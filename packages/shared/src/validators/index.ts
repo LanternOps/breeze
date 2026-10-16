@@ -29,6 +29,8 @@ export * from './httpUrl';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
 export * from './warrantyInlineSettings';
+export * from './systemProtectionInlineSettings';
+export * from './securityAgents';
 export * from './safeRelativePath';
 export * from './authenticator';
 export * from './catalog';
@@ -52,6 +54,7 @@ export * from './deviceRoles';
 export * from './deviceFunctions';
 export * from './customFieldImport';
 export * from './alertRuleConditions';
+export * from './eventLogProviders';
 export * from './complianceInlineSettings';
 
 // ============================================
@@ -617,6 +620,38 @@ export const policyAppRuleSchema = z.object({
 
 export type PolicyAppRule = z.infer<typeof policyAppRuleSchema>;
 
+/** Patch sources the app-rule UI presents as one bucket (manual entries hardcode 'third_party'). */
+const APP_RULE_THIRD_PARTY_BUCKET: readonly string[] = ['third_party', 'custom'];
+
+/**
+ * Canonical app-rule identity: 'third_party' and 'custom' collapse to one
+ * 'third_party' bucket, packageId is lowercased. The single implementation —
+ * apps/api patchApprovalEvaluator.appRuleKey delegates here so the validator's
+ * uniqueness check and the evaluator's lookup cannot disagree.
+ */
+export function canonicalAppRuleKey(source: string, packageId: string): string {
+  const bucket = APP_RULE_THIRD_PARTY_BUCKET.includes(source) ? 'third_party' : source;
+  return `${bucket}|${packageId.toLowerCase()}`;
+}
+
+/**
+ * Update Ring per-app block/pin rules — `patch_policies.app_rules` (#8184).
+ * Same element type as the policy-level `apps` list, max 200, unique by
+ * `canonicalAppRuleKey`.
+ */
+export const ringAppRulesSchema = z.array(policyAppRuleSchema).max(200).superRefine((rules, ctx) => {
+  const seen = new Set<string>();
+  rules.forEach((rule, i) => {
+    const key = canonicalAppRuleKey(rule.source, rule.packageId);
+    if (seen.has(key)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [i, 'packageId'], message: 'Duplicate application rule.' });
+    }
+    seen.add(key);
+  });
+});
+
+export type RingAppRules = z.infer<typeof ringAppRulesSchema>;
+
 /**
  * Typed shape for an Update Ring's `patch_policies.autoApprove` JSONB column.
  *
@@ -729,6 +764,68 @@ export function mergeRingAutoApproveWrite(
   };
 }
 
+// #8030: restart-prompt text limits. Mirrored by the varchar(n) lengths on
+// config_policy_patch_settings (lengths only — the content rules below are not
+// DB-enforced, which is why the API load and dispatch paths re-validate per
+// field) and by the agent's SanitizeRebootPromptText, which drops (never
+// truncates) a field that fails and falls back to the built-in text.
+export const REBOOT_PROMPT_TITLE_MAX = 100;
+export const REBOOT_PROMPT_BODY_MAX = 500;
+export const REBOOT_PROMPT_BUTTON_MAX = 40;
+/** The one placeholder the agent substitutes, with the time left until restart. */
+export const REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER = '{{countdown}}';
+
+/**
+ * One optional piece of restart-prompt text. Blank, whitespace-only, null and
+ * absent all canonicalize to null — "use the built-in text" — so the stored row,
+ * the partner export and the revision hash never disagree about an unset field.
+ *
+ * Plain text only. The prompt is rendered by MessageBox/toast XML on Windows,
+ * AppleScript on macOS and zenity/notify-send on Linux; notify-send has no
+ * reliable way to switch markup off, so `<` and `>` are refused outright rather
+ * than escaped differently per OS. Control characters are refused too (newline
+ * and tab are allowed in the body, which is multi-line). `{{...}}` is refused
+ * unless it is exactly {{countdown}}, so a typo reaches the operator as a
+ * validation error instead of reaching an end user verbatim.
+ */
+function restartPromptTextSchema(max: number, multiline: boolean) {
+  return z
+    .string()
+    .nullish()
+    .transform((value) => {
+      const trimmed = value?.trim() ?? '';
+      return trimmed === '' ? null : trimmed;
+    })
+    .pipe(
+      z
+        .string()
+        .max(max)
+        .refine((value) => !/[<>]/.test(value), {
+          message: 'Restart-prompt text is plain text: "<" and ">" are not allowed.',
+        })
+        .refine(
+          (value) => ![...value].some((ch) => {
+            const code = ch.codePointAt(0)!;
+            if (multiline && (ch === '\n' || ch === '\t')) return false;
+            return code < 0x20 || code === 0x7f;
+          }),
+          { message: 'Restart-prompt text must not contain control characters.' },
+        )
+        .refine(
+          (value) => value.replaceAll(REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER, '').match(/\{\{|\}\}/) === null,
+          { message: 'The only supported placeholder is {{countdown}}.' },
+        )
+        .nullable(),
+    );
+}
+
+/** Per-field validators, for re-checking stored text at dispatch time. */
+export const rebootPromptTextSchemas = {
+  title: restartPromptTextSchema(REBOOT_PROMPT_TITLE_MAX, false),
+  body: restartPromptTextSchema(REBOOT_PROMPT_BODY_MAX, true),
+  button: restartPromptTextSchema(REBOOT_PROMPT_BUTTON_MAX, false),
+} as const;
+
 export const patchInlineSettingsSchema = z.object({
   sources: z.array(patchSourceValueSchema).min(1).default(['os']),
   autoApprove: z.boolean().default(false),
@@ -755,6 +852,12 @@ export const patchInlineSettingsSchema = z.object({
   rebootAllowDeferral: z.boolean().default(false),
   rebootMaxDeferrals: z.number().int().min(0).max(10).default(3),
   rebootDeferralMinutes: z.number().int().min(5).max(1440).default(60),
+  // #8030: optional replacement text for the end-user restart prompt, so an
+  // MSP can warn users in their own language. null keeps the agent's built-in
+  // English copy byte-for-byte. Plain text only: see restartPromptTextSchema.
+  rebootPromptTitle: rebootPromptTextSchemas.title,
+  rebootPromptBody: rebootPromptTextSchemas.body,
+  rebootPromptButton: rebootPromptTextSchemas.button,
   // #1872: enforce Breeze as the sole patch source on Windows endpoints. When
   // true the agent suppresses the native Windows Update automatic-install
   // channel (NoAutoUpdate=1); Breeze's own WUA-driven installs are unaffected.
@@ -824,6 +927,7 @@ export const patchInlineSettingsSchema = z.object({
 
 export * from './hardwareHealth';
 export * from './timeSync';
+export * from './workloads';
 
 export const eventLogInlineSettingsSchema = z.object({
   retentionDays: z.number().int().min(7).max(365).default(30),
@@ -992,6 +1096,8 @@ export * from './ticketConfig';
 export * from './retiredLabourPricing';
 export * from './retiredAiModelFields';
 export * from './partnerTicketingSettings';
+export * from './ticketApproval';
+export * from './siteLocation';
 export * from './auditRetention';
 export * from './ticketPushPreferences';
 export * from './clientAiDlp';
@@ -1025,6 +1131,7 @@ export {
   type CreateBackupProfileInput,
   type UpdateBackupProfileInput,
 } from './backupTargets';
+export * from './backupDestinationPrefix';
 export {
   deliverableCadenceSchema,
   deliverableCompletionModeSchema,
@@ -1125,6 +1232,8 @@ export * from './topology';
 export * from './topologyCollection';
 
 export * from './topologyConfiguration';
+
+export * from './topologyPresence';
 
 export * from './topologyDiagnostics';
 
@@ -1280,6 +1389,7 @@ export const maintenanceInlineSettingsSchema = z
 
 export type MaintenanceInlineSettings = z.infer<typeof maintenanceInlineSettingsSchema>;
 export * from './callerVerification';
+export * from './endpointMessage';
 
 // Business reports (#3198 W02)
 export * from './businessReports';

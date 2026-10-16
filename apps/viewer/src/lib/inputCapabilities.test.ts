@@ -130,3 +130,58 @@ describe('createInputCapabilitiesGate', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe('input capabilities — reliable input (W2b) and extended input (W2c)', () => {
+  it('records reliableInput, epochs and releasesHeldInput from the reply', () => {
+    const gate = createInputCapabilitiesGate();
+    gate.arm();
+    gate.apply({ type: 'input_capabilities', typeText: true, releasesHeldInput: true, reliableInput: true, inputEpoch: 3, geoEpoch: 4 });
+    expect(gate.snapshot()).toEqual({
+      typeText: true,
+      releasesHeldInput: true,
+      reliableInput: true,
+      inputEpoch: 3,
+      geoEpoch: 4,
+      extended: { keyCodes: false, extraButtons: false, horizontalWheel: false },
+    });
+  });
+
+  it('treats reliableInput with an invalid epoch as legacy', () => {
+    for (const bad of [0, -1, 2 ** 32, 1.5, '3', undefined]) {
+      const gate = createInputCapabilitiesGate();
+      gate.arm();
+      gate.apply({ reliableInput: true, inputEpoch: bad, geoEpoch: 1 });
+      expect(gate.snapshot().reliableInput).toBe(false);
+      const gate2 = createInputCapabilitiesGate();
+      gate2.arm();
+      gate2.apply({ reliableInput: true, inputEpoch: 1, geoEpoch: bad });
+      expect(gate2.snapshot().reliableInput).toBe(false);
+    }
+  });
+
+  it('only accepts literal true for reliableInput', () => {
+    const gate = createInputCapabilitiesGate();
+    gate.arm();
+    gate.apply({ reliableInput: 'yes', inputEpoch: 1, geoEpoch: 1 });
+    expect(gate.snapshot().reliableInput).toBe(false);
+  });
+
+  it('gates every extended field on the W2c flag', () => {
+    const gate = createInputCapabilitiesGate();
+    gate.arm();
+    gate.apply({ reliableInput: true, inputEpoch: 1, geoEpoch: 1, keyCodes: true });
+    expect(gate.snapshot().extended).toEqual({ keyCodes: true, extraButtons: true, horizontalWheel: true });
+  });
+
+  it('clears everything on re-arm and on release', () => {
+    const gate = createInputCapabilitiesGate();
+    gate.arm();
+    gate.apply({ typeText: true, reliableInput: true, inputEpoch: 1, geoEpoch: 1, keyCodes: true, releasesHeldInput: true });
+    gate.arm();
+    expect(gate.snapshot().reliableInput).toBe(false);
+    expect(gate.snapshot().extended.keyCodes).toBe(false);
+    gate.apply({ reliableInput: true, inputEpoch: 1, geoEpoch: 1, releasesHeldInput: true });
+    gate.release();
+    expect(gate.snapshot()).toMatchObject({ reliableInput: false, releasesHeldInput: false, inputEpoch: null, geoEpoch: null });
+  });
+});

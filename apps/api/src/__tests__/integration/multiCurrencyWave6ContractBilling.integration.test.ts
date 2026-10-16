@@ -366,11 +366,18 @@ describe.runIf(RUN)(gateLabel('G3', 'recurring contract billing run'), () => {
   it('guard: the BullMQ billing-sweep processor still routes through runContractBillingSweep', () => {
     // The sweep is driven directly above; this pins the indirection so a future
     // refactor that moves logic into the processor cannot make the gate vacuous.
+    // #8181 moved the job body into runBillingSweepJob (renewal -> billing ->
+    // block-hours close-out); follow that one hop.
     const src = readFileSync(join(__dirname, '../../jobs/contractWorker.ts'), 'utf8');
     const processor = src.slice(src.indexOf("if (job.name === 'billing-sweep')"));
     expect(
       processor.slice(0, 400),
-      'createContractWorker\'s billing-sweep branch must call runContractBillingSweep()',
-    ).toContain('return runContractBillingSweep()');
+      'createContractWorker\'s billing-sweep branch must call runBillingSweepJob()',
+    ).toContain('return runBillingSweepJob()');
+    const job = src.slice(src.indexOf('export async function runBillingSweepJob('));
+    expect(
+      job.slice(0, job.indexOf('\n}\n')),
+      'runBillingSweepJob must call runContractBillingSweep(asOf)',
+    ).toContain('await runContractBillingSweep(asOf)');
   });
 });

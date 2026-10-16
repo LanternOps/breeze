@@ -72,6 +72,15 @@ export default function ResearchControls(props: ResearchControlsProps) {
           </button>
         </div>
       )}
+      {state.kind === 'request_error' && (
+        <div data-testid="research-state-request-error" className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-sm">
+          {t('longTail.remediation.RemediationSuggestionsPanel.errors.researchFailed')}
+          <button type="button" data-testid="research-retry" disabled={props.busy} onClick={props.onRetry} className="inline-flex items-center gap-1 underline disabled:opacity-60">
+            <RefreshCw className="h-3 w-3" />
+            {t('longTail.remediation.RemediationSuggestionsPanel.research.retry')}
+          </button>
+        </div>
+      )}
       {state.kind === 'no_safe_fix' && (
         <p data-testid="research-state-no-safe-fix" className="text-sm text-muted-foreground">{t('longTail.remediation.RemediationSuggestionsPanel.research.noSafeFix')}</p>
       )}

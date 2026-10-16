@@ -97,7 +97,7 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 |-------|-------------|
 | `script.started` | Script execution has begun on a device |
 | `script.completed` | Script execution finished successfully |
-| `script.failed` | Script execution failed |
+| `script.failed` | Script execution failed or timed out (a cancelled run emits neither) |
 
 ### Automation Events
 
@@ -124,6 +124,27 @@ Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more e
 | `patch.installed` | A patch was installed successfully |
 | `patch.failed` | A patch installation failed |
 | `patch.rollback` | A patch has been rolled back |
+
+### Ticket Events
+
+Ticket events are published from the ticketing transactional outbox with **id-only payloads**: identifiers, enum labels and field *names*, never a subject, description, resolution note or comment body. Read the full record through the API (staff JWT, or the Partner API `tickets:read` feed) when you need it. Rely only on the fields listed below: a payload can also carry other internal identifiers, which are not part of this contract.
+
+| Event | Payload (besides `ticketId`) | Description |
+|-------|------------------------------|-------------|
+| `ticket.created` | `internalNumber`, `source`, `assigneeId`, `actorPrincipalId` | A ticket was opened (from the portal, email, an alert, the UI, the Partner API or AI). `actorPrincipalId` is the service principal that opened it (`null` otherwise) |
+| `ticket.commented` | `commentId`, `isPublic`, `originPrincipalKind`, `originPrincipalId` | A comment, note or feed entry was added. `originPrincipalKind` and `originPrincipalId` are the comment's stored origin, the same values the Partner API feed returns for it: `service_principal` with the principal's id, `ai_agent` with the agent's id, `user` for people, and `system` for Breeze's own system notes, such as caller verification (`originPrincipalId` is `null` for the last two). A comment Breeze writes on a customer's behalf is `user` by design: a reply that arrives by email (or a public email linked from the Outlook add-in) and the reopen that reply triggers. A mirroring integration skips exactly the comments it wrote by matching `service_principal` and its own principal id |
+| `ticket.status_changed` | `from`, `to`, `statusId` | The core status changed (`statusId` is the partner's custom status row, when one was used) |
+| `ticket.updated` | `changed` (field names) | Fields were edited — subject, description, priority, category, due date, device, tags, requester |
+| `ticket.assigned` | `assigneeId` (`null` when unassigned), `actorPrincipalId` | The assignee changed. `actorPrincipalId` is the service principal that made the change (`null` for people and the system), so a mirroring integration can skip its own assignments |
+| `ticket.sla_breached` | `assigneeId` | A response or resolution SLA target was missed |
+
+### Migration Window Events
+
+A ticket migration window lets a partner admin import ticket history from another system without notifying anyone or firing per-ticket events. Nothing the import writes produces a ticket event. When the window closes, each organization in it gets one summary event.
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
 
 ### Other Events
 
@@ -320,7 +341,7 @@ The `X-Breeze-Signature-Timestamp` header contains the same timestamp value used
 
 ## Delivery History
 
-Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state.
+Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state. The list returns status and timing only; the event payload and the receiver's response body are not included. Reading the history requires `webhooks:read`.
 
 ### Listing Deliveries
 
@@ -348,9 +369,7 @@ Response:
       "status": "delivered",
       "event": "alert.triggered",
       "eventId": "event-uuid",
-      "payload": { "alertId": "...", "severity": "critical" },
       "responseStatus": 200,
-      "responseBody": "ok",
       "attempt": 1,
       "nextAttemptAt": null,
       "createdAt": "2026-02-18T12:34:56.000Z",
@@ -517,7 +536,12 @@ Breeze validates webhook URLs at both creation time and delivery time to prevent
 | **POST** | `/webhooks/:id/test` | Send a test delivery |
 | **POST** | `/webhooks/:id/retry/:deliveryId` | Retry a failed delivery |
 
-All webhook routes require authentication via the `authMiddleware` and are scoped to `organization`, `partner`, or `system` roles.
+All webhook routes require authentication and are scoped to `organization`, `partner`, or `system` roles. They also require a permission:
+
+- **Reading** (`GET /webhooks`, `GET /webhooks/:id`, `GET /webhooks/:id/deliveries`) requires `webhooks:read`. The AI assistant's `query_webhooks` tool requires the same permission.
+- **Managing** (create, update, delete, test, retry) requires `organizations:write`.
+
+`webhooks:read` is granted by default to Org Admin, Org Technician and Partner Technician; Partner Admin holds it through `*:*`. In the dashboard, a user without `webhooks:read` does not see the Webhooks tab under Integrations, and a user without `organizations:write` sees webhooks and their delivery history without the create, edit, delete, test, pause/resume or retry controls. See [Users & Roles](/reference/users-and-roles/#permission-model) to grant either permission to a role.
 
 ---
 

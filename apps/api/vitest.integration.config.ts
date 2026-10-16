@@ -43,6 +43,9 @@ export default defineConfig({
       // Hardware & RAID monitoring real-DB migration/RLS proof (W01 #6856).
       'src/services/hardwareHealth/**/*.integration.test.ts',
       'src/services/timeSync/**/*.integration.test.ts',
+      'src/services/workloads/**/*.integration.test.ts',
+      // Workload image currency (W05 #8194): the pass under real RLS + the system-only cache.
+      'src/services/imageCurrency/**/*.integration.test.ts',
       // Hardware & RAID monitoring (W05 BMC in-band): real-DB migration/enum
       // proof and BMC discovery-worker/topology-publish suites. Import
       // `__tests__/integration/setup` (real postgres pool + autoMigrate).
@@ -59,6 +62,8 @@ export default defineConfig({
       'src/services/portal/hardwareHealthReadModel.integration.test.ts',
       // #7732 portal hardware inventory: real-Postgres proof of org isolation.
       'src/services/portal/hardwareInventoryReadModel.integration.test.ts',
+      // #7733 portal performance metrics: real-Postgres proof of org isolation.
+      'src/services/portal/performanceReadModel.integration.test.ts',
       // Co-located real-DB integration test for the platform-admin bootstrap
       // (#2655): the mocked unit suite executes no SQL, so it never caught the
       // prod-bundle `= ANY(::text[])` array-literal failure. This drives the
@@ -223,6 +228,9 @@ export default defineConfig({
       // (real Redis; no Postgres fixtures used). Belongs to
       // vitest.integration.config.ts, not the no-Redis unit runner.
       'src/services/mfaStepUpGrant.integration.test.ts',
+      // Real-Redis test of the per-org script-review concurrency slot Lua
+      // scripts (#5637): cap, release, TTL self-heal, idempotent release.
+      'src/services/scriptProposals/reviewConcurrency.integration.test.ts',
       // Co-located real-DB integration test for the nightly enrollment-key
       // purge sweep: the #2775 live-bootstrap-token exemption (proving
       // Postgres itself evaluates the correlated NOT EXISTS subquery per row,
@@ -242,6 +250,9 @@ export default defineConfig({
       'src/routes/installerRotationRevocation.integration.test.ts',
       // One-time legacy token/child cutover and replay proof.
       'src/db/installerBootstrapCredentialGeneration.migration.integration.test.ts',
+      // v0.122.0 EU deploy: the quarantine execution-authority migration on a
+      // table with security links (deferred parity trigger + ALTER TABLE).
+      'src/db/securityQuarantineExecutionAuthorityMigration.integration.test.ts',
       // Hardware & RAID monitoring (W03): disposable-database replay proof for
       // the monitor-kind enum and alert subject-identity migrations.
       'src/db/hardwareAlertMigrations.integration.test.ts',

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
+import { PgDialect } from 'drizzle-orm/pg-core';
+
 import { c2cItemsRoutes } from './items';
 
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -198,5 +200,29 @@ describe('c2c items routes', () => {
       authorizationGrantRevision: 'rev-1',
     }));
     expect(queueAddMock).toHaveBeenCalledOnce();
+  });
+
+  // #8297: `${payload.itemIds}::uuid[]` was spread by Drizzle into
+  // `($1, $2)::uuid[]`, which Postgres rejects for every list length, so every
+  // restore request failed. The ids must be bound as ARRAY[$1::uuid, ...].
+  it.each([
+    [['11111111-1111-4111-8111-111111111111']],
+    [['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222']],
+  ])('binds restore itemIds as a uuid ARRAY, one parameter per id, for %j', async (itemIds) => {
+    const selectChain = chainMock([]);
+    selectMock.mockReturnValueOnce(selectChain);
+
+    await app.request('/c2c/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify({ itemIds }),
+    });
+
+    expect(selectChain.where).toHaveBeenCalledTimes(1);
+    const q = new PgDialect().sqlToQuery(selectChain.where.mock.calls[0]![0]);
+    const elements = itemIds.map((_, i) => `$${i + 4}::uuid`).join(', ');
+    expect(q.sql).toContain(`= ANY(ARRAY[${elements}])`);
+    expect(q.sql).not.toMatch(/\(\$\d+(, \$\d+)*\)::uuid\[\]/);
+    expect(q.params.slice(3, 3 + itemIds.length)).toEqual(itemIds);
   });
 });

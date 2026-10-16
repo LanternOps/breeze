@@ -103,6 +103,31 @@ export default function WorkTypesCard({ onLoad, ref, readOnly = false }: { onLoa
     }
   }
 
+  // Flags a work type as after-hours (customer approval policy, #8196): a PATCH
+  // of just the flag; the server leaves the name untouched.
+  async function toggleAfterHours(workType: WorkTypeOption, checked: boolean) {
+    if (readOnly || busy) return;
+    setBusy(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`${endpoint}/${workType.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ isAfterHours: checked }),
+        }),
+        successMessage: t('workTypes.saveSuccess'),
+        errorFallback: t('workTypes.saveError'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true }),
+      });
+      resetWorkTypeCache();
+      await load();
+    } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) showToast({ type: 'error', message: t('workTypes.saveError') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="mt-8 border-t pt-6" data-testid="work-types-card" aria-labelledby="work-types-title">
       <h2 id="work-types-title" className="text-lg font-semibold">{t('workTypes.title')}</h2>
@@ -128,6 +153,10 @@ export default function WorkTypesCard({ onLoad, ref, readOnly = false }: { onLoa
               <button type="button" className={buttonClass} disabled={busy} onClick={() => setEditingId(null)}>{t('ticketCategoriesPage.cancel')}</button>
             </form> : <>
               <span className="min-w-0 flex-1 break-words text-sm font-medium">{workType.name}</span>
+              <label className="flex items-center gap-1.5 text-xs">
+                <input type="checkbox" data-testid={`work-type-after-hours-${workType.id}`} checked={workType.isAfterHours === true} disabled={readOnly || busy || !workType.isActive} onChange={(event) => void toggleAfterHours(workType, event.target.checked)} />
+                {t('workTypes.afterHours')}
+              </label>
               <span className="rounded-full bg-muted px-2 py-1 text-xs">{workType.isActive ? t('ticketCategoriesPage.active') : t('workTypes.archived')}</span>
               {!readOnly && <button type="button" data-testid={`work-type-rename-${workType.id}`} className={buttonClass} disabled={busy} onClick={() => { setEditingId(workType.id); setEditName(workType.name); }}>{t('workTypes.rename')}</button>}
               {!readOnly && workType.isActive && <button type="button" data-testid={`work-type-archive-${workType.id}`} className={buttonClass} disabled={busy} onClick={() => void mutate('DELETE', workType.id)}>{t('workTypes.archive')}</button>}

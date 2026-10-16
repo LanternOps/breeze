@@ -100,7 +100,49 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
   // (ticket_id, org_id) FK is deferred by name in both movers too
   // (partner_api_idempotency_keys_ticket_org_fk).
   'partner_api_idempotency_keys',
+  // ticket_approval_requests (#4617) denormalizes org_id from its ticket and
+  // has no device_id, so it joins BOTH axes, appended last after
+  // partner_api_idempotency_keys on each. Its composite (ticket_id, org_id) FK is
+  // DEFERRABLE INITIALLY IMMEDIATE, so both movers also name
+  // ticket_approval_requests_ticket_org_fk in their SET CONSTRAINTS …
+  // DEFERRED statements. The approval writers (W02) lock
+  // request -> time_entries while the movers rewrite time_entries first and
+  // this table last; that is deadlock-free only because BOTH sides take the
+  // `tickets` row lock first, which serializes them per ticket.
+  'ticket_approval_requests',
+  // ticket_links (#7900 W02) is DELETE-not-rewrite, so it is the one entry
+  // that lives in neither rewrite list: it has two ticket legs
+  // (source_ticket_id, target_ticket_id) and no `ticket_id`, and a link whose
+  // ticket moves would have legs in two orgs, which its composite FKs forbid.
+  // Both movers instead delete every link touching a moved ticket, through
+  // TICKET_ORG_MOVE_DELETE_TABLES below, as the LAST child statement on each
+  // axis (after ticket_approval_requests) — extending, not reordering, this
+  // order. Both FKs (ticket_links_source_org_fk, ticket_links_target_org_fk)
+  // are DEFERRABLE INITIALLY IMMEDIATE and named in both movers' SET
+  // CONSTRAINTS … DEFERRED: the device axis re-stamps tickets.org_id inside
+  // the devices UPDATE trigger, long before this tail runs, so an immediate
+  // check would 23503 before the delete could execute. Org merge repoints it
+  // (both legs move with the loser org) in this same slot.
+  'ticket_links',
 ] as const;
+
+/**
+ * Ticket child tables both org movers DELETE (rather than re-stamp) for every
+ * row touching a moved ticket, after their rewrite statements. Kept apart from
+ * {@link TICKET_ORG_DENORMALIZED_TABLES} / `CUSTOM_ORG_REWRITE_TABLES` because
+ * those lists drive `UPDATE … SET org_id WHERE ticket_id = …` statements, and
+ * ticket_links has no `ticket_id`.
+ *
+ * Declarative (#8679): no code iterates this list. Each mover's DELETE is
+ * hand-written, because a link has two ticket legs and the statement is not
+ * the `WHERE ticket_id = …` shape the rewrite lists generate. Tests keep the
+ * list and the statements in step: ticketOrgMoveLockOrder.test.ts projects
+ * `[...rewrite, ...delete]` on each axis onto the canonical order, and
+ * routes/devices/moveOrg.coverage.test.ts pins that both movers delete on both
+ * legs and defer both FKs. A new delete-only table needs an entry here AND a
+ * hand-written DELETE in both movers.
+ */
+export const TICKET_ORG_MOVE_DELETE_TABLES = ['ticket_links'] as const;
 
 /**
  * Tables `moveTicketOrg` re-stamps in this order, `WHERE ticket_id = <ticket>`.
@@ -154,6 +196,7 @@ export const TICKET_ORG_DENORMALIZED_TABLES = [
   'ticket_checklist_items',
   'ticket_external_refs',
   'partner_api_idempotency_keys',
+  'ticket_approval_requests',
 ] as const;
 
 /**

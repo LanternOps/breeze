@@ -56,7 +56,8 @@ func TestPamReconciliationTransportResolverChunksCorrelatesAndAuthenticates(t *t
 			t.Errorf("decode request: %v", err)
 			return
 		}
-		if request.ProtocolVersion != 1 {
+		// #8206: the binding request negotiates protocol v2.
+		if request.ProtocolVersion != 2 {
 			t.Errorf("protocolVersion = %d", request.ProtocolVersion)
 		}
 		if len(request.Candidates) == 0 || len(request.Candidates) > 100 {
@@ -72,7 +73,7 @@ func TestPamReconciliationTransportResolverChunksCorrelatesAndAuthenticates(t *t
 			})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"protocolVersion": 1,
+			"protocolVersion": 2,
 			"dispositions":    dispositions,
 		})
 	}))
@@ -117,11 +118,11 @@ func TestPamReconciliationTransportResolverRejectsInvalidResponses(t *testing.T)
 		{name: "missing route", status: http.StatusNotFound, body: `{"error":"not found"}`},
 		{name: "non-200", status: http.StatusForbidden, body: `{"error":"forbidden"}`},
 		{name: "malformed", status: http.StatusOK, body: `{"protocolVersion":`},
-		{name: "wrong protocol", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[{"status":"unresolved","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
-		{name: "missing disposition", status: http.StatusOK, body: `{"protocolVersion":1,"dispositions":[]}`},
-		{name: "unknown observation", status: http.StatusOK, body: `{"protocolVersion":1,"dispositions":[{"status":"unresolved","observationId":"20000000-0000-4000-8000-000000000099"}]}`},
-		{name: "invalid status", status: http.StatusOK, body: `{"protocolVersion":1,"dispositions":[{"status":"accepted","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
-		{name: "bound missing command", status: http.StatusOK, body: `{"protocolVersion":1,"dispositions":[{"status":"bound","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
+		{name: "wrong protocol", status: http.StatusOK, body: `{"protocolVersion":3,"dispositions":[{"status":"unresolved","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
+		{name: "missing disposition", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[]}`},
+		{name: "unknown observation", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[{"status":"unresolved","observationId":"20000000-0000-4000-8000-000000000099"}]}`},
+		{name: "invalid status", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[{"status":"accepted","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
+		{name: "bound missing command", status: http.StatusOK, body: `{"protocolVersion":2,"dispositions":[{"status":"bound","observationId":"20000000-0000-4000-8000-000000000001"}]}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

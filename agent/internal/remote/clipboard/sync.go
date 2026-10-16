@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -44,6 +46,30 @@ type ClipboardSync struct {
 
 	mu           sync.Mutex
 	lastSentHash [32]byte
+
+	peerChunked       atomic.Bool   // the viewer said hello with chunked:true
+	bufferWaitTimeout time.Duration // how long a chunked send waits for the SCTP buffer
+	rx                chunkAssembler
+	rxBlockedID       string // transfer already counted as blocked (once per transfer)
+	rxFailedID        string // transfer whose reassembly failed; its later frames are dropped
+
+	statsMu sync.Mutex
+	stats   map[string]*TransferCount // key "direction/type"
+	blocked int
+}
+
+// Summary is what crossed the clipboard channel during a session, for audit.
+// Never any content.
+type Summary struct {
+	Transfers []TransferCount `json:"transfers"`
+	Blocked   int             `json:"blocked"`
+}
+
+type TransferCount struct {
+	Direction string `json:"direction"` // host_to_viewer | viewer_to_host
+	Type      string `json:"type"`
+	Count     int    `json:"count"`
+	Bytes     int    `json:"bytes"`
 }
 
 type clipboardPayload struct {
@@ -56,11 +82,12 @@ type clipboardPayload struct {
 
 func NewClipboardSync(dc *webrtc.DataChannel, provider Provider, policy Policy) *ClipboardSync {
 	syncer := &ClipboardSync{
-		sender:       dc,
-		provider:     provider,
-		pollInterval: defaultPollInterval,
-		stop:         make(chan struct{}),
-		policy:       policy,
+		sender:            dc,
+		provider:          provider,
+		pollInterval:      defaultPollInterval,
+		stop:              make(chan struct{}),
+		policy:            policy,
+		bufferWaitTimeout: chunkTransferTimeout,
 	}
 	if dc != nil {
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
@@ -75,11 +102,12 @@ func NewClipboardSync(dc *webrtc.DataChannel, provider Provider, policy Policy) 
 // newClipboardSyncWithSender is used by tests to inject a mock sender.
 func newClipboardSyncWithSender(sender dcSender, provider Provider, policy Policy) *ClipboardSync {
 	return &ClipboardSync{
-		sender:       sender,
-		provider:     provider,
-		pollInterval: defaultPollInterval,
-		stop:         make(chan struct{}),
-		policy:       policy,
+		sender:            sender,
+		provider:          provider,
+		pollInterval:      defaultPollInterval,
+		stop:              make(chan struct{}),
+		policy:            policy,
+		bufferWaitTimeout: chunkTransferTimeout,
 	}
 }
 
@@ -105,10 +133,18 @@ func (c *ClipboardSync) Watch() {
 	go func() {
 		defer ticker.Stop()
 		var lastErrMsg string
+		baselined := false
 		for {
 			select {
 			case <-ticker.C:
 				content, err := c.provider.GetContent()
+				if err != nil && !baselined && errors.Is(err, ErrNoSupportedFormat) {
+					// Empty (or unreadable formats only) at session start: that
+					// is the baseline, so the first copy after it is sent. A
+					// failure to open the clipboard says nothing about what it
+					// holds; it leaves the baseline to the next readable poll.
+					baselined = true
+				}
 				if err != nil {
 					// Only log when the error message changes to avoid spam
 					msg := err.Error()
@@ -120,6 +156,20 @@ func (c *ClipboardSync) Watch() {
 				}
 				lastErrMsg = ""
 				hash := fingerprint(content)
+				// The first readable clipboard is what the end user had before
+				// the session. Remember it instead of sending it: pushing it
+				// would overwrite the technician's clipboard just for connecting,
+				// with whatever the end user last copied. A viewer→host write
+				// that landed before this poll has already set the hash; keep it.
+				if !baselined {
+					baselined = true
+					c.mu.Lock()
+					if c.lastSentHash == ([32]byte{}) {
+						c.lastSentHash = hash
+					}
+					c.mu.Unlock()
+					continue
+				}
 				c.mu.Lock()
 				shouldSend := hash != c.lastSentHash
 				c.mu.Unlock()
@@ -165,7 +215,14 @@ func (c *ClipboardSync) Send(content Content) error {
 		return err
 	}
 
-	if err := c.sender.SendText(string(encoded)); err != nil {
+	// Chunk only for a viewer that said it can reassemble; older viewers keep
+	// getting one message, exactly as before.
+	if c.peerChunked.Load() && len(encoded) > chunkFrameMaxBytes {
+		err = c.sendChunked(encoded)
+	} else {
+		err = c.sender.SendText(string(encoded))
+	}
+	if err != nil {
 		return err
 	}
 
@@ -177,7 +234,8 @@ func (c *ClipboardSync) Send(content Content) error {
 	slog.Info("clipboard transfer",
 		"direction", "host_to_viewer",
 		"type", string(content.Type),
-		"bytes", len(content.Text)+len(content.RTF)+len(content.Image))
+		"bytes", contentBytes(content))
+	c.count("host_to_viewer", content)
 
 	c.mu.Lock()
 	c.lastSentHash = fingerprint(content)
@@ -186,28 +244,193 @@ func (c *ClipboardSync) Send(content Content) error {
 	return nil
 }
 
+type bufferedSender interface {
+	BufferedAmount() uint64
+}
+
+// The production sender must keep offering backpressure, or chunked sends
+// would queue a whole image in SCTP without pausing.
+var _ bufferedSender = (*webrtc.DataChannel)(nil)
+
+// chunkBufferHighWater pauses a chunked send while this much is queued, so a
+// slow viewer does not make the agent buffer a whole image in SCTP.
+const chunkBufferHighWater = 1 << 20
+
+func (c *ClipboardSync) sendChunked(inner []byte) error {
+	frames, err := encodeChunks(newTransferID(), inner)
+	if err != nil {
+		return err
+	}
+	bs, _ := c.sender.(bufferedSender)
+	for _, f := range frames {
+		if bs != nil {
+			deadline := time.Now().Add(c.bufferWaitTimeout)
+			for bs.BufferedAmount() > chunkBufferHighWater {
+				if time.Now().After(deadline) {
+					return errors.New("clipboard channel buffer did not drain")
+				}
+				select {
+				case <-c.stop:
+					return errors.New("clipboard sync stopped")
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+		}
+		if err := c.sender.SendText(string(f)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SendStatus tells the viewer what this channel allows, so it can show
+// "disabled by policy" instead of guessing from silence. Viewers that predate
+// it ignore an unknown message type.
+func (c *ClipboardSync) SendStatus() error {
+	if c.sender == nil {
+		return errClipboardSyncUnconfigured
+	}
+	raw, err := json.Marshal(map[string]any{
+		"type":               "status",
+		"hostToViewer":       c.policy.HostToViewer,
+		"viewerToHost":       c.policy.ViewerToHost,
+		"chunked":            true,
+		"suppressesBaseline": true,
+		"maxTextBytes":       MaxTextBytes,
+		"maxImageBytes":      MaxImageBytes,
+	})
+	if err != nil {
+		return err
+	}
+	return c.sender.SendText(string(raw))
+}
+
+func contentBytes(content Content) int {
+	return len(content.Text) + len(content.RTF) + len(content.Image)
+}
+
+func (c *ClipboardSync) count(direction string, content Content) {
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	if c.stats == nil {
+		c.stats = map[string]*TransferCount{}
+	}
+	key := direction + "/" + string(content.Type)
+	tc, ok := c.stats[key]
+	if !ok {
+		tc = &TransferCount{Direction: direction, Type: string(content.Type)}
+		c.stats[key] = tc
+	}
+	tc.Count++
+	tc.Bytes += contentBytes(content)
+}
+
+func (c *ClipboardSync) blockedTransfer(bytes int) {
+	// A denied paste is security-relevant: audit it rather than dropping it
+	// silently (finding #7). TODO(#1012): central audit_logs (W4c, #8261).
+	slog.Info("clipboard transfer blocked by policy",
+		"direction", "viewer_to_host",
+		"bytes", bytes)
+	c.statsMu.Lock()
+	c.blocked++
+	c.statsMu.Unlock()
+}
+
+// Summary returns the transfer counters, sorted by direction then type.
+func (c *ClipboardSync) Summary() Summary {
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	out := Summary{Blocked: c.blocked}
+	for _, tc := range c.stats {
+		out.Transfers = append(out.Transfers, *tc)
+	}
+	sort.Slice(out.Transfers, func(i, j int) bool {
+		if out.Transfers[i].Direction != out.Transfers[j].Direction {
+			return out.Transfers[i].Direction < out.Transfers[j].Direction
+		}
+		return out.Transfers[i].Type < out.Transfers[j].Type
+	})
+	return out
+}
+
 func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 	if c.provider == nil {
 		return errClipboardSyncUnconfigured
 	}
-	// Viewer→host writes disabled by policy: drop inbound clipboard rather than
-	// overwriting the host clipboard. Finding #7. A denied paste is a
-	// security-relevant event, so audit it instead of dropping silently. Bytes
-	// is the raw inbound message size (payload not decoded on the blocked path).
-	// NOTE: diagnostic-log, not central audit_logs (see Send).
-	// TODO(#1012): route clipboard/filedrop transfers to central audit_logs.
-	if !c.policy.ViewerToHost {
-		slog.Info("clipboard transfer blocked by policy",
-			"direction", "viewer_to_host",
-			"bytes", len(msg.Data))
-		return nil
+	if !msg.IsString {
+		return errors.New("clipboard payload must be text")
 	}
 	if len(msg.Data) > maxClipboardMessageBytes {
 		return fmt.Errorf("clipboard payload exceeds maximum %d bytes", maxClipboardMessageBytes)
 	}
+	var head struct {
+		Type    string `json:"type"`
+		Chunked bool   `json:"chunked"`
+	}
+	if err := json.Unmarshal(msg.Data, &head); err != nil {
+		return err
+	}
 
-	payload, err := decodeClipboardPayload(msg)
-	if err != nil {
+	// hello is the viewer describing itself, not clipboard content: accepted
+	// whatever the viewer→host policy says.
+	if head.Type == "hello" {
+		c.peerChunked.Store(head.Chunked)
+		return nil
+	}
+
+	// Viewer→host writes disabled by policy: drop inbound clipboard rather than
+	// overwriting the host clipboard (finding #7), counting a chunked transfer
+	// once rather than per frame.
+	if head.Type == "chunk" {
+		var f chunkFrame
+		if err := json.Unmarshal(msg.Data, &f); err != nil {
+			return err
+		}
+		if !c.policy.ViewerToHost {
+			// Once per transfer, not per frame. A frame with no usable id is
+			// malformed and counted on its own.
+			if f.ID == "" || len(f.ID) > maxTransferIDBytes || f.ID != c.rxBlockedID {
+				if len(f.ID) <= maxTransferIDBytes {
+					c.rxBlockedID = f.ID
+				}
+				c.blockedTransfer(len(msg.Data))
+			}
+			return nil
+		}
+		// The rest of a transfer that already failed is dropped quietly: the
+		// failure was reported once, and every later frame would only report
+		// "unknown transfer" again.
+		if f.ID != "" && f.ID == c.rxFailedID {
+			if f.Seq != 0 {
+				return nil
+			}
+			c.rxFailedID = "" // a restart under the same id is a new attempt
+		}
+		inner, done, err := c.rx.add(f)
+		if err != nil {
+			if len(f.ID) <= maxTransferIDBytes {
+				c.rxFailedID = f.ID
+			}
+			return err
+		}
+		if !done {
+			return nil
+		}
+		return c.applyInbound(inner, f.ID)
+	}
+
+	if !c.policy.ViewerToHost {
+		c.blockedTransfer(len(msg.Data))
+		return nil
+	}
+	return c.applyInbound(msg.Data, "")
+}
+
+// applyInbound writes one complete clipboard message from the viewer onto the
+// host clipboard and acks it. transferID is set when it arrived in chunks.
+func (c *ClipboardSync) applyInbound(raw []byte, transferID string) error {
+	var payload clipboardPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
 	}
 	if err := validateEncodedClipboardPayload(payload); err != nil {
@@ -243,7 +466,8 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 	slog.Info("clipboard transfer",
 		"direction", "viewer_to_host",
 		"type", string(content.Type),
-		"bytes", len(content.Text)+len(content.RTF)+len(content.Image))
+		"bytes", contentBytes(content))
+	c.count("viewer_to_host", content)
 
 	fp := fingerprint(content)
 	c.mu.Lock()
@@ -254,7 +478,8 @@ func (c *ClipboardSync) Receive(msg webrtc.DataChannelMessage) error {
 		ack, err := json.Marshal(struct {
 			Type string `json:"type"`
 			Hash string `json:"hash"`
-		}{"ack", fmt.Sprintf("%x", fp)})
+			ID   string `json:"id,omitempty"`
+		}{"ack", fmt.Sprintf("%x", fp), transferID})
 		if err == nil {
 			_ = c.sender.SendText(string(ack))
 		}
@@ -283,17 +508,6 @@ func (c *ClipboardSync) SetContent(content Content) error {
 	c.mu.Unlock()
 
 	return nil
-}
-
-func decodeClipboardPayload(msg webrtc.DataChannelMessage) (clipboardPayload, error) {
-	var payload clipboardPayload
-	if !msg.IsString {
-		return payload, errors.New("clipboard payload must be text")
-	}
-	if err := json.Unmarshal(msg.Data, &payload); err != nil {
-		return payload, err
-	}
-	return payload, nil
 }
 
 func validateEncodedClipboardPayload(payload clipboardPayload) error {

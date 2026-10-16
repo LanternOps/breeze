@@ -821,7 +821,7 @@ hosted reachability, customer mutation, production SLO adoption, or rollout.
 
 Exact-candidate closure (2026-08-29, rc.3 `a11d432a6`): the disposable
 signed-Windows fixture (Server 2022 endpoints, physical Windows 11 harness host,
-lab authorization LAB-2026-08-28-S0-445-DELL70601) executed all 25 matrix cases
+lab authorization LAB-2026-08-28-S0-445-LAB-WINDOWS-11-HOST) executed all 25 matrix cases
 against the SSL.com-signed hosted-gap agent (`9cf3bcb4…9be7`) and the candidate
 API image with **zero invariant failures** and zero missing `received` receipts:
 21 `accepted_cleanup`, `refused_stale_apply`, two `rejected_cross_org`, and

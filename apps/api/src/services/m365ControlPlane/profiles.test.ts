@@ -31,7 +31,7 @@ const PROFILE_CONTRACTS = [
   },
   {
     id: 'customer-graph-actions',
-    version: 1,
+    version: 2,
     ownerAxis: 'organization',
     authMode: 'application-certificate',
     credentialDomain: 'customer-graph-actions',

@@ -389,9 +389,9 @@ git commit -m "test(recovery-media): QEMU end-to-end — boot ISO, rebuild a dis
 
 ---
 
-### Task 5: Lab proof on KIT, docs, PR
+### Task 5: Lab proof on lab-hyperv-host, docs, PR
 
-- [ ] **Step 1: KIT** — upload `breeze-recovery-linux-amd64.iso` to `D:\lab\`, create a Gen2 VM (Secure Boot off, 4 GB, empty 60 GB VHDX, DVD = ISO, network on the lab switch), create a recovery in the lab stack UI for the Ubuntu rig's whole-machine snapshot (identity `new` — the rig stays in service), boot, type the code on the VM console, confirm with `ERASE` (fresh VHDX has no serial), watch the timeline reach `validated → rebooted`; the VM reboots into Ubuntu with hostname `<rig>-restored`. Then repeat with identity `original` against a snapshot of a throwaway lab VM and confirm `checked_in` + `recoveredAt` on the device page. Screenshots + recovery ids into the campaign doc §11 (`W04b-kit-linux-media-boot`, `W04b-kit-checkin`).
+- [ ] **Step 1: lab-hyperv-host** — upload `breeze-recovery-linux-amd64.iso` to `D:\lab\`, create a Gen2 VM (Secure Boot off, 4 GB, empty 60 GB VHDX, DVD = ISO, network on the lab switch), create a recovery in the lab stack UI for the Ubuntu rig's whole-machine snapshot (identity `new` — the rig stays in service), boot, type the code on the VM console, confirm with `ERASE` (fresh VHDX has no serial), watch the timeline reach `validated → rebooted`; the VM reboots into Ubuntu with hostname `<rig>-restored`. Then repeat with identity `original` against a snapshot of a throwaway lab VM and confirm `checked_in` + `recoveredAt` on the device page. Screenshots + recovery ids into the campaign doc §11 (`W04b-kit-linux-media-boot`, `W04b-kit-checkin`).
 - [ ] **Step 2: Docs** — `apps/docs/src/content/docs/backup/bare-metal-recovery.mdx`: new "Recover from Breeze recovery media" section (download ISO from Backup → Recovery, write to USB, boot, code, confirm, reboot), reinstall-then-recover demoted to "Alternative: recover into a freshly installed OS".
 - [ ] **Step 3: PR** — `Closes #5497`; one review round (Sonnet; questions: console guard, confirmation logic, CI-mode not reachable outside `breeze.ci=1`, nothing secret baked into the ISO, deleted-builder sweep complete), `gh pr merge <N> --squash`.
 

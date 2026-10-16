@@ -46,58 +46,61 @@ static void closeHIDConnection(void) {
     }
 }
 
-static void hidMouseMove(int x, int y) {
+// flags is the eventFlags argument: 0 (as before W2c) unless the agent holds
+// modifiers. button >= 3 (W2c back/forward) is an other-mouse event that names
+// its button; 0..2 post exactly what they did before.
+static void hidMouseMove(int x, int y, int flags) {
     NXEventData eventData = {0};
     IOGPoint location = {(float)x, (float)y};
     IOHIDPostEvent(g_hidConnection, NX_MOUSEMOVED, location, &eventData,
-                   kNXEventDataVersion, 0, 0);
+                   kNXEventDataVersion, flags, 0);
 }
 
-static void hidMouseDown(int x, int y, int button) {
+static void hidMouseButton(int x, int y, int button, int flags, int left, int right, int other) {
     NXEventData eventData = {0};
     IOGPoint location = {(float)x, (float)y};
     int eventType;
     switch (button) {
-        case 1:  eventType = NX_RMOUSEDOWN; break;
-        case 2:  eventType = NX_OMOUSEDOWN; break;
-        default: eventType = NX_LMOUSEDOWN; break;
+        case 0:  eventType = left; break;
+        case 1:  eventType = right; break;
+        default: eventType = other; break;
+    }
+    if (button >= 3) {
+        eventData.mouse.buttonNumber = button;
     }
     IOHIDPostEvent(g_hidConnection, eventType, location, &eventData,
-                   kNXEventDataVersion, 0, 0);
+                   kNXEventDataVersion, flags, 0);
 }
 
-static void hidMouseUp(int x, int y, int button) {
-    NXEventData eventData = {0};
-    IOGPoint location = {(float)x, (float)y};
-    int eventType;
-    switch (button) {
-        case 1:  eventType = NX_RMOUSEUP; break;
-        case 2:  eventType = NX_OMOUSEUP; break;
-        default: eventType = NX_LMOUSEUP; break;
-    }
-    IOHIDPostEvent(g_hidConnection, eventType, location, &eventData,
-                   kNXEventDataVersion, 0, 0);
+static void hidMouseDown(int x, int y, int button, int flags) {
+    hidMouseButton(x, y, button, flags, NX_LMOUSEDOWN, NX_RMOUSEDOWN, NX_OMOUSEDOWN);
 }
 
-static void hidMouseDrag(int x, int y, int button) {
-    NXEventData eventData = {0};
-    IOGPoint location = {(float)x, (float)y};
-    int eventType;
-    switch (button) {
-        case 1:  eventType = NX_RMOUSEDRAGGED; break;
-        case 2:  eventType = NX_OMOUSEDRAGGED; break;
-        default: eventType = NX_LMOUSEDRAGGED; break;
-    }
-    IOHIDPostEvent(g_hidConnection, eventType, location, &eventData,
-                   kNXEventDataVersion, 0, 0);
+static void hidMouseUp(int x, int y, int button, int flags) {
+    hidMouseButton(x, y, button, flags, NX_LMOUSEUP, NX_RMOUSEUP, NX_OMOUSEUP);
 }
 
-static void hidMouseScroll(int delta) {
+static void hidMouseDrag(int x, int y, int button, int flags) {
+    hidMouseButton(x, y, button, flags, NX_LMOUSEDRAGGED, NX_RMOUSEDRAGGED, NX_OMOUSEDRAGGED);
+}
+
+static void hidMouseScroll(int delta, int deltaAxis2, int flags) {
     NXEventData eventData = {0};
     eventData.scrollWheel.deltaAxis1 = delta;
+    eventData.scrollWheel.deltaAxis2 = deltaAxis2;
     IOGPoint location = {0, 0};
     IOHIDPostEvent(g_hidConnection, NX_SCROLLWHEELMOVED, location, &eventData,
-                   kNXEventDataVersion, 0, 0);
+                   kNXEventDataVersion, flags, 0);
+}
+
+// W2c: a modifier key going down or up. flags is the complete modifier state
+// after the change.
+static void hidFlagsChanged(int keycode, int flags) {
+    NXEventData eventData = {0};
+    eventData.key.keyCode = keycode;
+    IOGPoint location = {0, 0};
+    IOHIDPostEvent(g_hidConnection, NX_FLAGSCHANGED, location, &eventData,
+                   kNXEventDataVersion, flags, 0);
 }
 
 static void hidKeyDown(int keycode, int flags) {
@@ -135,60 +138,76 @@ static double getMainDisplayScaleFactor(void) {
     return 1.0;
 }
 
-static void inputMouseMove(int x, int y) {
-    CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, CGPointMake(x, y), 0);
-    if (event) {
-        CGEventPost(kCGHIDEventTap, event);
-        CFRelease(event);
+// tap selects the event tap: 0 = kCGHIDEventTap (user session), 1 =
+// kCGSessionEventTap (login-window fallback, see below).
+static CGEventTapLocation tapFor(int tap) {
+    return tap ? kCGSessionEventTap : kCGHIDEventTap;
+}
+
+// Button 0 is left, 1 right, anything else an other-mouse button (2 middle,
+// and for W2c 3 back, 4 forward). The CGMouseButton is the number itself.
+static CGEventType mouseTypeFor(int button, CGEventType left, CGEventType right, CGEventType other) {
+    switch (button) {
+        case 0:  return left;
+        case 1:  return right;
+        default: return other;
     }
 }
 
-static void inputMouseDown(int x, int y, int button) {
-    CGEventType type;
-    switch (button) {
-        case 1: type = kCGEventRightMouseDown; break;
-        case 2: type = kCGEventOtherMouseDown; break;
-        default: type = kCGEventLeftMouseDown; break;
-    }
+// setFlags 0 leaves the event's flags as CoreGraphics creates them (the
+// behaviour before W2c); 1 sets them to `flags`, the modifiers the agent holds.
+static void postMouse(int tap, CGEventType type, int x, int y, int button, int flags, int setFlags) {
     CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
     if (event) {
-        CGEventPost(kCGHIDEventTap, event);
+        if (setFlags) {
+            CGEventSetFlags(event, (CGEventFlags)flags);
+        }
+        CGEventPost(tapFor(tap), event);
         CFRelease(event);
     }
 }
 
-static void inputMouseUp(int x, int y, int button) {
-    CGEventType type;
-    switch (button) {
-        case 1: type = kCGEventRightMouseUp; break;
-        case 2: type = kCGEventOtherMouseUp; break;
-        default: type = kCGEventLeftMouseUp; break;
-    }
-    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
+static void cgMouseMove(int tap, int x, int y, int flags, int setFlags) {
+    postMouse(tap, kCGEventMouseMoved, x, y, 0, flags, setFlags);
+}
+
+static void cgMouseDown(int tap, int x, int y, int button, int flags, int setFlags) {
+    postMouse(tap, mouseTypeFor(button, kCGEventLeftMouseDown, kCGEventRightMouseDown, kCGEventOtherMouseDown),
+              x, y, button, flags, setFlags);
+}
+
+static void cgMouseUp(int tap, int x, int y, int button, int flags, int setFlags) {
+    postMouse(tap, mouseTypeFor(button, kCGEventLeftMouseUp, kCGEventRightMouseUp, kCGEventOtherMouseUp),
+              x, y, button, flags, setFlags);
+}
+
+static void cgMouseDrag(int tap, int x, int y, int button, int flags, int setFlags) {
+    postMouse(tap, mouseTypeFor(button, kCGEventLeftMouseDragged, kCGEventRightMouseDragged, kCGEventOtherMouseDragged),
+              x, y, button, flags, setFlags);
+}
+
+// axes 1 is the pre-W2c vertical-only event; 2 adds the horizontal wheel.
+static void cgMouseScroll(int tap, int axes, int wheel1, int wheel2, int flags, int setFlags) {
+    CGEventRef event = (axes == 2)
+        ? CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 2, wheel1, wheel2)
+        : CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, wheel1);
     if (event) {
-        CGEventPost(kCGHIDEventTap, event);
+        if (setFlags) {
+            CGEventSetFlags(event, (CGEventFlags)flags);
+        }
+        CGEventPost(tapFor(tap), event);
         CFRelease(event);
     }
 }
 
-static void inputMouseDrag(int x, int y, int button) {
-    CGEventType type;
-    switch (button) {
-        case 1: type = kCGEventRightMouseDragged; break;
-        case 2: type = kCGEventOtherMouseDragged; break;
-        default: type = kCGEventLeftMouseDragged; break;
-    }
-    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
+// W2c: a modifier key going down or up, posted as kCGEventFlagsChanged with
+// the complete modifier state after the change.
+static void cgFlagsChanged(int tap, int keycode, int flags) {
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)keycode, true);
     if (event) {
-        CGEventPost(kCGHIDEventTap, event);
-        CFRelease(event);
-    }
-}
-
-static void inputMouseScroll(int delta) {
-    CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, delta);
-    if (event) {
-        CGEventPost(kCGHIDEventTap, event);
+        CGEventSetType(event, kCGEventFlagsChanged);
+        CGEventSetFlags(event, (CGEventFlags)flags);
+        CGEventPost(tapFor(tap), event);
         CFRelease(event);
     }
 }
@@ -235,64 +254,6 @@ static void inputKeyUp(int keycode, int flags, int setFlags) {
 // posting to kCGSessionEventTap delivers events into the session-level
 // tap, which on modern macOS is the correct target for login-window
 // input injection from a privileged helper.
-
-static void sessionMouseMove(int x, int y) {
-    CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, CGPointMake(x, y), 0);
-    if (event) {
-        CGEventPost(kCGSessionEventTap, event);
-        CFRelease(event);
-    }
-}
-
-static void sessionMouseDown(int x, int y, int button) {
-    CGEventType type;
-    switch (button) {
-        case 1: type = kCGEventRightMouseDown; break;
-        case 2: type = kCGEventOtherMouseDown; break;
-        default: type = kCGEventLeftMouseDown; break;
-    }
-    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
-    if (event) {
-        CGEventPost(kCGSessionEventTap, event);
-        CFRelease(event);
-    }
-}
-
-static void sessionMouseUp(int x, int y, int button) {
-    CGEventType type;
-    switch (button) {
-        case 1: type = kCGEventRightMouseUp; break;
-        case 2: type = kCGEventOtherMouseUp; break;
-        default: type = kCGEventLeftMouseUp; break;
-    }
-    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
-    if (event) {
-        CGEventPost(kCGSessionEventTap, event);
-        CFRelease(event);
-    }
-}
-
-static void sessionMouseDrag(int x, int y, int button) {
-    CGEventType type;
-    switch (button) {
-        case 1: type = kCGEventRightMouseDragged; break;
-        case 2: type = kCGEventOtherMouseDragged; break;
-        default: type = kCGEventLeftMouseDragged; break;
-    }
-    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), (CGMouseButton)button);
-    if (event) {
-        CGEventPost(kCGSessionEventTap, event);
-        CFRelease(event);
-    }
-}
-
-static void sessionMouseScroll(int delta) {
-    CGEventRef event = CGEventCreateScrollWheelEvent(NULL, kCGScrollEventUnitLine, 1, delta);
-    if (event) {
-        CGEventPost(kCGSessionEventTap, event);
-        CFRelease(event);
-    }
-}
 
 // setFlags has the same meaning as in inputKeyDown above.
 static void sessionKeyDown(int keycode, int flags, int setFlags) {
@@ -434,6 +395,11 @@ type DarwinInputHandler struct {
 	hidAvailable   bool
 	atLoginWindow  atomic.Bool
 	inputAvailable bool
+
+	// mods is the W2c running modifier mask (input_macflags.go): modifiers
+	// held by sequenced key_down events, set on every later key and mouse
+	// event. Empty in legacy sessions, so their events are unchanged.
+	mods macModifierMask
 }
 
 func NewInputHandler(desktopContext string) InputHandler {
@@ -509,17 +475,6 @@ func (h *DarwinInputHandler) scaleXY(x, y int) (C.int, C.int) {
 	return C.int(float64(x) / h.scaleFactor), C.int(float64(y) / h.scaleFactor)
 }
 
-func buttonToInt(button string) int {
-	switch strings.ToLower(button) {
-	case "right":
-		return 1
-	case "middle":
-		return 2
-	default:
-		return 0
-	}
-}
-
 func modifiersToFlags(modifiers []string) C.int {
 	var flags int
 	for _, mod := range modifiers {
@@ -541,28 +496,46 @@ func normalizeKeyName(key string) string {
 	return strings.ToLower(strings.TrimSpace(key))
 }
 
+// cgTap is the cgMouse*/cgFlagsChanged tap argument: 1 for the session tap
+// (login window without IOHIDSystem), else 0 for the HID tap.
+func (h *DarwinInputHandler) cgTap() C.int {
+	if h.shouldUseSessionTap() {
+		return 1
+	}
+	return 0
+}
+
+// pointerFlags is the flags argument pair for a mouse event (W2c running mask;
+// setFlags 0 with nothing held, as before).
+func (h *DarwinInputHandler) pointerFlags() (C.int, C.int) {
+	f, set := macPointerFlags(h.mods.flags())
+	return C.int(f), boolToCInt(set)
+}
+
+func boolToCInt(b bool) C.int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func (h *DarwinInputHandler) SendMouseMove(x, y int) error {
 	if !h.inputAvailable {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
+	f, set := h.pointerFlags()
 	switch {
 	case h.shouldUseHID():
 		if h.mouseDown {
-			C.hidMouseDrag(sx, sy, C.int(h.mouseBtn))
+			C.hidMouseDrag(sx, sy, C.int(h.mouseBtn), f)
 		} else {
-			C.hidMouseMove(sx, sy)
-		}
-	case h.shouldUseSessionTap():
-		if h.mouseDown {
-			C.sessionMouseDrag(sx, sy, C.int(h.mouseBtn))
-		} else {
-			C.sessionMouseMove(sx, sy)
+			C.hidMouseMove(sx, sy, f)
 		}
 	case h.mouseDown:
-		C.inputMouseDrag(sx, sy, C.int(h.mouseBtn))
+		C.cgMouseDrag(h.cgTap(), sx, sy, C.int(h.mouseBtn), f, set)
 	default:
-		C.inputMouseMove(sx, sy)
+		C.cgMouseMove(h.cgTap(), sx, sy, f, set)
 	}
 	return nil
 }
@@ -572,18 +545,15 @@ func (h *DarwinInputHandler) SendMouseClick(x, y int, button string) error {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
-	btn := C.int(buttonToInt(button))
-	switch {
-	case h.shouldUseHID():
-		C.hidMouseDown(sx, sy, btn)
-		C.hidMouseUp(sx, sy, btn)
-	case h.shouldUseSessionTap():
-		C.sessionMouseDown(sx, sy, btn)
-		C.sessionMouseUp(sx, sy, btn)
-	default:
-		C.inputMouseDown(sx, sy, btn)
-		C.inputMouseUp(sx, sy, btn)
+	btn := C.int(macMouseButtonNumber(button))
+	f, set := h.pointerFlags()
+	if h.shouldUseHID() {
+		C.hidMouseDown(sx, sy, btn, f)
+		C.hidMouseUp(sx, sy, btn, f)
+		return nil
 	}
+	C.cgMouseDown(h.cgTap(), sx, sy, btn, f, set)
+	C.cgMouseUp(h.cgTap(), sx, sy, btn, f, set)
 	return nil
 }
 
@@ -591,17 +561,15 @@ func (h *DarwinInputHandler) SendMouseDown(x, y int, button string) error {
 	if !h.inputAvailable {
 		return errInputUnavailable
 	}
-	h.mouseBtn = buttonToInt(button)
+	h.mouseBtn = macMouseButtonNumber(button)
 	h.mouseDown = true
 	sx, sy := h.scaleXY(x, y)
-	switch {
-	case h.shouldUseHID():
-		C.hidMouseDown(sx, sy, C.int(h.mouseBtn))
-	case h.shouldUseSessionTap():
-		C.sessionMouseDown(sx, sy, C.int(h.mouseBtn))
-	default:
-		C.inputMouseDown(sx, sy, C.int(h.mouseBtn))
+	f, set := h.pointerFlags()
+	if h.shouldUseHID() {
+		C.hidMouseDown(sx, sy, C.int(h.mouseBtn), f)
+		return nil
 	}
+	C.cgMouseDown(h.cgTap(), sx, sy, C.int(h.mouseBtn), f, set)
 	return nil
 }
 
@@ -611,34 +579,36 @@ func (h *DarwinInputHandler) SendMouseUp(x, y int, button string) error {
 	}
 	h.mouseDown = false
 	sx, sy := h.scaleXY(x, y)
-	btn := C.int(buttonToInt(button))
-	switch {
-	case h.shouldUseHID():
-		C.hidMouseUp(sx, sy, btn)
-	case h.shouldUseSessionTap():
-		C.sessionMouseUp(sx, sy, btn)
-	default:
-		C.inputMouseUp(sx, sy, btn)
+	btn := C.int(macMouseButtonNumber(button))
+	f, set := h.pointerFlags()
+	if h.shouldUseHID() {
+		C.hidMouseUp(sx, sy, btn, f)
+		return nil
 	}
+	C.cgMouseUp(h.cgTap(), sx, sy, btn, f, set)
 	return nil
 }
 
 func (h *DarwinInputHandler) SendMouseScroll(x, y int, delta int) error {
+	return h.sendMouseScroll(x, y, delta, 0)
+}
+
+// sendMouseScroll posts the pre-W2c one-axis scroll when deltaX is 0, and a
+// two-axis scroll for a W2c deltaX (macScrollFor has the signs).
+func (h *DarwinInputHandler) sendMouseScroll(x, y, delta, deltaX int) error {
 	if !h.inputAvailable {
 		return errInputUnavailable
 	}
 	sx, sy := h.scaleXY(x, y)
-	switch {
-	case h.shouldUseHID():
-		C.hidMouseMove(sx, sy)
-		C.hidMouseScroll(C.int(-delta))
-	case h.shouldUseSessionTap():
-		C.sessionMouseMove(sx, sy)
-		C.sessionMouseScroll(C.int(-delta))
-	default:
-		C.inputMouseMove(sx, sy)
-		C.inputMouseScroll(C.int(-delta)) // negate: browser deltaY+ = scroll down
+	sc := macScrollFor(delta, deltaX)
+	f, set := h.pointerFlags()
+	if h.shouldUseHID() {
+		C.hidMouseMove(sx, sy, f)
+		C.hidMouseScroll(C.int(sc.Wheel1), C.int(sc.Wheel2), f)
+		return nil
 	}
+	C.cgMouseMove(h.cgTap(), sx, sy, f, set)
+	C.cgMouseScroll(h.cgTap(), C.int(sc.Axes), C.int(sc.Wheel1), C.int(sc.Wheel2), f, set)
 	return nil
 }
 
@@ -671,7 +641,11 @@ func (h *DarwinInputHandler) sendKeyPress(key string, modifiers []string, capsLo
 	// modifiersToFlags never carries AlphaShift, so without the fold below a
 	// key_press would strip Caps Lock while a bare key_down (which inherits the
 	// ambient flags) kept it — the inconsistent casing reported in #3595.
-	rawFlags, _ := applyCapsLockFlag(int(modifiersToFlags(modifiers)), capsLock)
+	//
+	// W2c: modifiers the agent holds (h.mods) are part of that state too. The
+	// K5 filter has already removed them from modifiers, so without the mask
+	// a held Shift would be missing from Shift+A.
+	rawFlags, _ := applyCapsLockFlag(int(modifiersToFlags(modifiers))|h.mods.flags(), capsLock)
 	flags := C.int(rawFlags)
 	switch {
 	case h.shouldUseHID():
@@ -738,8 +712,8 @@ func (h *DarwinInputHandler) sendKeyDown(key string, capsLock *bool) error {
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-	flags, authoritative := applyCapsLockFlag(0, capsLock)
-	setFlags := capsLockSetFlags(authoritative)
+	rawFlags, set := macKeyFlags(h.mods.flags(), capsLock)
+	flags, setFlags := rawFlags, boolToCInt(set)
 	switch {
 	case h.shouldUseHID():
 		C.hidKeyDown(C.int(keycode), C.int(flags))
@@ -767,8 +741,8 @@ func (h *DarwinInputHandler) sendKeyUp(key string, capsLock *bool) error {
 	if !ok {
 		return fmt.Errorf("unknown key: %s", key)
 	}
-	flags, authoritative := applyCapsLockFlag(0, capsLock)
-	setFlags := capsLockSetFlags(authoritative)
+	rawFlags, set := macKeyFlags(h.mods.flags(), capsLock)
+	flags, setFlags := rawFlags, boolToCInt(set)
 	switch {
 	case h.shouldUseHID():
 		C.hidKeyUp(C.int(keycode), C.int(flags))
@@ -780,22 +754,41 @@ func (h *DarwinInputHandler) sendKeyUp(key string, capsLock *bool) error {
 	return nil
 }
 
-// capsLockSetFlags picks the C helpers' setFlags argument (see the setFlags
-// contract on inputKeyDown above). Only a viewer that actually stated its Caps
-// Lock state earns the unconditional CGEventSetFlags call; without one the
-// ambient-flags branch is preserved unchanged.
-//
-// Worth knowing before assuming this endangers held modifiers: it cannot, on
-// this platform. keyNameToKeycode below has no "shift"/"ctrl"/"alt"/"meta"
-// entries, so the viewer's standalone modifier key_down/key_up return
-// "unknown key" before reaching either branch — the agent never holds a
-// modifier on macOS, and the ambient flags this branch preserves are the
-// remote console's own physical state, not anything the agent set.
-func capsLockSetFlags(authoritative bool) C.int {
-	if authoritative {
-		return 1
+// handleModifierKey is the W2c modifier path for key_down/key_up. A modifier
+// key_down in a sequenced session (seq > 0) is held: its bit joins h.mods and
+// a kCGEventFlagsChanged is posted. A modifier key_up for a held modifier
+// clears the bit, whatever its seq, so ReleaseAll's releases (seq 0) clear
+// the mask. handled is false for everything else, which keeps the pre-W2c
+// path: a legacy modifier key_down is still rejected as an unknown key, so
+// legacy sessions never hold a modifier.
+func (h *DarwinInputHandler) handleModifierKey(event InputEvent) (handled bool) {
+	var keycode int
+	switch event.Type {
+	case "key_down":
+		if event.Seq == 0 {
+			return false
+		}
+		kc, ok := h.mods.press(event.Key, event.Code)
+		if !ok {
+			return false
+		}
+		keycode = kc
+	case "key_up":
+		kc, ok := h.mods.release(event.Key, event.Code)
+		if !ok {
+			return false
+		}
+		keycode = kc
+	default:
+		return false
 	}
-	return 0
+	flags := C.int(h.mods.flags())
+	if h.shouldUseHID() {
+		C.hidFlagsChanged(C.int(keycode), flags)
+	} else {
+		C.cgFlagsChanged(h.cgTap(), C.int(keycode), flags)
+	}
+	return true
 }
 
 func (h *DarwinInputHandler) HandleEvent(event InputEvent) error {
@@ -812,12 +805,18 @@ func (h *DarwinInputHandler) HandleEvent(event InputEvent) error {
 	case "mouse_up":
 		return h.SendMouseUp(event.X, event.Y, event.Button)
 	case "mouse_scroll":
-		return h.SendMouseScroll(event.X, event.Y, event.Delta)
+		return h.sendMouseScroll(event.X, event.Y, event.Delta, event.DeltaX)
 	case "key_press":
 		return h.sendKeyPress(event.Key, event.Modifiers, event.CapsLock)
 	case "key_down":
+		if h.handleModifierKey(event) {
+			return nil
+		}
 		return h.sendKeyDown(event.Key, event.CapsLock)
 	case "key_up":
+		if h.handleModifierKey(event) {
+			return nil
+		}
 		return h.sendKeyUp(event.Key, event.CapsLock)
 	default:
 		return fmt.Errorf("unknown event type: %s", event.Type)

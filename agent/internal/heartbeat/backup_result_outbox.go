@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/websocket"
 )
@@ -129,11 +131,12 @@ func (o *backupResultOutbox) loadAllLocked() []backupResultOutboxFile {
 // backupResultOutboxMaxAge) entries and, if the pending count would
 // otherwise exceed backupResultOutboxMaxPending once the new entry lands,
 // the oldest surviving entries — so Enqueue never leaves more than
-// backupResultOutboxMaxPending files behind.
-func (o *backupResultOutbox) Enqueue(result websocket.CommandResult) {
+// backupResultOutboxMaxPending files behind. Reports whether the result is
+// now on disk.
+func (o *backupResultOutbox) Enqueue(result websocket.CommandResult) bool {
 	if !safeOutboxFilenameID(result.CommandID) {
 		log.Warn("refusing to outbox backup result with empty or unsafe commandId", "commandId", result.CommandID)
-		return
+		return false
 	}
 
 	o.mu.Lock()
@@ -141,42 +144,72 @@ func (o *backupResultOutbox) Enqueue(result websocket.CommandResult) {
 
 	if err := os.MkdirAll(o.dir, 0700); err != nil {
 		log.Warn("failed to create backup result outbox directory", "dir", o.dir, "error", err.Error())
-		return
+		return false
 	}
 
 	now := o.nowFn()
 	kept := make([]backupResultOutboxFile, 0)
 	for _, f := range o.loadAllLocked() {
 		if now.Sub(f.entry.EnqueuedAt) > backupResultOutboxMaxAge {
+			log.Warn("dropping expired outboxed command result", "commandId", f.entry.Result.CommandID)
 			_ = os.Remove(f.path)
 			continue
 		}
 		kept = append(kept, f)
 	}
 
-	// This enqueue adds one more entry, so make room first (oldest evicted).
+	// This enqueue adds one more entry, so make room first. Results for
+	// non-UUID ids (mon-*, snmp-*, term-*, tun-* — rowless on the server and
+	// superseded by the next poll or session) go before any result for a
+	// server-tracked command, then oldest first (#8296: shutdown drains and
+	// refused sends now feed this outbox too, so a burst of ephemeral results
+	// must not push out a terminal install_patches result).
 	for len(kept) >= backupResultOutboxMaxPending {
-		_ = os.Remove(kept[0].path)
-		kept = kept[1:]
+		victim := 0
+		for i, f := range kept {
+			if _, err := uuid.Parse(f.entry.Result.CommandID); err != nil {
+				victim = i
+				break
+			}
+		}
+		log.Warn("outbox full; evicting a pending command result",
+			"commandId", kept[victim].entry.Result.CommandID, "maxPending", backupResultOutboxMaxPending)
+		_ = os.Remove(kept[victim].path)
+		kept = append(kept[:victim], kept[victim+1:]...)
 	}
 
 	entry := backupResultOutboxEntry{EnqueuedAt: now, Result: result}
 	payload, err := json.Marshal(entry)
 	if err != nil {
 		log.Warn("failed to encode backup result for outbox", "commandId", result.CommandID, "error", err.Error())
-		return
+		return false
 	}
 
 	path := o.entryPath(result.CommandID)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, payload, 0600); err != nil {
 		log.Warn("failed to write backup result outbox entry", "commandId", result.CommandID, "error", err.Error())
-		return
+		return false
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		log.Warn("failed to persist backup result outbox entry", "commandId", result.CommandID, "error", err.Error())
+		return false
 	}
+	return true
+}
+
+// has reports whether a result for commandID is pending in the outbox. Used
+// by the command journal's startup recovery: a real result already on disk
+// must not be contradicted by a synthetic "interrupted" failure.
+func (o *backupResultOutbox) has(commandID string) bool {
+	if !safeOutboxFilenameID(commandID) {
+		return false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	_, err := os.Stat(o.entryPath(commandID))
+	return err == nil
 }
 
 // Flush attempts to redeliver every pending entry via send, oldest first. A

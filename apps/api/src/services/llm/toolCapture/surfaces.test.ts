@@ -50,13 +50,14 @@ describe('CAPTURE_SURFACES derive from the surfaces\' own exports', () => {
     expect([...analysis.onlyTools!].sort()).toEqual([...ANALYSIS_TOOL_ALLOWLIST].sort());
   });
 
-  it('helper levels register only their own tools (A-W04 onlyTools; basic = 11 tools)', () => {
+  it('helper levels register only their own tools (A-W04 onlyTools; basic = 12 tools)', () => {
+    // 12 = 11 + query_device_workloads (#8193): single-device read-only inventory, deliberately in BASIC_TOOLS next to get_device_hardware_health.
     for (const level of ['basic', 'standard', 'extended'] as const) {
       const s = CAPTURE_SURFACES[`helper-${level}`];
       expect(s.allowedTools).toEqual(getHelperAllowedMcpToolNames(level));
       expect([...s.onlyTools!].sort()).toEqual(getHelperAllowedTools(level).sort());
     }
-    expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toHaveLength(11);
+    expect(CAPTURE_SURFACES['helper-basic'].allowedTools).toHaveLength(12);
   });
 
   it('script builder uses its own server', () => {

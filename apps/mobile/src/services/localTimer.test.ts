@@ -38,6 +38,26 @@ beforeEach(() => {
   store.clear();
 });
 
+describe('location provenance round-trip (#8211)', () => {
+  it('persists orgId / siteId / source and reads them back', async () => {
+    await writeLocalTimer({ ...timer, orgId: 'o1', siteId: 's1', source: 'location' });
+    expect(await readLocalTimer()).toMatchObject({ orgId: 'o1', siteId: 's1', source: 'location' });
+  });
+
+  it('a legacy record reads back without the keys', async () => {
+    await writeLocalTimer(timer);
+    expect(await readLocalTimer()).not.toHaveProperty('siteId');
+  });
+
+  it('drops a source other than timer|location', async () => {
+    store.set(
+      LOCAL_TIMER_KEY,
+      JSON.stringify({ ...timer, orgId: 'o1', siteId: 's1', source: 'remote_session' })
+    );
+    expect(await readLocalTimer()).not.toHaveProperty('source');
+  });
+});
+
 describe('localTimer', () => {
   it('round-trips a timer through storage', async () => {
     await writeLocalTimer(timer);

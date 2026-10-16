@@ -4,7 +4,7 @@ import { Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import DiscoveryProfileList, { type DiscoveryProfile, type DiscoveryProfileStatus } from './DiscoveryProfileList';
-import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule, type SnmpSettings, type ProfileAlertSettings, defaultAlertSettings } from './DiscoveryProfileForm';
+import DiscoveryProfileForm, { type DiscoveryProfileFormValues, type DiscoverySchedule, type SnmpSettings, type ProfileAlertSettings, type ScanAgentOption, defaultAlertSettings } from './DiscoveryProfileForm';
 import DiscoveryJobList from './DiscoveryJobList';
 import DiscoveredAssetList, { mapAsset, toDetail } from './DiscoveredAssetList';
 import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
@@ -95,6 +95,8 @@ type ApiDiscoveryProfile = {
   snmpCommunities?: string[];
   snmpCredentials?: ApiSnmpCredentials | null;
   alertSettings?: ProfileAlertSettings | null;
+  /** #7969: pinned scan agent (devices.id); null = automatic selection. */
+  pinnedDeviceId?: string | null;
   lastRunAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -477,7 +479,8 @@ export default function DiscoveryPage() {
       methods: editingProfile.methods ?? [],
       schedule: scheduleToForm(editingProfile.schedule),
       snmp,
-      alertSettings: editingProfile.alertSettings ?? defaultAlertSettings
+      alertSettings: editingProfile.alertSettings ?? defaultAlertSettings,
+      pinnedDeviceId: editingProfile.pinnedDeviceId ?? ''
     };
   }, [editingProfile]);
 
@@ -531,6 +534,8 @@ export default function DiscoveryPage() {
         snmpCommunities,
         snmpCredentials,
         alertSettings: values.alertSettings,
+        // #7969: '' (Automatic) clears the pin.
+        pinnedDeviceId: values.pinnedDeviceId || null,
         // Edit only: the API moves the assets this profile discovered along
         // with the site change when this is true (ignored if the site is unchanged).
         ...(editingProfile ? { moveDiscoveredAssets: values.moveDiscoveredAssets === true } : {}),
@@ -582,6 +587,23 @@ export default function DiscoveryPage() {
     const data = await response.json() as { count?: number };
     return typeof data.count === 'number' ? data.count : 0;
   }, [editingProfile]);
+
+  // #7969: devices in the chosen site, for the profile's scan-agent picker.
+  // The API re-validates the pin (same org + site) on save.
+  const loadSiteAgents = useCallback(async (siteId: string): Promise<ScanAgentOption[]> => {
+    const params = new URLSearchParams({ siteId, limit: '500' });
+    if (currentOrgId) params.set('orgId', currentOrgId);
+    const response = await fetchWithAuth(`/devices?${params.toString()}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const raw = asList<{ id: string; displayName?: string | null; hostname?: string | null; status?: string }>(await response.json(), 'devices');
+    return raw
+      .map(device => ({
+        id: device.id,
+        name: device.displayName || device.hostname || device.id,
+        online: device.status === 'online',
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [currentOrgId]);
 
   const handleDeleteProfile = async (profile: DiscoveryProfile) => {
     if (!confirm(t('discoveryPage.confirmDeleteProfile', { name: profile.name }))) {
@@ -841,6 +863,7 @@ export default function DiscoveryPage() {
                 disabled={savingProfile}
                 error={profileFormError}
                 loadMovableAssetCount={editingProfile ? loadMovableAssetCount : undefined}
+                loadSiteAgents={loadSiteAgents}
               />
             </div>
           </div>

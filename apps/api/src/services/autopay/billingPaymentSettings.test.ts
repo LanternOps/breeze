@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Tx } from './types';
 import { billingPaymentSettings } from '../../db/schema';
-import { resolveBillingPaymentSettings, updatePartnerPaymentSettings, updateOrgPaymentSettings } from './billingPaymentSettings';
+import { changedOrgPaymentSettingFields, orgPaymentSettingsChanges, resolveBillingPaymentSettings, updatePartnerPaymentSettings, updateOrgPaymentSettings } from './billingPaymentSettings';
 
 const partnerId = '11111111-1111-4111-8111-111111111111';
 const orgId = '22222222-2222-4222-8222-222222222222';
@@ -101,4 +101,38 @@ it('stamps only server provenance and leaves existing attestation on ordinary ed
     expect(conflict.mock.calls[1]![0].set).toEqual({ cardFeeBps: 0 });
     await expect(updateOrgPaymentSettings(cx, partner, { feeAttestation: {} } as never, actor)).rejects.toThrow();
   } finally { vi.useRealTimers(); }
+});
+
+describe('org payment-settings changes against the stored org row', () => {
+  const stored = { orgId, partnerId: null, autopayOffsetDays: 5, autopayOffsetRule: 'later', autopayCapEnabled: true,
+    autopayCapAmount: '500.00', autopayCapCurrency: 'USD', achMode: null, cardFeeBps: 150, achFeeAmount: '1.50',
+    remindersEnabled: true, reminderBeforeDueDays: 3, reminderRepeatDays: null, overdueReminderEveryDays: null };
+  it('reports no change when every sent value equals the stored one', () => {
+    expect(changedOrgPaymentSettingFields(stored, { autopayOffsetDays: 5, autopayOffsetRule: 'later', autopayCapEnabled: true,
+      autopayCapAmount: '500.00', autopayCapCurrency: 'USD', achMode: null, cardFeeBps: 150, achFeeAmount: '1.50',
+      remindersEnabled: true, reminderBeforeDueDays: 3, reminderRepeatDays: null, overdueReminderEveryDays: null })).toEqual([]);
+    expect(changedOrgPaymentSettingFields(stored, {})).toEqual([]);
+  });
+  it('treats an org without a row as all-inherited, so blanks are no change', () => {
+    expect(changedOrgPaymentSettingFields(undefined, { autopayCapEnabled: null, cardFeeBps: null, remindersEnabled: null })).toEqual([]);
+    expect(changedOrgPaymentSettingFields(undefined, { cardFeeBps: 0 })).toEqual(['cardFeeBps']);
+  });
+  it.each([
+    [{ autopayCapEnabled: true, autopayCapAmount: '5000.00', autopayCapCurrency: 'USD' }, ['autopayCapAmount']],
+    [{ cardFeeBps: 300 }, ['cardFeeBps']],
+    [{ achFeeAmount: null }, ['achFeeAmount']],
+    [{ achMode: 'ach_only' }, ['achMode']],
+    [{ autopayOffsetDays: 0 }, ['autopayOffsetDays']],
+    [{ reminderRepeatDays: 4 }, ['reminderRepeatDays']],
+    // Turning the cap off also clears the stored amount and currency.
+    [{ autopayCapEnabled: false }, ['autopayCapEnabled', 'autopayCapAmount', 'autopayCapCurrency']],
+  ] as const)('reports %j as a change', (patch, fields) => {
+    expect(changedOrgPaymentSettingFields(stored, patch as never)).toEqual(fields);
+  });
+  it('reads the org row only, and rejects a patch the write would reject', async () => {
+    const f = fixture([{ orgId: null, partnerId, cardFeeBps: 300 }, stored]);
+    expect(await orgPaymentSettingsChanges(f.tx, orgId, { cardFeeBps: 150 })).toEqual([]);
+    expect(await orgPaymentSettingsChanges(f.tx, orgId, { cardFeeBps: 300 })).toEqual(['cardFeeBps']);
+    await expect(orgPaymentSettingsChanges(f.tx, orgId, { feeAttestation: {} } as never)).rejects.toThrow();
+  });
 });

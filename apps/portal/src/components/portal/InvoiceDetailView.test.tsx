@@ -53,8 +53,10 @@ function detail(lines: InvoiceLine[]): InvoiceDetail {
   };
 }
 
-function renderDetail(lines: InvoiceLine[]) {
-  return render(<InvoiceDetailView detail={detail(lines)} />);
+function renderDetail(lines: InvoiceLine[], lineGrouping?: 'entry' | 'day') {
+  const d = detail(lines);
+  if (lineGrouping) d.invoice.lineGrouping = lineGrouping;
+  return render(<InvoiceDetailView detail={d} />);
 }
 
 describe('InvoiceDetailView line labels (#3319)', () => {
@@ -281,5 +283,52 @@ describe('InvoiceDetailView — paper and rail layout (visual QA 2026-10-05)', (
     const name = 'Firewall-renewal-for-https://very-long-unbroken-host-name.example.internal/path';
     render(<InvoiceDetailView detail={detail([line({ name, lineTotal: '1234567.00', unitPrice: '1234567.00' })])} />);
     expect(screen.getByText(name).closest('td')).toHaveClass('[overflow-wrap:anywhere]');
+  });
+});
+
+// #8604: work date under each line (entry mode) or a per-day header (day mode).
+describe('InvoiceDetailView line detail (#8604)', () => {
+  it('entry mode shows the work date under a dated line and none for an undated one', () => {
+    renderDetail([
+      line({ name: 'Dated', workDate: '2026-09-16' }),
+      line({ name: 'Undated', workDate: null }),
+    ]);
+    expect(screen.getByTestId('invoice-line-date-0').textContent).toBe('Sep 16, 2026');
+    expect(screen.queryByTestId('invoice-line-date-1')).toBeNull();
+  });
+
+  it('day mode renders ascending day headers with totals, no per-line dates, undated last', () => {
+    renderDetail([
+      line({ name: 'A', workDate: '2026-09-17', quantity: '1.00', lineTotal: '100.00' }),
+      line({ name: 'B', workDate: '2026-09-16', quantity: '1.50', lineTotal: '150.00' }),
+      line({ name: 'C', workDate: '2026-09-16', quantity: '0.50', lineTotal: '50.00' }),
+      line({ name: 'Part', workDate: null, lineTotal: '20.00' }),
+    ], 'day');
+    const h16 = screen.getByTestId('invoice-day-2026-09-16');
+    const h17 = screen.getByTestId('invoice-day-2026-09-17');
+    expect(h16.compareDocumentPosition(h17) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(h16.textContent).toContain('Sep 16, 2026');
+    expect(h16.textContent).toContain('2');
+    expect(h16.textContent).toContain('$200.00');
+    expect(screen.queryByTestId('invoice-line-date-0')).toBeNull();
+    expect(screen.queryByTestId('invoice-line-date-1')).toBeNull();
+    const part = screen.getByText('Part');
+    const a = screen.getByText('A');
+    expect(a.compareDocumentPosition(part) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelectorAll('[data-testid^="invoice-day-"]')).toHaveLength(2);
+  });
+
+  it('default render carries no date or day markers', () => {
+    renderDetail([line({ name: 'Plain' })]);
+    expect(document.querySelectorAll('[data-testid^="invoice-line-date-"], [data-testid^="invoice-day-"]')).toHaveLength(0);
+  });
+
+  it('worked-vs-billed note renders when minutes differ and not when null', () => {
+    renderDetail([
+      line({ name: 'X', quantity: '1.00', workedMinutes: 30 }),
+      line({ name: 'Y', quantity: '1.00', workedMinutes: null }),
+    ]);
+    expect(screen.getByTestId('invoice-line-worked-vs-billed-0').textContent).toBe('0.50 h worked · 1.00 h billed');
+    expect(screen.queryByTestId('invoice-line-worked-vs-billed-1')).toBeNull();
   });
 });

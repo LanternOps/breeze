@@ -269,11 +269,15 @@
       "time": "Ora",
       "timeout": "Timeout (ms)",
       "timezone": "Fuso orario",
-      "username": "Nome utente"
+      "username": "Nome utente",
+      "scanAgent": "Agente di scansione"
     },
     "options": {
       "everyHours": "Ogni {{count}} ore",
-      "selectSite": "Seleziona un sito..."
+      "selectSite": "Seleziona un sito...",
+      "automaticAgent": "Automatico (preferisci un agente su queste subnet)",
+      "agentOffline": "{{name}} (non in linea)",
+      "pinnedAgentUnlisted": "Agente fissato (non in questa sede)"
     },
     "placeholders": {
       "profileName": "Scansione sede centrale",
@@ -296,7 +300,8 @@
       "invalidCidr": "\"{{value}}\": intervallo CIDR o indirizzo IP non valido",
       "octet": "\"{{value}}\": il valore dell'ottetto supera 255",
       "prefix": "\"{{value}}\": la lunghezza del prefisso deve essere compresa tra 0 e 32",
-      "subnetRequired": "È necessaria almeno una subnet o un indirizzo IP."
+      "subnetRequired": "È necessaria almeno una subnet o un indirizzo IP.",
+      "subnetTooLarge": "\"{{value}}\": la subnet è troppo grande. L’agente ignora le subnet con più di {{limit}} indirizzi (più grandi di una /16); suddividila in intervalli più piccoli"
     },
     "actions": {
       "saveProfile": "Salva profilo"
@@ -312,7 +317,13 @@
       "moveAssets_one": "Sposta anche il {{count}} dispositivo di rete rilevato da questo profilo nel nuovo sito",
       "moveAssets_other": "Sposta anche i {{count}} dispositivi di rete rilevati da questo profilo nel nuovo sito",
       "moveAssetsUnknown": "Sposta anche i dispositivi di rete rilevati da questo profilo nel nuovo sito"
-    }
+    },
+    "scanAgentHelp": {
+      "automatic": "Viene preferito un agente online di questa sede con un indirizzo in una delle subnet.",
+      "pinned": "Le scansioni vengono eseguite solo da questo agente. Se è offline, la scansione non riesce invece di usare un altro agente.",
+      "loadError": "Impossibile caricare gli agenti di questa sede. La selezione automatica è ancora disponibile."
+    },
+    "subnetTopologyNote": "Le sottoreti indicate qui identificano anche le reti di questa sede nella mappa della topologia."
   },
   "discoveryProfileList": {
     "actions": {
@@ -426,7 +437,8 @@
       "interval": "L'intervallo di scansione deve essere compreso tra 1 e 168 ore.",
       "selectSite": "Seleziona un sito prima di salvare."
     },
-    "configuredCount": "{{count}} baseline configurate"
+    "configuredCount": "{{count}} baseline configurate",
+    "subnetTopologyNote": "Le sottoreti indicate qui identificano anche le reti di questa sede nella mappa della topologia."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Conferma evento",

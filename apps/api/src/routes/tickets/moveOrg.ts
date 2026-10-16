@@ -6,6 +6,8 @@ import { hasPermission, PERMISSIONS } from '../../services/permissions';
 import { moveTicketOrgSchema, ERROR_CODES } from '@breeze/shared';
 import { moveTicketOrg } from '../../services/ticketService';
 import { TicketMoveCurrencyBlockedError } from '../../services/ticketMoveCurrencyGuard';
+import { TicketMoveHourBlockError } from '../../services/ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../../services/ticketMoveApprovalGuard';
 import { getScopedTicketOr404, actorFrom, handleServiceError } from './tickets';
 
 const idParam = z.object({ id: z.string().guid() });
@@ -51,7 +53,8 @@ ticketMoveOrgRoutes.post(
       });
       return c.json({ data: ticket });
     } catch (err) {
-      if (err instanceof TicketMoveCurrencyBlockedError) {
+      if (err instanceof TicketMoveCurrencyBlockedError || err instanceof TicketMoveHourBlockError
+        || err instanceof TicketMoveApprovalPendingError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
       }
       return handleServiceError(c, err);

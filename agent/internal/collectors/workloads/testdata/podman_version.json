@@ -1,0 +1,11 @@
+{
+  "Platform": {"Name": "linux/amd64/fedora-40"},
+  "Components": [
+    {"Name": "Podman Engine", "Version": "5.1.2", "Details": {"APIVersion": "5.1.2", "MinAPIVersion": "4.0.0"}},
+    {"Name": "Conmon", "Version": "conmon version 2.1.12"}
+  ],
+  "Version": "5.1.2",
+  "ApiVersion": "1.41",
+  "Os": "linux",
+  "Arch": "amd64"
+}

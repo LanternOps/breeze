@@ -28,6 +28,7 @@ import {
   configPolicyMonitors,
   configPolicyPatchSettings,
   configPolicyTimeSyncSettings,
+  configPolicyWorkloadInventorySettings,
   configurationPolicies,
   monitorDefinitions,
   deviceGroupMemberships,
@@ -46,6 +47,8 @@ import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolve
 import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
 import { resolveDeviceTimeSyncSettings } from '../../services/timeSync/settings';
 import { buildResolvedTimeSyncConfigUpdate } from '../../services/timeSync/configUpdate';
+import { resolveDeviceWorkloadInventorySettings } from '../../services/workloads/settings';
+import { buildResolvedWorkloadInventoryConfigUpdate } from '../../services/workloads/configUpdate';
 import {
   buildEventLogConfigUpdate,
   buildHardwareMonitoringConfigUpdate,
@@ -56,6 +59,7 @@ import {
   buildPolicyProbeConfigUpdate,
   buildTimeSyncConfigUpdate,
   buildWarrantyConfigUpdate,
+  buildWorkloadInventoryConfigUpdate,
 } from '../../routes/agents/helpers';
 import { buildHelperConfigUpdate } from '../../services/helperSettings';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -178,7 +182,7 @@ async function seedFixture(): Promise<Fixture> {
 
   // helper: org-owned, assigned to group g2 (wins only through groupIds).
   await seedPolicy({ owner: { orgId: org.id, partnerId: null }, featureType: 'helper',
-    inlineSettings: { enabled: true, showTrayIcon: false }, level: 'device_group', targetId: fixture.groupIds[1]! });
+    inlineSettings: { enabled: true, showDeviceInfo: false }, level: 'device_group', targetId: fixture.groupIds[1]! });
   // warranty: org-owned, assigned to group g1.
   await seedPolicy({ owner: { orgId: org.id, partnerId: null }, featureType: 'warranty',
     inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 }, level: 'device_group', targetId: fixture.groupIds[0]! });
@@ -196,6 +200,22 @@ async function seedFixture(): Promise<Fixture> {
     });
   });
   await seedPartnerWidePolicies(partner.id);
+  // workload_inventory (#8190): org-owned, assigned to group g2, so it wins
+  // only through the hierarchy's groupIds.
+  await sys(async () => {
+    const [policy] = await db.insert(configurationPolicies).values({
+      orgId: org.id, partnerId: null, name: `parity workload_inventory ${randomUUID()}`, status: 'active',
+    }).returning();
+    const [link] = await db.insert(configPolicyFeatureLinks).values({
+      configPolicyId: policy!.id, featureType: 'workload_inventory' as never,
+    }).returning();
+    await db.insert(configPolicyWorkloadInventorySettings).values({
+      featureLinkId: link!.id, enabled: true, podmanEnabled: false, intervalMinutes: 30,
+    });
+    await db.insert(configPolicyAssignments).values({
+      configPolicyId: policy!.id, level: 'device_group', targetId: fixture.groupIds[1]!, priority: 0,
+    });
+  });
   return fixture;
 }
 
@@ -219,7 +239,7 @@ type Resolver = (deviceId: string, opts?: DeviceHierarchyOpts) => Promise<unknow
 
 /** The own-read answer must be a real policy answer, never null / empty / default. */
 const NON_TRIVIAL: Record<string, (own: any) => void> = {
-  resolveDeviceHelperSettings: (o) => expect(o).toMatchObject({ enabled: true, showTrayIcon: false }),
+  resolveDeviceHelperSettings: (o) => expect(o).toMatchObject({ enabled: true, showDeviceInfo: false }),
   resolvePatchConfigPolicyForDevice: (o) =>
     expect(o).toMatchObject({ assignmentLevel: 'partner', settings: { autoApprove: true, rebootPolicy: 'never' } }),
   resolveMonitorsForDevice: (o) => {
@@ -237,6 +257,12 @@ const NON_TRIVIAL: Record<string, (own: any) => void> = {
   buildPatchSourceConfigUpdate: (o) => expect(o).toEqual({ exclusiveWindowsUpdate: expect.any(Boolean) }),
   buildWarrantyConfigUpdate: (o) => expect(o).toEqual({ hpCmslEnabled: expect.any(Boolean) }),
   buildTimeSyncConfigUpdate: (o) => expect(o).toMatchObject({ enforce_ntp: true, poll_interval_minutes: 30 }),
+  resolveDeviceWorkloadInventorySettings: (o) =>
+    expect(o.settings).toMatchObject({ enabled: true, podmanEnabled: false, intervalMinutes: 30 }),
+  buildResolvedWorkloadInventoryConfigUpdate: (o) =>
+    expect(o).toMatchObject({ enabled: true, podman_enabled: false, interval_minutes: 30 }),
+  buildWorkloadInventoryConfigUpdate: (o) =>
+    expect(o).toMatchObject({ enabled: true, podman_enabled: false, interval_minutes: 30 }),
   buildMonitoringConfigUpdate: (o) => expect(o).not.toBeNull(),
   buildHelperConfigUpdate: (o) => expect(o).toBeTruthy(),
   // No hardware_monitoring / onedrive policy is seeded: these two answer the
@@ -270,6 +296,8 @@ const SERVICE_RESOLVERS: Array<[string, Resolver]> = [
   ['resolveEffectiveWarrantyInlineSettings', (id, o) => resolveEffectiveWarrantyInlineSettings(id, o)],
   ['resolveDeviceTimeSyncSettings', (id, o) => resolveDeviceTimeSyncSettings(id, o)],
   ['buildResolvedTimeSyncConfigUpdate', (id, o) => buildResolvedTimeSyncConfigUpdate(id, o)],
+  ['resolveDeviceWorkloadInventorySettings', (id, o) => resolveDeviceWorkloadInventorySettings(id, o)],
+  ['buildResolvedWorkloadInventoryConfigUpdate', (id, o) => buildResolvedWorkloadInventoryConfigUpdate(id, o)],
 ];
 
 const ROUTE_BUILDERS: Array<[string, Resolver]> = [
@@ -280,6 +308,7 @@ const ROUTE_BUILDERS: Array<[string, Resolver]> = [
   ['buildPatchSourceConfigUpdate', (id, o) => buildPatchSourceConfigUpdate(id, o)],
   ['buildWarrantyConfigUpdate', (id, o) => buildWarrantyConfigUpdate(id, o)],
   ['buildTimeSyncConfigUpdate', (id, o) => buildTimeSyncConfigUpdate(id, o)],
+  ['buildWorkloadInventoryConfigUpdate', (id, o) => buildWorkloadInventoryConfigUpdate(id, o)],
   ['buildOnedriveHelperConfigUpdate', (id, o) => buildOnedriveHelperConfigUpdate(id, o)],
   ['buildHelperConfigUpdate', (id, o) => buildHelperConfigUpdate(id, f.orgId, o)],
 ];
@@ -335,13 +364,18 @@ describe('policy resolvers: passed hierarchy parity (#8053 W1a-1) — real Postg
     const noGroups: DeviceHierarchy = { ...hierarchy, groupIds: [] };
     const helperOwn = await sys(() => resolveDeviceHelperSettings(f.deviceId));
     const helperNoGroups = await sys(() => resolveDeviceHelperSettings(f.deviceId, { hierarchy: noGroups }));
-    expect(helperOwn).toMatchObject({ enabled: true, showTrayIcon: false });
+    expect(helperOwn).toMatchObject({ enabled: true, showDeviceInfo: false });
     expect(helperNoGroups).toBeNull();
 
     const warrantyOwn = await sys(() => resolveEffectiveWarrantyInlineSettings(f.deviceId));
     const warrantyNoGroups = await sys(() => resolveEffectiveWarrantyInlineSettings(f.deviceId, { hierarchy: noGroups }));
     expect(warrantyOwn).toMatchObject({ enabled: true });
     expect(warrantyNoGroups).toBeUndefined();
+
+    // workload_inventory (#8190): its group-assigned policy is lost too, so
+    // the resolver falls back to the defaults (enabled: false).
+    const workloadNoGroups = await sys(() => resolveDeviceWorkloadInventorySettings(f.deviceId, { hierarchy: noGroups }));
+    expect(workloadNoGroups.settings).toMatchObject({ enabled: false, intervalMinutes: 60 });
   });
 
   runDb('org: null in a passed hierarchy: monitors device_missing, partner patch policy no longer wins', async () => {

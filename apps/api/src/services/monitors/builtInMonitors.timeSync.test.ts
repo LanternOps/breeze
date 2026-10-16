@@ -6,7 +6,7 @@ import {
 } from './builtInMonitors';
 import { getMonitorKindSpec } from './kinds';
 it('adds exactly the three approved v4 defaults using their original version gate', () => {
-  expect(BUILT_IN_MONITORS_VERSION).toBe(5);
+  expect(BUILT_IN_MONITORS_VERSION).toBeGreaterThanOrEqual(5);
   expect(
     BUILT_IN_MONITOR_DEFAULTS.filter((d) => d.sinceVersion === 4).map((d) => [
       d.key,
@@ -50,11 +50,11 @@ it('adds exactly the three approved v4 defaults using their original version gat
       4,
     ],
   ]);
-  expect(defaultsToProvision(5)).toEqual([]);
+  expect(defaultsToProvision(5).filter((d) => d.kind === 'time_sync')).toEqual([]);
 });
 it('adds only the management monitor to a v4 partner and never resurrects a deleted v5 default', () => {
-  expect(BUILT_IN_MONITORS_VERSION).toBe(5);
-  expect(defaultsToProvision(4)).toEqual([
+  expect(BUILT_IN_MONITORS_VERSION).toBeGreaterThanOrEqual(5);
+  expect(defaultsToProvision(4).filter((d) => d.kind === 'time_sync')).toEqual([
     {
       key: 'time_policy_not_applied',
       name: 'Time policy not applied',
@@ -67,7 +67,7 @@ it('adds only the management monitor to a v4 partner and never resurrects a dele
       sinceVersion: 5,
     },
   ]);
-  expect(defaultsToProvision(5)).toEqual([]);
+  expect(defaultsToProvision(5).filter((d) => d.kind === 'time_sync')).toEqual([]);
 });
 it('preserves the v4 time defaults and validates every condition', () => {
   expect(

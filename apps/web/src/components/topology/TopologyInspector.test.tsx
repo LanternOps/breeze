@@ -142,6 +142,25 @@ describe('grouped overview inspector (2026-10-02)', () => {
     expect(screen.getByTestId('topology-shared-address')).toHaveTextContent('Same IP as 2 other devices');
   });
 
+  it('omits decommissioned reporters so the list matches the "N devices report" count (#8307)', () => {
+    const graph = topologyGraphFixture();
+    const gatewayId = graph.nodes[0]!.id;
+    const live = { ...graph.nodes[0]!, id: '10000000-0000-4000-8000-0000000000c1', kind: 'endpoint' as const, label: 'LIVE-PC', inventory };
+    const retired = { ...graph.nodes[0]!, id: '10000000-0000-4000-8000-0000000000c2', kind: 'endpoint' as const, label: 'RETIRED-PC',
+      inventory: { ...inventory, presence: { ...inventory.presence, agentStatus: 'decommissioned' } } };
+    graph.nodes = [graph.nodes[0]!, live, retired];
+    const route = graph.relationships[0]!;
+    graph.relationships = [
+      { ...route, id: '40000000-0000-4000-8000-0000000000c1', kind: 'default_route', sourceNodeId: live.id, targetNodeId: gatewayId },
+      { ...route, id: '40000000-0000-4000-8000-0000000000c2', kind: 'default_route', sourceNodeId: retired.id, targetNodeId: gatewayId },
+    ];
+    graph.presentation.nodes = [{ id: 'presentation:overview:s:gw-a', view: 'overview', role: 'gateway_group', label: 'Reported gateway 10.1.2.100', memberCount: 0, frontierToken: 't', authority: false,
+      group: { kind: 'gateway', basis: 'reported_gateway', networkClass: null, prefix: null, address: '10.1.2.100', gatewayAddresses: [], conflict: false, observerCount: 1, members: [], canonicalNodeIds: [gatewayId] } }];
+    render(<TopologyInspector graph={graph} selection={{ kind: 'node', id: 'presentation:overview:s:gw-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} onSelectNode={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'LIVE-PC' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'RETIRED-PC' })).not.toBeInTheDocument();
+  });
+
   it('lists each reporter of a folded gateway and selects that reporter’s own canonical gateway', () => {
     const graph = topologyGraphFixture();
     const gatewayId = graph.nodes[0]!.id;
@@ -227,6 +246,26 @@ describe('neighbour-cache corroboration in the inspector (#7816, #7817)', () => 
     expect(summary).toHaveTextContent('Neighbor-cache evidence is incomplete for this network');
     expect(summary).toHaveTextContent('different gateway MAC addresses');
     expect(summary).not.toHaveTextContent('Devices on this range report different gateways');
+  });
+
+  it('says whether a network card is declared for the site, and names the empty declared card', () => {
+    const open = (extra: Record<string, unknown>) => {
+      const graph = withPhone({}, extra);
+      render(<TopologyInspector graph={graph} siteName="Main Office" selection={{ kind: 'node', id: 'presentation:overview:s:net-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+      return screen.getByTestId('topology-declaration');
+    };
+    expect(open({ declaration: { state: 'declared', sources: ['discovery_profile'] } })).toHaveTextContent('Declared for this site (discovery profile)');
+    cleanup();
+    expect(open({ declaration: { state: 'declared', sources: ['network_baseline'] } })).toHaveTextContent('Declared for this site (network baseline)');
+    cleanup();
+    expect(open({ declaration: { state: 'declared', sources: ['discovery_profile', 'network_baseline'] } })).toHaveTextContent('Declared for this site (discovery profile and network baseline)');
+    cleanup();
+    expect(open({ declaration: { state: 'undeclared', sources: [] } })).toHaveTextContent('Not declared for Main Office');
+    cleanup();
+    expect(open({ basis: 'declared_site_network', declaration: { state: 'declared', sources: ['discovery_profile'] } })).toHaveTextContent('Declared for Main Office — no device reports this network');
+    cleanup();
+    render(<TopologyInspector graph={withPhone({})} selection={{ kind: 'node', id: 'presentation:overview:s:net-a' }} canDiagnose onDiagnose={vi.fn()} onClose={vi.fn()} onExpand={vi.fn()} />);
+    expect(screen.queryByTestId('topology-declaration')).toBeNull();
   });
 
   it('shows corroborated gateway MACs on a gateway group', () => {

@@ -13,6 +13,7 @@ import {
   type AiOperatorTaskWakeJobData,
 } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { bullmqJobId } from '../services/bullmqUtils';
 
 /**
  * Drains the `ai_operator_task_outbox` transactional outbox (spec §6.3, §11.2)
@@ -175,7 +176,8 @@ async function enqueueClaimedRows(rows: ClaimedOutboxRow[]): Promise<number[]> {
     try {
       // Hyphen-only, dedupe-stable — colons collide with BullMQ's own key
       // delimiter (same rule intentOutboxPublisher.ts's jobId follows).
-      const jobId = `task-wake-${row.org_id}-${row.task_id}-${row.source_kind}-${row.source_id}-${row.transition_seq}`;
+      // source_id is free text (≤200 chars), so a ':' in it must not reach bullmq.
+      const jobId = bullmqJobId('task-wake', row.org_id, row.task_id, row.source_kind, row.source_id, row.transition_seq);
       await getCoordinatorQueue().add(
         AI_OPERATOR_COORDINATOR_WAKE_JOB_NAME,
         {

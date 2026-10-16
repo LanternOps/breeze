@@ -185,7 +185,7 @@ vi.mock('../../db/schema', () => ({
     responseSlaMinutes: 'response_sla_minutes', resolutionSlaMinutes: 'resolution_sla_minutes',
     slaPausedAt: 'sla_paused_at', slaPausedMinutes: 'sla_paused_minutes',
     slaBreachReason: 'sla_breach_reason', statusId: 'statusId',
-    deletedAt: 'deletedAt', deletedBy: 'deletedBy'
+    deletedAt: 'deletedAt', deletedBy: 'deletedBy', ticketType: 'ticket_type'
   },
   ticketStatuses: { id: 'id', name: 'name', color: 'color' },
   ticketComments: { ticketId: 'ticketId', deletedAt: 'deletedAt', createdAt: 'createdAt' },
@@ -1030,7 +1030,7 @@ describe('POST /tickets/:id/status', () => {
 
   it('calls changeTicketStatus with id, status, opts, actor and returns 200', async () => {
     dbSelectMock.mockResolvedValueOnce([STUB_TICKET]); // getScopedTicketOr404
-    serviceMocks.changeTicketStatus.mockResolvedValue({ ...STUB_TICKET, status: 'resolved' });
+    serviceMocks.changeTicketStatus.mockResolvedValue({ ...STUB_TICKET, status: 'closed' });
 
     const res = await makeApp().request(`/tickets/${TICKET_ID}/status`, {
       method: 'POST',
@@ -1342,6 +1342,37 @@ describe('PATCH /tickets/:id — delegates to updateTicketFields', () => {
       TICKET_ID,
       expect.objectContaining({ subject: 'Updated subject' }),
       expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  // #4617 W03: the budget is the customer's spend ceiling under the approval
+  // gate. It is a partner-staff decision; time entries (what the budget is
+  // measured against) are not visible to organization scope at all.
+  it.each([{ budgetMinutes: 60 }, { budgetAmount: '100.00' }, { budgetAmount: null }])(
+    'refuses budget field %o from an organization-scope caller with 403',
+    async (body) => {
+      authRef.current = { ...DEFAULT_AUTH, scope: 'organization', orgId: ORG_ID, partnerId: null, canAccessOrg: () => true };
+      const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(403);
+      expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+    },
+  );
+
+  it('passes budget fields through for a partner-scope caller', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.updateTicketFields.mockResolvedValue({ ...STUB_TICKET, budgetMinutes: 60 });
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ budgetMinutes: 60, budgetAmount: '250.00' }),
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.updateTicketFields).toHaveBeenCalledWith(
+      TICKET_ID, { budgetMinutes: 60, budgetAmount: '250.00' }, expect.objectContaining({ userId: 'u-1' }),
     );
   });
 
@@ -2187,5 +2218,158 @@ describe('GET /tickets/:id comment attachments (W08 #3902)', () => {
     );
     expect(Object.keys(attachmentSelect!)).not.toContain('data');
     expect(Object.keys(attachmentSelect!)).not.toContain('storageKey');
+  });
+});
+
+// ─── #7900 / #8592 W01: ticket_type on the staff routes ──────────────────────
+
+describe('ticket_type — staff routes', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  const listSelection = async () => {
+    const { db } = await import('../../db');
+    return (db.select as any).mock.calls
+      .map((args: unknown[]) => args[0])
+      .find((sel: any) => sel && typeof sel === 'object' && 'internalNumber' in sel && 'subject' in sel);
+  };
+
+  it('GET /tickets selects ticketType in list rows', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(200);
+    expect(await listSelection()).toMatchObject({ ticketType: 'ticket_type' });
+  });
+
+  it('GET /tickets?ticketType=problem filters on ticket_type', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets?ticketType=problem');
+    expect(res.status).toBe(200);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('ticket_type');
+    expect(serialized).toContain('problem');
+  });
+
+  it('GET /tickets?ticketType=incident,change accepts a comma list and composes with status/category/assignee and soft-delete', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request(
+      `/tickets?ticketType=incident,change&status=open&categoryId=${ORG_ID}&assignee=unassigned`
+    );
+    expect(res.status).toBe(200);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain('ticket_type');
+    expect(serialized).toContain('incident');
+    expect(serialized).toContain('change');
+    expect(serialized).toContain('categoryId');
+    expect(serialized).toContain('assignedTo');
+    expect(serialized).toContain('deletedAt');
+  });
+
+  it('GET /tickets with no ticketType adds no type condition (existing clients unchanged)', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets?status=open');
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(lastWhereArgs[0]!.conditions)).not.toContain('ticket_type');
+  });
+
+  it.each(['outage', 'incident,outage', '', ','])('GET /tickets?ticketType=%s is a 400', async (value) => {
+    const res = await makeApp().request(`/tickets?ticketType=${encodeURIComponent(value)}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('GET /tickets?ticketType= still applies the site-scope condition for a site-restricted caller', async () => {
+    authRef.current = { ...DEFAULT_AUTH, scope: 'organization', orgId: 'org-1', partnerId: null, allowedSiteIds: ['site-1'] } as typeof authRef.current;
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets?ticketType=problem');
+    expect(res.status).toBe(200);
+    // The type filter is ADDED to the scoped predicate, never a replacement for
+    // it: the list WHERE carries both the type condition and the site-scope
+    // condition (deviceless OR device in an allowed site).
+    const listWhere = lastWhereArgs
+      .map((w) => JSON.stringify(w.conditions))
+      .find((serialized) => serialized.includes('ticket_type'));
+    expect(listWhere).toBeDefined();
+    // ticketSiteScopeCondition: (device_id IS NULL OR device_id IN (<allowed-site devices>)).
+    expect(listWhere).toContain('"deviceId",{"value":[" is null"]}');
+    expect(listWhere).toContain('"deviceId",{"value":[" in "]}');
+    expect(listWhere).toContain('{"value":[" or "]}');
+  });
+
+  it('POST /tickets passes an explicit ticketType through to createTicket', async () => {
+    serviceMocks.createTicket.mockResolvedValue({ id: 't-1', internalNumber: 'T-2026-0001', ticketType: 'service_request' });
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'New laptop', ticketType: 'service_request' })
+    });
+    expect(res.status).toBe(201);
+    expect(serviceMocks.createTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketType: 'service_request', source: 'manual' }),
+      expect.anything()
+    );
+  });
+
+  it('POST /tickets without ticketType sends none (the service defaults it)', async () => {
+    serviceMocks.createTicket.mockResolvedValue({ id: 't-1', internalNumber: 'T-2026-0001' });
+    await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'Printer offline' })
+    });
+    expect(serviceMocks.createTicket.mock.calls[0]![0]).not.toHaveProperty('ticketType');
+  });
+
+  it('POST /tickets with an unknown ticketType is a 400', async () => {
+    const res = await makeApp().request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, subject: 'X', ticketType: 'outage' })
+    });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /tickets/:id { ticketType } delegates to updateTicketFields', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    serviceMocks.updateTicketFields.mockResolvedValue({ ...STUB_TICKET, ticketType: 'problem' });
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketType: 'problem' })
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ ticketType: 'problem' });
+    expect(serviceMocks.updateTicketFields).toHaveBeenCalledWith(
+      TICKET_ID,
+      { ticketType: 'problem' },
+      expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('PATCH /tickets/:id with an unknown ticketType is a 400 and never reaches the service', async () => {
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketType: 'outage' })
+    });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+  });
+
+  it('POST /tickets/bulk strips a ticketType key: it is never forwarded to any service call', async () => {
+    const T1 = 'aaaaaaaa-1111-4222-8333-444455556666';
+    dbSelectMock.mockResolvedValue([STUB_TICKET]);
+    serviceMocks.changeTicketStatus.mockResolvedValue({ ...STUB_TICKET, status: 'closed' });
+    const res = await makeApp().request('/tickets/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticketIds: [T1], action: 'status', status: 'closed', ticketType: 'problem' })
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.updateTicketFields).not.toHaveBeenCalled();
+    for (const fn of Object.values(serviceMocks) as Array<{ mock?: { calls: unknown[][] } }>) {
+      for (const call of fn.mock?.calls ?? []) {
+        expect(JSON.stringify(call)).not.toContain('ticketType');
+      }
+    }
   });
 });

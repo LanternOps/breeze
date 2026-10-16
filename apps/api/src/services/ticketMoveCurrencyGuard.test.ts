@@ -139,7 +139,7 @@ describe('assertTicketMoveCurrencyCompatible', () => {
     expect(err.message).not.toContain('EUR draft');
   });
 
-  it('(e) time-entry predicate is ticket_id IN + not_billed + hourly_rate IS NOT NULL — and NOT is_billable', async () => {
+  it('(e) time-entry predicate is ticket_id IN + not_billed|awaiting_approval + hourly_rate IS NOT NULL — and NOT is_billable', async () => {
     const { tx, wheres, tables, projections } = makeTx([[], []]);
     await assertTicketMoveCurrencyCompatible(tx, { ...base, acceptCurrencyMismatch: false });
     expect(wheres).toHaveLength(2);
@@ -150,10 +150,11 @@ describe('assertTicketMoveCurrencyCompatible', () => {
 
     const time = render(wheres[0]);
     expect(time.sql).toMatch(/"ticket_id" in \(\$1\)/);
-    expect(time.sql).toMatch(/"billing_status" = \$2/);
+    // #4617: held time carries a stamped currency and is still unbilled money.
+    expect(time.sql).toMatch(/"billing_status" in \(\$2, \$3\)/);
     expect(time.sql).toMatch(/"hourly_rate" is not null/);
     expect(time.sql).not.toContain('is_billable');
-    expect(time.params).toEqual([T1, 'not_billed']);
+    expect(time.params).toEqual([T1, 'not_billed', 'awaiting_approval']);
 
     const parts = render(wheres[1]);
     expect(parts.sql).toMatch(/"ticket_id" in \(\$1\)/);

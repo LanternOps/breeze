@@ -38,6 +38,7 @@ import { isRedisAvailable } from './redis';
 import { processBackupVerificationResult } from '../routes/backup/verificationService';
 import { applyBackupCommandResultToJob } from './backupResultPersistence';
 import { applyVaultSyncCommandResult } from './vaultSyncPersistence';
+import { applyVaultConfigureCommandResult } from './vaultDeviceCommands';
 import { backupCommandResultSchema } from '../routes/backup/resultSchemas';
 import { describeZodIssues } from '../lib/zodIssues';
 import { redactSecretsFromOutput, redactOptionalSecretText } from './secretRedaction';
@@ -56,6 +57,7 @@ import { commandResultSchema } from '../routes/agents/schemas';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { evaluateScriptExitCodeAlert, type ScriptTriggerType } from './scriptExitCodeAlerts';
 import { advanceOutcomesForTerminalExecution } from './fixMemory/scriptTerminalHook';
+import { emitScriptTerminalEvent } from './scriptTerminalEvents';
 import { enqueueScriptVerify } from './scriptProposals/verify';
 import { handlePeripheralPolicyResultV2 } from './peripheralPolicyState';
 import {
@@ -67,6 +69,9 @@ import {
 // task exited, so the agent's result must close the device out here rather than
 // through the executor's poll.
 import { handleInstallPatchesResult } from './patchJobFinalizer';
+// #6354 W02: caller verification's workstation tier. Both transports reach
+// this one leaf handler; it decides nothing itself (W01 applyDecision does).
+import { handleCallerVerifyResult } from './callerVerification/workstationResult';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -320,6 +325,16 @@ async function handleProviderBackedBackupResult({ command, result, resolvedDevic
   }
 }
 
+async function handleVaultConfigureResult({ command, result, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+  await applyVaultConfigureCommandResult({
+    deviceId: resolvedDeviceId,
+    command,
+    resultStatus: result.status,
+    stderr: result.stderr,
+    error: result.error,
+  });
+}
+
 async function handleVaultSyncResult({ command, result, resolvedDeviceId, stdout }: Parameters<CommandResultHandler>[0]): Promise<void> {
   await applyVaultSyncCommandResult({
     deviceId: resolvedDeviceId,
@@ -414,6 +429,9 @@ function terminalExecutionProjection() {
     // #6690: the exit-code alert needs the execution's own org and trigger lane.
     orgId: scriptExecutions.orgId,
     triggerType: scriptExecutions.triggerType,
+    // #7277: identifies the automation run that queued the execution, so the
+    // public terminal event carries what the fan-out's loop guard needs.
+    automationRunId: scriptExecutions.automationRunId,
   } as const;
 }
 
@@ -423,6 +441,7 @@ type TerminalExecution = {
   proposalId: string | null;
   orgId: string;
   triggerType: ScriptTriggerType;
+  automationRunId: string | null;
 };
 
 function isCustomFieldWritesEnvelope(value: unknown): boolean {
@@ -858,6 +877,29 @@ async function handleScriptResult({ agentId, command, result, resolvedDeviceId, 
             eq(scriptExecutionBatches.scriptId, countedExecution.scriptId)
           ));
       }
+
+      // #7277 — public script.completed / script.failed. Keyed on the same fence
+      // as the batch counter: only the writer that TERMINALISED the row emits,
+      // so the #3607 recovery and #3525 late-output paths (rows a sweep already
+      // closed, and already announced) never double-fire automations. A proven
+      // cancel emits nothing. Deferred until the surrounding transaction
+      // commits. Registered LAST on purpose: the REST ingest path runs this
+      // handler in a SAVEPOINT of a request transaction that still commits
+      // after the savepoint rolls back (it parks the command), and a task
+      // registered inside a rolled-back savepoint is not dropped. Nothing after
+      // this point can throw, so the event is only queued for a final state.
+      if (countedExecution && !cancelConfirmed) {
+        emitScriptTerminalEvent({
+          executionId: countedExecution.id,
+          orgId: countedExecution.orgId,
+          deviceId: resolvedDeviceId,
+          scriptId: countedExecution.scriptId,
+          triggerType: countedExecution.triggerType,
+          automationRunId: countedExecution.automationRunId ?? null,
+          exitCode: executionValues.exitCode,
+          status: scriptStatus,
+        });
+      }
     }
   } catch (err) {
     // #3162 lived undetected because this catch logged to the container and
@@ -1190,6 +1232,8 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   hyperv_backup: handleProviderBackedBackupResult,
   mssql_backup: handleProviderBackedBackupResult,
   vault_sync: handleVaultSyncResult,
+  // #8385: a configuration the helper could not apply shows on the vault.
+  vault_configure: handleVaultConfigureResult,
   snmp_poll: handleSnmpPollResult,
   script: handleScriptResult,
   script_cancel: handleScriptCancelResult,
@@ -1206,4 +1250,5 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   system_cleanup_run: handleSystemCleanupRunResult,
   filesystem_analysis: handleFilesystemAnalysisResult,
   file_delete: handleFileDeleteResult,
+  caller_verify: handleCallerVerifyResult,
 };

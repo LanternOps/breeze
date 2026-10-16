@@ -12,6 +12,8 @@ const PATCH_SETTINGS = {
   autoApprove: false,
   autoApproveSeverities: [],
   autoApproveDeferralDays: 0,
+  // #8187: legacy per-app rules still stored on the link; the ring owns them now.
+  apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
   scheduleFrequency: 'weekly',
 };
 
@@ -50,6 +52,7 @@ describe('DeviceEffectiveConfigTab — patch approval source (#7625)', () => {
 
     expect(await screen.findByText('set by the linked update ring')).toBeInTheDocument();
     expect(screen.queryByText(/auto approve/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^apps$/i)).not.toBeInTheDocument();
     expect(screen.getByText('weekly')).toBeInTheDocument();
   });
 

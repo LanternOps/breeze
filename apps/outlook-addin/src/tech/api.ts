@@ -261,6 +261,8 @@ export interface StartTimerRequest {
   description?: string;
   /** #4628 W04 — OMIT for the ticket category's default work type (§3.1). */
   workTypeId?: string;
+  /** #8196 W05 — `false` for the "log as non-billable" retry after 409 APPROVAL_REQUIRED. */
+  isBillable?: boolean;
 }
 
 export interface StartTimerResponse {

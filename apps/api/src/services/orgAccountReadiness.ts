@@ -22,6 +22,7 @@ import {
   configPolicyAssignments,
   configurationPolicies,
   contacts,
+  contactRoles,
   devices,
   invoices,
   organizations,
@@ -289,12 +290,23 @@ function queryContactSignals(ids: string[]) {
       primaryEmail: sql<string | null>`max(${contacts.email}) ${primary}`,
       primaryPhone: sql<string | null>`max(${contacts.phone}) ${primary}`,
       primaryMobile: sql<string | null>`max(${contacts.mobile}) ${primary}`,
-      // ORG-level only, matching what invoices use: organizations.billing_contact
-      // projects the org-level contact holding the role (contacts/compat.ts
-      // projectBillingContact), so a site-level billing contact receives nothing.
-      billingRole: sql<boolean>`bool_or(${contacts.siteId} IS NULL AND ${contacts.roles} @> ARRAY['billing']::text[])`,
+      // Organization readiness requires an explicit Organization-scoped
+      // billing responsibility; Site/Device Group assignments are insufficient.
+      // The filtered LEFT JOIN keeps the decision on canonical contact_roles
+      // while the aggregates retain one result row per organization.
+      billingRole: sql<boolean>`bool_or(${contactRoles.id} IS NOT NULL)`,
     })
     .from(contacts)
+    .leftJoin(
+      contactRoles,
+      and(
+        eq(contactRoles.contactId, contacts.id),
+        eq(contactRoles.orgId, contacts.orgId),
+        eq(contactRoles.role, 'billing'),
+        isNull(contactRoles.siteId),
+        isNull(contactRoles.deviceGroupId),
+      ),
+    )
     .where(inArray(contacts.orgId, ids))
     .groupBy(contacts.orgId);
 }

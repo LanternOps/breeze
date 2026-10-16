@@ -1,10 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 import type { ComponentType } from 'react';
-import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check, Zap, MoreVertical, SlidersHorizontal } from 'lucide-react';
+import { Monitor, Wifi, WifiOff, Maximize, Minimize, Keyboard, ClipboardPaste, ChevronDown, X, ArrowLeftRight, Volume2, VolumeX, MousePointer2, Check, Zap, MoreVertical, SlidersHorizontal, Eye, Lock, Camera, Activity } from 'lucide-react';
 import type { TransportCapabilities } from '../lib/transports/types';
 import { transportHasQualityControls } from '../lib/transportTuning';
 import { webrtcSwitchUnavailableReason, shouldShowWebRTCSwitchPill } from '../lib/transportAvailability';
 import { detectViewerOs, shortcutLabel } from '../lib/inputSafety';
+import { ClipboardChip } from './ClipboardChip';
+import type { ClipboardChipInput } from '../lib/clipboardChip';
+import type { BlockLocalInputState } from '../lib/blockLocalInput';
+import type { ViewScaling } from '../lib/displayScaling';
+import type { KeyboardMode, KeyboardModeSupport } from '../lib/keyboardMode';
+import { KeyboardModeControl } from './KeyboardModeControl';
 
 const VIEWER_OS = detectViewerOs(typeof navigator === 'undefined' ? '' : navigator.userAgent);
 
@@ -34,6 +40,8 @@ interface Props {
    * agent dropped — see pasteFailureMessage in lib/pasteText.ts.
    */
   pasteNotice: string | null;
+  /** A neutral confirmation (e.g. screenshot saved); shown when no error notice is. */
+  statusNotice?: string | null;
   remapCmdCtrl: boolean;
   monitors: MonitorInfo[];
   activeMonitor: number;
@@ -75,6 +83,31 @@ interface Props {
   onSwitchTransport?: (target: 'webrtc' | 'vnc') => void;
   /** Capabilities of the active transport session; null = no session yet. */
   capabilities?: TransportCapabilities | null;
+  /** Clipboard status chip and its explicit actions (clipboard v2, C4). */
+  clipboardChip?: {
+    input: ClipboardChipInput;
+    onCopyRemote: () => void;
+    onSendToRemote: () => void;
+  };
+  /** View-only (#8241): viewer-local, nothing is sent while on. */
+  viewOnly?: boolean;
+  onViewOnlyChange?: (v: boolean) => void;
+  /** Fit (scale to window) or actual (100%, scroll). */
+  viewScaling?: ViewScaling;
+  onViewScalingChange?: (mode: ViewScaling) => void;
+  /** Block the remote user's keyboard and mouse (#966), rendered from the agent's reply. */
+  blockLocalInput?: BlockLocalInputState;
+  onToggleBlockLocalInput?: () => void;
+  /** Stats overlay (RTT, fps, bitrate, loss, codec, transport), off by default. */
+  statsOverlay?: boolean;
+  onStatsOverlayChange?: (on: boolean) => void;
+  /** Keyboard mode in force (W06): "Type what I see" or "Physical keys". */
+  keyboardMode?: KeyboardMode;
+  keyboardModeSupport?: KeyboardModeSupport;
+  onKeyboardModeChange?: (mode: KeyboardMode) => void;
+  /** Screenshot of the current frame, kept on this machine. */
+  onCopyScreenshot?: () => void;
+  onSaveScreenshot?: () => void;
 }
 
 interface KeyCombo {
@@ -178,6 +211,7 @@ export default function ViewerToolbar({
   onLockWorkstation,
   onPasteAsKeystrokes,
   onCancelPaste,
+  clipboardChip,
   reconnectSecondsLeft,
   webRTCAvailable = false,
   webrtcSupported = true,
@@ -185,6 +219,20 @@ export default function ViewerToolbar({
   desktopState,
   onSwitchTransport,
   capabilities = null,
+  viewOnly = false,
+  onViewOnlyChange,
+  viewScaling = 'fit',
+  onViewScalingChange,
+  blockLocalInput,
+  onToggleBlockLocalInput,
+  statusNotice = null,
+  statsOverlay = false,
+  onStatsOverlayChange,
+  onCopyScreenshot,
+  onSaveScreenshot,
+  keyboardMode = 'text',
+  keyboardModeSupport,
+  onKeyboardModeChange,
 }: Props) {
   const MonitorIcon = Monitor as unknown as ComponentType<{ className?: string }>;
   const ConnectedIcon = Wifi as unknown as ComponentType<{ className?: string }>;
@@ -203,6 +251,10 @@ export default function ViewerToolbar({
   const ZapIcon = Zap as unknown as ComponentType<{ className?: string }>;
   const MoreIcon = MoreVertical as unknown as ComponentType<{ className?: string }>;
   const SlidersIcon = SlidersHorizontal as unknown as ComponentType<{ className?: string }>;
+  const EyeIcon = Eye as unknown as ComponentType<{ className?: string }>;
+  const LockIcon = Lock as unknown as ComponentType<{ className?: string }>;
+  const CameraIcon = Camera as unknown as ComponentType<{ className?: string }>;
+  const ActivityIcon = Activity as unknown as ComponentType<{ className?: string }>;
 
   // Transport label: a crisp lucide glyph + text, replacing emoji so the badge
   // matches the rest of the toolbar's monochrome icon vocabulary.
@@ -660,16 +712,29 @@ export default function ViewerToolbar({
           {pasteNotice}
         </span>
       )}
+      {!pasteNotice && statusNotice && (
+        <span role="status" className="text-xs text-gray-300 max-w-xs truncate" title={statusNotice}>
+          {statusNotice}
+        </span>
+      )}
 
       {/* Divider between status/telemetry and the primary action group */}
       <div className="w-px h-5 bg-gray-600" />
 
       {/* ── Primary actions: the controls a tech reaches for every session ── */}
 
+      {clipboardChip && (
+        <ClipboardChip
+          input={clipboardChip.input}
+          onCopyRemote={clipboardChip.onCopyRemote}
+          onSendToRemote={clipboardChip.onSendToRemote}
+        />
+      )}
+
       {/* Paste as Keystrokes */}
       <button
         onClick={onPasteAsKeystrokes}
-        disabled={!!pasteProgress}
+        disabled={!!pasteProgress || viewOnly}
         className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded disabled:opacity-40 disabled:cursor-not-allowed"
         title={`Paste clipboard text as keystrokes (${shortcutLabel('V', VIEWER_OS)})`}
       >
@@ -681,8 +746,9 @@ export default function ViewerToolbar({
       <div className="relative" ref={keysDropdownRef}>
         <button
           onClick={() => setKeysOpen(!keysOpen)}
-          className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded"
-          title="Send key combination"
+          disabled={viewOnly}
+          className="flex items-center gap-1 px-2 py-1 text-xs text-gray-300 hover:text-white hover:bg-gray-700 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+          title={viewOnly ? 'Unavailable in view-only mode' : 'Send key combination'}
         >
           <KeyboardIcon className="w-3.5 h-3.5" />
           <span>Send Keys</span>
@@ -725,6 +791,16 @@ export default function ViewerToolbar({
           </div>
         )}
       </div>
+
+      {/* Keyboard mode (W06): type what I see vs physical keys */}
+      {keyboardModeSupport && onKeyboardModeChange && (
+        <KeyboardModeControl
+          mode={keyboardMode}
+          support={keyboardModeSupport}
+          onChange={onKeyboardModeChange}
+          disabled={viewOnly}
+        />
+      )}
 
       <button
         onClick={toggleFullscreen}
@@ -792,6 +868,108 @@ export default function ViewerToolbar({
                 <KeyboardIcon className="w-3.5 h-3.5" />
                 Release stuck keys
               </button>
+            )}
+
+            {/* View-only: viewer-local guard against accidental input */}
+            {onViewOnlyChange && (
+              <button
+                role="menuitemcheckbox"
+                aria-checked={viewOnly}
+                data-testid="toggle-view-only"
+                onClick={() => onViewOnlyChange(!viewOnly)}
+                title="Stop sending your keyboard and mouse to the remote"
+                className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700"
+              >
+                <span className="flex items-center gap-2">
+                  <EyeIcon className="w-3.5 h-3.5" />
+                  View only
+                </span>
+                {viewOnly && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+              </button>
+            )}
+
+            {/* Block the remote user's input (#966): WebRTC control channel only */}
+            {onToggleBlockLocalInput && transport === 'webrtc' && (
+              <button
+                role="menuitemcheckbox"
+                aria-checked={!!blockLocalInput?.blocked}
+                data-testid="toggle-block-local-input"
+                onClick={onToggleBlockLocalInput}
+                disabled={blockLocalInput?.pending || blockLocalInput?.supported === false}
+                title={blockLocalInput?.supported === false
+                  ? 'The remote device does not support blocking local input'
+                  : 'Block the keyboard and mouse at the remote device while you work'}
+                className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              >
+                <span className="flex items-center gap-2">
+                  <LockIcon className="w-3.5 h-3.5" />
+                  {blockLocalInput?.pending ? 'Block remote input…' : 'Block remote input'}
+                </span>
+                {blockLocalInput?.blocked && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+              </button>
+            )}
+
+            {/* Stats overlay */}
+            {onStatsOverlayChange && (
+              <button
+                role="menuitemcheckbox"
+                aria-checked={statsOverlay}
+                data-testid="toggle-stats-overlay"
+                onClick={() => onStatsOverlayChange(!statsOverlay)}
+                className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700"
+              >
+                <span className="flex items-center gap-2">
+                  <ActivityIcon className="w-3.5 h-3.5" />
+                  Stats overlay
+                </span>
+                {statsOverlay && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+              </button>
+            )}
+
+            {/* Screenshot of the current frame: local only */}
+            {onCopyScreenshot && (
+              <button
+                role="menuitem"
+                data-testid="copy-screenshot"
+                disabled={status !== 'connected'}
+                onClick={() => { onCopyScreenshot(); setMoreOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              >
+                <CameraIcon className="w-3.5 h-3.5" />
+                Copy screenshot
+              </button>
+            )}
+            {onSaveScreenshot && (
+              <button
+                role="menuitem"
+                data-testid="save-screenshot"
+                disabled={status !== 'connected'}
+                onClick={() => { onSaveScreenshot(); setMoreOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+              >
+                <CameraIcon className="w-3.5 h-3.5" />
+                Save screenshot
+              </button>
+            )}
+
+            {/* View scaling: fit to window or 100% with scrolling */}
+            {onViewScalingChange && (
+              <>
+                <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">Scaling</div>
+                {(['fit', 'actual'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    role="menuitemradio"
+                    aria-checked={viewScaling === mode}
+                    data-testid={`view-scaling-${mode}`}
+                    onClick={() => onViewScalingChange(mode)}
+                    className="w-full flex items-center justify-between gap-3 px-3 py-1.5 text-xs text-left text-gray-200 hover:bg-gray-700"
+                  >
+                    <span>{mode === 'fit' ? 'Fit to window' : '100% (scroll)'}</span>
+                    {viewScaling === mode && <CheckIcon className="w-3 h-3 text-accent-soft" />}
+                  </button>
+                ))}
+              </>
             )}
 
             {/* Remote cursor overlay (WebRTC only) */}

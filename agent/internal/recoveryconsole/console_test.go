@@ -72,8 +72,10 @@ type fakeDeps struct {
 
 	rebuildCalls  []rebuild.Options
 	progressCalls []bmr.ProgressUpdate
-	progressErr   error
-	powerCalls    []string
+	// progressTokens[i] is the recovery token progressCalls[i] was posted with.
+	progressTokens []string
+	progressErr    error
+	powerCalls     []string
 }
 
 func (f *fakeDeps) build(version string) Deps {
@@ -96,6 +98,7 @@ func (f *fakeDeps) build(version string) Deps {
 		WidenScope: f.widenFn,
 		Progress: func(ctx context.Context, server, token string, u bmr.ProgressUpdate) error {
 			f.progressCalls = append(f.progressCalls, u)
+			f.progressTokens = append(f.progressTokens, token)
 			return f.progressErr
 		},
 		Power: func(action string) error {
@@ -352,9 +355,10 @@ func TestConsole_DiskHasWindowsWrongSerialStillBlocksAfterOverwrite(t *testing.T
 
 // After a decline the `refused` post is terminal server-side; OVERWRITE must
 // never be offered again for this recovery, or the disk would be erased while
-// the server record stays refused.
+// the server record stays refused. Typing it at the failure menu is an invalid
+// choice; retry needs a new code (console_retry_new_code_test.go, #7927).
 func TestConsole_DiskHasWindowsNoOverwriteAfterRefusedPosted(t *testing.T) {
-	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "", "r", "OVERWRITE", "p"}}
+	io := &fakeIO{Answers: []string{"https://breeze.example", "abc-def-ghj", "", "OVERWRITE", "p"}}
 	deps := diskHasWindowsDeps(t)
 	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: "breeze.media=1"}
 	if err := c.Run(context.Background()); err != nil {

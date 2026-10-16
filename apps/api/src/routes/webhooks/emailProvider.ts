@@ -252,7 +252,7 @@ async function handleEmailEvent(
   progress.counted = true;
 
   if (EVALUATES_AUTO_SUSPENSION.has(envelope.type)) {
-    // jobId = autosuspend:<partnerId>, so a bounce storm collapses into one
+    // jobId = autosuspend-<partnerId>, so a bounce storm collapses into one
     // evaluation instead of one per message.
     await enqueueAutoSuspendEvaluation(rawTag);
   }

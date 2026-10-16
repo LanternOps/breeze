@@ -66,6 +66,9 @@ export const GATED_COMMAND_TYPES = [
   'backup_verify',
   'bare_metal_rebuild',
   'bmr_recover',
+  // Caller verification (#6354 W02): renders a confirmation card in the
+  // console user's Assist helper. Operator-initiated, so trust-gated.
+  'caller_verify',
   'capture_pprof',
   'cis_benchmark',
   'collect_audit_policy',
@@ -128,6 +131,7 @@ export const GATED_COMMAND_TYPES = [
   'network_tcp_check',
   'notify_user',
   'pam_apply_v2',
+  'pam_reconcile_v2',
   'peripheral_policy_sync',
   'peripheral_policy_sync_v2',
   'quarantine_file',

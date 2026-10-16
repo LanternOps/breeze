@@ -20,6 +20,7 @@ import {
 import { handleActionError } from "../../lib/runAction";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import DeviceEdrGenericSection from "./DeviceEdrGenericSection";
 
 const severityBadge: Record<string, string> = {
   low: "bg-blue-500/20 text-blue-700 border-blue-500/30",
@@ -329,6 +330,8 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
           )}
         </div>
       </div>
+
+      <DeviceEdrGenericSection deviceId={deviceId} orgId={orgId} timezone={timezone} />
 
       {confirmAction !== null && (
         <div

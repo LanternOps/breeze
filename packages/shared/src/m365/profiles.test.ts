@@ -208,11 +208,16 @@ describe('customer-graph-actions manifest (least privilege)', () => {
     const byValue = Object.fromEntries(
       (p.applicationPermissionAssignments ?? []).map((g) => [g.value, g]),
     );
-    expect(byValue['User.ReadWrite.All']?.appRoleId).toBe('204e0828-b5ca-4ad8-b9f3-f32a958e7cc4');
-    expect(byValue['User-PasswordProfile.ReadWrite.All']?.appRoleId).toBe('56760768-b641-451f-8906-e1b8ab31bca7');
+    // APPLICATION role IDs (appRoleAssignments), not the delegated oauth2PermissionScope IDs (#8648).
+    expect(byValue['User.ReadWrite.All']?.appRoleId).toBe('741f803b-c850-494e-b5df-cde7c675a1ca');
+    expect(byValue['User-PasswordProfile.ReadWrite.All']?.appRoleId).toBe('cc117bb9-00cf-4eb8-b580-ea2a878fe8f7');
     for (const g of p.applicationPermissionAssignments ?? []) {
       expect(g.resourceApplicationId).toBe('00000003-0000-0000-c000-000000000000');
     }
+  });
+
+  it('is manifest version 2 so tenants consented to the delegated-ID v1 manifest are re-prompted (#8648)', () => {
+    expect(p.version).toBe(2);
   });
 
   it('assignment set equals the requested scope set', () => {

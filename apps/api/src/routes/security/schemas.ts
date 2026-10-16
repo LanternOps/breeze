@@ -14,7 +14,10 @@ export const providerCatalog = {
   emsisoft: { id: 'emsisoft', name: 'Emsisoft', vendor: 'Emsisoft' },
   webroot: { id: 'webroot', name: 'Webroot SecureAnywhere', vendor: 'OpenText' },
   withsecure: { id: 'withsecure', name: 'WithSecure Elements', vendor: 'WithSecure' },
-  other: { id: 'other', name: 'Other', vendor: 'Other' }
+  other: { id: 'other', name: 'Other', vendor: 'Other' },
+  // Failed / not-collected provider (#8538). The web client localizes this
+  // bucket by id; `name` is the English fallback.
+  unknown: { id: 'unknown', name: 'Unknown', vendor: 'Unknown' }
 } as const;
 
 export type ProviderKey = keyof typeof providerCatalog;
@@ -32,9 +35,11 @@ export type StatusRow = {
   providerVersion: string | null;
   definitionsVersion: string | null;
   definitionsDate: Date | null;
-  realTimeProtection: boolean;
+  // null = unknown: the agent's collector failed (#8043) or the device has no
+  // security_status row yet. Never coerce to false — that reads as "off" (#8252).
+  realTimeProtection: boolean | null;
   threatCount: number;
-  firewallEnabled: boolean;
+  firewallEnabled: boolean | null;
   encryptionStatus: string;
   encryptionDetails: unknown;
   localAdminSummary: unknown;

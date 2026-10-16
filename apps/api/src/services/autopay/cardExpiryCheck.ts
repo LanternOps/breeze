@@ -7,6 +7,7 @@ import {mintBillingLinkToken,buildBillingLinkUrl} from './linkTokens';
 import {enqueueBillingNotice} from './noticeOutbox';
 import {renderBillingNotice} from './renderBillingNotice';
 import {buildAutopayDisclosure} from './consentText';
+import {autopayPartnerLiveCondition,isAutopayEnabledForPartner} from './autopayGate';
 export function isCardExpiring(now:Date,year:number|null,month:number|null):boolean{
   if(!year||!month||month<1||month>12)return false;
   const expiration=Date.UTC(year,month,1);
@@ -18,7 +19,7 @@ export async function checkExpiringAutopayCards(now:Date=new Date()):Promise<{en
       .from(orgPaymentMethods).innerJoin(orgAutopayEnrollments,and(eq(orgAutopayEnrollments.id,orgPaymentMethods.enrollmentId),eq(orgAutopayEnrollments.orgId,orgPaymentMethods.orgId)))
       .innerJoin(organizations,eq(organizations.id,orgPaymentMethods.orgId)).innerJoin(partners,eq(partners.id,organizations.partnerId))
       .where(and(eq(orgPaymentMethods.type,'card'),eq(orgPaymentMethods.status,'active'),eq(orgPaymentMethods.isAutopayMethod,true),
-        eq(orgAutopayEnrollments.status,'active'),eq(partners.autopayEnabled,true),
+        eq(orgAutopayEnrollments.status,'active'),eq(partners.autopayEnabled,true),autopayPartnerLiveCondition(organizations.partnerId),
         inArray(organizations.status,['active','trial']),isNull(organizations.deletedAt))));
     let enqueued=0;
     for(const row of rows){
@@ -30,7 +31,7 @@ export async function checkExpiringAutopayCards(now:Date=new Date()):Promise<{en
         const [currentOrg]=await db.select({id:organizations.id}).from(organizations).where(and(
           eq(organizations.id,row.org.id),isNull(organizations.deletedAt),inArray(organizations.status,['active','trial']),
         )).limit(1).for('update');
-        if(!currentOrg)return false;
+        if(!currentOrg||!await isAutopayEnabledForPartner(db,row.org.partnerId))return false;
         const [currentEnrollment]=await db.select().from(orgAutopayEnrollments).where(and(
           eq(orgAutopayEnrollments.id,row.enrollment.id),eq(orgAutopayEnrollments.orgId,row.org.id),
           eq(orgAutopayEnrollments.status,'active'),eq(orgAutopayEnrollments.generation,row.enrollment.generation),

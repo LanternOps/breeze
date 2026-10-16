@@ -198,13 +198,85 @@
     "running": "Em execução",
     "threatsDetectedCount": "{{count}} ameaças",
     "unknownProvider": "Provedor desconhecido",
-    "unknownVendor": "Fornecedor desconhecido"
+    "unknownVendor": "Fornecedor desconhecido",
+    "unknown": "Desconhecido"
   },
   "securityEdrPage": {
     "endpointDetectionAndAmpResponse": "Detecção e resposta de endpoint",
     "huntressIncidents": "Incidentes do Huntress",
     "sentineloneThreats": "Ameaças do SentinelOne",
     "threatsAndIncidentsAcrossYourFleetFrom": "Ameaças e incidentes em sua frota vindos do SentinelOne e do Huntress."
+  },
+  "securityOtherEdr": {
+    "tabLabel": "Outro EDR",
+    "statusError": "Não foi possível verificar outros provedores de EDR.",
+    "title": "Detecções de outros EDR",
+    "loading": "Carregando detecções...",
+    "showing": "Exibindo {{from}}-{{to}} de {{total}}",
+    "refresh": "Atualizar",
+    "filters": {
+      "severity": "Gravidade",
+      "status": "Status",
+      "provider": "Provedor",
+      "allSeverities": "Todas as gravidades",
+      "allProviders": "Todos os provedores",
+      "openDefault": "Abertas (padrão)",
+      "allStatuses": "Todos os status"
+    },
+    "severities": {
+      "critical": "Crítica",
+      "high": "Alta",
+      "medium": "Média",
+      "low": "Baixa",
+      "info": "Informativa",
+      "unknown": "Desconhecida"
+    },
+    "statuses": {
+      "open": "Aberta",
+      "in_progress": "Em andamento",
+      "mitigated": "Mitigada",
+      "resolved": "Resolvida",
+      "false_positive": "Falso positivo",
+      "dismissed": "Descartada",
+      "unknown": "Desconhecido"
+    },
+    "connectionStatuses": {
+      "connected": "Conectado",
+      "error": "Erro",
+      "reauth_required": "Reautenticação necessária"
+    },
+    "tenants": {
+      "stale": "Locatários desatualizados",
+      "failed": "Locatários com falha",
+      "pending": "Locatários pendentes",
+      "unmapped": "Locatários não mapeados"
+    },
+    "openDetections": "Detecções abertas",
+    "endpoints": "Endpoints",
+    "linkedEndpoints": "Endpoints vinculados",
+    "unhealthyEndpoints": "Endpoints com problemas",
+    "lastDetectionSync": "Última sincronização de detecções",
+    "never": "Nunca",
+    "coverageHeading": "Informações de cobertura",
+    "emptyPartial": "Nenhuma detecção retornada. A cobertura está incompleta - veja as notas acima.",
+    "empty": "Nenhuma detecção corresponde aos filtros.",
+    "table": {
+      "provider": "Provedor",
+      "detection": "Detecção",
+      "severity": "Gravidade",
+      "status": "Status",
+      "device": "Dispositivo",
+      "detected": "Detectada",
+      "actions": "Ações"
+    },
+    "unnamedDetection": "Detecção",
+    "detached": "Desvinculado",
+    "promoteToIncident": "Promover a incidente",
+    "promoted": "Promovida",
+    "alreadyPromoted": "Já promovida",
+    "promoteFailed": "Falha ao criar o incidente",
+    "previous": "Anterior",
+    "next": "Próximo"
   },
   "securityEdrSummaryPanel": {
     "edrStatusUnavailable": "Não foi possível carregar o status de EDR. Atualize para tentar novamente.",
@@ -285,7 +357,8 @@
     "totalDevices": "Total de dispositivos",
     "windows": "Windows",
     "statusFilterLabel": "Status do firewall",
-    "osFilterLabel": "Sistema operacional"
+    "osFilterLabel": "Sistema operacional",
+    "unknown": "Desconhecido"
   },
   "securityHuntressIncidentList": {
     "actions": "Ações",
@@ -534,7 +607,8 @@
     "updated": "Atualizado {{time}}",
     "viewDetails": "Ver detalhes",
     "vulnerabilities": "Vulnerabilidades",
-    "weakAdmins": "Administradores fracos"
+    "weakAdmins": "Administradores fracos",
+    "unknown": "Desconhecido"
   },
   "securitySecurityPageHeader": {
     "refresh": "Atualizar",

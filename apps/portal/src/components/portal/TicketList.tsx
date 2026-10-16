@@ -11,6 +11,7 @@ import {
   ticketSlaTextClass,
   ticketStatusLabel,
   ticketStatusTone,
+  ticketTypeLabel,
 } from './ticketMarks';
 
 interface TicketListProps {
@@ -112,6 +113,14 @@ export function TicketList({ tickets, error, enableSupportUsage = false }: Ticke
                         </a>
                         <p className="text-figures text-sm text-muted-foreground">
                           #{ticket.ticketNumber}
+                          {ticketTypeLabel(ticket.ticketType) && (
+                            <>
+                              {' · '}
+                              <span data-testid={`portal-ticket-type-${ticket.id}`}>
+                                {ticketTypeLabel(ticket.ticketType)}
+                              </span>
+                            </>
+                          )}
                         </p>
                       </div>
                     </td>

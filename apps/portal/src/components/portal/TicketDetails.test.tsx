@@ -55,6 +55,25 @@ describe('TicketDetails — statuses', () => {
   });
 });
 
+describe('TicketDetails — pending approval banner (#8200)', () => {
+  it('shows a banner linking to the request when work awaits approval', () => {
+    render(<TicketDetails ticket={ticket()} pendingApproval={{ id: 'req-9', askSentence: 'Approve up to 1 h more on ticket #T-1' }} />);
+    const banner = screen.getByTestId('ticket-pending-approval');
+    expect(banner.textContent).toContain('This ticket has work waiting for your approval');
+    expect(banner.textContent).toContain('Approve up to 1 h more on ticket #T-1');
+    const link = screen.getByTestId('ticket-pending-approval-link') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toMatch(/\/approvals#req-9$/);
+  });
+
+  it('shows no banner without a pending approval', () => {
+    const { unmount } = render(<TicketDetails ticket={ticket()} />);
+    expect(screen.queryByTestId('ticket-pending-approval')).toBeNull();
+    unmount();
+    render(<TicketDetails ticket={ticket()} pendingApproval={null} />);
+    expect(screen.queryByTestId('ticket-pending-approval')).toBeNull();
+  });
+});
+
 describe('TicketDetails — SLA status', () => {
   it.each([
     ['breached', 'SLA breached'],
@@ -184,6 +203,45 @@ describe('TicketDetails — who wrote it', () => {
     expect(item).not.toContain('Customer email');
     expect(item).not.toContain('Your IT team');
   });
+
+  // #8313: a customer's reply imported from another helpdesk is stored with
+  // author_type 'email' and no portal login; original_author_kind is the only
+  // thing that says the customer wrote it.
+  it("labels an imported requester reply as the customer's, not the IT team's", () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-imported-requester',
+        authorName: 'Maya',
+        authorType: 'email',
+        senderPortalUserId: null,
+        originalAuthorKind: 'requester',
+        content: 'Written in the old helpdesk',
+        createdAt: '2021-03-04T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(screen.getByTestId('ticket-comment-imported-customer').textContent).toBe('Customer');
+    expect(item).not.toContain('Your IT team');
+  });
+
+  it('keeps labelling an imported staff reply as the IT team', () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-imported-staff',
+        authorName: 'Former Tech',
+        authorType: 'internal',
+        senderPortalUserId: null,
+        originalAuthorKind: 'staff',
+        content: 'Answered in the old helpdesk',
+        createdAt: '2021-03-04T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(item).toContain('Your IT team');
+    expect(screen.queryByTestId('ticket-comment-imported-customer')).toBeNull();
+  });
 });
 
 describe('ReplyComposer — draft survives a dead session', () => {
@@ -254,5 +312,22 @@ describe('TicketDetails — column sits against the sheet edge', () => {
     const src = readFileSync('src/components/portal/TicketDetails.tsx', 'utf8');
     expect(src).toMatch(/max-w-3xl/);
     expect(src).not.toMatch(/mx-auto max-w-3xl|max-w-3xl mx-auto/);
+  });
+});
+
+describe('TicketDetails — ticket type (#8596)', () => {
+  it('shows the type label in the header', () => {
+    render(<TicketDetails ticket={ticket({ ticketType: 'service_request' })} />);
+    expect(screen.getByTestId('portal-ticket-type').textContent).toBe('Service request');
+  });
+
+  it('renders no type label when the API omits ticketType', () => {
+    render(<TicketDetails ticket={ticket({ ticketType: undefined })} />);
+    expect(screen.queryByTestId('portal-ticket-type')).toBeNull();
+  });
+
+  it('does not render an unknown type value raw at the customer', () => {
+    render(<TicketDetails ticket={ticket({ ticketType: 'mystery' as never })} />);
+    expect(screen.queryByTestId('portal-ticket-type')).toBeNull();
   });
 });

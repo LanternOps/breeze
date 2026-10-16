@@ -687,10 +687,10 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
 
       // Both fields differ from what the no-policy path produces: that path
       // returns HELPER_DEFAULTS with `enabled` from organizations.settings.helper
-      // (unset here, so false) and `showTrayIcon: true`.
+      // (unset here, so false) and `showOpenPortal: true`.
       const policyId = await seedHelperPolicy(
         { orgId: null, partnerId: partner.id },
-        { enabled: true, showTrayIcon: false },
+        { enabled: true, showOpenPortal: false },
       );
       await assign(policyId, 'partner', partner.id);
 
@@ -698,14 +698,14 @@ describe('agent-facing config-policy resolvers honour partner-wide policies (#29
         buildHelperConfigUpdate(device.id, org!.id),
       );
       expect(blind.enabled).toBe(false);
-      expect(blind.showTrayIcon).toBe(true);
+      expect(blind.showOpenPortal).toBe(true);
 
       await purgeCaches(device.id);
       const sighted = await withDbAccessContext(orgContext(org!.id, partner.id), () =>
         buildHelperConfigUpdate(device.id, org!.id),
       );
       expect(sighted.enabled).toBe(true);
-      expect(sighted.showTrayIcon).toBe(false);
+      expect(sighted.showOpenPortal).toBe(false);
     });
 
     it('writes stay locked: the org context still cannot UPDATE or DELETE the partner-wide policy', async () => {

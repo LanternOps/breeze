@@ -36,6 +36,7 @@ import {
   users,
 } from '../../db/schema';
 import { getTestDb } from './setup';
+import { currentOwnershipEpochSql } from '../../services/deviceOwnershipEpoch';
 
 // Request-scoped context for a given approver user (org scope, no org access —
 // approval_requests is keyed purely on user_id, so the org axis is irrelevant
@@ -118,6 +119,7 @@ beforeEach(async () => {
       siteId,
       partnerId,
       deviceId,
+      deviceEpoch: currentOwnershipEpochSql(deviceId),
       flowType: 'uac_intercept',
       subjectUsername: 'PR1254\\enduser',
       reason: 'install setup.exe',
@@ -267,6 +269,7 @@ describe('#1254 cross-tenant elevation mirror-back is RLS-contained (clean no-op
         siteId: site2!.id,
         partnerId: p2!.id,
         deviceId: device2!.id,
+        deviceEpoch: currentOwnershipEpochSql(device2!.id),
         flowType: 'uac_intercept',
         subjectUsername: 'OTHER\\enduser',
         reason: 'install other.exe',

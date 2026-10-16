@@ -19,6 +19,10 @@ vi.mock('../novnc', () => {
       this.sendCredentials = vi.fn();
       this.disconnect = vi.fn();
       this.clipboardPasteFrom = vi.fn();
+      this.sendKey = vi.fn();
+      this.viewOnly = false;
+      this.clipViewport = false;
+      this.toBlob = vi.fn((cb: (b: Blob | null) => void) => cb(new Blob(['png'], { type: 'image/png' })));
     }),
   };
 });
@@ -125,6 +129,31 @@ describe('connectVnc', () => {
     expect(deps.onStatus).toHaveBeenCalledWith('error');
   });
 
+  it('wires the clipboard under the policy reported with the tunnel, and detaches it on close', async () => {
+    const container = document.createElement('div');
+    const deps = makeDeps({
+      container,
+      clipboard: { readLocalText: vi.fn(), writeLocalText: vi.fn(), hasFocus: () => true },
+    });
+    const session = await connectVnc({
+      tunnelId: 't1', wsUrl: 'wss://api/x', clipboard: { hostToViewer: true, viewerToHost: true },
+    }, deps);
+    const { RFB } = await import('../novnc');
+    const rfb = (RFB as unknown as { mock: { results: Array<{ value: any }> } }).mock.results[0].value;
+    expect(rfb._listeners.clipboard).toHaveLength(1);
+    expect(session.clipboard?.state.policy).toEqual({ hostToViewer: true, viewerToHost: true });
+    session.close();
+    expect(rfb.removeEventListener).toHaveBeenCalledWith('clipboard', expect.any(Function));
+  });
+
+  it('keeps the clipboard off when the tunnel came with no policy', async () => {
+    const deps = makeDeps({
+      clipboard: { readLocalText: vi.fn(), writeLocalText: vi.fn(), hasFocus: () => true },
+    });
+    const session = await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, deps);
+    expect(session.clipboard?.state.policy).toBeNull();
+  });
+
   it('session.close() calls rfb.disconnect idempotently', async () => {
     const session = await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, makeDeps());
     const { RFB } = await import('../novnc');
@@ -175,5 +204,52 @@ describe('connectVnc', () => {
     if (input.includes('<script>')) {
       expect(seen.join('\n')).not.toContain('<script>');
     }
+  });
+
+  describe('W05 convenience (#8241)', () => {
+    async function connected() {
+      const session = await connectVnc({ tunnelId: 't1', wsUrl: 'wss://api/x' }, makeDeps());
+      const { RFB } = await import('../novnc');
+      const rfb = (RFB as unknown as { mock: { results: Array<{ value: any }> } }).mock.results[0].value;
+      return { session, rfb };
+    }
+
+    it('view-only maps onto noVNC viewOnly (noVNC releases its held keys when it ungrabs)', async () => {
+      const { session, rfb } = await connected();
+      session.setViewOnly(true);
+      expect(rfb.viewOnly).toBe(true);
+      session.setViewOnly(false);
+      expect(rfb.viewOnly).toBe(false);
+    });
+
+    it('100% turns viewport scaling and clipping off so the noVNC screen scrolls; Fit turns scaling back on', async () => {
+      const { session, rfb } = await connected();
+      session.setScaling('actual');
+      expect(rfb.scaleViewport).toBe(false);
+      expect(rfb.clipViewport).toBe(false);
+      session.setScaling('fit');
+      expect(rfb.scaleViewport).toBe(true);
+    });
+
+    it('leaves resizeSession alone in both modes (full-res Retina frames choke WKWebView)', async () => {
+      const { session, rfb } = await connected();
+      const before = rfb.resizeSession;
+      session.setScaling('actual');
+      session.setScaling('fit');
+      expect(rfb.resizeSession).toBe(before);
+    });
+
+    it('captures the current frame as a PNG through noVNC, not a private canvas', async () => {
+      const { session, rfb } = await connected();
+      const blob = await session.captureFrame();
+      expect(blob?.type).toBe('image/png');
+      expect(rfb.toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/png');
+    });
+
+    it('captureFrame resolves null when noVNC throws (no framebuffer yet)', async () => {
+      const { session, rfb } = await connected();
+      rfb.toBlob = vi.fn(() => { throw new Error('no display'); });
+      await expect(session.captureFrame()).resolves.toBeNull();
+    });
   });
 });

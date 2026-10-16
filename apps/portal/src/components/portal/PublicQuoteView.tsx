@@ -1,4 +1,6 @@
 import { quoteStatusTone } from '@/lib/quoteStatus';
+import { computeChargeNow } from '@/lib/invoiceDeposit';
+import { replaceLocation } from '@/lib/replaceLocation';
 import { useState } from 'react';
 import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -75,6 +77,24 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
     ? Math.round(Number(dueOnAcceptance) * 100) - Math.round(Number(depositDue) * 100)
     : 0;
 
+  // #8231 Sign & pay. The invoice this accept creates starts with nothing
+  // paid, so the shared deposit-first rule reduces to "deposit if one is set,
+  // else the due-on-acceptance total" — the same derivation QuoteDetailView
+  // labels its post-accept Pay button with. Only promised when the server says
+  // payment follows (partner takes online payment) AND something is due.
+  const payCharge = computeChargeNow({
+    depositDue: depositDue != null ? String(depositDue) : null,
+    amountPaid: '0.00',
+    balance: String(dueOnAcceptance),
+  }, currency);
+  const signAndPay = initial.payOnAccept === true && Number(payCharge.amount) > 0;
+  const acceptLabel = signAndPay
+    ? (payCharge.isDeposit
+      ? `Sign & pay deposit ${money(payCharge.amount, currency)}`
+      : `Sign & pay ${money(payCharge.amount, currency)}`)
+    : undefined;
+  const afterSignNote = signAndPay ? "You'll then go to secure payment." : undefined;
+
   const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
 
   const statusLabel =
@@ -107,16 +127,29 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
       return;
     }
     setStatus('converted');
-    // The accept response carries the invoice's DURABLE public url (the quote
-    // accept token is now spent). Land the customer straight on it — it shows
-    // the invoice with its Pay button and keeps working after the tab closes
-    // (replace, not assign: back must not return to the dead accept form).
-    // The invoice is also auto-emailed server-side, so losing this navigation
-    // is harmless. payDeferred = the link couldn't be minted right now.
+    // #8231: when the server minted a checkout, go straight to it. Its success
+    // and cancel urls both return to the invoice's durable page, so nothing is
+    // held here (spec §8) — replace, not assign: back must not return to the
+    // spent accept form.
+    const checkoutUrl = res.data?.data?.checkoutUrl ?? null;
+    if (checkoutUrl) {
+      setMsg('Signed and accepted. Taking you to secure payment.');
+      replaceLocation(checkoutUrl);
+      return;
+    }
+    // Otherwise the accept response carries the invoice's DURABLE public url
+    // (the quote accept token is now spent). Land the customer straight on it
+    // — it shows the invoice with its Pay button and keeps working after the
+    // tab closes. The invoice is also auto-emailed server-side, so losing this
+    // navigation is harmless. payDeferred = the link couldn't be minted now.
     const invoiceUrl = res.data?.data?.invoiceUrl ?? null;
     if (invoiceUrl) {
-      setMsg('Signed and accepted. Taking you to your invoice.');
-      window.location.replace(invoiceUrl);
+      // The button promised payment but none could be started (Stripe down,
+      // state changed since the page loaded): say so instead of going quiet.
+      setMsg(signAndPay
+        ? "Signed and accepted. We couldn't open payment just now — you can pay from your invoice."
+        : 'Signed and accepted. Taking you to your invoice.');
+      replaceLocation(invoiceUrl);
       return;
     }
     setMsg(
@@ -285,6 +318,8 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
             busy={busy}
             testIdPrefix="public-quote"
             agreements={quoteAgreementLinks(blocks, quote.termsAndConditions)}
+            acceptLabel={acceptLabel}
+            afterSignNote={afterSignNote}
           />
         )}
         {/* Accept/decline feedback stays adjacent to the button, not below the agreement. */}

@@ -205,6 +205,9 @@ func TestCreateSnapshot_NoSDCaptureLeavesManifestUnchanged(t *testing.T) {
 // Without that, a restore would see SDIndex > 0 with no table and silently
 // fall back to inherited ACLs.
 func TestCreateSnapshot_SourceGoneWithoutJournal_PartialManifestCarriesSDTable(t *testing.T) {
+	// One worker: the fake gates on upload call order, which the pool (#8381)
+	// does not fix. upload_pool_test.go covers the pooled stop/abort paths.
+	defer setUploadConcurrencyForTest(1)()
 	defer setShortUploadRetryDelayForTest(0)()
 	defer setUploadRetryDelayForTest(0)()
 

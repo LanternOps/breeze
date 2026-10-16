@@ -24,7 +24,8 @@
         "perDeviceRole": "Por rol de dispositivo",
         "perDeviceGroup": "Por grupo de dispositivos",
         "perSeat": "Por asiento",
-        "manual": "Cantidad manual"
+        "manual": "Cantidad manual",
+        "hourBlock": "Bolsa de horas"
       },
       "dynamicGroup": "dinámico",
       "deletedGroup": "{{name}} (grupo eliminado)",
@@ -588,6 +589,62 @@
       "warnings": {
         "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. Los cuerpos de los acuerdos admiten títulos, negrita, cursiva, subrayado, listas y enlaces."
       }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Horas incluidas por período",
+        "extraRate": "Precio por hora adicional",
+        "rolloverMode": "Horas sin usar al final del período",
+        "rolloverExpire": "Vencen",
+        "rolloverCarry": "Se trasladan",
+        "carryCap": "Límite de horas trasladables (vacío para sin límite)",
+        "alertPct": "Alertar al usar este % de la bolsa (opcional)",
+        "required": "Ingresa las horas incluidas y el precio por hora adicional.",
+        "firstPeriod": "Las horas cuentan desde el primer período de facturación aún por facturar; en un contrato en borrador se define al activarlo. El tiempo anterior se factura como de costumbre.",
+        "midPeriodEdit": "Los cambios se aplican al período abierto actual ({{start}} – {{end}}) cuando se cierre.",
+        "midPeriodEditNoDates": "Los cambios se aplican al período abierto actual cuando se cierre.",
+        "onlyOne": "Esta organización ya tiene una bolsa activa. Retírala antes de agregar otra."
+      },
+      "row": {
+        "perPeriod": "{{hours}} horas por período",
+        "retiredBadge": "Retirada",
+        "startsOn": "Cuenta desde {{date}}"
+      },
+      "errors": {
+        "exists": "Esta organización ya tiene una línea de bolsa de horas activa. Retírala primero y luego agrega la nueva.",
+        "locked": "Ese campo no se puede cambiar en una línea de bolsa de horas."
+      },
+      "retire": {
+        "title": "Retirar bolsa de horas",
+        "message": "«{{description}}» tiene historial de facturación, por lo que se retira en lugar de eliminarse. No habrá períodos nuevos; los períodos ya facturados se siguen liquidando. Los períodos cerrados permanecen en el contrato.",
+        "confirm": "Retirar bolsa",
+        "toast": "Bolsa de horas retirada"
+      },
+      "detail": {
+        "title": "Bolsa de horas",
+        "usage": "{{used}} de {{included}} horas usadas · {{remaining}} restantes · el período termina el {{end}}",
+        "carried": "Incluye {{hours}} horas trasladadas.",
+        "unapproved": "{{hours}} horas de este tiempo aún no están aprobadas.",
+        "foreign": "{{hours}} horas se registraron en otra moneda; igualmente descuentan de la bolsa.",
+        "over": "{{hours}} horas por encima de la bolsa → {{amount}} al cierre del período",
+        "advanceNote": "El exceso se factura en la factura siguiente.",
+        "arrearsNote": "El exceso se factura en la factura de este período.",
+        "lateEntry": "{{hours}} horas se registraron después del cierre de su período y se facturan por separado.",
+        "startsLater": "La bolsa comienza el {{date}}.",
+        "extraRate": "Horas adicionales: {{rate}} cada una",
+        "loadFailed": "No se pudo cargar el uso de la bolsa."
+      },
+      "history": {
+        "title": "Períodos de bolsa cerrados",
+        "empty": "Aún no se ha cerrado ningún período de bolsa.",
+        "included": "Incluidas",
+        "carriedIn": "Trasladadas de entrada",
+        "used": "Usadas",
+        "over": "Exceso",
+        "carriedOut": "Trasladadas de salida",
+        "loadMore": "Cargar más",
+        "invoiceRemoved": "Factura del exceso eliminada: horas no facturadas"
+      }
     }
   },
   "agreements": {
@@ -911,7 +968,8 @@
         "skuHelp": "Su número de stock de catálogo o distribuidor para este artículo.",
         "skuOptional": "SKU (opcional)",
         "tidyWithAi": "Pulir con IA",
-        "unitCost": "Costo unitario"
+        "unitCost": "Costo unitario",
+        "partNumberRequiredHint": "Agrega un número de parte para incluir esto en el pedido de piezas."
       },
       "liveTotals": {
         "annualRecurring": "Recurrente anual",
@@ -1148,7 +1206,10 @@
         "tooManyRecipients": "Usa como máximo {{max}} direcciones.",
         "zeroTotalWarning": "Esta cotización totaliza {{zero}} — verifica que sus ítems tengan precio antes de enviar.",
         "noBillingContactHint": "Esta organización no tiene un contacto de facturación guardado: ingresa un correo o agrega uno en la <orgLink>configuración de la organización</orgLink>.",
-        "revisionWarning": "Al enviarla se reemplazará {{number}} y se desactivará el enlace que el cliente ya tiene."
+        "revisionWarning": "Al enviarla se reemplazará {{number}} y se desactivará el enlace que el cliente ya tiene.",
+        "noPartNumberWarning_one": "{{count}} línea de producto no tiene número de parte y no se agregará al pedido de piezas.",
+        "noPartNumberWarning_other": "{{count}} líneas de producto no tienen número de parte y no se agregarán al pedido de piezas.",
+        "sendAnyway": "Enviar de todos modos"
       },
       "sendEmailWarning": {
         "noBillingContact": "La propuesta se marcó como Enviada, pero no se entregó ningún correo — {{orgName}} no tiene correo de contacto de facturación. Agregue uno en la configuración de la organización y vuelva a enviar.",
@@ -1321,7 +1382,9 @@
           "vendor": "Proveedor"
         },
         "title": "Por ordenar",
-        "unknownVendor": "Otro / proveedor desconocido"
+        "unknownVendor": "Otro / proveedor desconocido",
+        "excluded": "No incluido en este pedido (sin número de parte): {{names}}",
+        "untitledLine": "Línea sin título"
       },
       "pax8Order": {
         "message_one": "Esta cotización preparó un pedido de Pax8 ({{count}} artículo) pendiente de los detalles de aprovisionamiento",
@@ -1708,7 +1771,8 @@
       "saveNotes": "No se pudieron guardar notas.",
       "saveTerms": "No se pudieron guardar los términos.",
       "updateLine": "No se pudo actualizar la línea.",
-      "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual."
+      "noPriceForCurrency": "Este elemento no tiene precio en {{currency}}. Agregue uno en el catálogo o ingrese una línea manual.",
+      "saveLineDetail": "No se pudo actualizar cómo se imprimen los registros de tiempo"
     },
     "fields": {
       "descriptionOptional": "Descripción (opcional)",
@@ -1775,6 +1839,35 @@
     "linesScrollAria": "Líneas de la factura: desplácese hacia los lados para ver más columnas",
     "unsavedField": {
       "lines": "Líneas"
+    },
+    "lineDetail": {
+      "default": "Predeterminado de facturación",
+      "grouping": "Diseño",
+      "groupingDay": "Agrupar por día",
+      "groupingEntry": "Una fila por registro",
+      "help": "Reemplaza tu valor predeterminado de facturación solo en este borrador.",
+      "hide": "Ocultar",
+      "show": "Mostrar",
+      "showDate": "Fecha de trabajo",
+      "showNote": "Nota del técnico",
+      "showWorkedTime": "Tiempo trabajado vs. facturado",
+      "title": "Líneas de registro de tiempo"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} líneas bloquearán la emisión: sus registros de tiempo se facturaron en otra factura. Elimínalas antes de emitir:",
+      "billedElsewhere_one": "{{count}} línea bloqueará la emisión: su registro de tiempo se facturó en otra factura. Elimínala antes de emitir:",
+      "billedElsewhere_other": "{{count}} líneas bloquearán la emisión: sus registros de tiempo se facturaron en otra factura. Elimínalas antes de emitir:",
+      "button": "Actualizar desde registros de tiempo",
+      "drifted": "{{count}} líneas sin cambios: el tiempo facturado de sus registros ya no coincide con la cantidad. Edita la cantidad o genera un nuevo borrador.",
+      "drifted_one": "{{count}} línea sin cambios: el tiempo facturado de su registro ya no coincide con la cantidad. Edita la cantidad o genera un nuevo borrador.",
+      "drifted_other": "{{count}} líneas sin cambios: el tiempo facturado de sus registros ya no coincide con la cantidad. Edita la cantidad o genera un nuevo borrador.",
+      "error": "No se pudo actualizar desde los registros de tiempo",
+      "help": "Actualiza notas, fechas trabajadas y aprobación desde los registros de tiempo. Las cantidades, los precios y las descripciones editadas a mano nunca cambian.",
+      "running": "Actualizando…",
+      "skipped": "{{count}} líneas omitidas: sus registros de tiempo se facturaron en otra factura, se eliminaron o ya no son facturables en este borrador.",
+      "skipped_one": "{{count}} línea omitida: su registro de tiempo se facturó en otra factura, se eliminó o ya no es facturable en este borrador.",
+      "skipped_other": "{{count}} líneas omitidas: sus registros de tiempo se facturaron en otra factura, se eliminaron o ya no son facturables en este borrador.",
+      "summary": "Actualizadas: {{refreshed}} · Ya al día: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2022,6 +2115,7 @@
     "empty": "Esta factura aún no tiene ninguna partida.",
     "fallbackTitle": "Factura",
     "issued": "Emitido",
+    "laborLine": "Mano de obra",
     "preview": {
       "description": "Esto es lo que su cliente ve en su factura.",
       "downloadError": "No se pudo descargar la factura PDF.",
@@ -2118,7 +2212,9 @@
       "sourceAria": "fuente de factura",
       "title": "Nueva factura",
       "to": "A",
-      "working": "Procesando…"
+      "working": "Procesando…",
+      "heldForHourBlock_one": "{{count}} registro de tiempo ({{hours}} horas) está retenido para la bolsa de horas de esta organización y se facturará cuando se cierre el período de la bolsa.",
+      "heldForHourBlock_other": "{{count}} registros de tiempo ({{hours}} horas) están retenidos para la bolsa de horas de esta organización y se facturarán cuando se cierre el período de la bolsa."
     },
     "empty": {
       "description": "Reúna el tiempo y las piezas no facturados en un borrador o inicie una factura en blanco.",
@@ -2286,7 +2382,18 @@
       "invoiceNumberPrefix": "Prefijo del número de factura",
       "markupHelp": "Margen predeterminado sobre el costo del distribuidor, utilizado para completar previamente el precio de venta al importar artículos del catálogo. El margen bruto resultante se muestra a medida que importa.",
       "paymentTermsDays": "Condiciones de pago (días)",
-      "title": "Valores predeterminados de facturación"
+      "prefixInvalid": "Ingresa un prefijo de 1 a 12 caracteres.",
+      "taxRateInvalid": "Ingresa una tasa de impuesto de 0 a 100.",
+      "termsDaysInvalid": "Ingresa un número entero de días de 0 a 365.",
+      "title": "Valores predeterminados de facturación",
+      "lineDetailTitle": "Líneas de registro de tiempo en las facturas",
+      "lineDetailHelp": "Elige qué ven los clientes de los registros de tiempo. Un borrador de factura puede reemplazar esto; la elección se congela al emitir la factura.",
+      "lineShowDate": "Mostrar la fecha de trabajo",
+      "lineShowNote": "Mostrar la nota del técnico",
+      "lineShowWorkedTime": "Mostrar tiempo trabajado vs. facturado",
+      "lineGrouping": "Diseño",
+      "lineGroupingEntry": "Una fila por registro",
+      "lineGroupingDay": "Agrupar por día"
     },
     "loadError": "No se pudo cargar la configuración de facturación.",
     "loading": "Cargando configuración de facturación...",
@@ -2636,6 +2743,23 @@
       "schedule_inactive": "Esta factura ya no está programada para pago automático.",
       "generic": "No se pudo iniciar el pago automático. Actualiza la factura para ver su estado actual.",
       "excluded_contract": "El contrato de esta factura está excluido de los pagos automáticos, así que no se cobró. Si al cliente se le había avisado de este pago, se le envió un correo indicando que no se realizará."
+    },
+    "stepUp": {
+      "heading": "Confirme que es usted",
+      "intro": {
+        "autopay_charge_now": "Cobrar esta factura ahora requiere una verificación reciente de segundo factor.",
+        "partner_payment_settings_update": "Cambiar la configuración de pagos requiere una verificación reciente de segundo factor para estos valores exactos.",
+        "org_payment_settings_update": "Cambiar la configuración de pagos de esta organización requiere una verificación reciente de segundo factor para estos valores exactos.",
+        "autopay_request_recipient": "Enviar la solicitud de autorización a una dirección distinta del contacto de facturación requiere una verificación reciente de segundo factor."
+      },
+      "code": "Código de autenticación",
+      "passkey": "Confirmará con su clave de acceso.",
+      "noFactor": "Primero agregue una aplicación de autenticación o una clave de acceso a su cuenta.",
+      "noFactorSmsOnly": "Los códigos por mensaje de texto no pueden confirmar esta acción. Primero agregue una aplicación de autenticación o una clave de acceso a su cuenta.",
+      "enrollLink": "Configurar un segundo factor",
+      "confirm": "Confirmar",
+      "failed": "Verificación fallida. Inténtelo de nuevo.",
+      "unavailable": "No se pudo iniciar la verificación"
     }
   },
   "reminders": {

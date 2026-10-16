@@ -18,6 +18,10 @@ vi.mock('drizzle-orm', () => ({
   }),
 }));
 
+// Real monitoringActiveWatches; only the agent-config resolver is faked.
+const { resolveMonitoringConfigForDisplay } = vi.hoisted(() => ({ resolveMonitoringConfigForDisplay: vi.fn() }));
+vi.mock('../agents/helpers', () => ({ resolveMonitoringConfigForDisplay }));
+
 vi.mock('../../db', () => ({ db: { select: selectMock, selectDistinctOn: selectDistinctOnMock } }));
 
 vi.mock('../../db/schema', () => ({
@@ -82,6 +86,7 @@ describe('GET /devices/:id/tab-counts', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resolveMonitoringConfigForDisplay.mockResolvedValue(null); // unknown → unfiltered
     getDeviceWithOrgAndSiteCheckMock.mockResolvedValue(device);
     app = new Hono();
     app.route('/devices', tabCountsRoutes);
@@ -107,6 +112,22 @@ describe('GET /devices/:id/tab-counts', () => {
     });
     expect(selectMock).toHaveBeenCalledTimes(5);
     expect(selectDistinctOnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count a failing result for a watch removed from the policy (#8287)', async () => {
+    resolveMonitoringConfigForDisplay.mockResolvedValue({
+      check_interval_seconds: 60,
+      watches: [{ watch_type: 'process', name: 'Agent' }],
+    });
+    queueSelects([[{ count: '0' }], [{ count: '0' }], [{ count: '0' }], [{ count: '0' }], [{ count: '0' }]], [
+      { watchType: 'service', name: 'removed-svc', status: 'not_found' },
+      // positive control: still-configured watch (case differs) that is failing
+      { watchType: 'process', name: 'agent', status: 'not_found' },
+    ]);
+
+    const res = await app.request(`/devices/${device.id}/tab-counts`);
+    expect((await res.json()).data.monitoring).toBe(1);
+    expect(resolveMonitoringConfigForDisplay).toHaveBeenCalledWith(device.id);
   });
 
   it('counts OPEN anomaly episodes, not raw metric_anomalies rows (#6650)', async () => {

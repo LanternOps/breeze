@@ -11,6 +11,7 @@ import {
   delegatesToGuardedHelper,
   enclosingWindow,
   functionBody,
+  handlerWindow,
   matchClose,
   splitOr,
   tablesWithColumnIn,
@@ -471,10 +472,11 @@ function optionalDeviceArgTools(): { unguarded: string[]; total: number } {
         : '';
       if (/'deviceIds?'/.test(required)) continue; // the id is mandatory — not the RC2 shape
       total++;
-      // Handler window: from `handler` to the next tool definition's `name:`.
+      // Handler window: from `handler` to the next tool definition's `name:`,
+      // following a `handler: <identifier>` reference to its body (#8600).
       nameRe.lastIndex = handlerIdx;
       const next = nameRe.exec(src);
-      const window = src.slice(handlerIdx, next ? next.index : src.length);
+      const window = handlerWindow(src, handlerIdx, next ? next.index : src.length);
       nameRe.lastIndex = handlerIdx;
       if (namesDeviceAxis(window) || delegatesToGuardedHelper(window, helpers)) continue;
       unguarded.push(`${file}:${m[1]!}`);

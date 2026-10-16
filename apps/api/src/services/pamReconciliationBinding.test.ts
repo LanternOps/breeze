@@ -4,12 +4,12 @@ const mocks = vi.hoisted(() => ({ execute: vi.fn() }));
 
 vi.mock('../db', () => ({ db: { execute: mocks.execute } }));
 
-import { resolvePamReconciliationBindings } from './pamReconciliationBinding';
+import { resolvePamReconciliationBindings, toV1Disposition } from './pamReconciliationBinding';
 
 const input = {
   agentId: 'agent-primary',
   deviceId: '10000000-0000-4000-8000-000000000001',
-  orgId: '10000000-0000-4000-8000-000000000002',
+  protocolVersion: 2,
   candidates: [
     {
       observationId: '20000000-0000-4000-8000-000000000001',
@@ -104,6 +104,56 @@ describe('resolvePamReconciliationBindings', () => {
       status: 'unresolved',
       observationId: candidate.observationId,
     })));
+  });
+
+  // PAM ownership epochs W3 (#8205).
+  it('passes retired through on v2 and maps it to stale on v1', async () => {
+    const rows = input.candidates.map((candidate, index) => ({
+      ordinal: index + 1,
+      observation_id: candidate.observationId,
+      status: index === 0 ? 'retired' : 'unresolved',
+      command_id: null,
+    }));
+    mocks.execute.mockResolvedValue({ rows });
+
+    const v2 = await resolvePamReconciliationBindings({ ...input, protocolVersion: 2 });
+    expect(v2[0]).toEqual({ status: 'retired', observationId: input.candidates[0].observationId });
+
+    const v1 = await resolvePamReconciliationBindings({ ...input, protocolVersion: 1 });
+    expect(v1[0]).toEqual({ status: 'stale', observationId: input.candidates[0].observationId });
+    expect(v1.map((item) => item.status)).not.toContain('retired');
+  });
+
+  it('fails the whole batch closed when a retired row carries a command id', async () => {
+    mocks.execute.mockResolvedValue({
+      rows: input.candidates.map((candidate, index) => ({
+        ordinal: index + 1,
+        observation_id: candidate.observationId,
+        status: index === 0 ? 'retired' : 'unresolved',
+        command_id: index === 0 ? '40000000-0000-4000-8000-000000000001' : null,
+      })),
+    });
+    const result = await resolvePamReconciliationBindings(input);
+    expect(result.every((item) => item.status === 'unresolved')).toBe(true);
+  });
+
+  it('calls only the lineage definer function', async () => {
+    mocks.execute.mockResolvedValue({ rows: [] });
+    await resolvePamReconciliationBindings(input);
+    const query = mocks.execute.mock.calls[0]![0] as { queryChunks?: Array<{ value?: string[] }> };
+    const text = (query.queryChunks ?? []).flatMap((chunk) => chunk.value ?? []).join('');
+    expect(text).toContain('public.breeze_pam_epoch_binding(');
+    expect(text).not.toContain('JOIN devices');
+  });
+
+  it('toV1Disposition leaves every v1 disposition unchanged', () => {
+    const observationId = input.candidates[0].observationId;
+    const bound = { status: 'bound' as const, observationId, commandId: '40000000-0000-4000-8000-000000000001' };
+    expect(toV1Disposition(bound)).toBe(bound);
+    for (const status of ['duplicate', 'stale', 'unresolved'] as const) {
+      expect(toV1Disposition({ status, observationId })).toEqual({ status, observationId });
+    }
+    expect(toV1Disposition({ status: 'retired', observationId })).toEqual({ status: 'stale', observationId });
   });
 
   it('performs no database read for an empty internal batch', async () => {

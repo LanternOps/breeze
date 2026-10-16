@@ -9,6 +9,8 @@ vi.mock('../../db', () => ({
   // ambient context is held when the route consults it.
   hasDbAccessContext: () => false,
   runAfterDbContextExit: (_label: string, work: () => unknown) => { work(); },
+  // W05 (#8144): cluster caches publish their invalidation after commit.
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
 }));
 vi.mock('../../services/topology/flags', () => ({
   loadTopologyFlags: vi.fn(async () => { order.push('flags:loaded'); return { materialization: true }; }),

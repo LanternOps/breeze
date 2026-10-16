@@ -10,24 +10,37 @@ import {
   formatDate,
   formatMoney,
   lineTaxAmount,
-  lineTitle,
-  lineBlurb,
   lineWorkedVsBilledNote,
   pctFromFraction,
   sellerLines,
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
+import {
+  DEFAULT_INVOICE_LINE_DETAIL,
+  formatWorkDate,
+  groupLinesByDay,
+  invoiceLineText,
+  lineWorkDateToShow,
+  type InvoiceLineDetail,
+} from '@breeze/shared';
 
-function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean }) {
-  const { t } = useTranslation();
+function LineRow({ line, currency, taxRate, showTax, lineDetail }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean; lineDetail: InvoiceLineDetail }) {
+  const { t, i18n } = useTranslation();
   const child = !!line.parentLineId;
   const tax = showTax ? lineTaxAmount(line.lineTotal, line.taxable, taxRate) : null;
-  const workedVsBilledNote = lineWorkedVsBilledNote(line, t);
+  const workedVsBilledNote = lineDetail.showWorkedTime ? lineWorkedVsBilledNote(line, t) : null;
+  const text = invoiceLineText(line, lineDetail);
+  const workDate = lineWorkDateToShow(line, lineDetail);
   return (
     <tr className="border-b align-top last:border-0">
       <td className={`px-4 py-3 sm:px-5 ${child ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
-        <span className={child ? '' : 'font-medium'}>{child ? <span aria-hidden="true">↳ </span> : ''}{lineTitle(line)}</span>
-        {lineBlurb(line) && <p className="mt-0.5 text-xs text-muted-foreground">{lineBlurb(line)}</p>}
+        <span className={child ? '' : 'font-medium'}>{child ? <span aria-hidden="true">↳ </span> : ''}{text.title ?? t('billing:invoiceDocument.laborLine')}</span>
+        {workDate && (
+          <p className="mt-0.5 text-xs text-muted-foreground" data-testid={`invoice-document-line-date-${line.id}`}>
+            {formatWorkDate(workDate, i18n.language)}
+          </p>
+        )}
+        {text.blurb && <p className="mt-0.5 text-xs text-muted-foreground">{text.blurb}</p>}
         {/* #6467: worked-vs-billed disclosure, sourced from workedMinutes — never
             from `description`, so editing the description can't erase it. */}
         {workedVsBilledNote && (
@@ -57,7 +70,7 @@ interface DocumentProps {
  *  using the seller snapshot and the app accent. The sibling of QuoteDocument;
  *  works for drafts without a portal round-trip. */
 export function InvoiceDocument({ detail, customerName }: DocumentProps) {
-  const { t } = useTranslation('billing');
+  const { t, i18n } = useTranslation('billing');
   const { invoice, lines, branding } = detail;
   const currency = branding?.currencyCode ?? invoice.currencyCode;
   const seller = branding?.seller ?? invoice.sellerSnapshot;
@@ -97,6 +110,7 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
     }
     return list;
   }, [visibleLines]);
+  const lineDetail = detail.lineDetail ?? DEFAULT_INVOICE_LINE_DETAIL;
   const isEmpty = visibleLines.length === 0;
   const invoiceStatusLabel = invoice.status === 'sent' && !invoice.sentAt
     ? t('invoice.status.issued')
@@ -216,8 +230,24 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
                           </td>
                         </tr>
                       )}
-                      {group.lines.map((l) => (
-                        <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} />
+                      {(lineDetail.grouping === 'day' && lineDetail.showDate
+                        ? groupLinesByDay(group.lines)
+                        : [{ workDate: null, lines: group.lines, hours: '', total: '' }]
+                      ).map((bucket) => (
+                        <Fragment key={bucket.workDate ?? '__undated__'}>
+                          {bucket.workDate && (
+                            <tr className="border-b bg-muted/10" data-testid={`invoice-document-day-${bucket.workDate}`}>
+                              <td className="px-4 py-2 text-xs font-semibold text-foreground sm:px-5">{formatWorkDate(bucket.workDate, i18n.language)}</td>
+                              <td className="whitespace-nowrap px-2 py-2 text-right text-xs tabular-nums text-muted-foreground">{String(Number(bucket.hours))}</td>
+                              <td />
+                              {showTax && <td />}
+                              <td className="whitespace-nowrap px-4 py-2 text-right text-xs font-semibold tabular-nums text-foreground sm:px-5">{formatMoney(bucket.total, currency)}</td>
+                            </tr>
+                          )}
+                          {bucket.lines.map((l) => (
+                            <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} lineDetail={lineDetail} />
+                          ))}
+                        </Fragment>
                       ))}
                     </Fragment>
                   ))}

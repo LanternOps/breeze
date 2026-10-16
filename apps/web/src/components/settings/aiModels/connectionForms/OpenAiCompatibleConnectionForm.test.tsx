@@ -136,14 +136,15 @@ describe('OpenAI-compatible connection (edit)', () => {
     expect((screen.getByTestId('ai-connection-save') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('a failed save surfaces the error and keeps the drawer open', async () => {
+  it('a failed save surfaces the error on Base URL and keeps the drawer open (#7803)', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'Blocked by policy', code: 'egress_blocked' }, 400));
     const onClose = vi.fn();
     render(<ConnectionDrawer connection={GATEWAY_CONNECTION} catalog={[]} catalogEnabled={false} onClose={onClose} onSaved={noop} />);
     fill('ai-connection-openai-base-url', 'http://169.254.169.254/v1');
     fireEvent.click(screen.getByTestId('ai-connection-openai-remove-key'));
     fireEvent.click(screen.getByTestId('ai-connection-save'));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect((await screen.findByTestId('ai-connection-openai-base-url-error')).textContent).toBe('Blocked by policy');
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
     expect(onClose).not.toHaveBeenCalled();
   });
 
