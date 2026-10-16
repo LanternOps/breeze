@@ -72,6 +72,7 @@ import { handleInstallPatchesResult } from './patchJobFinalizer';
 // #6354 W02: caller verification's workstation tier. Both transports reach
 // this one leaf handler; it decides nothing itself (W01 applyDecision does).
 import { handleCallerVerifyResult } from './callerVerification/workstationResult';
+import { handleNotifyUserResult } from './endpointMessaging/commandResults';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -1251,4 +1252,6 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   filesystem_analysis: handleFilesystemAnalysisResult,
   file_delete: handleFileDeleteResult,
   caller_verify: handleCallerVerifyResult,
+  // #8742 W02: endpoint-message deliveries follow their notify_user result.
+  notify_user: handleNotifyUserResult,
 };
