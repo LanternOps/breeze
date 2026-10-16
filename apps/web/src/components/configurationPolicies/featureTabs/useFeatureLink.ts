@@ -49,6 +49,12 @@ export function useFeatureLink(policyId: string) {
             if (code === 'APPROVAL_RULES_MOVED_TO_RING') {
               return i18n.t('policies:configurationPolicies.featureTabs.patchTab.approvalRulesMovedToRing');
             }
+            // #8678: repointing a link off a missing / deleted ring onto one
+            // that lacks the link's legacy app rules (the Patch tab's repair
+            // flow) — reloading would not help, the chosen ring needs the rules.
+            if (code === 'RING_LACKS_POLICY_APP_RULES') {
+              return i18n.t('policies:configurationPolicies.featureTabs.patchTab.ringLacksPolicyAppRules');
+            }
             return undefined;
           },
           successMessage: i18n.t('common:states.saved'),

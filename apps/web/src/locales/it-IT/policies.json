@@ -885,7 +885,8 @@
         "ringInvalidTitle": "L'anello di aggiornamento collegato non è più disponibile.",
         "ringInvalidBody": "Le patch di questo criterio restano in attesa finché non scegli un anello e salvi.",
         "ringInvalidLegacyRules": "Questo criterio contiene ancora regole delle applicazioni precedenti al loro spostamento negli anelli ({{rules}}). L'anello scelto deve già avere esattamente queste regole: aggiungile prima lì.",
-        "approvalRulesMovedToRing": "L'approvazione automatica e le regole delle applicazioni ora si impostano nell'anello di aggiornamento. Modificale nell'anello collegato. Se questa pagina era aperta prima dell'aggiornamento, ricaricala e salva di nuovo."
+        "approvalRulesMovedToRing": "L'approvazione automatica e le regole delle applicazioni ora si impostano nell'anello di aggiornamento. Modificale nell'anello collegato. Se questa pagina era aperta prima dell'aggiornamento, ricaricala e salva di nuovo.",
+        "ringLacksPolicyAppRules": "L'anello di aggiornamento scelto non ha le regole delle applicazioni di questo criterio. Aggiungi prima esattamente queste regole a quell'anello oppure scegli un anello che le abbia già."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Collega criterio periferiche",

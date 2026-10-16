@@ -885,7 +885,8 @@
         "ringInvalidTitle": "L'anneau de mise à jour lié n'est plus disponible.",
         "ringInvalidBody": "Les correctifs de cette politique sont retenus jusqu'à ce que vous choisissiez un anneau et enregistriez.",
         "ringInvalidLegacyRules": "Cette politique contient encore des règles d'application d'avant leur transfert vers les anneaux ({{rules}}). L'anneau choisi doit déjà avoir exactement ces règles — ajoutez-les-y d'abord.",
-        "approvalRulesMovedToRing": "L'approbation automatique et les règles d'application se configurent maintenant dans l'anneau de mise à jour. Modifiez-les dans l'anneau lié. Si cette page était ouverte avant la mise à jour, rechargez-la et enregistrez de nouveau."
+        "approvalRulesMovedToRing": "L'approbation automatique et les règles d'application se configurent maintenant dans l'anneau de mise à jour. Modifiez-les dans l'anneau lié. Si cette page était ouverte avant la mise à jour, rechargez-la et enregistrez de nouveau.",
+        "ringLacksPolicyAppRules": "L'anneau de mise à jour choisi n'a pas les règles d'application de cette politique. Ajoutez d'abord exactement ces règles à cet anneau, ou choisissez un anneau qui les a déjà."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Politique de périphériques de lien",

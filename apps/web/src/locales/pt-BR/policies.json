@@ -885,7 +885,8 @@
         "ringInvalidTitle": "O anel de atualização vinculado não está mais disponível.",
         "ringInvalidBody": "Os patches desta política ficam retidos até você escolher um anel e salvar.",
         "ringInvalidLegacyRules": "Esta política ainda tem regras de aplicativo de antes de elas passarem para os anéis ({{rules}}). O anel escolhido já deve ter exatamente essas regras — adicione-as a ele primeiro.",
-        "approvalRulesMovedToRing": "A aprovação automática e as regras de aplicativo agora são definidas no anel de atualização. Edite-as no anel vinculado. Se esta página estava aberta antes da atualização, recarregue-a e salve novamente."
+        "approvalRulesMovedToRing": "A aprovação automática e as regras de aplicativo agora são definidas no anel de atualização. Edite-as no anel vinculado. Se esta página estava aberta antes da atualização, recarregue-a e salve novamente.",
+        "ringLacksPolicyAppRules": "O anel de atualização escolhido não tem as regras de aplicativo desta política. Adicione primeiro exatamente essas regras a esse anel ou escolha um anel que já as tenha."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Vincular política de periféricos",

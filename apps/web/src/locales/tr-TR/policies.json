@@ -885,7 +885,8 @@
         "ringInvalidTitle": "Bağlantılı Güncelleme Halkası artık kullanılamıyor.",
         "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir.",
         "ringInvalidLegacyRules": "Bu ilke, kurallar halkalara taşınmadan önceki uygulama kurallarını hâlâ taşıyor ({{rules}}). Seçtiğiniz halkada bu kuralların tam olarak aynısı zaten bulunmalı — önce onları halkaya ekleyin.",
-        "approvalRulesMovedToRing": "Otomatik onay ve uygulama kuralları artık Güncelleme Halkasında ayarlanıyor. Bunları bağlantılı halkada düzenleyin. Bu sayfa güncellemeden önce açıksa yeniden yükleyip tekrar kaydedin."
+        "approvalRulesMovedToRing": "Otomatik onay ve uygulama kuralları artık Güncelleme Halkasında ayarlanıyor. Bunları bağlantılı halkada düzenleyin. Bu sayfa güncellemeden önce açıksa yeniden yükleyip tekrar kaydedin.",
+        "ringLacksPolicyAppRules": "Seçtiğiniz Güncelleme Halkası bu ilkenin uygulama kurallarına sahip değil. Önce bu kuralların tam olarak aynısını o halkaya ekleyin veya bunlara zaten sahip bir halka seçin."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Bağlantı Çevre Birimi Politikası",

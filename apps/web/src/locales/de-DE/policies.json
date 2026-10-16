@@ -885,7 +885,8 @@
         "ringInvalidTitle": "Der verknüpfte Update-Ring ist nicht mehr verfügbar.",
         "ringInvalidBody": "Patches für diese Richtlinie werden zurückgehalten, bis Sie einen Ring auswählen und speichern.",
         "ringInvalidLegacyRules": "Diese Richtlinie enthält noch Anwendungsregeln aus der Zeit vor der Verlagerung in Ringe ({{rules}}). Der gewählte Ring muss bereits genau diese Regeln enthalten – fügen Sie sie zuerst dort hinzu.",
-        "approvalRulesMovedToRing": "Automatische Genehmigung und Anwendungsregeln werden jetzt im Update-Ring festgelegt. Bearbeiten Sie sie im verknüpften Ring. War diese Seite schon vor dem Update geöffnet, laden Sie sie neu und speichern Sie erneut."
+        "approvalRulesMovedToRing": "Automatische Genehmigung und Anwendungsregeln werden jetzt im Update-Ring festgelegt. Bearbeiten Sie sie im verknüpften Ring. War diese Seite schon vor dem Update geöffnet, laden Sie sie neu und speichern Sie erneut.",
+        "ringLacksPolicyAppRules": "Der gewählte Update-Ring enthält die Anwendungsregeln dieser Richtlinie nicht. Fügen Sie genau diese Regeln zuerst diesem Ring hinzu oder wählen Sie einen Ring, der sie bereits enthält."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link-Peripherierichtlinie",

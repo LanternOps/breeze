@@ -23,6 +23,9 @@ import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 export type PatchInlineSettings = z.infer<typeof patchInlineSettingsSchema>;
 export type PatchReferenceClassification =
   | 'valid_ring'
+  // A ring row that is disabled: `DELETE /update-rings/:id` is a soft delete
+  // (enabled = false), and PATCH can switch `enabled` off (#8678).
+  | 'disabled_ring'
   | 'legacy_patch_policy'
   | 'config_policy_uuid'
   | 'missing_target'
@@ -263,17 +266,40 @@ export function normalizeStoredInlineSettingsWithSalvage(
 }
 
 /**
+ * Why a patch link write was refused for touching ring-owned approval config:
+ *  - `APPROVAL_RULES_MOVED_TO_RING` — the write edits the per-app `apps`
+ *    rules or switches policy-level `autoApprove` on (#8186), most often a
+ *    client loaded before the cutover.
+ *  - `RING_LACKS_POLICY_APP_RULES` — the link is being repointed off a ring
+ *    reference that does not resolve (missing, or a deleted ring, #8678) while
+ *    it still carries legacy app rules no ring enforces, and the chosen ring
+ *    does not enforce exactly those rules (#8678).
+ */
+export type PolicyApprovalFieldMovedCode =
+  | 'APPROVAL_RULES_MOVED_TO_RING'
+  | 'RING_LACKS_POLICY_APP_RULES';
+
+const POLICY_APPROVAL_FIELD_MOVED_MESSAGES: Record<PolicyApprovalFieldMovedCode, string> = {
+  APPROVAL_RULES_MOVED_TO_RING:
+    'Approval and application rules are configured on the Update Ring linked to this policy.',
+  RING_LACKS_POLICY_APP_RULES:
+    'This policy still carries application rules that no Update Ring enforces. ' +
+    'Link an Update Ring that already has exactly these rules.',
+};
+
+/**
  * A configuration-policy patch write tried to change approval config that now
- * lives on the Update Ring (#8186): the per-app `apps` rules, or switching
- * policy-level `autoApprove` on. Routes map it to a 400 with `code`.
+ * lives on the Update Ring (#8186). Routes map it to a 400 with `code`; see
+ * `PolicyApprovalFieldMovedCode` for the two cases.
  */
 export class PolicyApprovalFieldMovedError extends Error {
   readonly status = 400 as const;
-  readonly code = 'APPROVAL_RULES_MOVED_TO_RING' as const;
+  readonly code: PolicyApprovalFieldMovedCode;
 
-  constructor() {
-    super('Approval and application rules are configured on the Update Ring linked to this policy.');
+  constructor(code: PolicyApprovalFieldMovedCode = 'APPROVAL_RULES_MOVED_TO_RING') {
+    super(POLICY_APPROVAL_FIELD_MOVED_MESSAGES[code]);
     this.name = 'PolicyApprovalFieldMovedError';
+    this.code = code;
   }
 }
 
@@ -470,6 +496,7 @@ export async function resolvePatchPolicyReference(
         id: patchPolicies.id,
         kind: patchPolicies.kind,
         name: patchPolicies.name,
+        enabled: patchPolicies.enabled,
         categoryRules: patchPolicies.categoryRules,
         categories: patchPolicies.categories,
         excludeCategories: patchPolicies.excludeCategories,
@@ -483,6 +510,15 @@ export async function resolvePatchPolicyReference(
 
   if (patchPolicy) {
     if (patchPolicy.kind === 'ring') {
+      // #8678: a disabled (soft-deleted) ring is gone as far as the ring list
+      // and picker are concerned, so it must not keep gating or releasing
+      // patches here either. It is an invalid reference like any other:
+      // the scheduler skips the policy, manual jobs are refused and device
+      // evaluation denies every candidate, until the link is repointed or
+      // the ring is re-enabled. Anything but an explicit `true` fails closed.
+      if (patchPolicy.enabled !== true) {
+        return noRingResolution('disabled_ring', false);
+      }
       return {
         classification: 'valid_ring',
         valid: true,
@@ -702,10 +738,10 @@ async function buildPatchInventory(conditions: SQL[]): Promise<PatchInventoryRow
       : 'missing_target';
     const inlineSettingsValid = patchInlineSettingsSchema.safeParse(row.storedInlineSettings ?? {}).success;
     const normalizedSettingsPresent = Boolean(row.patchSettingsId);
+    // Every classification except a usable ring or no ring at all is a broken
+    // reference the editor must repoint.
     const effectiveStatus: PatchEffectiveStatus =
-      classification === 'legacy_patch_policy' ||
-      classification === 'config_policy_uuid' ||
-      classification === 'missing_target'
+      classification !== 'valid_ring' && classification !== 'null'
         ? 'invalid_reference'
         : normalizedSettingsPresent && inlineSettingsValid
           ? 'ok'
