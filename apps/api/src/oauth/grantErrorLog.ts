@@ -70,11 +70,13 @@ function tokenHash(raw: string | null): string | null {
 type GrantErrorContext = {
   grant_type: string | null;
   client_id: string | null;
+  /** true only when client_id came from the provider's authenticated client; false = raw request-body fallback. */
+  client_resolved: boolean;
   token_hash: string | null;
   user_agent: string | null;
 };
 
-const EMPTY_CONTEXT: GrantErrorContext = { grant_type: null, client_id: null, token_hash: null, user_agent: null };
+const EMPTY_CONTEXT: GrantErrorContext = { grant_type: null, client_id: null, client_resolved: false, token_hash: null, user_agent: null };
 
 /**
  * Attribution fields for a token-endpoint failure. Never includes a raw token.
@@ -100,9 +102,11 @@ function readGrantErrorContext(ctx: unknown): GrantErrorContext {
   } catch {
     userAgent = null;
   }
+  const resolvedClientId = capped(c.oidc?.client?.clientId);
   return {
     grant_type: grantType,
-    client_id: capped(c.oidc?.client?.clientId) ?? capped(params.client_id),
+    client_id: resolvedClientId ?? capped(params.client_id),
+    client_resolved: resolvedClientId !== null,
     token_hash: tokenHash(presented),
     user_agent: userAgent,
   };
@@ -136,7 +140,7 @@ export function createGrantErrorLogger(opts: {
       return;
     }
 
-    const key = `${context.client_id ?? '-'}|${context.error ?? '-'}|${context.detail ?? '-'}`;
+    const key = `${context.client_id ?? '-'}|${context.client_resolved ? 1 : 0}|${context.error ?? '-'}|${context.detail ?? '-'}`;
     const at = now();
     const current = windows.get(key);
     if (current && at - current.startedAt < windowMs) {

@@ -159,7 +159,7 @@ describe('grant.error logger', () => {
 
   it('never throws from a hostile context', () => {
     const hostile = { get oidc() { throw new Error('not initialised'); } };
-    expect(grantErrorContext(hostile)).toEqual({ grant_type: null, client_id: null, token_hash: null, user_agent: null });
+    expect(grantErrorContext(hostile)).toEqual({ grant_type: null, client_id: null, client_resolved: false, token_hash: null, user_agent: null });
     const log = createGrantErrorLogger({ now: () => now });
     expect(() => log(hostile, invalidGrant())).not.toThrow();
   });
