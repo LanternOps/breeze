@@ -257,7 +257,7 @@ The agent is **plain-first**. Nothing changes on a network that does not interfe
 - Three consecutive ECH failures put ECH on a one-hour cooldown (plain only). Mode is kept in memory, so a restart starts plain.
 - `enroll`, `bootstrap` and `support` retry with ECH on the first signature, so a first-run enrollment on a filtered network can succeed.
 
-**How to tell:** the `control_plane` health component shows `warning` with the reason "control plane blocked by a network security filter" means the agent saw the signature; `healthy` with "reachable via encrypted client hello" means ECH is carrying the connection. Heartbeats also carry `echActive` and `filterSignatureSeenAt`.
+**How to tell:** the `control_plane` health component shows `warning` with the reason "control plane blocked by a network security filter" when the agent has seen the signature, and `healthy` with "reachable via encrypted client hello" when ECH is carrying the connection. Heartbeats also carry `echActive` and `filterSignatureSeenAt`.
 
 **Opt out locally** by adding `ech: false` to `agent.yaml` and restarting the agent.
 
