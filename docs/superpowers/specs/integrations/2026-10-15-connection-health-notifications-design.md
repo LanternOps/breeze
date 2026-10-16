@@ -263,7 +263,7 @@ A row left in `claimed` for over an hour is marked `failed`, not resent. The mod
 
 | Kind | Owner | broken when | permanent? | fix href | view / repair permission | Wave |
 |---|---|---|---|---|---|---|
-| `oauth_grant` | user (owner) + partner | grant revoked with an automatic reason (`refresh-token-reuse`, `provider-revoke-grant`) and no later active grant for the same (account, client) | yes | `/account/connected-apps` (owner); `/settings/connected-apps` (admins) | `connected_apps:read` / `connected_apps:manage` | W1 |
+| `oauth_grant` | user (owner) + partner | the pair's latest automatic revoke (`refresh-token-reuse`, `revoked_by_user_id IS NULL`, within 30 days) has no grant for the same (account, client) created after it; see **OAuth detail** | yes | `/account/connected-apps` (owner); `/settings/connected-apps` (admins) | `connected_apps:read` / `connected_apps:manage` | W1 |
 | `huntress`, `sentinelone`, `pax8` | partner | `is_active` and `last_sync_status` in (`error`,`failed`) | no | `/integrations#<kind>` | `organizations:read` / `organizations:write` | W2 |
 | `unifi`, `backup_provider`, `edr` | partner | `status` in (`reauth_required`,`error`) or last sync failed | reauth = yes | `/integrations#unifi` / `#backup` / `#edr` | backup: `backup:read`/`backup:write`; others `organizations:*` | W2 |
 | `accounting` | partner | `status` in (`reauth_required`,`disconnected`,`error`) | reauth = yes | `/integrations#quickbooks` / `#xero` | `accounting:read` / `billing:manage` | W2 |
@@ -280,7 +280,18 @@ A row left in `claimed` for over an hour is marked `failed`, not resent. The mod
 
 **Backup recovery trap.** `jobs/backupProviderSync.ts:229` clears the error when a retry starts. The backup adapter therefore reports `unknown` while a sync is running, and `healthy` only after `last_sync_status = 'success'`.
 
-**OAuth detail.** Deliberate revocations are `retired`, never `broken`: they set `revoked_by_user_id`, or come from a partner disconnect or the tenant lifecycle. A grant incident resolves when the owner re-consents and a new active grant for the same client exists [Q]. It retires after 30 days with no replacement, because an app the user abandoned shouldn't nag forever. In W4, a Redis per-client daily counter of `refresh token not found` from the `grant.error` logger (`oauth/grantErrorLog.ts`) adds "this app is still retrying N times a day" to the detail. W1 does not depend on it.
+**OAuth detail.** Deliberate revocations are `retired`, never `broken`: they set `revoked_by_user_id`, or come from a partner disconnect or the tenant lifecycle. Only `refresh-token-reuse` counts as automatic. `provider-revoke-grant` does not, because oidc-provider's default `revokeGrantPolicy` also writes it for deliberate RP-initiated revocation and `end_session`, so it cannot tell a logout from a break.
+
+Classification runs per (account, client) pair, over grants with `partner_id IS NOT NULL` only. Let E be the pair's latest automatic revoke (reason `refresh-token-reuse`, `revoked_by_user_id IS NULL`, `revoked_at` within 30 days), ordered by `revoked_at`, then `created_at`, then `id`, so ties are deterministic.
+- E exists and the client is disabled → `retired`.
+- E exists → look only at grants created after `E.revoked_at`. If any is active (`revoked_at IS NULL AND expires_at > now`), the pair is `healthy`. If some exist but none is active (re-consent, then a deliberate revoke or expiry), it is `retired`. If none exists, it is `broken` / permanent, condition `grant_revoked_reuse`.
+- No E → an active grant means `healthy`, otherwise `retired`.
+
+So an older install that is still active never hides a newer install that is dead. Only a grant created after the break counts as the fix.
+
+*Deferred to W4:* detecting authorization-code replay. It needs a distinct revocation reason, which means changing `revokeGrantPolicy` on the auth surface, and that change gets its own review.
+
+A grant incident resolves when the owner re-consents and a new active grant for the same client exists [Q]. It retires after 30 days with no replacement, because an app the user abandoned shouldn't nag forever. In W4, a Redis per-client daily counter of `refresh token not found` from the `grant.error` logger (`oauth/grantErrorLog.ts`) adds "this app is still retrying N times a day" to the detail. W1 does not depend on it.
 
 ## 4. Recipients and noise
 

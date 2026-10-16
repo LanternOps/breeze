@@ -73,8 +73,9 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- OAuth source (W1): automatically revoked grants, newest first. Keeps the
--- broken-set query index-backed (spec §1.3) as oauth_grants grows.
+-- OAuth source (W1): grants revoked automatically for refresh-token reuse.
+-- Keeps the broken-set query index-backed (spec §1.3) as oauth_grants grows.
+-- provider-revoke-grant is excluded: deliberate RP revocation writes it too.
 CREATE INDEX IF NOT EXISTS oauth_grants_auto_revoked_idx
   ON public.oauth_grants (revoked_at)
-  WHERE revoked_reason IN ('refresh-token-reuse','provider-revoke-grant') AND revoked_by_user_id IS NULL;
+  WHERE revoked_reason = 'refresh-token-reuse' AND revoked_by_user_id IS NULL;

@@ -146,7 +146,7 @@ describe('runReconcile (end to end)', () => {
     expect(await noticesFor([u1, o1])).toHaveLength(0);
     expect(await redis.get(SEEDED_KEY)).toBe('1');
 
-    await seedGrant({ clientId: `client-${randomUUID()}`, revokedAt: daysAgo(0.5), revokedReason: 'provider-revoke-grant' });
+    await seedGrant({ clientId: `client-${randomUUID()}`, revokedAt: daysAgo(0.5), revokedReason: 'refresh-token-reuse' });
     const second = await reconcile(plusMin(T0, 15));
     expect(second.kinds[0]).toMatchObject({ status: 'ok', opened: 1 });
     expect(await incidents()).toHaveLength(2);

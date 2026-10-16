@@ -29,7 +29,7 @@ wave: W01 (#8845)
 - The reconciler runs on pattern `2,17,32,47 * * * *` with stable jobId `connection-health-reconcile`, at concurrency 1, with placement `global`.
 - Per kind it uses `statement_timeout` 5s via `tightenStatementTimeout`. The whole run has a 60s budget.
 - Transient incidents open on the **second consecutive** broken observation. Permanent ones open immediately. Resolution takes **2 consecutive** healthy observations. The reopen window is **60 minutes**.
-- OAuth: automatic reasons are exactly `refresh-token-reuse` and `provider-revoke-grant` with `revoked_by_user_id IS NULL`. The lookback is **30 days**.
+- OAuth: the only automatic reason is `refresh-token-reuse` with `revoked_by_user_id IS NULL` (amended in the final fix wave: `provider-revoke-grant` is also written by deliberate RP revocation and end_session; code-replay detection is deferred to W4). The lookback is **30 days**. Classification follows spec §3 **OAuth detail** (latest automatic revoke E; only grants created after E count).
 - Notice dedupe keys are `connection-health:<incidentId>:<openedAtEpochMs>` and `connection-health:<incidentId>:<openedAtEpochMs>:permanent`.
 - No customer, host or infrastructure names in code or docs (public repo).
 - All writes to `connection_health_incidents` happen in system scope from the reconciler. The route is GET-only.
@@ -637,7 +637,7 @@ END $$;
 -- broken-set query index-backed (spec §1.3) as oauth_grants grows.
 CREATE INDEX IF NOT EXISTS oauth_grants_auto_revoked_idx
   ON public.oauth_grants (revoked_at)
-  WHERE revoked_reason IN ('refresh-token-reuse','provider-revoke-grant') AND revoked_by_user_id IS NULL;
+  WHERE revoked_reason = 'refresh-token-reuse' AND revoked_by_user_id IS NULL;
 ```
 
 - [ ] **Step 4: Drizzle model**
@@ -1286,7 +1286,9 @@ git commit -m "feat(connection-health): durable notice outbox and delivery (#884
   - `cleanDisplayName(raw: unknown, fallback: string): string`.
 
 **Semantics (spec §3):**
-- **broken / permanent:** the newest grant for an (account, client) pair was revoked within 30 days with reason `refresh-token-reuse` (condition `grant_revoked_reuse`) or `provider-revoke-grant` (condition `grant_revoked_code_replay`), with `revoked_by_user_id IS NULL` and `partner_id IS NOT NULL`. No active grant exists for the pair (one with `revoked_at IS NULL AND expires_at > now`), and the client isn't disabled.
+> **Amended in the final fix wave.** The rule below and the code in this task are superseded by spec §3 **OAuth detail** and by `sources/oauthGrant.ts`: only `refresh-token-reuse` is automatic, and a pair is broken when no partner-attributed grant was created after its latest automatic revoke E (an older active grant no longer hides it).
+
+- **broken / permanent (original, superseded):** the newest grant for an (account, client) pair was revoked within 30 days with reason `refresh-token-reuse` (condition `grant_revoked_reuse`) or `provider-revoke-grant` (condition `grant_revoked_code_replay`), with `revoked_by_user_id IS NULL` and `partner_id IS NOT NULL`. No active grant exists for the pair (one with `revoked_at IS NULL AND expires_at > now`), and the client isn't disabled.
 - **healthy:** an active grant exists for a tracked pair.
 - **retired:** a tracked pair whose newest grant is deliberately revoked, older than 30 days, expired with no replacement, gone, or whose client is disabled.
 - **Fixed fields:**
