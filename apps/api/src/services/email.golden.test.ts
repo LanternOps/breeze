@@ -58,6 +58,8 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'account.deletion_requested', params: { ...MESSAGE, purpose: 'account.deletion_requested' }, expectedFrom: DEFAULT_FROM },
   { name: 'account.deletion_declined', params: { ...MESSAGE, purpose: 'account.deletion_declined' }, expectedFrom: DEFAULT_FROM },
   { name: 'account.purge_warning', params: { ...MESSAGE, purpose: 'account.purge_warning' }, expectedFrom: DEFAULT_FROM },
+  { name: 'account.trust_review_received', params: { ...MESSAGE, purpose: 'account.trust_review_received' }, expectedFrom: DEFAULT_FROM },
+  { name: 'account.trust_approved', params: { ...MESSAGE, purpose: 'account.trust_approved' }, expectedFrom: DEFAULT_FROM },
   { name: 'ops.alert', params: { ...MESSAGE, purpose: 'ops.alert' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.ai_budget_alert', params: { ...MESSAGE, purpose: 'staff.ai_budget_alert' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.autopay', params: { ...MESSAGE, purpose: 'staff.autopay' }, expectedFrom: DEFAULT_FROM },

@@ -57,6 +57,13 @@ export const MAIL_PURPOSES = {
   'account.deletion_requested': { lane: 'platform' },
   'account.deletion_declined': { lane: 'platform' },
   'account.purge_warning': { lane: 'platform' },
+  // #8713. Breeze → the partner's own admins about the partner's trust
+  // review: the request was received, or the partner is now trusted. Platform
+  // lane: account mail to the partner's staff must not depend on, or appear to
+  // come from, a partner sending domain. Send site:
+  // services/partnerTrustPartnerMail.ts.
+  'account.trust_review_received': { lane: 'platform' },
+  'account.trust_approved': { lane: 'platform' },
 
   // ---- platform lane: operations and MSP staff notices --------------------
   'ops.alert': { lane: 'platform' },

@@ -47,6 +47,8 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'account.deletion_requested': { lane: 'platform' },
       'account.deletion_declined': { lane: 'platform' },
       'account.purge_warning': { lane: 'platform' },
+      'account.trust_review_received': { lane: 'platform' },
+      'account.trust_approved': { lane: 'platform' },
       'ops.alert': { lane: 'platform' },
       'staff.ai_budget_alert': { lane: 'platform' },
       'staff.autopay': { lane: 'platform' },
