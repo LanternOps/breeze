@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { isPgUniqueViolation, isTransientLockError, pgErrorCode, retryOnTransientLockError } from './pgErrors';
+import { isPgDataException, isPgUniqueViolation, isTransientLockError, pgErrorCode, retryOnTransientLockError } from './pgErrors';
 
 // postgres.js surfaces the index as `constraint_name` (the real shape we hit in prod)
 const pgErr = (constraint?: string) =>
@@ -185,5 +185,26 @@ describe('retryOnTransientLockError', () => {
     const fn = vi.fn().mockResolvedValue('ok');
     await expect(retryOnTransientLockError('t', fn, { attempts: 0 })).resolves.toBe('ok');
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isPgDataException', () => {
+  const wrapped = (code: string) =>
+    Object.assign(new Error('Failed query: insert ...'), { cause: Object.assign(new Error('pg'), { code }) });
+
+  it('is true for SQLSTATE class 22, top-level or drizzle-wrapped', () => {
+    for (const code of ['22P05', '22P02', '22001', '22021']) {
+      expect(isPgDataException(Object.assign(new Error('pg'), { code }))).toBe(true);
+      expect(isPgDataException(wrapped(code))).toBe(true);
+    }
+  });
+
+  it('is false for other classes, codeless errors and non-errors', () => {
+    for (const code of ['23505', '57014', '40P01', '08006']) {
+      expect(isPgDataException(wrapped(code))).toBe(false);
+    }
+    expect(isPgDataException(new Error('connection closed'))).toBe(false);
+    expect(isPgDataException(null)).toBe(false);
+    expect(isPgDataException('22P05')).toBe(false);
   });
 });

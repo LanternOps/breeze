@@ -306,7 +306,7 @@ describe('changes routes', () => {
       });
 
       expect(res.status).toBe(207);
-      expect(await res.json()).toEqual({ success: true, count: 2, total: 3, partial: true });
+      expect(await res.json()).toEqual({ success: true, count: 2, total: 3, dropped: 1, partial: true });
       // One failed chunk statement, then one statement per row.
       expect(valuesSpy).toHaveBeenCalledTimes(4);
       expect(valuesSpy.mock.calls.slice(1).map((call) => call[0].map((r) => r.subject))).toEqual([
@@ -333,6 +333,69 @@ describe('changes routes', () => {
 
       expect(res.status).toBe(500);
       expect(valuesSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers 500 when a non-data error strands later chunks, so the agent re-sends (#8301)', async () => {
+      mockDeviceFound();
+      let call = 0;
+      const valuesSpy = mockInsertImpl(async (batch) => {
+        call += 1;
+        if (call === 2) throw pgFailure('57014', 'canceling statement due to statement timeout');
+        return batch.map((_, i) => ({ id: `c${i}` }));
+      });
+
+      const changes = Array.from({ length: 450 }, (_, i) => makeChangePayload({ subject: `pkg-${i}` }));
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes }),
+      });
+
+      // A 2xx would make the agent commit its diff baseline and the
+      // unattempted rows would never be re-sent.
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Failed to insert changes', count: 200 });
+      // No row-by-row retry and no third chunk.
+      expect(valuesSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps going after a row-by-row retry: later chunks are still inserted (#8301)', async () => {
+      mockDeviceFound();
+      const valuesSpy = mockInsertImpl(async (batch) => {
+        if (batch.some((r) => r.subject === 'pkg-250')) {
+          throw pgFailure('22P02', 'invalid input syntax for type json');
+        }
+        return batch.map((_, i) => ({ id: `c${i}` }));
+      });
+
+      const changes = Array.from({ length: 450 }, (_, i) => makeChangePayload({ subject: `pkg-${i}` }));
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes }),
+      });
+
+      expect(res.status).toBe(207);
+      expect(await res.json()).toEqual({ success: true, count: 449, total: 450, dropped: 1, partial: true });
+      // chunk 1, failed chunk 2, 200 single-row retries, chunk 3.
+      expect(valuesSpy).toHaveBeenCalledTimes(203);
+      expect(valuesSpy.mock.calls.at(-1)![0]).toHaveLength(50);
+    });
+
+    it('answers 2xx when every row is dropped on a data exception, so a poison row is not re-sent forever (#8301)', async () => {
+      mockDeviceFound();
+      mockInsertImpl(async () => {
+        throw pgFailure('22P05', 'unsupported Unicode escape sequence');
+      });
+
+      const res = await app.request(`/agents/${AGENT_ID}/changes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes: [makeChangePayload({ subject: 'poison' })] }),
+      });
+
+      expect(res.status).toBe(207);
+      expect(await res.json()).toEqual({ success: true, count: 0, total: 1, dropped: 1, partial: true });
     });
 
     it('should return 404 when device not found', async () => {

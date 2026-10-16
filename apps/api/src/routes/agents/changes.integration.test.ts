@@ -157,7 +157,7 @@ describe('device change ingest — one bad row does not sink the batch (real Pos
     ]);
 
     expect(res.status).toBe(207);
-    expect(await res.json()).toEqual({ success: true, count: 3, total: 4, partial: true });
+    expect(await res.json()).toEqual({ success: true, count: 3, total: 4, dropped: 1, partial: true });
 
     // Read back in a fresh transaction: the rows must have survived the
     // request transaction's COMMIT, not only been counted.
@@ -172,5 +172,37 @@ describe('device change ingest — one bad row does not sink the batch (real Pos
     const service = rows.find((r) => r.changeType === 'service')!;
     expect(service.beforeValue).toEqual({ account: 'lSystem' });
     expect(service.afterValue).toEqual({ account: 'LocalSystem' });
+  });
+
+  runDb('keeps the first chunk when a row in a later chunk is rejected (savepoint per chunk)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const dev = await insertDevice(env.organization.id, env.site.id);
+    const base = Date.now();
+
+    // 250 rows = two 200-row chunks; the bad row sits in the second chunk, so
+    // chunk 1's rows are only kept if chunk 2's failure did not abort the
+    // request transaction.
+    const changes = Array.from({ length: 250 }, (_, i) => ({
+      timestamp: new Date(base + i).toISOString(),
+      changeType: 'software',
+      changeAction: 'added',
+      subject: `pkg-${i}`,
+      afterValue: i === 210 ? { version: 'bad\ud800' } : { version: `1.${i}` },
+    }));
+
+    const res = await submitChanges(env.organization.id, dev.agentId, changes);
+
+    expect(res.status).toBe(207);
+    expect(await res.json()).toEqual({ success: true, count: 249, total: 250, dropped: 1, partial: true });
+
+    const rows = await withDbAccessContext(agentRequestContext(env.organization.id), () =>
+      db.select({ subject: deviceChangeLog.subject }).from(deviceChangeLog).where(eq(deviceChangeLog.deviceId, dev.id))
+    );
+    expect(rows).toHaveLength(249);
+    const subjects = new Set(rows.map((r) => r.subject));
+    expect(subjects.has('pkg-0')).toBe(true);
+    expect(subjects.has('pkg-199')).toBe(true);
+    expect(subjects.has('pkg-210')).toBe(false);
+    expect(subjects.has('pkg-249')).toBe(true);
   });
 });
