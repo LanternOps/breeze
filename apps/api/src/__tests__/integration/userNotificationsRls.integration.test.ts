@@ -19,10 +19,10 @@
 import './setup';
 
 import { describe, expect, it } from 'vitest';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { userNotifications } from '../../db/schema';
-import { createNotification } from '../../services/userNotifications';
+import { createNotification, markNotificationsReadByDedupeKeys } from '../../services/userNotifications';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -317,5 +317,24 @@ describe('user_notifications RLS — user axis', () => {
         )));
 
     expect(rows.length).toBeGreaterThanOrEqual(1);
+  });
+
+  runDb('markNotificationsReadByDedupeKeys marks only the named users and keys', async () => {
+    const fx = await seed();
+    const k1 = `connection-health:i1:${Date.now()}`;
+    const k2 = `connection-health:i2:${Date.now()}`;
+    await withSystemDbAccessContext(async () => {
+      await createNotification({ userId: fx.userAId, orgId: null, type: 'integration', title: 'x', dedupeKey: k1 });
+      await createNotification({ userId: fx.userPeerId, orgId: null, type: 'integration', title: 'x', dedupeKey: k1 });
+      await createNotification({ userId: fx.userAId, orgId: null, type: 'integration', title: 'y', dedupeKey: k2 });
+      const n = await markNotificationsReadByDedupeKeys([fx.userAId], [k1]);
+      expect(n).toBe(1);
+      const rows = await db
+        .select()
+        .from(userNotifications)
+        .where(inArray(userNotifications.dedupeKey, [k1, k2]));
+      const read = rows.filter((r) => r.read).map((r) => `${r.userId}:${r.dedupeKey}`);
+      expect(read).toEqual([`${fx.userAId}:${k1}`]);
+    });
   });
 });

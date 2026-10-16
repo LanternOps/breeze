@@ -45,7 +45,7 @@ describe('agent websocket credential generation (real PostgreSQL)', () => {
     }).returning({ id: devices.id });
     expect(device).toBeDefined();
 
-    expect(await isAgentDeviceStillAuthorized(agentId, oldHash)).toBe(true);
+    expect(await isAgentDeviceStillAuthorized(agentId, oldHash)).toBe('authorized');
 
     await getTestDb().update(devices)
       .set({
@@ -56,26 +56,26 @@ describe('agent websocket credential generation (real PostgreSQL)', () => {
       .where(eq(devices.id, device!.id));
 
     // A previous generation remains valid only inside its explicit grace.
-    expect(await isAgentDeviceStillAuthorized(agentId, oldHash)).toBe(true);
+    expect(await isAgentDeviceStillAuthorized(agentId, oldHash)).toBe('authorized');
     await getTestDb().update(devices)
       .set({ previousTokenExpiresAt: new Date(Date.now() - 1) })
       .where(eq(devices.id, device!.id));
-    expect(await isAgentDeviceStillAuthorized(agentId, oldHash)).toBe(false);
-    expect(await isAgentDeviceStillAuthorized(agentId, replacementHash)).toBe(true);
+    expect(await isAgentDeviceStillAuthorized(agentId, oldHash)).toBe('denied');
+    expect(await isAgentDeviceStillAuthorized(agentId, replacementHash)).toBe('authorized');
 
     // A staged generation follows the same expiry boundary.
     const pendingHash = digest('brz_pending_generation');
     await getTestDb().update(devices)
       .set({ pendingTokenHash: pendingHash, pendingTokenExpiresAt: new Date(Date.now() + 60_000) })
       .where(eq(devices.id, device!.id));
-    expect(await isAgentDeviceStillAuthorized(agentId, pendingHash)).toBe(true);
+    expect(await isAgentDeviceStillAuthorized(agentId, pendingHash)).toBe('authorized');
     await getTestDb().update(devices)
       .set({ pendingTokenExpiresAt: new Date(Date.now() - 1) })
       .where(eq(devices.id, device!.id));
-    expect(await isAgentDeviceStillAuthorized(agentId, pendingHash)).toBe(false);
+    expect(await isAgentDeviceStillAuthorized(agentId, pendingHash)).toBe('denied');
 
     await getTestDb().delete(devices).where(eq(devices.id, device!.id));
-    expect(await isAgentDeviceStillAuthorized(agentId, replacementHash)).toBe(false);
+    expect(await isAgentDeviceStillAuthorized(agentId, replacementHash)).toBe('denied');
   });
 
   runDb('broadcasts a hash-targeted revocation through real Redis for peer instances', async () => {
