@@ -63,7 +63,10 @@ type HostStatus struct {
 	Mode                  Mode
 	ECHActive             bool
 	FilterSignatureSeenAt time.Time
-	InCooldown            bool
+	// LastPlainSuccessAt is the last successful plain handshake. A signature
+	// older than this is stale: the host is reachable without ECH.
+	LastPlainSuccessAt time.Time
+	InCooldown         bool
 }
 
 // New builds a Dialer from opts, filling defaults.
@@ -163,12 +166,14 @@ func (d *Dialer) Status(host string) HostStatus {
 		delete(d.warned, host)
 	}
 	seen := st.LastSignatureAt()
+	plainOK := st.LastPlainSuccessAt()
 	d.mu.Unlock()
 	logTransition(host, from, mode)
 	return HostStatus{
 		Mode:                  mode,
 		ECHActive:             mode == ModeECH && d.enabled(),
 		FilterSignatureSeenAt: seen,
+		LastPlainSuccessAt:    plainOK,
 		InCooldown:            mode == ModeCooldown,
 	}
 }
@@ -309,7 +314,6 @@ func (a *attempt) plainInitial(ctx context.Context, mode Mode) (net.Conn, error)
 func (a *attempt) plainFallback(ctx context.Context) (net.Conn, error) {
 	tc, _, err := a.handshake(ctx, a.config(), a.plainBudget)
 	if err == nil {
-		a.d.update(a.host, func(st *hostState) bool { st.NotePlainSuccess(); return false })
 		a.notePlainSuccess("plain-fallback")
 		return tc, nil
 	}
@@ -399,11 +403,18 @@ func (a *attempt) noteSignature() (engaged bool) {
 	return engaged
 }
 
-// notePlainSuccess ends a signature streak for logging purposes.
+// notePlainSuccess runs on every successful plain handshake (plain mode,
+// ECH-mode fallback, ECH switched off, cooldown). It records the time, so
+// health can tell a stale filter signature from a live one, moves a host in
+// ModeECH back to ModePlain (plain works, even while ECH is switched off, so
+// the filter is gone), and ends the signature streak for the warning latch.
 func (a *attempt) notePlainSuccess(kind string) {
-	a.d.mu.Lock()
-	delete(a.d.warned, a.host)
-	a.d.mu.Unlock()
+	now := a.d.opts.Now()
+	a.d.update(a.host, func(st *hostState) bool {
+		st.NotePlainSuccessAt(now)
+		delete(a.d.warned, a.host)
+		return false
+	})
 	log.Debug("ech dial attempt", "host", a.host, "attempt", kind, "result", "ok")
 }
 

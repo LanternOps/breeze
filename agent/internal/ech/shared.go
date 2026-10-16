@@ -1,8 +1,10 @@
 package ech
 
 import (
+	"net/http"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/netcache"
@@ -26,8 +28,13 @@ func Shared() *Dialer {
 	sharedMu.Lock()
 	defer sharedMu.Unlock()
 	if shared == nil {
+		// DoH dials through netcache too (cached-IP fallback when system DNS
+		// fails) but keeps its own TLS: it never goes through the ECH dialer.
+		dohTransport := http.DefaultTransport.(*http.Transport).Clone()
+		dohTransport.DialContext = netcache.Shared().DialContext
 		shared = New(Options{
 			TCPDial:       netcache.Shared().DialContext,
+			Resolver:      NewResolver(&http.Client{Timeout: 3 * time.Second, Transport: dohTransport}),
 			Cache:         NewCache(filepath.Join(config.GetDataDir(), "ech-cache.json")),
 			LocalEnabled:  true,
 			ServerEnabled: true,

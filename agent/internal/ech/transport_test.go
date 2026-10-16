@@ -2,6 +2,7 @@ package ech
 
 import (
 	"crypto/tls"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -39,5 +40,33 @@ func TestConfigure_SetsSharedFlags(t *testing.T) {
 		if got := Shared().enabled(); got != c.want {
 			t.Fatalf("Configure(%v,%v): enabled()=%v want %v", c.local, c.server, got, c.want)
 		}
+	}
+}
+
+// The shared dialer's DoH lookups dial through netcache (cached IP fallback
+// when system DNS fails) and keep the 3 s budget. DoH uses the resolver's own
+// TLS, never the ECH dialer.
+func TestShared_ResolverDialsThroughNetcache(t *testing.T) {
+	restore := SetSharedForTest(nil)
+	t.Cleanup(restore)
+	c := Shared().opts.Resolver.httpClient()
+	if c == nil {
+		t.Fatal("shared resolver has no http client")
+	}
+	if c.Timeout != 3*time.Second {
+		t.Fatalf("resolver client timeout = %v, want 3s", c.Timeout)
+	}
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("resolver transport is %T, want *http.Transport", c.Transport)
+	}
+	if tr.DialContext == nil {
+		t.Fatal("resolver transport DialContext is nil; DoH must dial through netcache")
+	}
+	if tr.DialTLSContext != nil {
+		t.Fatal("resolver transport must not use the ECH dialer (DialTLSContext set)")
+	}
+	if tr.Proxy == nil {
+		t.Fatal("resolver transport dropped the DefaultTransport Proxy")
 	}
 }

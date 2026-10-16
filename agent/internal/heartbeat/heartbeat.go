@@ -4661,14 +4661,22 @@ func (h *Heartbeat) runHeartbeat() {
 // plane's ECH / network-filter state (#8869).
 const controlPlaneComponentName = "control_plane"
 
+// filterSignatureCurrent reports whether st's filter signature is newer than
+// its last plain success. A plain handshake after the signature means the host
+// is reachable, so the signature is stale.
+func filterSignatureCurrent(st ech.HostStatus) bool {
+	return !st.FilterSignatureSeenAt.IsZero() && st.FilterSignatureSeenAt.After(st.LastPlainSuccessAt)
+}
+
 // controlPlaneComponent maps a host's ECH state to the control_plane health
-// component. Row order matters: ECH active wins, then a filter signature seen
-// within the last 10 minutes, then cooldown.
+// component. Row order matters: ECH active wins, then a current filter
+// signature (newer than the last plain success) seen within the last 10
+// minutes, then cooldown.
 func controlPlaneComponent(st ech.HostStatus) (status health.Status, message string) {
 	switch {
 	case st.ECHActive:
 		return health.Healthy, "reachable via encrypted client hello"
-	case !st.FilterSignatureSeenAt.IsZero() && time.Since(st.FilterSignatureSeenAt) < 10*time.Minute:
+	case filterSignatureCurrent(st) && time.Since(st.FilterSignatureSeenAt) < 10*time.Minute:
 		return health.Degraded, "control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)"
 	case st.InCooldown:
 		return health.Degraded, "encrypted client hello unavailable; retrying later"
@@ -4706,10 +4714,11 @@ func (h *Heartbeat) observeControlPlane() ech.HostStatus {
 }
 
 // setECHStatus copies st into the payload's echActive/filterSignatureSeenAt
-// fields. A zero signature time leaves filterSignatureSeenAt omitted.
+// fields. filterSignatureSeenAt is omitted when no signature was seen or a
+// plain handshake succeeded since (the signature is stale).
 func (p *HeartbeatPayload) setECHStatus(st ech.HostStatus) {
 	p.ECHActive = st.ECHActive
-	if !st.FilterSignatureSeenAt.IsZero() {
+	if filterSignatureCurrent(st) {
 		p.FilterSignatureSeenAt = st.FilterSignatureSeenAt.UTC().Format(time.RFC3339)
 	}
 }

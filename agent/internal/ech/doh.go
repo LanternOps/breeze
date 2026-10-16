@@ -56,6 +56,9 @@ func NewResolver(client *http.Client, endpoints ...string) *Resolver {
 	return &Resolver{endpoints: endpoints, client: client, now: time.Now}
 }
 
+// httpClient returns the client DoH lookups use.
+func (r *Resolver) httpClient() *http.Client { return r.client }
+
 type dohResponse struct {
 	Status int `json:"Status"`
 	Answer []struct {

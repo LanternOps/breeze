@@ -142,3 +142,29 @@ func TestState_NonECHBehaviors(t *testing.T) {
 		t.Fatal("cooldown state wrong")
 	}
 }
+
+func TestState_PlainSuccessAtRecordsTimeInEveryMode(t *testing.T) {
+	plain := newHostState()
+	at := stateT0.Add(time.Second)
+	plain.NotePlainSuccessAt(at)
+	if !plain.LastPlainSuccessAt().Equal(at) || plain.Mode(at) != ModePlain {
+		t.Fatalf("plain: last=%v mode=%v", plain.LastPlainSuccessAt(), plain.Mode(at))
+	}
+
+	e := engagedState(t)
+	at = stateT0.Add(3 * time.Minute)
+	e.NotePlainSuccessAt(at)
+	if !e.LastPlainSuccessAt().Equal(at) || e.Mode(at) != ModePlain {
+		t.Fatalf("ech: last=%v mode=%v, want %v plain", e.LastPlainSuccessAt(), e.Mode(at), at)
+	}
+
+	c := engagedState(t)
+	c.NoteECHFailure(at)
+	c.NoteECHFailure(at)
+	c.NoteECHFailure(at)
+	later := at.Add(time.Minute)
+	c.NotePlainSuccessAt(later)
+	if !c.LastPlainSuccessAt().Equal(later) || c.Mode(later) != ModeCooldown {
+		t.Fatalf("cooldown: last=%v mode=%v, want %v cooldown", c.LastPlainSuccessAt(), c.Mode(later), later)
+	}
+}

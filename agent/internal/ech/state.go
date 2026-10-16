@@ -42,6 +42,9 @@ type hostState struct {
 	echFailures     int
 	cooldownUntil   time.Time
 	lastSignatureAt time.Time
+	// lastPlainSuccessAt is the last successful plain handshake. Health uses
+	// it to tell a stale filter signature from a filter still in the path.
+	lastPlainSuccessAt time.Time
 }
 
 func newHostState() *hostState {
@@ -101,8 +104,17 @@ func (s *hostState) NoteECHFailure(now time.Time) (cooled bool) {
 	return true
 }
 
-// NotePlainSuccess leaves ModeECH: a plain dial worked, so the filter is gone.
-// It does nothing in ModePlain or ModeCooldown.
+// NotePlainSuccessAt records a successful plain handshake at now, in every
+// mode, and leaves ModeECH: a plain dial worked, so the filter is gone.
+// ModePlain and ModeCooldown keep their mode.
+func (s *hostState) NotePlainSuccessAt(now time.Time) {
+	s.lastPlainSuccessAt = now
+	s.NotePlainSuccess()
+}
+
+// NotePlainSuccess is the mode transition of NotePlainSuccessAt without
+// recording a time: it leaves ModeECH and does nothing in ModePlain or
+// ModeCooldown.
 func (s *hostState) NotePlainSuccess() {
 	if s.mode == ModeECH {
 		s.mode = ModePlain
@@ -113,3 +125,7 @@ func (s *hostState) NotePlainSuccess() {
 
 // LastSignatureAt returns the last signature seen, or the zero time.
 func (s *hostState) LastSignatureAt() time.Time { return s.lastSignatureAt }
+
+// LastPlainSuccessAt returns the last successful plain handshake, or the zero
+// time.
+func (s *hostState) LastPlainSuccessAt() time.Time { return s.lastPlainSuccessAt }

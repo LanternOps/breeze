@@ -212,6 +212,16 @@ func TestControlPlaneComponent_Table(t *testing.T) {
 			health.Degraded, "encrypted client hello unavailable; retrying later"},
 		{"plain, nothing seen", ech.HostStatus{}, health.Healthy, ""},
 		{"plain, stale signature", ech.HostStatus{FilterSignatureSeenAt: now.Add(-11 * time.Minute)}, health.Healthy, ""},
+		// A plain handshake after the signature means the host is reachable:
+		// the signature is stale even inside the 10-minute window.
+		{"plain success after signature", ech.HostStatus{
+			FilterSignatureSeenAt: now.Add(-time.Minute),
+			LastPlainSuccessAt:    now.Add(-time.Minute + time.Second),
+		}, health.Healthy, ""},
+		{"signature after plain success", ech.HostStatus{
+			FilterSignatureSeenAt: now.Add(-time.Minute + time.Second),
+			LastPlainSuccessAt:    now.Add(-time.Minute),
+		}, health.Degraded, "control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -219,6 +229,43 @@ func TestControlPlaneComponent_Table(t *testing.T) {
 			if status != tc.wantStatus || message != tc.wantMessage {
 				t.Fatalf("controlPlaneComponent(%+v) = (%q, %q), want (%q, %q)",
 					tc.st, status, message, tc.wantStatus, tc.wantMessage)
+			}
+		})
+	}
+}
+
+// filterSignatureSeenAt is sent only while the signature is newer than the
+// last plain success; a reachable host must not report a stale filter.
+func TestSetECHStatus_SignatureOnlyWhenNewerThanPlainSuccess(t *testing.T) {
+	sig := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		st      ech.HostStatus
+		wantSig string
+	}{
+		{"no signature", ech.HostStatus{LastPlainSuccessAt: sig}, ""},
+		{"signature, never a plain success", ech.HostStatus{FilterSignatureSeenAt: sig}, "2026-10-16T12:00:00Z"},
+		{"plain success after signature", ech.HostStatus{FilterSignatureSeenAt: sig, LastPlainSuccessAt: sig.Add(time.Second)}, ""},
+		{"signature after plain success", ech.HostStatus{FilterSignatureSeenAt: sig.Add(time.Second), LastPlainSuccessAt: sig}, "2026-10-16T12:00:01Z"},
+		{"ech active, signature older than window", ech.HostStatus{Mode: ech.ModeECH, ECHActive: true, FilterSignatureSeenAt: sig.Add(-time.Hour)}, "2026-10-16T11:00:00Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var p HeartbeatPayload
+			p.setECHStatus(tc.st)
+			if p.FilterSignatureSeenAt != tc.wantSig {
+				t.Fatalf("FilterSignatureSeenAt = %q, want %q", p.FilterSignatureSeenAt, tc.wantSig)
+			}
+			raw, err := json.Marshal(p)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(raw, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, present := m["filterSignatureSeenAt"]; present != (tc.wantSig != "") {
+				t.Fatalf("filterSignatureSeenAt present = %v, want %v (%s)", present, tc.wantSig != "", raw)
 			}
 		})
 	}

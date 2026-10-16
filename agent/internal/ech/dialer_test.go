@@ -395,18 +395,29 @@ func TestDial_SingleSignatureStaysPlain(t *testing.T) {
 	filterAddr, _ := startFilterListener(t)
 	rig := newRig(filterAddr)
 	res, hits := failResolver(t)
-	d := newTestDialer(t, rig, res, &fakeClock{t: dialT0})
+	clock := &fakeClock{t: dialT0}
+	d := newTestDialer(t, rig, res, clock)
 
 	if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
 		t.Fatalf("err = %v, want filter signature", err)
 	}
 	rig.setTarget(plainAddr)
+	clock.Set(dialT0.Add(time.Second))
 	tc := mustDial(t, d, baseCfg(pool))
 	if tc.ConnectionState().ECHAccepted {
 		t.Fatal("ECHAccepted after a single signature")
 	}
-	if got := d.Status(dialHost).Mode; got != ModePlain {
-		t.Fatalf("Mode = %v, want plain", got)
+	st := d.Status(dialHost)
+	if st.Mode != ModePlain {
+		t.Fatalf("Mode = %v, want plain", st.Mode)
+	}
+	// The plain success is recorded so health can tell a stale signature
+	// from a live filter.
+	if !st.LastPlainSuccessAt.Equal(dialT0.Add(time.Second)) {
+		t.Fatalf("LastPlainSuccessAt = %v, want %v", st.LastPlainSuccessAt, dialT0.Add(time.Second))
+	}
+	if !st.LastPlainSuccessAt.After(st.FilterSignatureSeenAt) {
+		t.Fatalf("LastPlainSuccessAt %v not after FilterSignatureSeenAt %v", st.LastPlainSuccessAt, st.FilterSignatureSeenAt)
 	}
 	if n := hits.Load(); n != 0 {
 		t.Fatalf("DoH hits = %d, want 0", n)
@@ -606,16 +617,84 @@ func TestDial_KillSwitchForcesPlain(t *testing.T) {
 	if n := rig.dials.Load() - before; n != 1 {
 		t.Fatalf("kill switch: TCP dials = %d, want 1", n)
 	}
-	if st := d.Status(dialHost); st.ECHActive || st.Mode != ModeECH {
-		t.Fatalf("kill switch: Status = %+v, want Mode ech, ECHActive false", st)
+	// A plain success with the switch off leaves ECH mode (see
+	// TestDial_KillSwitchPlainSuccessLeavesECH); put the host back to check
+	// that re-enabling resumes ECH.
+	if st := d.Status(dialHost); st.ECHActive || st.Mode != ModePlain {
+		t.Fatalf("kill switch: Status = %+v, want Mode plain, ECHActive false", st)
 	}
 
 	d.SetServerEnabled(true)
+	forceMode(d, dialHost, ModeECH)
 	if !mustDial(t, d, baseCfg(pool)).ConnectionState().ECHAccepted {
 		t.Fatal("re-enabled: ECHAccepted = false")
 	}
 	if !d.Status(dialHost).ECHActive {
 		t.Fatal("re-enabled: ECHActive = false")
+	}
+}
+
+// Ruling (#8869 final review): a plain success while ECH is switched off
+// (server kill switch or local opt-out) is still a plain success, so a host in
+// ModeECH returns to ModePlain instead of staying in ECH while the switch is off.
+func TestDial_KillSwitchPlainSuccessLeavesECH(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		off  func(d *Dialer)
+	}{
+		{"server switch off", func(d *Dialer) { d.SetServerEnabled(false) }},
+		{"local opt-out", func(d *Dialer) { d.SetLocalEnabled(false) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+			rig := newRig(addr)
+			res, hits := failResolver(t)
+			clock := &fakeClock{t: dialT0}
+			d := newTestDialer(t, rig, res, clock)
+			d.ForceModeForTest(dialHost, ModeECH, dialT0)
+			tc.off(d)
+
+			clock.Set(dialT0.Add(time.Minute))
+			if mustDial(t, d, baseCfg(pool)).ConnectionState().ECHAccepted {
+				t.Fatal("ECHAccepted with ECH switched off")
+			}
+			st := d.Status(dialHost)
+			if st.Mode != ModePlain || st.ECHActive {
+				t.Fatalf("Status = %+v, want Mode plain, ECHActive false", st)
+			}
+			if !st.LastPlainSuccessAt.Equal(dialT0.Add(time.Minute)) {
+				t.Fatalf("LastPlainSuccessAt = %v, want %v", st.LastPlainSuccessAt, dialT0.Add(time.Minute))
+			}
+			if n := hits.Load(); n != 0 {
+				t.Fatalf("DoH hits = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// Every successful plain handshake records its time: the ECH-mode fallback
+// and a dial during cooldown included.
+func TestDial_PlainSuccessRecordsTime(t *testing.T) {
+	addr, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+	rig := newRig(addr)
+	res, _ := noECHResolver(t)
+	clock := &fakeClock{t: dialT0}
+	d := newTestDialer(t, rig, res, clock)
+
+	// ModeECH with no cached config: ECH is skipped, the plain fallback wins.
+	forceMode(d, dialHost, ModeECH)
+	clock.Set(dialT0.Add(time.Second))
+	mustDial(t, d, baseCfg(pool))
+	if st := d.Status(dialHost); !st.LastPlainSuccessAt.Equal(dialT0.Add(time.Second)) || st.Mode != ModePlain {
+		t.Fatalf("fallback: Status = %+v, want plain with LastPlainSuccessAt %v", st, dialT0.Add(time.Second))
+	}
+	waitFetchIdle(t, d, dialHost)
+
+	d.ForceModeForTest(dialHost, ModeCooldown, time.Time{})
+	clock.Set(dialT0.Add(2 * time.Second))
+	mustDial(t, d, baseCfg(pool))
+	if st := d.Status(dialHost); !st.LastPlainSuccessAt.Equal(dialT0.Add(2*time.Second)) || st.Mode != ModeCooldown {
+		t.Fatalf("cooldown: Status = %+v, want cooldown with LastPlainSuccessAt %v", st, dialT0.Add(2*time.Second))
 	}
 }
 
