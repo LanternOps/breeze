@@ -271,7 +271,7 @@ describe('audit_log_verify_chain_incremental / _range', () => {
     expect(await verifyIncremental(orgId, 3, 2, 1000)).toEqual([]);
   });
 
-  // 2026-12-28 migration: `org_id IS NOT DISTINCT FROM p_org_id` cannot use the
+  // 2026-12-29-140000 migration: `org_id IS NOT DISTINCT FROM p_org_id` cannot use the
   // (org_id, …) btree indexes, so each nightly per-org call walked the whole
   // chain pkey instead of seeking by org. The functions must branch on NULL
   // (like audit_log_seal_one) instead.
