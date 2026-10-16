@@ -141,7 +141,8 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // #8167 W03: `edr_endpoint_action (isolate/unisolate/scan)` on the
     // Integrations line adds 46 bytes (6677 vs the 6656 limit). Paid for by
     // dropping the patching note's "Approve patches before install." (names no
-    // tool), not by raising the ceiling.
+    // tool), not by raising the ceiling. W03 PR-B's `sync_edr_data` (+15 bytes)
+    // is paid for by tightening the scripts note's wording.
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.5 * 1024);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });

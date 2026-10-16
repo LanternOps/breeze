@@ -904,6 +904,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     reason: z.string().max(500).optional(),
   }),
 
+  // #8167 W03 PR-B. Tier-2 "sync now".
+  sync_edr_data: z.object({
+    connectionId: uuid.optional(),
+    orgId: uuid.optional(),
+  }),
+
   s1_isolate_device: z.object({
     orgId: uuid.optional(),
     deviceId: uuid.optional(),

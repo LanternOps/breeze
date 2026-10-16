@@ -916,6 +916,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   s1_isolate_device: { resource: 'devices', action: 'execute' },
   s1_threat_action: { resource: 'devices', action: 'execute' },
   edr_endpoint_action: { resource: 'devices', action: 'execute' },
+  // Route parity: POST /edr/connections/:id/sync requires ORGS_WRITE.
+  sync_edr_data: { resource: 'organizations', action: 'write' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
   // Authoring is inert, but it is still script work: whoever may read the
