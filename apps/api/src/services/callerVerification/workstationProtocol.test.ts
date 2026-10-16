@@ -51,6 +51,21 @@ describe('workstationCommandSchema', () => {
     expect(workstationCommandSchema.safeParse({ ...payload, ...patch }).success).toBe(false);
   });
 
+  it('accepts the optional absolute deadline (#8668) and still accepts payloads without it', () => {
+    expect(workstationCommandSchema.safeParse({ ...payload, deadlineAt: '2026-10-16T12:00:00.000Z' }).success).toBe(true);
+    expect(workstationCommandSchema.safeParse({ ...payload, deadlineAt: '2026-10-16T12:00:00+02:00' }).success).toBe(true);
+    expect(workstationCommandSchema.safeParse(payload).success).toBe(true);
+  });
+
+  it.each([
+    ['not a timestamp', 'tomorrow'],
+    ['date only', '2026-10-16'],
+    ['epoch number', 1_760_000_000_000],
+    ['empty', ''],
+  ])('rejects a deadlineAt that is %s', (_label, deadlineAt) => {
+    expect(workstationCommandSchema.safeParse({ ...payload, deadlineAt }).success).toBe(false);
+  });
+
   it('rejects unknown fields (no approval or principal can ride the command)', () => {
     expect(workstationCommandSchema.safeParse({ ...payload, approved: true }).success).toBe(false);
   });

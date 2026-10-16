@@ -24,6 +24,10 @@ pub const WINDOW_LABEL_PREFIX: &str = "caller-verify-";
 /// Matches the API (`workstationProtocol.ts`, max 320) and the Go agent, so a
 /// request the API accepted is never silently dropped here.
 const MAX_TEXT_LEN: usize = 320;
+/// Clock-skew allowance on `deadlineAt` (#8668): the deadline is advisory, so
+/// a device clock slightly ahead of the API's does not refuse a card the
+/// server would still accept. Matches the agent's `CallerVerifyDeadlineSkew`.
+const DEADLINE_SKEW_MS: i64 = 5_000;
 
 pub fn window_label(verification_id: &str) -> String {
     format!("{WINDOW_LABEL_PREFIX}{verification_id}")
@@ -66,9 +70,29 @@ pub struct Request {
     pub reverse_code: String,
     pub choices: [String; 3],
     pub timeout_ms: u64,
+    /// Optional absolute expiry (#8668, RFC 3339). Older agents never send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_at: Option<String>,
 }
 
 impl Request {
+    /// How long the card may stay up at `now_ms` (unix millis): `timeout_ms`,
+    /// clamped to `deadline_at` plus the skew allowance so a late-delivered
+    /// request does not restart a full countdown. Never exceeds `timeout_ms`.
+    /// `None` once the deadline has passed by the allowance or more: the card
+    /// must not be shown. An unparseable deadline is refused by `validate`.
+    fn countdown_ms(&self, now_ms: i64) -> Option<u64> {
+        let mut ms = self.timeout_ms as i64;
+        if let Some(deadline) = self
+            .deadline_at
+            .as_deref()
+            .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+        {
+            ms = ms.min(deadline.timestamp_millis() - now_ms + DEADLINE_SKEW_MS);
+        }
+        (ms > 0).then_some(ms as u64)
+    }
+
     fn validate(&self) -> Result<(), String> {
         let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
         let c = &self.choices;
@@ -87,11 +111,25 @@ impl Request {
             || c[0] == c[2]
             || c[1] == c[2]
             || !texts.iter().all(|s| valid_text(s))
+            || self
+                .deadline_at
+                .as_deref()
+                .is_some_and(|d| chrono::DateTime::parse_from_rfc3339(d).is_err())
         {
             return Err("invalid caller request".into());
         }
         Ok(())
     }
+}
+
+/// Outcome of a valid `insert`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// Registered: show the prompt window.
+    Show,
+    /// Already past its deadline (#8668): answered `timeout` on the envelope
+    /// and NOT registered. No window may be shown.
+    Expired,
 }
 
 /// What the React window hydrates from. `deadline_ms` is unix epoch millis.
@@ -149,8 +187,9 @@ impl CallerVerifyBridge {
         state.sender = None;
     }
 
-    /// Validate and register a request. The deadline starts now (Rust-owned).
-    pub fn insert(&self, envelope_id: String, request: Request) -> Result<(), String> {
+    /// Validate and register a request. The deadline starts now (Rust-owned),
+    /// clamped to the request's absolute `deadlineAt` when it carries one.
+    pub fn insert(&self, envelope_id: String, request: Request) -> Result<Admission, String> {
         request.validate()?;
         let mut state = self.locked();
         if state.sender.is_none() || state.pending.contains_key(&request.verification_id) {
@@ -160,9 +199,22 @@ impl CallerVerifyBridge {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_millis() as u64;
-        let deadline = Instant::now() + Duration::from_millis(request.timeout_ms);
+        let Some(countdown_ms) = request.countdown_ms(now as i64) else {
+            // Answer at once so the agent stops waiting; nothing is rendered.
+            state
+                .sender
+                .as_ref()
+                .ok_or("IPC disconnected")?
+                .send(Response {
+                    envelope_id,
+                    choice: "timeout".into(),
+                })
+                .map_err(|e| e.to_string())?;
+            return Ok(Admission::Expired);
+        };
+        let deadline = Instant::now() + Duration::from_millis(countdown_ms);
         let view = View {
-            deadline_ms: now + request.timeout_ms,
+            deadline_ms: now + countdown_ms,
             request,
         };
         state.pending.insert(
@@ -173,7 +225,7 @@ impl CallerVerifyBridge {
                 deadline,
             },
         );
-        Ok(())
+        Ok(Admission::Show)
     }
 
     pub fn get(&self, id: &str) -> Option<View> {
@@ -409,6 +461,78 @@ mod tests {
         assert_eq!(v["request"]["reverseCode"], "7319");
         assert_eq!(v["request"]["choices"], serde_json::json!(["42", "17", "86"]));
         assert!(v["deadlineMs"].as_u64().unwrap() > 1_600_000_000_000);
+    }
+
+    fn iso(ms: i64) -> String {
+        chrono::DateTime::from_timestamp_millis(ms).unwrap().to_rfc3339()
+    }
+
+    fn now_ms() -> i64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    }
+
+    // #8668: countdown = min(timeoutMs, deadlineAt - now + skew); refused once
+    // that is not positive. The deadline never extends timeoutMs.
+    #[test]
+    fn countdown_clamps_to_the_absolute_deadline() {
+        let now = 1_760_000_000_000_i64;
+        let with = |deadline: Option<String>| {
+            let mut r = request();
+            r.deadline_at = deadline;
+            r.countdown_ms(now)
+        };
+        assert_eq!(with(None), Some(30_000));
+        assert_eq!(with(Some(iso(now + 600_000))), Some(30_000));
+        assert_eq!(with(Some(iso(now + 20_000))), Some(25_000));
+        assert_eq!(with(Some(iso(now - 3_000))), Some(2_000));
+        assert_eq!(with(Some(iso(now - 5_000))), None);
+        assert_eq!(with(Some(iso(now - 3_600_000))), None);
+        // Same instant in another offset.
+        let offset = chrono::DateTime::from_timestamp_millis(now + 20_000)
+            .unwrap()
+            .with_timezone(&chrono::FixedOffset::east_opt(7200).unwrap())
+            .to_rfc3339();
+        assert_eq!(with(Some(offset)), Some(25_000));
+    }
+
+    #[test]
+    fn wire_deadline_is_optional_and_validated() {
+        let with = r#"{"verificationId":"11111111-1111-4111-8111-111111111111","username":"a","technicianName":"S","orgName":"A","actionLabel":"x","targetLabel":"y","reverseCode":"7319","choices":["42","17","86"],"timeoutMs":30000,"deadlineAt":"2026-10-16T12:00:00.000Z"}"#;
+        let r: Request = serde_json::from_str(with).unwrap();
+        assert_eq!(r.deadline_at.as_deref(), Some("2026-10-16T12:00:00.000Z"));
+        assert!(r.validate().is_ok());
+        assert!(request().deadline_at.is_none());
+        let mut bad = request();
+        bad.deadline_at = Some("tomorrow".into());
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn late_request_shows_a_clamped_countdown() {
+        let bridge = CallerVerifyBridge::default();
+        let _rx = bridge.connect();
+        let mut req = request();
+        let id = req.verification_id.clone();
+        req.deadline_at = Some(iso(now_ms() + 10_000));
+        assert_eq!(bridge.insert("e".into(), req).unwrap(), Admission::Show);
+        let view = bridge.get(&id).unwrap();
+        let left = view.deadline_ms as i64 - now_ms();
+        assert!(left > 13_000 && left <= 15_000, "countdown {left} ms, want ~15 s");
+        let instant_left = bridge.state.lock().unwrap().pending[&id].deadline - Instant::now();
+        assert!(instant_left <= Duration::from_millis(15_000));
+    }
+
+    #[test]
+    fn expired_request_is_never_shown_and_answers_timeout() {
+        let bridge = CallerVerifyBridge::default();
+        let mut rx = bridge.connect();
+        let mut req = request();
+        let id = req.verification_id.clone();
+        req.deadline_at = Some(iso(now_ms() - 60_000));
+        assert_eq!(bridge.insert("orig".into(), req).unwrap(), Admission::Expired);
+        assert!(bridge.get(&id).is_none());
+        let r = rx.try_recv().unwrap();
+        assert_eq!((r.envelope_id.as_str(), r.choice.as_str()), ("orig", "timeout"));
     }
 
     #[test]

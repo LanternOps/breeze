@@ -9,6 +9,14 @@
  * field and no principal: the human's choice comes back in the result, and
  * the agent — never the helper — supplies the OS principal.
  *
+ * Additive, optional fields (older agents and helpers ignore them):
+ *  - `deadlineAt` (#8668): the verification's absolute expiry (ISO 8601).
+ *    `timeoutMs` alone restarts a full countdown when the command is
+ *    delivered late; with `deadlineAt` the agent and helper clamp the
+ *    countdown to min(timeoutMs, deadlineAt - now + skew allowance) and
+ *    refuse to render once it has passed. Advisory only: it can shorten the
+ *    countdown, never extend it past `timeoutMs`.
+ *
  * Result (`stdout` JSON on HTTP, the parsed `result` on WS):
  *   { delivered, choice?, principal?, helperVersion?, error? }
  * `choice` is one of the three offered numbers, `not_me` or `timeout`.
@@ -37,6 +45,7 @@ export const workstationCommandSchema = z.object({
   reverseCode: z.string().regex(/^\d{4}$/),
   choices: z.tuple([numberChoice, numberChoice, numberChoice]),
   timeoutMs: z.number().int().min(WORKSTATION_TIMEOUT_MIN_MS).max(WORKSTATION_TIMEOUT_MAX_MS),
+  deadlineAt: z.string().datetime({ offset: true }).optional(),
 }).strict().refine((value) => new Set(value.choices).size === 3, { message: 'choices must be distinct' });
 
 export type WorkstationCommand = z.infer<typeof workstationCommandSchema>;

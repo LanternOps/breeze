@@ -11,6 +11,12 @@ export interface CallerRequest {
   reverseCode: string;
   choices: string[];
   timeoutMs: number;
+  /**
+   * Optional absolute expiry (#8668). Informational here: the Rust side has
+   * already clamped `deadlineMs` to it (or refused to open the window), so the
+   * countdown below never derives from `timeoutMs` or this field.
+   */
+  deadlineAt?: string;
 }
 
 export type Branding = { partnerName: string; logoUrl: string | null } | null;

@@ -101,6 +101,12 @@ describe('prepareWorkstationVerification', () => {
     expect(inserted()[0]!.payload.actionLabel).toBe(label);
   });
 
+  it('sends the verification expiry as the absolute deadline (#8668)', async () => {
+    arrangeHappy();
+    await prepareWorkstationVerification(row);
+    expect(inserted()[0]!.payload.deadlineAt).toBe(row.expiresAt.toISOString());
+  });
+
   it('clamps the helper deadline into the shared bounds', async () => {
     arrangeHappy();
     await prepareWorkstationVerification({ ...row, expiresAt: new Date(created.getTime() + 900_000) });

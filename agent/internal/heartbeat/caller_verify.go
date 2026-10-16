@@ -26,8 +26,8 @@ import (
 const cmdCallerVerify = "caller_verify"
 
 // callerVerifyIPCGrace covers the helper's own countdown round-trip: the
-// helper answers "timeout" at TimeoutMs, the agent stops waiting slightly
-// after that.
+// helper answers "timeout" at its countdown (TimeoutMs, clamped to DeadlineAt
+// when sent), the agent stops waiting slightly after that.
 const callerVerifyIPCGrace = 2 * time.Second
 
 func init() {
@@ -114,7 +114,15 @@ func runCallerVerify(req ipc.CallerVerifyRequest, resolve callerVerifyResolver, 
 	}
 
 	timedOut := callerVerifyResult{Delivered: true, Choice: ipc.CallerVerifyChoiceTimeout}
-	timeout := time.Duration(req.TimeoutMs)*time.Millisecond + callerVerifyIPCGrace
+	// A late-delivered command (#8668) waits only until the verification's
+	// absolute deadline; one already past is never shown and reports a
+	// timeout, exactly as if nobody answered.
+	countdown, show := req.Countdown(time.Now())
+	if !show {
+		log.Info("caller verification: deadline already passed, not shown", "verificationId", req.VerificationID)
+		return timedOut
+	}
+	timeout := countdown + callerVerifyIPCGrace
 	resp, err := send(helper, ipc.CallerVerifyEnvelopeID(req.VerificationID), ipc.TypeCallerVerifyRequest, req, timeout)
 	if errors.Is(err, sessionbroker.ErrDuplicateCommand) {
 		return callerVerifyResult{duplicate: true}
