@@ -95,16 +95,17 @@ Keeping a flag outside "Enable all" is enforced by a mechanism, not by conventio
 - every new flag that reveals layout or other sensitive data (`enableNetworkTopology`, `enableObservedLocation`, the future monitoring/SNMP flag, and `enablePhysicalPlacement`) is added to `PORTAL_SENSITIVE_FLAG_KEYS` in `packages/shared/src/validators/portal.ts`;
 - `apps/api/src/services/portal/portalFlags.test.ts` pins the exact list of that constant, so adding a key requires updating that test in the same change;
 - `apps/web/src/components/settings/OrgPortalSettingsEditor.test.tsx` checks specific sensitive flags (for example `enablePatchDetail`) stay off through "Enable all". It does not iterate over the whole list, so each new sensitive flag needs its own case there;
-- a flag that is not in `PORTAL_VISIBILITY_FLAG_KEYS` is not turned on by "Enable all", so the two tests together are what keep the boundary true.
+- `enableAllVisibility()` in `apps/web/src/components/settings/OrgPortalSettingsEditor.tsx` is the source of truth for the "Enable all" action: every sensitive flag must be deliberately omitted from that hardcoded update object, and `OrgPortalSettingsEditor.test.tsx` must keep a dedicated test case proving that "Enable all" leaves that flag disabled.
 
 ### 5.1.2 Gate pattern per family
 
-The existing gates are of two kinds, in `apps/api/src/routes/portal/featureFlags.ts`:
+The existing Portal visibility controls use three gate patterns, as shown by `apps/api/src/routes/portal/featureFlags.ts` and the current Network Visibility contract:
 
 - `not_enabled` with null metrics or an empty list, as for `enableNetworkVisibility` (the approved shared contract from #5438);
-- strict fail-closed `403`, as for `enablePatchDetail`, `enableVulnerabilityDetail` and `enableHourBlock`.
+- strict fail-closed `403`, as for `enablePatchDetail`, `enableVulnerabilityDetail` and `enableHourBlock`;
+- conditional field omission, as for `enableNetworkAlerts`, where alert/ticket enrichment fields are absent when the flag is off rather than returning `403` or a separate `not_enabled` payload.
 
-Each family must state which kind it follows. **Decision:** W1 (`enablePhysicalPlacement`) follows the `not_enabled` contract, the same as `enableNetworkVisibility`, so the network surface keeps a single shared contract. W5 and W6 also follow `not_enabled`, as a suggestion of this specification. W4 must choose its pattern when its flag is defined.
+Each family must state which pattern it follows. **Decision:** W1 (`enablePhysicalPlacement`) follows the `not_enabled` contract, the same as `enableNetworkVisibility`, so the network surface keeps a single shared contract. W5 and W6 also follow `not_enabled`, as a suggestion of this specification. W4 must choose its pattern when its flag is defined.
 
 ### 5.2 Family and flag matrix
 
@@ -479,7 +480,7 @@ The need for `id`, `sourceId`, and `targetId` is functional, to render relations
 
 ### 12.1 Confirmed current state
 
-Breeze already has its own presence/location read model. The classifier produces `home`, `visiting`, `unrecognized`, `ambiguous`, and `unknown` (`apps/api/src/services/topology/presenceClassifier.ts:43`). `stale` is not a classifier output: it is a persisted presence state, set on stored rows whose evidence is no longer current (`apps/api/src/db/schema/topologyPresence.ts:79`). Assignment is kept separate from observation. The model also contains `reason`, prefixes, gateway address, MAC corroboration, fingerprints, evidence, suggestions, and history — this data is operational and is not appropriate for passthrough to the Portal.
+Breeze already has its own presence/location read model. Per-attachment classification produces `home`, `visiting`, `unrecognized`, `ambiguous`, and `unknown` (`apps/api/src/services/topology/presenceClassifier.ts:43`). At device level, `classifyDevicePresence()` may additionally return `state: 'stale'` when no observation is fresh (`apps/api/src/services/topology/presenceClassifier.ts:183`). `stale` is also part of the persisted presence-state union (`apps/api/src/db/schema/topologyPresence.ts:79`), and the Portal omits it from the customer-facing location projection. Assignment is kept separate from observation. The model also contains `reason`, prefixes, gateway address, MAC corroboration, fingerprints, evidence, suggestions, and history — this data is operational and is not appropriate for passthrough to the Portal.
 
 ### 12.2 Flag
 
