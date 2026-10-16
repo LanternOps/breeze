@@ -200,7 +200,14 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
  */
 function NumberField({ id, min, max, value, onCommit }: { id: string; min: number; max: number; value: number; onCommit: (n: number) => void }) {
   const [text, setText] = useState(String(value));
-  useEffect(() => { setText(String(value)); }, [value]);
+  // Re-sync the text when the committed value changes, during render rather
+  // than in an effect: a pending mount effect is flushed ahead of the next
+  // keystroke's re-render and would overwrite what was just typed (#8879).
+  const [synced, setSynced] = useState(value);
+  if (synced !== value) {
+    setSynced(value);
+    setText(String(value));
+  }
   const commit = () => {
     const n = Number.parseInt(text, 10);
     if (!Number.isFinite(n)) { setText(String(value)); return; }
