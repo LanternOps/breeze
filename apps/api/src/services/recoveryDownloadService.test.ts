@@ -516,6 +516,9 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
         ['a root under a base prefix', 'archive-2025/snapshots/older', 'archive-2025/snapshots/older/files/a.gz'],
         ['an s3:// URI root', 's3://backups/archive-2025/snapshots/older/', 'archive-2025/snapshots/older/files/a.gz'],
         ['a value that does not name the origin\'s root', 'archive-2025', 'snapshots/older/files/a.gz'],
+        ['another snapshot\'s root that merely starts with the origin id', 'base/snapshots/older-v2', 'snapshots/older/files/a.gz'],
+        ['a root with trailing segments after the origin id', 'base/snapshots/older/extra', 'snapshots/older/files/a.gz'],
+        ['no recorded prefix (falls back to the token snapshot\'s bare root)', null, 'snapshots/older/files/a.gz'],
       ])('S3: presigns the external key once under %s', async (_label, originStoragePrefix, expected) => {
         mockCurrentSnapshotS3();
         pushAuthorizedOrigin(originStoragePrefix);
@@ -526,17 +529,23 @@ describe('getAuthenticatedRecoveryDownloadTarget', () => {
         expect(presignedKey()).toBe(expected);
       });
 
-      it('local: reads the external key once under an origin recorded at the bare agent layout', async () => {
+      it.each([
+        ['the bare agent layout', 'snapshots/older', '/var/backups/snapshots/older/files/a.gz'],
+        ['a root under a base prefix', 'archive-2025/snapshots/older', '/var/backups/archive-2025/snapshots/older/files/a.gz'],
+        ['a value that does not name the origin\'s root', 'archive-2025', '/var/backups/snapshots/older/files/a.gz'],
+        ['no recorded prefix', null, '/var/backups/snapshots/older/files/a.gz'],
+      ])('local: reads the external key once under %s', async (_label, originStoragePrefix, expected) => {
         mockCurrentSnapshotLocal(LOCAL_IDENTITY);
         lineageRows.push([{ fileIndexStatus: 'complete' }]);
         lineageRows.push([{ id: 'file-row-1' }]);
-        lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix: 'snapshots/older' }]);
+        lineageRows.push([{ originOrgId: 'org-1', originDeviceId: 'device-1', originStorageIdentity: LOCAL_IDENTITY, originStoragePrefix }]);
 
         const result = await getAuthenticatedRecoveryDownloadTarget(baseTokenRow as any, 'snapshots/older/files/a.gz');
 
         expect(result.unavailable).toBe(false);
+        expect(statMock).toHaveBeenCalledTimes(1);
         const [filePathArg] = (statMock as any).mock.calls[0];
-        expect(filePathArg).toBe('/var/backups/snapshots/older/files/a.gz');
+        expect(filePathArg).toBe(expected);
       });
     });
 
