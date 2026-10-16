@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   pgTable,
   uuid,
@@ -137,7 +138,11 @@ export const dnsFilterIntegrations = pgTable('dns_filter_integrations', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
   orgIdIdx: index('dns_filter_integrations_org_id_idx').on(table.orgId),
-  providerIdx: index('dns_filter_integrations_provider_idx').on(table.provider)
+  providerIdx: index('dns_filter_integrations_provider_idx').on(table.provider),
+  // Connection health broken set (migration 2026-12-29-190000).
+  syncErrorIdx: index('dns_filter_integrations_sync_error_idx')
+    .on(table.id)
+    .where(sql`${table.isActive} AND ${table.lastSyncStatus} = 'error'`)
 }));
 
 export const dnsSecurityEvents = pgTable('dns_security_events', {

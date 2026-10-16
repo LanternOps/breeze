@@ -1,6 +1,21 @@
+import type { SQL, SQLWrapper } from 'drizzle-orm';
 import type { Permission } from '../permissions';
 
-export const CONNECTION_SOURCE_KINDS = ['oauth_grant'] as const;   // W2+ appends
+export const CONNECTION_SOURCE_KINDS = [
+  'oauth_grant',
+  // W2: existing integrations (spec §3).
+  'huntress',
+  'sentinelone',
+  'pax8',
+  'unifi',
+  'backup_provider',
+  'edr',
+  'accounting',
+  'dns_filter',
+  'm365_connection',
+  'm365_sync',
+  'ticket_mailbox',
+] as const;
 export type ConnectionSourceKind = (typeof CONNECTION_SOURCE_KINDS)[number];
 export type HealthState = 'healthy' | 'broken' | 'unknown' | 'retired';
 export type HealthSeverity = 'permanent' | 'transient';
@@ -25,7 +40,14 @@ export type HealthObservation = {
 
 export interface HealthSource {
   kind: ConnectionSourceKind;
+  /** Minutes between observations; a multiple of 15 matched to the signal's own cadence (spec §1.3). */
   intervalMinutes: number;
+  /** Connection tables this source covers (source-coverage contract, spec §1.1). */
+  tables: readonly string[];
+  /** Every fixHref / ownerFixHref this source can emit (fix-link contract). */
+  fixHrefs: readonly string[];
+  /** The broken-set query observe() runs; the index contract EXPLAINs it (spec §1.3). */
+  brokenQuery(now: Date): SQL | SQLWrapper;
   observe(now: Date, trackedSourceIds: readonly string[]): Promise<HealthObservation[]>;
 }
 

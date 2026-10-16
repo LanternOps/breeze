@@ -35,6 +35,9 @@ vi.mock('./transitions', () => ({ planTransitions: (...a: unknown[]) => planMock
 import { runKindInSystemScope, runReconcile } from './reconcile';
 import type { HealthSource } from './types';
 
+// The contract fields the reconciler never reads.
+const CONTRACT_STUB = { tables: [] as string[], fixHrefs: [] as string[], brokenQuery: () => ({ getSQL: () => { throw new Error('unused'); } }) } as Pick<HealthSource, 'tables' | 'fixHrefs' | 'brokenQuery'>;
+
 function fakeRedis() {
   const store = new Map<string, string>();
   const ttls = new Map<string, unknown[]>();
@@ -51,6 +54,7 @@ function fakeRedis() {
 const src = (kind: string, intervalMinutes: number): HealthSource => ({
   kind: kind as HealthSource['kind'],
   intervalMinutes,
+  ...CONTRACT_STUB,
   observe: async () => { throw new Error('observe must not be called; runKind is injected'); },
 });
 const okCounts = { opened: 0, resolved: 0, pending: 0, observations: 0 };
@@ -242,6 +246,7 @@ describe('runKindInSystemScope', () => {
     const source: HealthSource = {
       kind: 'oauth_grant',
       intervalMinutes: 15,
+      ...CONTRACT_STUB,
       observe: vi.fn(async () => { calls.push('observe'); return [observation] as never; }),
     };
     loadTrackedMock.mockImplementation(async () => { calls.push('load'); return tracked; });
@@ -264,7 +269,7 @@ describe('runKindInSystemScope', () => {
     hasIncidentsMock.mockResolvedValueOnce(true);
     planMock.mockReturnValue([]);
     applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
-    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: async () => [] };
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: async () => [] };
     const r = await runKindInSystemScope(source, T0, true);
     expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
     expect(r).toMatchObject({ seeded: false });
@@ -274,7 +279,7 @@ describe('runKindInSystemScope', () => {
     loadTrackedMock.mockResolvedValue(tracked);
     planMock.mockReturnValue([]);
     applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
-    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: async () => [] };
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: async () => [] };
     await runKindInSystemScope(source, T0, false);
     expect(hasIncidentsMock).not.toHaveBeenCalled();
     expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
@@ -282,7 +287,7 @@ describe('runKindInSystemScope', () => {
 
   it('returns locked without touching incidents when the per-kind advisory lock is taken', async () => {
     executeMock.mockImplementationOnce(async () => { calls.push('lock'); return [{ acquired: false }]; });
-    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: vi.fn(async () => []) };
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: vi.fn(async () => []) };
     expect(await runKindInSystemScope(source, T0, true)).toBe('locked');
     expect(calls).toEqual(['outside', 'system:connectionHealth.reconcile.oauth_grant', 'lock']);
     expect(source.observe).not.toHaveBeenCalled();
@@ -291,7 +296,7 @@ describe('runKindInSystemScope', () => {
 
   it('propagates an observe failure without applying anything', async () => {
     loadTrackedMock.mockResolvedValue(tracked);
-    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: async () => { throw new Error('boom'); } };
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, ...CONTRACT_STUB, observe: async () => { throw new Error('boom'); } };
     await expect(runKindInSystemScope(source, T0, false)).rejects.toThrow('boom');
     expect(planMock).not.toHaveBeenCalled();
     expect(applyActionsMock).not.toHaveBeenCalled();

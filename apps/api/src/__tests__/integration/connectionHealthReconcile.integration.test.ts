@@ -203,6 +203,9 @@ describe('runReconcile (end to end)', () => {
     const failing: HealthSource = {
       kind: 'oauth_grant',
       intervalMinutes: 15,
+      tables: [],
+      fixHrefs: [],
+      brokenQuery: () => sql`SELECT 1`,
       // A valid new break, then one whose display_name violates the table CHECK:
       // the first insert succeeds, the second fails, the transaction rolls back.
       observe: async () => [
@@ -214,6 +217,9 @@ describe('runReconcile (end to end)', () => {
     const probe: HealthSource = {
       kind: 'probe_kind' as ConnectionSourceKind,
       intervalMinutes: 15,
+      tables: [],
+      fixHrefs: [],
+      brokenQuery: () => sql`SELECT 1`,
       observe: async () => {
         const rows = (await db.execute(sql`SELECT current_setting('statement_timeout') AS v`)) as unknown as Array<{ v: string }>;
         statementTimeout = rows[0]!.v;

@@ -120,6 +120,9 @@ function pairQuery(pairsSql: SQL, now: Date): SQL {
 export const oauthGrantSource: HealthSource = {
   kind: 'oauth_grant',
   intervalMinutes: 15,
+  tables: ['oauth_grants'],
+  fixHrefs: ['/settings/connected-apps', '/account/connected-apps'],
+  brokenQuery: brokenCandidatesQuery,
   async observe(now, trackedSourceIds) {
     // Tracked pairs, validated before any cast; malformed ids are skipped
     // (absent => the reconciler retires them).
