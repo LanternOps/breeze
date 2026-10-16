@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -69,5 +70,45 @@ func TestCheckCaptureAccess_LoginWindowIsPreflightOnly(t *testing.T) {
 	report := CheckCaptureAccess(CaptureConfig{DesktopContext: "login_window"})
 	if report.State != CaptureAccessDenied || report.Reason != "preflight" {
 		t.Fatalf("report = %+v, want denied by preflight", report)
+	}
+}
+
+// The TCC check loop and the capture re-probe call CheckCaptureAccess from
+// separate goroutines; the once-per-process "unverified" warning flag they
+// share must be safe under -race.
+func TestCheckCaptureAccess_ConcurrentUnverifiedWarningIsRaceFree(t *testing.T) {
+	origPreflight, origNames, origPolicy, origMajor := screenRecordingPreflight, namedWindowVisibleFn, sckPolicy, macOSMajorVersion
+	t.Cleanup(func() {
+		screenRecordingPreflight, namedWindowVisibleFn, sckPolicy, macOSMajorVersion = origPreflight, origNames, origPolicy, origMajor
+		captureAccessUnverifiedWarned.Store(false)
+	})
+	// macOS 26: preflight unreliable, no titled window, no recorded session
+	// -> unknown, the state that logs the warning.
+	macOSMajorVersion = 25
+	screenRecordingPreflight = func() bool { return false }
+	namedWindowVisibleFn = func() bool { return false }
+	store := &sckVerdictStore{dir: filepath.Join(t.TempDir(), "Breeze"), uid: os.Getuid()}
+	sckPolicy = sckSessionPolicy{
+		store:       func() (*sckVerdictStore, error) { return store, nil },
+		fingerprint: testFingerprint,
+		now:         time.Now,
+		preflight:   func() bool { return false },
+		latch:       sckPolicy.latch,
+	}
+	captureAccessUnverifiedWarned.Store(false)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if r := CheckCaptureAccess(CaptureConfig{}); r.State != CaptureAccessUnknown {
+				t.Errorf("report = %+v, want unknown", r)
+			}
+		}()
+	}
+	wg.Wait()
+	if !captureAccessUnverifiedWarned.Load() {
+		t.Fatal("unverified warning flag not set after an unknown report")
 	}
 }

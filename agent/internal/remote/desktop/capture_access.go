@@ -11,8 +11,9 @@ package desktop
 // checks now combine only signals that never capture; the one real capture
 // happens when a session opens its capturer and a technician is waiting.
 //
-// This file carries a `unix` build tag so the Linux CI job tests the policy
-// with fakes; capture_darwin.go wires the real signals.
+// This file has no build constraint, so CI on every OS tests the policy with
+// fakes; capture_access_darwin.go (darwin && cgo) wires the real signals and
+// capture_access_other.go covers everything else.
 
 // CaptureAccessState is what the non-capturing signals could establish.
 type CaptureAccessState int
@@ -81,15 +82,16 @@ func (r CaptureAccessReport) Status() CaptureAccessStatus {
 	return CaptureAccessStatus{State: r.State.String(), Reason: r.Reason, CanCapture: r.CanCapture()}
 }
 
-// CanCapture is the value for Capabilities.CanCapture: a session may try
-// unless access is known to be denied. The session's own capture is the
+// CanCapture is the value for Capabilities.CanCapture and for the TCC status's
+// ScreenRecording and RemoteDesktop fields (the state itself travels as
+// ScreenRecordingState): a session may try unless access is known to be denied. The session's own capture is the
 // precise check, and refusing to try would leave a macOS 26 host whose
 // preflight misreports with no way to ever prove the grant.
 func (r CaptureAccessReport) CanCapture() bool { return r.State != CaptureAccessDenied }
 
-// Granted is the value for the TCC status and the consent-dialog gate: only a
-// known grant. An unknown state keeps the "missing permission" guidance and
-// the rate-limited consent request in place.
+// Granted reports a known grant only. The consent-dialog gate
+// (maybeRequestScreenRecording) uses it to skip asking; the TCC status does
+// not, it reports CanCapture.
 func (r CaptureAccessReport) Granted() bool { return r.State == CaptureAccessGranted }
 
 // Denied reports a known denial: the only state in which asking macOS for the

@@ -3195,6 +3195,7 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 			log.Info("TCC permissions received",
 				"uid", s.UID,
 				"screenRecording", sanitized.ScreenRecording,
+				"screenRecordingState", sanitized.ScreenRecordingState,
 				"accessibility", sanitized.Accessibility,
 				"fullDiskAccess", sanitized.FullDiskAccess,
 				"remoteDesktop", sanitized.RemoteDesktop,
