@@ -51,6 +51,7 @@ import {
 } from '../../services/aiChat';
 
 import { fetchAlerts } from '../../store/alertsSlice';
+import { shouldRefreshAlerts, type AlertRefreshTrigger } from './homeAlertsRefresh';
 import { fetchOne as fetchApprovalOne, setFocus as setApprovalFocus } from '../../store/approvalsSlice';
 import { track } from '../../lib/analytics';
 import { reportInternalError } from '../../lib/errorReporting';
@@ -106,6 +107,18 @@ export function HomeScreen() {
   const streamHandleRef = useRef<SseStreamHandle | null>(null);
   const lastUserContentRef = useRef<string | null>(null);
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const alertsFetchedAtRef = useRef(0);
+  // Keeps the header StatusPill's alerts slice fresh on every trigger the
+  // fleet strip's data can change on (#8890). Failures are intentional no-ops.
+  const refreshAlerts = useCallback(
+    (trigger: AlertRefreshTrigger) => {
+      const since = Date.now() - alertsFetchedAtRef.current;
+      if (!shouldRefreshAlerts(trigger, since)) return;
+      alertsFetchedAtRef.current = Date.now();
+      dispatch(fetchAlerts()).unwrap().catch(() => undefined);
+    },
+    [dispatch],
+  );
   const settleRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Bumped on every send / new chat / session switch / unmount. Async work
@@ -225,6 +238,7 @@ export function HomeScreen() {
       const wasBackground = previous === 'background';
       previous = next;
       if (!wasBackground || next !== 'active') return;
+      refreshAlerts('foreground');
       const sid = sessionIdRef.current;
       if (statusRef.current !== 'streaming' || !sid) return;
       streamHandleRef.current?.abort();
@@ -232,15 +246,15 @@ export function HomeScreen() {
       void reconcileFromServer(sid);
     });
     return () => sub.remove();
-  }, [reconcileFromServer]);
+  }, [reconcileFromServer, refreshAlerts]);
 
   // Refresh alerts whenever the Home tab gains focus, not just on first
   // mount. Keeps the StatusPill from going stale after a tab switch.
   // Failures are intentional no-ops; the pill falls back to "all clear".
   useFocusEffect(
     useCallback(() => {
-      dispatch(fetchAlerts()).unwrap().catch(() => undefined);
-    }, [dispatch]),
+      refreshAlerts('focus');
+    }, [refreshAlerts]),
   );
 
   const beginStream = useCallback(
@@ -355,6 +369,8 @@ export function HomeScreen() {
               dispatch(failAssistantMessage({ id: assistantId, error: ev.message }));
               break;
             case 'done':
+              // The turn may have resolved/acknowledged alerts (#8890).
+              refreshAlerts('turn_done');
               commitPick();
               dispatch(finishAssistantMessage({
                 id: assistantId,
@@ -417,6 +433,7 @@ export function HomeScreen() {
         onDone: () => {
           // `done` SSE event already finishes the message. This fires on
           // socket close without a `done` event — finish defensively.
+          refreshAlerts('turn_done');
           commitPick();
           dispatch(finishAssistantMessage({
             id: assistantId,
@@ -425,7 +442,7 @@ export function HomeScreen() {
         },
       });
     },
-    [dispatch, reconcileFromServer],
+    [dispatch, reconcileFromServer, refreshAlerts],
   );
 
   const handleSend = useCallback(
