@@ -104,6 +104,9 @@ export function SavedFilterList({
     setFormDescription(filter.description || '');
     setFormConditions(filter.conditions);
     setFormError(null);
+    // In the All-organizations view, start the copy in the source filter's org.
+    // The hook ignores a pick that is not in the current org list.
+    fleet.setOrgId(filter.orgId);
     setEditingFilter(null);
     setIsCreating(true);
   };
@@ -279,7 +282,10 @@ export function SavedFilterList({
             </button>
             <button
               type="submit"
-              disabled={formSubmitting || (!editingFilter && fleet.needsOrgSelection)}
+              // Disabled only where the picker and its hint explain why. In an
+              // unresolved org scope (loading, failed, empty) a click reaches the
+              // handleSubmit guard, which says to select an organization.
+              disabled={formSubmitting || (!editingFilter && fleet.isFleetScope && fleet.needsOrgSelection)}
               className="h-10 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
             >
               {formSubmitting
