@@ -1,0 +1,85 @@
+# Agent: Encrypted Client Hello (ECH) for control-plane TLS — design
+
+**Issue:** #8869 · **Related:** #8868 (detect ISP filter), #8870 (second domain), #8872 (abuse contact surface)
+**Date:** 2026-10-16 · **Status:** draft for builder check
+
+## Intent and why
+
+On 2026-10-15 the hosted control-plane domain was rated "Malicious" by two commercial reputation feeds, and consumer/SMB ISP gateways running CUJO AI security features (Comcast xFi Advanced Security, Spectrum Security Shield; Rogers ships the same product) began hijacking every agent connection. The filter matches the **plaintext hostname in the TLS ClientHello (SNI)**, on **every port** (443 and Cloudflare's alternate HTTPS ports were tested), and answers in plaintext with a `302` to its block page. DNS is untouched. The agent logs `tls: first record does not look like a TLS handshake` and the device goes offline. Nothing server-side can reach those devices, and delisting is a slow, opaque process with no public appeal.
+
+TLS Encrypted Client Hello removes the signal the filter keys on: the real hostname travels encrypted; the wire shows only the edge's public cover name (`cloudflare-ech.com`), which an ISP cannot block without breaking a large share of the web. The hosted zone already publishes an ECH config in its DNS HTTPS record; the agent builds on Go 1.26, whose `crypto/tls` has had client-side ECH since 1.23. A spike (2026-10-16) got `ECHAccepted=true` against both regions with no infrastructure change.
+
+Second, lesser motive: a cheap, generic detector for "a filter answered on 443", which #8868 also wants.
+
+## Goals
+
+1. An agent behind an SNI-blocking gateway reconnects to the control plane **without any human action** on the device or the gateway, within a few retry cycles.
+2. **Zero regression for every other agent.** A healthy agent's connections are byte-for-byte what they are today unless the filter signature is observed.
+3. The fleet can be told to stop using ECH **without a release** (server-pushed kill switch).
+4. Operators can see which devices are on ECH (health payload), so the rollout is observable.
+5. Self-hosted deployments whose edge publishes no ECH config get exactly today's behaviour; no new required configuration.
+
+## Non-goals
+
+- Privacy as a feature. The hostname is still visible on the first (plain) attempt; the goal is reachability, not hiding the domain from everyone.
+- ECH for policy-gated third-party egress (`netpolicy` clients used by tools), the UniFi collector, backup storage sessions, the network diagnostic, or the PowerShell installer one-liner (Schannel has no ECH; installs on a filtered network need the MSI, whose enrollment runs through the agent binary — document that in #8869's release note).
+- Working around DNS-based blocking. If a filter starts poisoning DNS for the hostname, that is #8870's problem (second domain + `backup_server_url`), not this one.
+- QUIC/HTTP3.
+
+## Anti-goals (what would make this a failure even if it "works")
+
+- **An agent that is less reachable because of ECH.** Any ECH-path failure — DoH unreachable, record missing, config rejected, handshake error, timeout — must land on plain SNI on the *next attempt at the latest*, with no extra backoff. A broken ECH config must never be retried forever.
+- A slow DoH lookup delaying a heartbeat or a WebSocket reconnect. Key lookup never sits in front of a dial.
+- Behaviour change for self-hosters with corporate TLS inspection: those proxies terminate TLS and never produce the filter signature, so ECH must never engage there (and if it somehow does, the fallback rule above still saves them).
+- Persisting a bad state across restarts (e.g. "ECH on" with a dead config and no cooldown).
+
+## Constraints
+
+- Go 1.26, standard library TLS only; no new third-party modules. HTTPS-record lookup goes over DNS-over-HTTPS with the JSON API (`Accept: application/dns-json`), parsing the presentation-format `ech=` SvcParam; avoid pulling in a wire-format DNS parser.
+- DoH resolvers: `https://cloudflare-dns.com/dns-query`, then `https://dns.google/resolve` as fallback. Both are hard to block and both serve HTTPS records. The DoH request itself goes through the normal dialer (plain SNI to the resolver) and through `netcache`, so a DNS outage does not break the lookup path more than it breaks everything else.
+- Cover/public name comes from the ECH config itself (Go reads it from the config list); the agent never hard-codes `cloudflare-ech.com`.
+- Must coexist with the custom-CA `tls.Config` self-hosters set (`heartbeat.go:1075`, `watchdog/failover.go:175`, `websocket/client.go:388`): the ECH config list is an *addition* to that config, cloned per attempt, never a replacement.
+- Strict host policy for hosted builds (`hostpolicy`) is unaffected: the URL/host the agent talks to does not change.
+- No change to the MSI, the installer scripts, or enrollment flow.
+
+## Decided behaviour
+
+### 1. Plain first; ECH only after the filter signature
+
+Per host (control-plane host and backup host separately), the dialer has three modes: `plain` (default), `ech`, `cooldown`.
+
+- In `plain`, dial exactly as today. If the TLS handshake fails with `*tls.RecordHeaderError` whose `RecordHeader` begins with `HTTP/` (a plaintext HTTP answer on the TLS port), record a **filter signature**. After **2 signatures within 10 minutes** (my call; one could be a captive portal), switch the host to `ech` and schedule an ECH config fetch. The signature counter also feeds #8868's health message ("blocked by a network security filter").
+- In `ech`, each dial: TCP connect (via `netcache` as today) → `tls.Client` with the host's normal config **plus** `EncryptedClientHelloConfigList`. On success, stay in `ech` (sticky while it works) and set `ech_active=true`. On `*tls.ECHRejectionError` with a non-empty `RetryConfigList`: persist it and retry **once, immediately** with the new list. On any other ECH-path error (no cached config, DoH failed, rejection with empty retry list, handshake error): **fall back to plain within the same dial** (one more TCP connect), and count an ECH failure.
+- **3 consecutive ECH failures** → `cooldown` for **1 hour** (my call), during which the host is dialled plain only; after cooldown, back to `plain` with the signature counter reset (so the filter must be observed again before ECH re-engages).
+- A successful **plain** handshake while in `ech` mode (e.g. the filter was turned off) moves the host back to `plain`. This keeps the healthy state the default.
+
+### 2. Key discovery and caching
+
+- `internal/ech` fetches the HTTPS record for the host over DoH, extracts `ech=`, base64-decodes it, and stores `{host, configList, fetchedAt, ttl}` in `<data dir>/ech-cache.json` (same tmp+rename pattern as `netcache`). Fetch is triggered when a host enters `ech` mode and when a cached entry is older than its TTL (min 5 min, max 24 h); it runs in the background and never blocks a dial. A dial in `ech` mode with no cached config falls back to plain for that attempt.
+- `RetryConfigList` from a rejection replaces the cached list (that is the edge telling us the current key).
+
+### 3. Kill switch and opt-out
+
+- Server-pushed: a boolean `echEnabled` on the heartbeat response (same channel that already carries `backup_server_url`). Default true when absent (so older API versions don't disable it). When false, all hosts are forced to `plain` and no DoH fetches happen. API side: driven by env `AGENT_ECH_ENABLED` (default `true`), no UI for v1.
+- Local: `ech: false` in `agent.yaml` (default true). Either switch wins when off.
+
+### 4. Observability
+
+- `ech_active` (bool) and `filter_signature_seen_at` (timestamp, nullable) in the health snapshot sent with the heartbeat; stored with the existing device health JSON. No web UI work in v1 beyond what the existing health JSON viewer shows.
+- Logs: one INFO per mode change per host (`plain→ech`, `ech→cooldown`, …), one WARN per filter-signature streak (reuse the `netcache` once-per-streak latch pattern), DEBUG for individual ECH attempts. No per-dial INFO noise.
+
+### 5. Where it plugs in
+
+Control-plane transports only: the heartbeat transport (`agent/internal/heartbeat/heartbeat.go` ~1067–1075), the WebSocket dialer (`agent/internal/websocket/client.go` ~386, gorilla `Dialer.NetDialTLSContext`), the watchdog failover probe (`agent/internal/watchdog/failover.go` ~173–175), and the log shipper's transport. Each gets a `DialTLSContext` from one shared `ech.Dialer` that wraps `netcache.Shared().DialContext` and takes the caller's `tls.Config` as the base. `netpolicy` and all other transports are untouched.
+
+## Left to the builder
+
+- Package layout and naming inside `agent/internal/ech` (state machine, DoH client, cache, dialer wrapper), as long as the dial wrapper is independently testable with a fake TCP dialer and a fake DoH responder.
+- Exact representation of the per-host state (in-memory is fine; only the config list cache is persisted — mode is *not* persisted across restarts, which is deliberate: a restart starts plain).
+- How the heartbeat-response flag reaches the dialer (a setter on the shared dialer is fine).
+- Test strategy details. Required coverage: plain → signature → ech transition; ech success sticky; rejection-with-retry path; every ECH failure class falling back to plain in the same dial; cooldown entry/exit; kill switch (both) forcing plain; DoH timeout never delaying a dial; self-hoster custom CA preserved on the ECH path; no behaviour change on a host that never sees the signature (a byte-equal dial path assertion is ideal).
+- Lab verification recipe: a local listener that answers 443 with the plaintext 302 (for the signature) plus a real ECH handshake against the hosted edge; and one real run on a filtered gateway (a currently blocked customer PC is available for a supervised test).
+
+## Rollout
+
+Ships in the next agent release behind the server flag defaulting on. Watch `ech_active` counts and the WS reconnect rate after promote; the kill switch is the rollback. Release note must say: Windows installer one-liner cannot use ECH; use the MSI on filtered networks.
