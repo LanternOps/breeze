@@ -96,7 +96,7 @@ var allCommandTypes = []string{
 	tools.CmdBMRRecover, tools.CmdBareMetalRebuild,
 
 	// handlers_user.go init()
-	CmdNotifyUser, CmdTrayUpdate,
+	CmdNotifyUser, CmdTrayUpdate, CmdRetractMessage,
 	// caller_verify.go (#6354 W02)
 	cmdCallerVerify,
 

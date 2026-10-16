@@ -25,6 +25,43 @@ type helperProbe struct {
 	// beforePresented runs after message_show arrives and before the
 	// correlated message_presented reply (e.g. a racing user ack).
 	beforePresented func(show ipc.MessageShow)
+	// order, when set, receives "<label>:<type>" for every envelope this
+	// helper receives, in one log shared across probes (ordering assertions).
+	order *orderLog
+	label string
+}
+
+// orderLog is one ordered event log shared by several helperProbes.
+type orderLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (o *orderLog) add(ev string) {
+	o.mu.Lock()
+	o.events = append(o.events, ev)
+	o.mu.Unlock()
+}
+
+func (o *orderLog) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.events...)
+}
+
+func (o *orderLog) indexOf(ev string) int {
+	for i, got := range o.snapshot() {
+		if got == ev {
+			return i
+		}
+	}
+	return -1
+}
+
+func (p *helperProbe) trackOrder(o *orderLog, label string) {
+	p.mu.Lock()
+	p.order, p.label = o, label
+	p.mu.Unlock()
 }
 
 func (p *helperProbe) setPresent(status string, before func(ipc.MessageShow)) {
@@ -50,7 +87,11 @@ func newHelperProbe(t *testing.T, role ipc.HelperRole, username, winSession stri
 			}
 			p.mu.Lock()
 			p.got = append(p.got, env)
+			order, label := p.order, p.label
 			p.mu.Unlock()
+			if order != nil {
+				order.add(label + ":" + env.Type)
+			}
 			switch env.Type {
 			case ipc.TypeMessageShow:
 				var show ipc.MessageShow
@@ -58,11 +99,16 @@ func newHelperProbe(t *testing.T, role ipc.HelperRole, username, winSession stri
 				p.mu.Lock()
 				status, before := p.presentStatus, p.beforePresented
 				p.mu.Unlock()
-				if before != nil {
-					before(show)
-				}
-				payload, _ := json.Marshal(ipc.MessagePresented{MessageID: show.MessageID, Status: status})
-				_ = p.client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeMessagePresented, Payload: payload})
+				// Reply off the receive loop: a slow helper must still
+				// "receive" later envelopes (e.g. message_retract) on time, so
+				// the shared order log reflects arrival, not reply latency.
+				go func(id string) {
+					if before != nil {
+						before(show)
+					}
+					payload, _ := json.Marshal(ipc.MessagePresented{MessageID: show.MessageID, Status: status})
+					_ = p.client.Send(&ipc.Envelope{ID: id, Type: ipc.TypeMessagePresented, Payload: payload})
+				}(env.ID)
 			case ipc.TypeNotify:
 				payload, _ := json.Marshal(ipc.NotifyResult{Delivered: true})
 				_ = p.client.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeNotifyResult, Payload: payload})
