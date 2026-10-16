@@ -83,6 +83,10 @@ describe('ReportEditPage — template-born reports render their own form (#8796)
     const contact = await screen.findByTestId('report-recipient-contact-c-1');
     expect(contact.querySelector('input')).toBeChecked();
     expect(screen.getByTestId('report-builder-submit')).toBeEnabled();
+    // Nor is the hidden builder preview generated behind the user's back. The
+    // builder debounces it by 300 ms; wait past that before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(fetchWithAuth.mock.calls.some(([url]) => url === '/reports/generate')).toBe(false);
   });
 
   it('saving still carries the template options under their own keys', async () => {
@@ -109,5 +113,7 @@ describe('ReportEditPage — template-born reports render their own form (#8796)
     render(<ReportEditPage reportId="rep-1" />);
 
     expect(await screen.findByTestId('report-builder-generic-sections')).toBeInTheDocument();
+    // The control for the no-generate assertion above: this one previews.
+    await waitFor(() => expect(fetchWithAuth.mock.calls.some(([url]) => url === '/reports/generate')).toBe(true));
   });
 });

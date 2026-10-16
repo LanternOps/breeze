@@ -139,6 +139,36 @@ describe('ReportTemplates — template dialogs ask for recipients (#8796)', () =
     );
   });
 
+  it('one refused contact does not stop the others from being attached', async () => {
+    fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
+      if (url === '/orgs/organizations/org-1/contacts') {
+        return ok({
+          data: [
+            { id: 'c-1', name: 'Pat Owner', email: 'pat@acme.test' },
+            { id: 'c-3', name: 'Sam Admin', email: 'sam@acme.test' },
+          ],
+        });
+      }
+      if (url === '/reports' && init?.method === 'POST') return ok({ id: 'rep-9' }, 201);
+      if (url === '/reports/rep-9/recipients' && init?.method === 'POST') {
+        const { contactId } = JSON.parse((init as { body: string }).body);
+        return contactId === 'c-1' ? fail(404, { error: 'Contact not found' }) : ok({ id: 'r-3' }, 201);
+      }
+      return fail(404);
+    });
+    const user = userEvent.setup();
+    render(<ReportTemplates />);
+    await useTemplate('Intune Endpoint Management Review');
+    const delivery = screen.getByTestId('template-delivery');
+    await user.click(within(await within(delivery).findByTestId('template-delivery-contact-c-1')).getByRole('checkbox'));
+    await user.click(within(delivery).getByTestId('template-delivery-contact-c-3').querySelector('input')!);
+    await user.click(screen.getByTestId('endpoint-management-create-report'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/reports/rep-9/edit'));
+    expect(posts('/reports/rep-9/recipients').map((call) => bodyOf(call).contactId)).toEqual(['c-1', 'c-3']);
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
   it('an invalid address is refused, not added', async () => {
     const user = userEvent.setup();
     render(<ReportTemplates />);

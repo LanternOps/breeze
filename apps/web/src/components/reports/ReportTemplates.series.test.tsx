@@ -112,6 +112,30 @@ describe('ReportTemplates — one report per organization (W03)', () => {
     expect(JSON.parse((posts('/reports/series')[0]![1] as { body: string }).body).schedule).toBe('weekly');
   });
 
+  // Review follow-up: contacts belong to one organization. A contact ticked for
+  // the first org picked must never be attached to a report for the next one.
+  it('switching the organization in the dialog drops contacts picked for the previous one', async () => {
+    const user = userEvent.setup();
+    fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
+      if (url === '/orgs/organizations/o-1/contacts') return ok({ data: [{ id: 'c-a', name: 'Acme Owner', email: 'a@acme.test' }] });
+      if (url === '/orgs/organizations/o-2/contacts') return ok({ data: [{ id: 'c-b', name: 'Birch Owner', email: 'b@birch.test' }] });
+      if (url === '/reports' && init?.method === 'POST') return ok({ id: 'rep-3' }, 201);
+      if (url === '/reports/rep-3/recipients' && init?.method === 'POST') return ok({}, 201);
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+    });
+    render(<ReportTemplates />);
+    await useTemplate('Hardware Lifecycle Report');
+    const picker = within(screen.getByTestId('template-org-picker')).getByRole('combobox');
+    await user.selectOptions(picker, 'o-1');
+    await user.click(within(await screen.findByTestId('template-delivery-contact-c-a')).getByRole('checkbox'));
+    await user.selectOptions(picker, 'o-2');
+    expect(within(await screen.findByTestId('template-delivery-contact-c-b')).getByRole('checkbox')).not.toBeChecked();
+    await user.click(screen.getByTestId('lifecycle-create-report'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/reports'));
+    expect(JSON.parse((posts('/reports')[0]![1] as { body: string }).body)).toMatchObject({ orgId: 'o-2' });
+    expect(posts('/reports/rep-3/recipients')).toHaveLength(0);
+  });
+
   // W03 final review: a type that cannot fan out (a managed-evidence type)
   // must still require an org up front, as before W03.
   it('a template that cannot fan out still asks for an organization first', async () => {
@@ -131,7 +155,17 @@ describe('ReportTemplates — one report per organization (W03)', () => {
     const covers = screen.getByTestId('template-covers-backup_status');
     await user.click(within(covers).getByTestId('covers-mode-series'));
     // One-time template: the series schedule is never defaulted.
-    expect(within(covers).getByTestId('series-schedule-select')).toHaveValue('');
+    const select = within(covers).getByTestId('series-schedule-select');
+    expect(select).toHaveValue('');
+    // The single-org delivery block steps aside for the series recipients.
+    expect(screen.queryByTestId('template-delivery')).toBeNull();
+    await user.selectOptions(select, 'weekly');
+    await user.click(screen.getByTestId('backup-status-create-report'));
+    await waitFor(() => expect(posts('/reports/series')).toHaveLength(1));
+    expect(posts('/reports')).toHaveLength(0);
+    const body = JSON.parse((posts('/reports/series')[0]![1] as { body: string }).body);
+    expect(body).toMatchObject({ type: 'backup_status', schedule: 'weekly', targetMode: 'all' });
+    expect(body.config).not.toHaveProperty('emailRecipients');
   });
 
   // Stack check: the Covers + recipients fields make the modal taller than a

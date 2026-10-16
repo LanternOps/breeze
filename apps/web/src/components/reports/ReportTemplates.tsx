@@ -93,7 +93,7 @@ import {
 } from './TemplateDeliveryFields';
 import { hasTemplateOptionsForm } from './templateReportTypes';
 import { showToast } from '../shared/Toast';
-import { runAction } from '@/lib/runAction';
+import { ActionError, runAction } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { asList } from '@/lib/asList';
 import { useTranslation } from 'react-i18next';
@@ -724,11 +724,16 @@ export default function ReportTemplates() {
     setBuilderOpen(true);
   }, []);
 
-  /** Attach org contacts to a just-created report, in order; false on the
-   *  first failure (that one is reported once by the caller, not per contact). */
+  /**
+   * Attach org contacts to a just-created report. Every contact is tried (one
+   * refused contact must not cost the others); false when any failed. API
+   * refusals are reported once by the caller rather than per contact — a
+   * network failure still gets runAction's own toast. An expired session
+   * (401) is not a recipient failure: it redirects and rethrows.
+   */
   const attachContactRecipients = useCallback(
-    async (reportId: string | undefined, contactIds: string[]): Promise<boolean> => {
-      if (!reportId) return false;
+    async (reportId: string, contactIds: string[]): Promise<boolean> => {
+      let allAttached = true;
       for (const contactId of contactIds) {
         try {
           await runAction({
@@ -738,14 +743,18 @@ export default function ReportTemplates() {
                 body: JSON.stringify({ contactId })
               }),
             errorFallback: t('reports.reportBuilder.recipients.updateFailed'),
-            suppressErrorToast: () => true
+            suppressErrorToast: () => true,
+            onUnauthorized: () => {
+              void navigateTo('/login', { replace: true });
+            }
           });
         } catch (err) {
+          if (err instanceof ActionError && err.status === 401) throw err;
           console.warn('[ReportTemplates] could not attach a report recipient', { reportId, contactId, err });
-          return false;
+          allAttached = false;
         }
       }
-      return true;
+      return allAttached;
     },
     [t]
   );
@@ -857,10 +866,16 @@ export default function ReportTemplates() {
         // say so and open that report, where its delivery section can finish
         // the job, instead of landing on the list as if all went well.
         if (singleOrg && singleOrg.contactIds.length > 0) {
-          const attached = await attachContactRecipients(created?.id, singleOrg.contactIds);
+          const reportId = created?.id;
+          if (!reportId) {
+            // The create succeeded but named no report to attach to (never
+            // expected from POST /reports, which returns the row).
+            console.error('[ReportTemplates] report created without an id; recipients not attached', { name, created });
+          }
+          const attached = reportId ? await attachContactRecipients(reportId, singleOrg.contactIds) : false;
           if (!attached) {
             showToast({ type: 'error', message: t('reports.reportTemplates.delivery.recipientsFailed', { name }) });
-            void navigateTo(created?.id ? `/reports/${created.id}/edit` : '/reports');
+            void navigateTo(reportId ? `/reports/${reportId}/edit` : '/reports');
             return;
           }
         }

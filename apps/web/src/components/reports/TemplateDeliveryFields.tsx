@@ -105,11 +105,13 @@ export function TemplateDeliveryFields({
     fetchWithAuth(`/orgs/organizations/${orgId}/contacts`, { orgIdOverride: orgId })
       .then(async (response) => {
         if (!response.ok) throw new Error(`contacts ${response.status}`);
-        const payload = (await response.json()) as { data?: ContactOption[] };
+        const payload = (await response.json()) as { data?: unknown };
+        // A body without a contact list is a failure, not an empty organization.
+        if (!Array.isArray(payload.data)) throw new Error('contacts response has no data array');
         if (!active) return;
         setContactsState({
           status: 'ready',
-          contacts: (payload.data ?? []).filter((contact) => Boolean(contact.email)),
+          contacts: (payload.data as ContactOption[]).filter((contact) => Boolean(contact.email)),
         });
       })
       .catch((err: unknown) => {
@@ -139,7 +141,8 @@ export function TemplateDeliveryFields({
     }
     setEmailInvalid(false);
     setEmailInput('');
-    if (!value.emailRecipients.includes(trimmed)) {
+    const lower = trimmed.toLowerCase();
+    if (!value.emailRecipients.some((email) => email.toLowerCase() === lower)) {
       onChange({ ...value, emailRecipients: [...value.emailRecipients, trimmed] });
     }
   };
