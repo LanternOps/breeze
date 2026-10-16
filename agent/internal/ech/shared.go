@@ -9,8 +9,11 @@ import (
 )
 
 var (
-	sharedOnce sync.Once
-	shared     *Dialer
+	// sharedMu guards shared. A plain mutex (rather than sync.Once) lets
+	// SetSharedForTest swap the singleton race-free; Shared is called once per
+	// transport build and once per heartbeat, never per dial.
+	sharedMu sync.Mutex
+	shared   *Dialer
 )
 
 // Shared is the process-wide ECH dialer. Like netcache.Shared it does not
@@ -20,14 +23,16 @@ var (
 // call Configure(cfg.ECH, cfg.ECHServerEnabled) with the config it already
 // holds.
 func Shared() *Dialer {
-	sharedOnce.Do(func() {
+	sharedMu.Lock()
+	defer sharedMu.Unlock()
+	if shared == nil {
 		shared = New(Options{
 			TCPDial:       netcache.Shared().DialContext,
 			Cache:         NewCache(filepath.Join(config.GetDataDir(), "ech-cache.json")),
 			LocalEnabled:  true,
 			ServerEnabled: true,
 		})
-	})
+	}
 	return shared
 }
 
