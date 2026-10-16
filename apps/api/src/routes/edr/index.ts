@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { authMiddleware, requireScope } from '../../middleware/auth';
 import { edrProviderCatalogRoutes } from './providers';
 import { edrConnectionRoutes } from './connections';
+import { edrConnectionPushRoutes } from './connectionPush';
 import { edrTenantRoutes } from './tenants';
 import { edrEndpointRoutes } from './endpoints';
 import { edrDetectionRoutes } from './detections';
@@ -19,6 +20,7 @@ edrRoutes.use('*', requireScope('organization', 'partner', 'system'));
 
 edrRoutes.route('/', edrProviderCatalogRoutes);
 edrRoutes.route('/', edrConnectionRoutes);
+edrRoutes.route('/', edrConnectionPushRoutes);
 edrRoutes.route('/', edrTenantRoutes);
 edrRoutes.route('/', edrEndpointRoutes);
 edrRoutes.route('/', edrDetectionRoutes);

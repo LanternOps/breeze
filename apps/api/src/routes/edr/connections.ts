@@ -21,6 +21,8 @@ import { buildEdrAdapterContext } from '../../services/edrProviders/context';
 import { capabilitySnapshot } from '../../services/edrProviders/capabilities';
 import type { EdrProviderAdapter } from '../../services/edrProviders/types';
 import { enqueueEdrSync } from '../../jobs/edrProviderSync';
+import { readLastEdrHintAt } from '../../services/edrProviders/hints';
+import { getRedis } from '../../services/redis';
 import {
   EDR_CONNECTION_PUBLIC_SELECT,
   isGateFailure,
@@ -95,6 +97,15 @@ function checkBaseUrl(adapter: EdrProviderAdapter, baseUrl: string | undefined |
   return v.ok ? null : `Invalid Access URL: ${v.reason}`;
 }
 
+function pushSupported(provider: string): boolean {
+  try {
+    const a = getEdrProvider(provider);
+    return typeof a.registerPush === 'function' && typeof a.verifyWebhook === 'function';
+  } catch {
+    return false;
+  }
+}
+
 async function enqueueBoth(connectionId: string): Promise<string[]> {
   // Outside every DB context: the queue is instrumented with assertOutsideHeldDbContext.
   return runOutsideDbContext(async () => [
@@ -117,7 +128,16 @@ edrConnectionRoutes.get(
       .from(edrConnections)
       .where(eq(edrConnections.partnerId, gate.partnerId))
       .orderBy(edrConnections.name);
-    return c.json({ data: rows });
+    // W03 PR-B: push UI fields. `lastHintAt` is display-only (Redis, best
+    // effort; the cleared marker cannot carry it), falling back to an unacked marker.
+    const lastHints = await runOutsideDbContext(() => readLastEdrHintAt(rows.map((r) => r.id), getRedis()));
+    return c.json({
+      data: rows.map((r) => ({
+        ...r,
+        pushSupported: pushSupported(r.provider),
+        lastHintAt: lastHints.get(r.id) ?? r.pendingHintAt?.toISOString?.() ?? null,
+      })),
+    });
   },
 );
 
