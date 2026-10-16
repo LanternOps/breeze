@@ -149,14 +149,14 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
-### v0.122.1 — installer token default, 65 newly passed API settings, Partner API ticket settings
+### v0.122.1 — installer token default, 63 newly passed API settings, Partner API ticket settings
 
 The [v0.122.1 Compose files](https://github.com/LanternOps/breeze/blob/v0.122.1/docker-compose.yml) change the `api` environment:
 
 | Change | Required action |
 |---|---|
 | `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` defaults to `10080` (7 days) in both files; it was `1440` (1 day). | Nothing if you want the new default. To keep 1 day, set `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES=1440` in `.env`. Values above `43200` (30 days) are clamped. See [the v0.122.1 notes](#v01221--remote-desktop-clipboard-v2-diagnostic-file-access-partner-api-tickets-restore-integrity). |
-| Both files pass 65 more variables to the API: retention windows, agent ingest quotas and rate limits, screenshot and log-forwarding caps, `DB_POOL_MAX`, the offboarding drain window, the public download key TTL and login lockout. Each is passed as `${VAR:-}`, so an unset value keeps the built-in default. | A value already in your `.env` that Compose used to ignore now takes effect. Check `.env` for stale entries before upgrading. |
+| Both files pass 63 more variables to the API: retention windows, agent ingest quotas and rate limits, screenshot and log-forwarding caps, `DB_POOL_MAX`, the offboarding drain window, the public download key TTL and login lockout. Each is passed as `${VAR:-}`, so an unset value keeps the built-in default. | A value already in your `.env` that Compose used to ignore now takes effect. Check `.env` for stale entries before upgrading. |
 | New optional settings are mapped in both files: `PATCH_REPORT_RETENTION_DAYS`, `PATCH_REPORT_ORPHAN_MIN_AGE_MS`, `DB_POOL_ACQUIRE_TIMEOUT_MS` and `DB_TIMER_LAG_GRACE_MS`. | Copy the lines into your own Compose file if you want to set any of them. See [Environment Variables](/deploy/environment/). |
 | `PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR`, `PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR`, `PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED` and `PARTNER_API_IDEMPOTENCY_RETENTION_DAYS` are mapped in the root `docker-compose.yml` only in v0.122.1; `deploy/docker-compose.prod.yml` maps them from the next release. | On v0.122.1 with `deploy/docker-compose.prod.yml`, add them to the `api` service's `environment:` block if you need to change them. The defaults apply without them. |
 | `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` is not passed to the api container by either v0.122.1 Compose file; both map it from the next release. | On v0.122.1, add it to the `api` service's `environment:` block if you want to change the default of `3`. |
