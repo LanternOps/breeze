@@ -295,29 +295,38 @@
     "saving": "Kaydediliyor...",
     "saveSettings": "Ayarları kaydet"
   },
-  "connectorStatusPanel": {
-    "healthy": "Sağlıklı",
-    "degraded": "Bozulmuş",
-    "paused": "Duraklatıldı",
-    "connectorStatus": "Bağlayıcı durumu",
-    "trackIntegrationHealthAndRecentActivityAtA": "Entegrasyon durumunu ve son etkinlikleri bir bakışta takip edin. ",
-    "refreshAll": "Tümünü yenile ",
-    "integration": "Entegrasyon",
-    "health": "Sağlık",
-    "lastActivity": "Son etkinlik",
-    "errors": "Hatalar",
-    "syncNow": "Şimdi senkronize et ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "İzleme",
-      "webhooks": "Web kancaları",
-      "backup": "Yedekleme"
+  "connectionHealthPanel": {
+    "title": "Bağlantı durumu",
+    "allHealthy": "Tüm bağlantılar sağlıklı",
+    "loadError": "Bağlantı durumu yüklenemedi.",
+    "retry": "Yeniden dene",
+    "since": "{{time}} beri",
+    "fix": "Düzelt",
+    "truncated": "İlk {{count}} gösteriliyor",
+    "recentlyResolved": "Yakın zamanda çözülenler ({{count}})",
+    "resolution": {
+      "recovered": "Düzeldi",
+      "retired": "Kullanımdan kaldırıldı"
     },
-    "activity": {
-      "threeMinutesAgo": "3 dakika önce",
-      "elevenMinutesAgo": "11 dk önce",
-      "fiveMinutesAgo": "5 dk önce",
-      "oneDayAgo": "1 gün önce"
+    "condition": {
+      "sync_failed": "Eşitleme başarısız",
+      "reauth_required": "Yeniden yetkilendirme gerekli",
+      "disconnected": "Bağlantı kesildi",
+      "error": "Hata",
+      "mailbox_error": "Posta kutusu hatası",
+      "poll_failing": "Yoklama başarısız",
+      "needs_consent": "Onay gerekli",
+      "degraded": "Performans düştü",
+      "suspended": "Askıya alındı",
+      "grant_missing": "İzin eksik",
+      "grant_unexpected": "Beklenmeyen izin",
+      "manifest_stale": "Bildirim dosyası güncel değil",
+      "application_token_invalid": "Uygulama belirteci geçersiz",
+      "tenant_mismatch": "Kiracı uyuşmuyor",
+      "grant_reconciliation_unavailable": "İzin denetimi kullanılamıyor",
+      "grant_revoked_reuse": "İzin iptal edildi (belirteç yeniden kullanımı)",
+      "grant_revoked": "İzin iptal edildi",
+      "unknown": "İlgilenilmesi gerekiyor"
     }
   },
   "googleWorkspaceIntegration": {

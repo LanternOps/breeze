@@ -295,29 +295,38 @@
     "saving": "Saving...",
     "saveSettings": "Save settings"
   },
-  "connectorStatusPanel": {
-    "healthy": "Healthy",
-    "degraded": "Degraded",
-    "paused": "Paused",
-    "connectorStatus": "Connector status",
-    "trackIntegrationHealthAndRecentActivityAtA": "Track integration health and recent activity at a glance. ",
-    "refreshAll": "Refresh all ",
-    "integration": "Integration",
-    "health": "Health",
-    "lastActivity": "Last activity",
-    "errors": "Errors",
-    "syncNow": "Sync now ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Monitoring",
-      "webhooks": "Webhooks",
-      "backup": "Backup"
+  "connectionHealthPanel": {
+    "title": "Connection health",
+    "allHealthy": "All connections are healthy",
+    "loadError": "Could not load connection health.",
+    "retry": "Retry",
+    "since": "since {{time}}",
+    "fix": "Fix",
+    "truncated": "Showing the first {{count}}",
+    "recentlyResolved": "Recently resolved ({{count}})",
+    "resolution": {
+      "recovered": "Recovered",
+      "retired": "Retired"
     },
-    "activity": {
-      "threeMinutesAgo": "3m ago",
-      "elevenMinutesAgo": "11m ago",
-      "fiveMinutesAgo": "5m ago",
-      "oneDayAgo": "1d ago"
+    "condition": {
+      "sync_failed": "Sync failed",
+      "reauth_required": "Re-authorization required",
+      "disconnected": "Disconnected",
+      "error": "Error",
+      "mailbox_error": "Mailbox error",
+      "poll_failing": "Polling failing",
+      "needs_consent": "Consent needed",
+      "degraded": "Degraded",
+      "suspended": "Suspended",
+      "grant_missing": "Grant missing",
+      "grant_unexpected": "Unexpected grant",
+      "manifest_stale": "Manifest out of date",
+      "application_token_invalid": "Application token invalid",
+      "tenant_mismatch": "Tenant mismatch",
+      "grant_reconciliation_unavailable": "Grant check unavailable",
+      "grant_revoked_reuse": "Grant revoked (token reuse)",
+      "grant_revoked": "Grant revoked",
+      "unknown": "Needs attention"
     }
   },
   "googleWorkspaceIntegration": {

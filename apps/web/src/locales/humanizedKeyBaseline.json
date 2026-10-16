@@ -1976,8 +1976,6 @@
   "integrations.communicationIntegrations.slackChannel",
   "integrations.communicationIntegrations.teamsChannel",
   "integrations.communicationIntegrations.testNotification",
-  "integrations.connectorStatusPanel.connectorStatus",
-  "integrations.connectorStatusPanel.lastActivity",
   "integrations.googleWorkspaceIntegration.anAdministratorEnablesItBySetting",
   "integrations.googleWorkspaceIntegration.connectionDetails",
   "integrations.googleWorkspaceIntegration.failedToDisconnect",
