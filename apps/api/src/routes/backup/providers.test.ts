@@ -23,6 +23,8 @@ const { authState, gates, adapterState, dbState } = vi.hoisted(() => ({
     executed: [] as string[],
     /** Count of `SELECT ... FOR UPDATE` row locks taken. */
     locks: 0,
+    /** When set, the `FOR UPDATE` re-read throws (lock timeout, lost connection). */
+    lockError: null as Error | null,
     // Defense-in-depth: the hand-rolled mock below ignores the drizzle
     // condition it's given (ANY where clause returns every seeded row), so
     // deleting a tenant-scoping `eq(...partnerId...)` from a route query
@@ -66,7 +68,11 @@ function selectChain(columns: Record<string, unknown> | undefined) {
         const build = (): unknown => Object.assign(Promise.resolve(rows()), {
           limit: vi.fn(() => build()),
           orderBy: vi.fn(async () => rows()),
-          for: vi.fn((_strength: string) => { dbState.locks += 1; return build(); }),
+          for: vi.fn((_strength: string) => {
+            if (dbState.lockError) return Object.assign(Promise.reject(dbState.lockError), { limit: vi.fn() });
+            dbState.locks += 1;
+            return build();
+          }),
         });
         return build();
       }),
@@ -321,6 +327,7 @@ describe('backup provider connection routes', () => {
     dbState.deleted = 0;
     dbState.executed = [];
     dbState.locks = 0;
+    dbState.lockError = null;
     dbState.capturedSelectWheres = [];
     dbState.capturedUpdateWheres = [];
     dbState.capturedDeleteWheres = [];
@@ -571,9 +578,25 @@ describe('backup provider connection routes', () => {
         code: 'VENDOR_ROOT_MISMATCH', storedVendorRootId: '2000', newVendorRootId: '1000',
       });
       expect(dbState.updated).toHaveLength(0);
+      expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledTimes(1);
       expect(vi.mocked(writeRouteAudit)).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        action: 'backup_provider.connection.update.rejected', result: 'denied',
+        action: 'backup_provider.connection.update.rejected',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'vendor_root_mismatch', storedVendorRootId: '2000', newVendorRootId: '1000',
+        }),
       }));
+    });
+
+    it('a mismatched credential in a multi-field PATCH applies none of the other fields', async () => {
+      adapterState.test = OTHER_ROOT;
+      const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed', isActive: false, credentials: CREDS }),
+      });
+      expect(res.status).toBe(409);
+      expect(dbState.updated).toHaveLength(0);
+      expect(resolveAlertsMock).not.toHaveBeenCalled();
     });
 
     it('does not take the row lock for a PATCH that leaves the credential alone', async () => {
@@ -741,6 +764,21 @@ describe('backup provider connection routes', () => {
       const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}/test`, { method: 'POST' });
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({ code: 'VENDOR_ROOT_MISMATCH', storedVendorRootId: '2000' });
+      expect(dbState.updated).toHaveLength(0);
+      const audits = vi.mocked(writeRouteAudit).mock.calls.map((call) => call[1]);
+      expect(audits).toEqual([expect.objectContaining({
+        action: 'backup_provider.connection.test.rejected',
+        result: 'denied',
+        details: expect.objectContaining({
+          reason: 'vendor_root_mismatch', storedVendorRootId: '2000', newVendorRootId: '1000',
+        }),
+      })]);
+    });
+
+    it('a failed locked re-read keeps the best-effort contract: test result returned, nothing written', async () => {
+      dbState.lockError = new Error('lock timeout');
+      const res = await app.request(`/backup/providers/connections/${CONNECTION_ID}/test`, { method: 'POST' });
+      expect(res.status).toBe(200);
       expect(dbState.updated).toHaveLength(0);
     });
 

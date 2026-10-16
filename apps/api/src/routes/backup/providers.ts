@@ -550,7 +550,11 @@ connectionRoutes.post(
           ));
         return null;
       }).catch((error) => {
-        console.error('[backupProvider] failed to persist a connection test outcome:', error);
+        // Best-effort, as before: the transaction rolled back, so neither the
+        // status nor the root was written. The pre-check above already
+        // refused any mismatch visible at load time; only a root changed
+        // concurrently AND a failed re-read lands here, and that writes nothing.
+        console.error(`[backupProvider] failed to persist a connection test outcome for ${id}:`, error);
         return null;
       });
       if (lateMismatch) {
