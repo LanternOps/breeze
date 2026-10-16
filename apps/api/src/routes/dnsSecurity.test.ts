@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { sql } from 'drizzle-orm';
 
 const { permissionGate, mfaGate, permsState } = vi.hoisted(() => ({
   permissionGate: { deny: false, deniedPermission: null as string | null },
@@ -748,7 +749,19 @@ describe('dns security routes', () => {
     const ORG_OTHER = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
     const INTEGRATION_ID = '22222222-2222-2222-2222-222222222222';
     const POLICY_ID = '44444444-4444-4444-4444-444444444444';
-    const orgCondition = vi.fn(() => undefined);
+    // A sentinel scope clause, so the test can prove the route puts the
+    // caller's org scope into the integration lookup's WHERE.
+    const ORG_SCOPE = sql`org_scope_sentinel`;
+    const orgCondition = vi.fn(() => ORG_SCOPE);
+    let lookupWhere: unknown;
+
+    function containsChunk(node: unknown, target: unknown, seen = new Set<unknown>()): boolean {
+      if (node === target) return true;
+      if (!node || typeof node !== 'object' || seen.has(node)) return false;
+      seen.add(node);
+      const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+      return Array.isArray(chunks) && chunks.some((chunk) => containsChunk(chunk, target, seen));
+    }
 
     function setPartnerAuth() {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
@@ -768,8 +781,9 @@ describe('dns security routes', () => {
     function mockIntegrationLookup(rows: Array<{ id: string; orgId: string }>) {
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue(rows)
+          where: vi.fn().mockImplementation((clause: unknown) => {
+            lookupWhere = clause;
+            return { limit: vi.fn().mockResolvedValue(rows) };
           })
         })
       } as any);
@@ -809,6 +823,7 @@ describe('dns security routes', () => {
       vi.mocked(db.select).mockReset();
       vi.mocked(db.insert).mockReset();
       orgCondition.mockClear();
+      lookupWhere = undefined;
       setPartnerAuth();
     });
 
@@ -824,6 +839,7 @@ describe('dns security routes', () => {
       expect((await res.json()).orgId).toBe(ORG_B);
       // The lookup is scoped to the caller's accessible orgs.
       expect(orgCondition).toHaveBeenCalledWith('orgId');
+      expect(containsChunk(lookupWhere, ORG_SCOPE)).toBe(true);
     });
 
     it('accepts an explicit body orgId that matches the integration org', async () => {
