@@ -269,11 +269,13 @@ export function normalizeStoredInlineSettingsWithSalvage(
  * Why a patch link write was refused for touching ring-owned approval config:
  *  - `APPROVAL_RULES_MOVED_TO_RING` — the write edits the per-app `apps`
  *    rules or switches policy-level `autoApprove` on (#8186), most often a
- *    client loaded before the cutover.
- *  - `RING_LACKS_POLICY_APP_RULES` — the link is being repointed off a ring
- *    reference that does not resolve (missing, or a deleted ring, #8678) while
- *    it still carries legacy app rules no ring enforces, and the chosen ring
- *    does not enforce exactly those rules (#8678).
+ *    client loaded before the cutover; also a NEW link that sends `apps` its
+ *    ring does not already enforce.
+ *  - `RING_LACKS_POLICY_APP_RULES` — an existing link is being repointed off
+ *    a ring reference that does not resolve (missing, not a ring, another
+ *    partner's, or a deleted ring) while it still carries legacy app rules no
+ *    ring enforces, and the chosen ring does not enforce exactly those rules
+ *    (#8678).
  */
 export type PolicyApprovalFieldMovedCode =
   | 'APPROVAL_RULES_MOVED_TO_RING'

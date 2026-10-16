@@ -1993,9 +1993,10 @@ async function assertNewPatchLinkAppRulesOnRing(
  *    the cutover does that (it sends the list it loaded alongside the ring it
  *    loaded), so it would relink a migrated policy to its old ring, or to none.
  *  - The link has legacy inline rules that no ring enforces: its current
- *    reference does not resolve to a valid ring (the backfill skips missing
- *    ones; a deleted ring, #8678, enforces nothing any more), so the target
- *    ring has to enforce exactly those rules (RING_LACKS_POLICY_APP_RULES).
+ *    reference does not resolve to a valid ring (missing, not a ring, or
+ *    another partner's — the backfill skips those — or a deleted ring, which
+ *    enforces nothing any more, #8678), so the target ring has to enforce
+ *    exactly those rules (RING_LACKS_POLICY_APP_RULES).
  * Moving from a valid ring to another needs nothing: the ring owns the rules.
  */
 async function assertPatchRingChangeKeepsAppRules(

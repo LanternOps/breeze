@@ -527,6 +527,18 @@ describe('featureLinks routes', () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ code: 'APPROVAL_RULES_MOVED_TO_RING' });
     });
+
+    it('passes the repair-flow code RING_LACKS_POLICY_APP_RULES through as a 400 (#8678)', async () => {
+      const { PolicyApprovalFieldMovedError } = await import('../../services/configPolicyPatching');
+      updateFeatureLinkMock.mockRejectedValueOnce(new PolicyApprovalFieldMovedError('RING_LACKS_POLICY_APP_RULES'));
+      const res = await buildApp().request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { apps: [] } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'RING_LACKS_POLICY_APP_RULES' });
+    });
   });
 
   describe('feature link reserved export material validation', () => {
