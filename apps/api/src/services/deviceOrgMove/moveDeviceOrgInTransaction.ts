@@ -466,6 +466,18 @@ export async function moveDeviceOrgInTransaction(
   await revokeWorkstationGrantsForMove(tx, sourceOrgId, deviceId);
   await revokeDiagnosticGrantsForMove(tx, sourceOrgId, deviceId, input.actor.userId);
 
+  // Endpoint messaging (#8742 W02): delivery and receipt history follows the
+  // device, but the message (and its body) stays with the source org. The
+  // (endpoint_message_id, org_id) -> endpoint_messages(id, org_id) FK is
+  // DEFERRABLE INITIALLY IMMEDIATE, and breeze_cascade_device_org_id()
+  // restamps the delivery's org_id inside the devices UPDATE below, so the
+  // pointer must be severed BEFORE the flip or that UPDATE 23503s.
+  // LOAD-BEARING, like the invoice_line_devices detach.
+  await tx.execute(
+    sql`UPDATE endpoint_message_deliveries SET endpoint_message_id = NULL, updated_at = now()
+        WHERE device_id = ${deviceId}::uuid AND endpoint_message_id IS NOT NULL`,
+  );
+
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
   const [row] = await tx
