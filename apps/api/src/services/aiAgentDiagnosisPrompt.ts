@@ -45,10 +45,11 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Every heartbeat (default 60 s): one powershell Get-NetIPInterface per adapter IP that is not VPN or link-local (DHCP check, 2 s timeout, not cached).',
+    text: 'Every heartbeat (default 60 s): a DHCP check per adapter IP that is not VPN or link-local. It reads adapter flags in-process (GetAdaptersAddresses, no PowerShell or WMI). Only if that read fails does it spawn powershell Get-NetIPInterface instead (2 s timeout, not cached).',
     anchors: [
       { file: 'internal/config/config.go', contains: ['DefaultHeartbeatIntervalSeconds = 60'] },
-      { file: 'internal/heartbeat/ip_tracking.go', contains: ['commandOutput(2*time.Second, "powershell"', 'Get-NetIPInterface -AddressFamily IPv4', 'AssignmentType: determineAssignmentType('] },
+      { file: 'internal/heartbeat/ip_tracking.go', contains: ['var readDHCPEnabledAliases = readDHCPEnabledAliasesIPHelper', 'aliases, err = readDHCPEnabledAliasesPowerShell()', 'commandOutput(2*time.Second, "powershell"', 'Get-NetIPInterface -AddressFamily IPv4', 'AssignmentType: determineAssignmentType('] },
+      { file: 'internal/heartbeat/ip_tracking_dhcp_windows.go', contains: ['windows.GetAdaptersAddresses(windows.AF_INET, flags, 0, head, &size)', 'a.Flags&ipAdapterDHCPEnabled != 0'], absent: ['powershell', 'exec.Command'] },
     ],
   },
   {

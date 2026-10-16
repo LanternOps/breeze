@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
@@ -245,23 +246,58 @@ func macOSDHCPLeaseEvidence(ifaceName, ipAddress string) bool {
 	return strings.Contains(content, "lease_time")
 }
 
+// readDHCPEnabledAliases returns DHCPv4 state keyed by lower-cased, trimmed
+// interface alias. On Windows it reads adapter flags in-process
+// (GetAdaptersAddresses); it is a var so tests can stub it.
+var readDHCPEnabledAliases = readDHCPEnabledAliasesIPHelper
+
+// readDHCPEnabledAliasesPowerShell is the pre-#7765 path, kept only as the
+// fallback when the in-process read fails: one powershell Get-NetIPInterface
+// per call. A var so tests can assert it is not spawned.
+var readDHCPEnabledAliasesPowerShell = powershellDHCPEnabledAliases
+
+// dhcpInProcessFailureLogged keeps a persistently failing in-process read
+// from logging a warning on every heartbeat for every adapter IP.
+var dhcpInProcessFailureLogged atomic.Bool
+
 func windowsDHCPLeaseEvidence(ifaceName, ipAddress string) bool {
+	aliases, err := readDHCPEnabledAliases()
+	if err != nil {
+		if dhcpInProcessFailureLogged.CompareAndSwap(false, true) {
+			log.Warn("in-process DHCP state read failed, falling back to PowerShell Get-NetIPInterface", "error", err.Error())
+		} else {
+			log.Debug("in-process DHCP state read failed, falling back to PowerShell Get-NetIPInterface", "error", err.Error())
+		}
+		aliases, err = readDHCPEnabledAliasesPowerShell()
+		if err != nil {
+			return false
+		}
+	}
+	return aliases[strings.ToLower(strings.TrimSpace(ifaceName))]
+}
+
+func powershellDHCPEnabledAliases() (map[string]bool, error) {
 	// Use PowerShell Get-NetIPInterface which returns .NET enum values
 	// ("Enabled"/"Disabled") that are always English regardless of OS locale.
 	// This avoids parsing ipconfig /all which is fully localized.
 	out, err := commandOutput(2*time.Second, "powershell", "-NoProfile", "-NonInteractive", "-Command",
 		`Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.Dhcp -eq 'Enabled' } | Select-Object -ExpandProperty InterfaceAlias`)
-	if err != nil || len(out) == 0 {
-		return false
+	if err != nil {
+		return nil, err
 	}
+	return parseDHCPEnabledAliases(out), nil
+}
 
-	target := strings.ToLower(strings.TrimSpace(ifaceName))
+// parseDHCPEnabledAliases turns one-alias-per-line output (DHCP-enabled
+// aliases only) into the alias map readDHCPEnabledAliases returns.
+func parseDHCPEnabledAliases(out []byte) map[string]bool {
+	aliases := map[string]bool{}
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.ToLower(strings.TrimSpace(line)) == target {
-			return true
+		if name := strings.ToLower(strings.TrimSpace(line)); name != "" {
+			aliases[name] = true
 		}
 	}
-	return false
+	return aliases
 }
 
 // isLinkLocal checks if an IP is link-local.
