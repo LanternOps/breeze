@@ -92,10 +92,10 @@ func startBlackhole(t *testing.T) string {
 		conns []net.Conn
 	)
 	t.Cleanup(func() {
-		ln.Close()
+		_ = ln.Close()
 		mu.Lock()
 		for _, c := range conns {
-			c.Close()
+			_ = c.Close()
 		}
 		mu.Unlock()
 	})
@@ -122,7 +122,7 @@ func closedAddr(t *testing.T) string {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
-	ln.Close()
+	_ = ln.Close()
 	return addr
 }
 
@@ -257,10 +257,10 @@ func dialTLSCtx(t *testing.T, ctx context.Context, d *Dialer, base *tls.Config, 
 	}
 	tc, ok := c.(*tls.Conn)
 	if !ok {
-		c.Close()
+		_ = c.Close()
 		t.Fatalf("conn is %T, want *tls.Conn", c)
 	}
-	t.Cleanup(func() { tc.Close() })
+	t.Cleanup(func() { _ = tc.Close() })
 	return tc, nil
 }
 
@@ -312,7 +312,7 @@ func TestDial_PlainPathIsByteEqualToToday(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -852,7 +852,7 @@ func TestDial_ConcurrentDialsSameHost(t *testing.T) {
 		}
 		for _, r := range results {
 			if r.conn != nil {
-				t.Cleanup(func() { r.conn.Close() })
+				t.Cleanup(func() { _ = r.conn.Close() })
 			}
 		}
 		return results

@@ -23,7 +23,7 @@ func status(t *testing.T, c *http.Client, url string) int {
 		t.Fatalf("GET %s: %v", url, err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp.StatusCode
 }
 

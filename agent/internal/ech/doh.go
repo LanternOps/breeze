@@ -97,7 +97,7 @@ func (r *Resolver) lookupOne(ctx context.Context, endpoint, host string) (ECHCon
 	if err != nil {
 		return ECHConfig{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return ECHConfig{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}

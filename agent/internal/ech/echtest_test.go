@@ -124,7 +124,7 @@ func startFilterListener(t *testing.T) (string, *atomic.Int32) {
 		t.Fatal(err)
 	}
 	hits := new(atomic.Int32)
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -133,7 +133,7 @@ func startFilterListener(t *testing.T) (string, *atomic.Int32) {
 			}
 			hits.Add(1)
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 				buf := make([]byte, 4096)
 				_, _ = c.Read(buf)
@@ -157,7 +157,7 @@ func TestECHTestServer_AcceptsECH(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if !conn.ConnectionState().ECHAccepted {
 		t.Fatal("ECHAccepted = false, want true")
 	}
@@ -174,7 +174,7 @@ func TestECHTestServer_PlainServerRejectsECH(t *testing.T) {
 		EncryptedClientHelloConfigList: list,
 	})
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Fatal("expected ECH rejection error")
 	}
 	var echErr *tls.ECHRejectionError

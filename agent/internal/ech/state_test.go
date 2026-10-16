@@ -72,7 +72,7 @@ func TestState_TwoEventsOutsidePeriodDoNotEngage(t *testing.T) {
 func TestState_ThreeECHFailuresCooldown(t *testing.T) {
 	s := engagedState(t)
 	now := stateT0.Add(3 * time.Minute)
-	if s.NoteECHFailure(now) || s.NoteECHFailure(now) {
+	if first, second := s.NoteECHFailure(now), s.NoteECHFailure(now); first || second {
 		t.Fatal("cooled early")
 	}
 	if !s.NoteECHFailure(now) {
@@ -96,7 +96,7 @@ func TestState_ECHSuccessResetsFailures(t *testing.T) {
 	s.NoteECHFailure(now)
 	s.NoteECHFailure(now)
 	s.NoteECHSuccess()
-	if s.NoteECHFailure(now) || s.NoteECHFailure(now) {
+	if first, second := s.NoteECHFailure(now), s.NoteECHFailure(now); first || second {
 		t.Fatal("cooled despite reset")
 	}
 	if got := s.Mode(now); got != ModeECH {

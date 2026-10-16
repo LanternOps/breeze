@@ -58,7 +58,7 @@ func TestDialTLSVia_OpensTCPThroughGivenDial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialTLSVia: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 	if via.Load() != 1 {
 		t.Fatalf("given dial used %d times, want 1", via.Load())
 	}
@@ -84,7 +84,7 @@ func TestDialTLSVia_FailsClosedWhenDialerIgnoresContext(t *testing.T) {
 	base := baseCfg(pool)
 	conn, err := d.DialTLSVia(tcp, base, []string{"http/1.1"})(context.Background(), "tcp", dialAddr)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Fatal("DialTLSVia returned a connection opened outside the given TCP dial")
 	}
 	if !errors.Is(err, ErrTCPDialBypassed) {

@@ -57,7 +57,7 @@ func TestResolver_UsesAcceptHeaderAndFirstEndpoint(t *testing.T) {
 		if r.URL.Query().Get("name") != "example.test" {
 			t.Errorf("name = %q", r.URL.Query().Get("name"))
 		}
-		w.Write([]byte(okBody))
+		_, _ = w.Write([]byte(okBody))
 	}))
 	defer srv.Close()
 
@@ -81,7 +81,7 @@ func TestResolver_FallsBackToSecondEndpoint(t *testing.T) {
 	}))
 	defer first.Close()
 	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(okBody))
+		_, _ = w.Write([]byte(okBody))
 	}))
 	defer second.Close()
 
@@ -99,7 +99,7 @@ func TestResolver_FallsBackToSecondEndpoint(t *testing.T) {
 
 func TestResolver_NoAnswerIsErrNoECHConfig(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"Status":0,"Answer":[{"type":65,"TTL":60,"data":"1 . alpn=h2"}]}`))
+		_, _ = w.Write([]byte(`{"Status":0,"Answer":[{"type":65,"TTL":60,"data":"1 . alpn=h2"}]}`))
 	}))
 	defer srv.Close()
 
@@ -115,7 +115,7 @@ func TestResolver_TTLClamped(t *testing.T) {
 		want time.Duration
 	}{{"10", 5 * time.Minute}, {"100000", 24 * time.Hour}} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"Status":0,"Answer":[{"type":65,"TTL":` + tc.ttl + `,"data":"1 . ech=AEX+DQBB"}]}`))
+			_, _ = w.Write([]byte(`{"Status":0,"Answer":[{"type":65,"TTL":` + tc.ttl + `,"data":"1 . ech=AEX+DQBB"}]}`))
 		}))
 		cfg, err := NewResolver(srv.Client(), srv.URL).Lookup(context.Background(), "example.test")
 		srv.Close()

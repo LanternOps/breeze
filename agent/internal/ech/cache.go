@@ -126,7 +126,7 @@ func (c *Cache) persistOnce(entries map[string]cacheEntry) error {
 		return err
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if err := tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close()
