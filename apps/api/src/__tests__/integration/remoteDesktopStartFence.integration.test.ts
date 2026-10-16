@@ -103,7 +103,12 @@ import {
 } from '../../services/remoteDesktopStartIntent';
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
 import { getRedis } from '../../services/redis';
-import { desktopStartInFlightRedisKey } from '../../services/desktopStartInFlight';
+import {
+  desktopStartInFlightRedisKey,
+  markDesktopStartInFlight,
+  releaseDesktopStartInFlight,
+} from '../../services/desktopStartInFlight';
+import { viewerAnswerTimeoutMs } from '../../routes/remote/consentTiming';
 
 const OFFER = 'v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n';
 const LEASE = { lease: { sessionId: 'x', token: 't', expiresAt: new Date().toISOString() } };
@@ -590,6 +595,24 @@ describe('desktop start-intent generation fence', () => {
       await getRedis()!.del(desktopStartInFlightRedisKey(sessionId));
       expect((await viewerOffer(app, sessionId)).status).toBe(200);
       expect((await readFence(sessionId)).generation).toBe(2n);
+    });
+
+    it('marker: real PX TTL, and release is compare-and-delete against real Redis', async () => {
+      const sessionId = '00000000-0000-4000-8000-0000000089a7';
+      const key = desktopStartInFlightRedisKey(sessionId);
+      const redis = getRedis()!;
+
+      await markDesktopStartInFlight(sessionId, 'start-A', viewerAnswerTimeoutMs('off'));
+      const ttl = await redis.pttl(key);
+      expect(ttl).toBeGreaterThan(0);
+      expect(ttl).toBeLessThanOrEqual(viewerAnswerTimeoutMs('off'));
+
+      // A release for another start never drops this one's marker.
+      await releaseDesktopStartInFlight(sessionId, 'start-B');
+      expect(await redis.get(key)).toBe('start-A');
+
+      await releaseDesktopStartInFlight(sessionId, 'start-A');
+      expect(await redis.exists(key)).toBe(0);
     });
 
     it('accepts a retry when the first start never reached the agent', async () => {

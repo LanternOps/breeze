@@ -20,12 +20,19 @@
  * no answer and is still `connecting`. That check and the marker write both run
  * under the start decision's row lock, so two concurrent offers serialize on it.
  *
- * Every operation fails OPEN: no Redis, a client that is not ready, an error or
- * a slow reply all read as "nothing in flight", and the offer goes through as
- * it did before #8947. The calls run under a held row lock and inside a
- * transaction, so each one is capped at DESKTOP_START_IN_FLIGHT_REDIS_TIMEOUT_MS.
- * An offline client is skipped outright: its offline queue would hold the lock
- * for as long as the retry strategy runs.
+ * Read and mark fail OPEN: no Redis, a client that is not ready, an error or a
+ * slow reply all read as "nothing in flight", and the offer goes through as it
+ * did before #8947. The guard is then off, so every degraded outcome is logged
+ * (rate-limited) to make a recurrence of the double offer traceable. The calls
+ * run under a held row lock and inside a transaction, so each one is capped at
+ * DESKTOP_START_IN_FLIGHT_REDIS_TIMEOUT_MS. An offline client is skipped
+ * outright: its offline queue would hold the lock for as long as the retry
+ * strategy runs.
+ *
+ * Release is the exception: a release that fails leaves the marker until its
+ * TTL, so a retry inside that window is refused with START_IN_FLIGHT for a
+ * start the agent never received. It is bounded by the TTL and logged at error
+ * level with the command id.
  */
 import { getRedis } from './redis';
 
@@ -45,14 +52,40 @@ const RELEASE_SCRIPT = `
 `;
 
 const TIMED_OUT = Symbol('timed-out');
+const NO_CLIENT = 'skipped: no Redis client';
+
+/** At most one "guard is off" warning per interval, so an outage cannot flood the log. */
+const DEGRADED_WARN_INTERVAL_MS = 60_000;
+let lastDegradedWarnAt = Number.NEGATIVE_INFINITY;
+
+function warnDegraded(message: string): void {
+  const now = Date.now();
+  if (now - lastDegradedWarnAt < DEGRADED_WARN_INTERVAL_MS) return;
+  lastDegradedWarnAt = now;
+  console.warn(`[desktopStartInFlight] ${message}; duplicate-offer guard (#8947) is off until Redis recovers`);
+}
+
+/** Test hook: forget the rate-limit window. */
+export function resetDesktopStartInFlightWarningsForTests(): void {
+  lastDegradedWarnAt = Number.NEGATIVE_INFINITY;
+}
 
 async function withReadyRedis<T>(
-  operation: string,
+  operation: 'read' | 'mark' | 'release',
   sessionId: string,
   run: (redis: NonNullable<ReturnType<typeof getRedis>>) => Promise<T>,
+  onFailure: (reason: string) => void = (reason) =>
+    warnDegraded(`${operation} ${reason} for session ${sessionId}`),
 ): Promise<T | null> {
   const redis = getRedis();
-  if (!redis || redis.status !== 'ready') return null;
+  if (!redis) {
+    onFailure(NO_CLIENT);
+    return null;
+  }
+  if (redis.status !== 'ready') {
+    onFailure(`skipped: Redis client is ${redis.status}`);
+    return null;
+  }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -63,12 +96,12 @@ async function withReadyRedis<T>(
       }),
     ]);
     if (result === TIMED_OUT) {
-      console.warn(`[desktopStartInFlight] ${operation} timed out for session ${sessionId}; failing open`);
+      onFailure(`timed out after ${DESKTOP_START_IN_FLIGHT_REDIS_TIMEOUT_MS} ms`);
       return null;
     }
     return result;
   } catch (err) {
-    console.warn(`[desktopStartInFlight] ${operation} failed for session ${sessionId}; failing open:`, err);
+    onFailure(`failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   } finally {
     if (timer) clearTimeout(timer);
@@ -102,7 +135,16 @@ export async function markDesktopStartInFlight(
  * never drop a newer start's marker.
  */
 export async function releaseDesktopStartInFlight(sessionId: string, startCommandId: string): Promise<void> {
-  await withReadyRedis('release', sessionId, (redis) =>
-    redis.eval(RELEASE_SCRIPT, 1, desktopStartInFlightRedisKey(sessionId), startCommandId),
+  await withReadyRedis(
+    'release',
+    sessionId,
+    (redis) => redis.eval(RELEASE_SCRIPT, 1, desktopStartInFlightRedisKey(sessionId), startCommandId),
+    // Not rate-limited: each one may strand a marker, and a retry of this
+    // session is refused until it expires. With no client at all nothing was
+    // ever marked, so there is nothing to report.
+    (reason) => reason !== NO_CLIENT && console.error(
+      `[desktopStartInFlight] release ${reason} for session ${sessionId} (start ${startCommandId}); `
+        + 'a retry is refused with START_IN_FLIGHT until the marker expires',
+    ),
   );
 }

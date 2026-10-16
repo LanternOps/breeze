@@ -383,6 +383,8 @@ function rigDesktopStartIntent(options: {
   includeHardwareLookup?: boolean;
   /** Extra columns on the row-locked read (#8947: the current start's command id / answer). */
   lockedRow?: Record<string, unknown>;
+  /** Generation the pre-send re-read sees; differs from committedGeneration to model supersession. */
+  rereadGeneration?: bigint;
 } = {}) {
   const {
     lockedStatus = 'pending',
@@ -390,6 +392,7 @@ function rigDesktopStartIntent(options: {
     includeHardwareLookup = true,
     lockedRow = {},
   } = options;
+  const rereadGeneration = options.rereadGeneration ?? committedGeneration;
 
   // A prior test in a describe whose beforeEach only calls vi.clearAllMocks()
   // (not mockReset()) can leave an unconsumed mockReturnValueOnce queued on
@@ -432,7 +435,7 @@ function rigDesktopStartIntent(options: {
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue([
-          { terminationPhase: 'none', generation: committedGeneration },
+          { terminationPhase: 'none', generation: rereadGeneration },
         ]),
       }),
     }),
@@ -1403,6 +1406,21 @@ describe('remote sessions — site-scope enforcement', () => {
         const res = await offer();
 
         expect(res.status).toBe(500);
+        expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
+        expect(releaseDesktopStartInFlight).toHaveBeenCalledWith(SESSION_ID, expect.stringMatching(/^desk-start-/));
+      });
+
+      it('releases the marker when the start was superseded before dispatch', async () => {
+        getSessionWithOrgCheck.mockResolvedValue({
+          session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: 'pending', deviceId: DEVICE_IN_ALLOWED },
+          device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1' },
+        });
+        // Commit returns generation 1; the pre-send re-read sees 2.
+        rigDesktopStartIntent({ lockedStatus: 'pending', committedGeneration: 1n, rereadGeneration: 2n });
+
+        const res = await offer();
+
+        expect(res.status).toBe(409);
         expect(vi.mocked(sendCommandToAgent)).not.toHaveBeenCalled();
         expect(releaseDesktopStartInFlight).toHaveBeenCalledWith(SESSION_ID, expect.stringMatching(/^desk-start-/));
       });

@@ -943,6 +943,29 @@ describe('POST /:id/viewer/offer — concurrent second offer (#8947)', () => {
     expect(store.get(desktopStartInFlightRedisKey(SESSION_ID))).toBe((command as { id: string }).id);
   });
 
+  it('releases the marker when the start was superseded before dispatch', async () => {
+    // The pre-send re-read sees a newer generation than the one committed.
+    rigDesktopStartIntentSelects({ lockedStatus: 'pending', committedGeneration: 2n });
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('SESSION_SUPERSEDED');
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(store.has(desktopStartInFlightRedisKey(SESSION_ID))).toBe(false);
+  });
+
+  it('releases the marker when the request throws after the commit', async () => {
+    const { logSessionAudit } = await import('./remote/helpers');
+    vi.mocked(logSessionAudit).mockRejectedValueOnce(new Error('audit write exploded'));
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(500);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(store.has(desktopStartInFlightRedisKey(SESSION_ID))).toBe(false);
+  });
+
   it('releases the marker when the agent is unreachable, so the retry is not refused', async () => {
     vi.mocked(sendCommandToAgent).mockReturnValueOnce(false);
 

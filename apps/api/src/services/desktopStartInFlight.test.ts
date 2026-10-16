@@ -9,6 +9,7 @@ import {
   markDesktopStartInFlight,
   readDesktopStartInFlight,
   releaseDesktopStartInFlight,
+  resetDesktopStartInFlightWarningsForTests,
 } from './desktopStartInFlight';
 
 const SESSION = '11111111-1111-4111-8111-111111111111';
@@ -26,8 +27,10 @@ function fakeRedis(overrides: Partial<Record<'get' | 'set' | 'eval', ReturnType<
 
 describe('desktopStartInFlight (#8947)', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.useRealTimers();
+    resetDesktopStartInFlightWarningsForTests();
   });
 
   it('marks a start in flight with its command id and a PX TTL', async () => {
@@ -93,6 +96,28 @@ describe('desktopStartInFlight (#8947)', () => {
       }));
       await expect(markDesktopStartInFlight(SESSION, COMMAND, 15_000)).resolves.toBeUndefined();
       await expect(releaseDesktopStartInFlight(SESSION, COMMAND)).resolves.toBeUndefined();
+    });
+
+    it('says the guard is off when it degrades, at most once per interval', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      getRedisMock.mockReturnValue({ ...fakeRedis(), status: 'reconnecting' });
+
+      await readDesktopStartInFlight(SESSION);
+      await readDesktopStartInFlight(SESSION);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toMatch(/guard \(#8947\) is off/);
+    });
+
+    it('logs a failed release at error level with the start it stranded, every time', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      getRedisMock.mockReturnValue(fakeRedis({ eval: vi.fn(async () => { throw new Error('boom'); }) }));
+
+      await releaseDesktopStartInFlight(SESSION, COMMAND);
+      await releaseDesktopStartInFlight(SESSION, COMMAND);
+
+      expect(error).toHaveBeenCalledTimes(2);
+      expect(String(error.mock.calls[0]![0])).toContain(COMMAND);
     });
 
     it('gives up on a slow Redis instead of holding the row lock', async () => {
