@@ -27,10 +27,15 @@ import { classifyMissingBaseReason, type BaseCandidateProbe } from './backupWork
 const now = new Date('2026-09-20T12:00:00Z');
 const identity = 'local::/srv/backups';
 
+const LEGACY = { layout: 'legacy_flat', prefix: null } as const;
+const PREFIXED = { layout: 'prefixed_flat', prefix: 'msp/acme' } as const;
+
 function probe(overrides: Partial<BaseCandidateProbe> = {}): BaseCandidateProbe {
   return {
     expiresAt: new Date('2026-09-27T11:59:00Z'),
     storageIdentity: identity,
+    keyLayout: 'legacy_flat',
+    keyPrefix: null,
     backupType: 'file',
     jobStatus: 'completed',
     retired: false,
@@ -40,7 +45,7 @@ function probe(overrides: Partial<BaseCandidateProbe> = {}): BaseCandidateProbe 
 
 describe('classifyMissingBaseReason', () => {
   it('reports no_prior_snapshot when the device has never been backed up', () => {
-    expect(classifyMissingBaseReason(null, { storageIdentity: identity, mode: 'file', now })).toBe(
+    expect(classifyMissingBaseReason(null, { storageIdentity: identity, mode: 'file', now, keyRoot: LEGACY })).toBe(
       'no_prior_snapshot',
     );
   });
@@ -50,7 +55,7 @@ describe('classifyMissingBaseReason', () => {
     // `expiresAt > publishLeaseExpiresAt` rule this snapshot was rejected —
     // it is now eligible, so nothing here classifies it as a blocker.
     expect(
-      classifyMissingBaseReason(probe(), { storageIdentity: identity, mode: 'file', now }),
+      classifyMissingBaseReason(probe(), { storageIdentity: identity, mode: 'file', now, keyRoot: LEGACY }),
     ).toBe('no_prior_snapshot');
   });
 
@@ -60,6 +65,7 @@ describe('classifyMissingBaseReason', () => {
         storageIdentity: identity,
         mode: 'file',
         now,
+        keyRoot: LEGACY,
       }),
     ).toBe('base_expired');
   });
@@ -70,6 +76,7 @@ describe('classifyMissingBaseReason', () => {
         storageIdentity: identity,
         mode: 'file',
         now,
+        keyRoot: LEGACY,
       }),
     ).toBe('no_prior_snapshot');
   });
@@ -80,6 +87,7 @@ describe('classifyMissingBaseReason', () => {
         storageIdentity: identity,
         mode: 'file',
         now,
+        keyRoot: LEGACY,
       }),
     ).toBe('storage_identity_changed');
   });
@@ -90,6 +98,7 @@ describe('classifyMissingBaseReason', () => {
         storageIdentity: identity,
         mode: 'system_image',
         now,
+        keyRoot: LEGACY,
       }),
     ).toBe('backup_type_mismatch');
   });
@@ -100,6 +109,7 @@ describe('classifyMissingBaseReason', () => {
         storageIdentity: identity,
         mode: 'file',
         now,
+        keyRoot: LEGACY,
       }),
     ).toBe('no_prior_snapshot');
   });
@@ -110,6 +120,7 @@ describe('classifyMissingBaseReason', () => {
         storageIdentity: identity,
         mode: 'file',
         now,
+        keyRoot: LEGACY,
       }),
     ).toBe('base_job_not_completed');
   });
@@ -124,6 +135,7 @@ describe('classifyMissingBaseReason', () => {
         storageIdentity: identity,
         mode: 'file',
         now,
+        keyRoot: LEGACY,
       }),
     ).not.toBe('base_job_not_completed');
   });
@@ -134,8 +146,43 @@ describe('classifyMissingBaseReason', () => {
         storageIdentity: identity,
         mode: 'file',
         now,
+        keyRoot: LEGACY,
       }),
     ).toBe('base_retired');
+  });
+
+  // #7081 (I4): a dedupe base must share the run's key root, so the first run
+  // after a destination prefix changes is a full backup.
+  it('reports key_root_changed when the newest snapshot is under another key root', () => {
+    expect(
+      classifyMissingBaseReason(probe({ keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' }), {
+        storageIdentity: identity, mode: 'file', now, keyRoot: LEGACY,
+      }),
+    ).toBe('key_root_changed');
+    expect(
+      classifyMissingBaseReason(probe(), { storageIdentity: identity, mode: 'file', now, keyRoot: PREFIXED }),
+    ).toBe('key_root_changed');
+    expect(
+      classifyMissingBaseReason(probe({ keyLayout: 'prefixed_flat', keyPrefix: 'msp/other' }), {
+        storageIdentity: identity, mode: 'file', now, keyRoot: PREFIXED,
+      }),
+    ).toBe('key_root_changed');
+  });
+
+  it('does not blame the key root when the newest snapshot shares it', () => {
+    expect(
+      classifyMissingBaseReason(probe({ keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' }), {
+        storageIdentity: identity, mode: 'file', now, keyRoot: PREFIXED,
+      }),
+    ).toBe('no_prior_snapshot');
+  });
+
+  it('checks the key root right after the storage identity', () => {
+    expect(
+      classifyMissingBaseReason(probe({ keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme', backupType: 'system_image' }), {
+        storageIdentity: identity, mode: 'file', now, keyRoot: LEGACY,
+      }),
+    ).toBe('key_root_changed');
   });
 
   it('prefers the first failing filter in WHERE-clause order', () => {
@@ -144,7 +191,7 @@ describe('classifyMissingBaseReason', () => {
     expect(
       classifyMissingBaseReason(
         probe({ storageIdentity: 'local::/srv/old', expiresAt: new Date('2026-01-01T00:00:00Z') }),
-        { storageIdentity: identity, mode: 'file', now },
+        { storageIdentity: identity, mode: 'file', now, keyRoot: LEGACY },
       ),
     ).toBe('storage_identity_changed');
   });

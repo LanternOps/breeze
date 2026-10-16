@@ -196,7 +196,11 @@ export type WriteUnbrokeredReason =
   | 'invalid_destination_prefix'
   // The job's existing reservation records a key root this server cannot
   // read (fail closed).
-  | 'key_root_invalid';
+  | 'key_root_invalid'
+  // The dispatch base is recorded under a key root other than this run's
+  // (the destination prefix changed between dispatch and delivery): a chain
+  // never spans roots (I4), so the next run takes a full backup instead.
+  | 'base_key_root_mismatch';
 
 /**
  * Whether a backup to this destination can be brokered for this device. A
@@ -532,6 +536,20 @@ export async function mintBackupWriteSession(
   const baseManifestKey = input.baseManifestKey && parseBackupObjectKey(input.baseManifestKey)
     ? input.baseManifestKey
     : null;
+  const baseSnapshotId = baseManifestKey ? parseBackupObjectKey(baseManifestKey)?.snapshotId ?? null : null;
+  // I4: the dispatch base must be recorded under the run's key root — the
+  // same rule (originKeyRootAllows) the base GET enforces at read time,
+  // checked here so a mismatched run is refused before anything is reserved.
+  const baseRootRefused = async (root: SnapshotKeyRoot): Promise<boolean> => {
+    if (!baseSnapshotId) return false;
+    const rows = await loadOriginKeyRootRows({ orgId: input.orgId, storageIdentity: identity, originSnapshotIds: [baseSnapshotId] });
+    if (originKeyRootAllows(root, rows.get(baseSnapshotId))) return false;
+    console.warn('[backupStorageWriteSessions] refused a write session: its dispatch base is under another or an unreadable key root', {
+      jobId: input.jobId,
+      baseSnapshotId,
+    });
+    return true;
+  };
   const deadline = new Date(Math.floor((now.getTime() + STORAGE_WRITE_SESSION_DEADLINE_MS) / 1000) * 1000);
   const expiresAt = new Date(Math.min(Math.floor((now.getTime() + STORAGE_SESSION_LEASE_MS) / 1000) * 1000, deadline.getTime()));
   const token = deps.randomToken();
@@ -554,6 +572,7 @@ export async function mintBackupWriteSession(
         });
         return { refused: 'key_root_invalid' };
       }
+      if (await baseRootRefused(snapshotKeyRootOf(existing)!)) return { refused: 'base_key_root_mismatch' };
       // A redelivery of the same job: the new session writes the same id, and
       // becomes its only writer — every earlier session of the job is revoked
       // and the reservation moves to a new write generation, so an earlier
@@ -579,6 +598,7 @@ export async function mintBackupWriteSession(
       if (!rooted.ok) return { refused: rooted.reason };
       const keyRoot = snapshotKeyRootOf({ keyLayout: rooted.root.layout, keyPrefix: rooted.root.prefix });
       if (!keyRoot) return { refused: 'invalid_destination_prefix' };
+      if (await baseRootRefused(keyRoot)) return { refused: 'base_key_root_mismatch' };
       snapshotId = await reserveNewSnapshotId({
         orgId: input.orgId,
         deviceId: input.deviceId,
