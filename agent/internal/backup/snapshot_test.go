@@ -2250,8 +2250,8 @@ func useManualLeaseTicksForTest(t *testing.T) (ticks chan time.Time, requested f
 	}
 }
 
-// leaseTickDuringUploadProvider wraps mockProvider. On the FIRST data-file
-// upload it sends one lease tick and waits until the refresh that tick
+// leaseTickDuringUploadProvider wraps mockProvider. On the FIRST upload that
+// is not an upload.lease refresh (the data file, in a one-file run) it sends one lease tick and waits until the refresh that tick
 // triggers has reached the backing store, then finishes the data upload. The
 // refresh therefore lands inside the upload however the scheduler interleaves
 // the goroutines: a 50 ms sleep raced against a 10 ms ticker here failed
@@ -2338,7 +2338,7 @@ func TestCreateSnapshot_UploadLease_RefreshedDuringUploadThenDeletedAfterPublish
 		}
 	}
 	if leaseIdx < 0 {
-		t.Error("expected at least one upload.lease refresh during a slow upload")
+		t.Error("expected at least one upload.lease refresh during the data upload")
 	}
 	if dataIdx < 0 {
 		t.Fatalf("expected the data file to be uploaded to %s, got %+v", dataKey, backing.uploadCalls)
@@ -2448,8 +2448,8 @@ func TestAbortSourceGone_StopsLeaseRefreshBeforeCleanup_NoOrphanLeaseAfterAbort(
 	// even once before stopLeaseRefresh stops it — that's a CORRECT outcome
 	// of the fix, not a broken heartbeat. The heartbeat firing at all is
 	// separately proven by TestCreateSnapshot_UploadLease_RefreshedDuring
-	// UploadThenDeletedAfterPublish (which uses a slow provider precisely
-	// so the ticker gets a chance to tick). leaseUploads() is logged here
+	// UploadThenDeletedAfterPublish (which delivers a manual lease tick
+	// mid-upload, #8828). leaseUploads() is logged here
 	// purely as a diagnostic (0 or 1 is both a legitimate outcome, so it is
 	// not asserted on) rather than left as dead instrumentation.
 	t.Logf("lease-key uploads observed during this run: %d", provider.leaseUploads())
