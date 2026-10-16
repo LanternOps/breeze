@@ -15,7 +15,7 @@ interface Props {
   onPlanStop?: (messageId: string) => Promise<string | null>;
 }
 
-const STICK_THRESHOLD_PX = 80;
+import { distanceFromBottom, shouldAutoFollow, STICK_THRESHOLD_PX } from './autoFollow';
 
 // Tracks the latest assistant content length so we can re-trigger the
 // auto-scroll effect during streaming without depending on the entire
@@ -36,16 +36,26 @@ export function ConversationList({ messages, inFlightTool, onRetry, onPlanDecide
 
   const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-    const distanceFromBottom =
-      contentSize.height - (contentOffset.y + layoutMeasurement.height);
-    stickToBottom.current = distanceFromBottom <= STICK_THRESHOLD_PX;
+    stickToBottom.current =
+      distanceFromBottom({
+        contentOffsetY: contentOffset.y,
+        contentHeight: contentSize.height,
+        layoutHeight: layoutMeasurement.height,
+      }) <= STICK_THRESHOLD_PX;
   }, []);
 
+  const lastUserId = useRef<string | null>(null);
   useEffect(() => {
-    if (!stickToBottom.current) return;
+    const last = messages[messages.length - 1];
+    const sentNewUserMessage = last?.role === 'user' && last.id !== lastUserId.current;
+    if (last?.role === 'user') lastUserId.current = last.id;
+    if (!shouldAutoFollow({ sentNewUserMessage, nearBottom: stickToBottom.current })) return;
+    // Following the reply from here on, until the user scrolls away again.
+    stickToBottom.current = true;
     requestAnimationFrame(() => {
       ref.current?.scrollToEnd({ animated: true });
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stream signature on purpose
   }, [signature]);
 
   return (
