@@ -1,12 +1,15 @@
-// The device filter field catalog a FilterBuilder should offer: the static
-// catalog (mirrors the backend filterEngine) plus every org/partner custom
-// field definition as a `custom.<key>` field (#6594, #8843). The filter engine
-// synthesises `custom.<key>` fields at evaluation time, so any FilterBuilder
-// whose filter is evaluated by it should use this instead of the bare
-// DEFAULT_FILTER_FIELDS — otherwise custom fields cannot be picked.
+// The device filter field catalog for a FilterBuilder: FILTER_FIELDS (the
+// static catalog, mirroring the backend filterEngine) plus every org/partner
+// custom field definition as a `custom.<key>` field (#6594, #8843). The filter
+// engine synthesises `custom.<key>` fields at evaluation time; a builder given
+// only FILTER_FIELDS / DEFAULT_FILTER_FIELDS cannot offer them.
 //
-// Definitions come from the shared custom field definitions store, so every
-// mounted consumer shares one GET /custom-fields; the fetch is idempotent.
+// Used by DeviceFilterBar and the device-group rule builders (CreateGroupModal,
+// DeviceGroupsPage). DeviceTargetSelector, ScriptExecutionModal and
+// ReportBuilder still pass DEFAULT_FILTER_FIELDS.
+//
+// Definitions come from the shared custom field definitions store: consumers
+// share one GET /custom-fields (re-attempted on the next mount after an error).
 import { useEffect, useMemo } from 'react';
 import type { FilterFieldDefinition } from '@breeze/shared';
 import { FILTER_FIELDS } from './filterFields';
