@@ -260,11 +260,13 @@ export async function persistDeviceCustomFieldValues(
     if (updated.length > 0) changed.push(write.fieldKey);
   }
   // Dynamic groups store membership, so a rule on `custom.<key>` goes stale
-  // unless a value write asks for a re-evaluation (#8832). Every value write
-  // path funnels through here, so this is the one place that can promise it.
-  // `custom.<key>` is the spelling `extractFieldsFromFilter` stores in
-  // `device_groups.filter_fields_used`, which the worker overlaps against.
-  // Unchanged values (skipped by `setWhere`) request nothing.
+  // unless a value write asks for a re-evaluation (#8832). Every
+  // application-level value write (device PATCH, PATCH /custom-fields, CSV
+  // import, script write-back) funnels through here; SQL-side rehome and
+  // cascade deletes do not. `custom.<key>` is the field name a filter
+  // condition carries, which the group routes persist into
+  // `filter_fields_used` (via `extractFieldsFromFilter`) and the worker
+  // overlaps against. Unchanged values (skipped by `setWhere`) request nothing.
   if (changed.length > 0) {
     requestDeviceGroupReevaluationAfterCommit({
       deviceId,

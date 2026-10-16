@@ -43,7 +43,8 @@
  *      (`persistDeviceCustomFieldValues`): the write enqueues a job after
  *      commit whose `custom.<key>` matches the spelling stored in
  *      `filter_fields_used`, and running it flips membership both ways; a
- *      rolled-back write enqueues nothing.
+ *      write whose transaction rolls back enqueues nothing; re-writing an
+ *      unchanged value enqueues nothing (the real `setWhere` skip).
  */
 import './setup';
 
@@ -482,7 +483,28 @@ describe('custom-field value writes re-evaluate dynamic groups (#8832)', () => {
     expect(await memberDeviceIds(groupId)).toEqual([]);
   }, 30_000);
 
-  runDb('a rolled-back value write enqueues nothing', async () => {
+  runDb('re-writing an unchanged value enqueues nothing', async () => {
+    // A fleet-wide script re-asserting the same value on every run must not
+    // enqueue a re-evaluation per device. Proven against the real upsert's
+    // setWhere/RETURNING, not a mock.
+    const env = await setupTestEnvironment();
+    const orgId = env.organization.id;
+    const definitionId = await seedDefinition(orgId);
+    const deviceId = await seedDevice(orgId, env.site.id, 'wks-unchanged');
+
+    await writeDisposition(deviceId, orgId, definitionId, 'retired');
+    await (await awaitQueuedJob(deviceId)).remove();
+
+    await writeDisposition(deviceId, orgId, definitionId, 'retired');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(await getDeviceGroupReevaluationQueue().getJob(deviceGroupReevaluationJobId(deviceId))).toBeUndefined();
+
+    // Positive control: a real change on the same device still enqueues.
+    await writeDisposition(deviceId, orgId, definitionId, 'in_service');
+    expect((await awaitQueuedJob(deviceId)).data.changedFields).toEqual([`custom.${FIELD_KEY}`]);
+  }, 30_000);
+
+  runDb('a write whose transaction rolls back enqueues nothing', async () => {
     const env = await setupTestEnvironment();
     const orgId = env.organization.id;
     const definitionId = await seedDefinition(orgId);
