@@ -14,7 +14,7 @@ Two gaps in `ticketNotifyWorker` for a team that works out of one shared support
 
 2. A public reply from the ticket screen is a portal notice. The comment text is not in the mail. `ticketing.inbound.fullMessageReply` can append it, but only when the reply is **not** sent through a connected Microsoft 365 mailbox (`fullMessageReply && !graphMailbox` in `collectRequesterEmail`). With the support mailbox connected, Graph `createReply` still sends the portal notice. The flag is also stored on `ticketing.inbound`, which the Inbound email card replaces wholesale, so the card cannot edit it.
 
-Confirmed live on a self-hosted partner with the flag set and `support@thetmg.com` connected: the customer received "New reply on your ticket" and "Sign in to the portal to view it." The technician's text was not in the message.
+Confirmed live on a self-hosted partner with the flag set and `support@example.com` connected: the customer received "New reply on your ticket" and "Sign in to the portal to view it." The technician's text was not in the message.
 
 ## Goals
 
