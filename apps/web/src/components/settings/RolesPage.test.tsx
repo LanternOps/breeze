@@ -27,9 +27,12 @@ vi.mock('@/hooks/useOrgScope', () => ({
 }));
 type Claims = { scope: string; partnerId: string | null; orgId: string | null };
 const jwtClaimsMock = vi.fn((): Claims => ({ scope: 'partner', partnerId: 'p-1', orgId: null }));
+// Resolved by default; a test can return { status: 'unresolved' } for the cold-load window.
+const jwtStateMock = vi.fn((): unknown => ({ status: 'resolved', claims: jwtClaimsMock() }));
 vi.mock('@/lib/authScope', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/authScope')>()),
   getJwtClaims: () => jwtClaimsMock(),
+  useJwtClaims: () => jwtStateMock(),
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
@@ -93,6 +96,7 @@ describe('RolesPage — explicit role scope on create (#8370)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     jwtClaimsMock.mockReturnValue({ scope: 'partner', partnerId: 'p-1', orgId: null });
+    jwtStateMock.mockImplementation(() => ({ status: 'resolved', claims: jwtClaimsMock() }));
     useOrgStore.setState({ currentOrgId: 'org-aaaa', allOrgs: false, organizations: [orgA, orgB], organizationsLoaded: true, error: null });
   });
 
@@ -178,6 +182,85 @@ describe('RolesPage — explicit role scope on create (#8370)', () => {
     fireEvent.click(screen.getByTestId('role-owner-org'));
     expect(parentOptions()).toContain('Org Tech');
     expect(parentOptions()).not.toContain('Partner Tech');
+  });
+
+  it('guards an Enter-key/programmatic submit with no org picked: inline error, no request', async () => {
+    orgScopeMock.mockReturnValue(fleet);
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true });
+    await openCreate();
+
+    fireEvent.click(screen.getByTestId('role-owner-org'));
+    expect(screen.getByTestId('role-owner-org-required')).toBeInTheDocument();
+    fireEvent.submit(screen.getByTestId('role-owner').closest('form')!);
+
+    expect(await screen.findByText('Select an organization', { selector: 'div' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([u, i]) => u === '/roles' && (i as RequestInit | undefined)?.method === 'POST')).toBe(false);
+  });
+
+  it('clears a parent role from the other axis when the scope changes', async () => {
+    orgScopeMock.mockReturnValue(focused);
+    await openCreate([role('pr-1', 'Partner Tech', 'partner'), role('or-1', 'Org Tech', 'organization')]);
+
+    const parent = screen.getByLabelText('Inherit From (Parent Role)') as HTMLSelectElement;
+    fireEvent.change(parent, { target: { value: 'pr-1' } });
+    expect(parent.value).toBe('pr-1');
+    fireEvent.click(screen.getByTestId('role-owner-org'));
+    expect(parent.value).toBe('');
+
+    const body = await submitAndCaptureBody();
+    expect(body).toMatchObject({ ownerScope: 'organization', parentRoleId: null });
+  });
+
+  it('resets the scope and the fleet org pick when the dialog is reopened', async () => {
+    orgScopeMock.mockReturnValue(fleet);
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true });
+    await openCreate();
+
+    fireEvent.click(screen.getByTestId('role-owner-org'));
+    fireEvent.change(screen.getByTestId('role-owner-org-picker'), { target: { value: 'org-bbbb' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Role' }));
+
+    expect(await screen.findByTestId('role-owner-partner')).toBeChecked();
+    fireEvent.click(screen.getByTestId('role-owner-org'));
+    expect((screen.getByTestId('role-owner-org-picker') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('keeps Create disabled until the session token has resolved', async () => {
+    jwtStateMock.mockImplementation(() => ({ status: 'unresolved' }));
+    orgScopeMock.mockReturnValue(focused);
+    await openCreate();
+
+    expect(screen.queryByTestId('role-owner')).toBeNull();
+    expect(submitButton()).toBeDisabled();
+  });
+
+  it('does not show the scope selector or send owner fields when editing', async () => {
+    orgScopeMock.mockReturnValue(focused);
+    const existing = role('pr-1', 'Partner Tech', 'partner');
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/roles/pr-1' && init?.method === 'PATCH') return json({ ...existing });
+      if (input === '/roles/pr-1') return json({ ...existing, permissions: [] });
+      if (input === '/roles') return json({ data: [existing] });
+      if (input === '/permissions/catalog') return json({ permissions: [], resourceLabels: {}, actionLabels: {} });
+      return json({}, false, 404);
+    });
+    render(<RolesPage />);
+    await waitFor(() => expect(screen.getByText('Partner Tech')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    const save = await screen.findByRole('button', { name: 'Save Changes' });
+
+    expect(screen.queryByTestId('role-owner')).toBeNull();
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    const patch = await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([u, i]) => u === '/roles/pr-1' && (i as RequestInit | undefined)?.method === 'PATCH');
+      expect(call).toBeTruthy();
+      return call!;
+    });
+    const body = JSON.parse((patch[1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty('ownerScope');
+    expect(body).not.toHaveProperty('orgId');
   });
 
   it('shows no scope selector to an organization-scope user and sends no owner fields', async () => {

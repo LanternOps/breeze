@@ -8,9 +8,13 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
-  // RoleFormModal's owner-scope hooks (#8370) read the JWT claims and the org
-  // store, which registers an orgId provider at module load.
-  useAuthStore: { getState: () => ({ tokens: null }) },
+  // RoleFormModal's owner-scope hooks (#8370) read the JWT claims (an opaque
+  // token decodes to no scope, so no selector) and the org store, which
+  // registers an orgId provider at module load.
+  useAuthStore: Object.assign(
+    (selector: (s: { tokens: { accessToken: string } }) => unknown) => selector({ tokens: { accessToken: 'test-token' } }),
+    { getState: () => ({ tokens: { accessToken: 'test-token' } }) }
+  ),
   registerOrgIdProvider: vi.fn()
 }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));

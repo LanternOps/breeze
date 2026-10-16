@@ -753,6 +753,27 @@ describe('role routes', () => {
       expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
     });
 
+    it('an explicit ownerScope=organization cannot bypass the hidden quick_support exclusion (403)', async () => {
+      setPartnerAuth();
+      mockOrgTypeLookup('quick_support');
+
+      const res = await post({ ownerScope: 'organization', orgId: ORG_A });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(db.transaction)).not.toHaveBeenCalled();
+    });
+
+    it('ORG-scope caller may name its own org alongside ownerScope=organization', async () => {
+      setOrgAuth();
+      const roleInsertValues = mockSuccessfulInsert('organization');
+
+      const res = await post({ ownerScope: 'organization', orgId: ORG_A });
+
+      expect(res.status).toBe(201);
+      const inserted = roleInsertValues.mock.calls[0]![0] as Record<string, unknown>;
+      expect(inserted).toMatchObject({ scope: 'organization', orgId: ORG_A });
+    });
+
     it('rejects an unknown ownerScope value (400)', async () => {
       setPartnerAuth();
 

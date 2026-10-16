@@ -5,7 +5,8 @@ import { cn } from '@/lib/utils';
 import { FilterSelect } from '../shared/FilterSelect';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
-import { useDefaultOwnerScope, type OwnerScope } from '@/hooks/useDefaultOwnerScope';
+import type { OwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { useJwtClaims } from '@/lib/authScope';
 import { useFleetOrgOwner } from '@/hooks/useFleetOrgOwner';
 import RoleOwnerScopeField from './RoleOwnerScopeField';
 
@@ -733,8 +734,14 @@ export function RoleFormModal({
   // creators. It defaults to partner regardless of the header org: a partner
   // role is the one a partner admin can assign on their own Users page, and the
   // header org used to turn every create into an org role without saying so.
-  const { isPartnerScope } = useDefaultOwnerScope();
+  // Reactive claims, not the one-shot getJwtClaims(): on a cold load the token
+  // lands after first paint, and a create submitted before then would omit the
+  // owner axis without the selector ever having been shown. Create waits.
+  const jwt = useJwtClaims();
+  const isPartnerScope = jwt.status === 'resolved' && jwt.claims.scope === 'partner' && !!jwt.claims.partnerId;
+  const claimsPending = mode === 'create' && jwt.status !== 'resolved';
   const fleet = useFleetOrgOwner();
+  const { setOrgId: setFleetOrgId } = fleet;
   const [ownerScope, setOwnerScope] = useState<OwnerScope>('partner');
   const showOwnerScope = mode === 'create' && isPartnerScope;
   const needsOwnerOrg = showOwnerScope && ownerScope === 'organization' && fleet.needsOrgSelection;
@@ -795,8 +802,22 @@ export function RoleFormModal({
     // clone, so the toggle must start from the same value it will get.
     setForceMfa(role?.forceMfa === true);
     setOwnerScope('partner');
+    setFleetOrgId('');
     setFormError(null);
-  }, [isOpen, role, mode]);
+  }, [isOpen, role, mode, setFleetOrgId]);
+
+  // A parent org role belongs to one org; once the owner org changes it can no
+  // longer be a valid parent (the API would 400), so drop it.
+  const ownerOrgId = fleet.orgId;
+  useEffect(() => {
+    if (!showOwnerScope || ownerScope !== 'organization') return;
+    setParentRoleId((current) => {
+      const parent = availableParentRoles.find((r) => r.id === current);
+      return parent && parent.scope === 'organization' && !parent.isSystem ? null : current;
+    });
+    // Keyed on the owner org only; the parent list itself is filtered by axis
+    // at render time.
+  }, [ownerOrgId]);
 
   if (!isOpen) return null;
 
@@ -979,7 +1000,7 @@ export function RoleFormModal({
               {i18n.t('settings:roleManager.cancel')}</button>
             <button
               type="submit"
-              disabled={loading || !name.trim() || !catalog || needsOwnerOrg}
+              disabled={loading || !name.trim() || !catalog || needsOwnerOrg || claimsPending}
               title={!catalog ? i18n.t('settings:roleManager.waitingForPermissionCatalog') : undefined}
               className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >

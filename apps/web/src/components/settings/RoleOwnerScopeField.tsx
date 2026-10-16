@@ -91,6 +91,11 @@ export default function RoleOwnerScopeField({
               </option>
             ))}
           </select>
+          {!fleet.orgId && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="role-owner-org-required">
+              {i18n.t('common:layout.orgRequired.title')}
+            </p>
+          )}
         </div>
       )}
     </fieldset>
