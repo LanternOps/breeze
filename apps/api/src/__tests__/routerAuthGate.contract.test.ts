@@ -37,6 +37,7 @@ const EXEMPT: Record<string, string> = {
   quickbooksWebhookRoutes: 'QuickBooks webhook authenticates provider signatures.',
   xeroWebhookRoutes: 'Xero webhook authenticates provider signatures.',
   resendWebhookRoutes: 'Resend delivery webhook authenticates provider signatures (Svix).',
+  edrWebhookRoutes: 'EDR vendor push hint authenticates the per-connection shared secret (hint only: schedules a read sync).',
   backupRoutes: 'Public bare-metal recovery code exchange precedes JWT-protected backup routes.',
   clientAiRoutes: 'First endpoint exchanges an Entra token before client AI login.',
   officeAddinRoutes: 'First endpoint exchanges an Entra token before Office add-in login.',
