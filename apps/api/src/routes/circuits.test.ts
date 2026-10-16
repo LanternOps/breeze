@@ -22,6 +22,7 @@ const m = vi.hoisted(() => ({
   deleteCircuit: vi.fn(),
   setCircuitServedSites: vi.fn(),
   clearCircuitTermination: vi.fn(),
+  setCircuitTermination: vi.fn(),
 }));
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
@@ -62,8 +63,10 @@ vi.mock('../services/circuits', async () => ({
   deleteCircuit: m.deleteCircuit,
   setCircuitServedSites: m.setCircuitServedSites,
   clearCircuitTermination: m.clearCircuitTermination,
+  setCircuitTermination: m.setCircuitTermination,
 }));
 
+import { db } from '../db';
 import { circuitRoutes } from './circuits';
 
 const app = new Hono();
@@ -156,6 +159,16 @@ describe('POST /circuits', () => {
     m.auth = { ...m.auth, scope: 'partner', orgId: null, partnerId: 'partner-1' };
     const res = await app.request('/circuits', { method: 'POST', headers: json, body: JSON.stringify(payload) });
     expect(res.status).toBe(400);
+    expect(m.createCircuit).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /circuits for a site-restricted caller', () => {
+  it('refuses with a generic 403 because a new circuit has no site the caller could see it through', async () => {
+    caller({ permissionSites: [SITE_A] });
+    const res = await app.request('/circuits', { method: 'POST', headers: json, body: JSON.stringify({ providerName: 'Acme', cid: 'CID-9' }) });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('CIRCUIT_SITE_FORBIDDEN');
     expect(m.createCircuit).not.toHaveBeenCalled();
   });
 });
@@ -351,5 +364,56 @@ describe('DELETE /circuits/:id/termination', () => {
     m.getCircuitDto.mockResolvedValue(circuit(SITE_B));
     expect((await app.request(`/circuits/${CIRCUIT_ID}/termination`, { method: 'DELETE' })).status).toBe(404);
     expect(m.clearCircuitTermination).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('PUT /circuits/:id/termination', () => {
+  const IFACE_ID = '66666666-6666-4666-8666-666666666666';
+  const put = () =>
+    app.request(`/circuits/${CIRCUIT_ID}/termination`, { method: 'PUT', headers: json, body: JSON.stringify({ interfaceId: IFACE_ID }) });
+  const interfaceAt = (siteId: string) => {
+    (db.select as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      from: () => ({ where: () => ({ limit: async () => [{ siteId }] }) }),
+    });
+  };
+
+  it('returns 404 for a circuit the caller cannot see', async () => {
+    caller({ permissionSites: [SITE_A] });
+    m.getCircuitDto.mockResolvedValue(circuit(SITE_B));
+    interfaceAt(SITE_A);
+    expect((await put()).status).toBe(404);
+    expect(m.setCircuitTermination).not.toHaveBeenCalled();
+  });
+
+  it('does not let a restricted caller terminate an unassigned circuit while a served site is not writable', async () => {
+    caller({ permissionSites: [SITE_B] });
+    m.writableSites = [SITE_B];
+    m.getCircuitDto.mockResolvedValue(circuit(null, [SITE_B, SITE_C]));
+    interfaceAt(SITE_B);
+    const res = await put();
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain(SITE_C);
+    expect(m.setCircuitTermination).not.toHaveBeenCalled();
+  });
+
+  it('terminates an unassigned circuit when the interface site and every served site are writable', async () => {
+    caller({ permissionSites: [SITE_B, SITE_C] });
+    m.writableSites = [SITE_B, SITE_C];
+    m.getCircuitDto.mockResolvedValue(circuit(null, [SITE_B, SITE_C]));
+    m.setCircuitTermination.mockResolvedValue(circuit(SITE_B, [SITE_C]));
+    interfaceAt(SITE_B);
+    expect((await put()).status).toBe(200);
+    expect(m.setCircuitTermination).toHaveBeenCalledWith(CIRCUIT_ID, IFACE_ID);
+  });
+
+  it('needs only the current primary site for an assigned circuit', async () => {
+    caller({ permissionSites: [SITE_A] });
+    m.writableSites = [SITE_A];
+    m.getCircuitDto.mockResolvedValue(circuit(SITE_A, [SITE_B]));
+    m.setCircuitTermination.mockResolvedValue(circuit(SITE_A));
+    interfaceAt(SITE_A);
+    expect((await put()).status).toBe(200);
+    expect(m.setCircuitTermination).toHaveBeenCalledOnce();
   });
 });

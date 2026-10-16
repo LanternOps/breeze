@@ -146,14 +146,21 @@ circuitRoutes.get('/', scopes, requireDevicesRead, zValidator('query', circuitLi
 });
 
 circuitRoutes.post('/', scopes, requireDevicesWrite, requireMfa(), zValidator('json', circuitCreateBodySchema), async (c) => {
-  const auth = c.get('auth') as AuthContext;
-  const { orgId: requestedOrgId, ...body } = c.req.valid('json');
-  const orgId = requestedOrgId ?? auth.orgId;
-  if (!orgId) return c.json({ error: 'orgId is required to create a circuit for this scope' }, 400);
-  if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Access to this organization denied' }, 403);
-  const dto = await createCircuit(orgId, body);
-  writeRouteAudit(c, { orgId, action: 'circuit.create', resourceType: 'circuit', resourceId: dto.id, resourceName: dto.cid, details: { after: dto } });
-  return c.json(dto, 201);
+  try {
+    const auth = c.get('auth') as AuthContext;
+    const { orgId: requestedOrgId, ...body } = c.req.valid('json');
+    const orgId = requestedOrgId ?? auth.orgId;
+    if (!orgId) return c.json({ error: 'orgId is required to create a circuit for this scope' }, 400);
+    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Access to this organization denied' }, 403);
+    // A new circuit has no sites, so a restricted caller could not see it afterwards (spec 7.2).
+    const scope = await resolveSiteScope(c);
+    if (scope.allowedSiteIds !== null) throw new CircuitError('Circuit write not permitted', 'CIRCUIT_SITE_FORBIDDEN', 403);
+    const dto = await createCircuit(orgId, body);
+    writeRouteAudit(c, { orgId, action: 'circuit.create', resourceType: 'circuit', resourceId: dto.id, resourceName: dto.cid, details: { after: dto } });
+    return c.json(dto, 201);
+  } catch (err) {
+    return handleError(c, err);
+  }
 });
 
 circuitRoutes.get('/:id', scopes, requireDevicesRead, async (c) => {
@@ -203,7 +210,9 @@ circuitRoutes.put('/:id/termination', scopes, requireDevicesWrite, requireMfa(),
     const [iface] = await db.select({ siteId: topologyInterfaces.siteId }).from(topologyInterfaces).where(eq(topologyInterfaces.id, interfaceId)).limit(1);
     if (!iface) return c.json({ error: 'Interface not found', code: 'INTERFACE_NOT_FOUND' }, 404);
     await assertTopologySiteWrite(c, iface.siteId);
-    await assertCircuitSitesWritable(c, circuitPrimarySiteIds(circuit));
+    // Assigned: the current primary site. Unassigned and restricted: every served site, so
+    // terminating cannot sidestep the rule that edits need all of them (spec 7.2).
+    await assertCircuitSitesWritable(c, circuitWriteSiteIds(circuit, scope));
     const before = circuit.termination;
     const dto = await setCircuitTermination(circuit.id, interfaceId);
     writeRouteAudit(c, { orgId: dto.orgId, action: 'circuit.termination.set', resourceType: 'circuit', resourceId: dto.id, resourceName: dto.cid, details: { before, after: dto.termination } });
