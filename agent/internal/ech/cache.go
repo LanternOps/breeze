@@ -2,6 +2,8 @@ package ech
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -43,13 +45,23 @@ func NewCache(path string) *Cache {
 	return c
 }
 
+// load reads the cache file. A missing file is the normal first boot and is
+// silent; an unreadable or corrupt one is warned about once (NewCache calls
+// load once) and the cache starts empty. Config bytes are never logged.
 func (c *Cache) load() {
 	data, err := os.ReadFile(c.path)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			log.Warn("ECH config cache unreadable; starting empty", "path", c.path, "error", err.Error())
+		}
 		return
 	}
 	var entries map[string]cacheEntry
-	if json.Unmarshal(data, &entries) == nil && entries != nil {
+	if err := json.Unmarshal(data, &entries); err != nil {
+		log.Warn("ECH config cache corrupt; starting empty", "path", c.path, "error", err.Error())
+		return
+	}
+	if entries != nil {
 		c.entries = entries
 	}
 }

@@ -95,3 +95,38 @@ func TestCache_EmptyListIsNeverServed(t *testing.T) {
 		t.Fatal("loaded an empty config list as usable")
 	}
 }
+
+// TestCache_CorruptFileWarns: a corrupt cache file starts empty (as before)
+// and says so once at Warn, naming the path.
+func TestCache_CorruptFileWarns(t *testing.T) {
+	logs := captureLogs(t)
+	path := filepath.Join(t.TempDir(), "c.json")
+	if err := os.WriteFile(path, []byte("{garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := NewCache(path).Get("h"); ok {
+		t.Fatal("corrupt file should yield an empty cache")
+	}
+	if got := logs.lines("level=WARN", "ECH config cache corrupt; starting empty", path); len(got) != 1 {
+		t.Fatalf("corrupt-cache warnings = %d, want 1; logs:\n%s", len(got), logs)
+	}
+}
+
+// TestCache_UnreadableFileWarns: a read error other than not-exist starts
+// empty and warns once; a missing file is the normal first boot and is quiet.
+func TestCache_UnreadableFileWarns(t *testing.T) {
+	logs := captureLogs(t)
+	dir := t.TempDir() // a directory: ReadFile fails, and not with ErrNotExist
+	if _, _, ok := NewCache(dir).Get("h"); ok {
+		t.Fatal("unreadable file should yield an empty cache")
+	}
+	if got := logs.lines("level=WARN", "ECH config cache unreadable; starting empty", dir); len(got) != 1 {
+		t.Fatalf("unreadable-cache warnings = %d, want 1; logs:\n%s", len(got), logs)
+	}
+
+	missing := filepath.Join(t.TempDir(), "absent.json")
+	NewCache(missing)
+	if got := logs.lines(missing); len(got) != 0 {
+		t.Fatalf("missing file logged %v, want nothing", got)
+	}
+}

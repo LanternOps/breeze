@@ -375,6 +375,43 @@ func reportExecutableTrustWarning(err error) {
 	slog.Warn(msg, "error", err.Error())
 }
 
+// bootWatchdogConfig loads the boot config (see loadWatchdogConfig) and
+// applies its ECH switches to the process-wide dialer at once. ech.Shared()
+// reads no config and starts with both switches on, so without this a
+// failover window whose config re-read fails would dial ECH although the
+// operator set `ech: false` (or the server kill switch is off).
+func bootWatchdogConfig(stop <-chan struct{}) (*config.Config, error) {
+	cfg, err := loadWatchdogConfig(stop)
+	if err == nil && cfg != nil {
+		ech.Configure(cfg.ECH, cfg.ECHServerEnabled)
+	}
+	return cfg, err
+}
+
+// failoverReloadConfigFn re-reads the on-disk config at a failover-window
+// start. A seam for tests.
+var failoverReloadConfigFn = func() (*config.Config, error) { return config.Load("") }
+
+// resolveFailoverBaseURL re-reads the on-disk config at a failover-window
+// start and returns the server URL the failover client should use: the
+// reloaded server_url, or cfg's when the reload fails or names none. A
+// successful reload also refreshes the ECH switches; a failed one is
+// journaled and leaves them as they were.
+func resolveFailoverBaseURL(cfg *config.Config, journal *watchdog.Journal) string {
+	baseURL := cfg.ServerURL
+	reloaded, err := failoverReloadConfigFn()
+	if err != nil {
+		journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": err.Error()})
+		return baseURL
+	}
+	// ech.Shared() reads no config; every process configures it.
+	ech.Configure(reloaded.ECH, reloaded.ECHServerEnabled)
+	if reloaded.ServerURL != "" {
+		baseURL = reloaded.ServerURL
+	}
+	return baseURL
+}
+
 func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 	if err := verifyOwnExecutableTrustedIfPrivileged(); err != nil {
 		reportExecutableTrustWarning(err)
@@ -384,7 +421,7 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 	}
 	maybeMigrateLegacyInstall()
 
-	cfg, err := loadWatchdogConfig(stopCh)
+	cfg, err := bootWatchdogConfig(stopCh)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
 		os.Exit(1)
@@ -977,16 +1014,7 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 				// client built from the stale startup URL would keep working
 				// against the rolled-back control plane if that URL answers —
 				// the failure-only reload path below would then never run.
-				failoverBaseURL := cfg.ServerURL
-				if reloaded, rerr := config.Load(""); rerr == nil {
-					// ech.Shared() reads no config; every process configures it.
-					ech.Configure(reloaded.ECH, reloaded.ECHServerEnabled)
-					if reloaded.ServerURL != "" {
-						failoverBaseURL = reloaded.ServerURL
-					}
-				} else if rerr != nil {
-					journal.Log(watchdog.LevelWarn, "failover.config_reload_failed", map[string]any{"error": rerr.Error()})
-				}
+				failoverBaseURL := resolveFailoverBaseURL(cfg, journal)
 				failoverClient = watchdog.NewFailoverClient(
 					failoverBaseURL, cfg.AgentID, tokenStore.Reveal(), nil,
 				)

@@ -6,11 +6,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1235,5 +1237,155 @@ func TestDial_ECHAttemptWithoutAcceptanceIsPlainSuccess(t *testing.T) {
 	}
 	if st.LastPlainSuccessAt.IsZero() || st.Mode != ModePlain {
 		t.Fatalf("plain success not recorded / host still in ECH: %+v", st)
+	}
+}
+
+const cooldownWarning = "encrypted client hello paused for one hour after repeated failures; dialing plain"
+
+// TestDial_CooldownEntryWarnsOnceWithCause: three failed ECH handshakes put
+// the host in cooldown with exactly one Warn (visible at the stock info
+// level) that names the host and the last failure.
+func TestDial_CooldownEntryWarnsOnceWithCause(t *testing.T) {
+	logs := captureLogs(t)
+	list, _ := newECHConfigList(t, "public.test")
+	noECHAddr, pool := startTLSServer(t, []string{dialHost, "public.test"}, nil, okHandler())
+	filterAddr, _ := startFilterListener(t)
+	rig := newRig(filterAddr)
+	res, _ := failResolver(t)
+	clock := &fakeClock{t: dialT0}
+	d := newTestDialer(t, rig, res, clock)
+	forceMode(d, dialHost, ModeECH)
+
+	for i := 1; i <= 3; i++ {
+		d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+		rig.setTarget(noECHAddr)
+		rig.thenTarget(filterAddr)
+		if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
+			t.Fatalf("dial %d: err = %v, want filter signature", i, err)
+		}
+		if i < 3 {
+			if got := logs.lines(cooldownWarning); len(got) != 0 {
+				t.Fatalf("dial %d: cooldown warning before cooldown: %v", i, got)
+			}
+		}
+	}
+	if m := rawMode(d, dialHost, clock.Now()); m != ModeCooldown {
+		t.Fatalf("mode = %v, want cooldown", m)
+	}
+	got := logs.lines("level=WARN", cooldownWarning)
+	if len(got) != 1 {
+		t.Fatalf("cooldown warnings = %d, want 1; logs:\n%s", len(got), logs)
+	}
+	for _, want := range []string{"host=" + dialHost, "last_error=", "ECH handshake failed"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("cooldown warning %q missing %q", got[0], want)
+		}
+	}
+}
+
+// TestDial_CooldownFromFetchNamesTheCause: when the config fetch is what
+// keeps failing, the cooldown warning says whether the host publishes no ECH
+// config (a self-hosted edge without an ech= record) or DoH was unreachable.
+func TestDial_CooldownFromFetchNamesTheCause(t *testing.T) {
+	cases := []struct {
+		name     string
+		resolver func(t *testing.T) *Resolver
+		want     string
+		notWant  string
+	}{
+		{
+			name:     "NoECHRecord",
+			resolver: func(t *testing.T) *Resolver { r, _ := noECHResolver(t); return r },
+			want:     "publishes no ECH config",
+			notWant:  "DNS-over-HTTPS lookup failed",
+		},
+		{
+			name: "DoHUnreachable",
+			resolver: func(t *testing.T) *Resolver {
+				return NewResolver(&http.Client{Timeout: 2 * time.Second}, "http://"+closedAddr(t)+"/dns-query")
+			},
+			want:    "DNS-over-HTTPS lookup failed",
+			notWant: "publishes no ECH config",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLogs(t)
+			clock := &fakeClock{t: dialT0}
+			d := newTestDialer(t, newRig(closedAddr(t)), tc.resolver(t), clock)
+			forceMode(d, dialHost, ModeECH)
+			d.mu.Lock()
+			d.state(dialHost).echFailures = echFailureLimit - 1
+			d.mu.Unlock()
+
+			d.fetchAsync(dialHost)
+			waitFetchIdle(t, d, dialHost)
+
+			if m := rawMode(d, dialHost, clock.Now()); m != ModeCooldown {
+				t.Fatalf("mode = %v, want cooldown", m)
+			}
+			got := logs.lines("level=WARN", cooldownWarning, "host="+dialHost)
+			if len(got) != 1 {
+				t.Fatalf("cooldown warnings = %d, want 1; logs:\n%s", len(got), logs)
+			}
+			if !strings.Contains(got[0], tc.want) || strings.Contains(got[0], tc.notWant) {
+				t.Fatalf("cooldown warning %q: want %q and not %q", got[0], tc.want, tc.notWant)
+			}
+		})
+	}
+}
+
+// TestDial_OneShotFetchFailureSurfacesCause: a one-shot dial whose config
+// fetch fails returns the original filter error (errors.As still finds it)
+// with the fetch failure appended, and warns at a level a stock agent logs.
+func TestDial_OneShotFetchFailureSurfacesCause(t *testing.T) {
+	logs := captureLogs(t)
+	filterAddr, _ := startFilterListener(t)
+	_, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+	res, _ := noECHResolver(t)
+	d := newTestDialer(t, newRig(filterAddr), res, &fakeClock{t: dialT0})
+	d.SetOneShot(true)
+
+	_, err := dialTLS(t, d, baseCfg(pool), nil)
+	if !IsFilterSignature(err) {
+		t.Fatalf("err = %v, want the original filter signature", err)
+	}
+	var rhe tls.RecordHeaderError
+	if !errors.As(err, &rhe) {
+		t.Fatalf("errors.As(RecordHeaderError) failed on %v", err)
+	}
+	for _, want := range []string{"encrypted client hello fallback", "config fetch failed", ErrNoECHConfig.Error()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, missing %q", err, want)
+		}
+	}
+	if got := logs.lines("level=WARN", "encrypted client hello fallback failed", "host="+dialHost); len(got) != 1 {
+		t.Fatalf("one-shot fallback warnings = %d, want 1; logs:\n%s", len(got), logs)
+	}
+}
+
+// TestDial_OneShotECHAndPlainFailSurfaceBoth: when the one-shot ECH try and
+// the extra plain try both fail, both reasons ride on the original error.
+func TestDial_OneShotECHAndPlainFailSurfaceBoth(t *testing.T) {
+	logs := captureLogs(t)
+	list, _ := newECHConfigList(t, "public.test")
+	noECHAddr, pool := startTLSServer(t, []string{dialHost, "public.test"}, nil, okHandler())
+	filterAddr, _ := startFilterListener(t)
+	rig := newRig(filterAddr)
+	rig.thenTarget(noECHAddr, filterAddr)
+	d := newTestDialer(t, rig, listResolver(t, list), &fakeClock{t: dialT0})
+	d.SetOneShot(true)
+
+	_, err := dialTLS(t, d, baseCfg(pool), nil)
+	if !IsFilterSignature(err) {
+		t.Fatalf("err = %v, want the original filter signature", err)
+	}
+	for _, want := range []string{"encrypted client hello fallback", "ech attempt failed", "plain retry failed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, missing %q", err, want)
+		}
+	}
+	if got := logs.lines("level=WARN", "encrypted client hello fallback failed", "host="+dialHost); len(got) != 1 {
+		t.Fatalf("one-shot fallback warnings = %d, want 1; logs:\n%s", len(got), logs)
 	}
 }

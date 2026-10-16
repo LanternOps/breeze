@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -156,6 +157,48 @@ func TestParseECHParam_EmptyValueIsNoConfig(t *testing.T) {
 	for _, rec := range []string{`1 . ech=""`, `1 . alpn=h2 ech= ipv4hint=1.2.3.4`} {
 		if _, err := parseECHParam(rec); !errors.Is(err, ErrNoECHConfig) {
 			t.Fatalf("%q: want ErrNoECHConfig, got %v", rec, err)
+		}
+	}
+}
+
+// TestResolver_RcodeIsNotNoECHConfig: NXDOMAIN/SERVFAIL arrive as HTTP 200
+// with an empty Answer. They must not read as "the server publishes no ECH
+// config".
+func TestResolver_RcodeIsNotNoECHConfig(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"Status":3,"Answer":[]}`))
+	}))
+	defer srv.Close()
+
+	_, err := NewResolver(srv.Client(), srv.URL).Lookup(context.Background(), "example.test")
+	if err == nil || errors.Is(err, ErrNoECHConfig) {
+		t.Fatalf("err = %v, want an rcode error that is not ErrNoECHConfig", err)
+	}
+	if !strings.Contains(err.Error(), "doh rcode 3 for HTTPS example.test") {
+		t.Fatalf("err = %q, want it to name rcode 3 and the host", err)
+	}
+}
+
+// TestResolver_JoinsAllEndpointErrors: when every endpoint fails, each
+// endpoint's reason is reported, not only the last one.
+func TestResolver_JoinsAllEndpointErrors(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"Status":2,"Answer":[]}`))
+	}))
+	defer second.Close()
+
+	_, err := NewResolver(nil, first.URL, second.URL).Lookup(context.Background(), "example.test")
+	if err == nil {
+		t.Fatal("Lookup succeeded, want an error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"doh " + first.URL, "unexpected status 500", "doh " + second.URL, "doh rcode 2"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("err = %q, missing %q", msg, want)
 		}
 	}
 }

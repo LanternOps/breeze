@@ -15,8 +15,11 @@ import (
 	"time"
 )
 
-// ErrNoECHConfig means the HTTPS record carried no usable ech= SvcParam.
-var ErrNoECHConfig = errors.New("ech: no ech= parameter in HTTPS record")
+// ErrNoECHConfig means the HTTPS record carried no usable ech= SvcParam: the
+// host (for example a self-hosted edge) does not publish an ECH config. Its
+// text is distinct from a DoH transport failure so the two read differently
+// in logs.
+var ErrNoECHConfig = errors.New("ech: host publishes no ECH config (its DNS HTTPS record has no ech= parameter)")
 
 // DefaultEndpoints are the DoH JSON endpoints tried in order.
 var DefaultEndpoints = []string{
@@ -68,21 +71,22 @@ type dohResponse struct {
 	} `json:"Answer"`
 }
 
-// Lookup returns the ECH config for host, trying each endpoint in order and
-// returning the last error if all fail.
+// Lookup returns the ECH config for host, trying each endpoint in order. If
+// all fail it returns every endpoint's error joined (errors.Is still finds
+// ErrNoECHConfig when any endpoint reported it).
 func (r *Resolver) Lookup(ctx context.Context, host string) (ECHConfig, error) {
-	var lastErr error
+	var errs []error
 	for _, ep := range r.endpoints {
 		cfg, err := r.lookupOne(ctx, ep, host)
 		if err == nil {
 			return cfg, nil
 		}
-		lastErr = fmt.Errorf("doh %s: %w", ep, err)
+		errs = append(errs, fmt.Errorf("doh %s: %w", ep, err))
 		if ctx.Err() != nil {
 			break
 		}
 	}
-	return ECHConfig{}, lastErr
+	return ECHConfig{}, errors.Join(errs...)
 }
 
 func (r *Resolver) lookupOne(ctx context.Context, endpoint, host string) (ECHConfig, error) {
@@ -104,6 +108,11 @@ func (r *Resolver) lookupOne(ctx context.Context, endpoint, host string) (ECHCon
 	var dr dohResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&dr); err != nil {
 		return ECHConfig{}, fmt.Errorf("decode response: %w", err)
+	}
+	// NXDOMAIN, SERVFAIL and the like arrive as HTTP 200 with an empty
+	// Answer; they are a DNS failure, not a host that publishes no config.
+	if dr.Status != 0 {
+		return ECHConfig{}, fmt.Errorf("doh rcode %d for HTTPS %s", dr.Status, host)
 	}
 	for _, a := range dr.Answer {
 		if a.Type != dnsTypeHTTPS {
