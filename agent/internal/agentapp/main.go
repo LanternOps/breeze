@@ -834,7 +834,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			AgentID:      cfg.AgentID,
 			AuthToken:    secureToken,
 			AgentVersion: version,
-			HTTPClient:   nil, // will use default
+			HTTPClient:   newShipperHTTPClient(),
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
 			// Restores a set_log_level override across restarts (#7416).
@@ -2183,6 +2183,7 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 			AgentID:      cfg.AgentID,
 			AuthToken:    helperToken,
 			AgentVersion: version + "-helper",
+			HTTPClient:   newShipperHTTPClient(),
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  helperAuthMon,
 			// Follows the agent's set_log_level override (#7416).
