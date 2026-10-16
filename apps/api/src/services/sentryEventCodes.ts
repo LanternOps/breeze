@@ -52,6 +52,14 @@ export const SENTRY_EVENT_CODES = [
    * silent, indefinite gap in offline detection for that one device (#5867).
    */
   'offline_detector_invalid_device_row',
+  /**
+   * The maintenance-reboot sweep decided a device should reboot inside its
+   * maintenance window and the dispatch was refused (partner trust, device
+   * moved org or decommissioned, claim-time cancel, …). Not a throw: the sweep
+   * logs it and moves on, and retries on the next tick. The refusal class
+   * rides as the `command_dispatch_refusal` tag (#8022, BREEZE-45).
+   */
+  'maintenance_reboot_dispatch_refused',
 
   // --- database / pool --------------------------------------------------
   /** Pool-health watchdog published a non-healthy verdict. */

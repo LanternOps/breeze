@@ -248,6 +248,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // provably-unsent rows failed, so they wait on the stale reaper instead).
   // Carries no tenant, device or job identifier.
   'backup_dispatch_issue',
+  // #8022 (BREEZE-45): why a device command dispatch was refused, as the
+  // closed `CommandDispatchRefusal` union (services/commandQueue.ts) — the
+  // dispatch seam's refusal codes plus 'cancelled' — or the literal
+  // 'unclassified'. The refusal's `error` text interpolates ids and is deleted
+  // with the message, so before this tag the maintenance-reboot sweep's report
+  // arrived as a bare "Error" and the refusal reason was unrecoverable.
+  // Carries no tenant, device or command identifier.
+  'command_dispatch_refusal',
   // These were being passed to captureMessage and silently dropped — the same
   // defect as `worker`, found by auditing every tag key against this list
   // rather than trusting that a passed tag arrives.

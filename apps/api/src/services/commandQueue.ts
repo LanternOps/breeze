@@ -38,7 +38,11 @@ import { recordCommandDispatch } from './anomalyMetrics';
 // #5128. `dispatchDeviceCommand` imports back from this module; both uses are
 // function-level (neither evaluates the other's exports at module load), so the
 // ESM cycle resolves.
-import { dispatchDeviceCommand, dispatchDeviceCommandWithSystemPrecheck } from './dispatchDeviceCommand';
+import {
+  dispatchDeviceCommand,
+  dispatchDeviceCommandWithSystemPrecheck,
+  type DispatchDeviceCommandResult,
+} from './dispatchDeviceCommand';
 import { deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
@@ -197,9 +201,21 @@ export { insertQueuedCommandInTransaction } from './commandQueueInsert';
 // inside the transaction — which is exactly what we're trying to avoid.
 const runOutsideDbContextSafe = runOutsideDbContext;
 
+/**
+ * Why a dispatch did not go out, as a closed set (#8022): the dispatch seam's
+ * own refusal codes, plus `cancelled` for a row the push's claim-time
+ * eligibility check terminalised. Unlike `error` (free text that can carry
+ * ids), this is safe to use as a Sentry tag or metric label.
+ */
+export type CommandDispatchRefusal =
+  | Extract<DispatchDeviceCommandResult, { ok: false }>['code']
+  | 'cancelled';
+
 export interface QueueCommandForExecutionResult {
   command?: QueuedCommand;
   error?: string;
+  /** Set exactly when `error` is: the refusal's class. See CommandDispatchRefusal. */
+  refusal?: CommandDispatchRefusal;
   trust?: { capability: 'device_execute'; reason: string };
   /**
    * #5128. `delivered` = pushed over the live socket. `queued_live` = device
@@ -946,18 +962,7 @@ export async function queueCommandForExecution(
     ...(options.offlinePolicy !== undefined ? { offlinePolicy: options.offlinePolicy } : {}),
   });
 
-  if (!res.ok) {
-    return res.code === 'trust_denied' && res.trust
-      ? { error: res.error, trust: res.trust }
-      : { error: res.error };
-  }
-
-  if (res.delivery === 'cancelled') {
-    // The push's claim-time eligibility check cancelled the row: it exists but
-    // will never run. Report it as the refusal it is, with the reason.
-    return { command: res.command, error: cancelledCommandError(res.cancelReason) };
-  }
-  return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
+  return toQueueCommandForExecutionResult(res);
 }
 
 /** Queue without holding a database transaction across socket delivery. */
@@ -968,15 +973,20 @@ export async function queueCommandForExecutionWithSystemPrecheck(
   options: NonNullable<Parameters<typeof queueCommandForExecution>[3]> & { expectedOrgId: string },
 ): Promise<QueueCommandForExecutionResult> {
   const res = await dispatchDeviceCommandWithSystemPrecheck({ deviceId, type, payload, ...options });
+  return toQueueCommandForExecutionResult(res);
+}
+
+/** The dispatch seam's result in the shape both queueCommandForExecution entry points return. */
+function toQueueCommandForExecutionResult(res: DispatchDeviceCommandResult): QueueCommandForExecutionResult {
   if (!res.ok) {
     return res.code === 'trust_denied' && res.trust
-      ? { error: res.error, trust: res.trust }
-      : { error: res.error };
+      ? { error: res.error, refusal: res.code, trust: res.trust }
+      : { error: res.error, refusal: res.code };
   }
   if (res.delivery === 'cancelled') {
     // The push's claim-time eligibility check cancelled the row: it exists but
     // will never run. Report it as the refusal it is, with the reason.
-    return { command: res.command, error: cancelledCommandError(res.cancelReason) };
+    return { command: res.command, error: cancelledCommandError(res.cancelReason), refusal: 'cancelled' };
   }
   return { command: res.command, delivery: res.delivery, deliverBy: res.deliverBy };
 }
