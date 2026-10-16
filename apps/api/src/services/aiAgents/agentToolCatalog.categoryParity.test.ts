@@ -112,6 +112,8 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'get_contract',
   'get_device_vulnerabilities',
   // EDR provider framework (#8164/#8166): same gap as get_huntress_incidents.
+  // edr_endpoint_action (#8167 W03 PR-A): the web risk-page row ships with the PR-B web work.
+  'edr_endpoint_action',
   'get_edr_status',
   'list_edr_detections',
   'get_huntress_incidents',
