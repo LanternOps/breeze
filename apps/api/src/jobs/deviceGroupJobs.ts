@@ -256,6 +256,51 @@ export function requestDeviceGroupReevaluation(
 }
 
 /**
+ * Like `requestDeviceGroupReevaluation`, but enqueues only once the caller's
+ * outermost transaction has COMMITTED (and drops the request on rollback).
+ *
+ * For writers whose transaction can outlive `DEVICE_GROUP_REEVALUATION_DELAY_MS`
+ * — the custom-field CSV importer writes up to `MAX_IMPORT_ROWS` (1000)
+ * devices, each in its own savepoint, inside ONE request transaction — the
+ * delay alone does not close the commit race: the job would
+ * run against the pre-import snapshot, "succeed", and never retry. Deferring
+ * the enqueue to after commit makes the delay irrelevant for them. The
+ * operator-edit paths (device PATCH, custom-field PATCH, script write-back) use
+ * it too so every #8832 producer has one shape. With no DB context held the
+ * enqueue starts immediately.
+ *
+ * Enqueues for one device are SERIALIZED in-process. A single PATCH that
+ * edits tags and a custom field registers two of these, and both start on the
+ * same tick after commit. `scheduleDeviceGroupReevaluation` is a
+ * read-then-write (getJob, then add or updateData), so racing it, both calls
+ * see "no job", both `add` under the same jobId, and BullMQ silently keeps only
+ * the first — dropping the second request's changed fields. Chained, the
+ * second finds the first's job and merges into it. (Cross-process races were
+ * already possible for the heartbeat path and are unchanged.)
+ *
+ * `runAfterDbContextCommit` is looked up on the module object at call time for
+ * the same reason as `runWithSystemDbAccess` above.
+ */
+const afterCommitEnqueueChains = new Map<string, Promise<unknown>>();
+
+export function requestDeviceGroupReevaluationAfterCommit(
+  request: DeviceGroupReevaluationRequest,
+): void {
+  dbModule.runAfterDbContextCommit(`deviceGroupReevaluation.${request.reason}`, () => {
+    const previous = afterCommitEnqueueChains.get(request.deviceId) ?? Promise.resolve();
+    // `requestDeviceGroupReevaluation` never rejects, so neither does the chain.
+    const current = previous.then(() => requestDeviceGroupReevaluation(request));
+    afterCommitEnqueueChains.set(request.deviceId, current);
+    void current.then(() => {
+      if (afterCommitEnqueueChains.get(request.deviceId) === current) {
+        afterCommitEnqueueChains.delete(request.deviceId);
+      }
+    });
+    return current;
+  });
+}
+
+/**
  * Run one re-evaluation. Assumes it is already inside a system DB access
  * context (the worker wraps it; the integration test wraps it explicitly).
  *

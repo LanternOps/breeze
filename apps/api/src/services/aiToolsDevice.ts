@@ -36,6 +36,7 @@ import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, siteScopeCondition, deviceScopeCondition } from './aiToolsSiteScope';
 import { queryDeviceStats } from './deviceStats';
 import { getDeviceHardwareHealthView } from './hardwareHealth/view';
@@ -817,6 +818,16 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
             );
           }
         }
+
+        // Dynamic groups store membership; a tag rule is stale until this
+        // device is re-evaluated (#8832), same as PATCH /devices/:id.
+        requestDeviceGroupReevaluationAfterCommit({
+          deviceId,
+          orgId: access.device.orgId,
+          eventType: 'device.updated',
+          changedFields: ['tags'],
+          reason: 'ai_manage_tags',
+        });
 
         const [updated] = await db
           .select({ tags: devices.tags })

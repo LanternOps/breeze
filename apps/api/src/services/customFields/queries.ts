@@ -2,6 +2,7 @@ import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { customFieldDefinitions } from '../../db/schema/customFields';
 import { deviceCustomFieldValues, devices, organizations } from '../../db/schema';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 
 export interface WriteBackDevice {
   id: string;
@@ -257,6 +258,21 @@ export async function persistDeviceCustomFieldValues(
       })
       .returning({ fieldKey: deviceCustomFieldValues.fieldKey });
     if (updated.length > 0) changed.push(write.fieldKey);
+  }
+  // Dynamic groups store membership, so a rule on `custom.<key>` goes stale
+  // unless a value write asks for a re-evaluation (#8832). Every value write
+  // path funnels through here, so this is the one place that can promise it.
+  // `custom.<key>` is the spelling `extractFieldsFromFilter` stores in
+  // `device_groups.filter_fields_used`, which the worker overlaps against.
+  // Unchanged values (skipped by `setWhere`) request nothing.
+  if (changed.length > 0) {
+    requestDeviceGroupReevaluationAfterCommit({
+      deviceId,
+      orgId,
+      eventType: 'device.updated',
+      changedFields: changed.map((fieldKey) => `custom.${fieldKey}`),
+      reason: `custom_field_write:${source}`,
+    });
   }
   return changed;
 }
