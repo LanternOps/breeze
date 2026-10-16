@@ -7,6 +7,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
+#[cfg(any(target_os = "linux", test))]
+mod linux_webkit_env;
 mod screenshot;
 mod session_menu;
 mod update_diagnostics;
@@ -1241,6 +1243,12 @@ async fn auto_update(app: tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux: WebKitGTK reads its renderer env vars when the first webview is
+    // created, so this must run before the builder below — and first, while
+    // the process is still single-threaded (#8764).
+    #[cfg(target_os = "linux")]
+    linux_webkit_env::apply();
+
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
