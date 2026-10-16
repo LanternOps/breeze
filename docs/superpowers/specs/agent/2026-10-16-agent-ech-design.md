@@ -22,7 +22,8 @@ Second, lesser motive: a cheap, generic detector for "a filter answered on 443",
 ## Non-goals
 
 - Privacy as a feature. The hostname is still visible on the first (plain) attempt; the goal is reachability, not hiding the domain from everyone.
-- ECH for policy-gated third-party egress (`netpolicy` clients used by tools), the UniFi collector, backup storage sessions, the network diagnostic, or the PowerShell installer one-liner (Schannel has no ECH; installs on a filtered network need the MSI, whose enrollment runs through the agent binary — document that in #8869's release note).
+- ECH for policy-gated third-party egress (`netpolicy` clients used by tools), the UniFi collector, backup storage sessions, or the network diagnostic.
+- Making the *downloaders* (PowerShell one-liner, macOS installer app, Linux `install.sh`) work on a filtered network — see §6; that is the follow-on wave.
 - Working around DNS-based blocking. If a filter starts poisoning DNS for the hostname, that is #8870's problem (second domain + `backup_server_url`), not this one.
 - QUIC/HTTP3.
 
@@ -68,7 +69,15 @@ Per host (control-plane host and backup host separately), the dialer has three m
 - `ech_active` (bool) and `filter_signature_seen_at` (timestamp, nullable) in the health snapshot sent with the heartbeat; stored with the existing device health JSON. No web UI work in v1 beyond what the existing health JSON viewer shows.
 - Logs: one INFO per mode change per host (`plain→ech`, `ech→cooldown`, …), one WARN per filter-signature streak (reuse the `netcache` once-per-streak latch pattern), DEBUG for individual ECH attempts. No per-dial INFO noise.
 
-### 5. Where it plugs in
+### 5. One-shot commands: `enroll`, `bootstrap`, `support`
+
+The 2-signature threshold protects a long-running agent from engaging ECH on a captive-portal blip. A one-shot CLI command has no steady state to protect and no second attempt: on the **first** filter signature it fetches the ECH config (synchronously, bounded to ~5 s total across both DoH resolvers) and retries the request with ECH once, then falls back to plain and reports the normal error. This is what makes the MSI's `BootstrapEnroll` / `EnrollAgent` custom actions succeed on a filtered network: the MSI ships the agent binary, so enrollment is the only network step.
+
+### 6. Fresh installs on a filtered network — scope boundary
+
+Everything that downloads the agent *before* the agent exists cannot use ECH: the PowerShell one-liner (`apps/web/src/lib/installCommands.ts`, Schannel/.NET), the macOS installer app (`agent/installer/macos-app`, URLSession), Linux `install.sh` (curl). On a filtered network they fail at the first HTTPS call to the control plane. This design does **not** fix that. The follow-on wave ("install bootstrap from an unblockable artifact source") should have the installers fetch the binary + checksum from the project's GitHub Releases when the control-plane fetch fails with a TLS/transport error, verified against the signed release manifest (`RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` already exists for this), then run `enroll` (which gets §5). Tracked as its own issue; until it lands, the documented workaround is: download the MSI/pkg from any unfiltered network (or the console on a phone), copy it over, run it.
+
+### 7. Where it plugs in
 
 Control-plane transports only: the heartbeat transport (`agent/internal/heartbeat/heartbeat.go` ~1067–1075), the WebSocket dialer (`agent/internal/websocket/client.go` ~386, gorilla `Dialer.NetDialTLSContext`), the watchdog failover probe (`agent/internal/watchdog/failover.go` ~173–175), and the log shipper's transport. Each gets a `DialTLSContext` from one shared `ech.Dialer` that wraps `netcache.Shared().DialContext` and takes the caller's `tls.Config` as the base. `netpolicy` and all other transports are untouched.
 
@@ -82,4 +91,4 @@ Control-plane transports only: the heartbeat transport (`agent/internal/heartbea
 
 ## Rollout
 
-Ships in the next agent release behind the server flag defaulting on. Watch `ech_active` counts and the WS reconnect rate after promote; the kill switch is the rollback. Release note must say: Windows installer one-liner cannot use ECH; use the MSI on filtered networks.
+Ships in the next agent release behind the server flag defaulting on. Watch `ech_active` counts and the WS reconnect rate after promote; the kill switch is the rollback. Release note must say: the installer downloaders cannot use ECH yet; on a filtered network, download the MSI/pkg elsewhere and run it (enrollment inside it works).
