@@ -65,12 +65,12 @@ func (t *unifiAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 // newUnifiAPIClient builds an http.Client that authenticates to the Breeze API
-// as this agent and refuses redirects (token-leak guard).
+// as this agent and refuses redirects (token-leak guard). It backs the UniFi
+// collector config/telemetry calls and the workspace-index client, so its TLS
+// goes through the shared ECH dialer like the heartbeat's (#8869); tlsCfg may
+// be nil.
 func newUnifiAPIClient(token *secmem.SecureString, tlsCfg *tls.Config) *http.Client {
-	tr := &http.Transport{}
-	if tlsCfg != nil {
-		tr.TLSClientConfig = tlsCfg
-	}
+	tr := ech.NewTransport(tlsCfg)
 	return &http.Client{
 		Timeout:       30 * time.Second,
 		Transport:     &unifiAuthTransport{base: tr, token: token},

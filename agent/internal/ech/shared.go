@@ -33,7 +33,9 @@ func Shared() *Dialer {
 		dohTransport := http.DefaultTransport.(*http.Transport).Clone()
 		dohTransport.DialContext = netcache.Shared().DialContext
 		shared = New(Options{
-			TCPDial:       netcache.Shared().DialContext,
+			// A ctx-carried dial (WithTCPDial) wins so a caller that owns
+			// the TCP leg, such as netpolicy's validated dialer, keeps it.
+			TCPDial:       TCPDialHonouringContext(netcache.Shared().DialContext),
 			Resolver:      NewResolver(&http.Client{Timeout: 3 * time.Second, Transport: dohTransport}),
 			Cache:         NewCache(filepath.Join(config.GetDataDir(), "ech-cache.json")),
 			LocalEnabled:  true,
