@@ -805,6 +805,86 @@ describe('peripheralControl routes', () => {
   });
 
   // ----------------------------------------------------------------
+  // Org-owned create by a partner with TWO accessible orgs (#8338).
+  // Every other fixture here has a single accessible org, which
+  // resolveOrgIdForWrite fills in on its own, so the "no org named"
+  // 400 can only be reached with two.
+  // ----------------------------------------------------------------
+  describe('org-owned create names its organization (#8338)', () => {
+    const orgB = '33333333-3333-3333-3333-333333333333';
+
+    function setTwoOrgPartnerAuth() {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          orgId: null,
+          partnerId,
+          partnerOrgAccess: 'all',
+          accessibleOrgIds: [orgId, orgB],
+          canAccessOrg: (id: string) => id === orgId || id === orgB,
+          orgCondition: () => undefined,
+          user: { id: 'user-partner', email: 'partner@example.com' }
+        });
+        return next();
+      });
+    }
+
+    const createBody = (extra: Record<string, unknown> = {}) => JSON.stringify({
+      name: 'Block USB Storage',
+      deviceClass: 'storage',
+      action: 'block',
+      targetType: 'organization',
+      ...extra
+    });
+
+    it('creates the policy when the body names an accessible org', async () => {
+      setTwoOrgPartnerAuth();
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ ...basePolicy, orgId: orgB }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: insertValues } as any);
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ id: orgB }]) })
+      } as any);
+
+      const res = await app.request('/peripherals/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody({ orgId: orgB })
+      });
+
+      expect(res.status).toBe(201);
+      expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({ orgId: orgB }));
+    });
+
+    it('returns 403 when the body names an org the caller cannot access', async () => {
+      setTwoOrgPartnerAuth();
+      const res = await app.request('/peripherals/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody({ orgId: '44444444-4444-4444-4444-444444444444' })
+      });
+
+      expect(res.status).toBe(403);
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 naming orgId when the body omits it', async () => {
+      setTwoOrgPartnerAuth();
+      const res = await app.request('/peripherals/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: createBody()
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('orgId');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+  });
+
+  // ----------------------------------------------------------------
   // Partner-wide dual-ownership gate (#2131): a policy with orgId null +
   // partnerId set is only mutable by a caller with
   // canManagePartnerWidePolicies(auth) === true (system scope, or partner

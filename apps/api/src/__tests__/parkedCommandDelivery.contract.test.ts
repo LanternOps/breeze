@@ -142,6 +142,10 @@ const CLASSIFICATION: Record<string, Classification> = {
     kind: 'eligibility',
     reason: 'The dispatch read joins the device org type; a parked device fails the actuation before the raw insert',
   },
+  'routes/devices/pamReconciliation.ts': {
+    kind: 'chokepoint',
+    reason: 'insertQueuedCommandInTransaction checks parked-device delivery on the held transaction and the route returns its typed 409 refusal',
+  },
   'routes/devices/actuateElevation.ts': {
     kind: 'eligibility',
     reason: 'Asserted first in the actuation transaction, before the approval flip and the insert',

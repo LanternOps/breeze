@@ -107,6 +107,7 @@ import { writeOrgImportAudits } from '../services/orgImport/audit';
 import { commitImportRowSchema, importRowSchema } from '../services/orgImport/schemas';
 import { resolveImportPartnerId } from './importScope';
 import { registerOrgContactsRoutes } from './orgContacts';
+import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibilities';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
@@ -2923,6 +2924,8 @@ registerOrgBillingProfileRoutes(orgRoutes);
 registerOrgAuditRetentionSettingsRoutes(orgRoutes);
 // First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts
 registerOrgContactsRoutes(orgRoutes);
+// Read-only who-to-contact resolution (Site / Device) — see routes/orgContactResponsibilities.ts
+registerOrgContactResponsibilitiesRoutes(orgRoutes);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;

@@ -203,6 +203,45 @@ describe('TicketDetails — who wrote it', () => {
     expect(item).not.toContain('Customer email');
     expect(item).not.toContain('Your IT team');
   });
+
+  // #8313: a customer's reply imported from another helpdesk is stored with
+  // author_type 'email' and no portal login; original_author_kind is the only
+  // thing that says the customer wrote it.
+  it("labels an imported requester reply as the customer's, not the IT team's", () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-imported-requester',
+        authorName: 'Maya',
+        authorType: 'email',
+        senderPortalUserId: null,
+        originalAuthorKind: 'requester',
+        content: 'Written in the old helpdesk',
+        createdAt: '2021-03-04T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(screen.getByTestId('ticket-comment-imported-customer').textContent).toBe('Customer');
+    expect(item).not.toContain('Your IT team');
+  });
+
+  it('keeps labelling an imported staff reply as the IT team', () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-imported-staff',
+        authorName: 'Former Tech',
+        authorType: 'internal',
+        senderPortalUserId: null,
+        originalAuthorKind: 'staff',
+        content: 'Answered in the old helpdesk',
+        createdAt: '2021-03-04T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(item).toContain('Your IT team');
+    expect(screen.queryByTestId('ticket-comment-imported-customer')).toBeNull();
+  });
 });
 
 describe('ReplyComposer — draft survives a dead session', () => {

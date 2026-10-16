@@ -1,8 +1,54 @@
 # PAM Reconciliation Ledger Reset
 
-This is the only approved manual procedure for clearing a persistent PAM
-reconciliation quarantine. There is no remote administrative reset API. This
-branch does not perform this procedure in production or on customer devices.
+The supported remote recovery path retries independent endpoint verification;
+it does not erase a ledger or quarantine. The manual archive procedure below
+remains available for incidents requiring evidence-preserving service recovery.
+
+## Remote verification reset
+
+Deploy the updated API, its additive reset-capability migration, and agent first. The agent advertises
+`pamReconciliationResetProtocolVersion: 1` independently of its normal PAM
+availability, so recovery remains deliverable while `pamLifetimeProtocolVersion`
+is zero. Heartbeats rewrite the independent capability claim, clearing it when
+an older agent omits it. The API returns `409` without queuing a command when
+the device does not currently advertise reset support.
+
+1. Revoke active elevations, or wait for their expiry cleanup to be scheduled.
+   The endpoint returns `409` while any actuation still has desired state
+   `active`, even if its expiration timestamp has already passed. A timestamp
+   alone does not prove that the server has requested cleanup.
+2. As an authenticated operator satisfying the current MFA policy, with `pam:approve` and `devices:execute`
+   for the device's current organization and site, call:
+
+   ```http
+   POST /api/v1/devices/<device-id>/pam-reconciliation/reset
+   Content-Type: application/json
+
+   {"reason":"Incident reference and reason for retrying verification"}
+   ```
+
+   Partner trust must also allow `device_execute`. A trust denial returns `403`;
+   a device parked in a holding organization returns `409` without queuing work.
+
+3. A `202` response means a `pam_reconcile_v2` command was queued, not that PAM
+   has already recovered. Inspect its command result after the next heartbeat.
+   Recovery reports verification, reconciliation, and observation-transport
+   readiness. Failed verification remains a failed command.
+4. The agent disables interception while reconciling, verifies cleanup, delivers
+   durable observations, and reapplies the current policy only after local proof.
+   Admission also waits for observation-transport readiness. Recovery retains
+   cleanup generation tombstones, preventing old apply commands from replaying.
+   Missing-account recovery requires absent job/process identities and an
+   independent token scan; unreadable ledgers, unknown tokens, and unresolved
+   quarantine remain blocking evidence.
+
+There is no `force` or evidence-deletion option. A remaining quarantine needs
+investigation or the controlled manual procedure below.
+
+On domain-joined hosts, token identity lookup can require a reachable domain
+controller. If a token SID cannot be resolved, missing-account recovery remains
+unavailable. Restore domain connectivity and retry; unresolved identities must
+not be interpreted as proof that no privileged token survives.
 
 Use this runbook only under an approved incident or change record. Record the
 incident/change reference in every captured artifact and command transcript.

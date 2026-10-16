@@ -362,8 +362,9 @@ func (m *Manager) Apply(settings *Settings) {
 		return
 	}
 
-	// Snapshot install state BEFORE migrateFromLegacyName — on Linux (and
-	// old-name darwin/windows) it can delete the binary, and we must still
+	// Snapshot install state BEFORE migrateFromLegacyName — on darwin/windows
+	// an old-name install is deleted there (Linux has no separate old name, so
+	// it is left alone; #8541), and we must still
 	// finish uninstall cleanup exactly once for a legacy box upgrading with
 	// Assist disabled.
 	wasInstalled := m.isInstalled()

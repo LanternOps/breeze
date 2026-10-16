@@ -957,8 +957,8 @@ sudo launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist
 # Remove LaunchDaemon
 sudo rm /Library/LaunchDaemons/com.breeze.agent.plist
 
-# Remove binary
-sudo rm /usr/local/bin/breeze-agent
+# Remove binary (the .pkg installs to either location)
+sudo rm -f /usr/local/bin/breeze-agent /Library/Breeze/bin/breeze-agent
 
 # Remove configuration
 sudo rm -rf /etc/breeze

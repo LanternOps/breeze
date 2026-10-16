@@ -395,6 +395,11 @@ export interface TicketComment {
    * on an 'email' comment is the only signal that the CUSTOMER wrote it.
    */
   senderPortalUserId?: string | null;
+  /**
+   * Set on a comment imported from another helpdesk (#8313): who wrote it
+   * there. 'requester' is the customer's own reply, which has no portal login.
+   */
+  originalAuthorKind?: 'staff' | 'requester' | null;
   content: string;
   createdAt: string;
   /** Absent on a reply the customer just posted locally. */

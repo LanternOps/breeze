@@ -14,6 +14,8 @@ type TranslatedLocale = (typeof translatedLocales)[number];
 // same `Français (Canada)` value in every catalog.
 const namespaceDuplicateBaselines = {
   'pt-BR': {
+    // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in pt-BR.
+    'contactResponsibilities.json': 1,
     // +6: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Status" are
     // identical cognates in pt-BR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -189,6 +191,8 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 14,
   },
   'es-419': {
+    // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in es-419.
+    'contactResponsibilities.json': 1,
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
     // standard CMS loanword in es-419; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -353,6 +357,8 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'fr-FR': {
+    // +1 contactResponsibilities roles.admin — "Administration" is the same French word.
+    'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
     // are identical cognates in fr-FR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -554,6 +560,8 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'fr-CA': {
+    // +1 contactResponsibilities roles.admin — "Administration" is the same French word.
+    'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
     // are identical cognates in fr-CA; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -750,6 +758,8 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'de-DE': {
+    // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in de-DE.
+    'contactResponsibilities.json': 1,
     // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
     // are identical cognates in de-DE; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -942,6 +952,8 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 21,
   },
   'it-IT': {
+    // +1 contactResponsibilities roles.escalation — "Escalation" is the standard Italian term.
+    'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
     // are identical cognates in it-IT; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -1092,6 +1104,8 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 18,
   },
   'tr-TR': {
+    // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in tr-TR.
+    'contactResponsibilities.json': 1,
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
     // standard CMS loanword in tr-TR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.

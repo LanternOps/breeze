@@ -96,6 +96,8 @@ behaves exactly as it does today.
   sweep, as soon as any of these happens:
   - the principal is disabled, expires, or loses `tickets:write`;
   - the opener stops being an active partner-wide admin of the partner;
+  - the opener's partner role stops granting `organizations.write` and `tickets.write`, the
+    permissions opening requires (a role downgrade; closed as `opener_inactive`);
   - the opener's `credential_epoch` or `mfa_epoch` moves.
 
   This is the rule #8332 applies to keys.
@@ -180,7 +182,7 @@ Staff routes under `/migration-windows`, mounted like `/partner-service-principa
 
 | Route | Who | Notes |
 |---|---|---|
-| `POST /migration-windows` | Partner-wide admin who owns the principal | Requires `requireInteractiveSession()` and a single-use step-up grant for the new operation `migration_window_open`. The operation goes in `StepUpOperation`/`STEP_UP_OPERATIONS` with a digest builder in `routes/auth/mfa.ts` over `{ partnerId, principalId, sorted orgIds, endsAt, writesPerHour }`.<br>**Checks:** the principal is active, unexpired, holds `tickets:write` and has no active key. The opener has `TICKETS_WRITE` on every org. Every org is an active org of the partner (not `quick_support`, not the unassigned pool). No other open window exists for the partner.<br>The opener's epochs are snapshotted. Audit `migration_window.opened`. |
+| `POST /migration-windows` | Partner-wide admin who owns the principal, signed in to the partner (a system-scope session is refused with `403 MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED`: it has no partner membership for the sweep to keep) | Requires `requireInteractiveSession()` and a single-use step-up grant for the new operation `migration_window_open`. The operation goes in `StepUpOperation`/`STEP_UP_OPERATIONS` with a digest builder in `routes/auth/mfa.ts` over `{ partnerId, principalId, sorted orgIds, endsAt, writesPerHour }`.<br>**Checks:** the principal is active, unexpired, holds `tickets:write` and has no active key. The opener has `TICKETS_WRITE` on every org. Every org is an active org of the partner (not `quick_support`, not the unassigned pool). No other open window exists for the partner.<br>The opener's epochs are snapshotted. Audit `migration_window.opened`. |
 | `POST /migration-windows/:id/close` | Any partner-wide admin | Closes now with `closed_by_admin`. Audit `migration_window.closed`. |
 | `GET /migration-windows`, `GET /migration-windows/:id` | Partner-wide admins | Live counts while open; `summary` once closed. |
 

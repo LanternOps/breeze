@@ -44,8 +44,12 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up -d po
 pnpm db:migrate
 pnpm db:seed
 
-# Start dev servers
-pnpm dev
+# Start dev servers (api + web + portal)
+pnpm dev:app
+
+# `pnpm dev` runs every package's dev task, including the Office add-ins. Those need the
+# Windows or macOS certificate store (office-addin-dev-certs), so on Linux/WSL they skip
+# themselves with a message rather than failing the run.
 
 # When you're done: stop the infrastructure (nothing stops it for you).
 # Add -v to also drop the database volumes.
