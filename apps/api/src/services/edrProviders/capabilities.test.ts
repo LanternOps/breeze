@@ -6,7 +6,7 @@ describe('capabilitySnapshot', () => {
   it('is the adapter capability keys plus the key-specific degradation notes from the last test', () => {
     expect(capabilitySnapshot(bitdefenderAdapter, ['quarantine: API not enabled on key'])).toEqual([
       'tenants:partner',
-      'detections:poll',
+      'detections:poll_and_push',
       'installer:none',
       'action:isolate',
       'action:unisolate',
@@ -17,7 +17,7 @@ describe('capabilitySnapshot', () => {
 
   it('no notes -> keys only', () => {
     expect(capabilitySnapshot(bitdefenderAdapter, [])).toEqual([
-      'tenants:partner', 'detections:poll', 'installer:none',
+      'tenants:partner', 'detections:poll_and_push', 'installer:none',
       'action:isolate', 'action:unisolate', 'action:scan',
     ]);
   });

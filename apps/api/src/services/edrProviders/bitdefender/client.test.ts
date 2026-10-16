@@ -541,3 +541,66 @@ describe('GravityZoneClient getScanTaskStatus', () => {
     }
   });
 });
+
+describe('GravityZoneClient push settings (W03 PR-B)', () => {
+  it('setPushEventSettings enables jsonRPC push with the secret as Authorization, TLS required, mapped companies', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('push-set-ok.json') }]);
+    const { client, limiter } = makeClient(impl);
+    await client.setPushEventSettings({
+      enabled: true, url: 'https://breeze.example.test/api/v1/webhooks/edr/x', authorization: 'synthetic-secret', companyIds: ['c1', 'c2'],
+    });
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/push`);
+    expect(calls[0]!.body.method).toBe('setPushEventSettings');
+    expect(calls[0]!.body.params).toEqual({
+      status: 1,
+      serviceType: 'jsonRPC',
+      serviceSettings: {
+        url: 'https://breeze.example.test/api/v1/webhooks/edr/x',
+        authorization: 'synthetic-secret',
+        requireValidSslCertificate: true,
+      },
+      subscribeToEventTypes: { 'new-incident': true, av: true, aph: true },
+      subscribeToCompanies: ['c1', 'c2'],
+    });
+    expect(limiter.acquire.mock.calls.map((c: unknown[]) => c[0])).toEqual(['push']);
+  });
+
+  it('setPushEventSettings disable sends status 0 and no secret', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('push-set-ok.json') }]);
+    await makeClient(impl).client.setPushEventSettings({ enabled: false });
+    expect(calls[0]!.body.params).toEqual({ status: 0 });
+  });
+
+  it('setPushEventSettings omits subscribeToCompanies when no company is mapped', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('push-set-ok.json') }]);
+    await makeClient(impl).client.setPushEventSettings({ enabled: true, url: 'https://x.example.test/h', authorization: 's', companyIds: [] });
+    expect(calls[0]!.body.params).not.toHaveProperty('subscribeToCompanies');
+  });
+
+  it('a non-true result is a malformed response, not a silent success', async () => {
+    const { impl } = makeFetch([{ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result: false }) }]);
+    const err = await rejection(makeClient(impl).client.setPushEventSettings({ enabled: false }));
+    expect(err.code).toBe('malformed_response');
+  });
+
+  it('getPushEventSettings never surfaces the stored authorization value', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('push-settings-get.json') }]);
+    const s = await makeClient(impl).client.getPushEventSettings();
+    expect(calls[0]!.body.method).toBe('getPushEventSettings');
+    expect(s).toEqual({
+      enabled: true,
+      url: 'https://breeze.example.test/api/v1/webhooks/edr/00000000-0000-4000-8000-000000000001',
+      subscribedCompanyIds: ['5f0a1b2c3d4e5f60718293a1'],
+    });
+    expect(JSON.stringify(s)).not.toContain('synthetic-not-a-real-secret');
+  });
+
+  it('sendTestPushEvent posts push.sendTestPushEvent under the push class', async () => {
+    const { impl, calls } = makeFetch([{ body: fx('push-test-ok.json') }]);
+    const { client, limiter } = makeClient(impl);
+    await client.sendTestPushEvent();
+    expect(calls[0]!.url).toBe(`${ACCESS_URL}/v1.0/jsonrpc/push`);
+    expect(calls[0]!.body).toMatchObject({ method: 'sendTestPushEvent', params: { eventType: 'av' } });
+    expect(limiter.acquire.mock.calls.map((c: unknown[]) => c[0])).toEqual(['push']);
+  });
+});

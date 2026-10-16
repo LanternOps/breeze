@@ -17,6 +17,7 @@ import {
 } from '../types';
 import { GravityZoneClient, GZ_HOST_ALLOWLIST, type GzIncident, type GzQuarantineItem } from './client';
 import { toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint } from './normalize';
+import { verifyGravityZoneWebhook } from './push';
 
 const credentialsSchema = z.object({ apiKey: z.string().trim().min(16).max(512) }).strict();
 
@@ -88,7 +89,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
   capabilities: {
     tenantModel: 'partner',
     perTenantHost: false,
-    detectionDelivery: 'poll', // push arrives in W03
+    // Push events are hints that schedule the normal poll (W03 PR-B); polling stays authoritative.
+    detectionDelivery: 'poll_and_push',
     detectionStatusModel: 'delta_with_updates',
     actions: ['isolate', 'unisolate', 'scan'],
     endpointIdentifiers: ['hostname', 'fqdn', 'mac', 'ip'],
@@ -98,6 +100,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     operationBudgets: { inventory: { perSecond: 5 }, companies: { perSecond: 5 }, incidents: { perMinute: 2 },
       // Vendor scan/quarantine task cap: 30 / min.
       actions: { perMinute: 30 },
+      // Vendor push-settings API: 5 requests / min.
+      push: { perMinute: 5 },
     },
     defaultIntervals: { detectionsMinutes: 10, inventoryMinutes: 60 },
     maxActionTargets: 1000,
@@ -302,6 +306,22 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     const isolated = (await clientFor(ctx).getEndpointDetails(req.target.vendorEndpointId)).isIsolated;
     if (typeof isolated !== 'boolean') return 'unknown';
     return isolated === (req.action === 'isolate') ? 'applied' : 'not_applied';
+  },
+
+  verifyWebhook: verifyGravityZoneWebhook,
+
+  async registerPush(ctx, o): Promise<void> {
+    await clientFor(ctx).setPushEventSettings({
+      enabled: true, url: o.url, authorization: o.secret, companyIds: o.vendorTenantIds,
+    });
+  },
+
+  async unregisterPush(ctx): Promise<void> {
+    await clientFor(ctx).setPushEventSettings({ enabled: false });
+  },
+
+  async sendTestPush(ctx): Promise<void> {
+    await clientFor(ctx).sendTestPushEvent();
   },
 
   async listDetections(ctx, tenant, cursorRaw, now): Promise<EdrDetectionPage> {

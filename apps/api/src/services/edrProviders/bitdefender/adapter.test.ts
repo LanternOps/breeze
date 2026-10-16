@@ -49,6 +49,42 @@ function makeCtx(routes: Record<string, Route>, over: Partial<EdrAdapterContext>
 const ok = (name: string): Reply => ({ body: fx(name) });
 const rpc = (result: unknown): Reply => ({ body: JSON.stringify({ jsonrpc: '2.0', id: 1, result }) });
 
+describe('push (W03 PR-B)', () => {
+  it('declares poll_and_push and a 5/min push budget', () => {
+    expect(adapter.capabilities.detectionDelivery).toBe('poll_and_push');
+    expect(adapter.capabilities.operationBudgets?.push).toEqual({ perMinute: 5 });
+    expect(typeof adapter.verifyWebhook).toBe('function');
+  });
+
+  it('registerPush enables vendor push with the url, secret and mapped companies', async () => {
+    const { ctx, calls } = makeCtx({ 'push.setPushEventSettings': rpc(true) });
+    await adapter.registerPush!(ctx, { url: 'https://breeze.example.test/api/v1/webhooks/edr/x', secret: 'sek', vendorTenantIds: [C1, C2] });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.params).toMatchObject({
+      status: 1, serviceSettings: { url: 'https://breeze.example.test/api/v1/webhooks/edr/x', authorization: 'sek' },
+      subscribeToCompanies: [C1, C2],
+    });
+  });
+
+  it('unregisterPush disables vendor push', async () => {
+    const { ctx, calls } = makeCtx({ 'push.setPushEventSettings': rpc(true) });
+    await adapter.unregisterPush!(ctx);
+    expect(calls[0]!.params).toEqual({ status: 0 });
+  });
+
+  it('sendTestPush calls sendTestPushEvent', async () => {
+    const { ctx, count } = makeCtx({ 'push.sendTestPushEvent': rpc(true) });
+    await adapter.sendTestPush!(ctx);
+    expect(count('push.sendTestPushEvent')).toBe(1);
+  });
+
+  it('a vendor refusal surfaces as a typed error', async () => {
+    const { ctx } = makeCtx({ 'push.setPushEventSettings': ok('error-invalid-params-32602.json') });
+    await expect(adapter.registerPush!(ctx, { url: 'https://x.example.test/h', secret: 's', vendorTenantIds: [] }))
+      .rejects.toBeInstanceOf(EdrProviderRequestError);
+  });
+});
+
 describe('bitdefender adapter metadata', () => {
   it('pins budgets and capabilities', () => {
     expect(adapter.capabilities.operationBudgets?.incidents).toEqual({ perMinute: 2 });
@@ -376,10 +412,9 @@ describe('response actions', () => {
   const endpointReq = (action: 'isolate' | 'unisolate' | 'scan' | 'update_agent'): EdrActionRequest =>
     ({ action, target: { kind: 'endpoint', vendorEndpointId: 'ep1' } });
 
-  it('declares isolate/unisolate/scan with a 30/min actions budget; delivery stays poll', () => {
+  it('declares isolate/unisolate/scan with a 30/min actions budget', () => {
     expect(adapter.capabilities.actions).toEqual(['isolate', 'unisolate', 'scan']);
     expect(adapter.capabilities.operationBudgets?.actions).toEqual({ perMinute: 30 });
-    expect(adapter.capabilities.detectionDelivery).toBe('poll');
   });
 
   describe('supportsAction', () => {
