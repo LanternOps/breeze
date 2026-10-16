@@ -92,15 +92,16 @@ export type DeliveryFailureCode = 'no_helper' | 'agent_unsupported' | 'undeliver
 
 export type CommandResultOutcome =
   | { status: 'delivered'; surface: 'assist' | 'native' | null }
+  | { status: 'retracted' }
   | { status: 'failed'; errorCode: DeliveryFailureCode };
 
-function surfaceFromStdout(stdout: string | undefined): 'assist' | 'native' | null {
-  if (!stdout) return null;
+function parseStdout(stdout: string | undefined): Record<string, unknown> {
+  if (!stdout) return {};
   try {
-    const parsed = JSON.parse(stdout) as { surface?: unknown };
-    return parsed.surface === 'assist' || parsed.surface === 'native' ? parsed.surface : null;
+    const parsed = JSON.parse(stdout) as unknown;
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
   } catch {
-    return null;
+    return {};
   }
 }
 
@@ -114,7 +115,11 @@ export function deliveryStatusFromCommandResult(result: {
   stdout?: string;
 }): CommandResultOutcome {
   if (result.status === 'completed') {
-    return { status: 'delivered', surface: surfaceFromStdout(result.stdout) };
+    const out = parseStdout(result.stdout);
+    // The agent had already been told to retract this message and showed nothing.
+    if (out.delivered === false && out.retracted === true) return { status: 'retracted' };
+    const surface = out.surface === 'assist' || out.surface === 'native' ? out.surface : null;
+    return { status: 'delivered', surface };
   }
   const error = (result.error ?? '').trim().toLowerCase();
   if (error.startsWith('unknown command type')) return { status: 'failed', errorCode: 'agent_unsupported' };

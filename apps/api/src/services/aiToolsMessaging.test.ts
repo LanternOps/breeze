@@ -140,6 +140,44 @@ describe('send_endpoint_message handler', () => {
     expect(executeSend).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [{ kind: 'api_key', apiKeyId: 'k' }],
+    [{ kind: 'oauth_grant', grantId: 'g' }],
+    [{ kind: 'system', reason: 'x' }],
+  ])('send runs only for a human chat session: refuses principal %o (unattended MCP opt-in cannot skip approval)', async (principal) => {
+    const out = JSON.parse(await tool().handler(sendInput, makeAuth({ principal } as never)));
+    expect(out.error).toBeTruthy();
+    expect(executeSend).not.toHaveBeenCalled();
+  });
+
+  it('the model cannot self-confirm a large send: confirmedCount is never forwarded', async () => {
+    executeSend.mockResolvedValue({ status: 200, body: { batchId: 'b', deviceCount: 1, results: [] } });
+    await tool().handler({ ...sendInput, confirmedCount: 500 }, makeAuth());
+    if (executeSend.mock.calls.length > 0) {
+      expect(executeSend.mock.calls[0]![1].confirmedCount).toBeUndefined();
+    }
+  });
+
+  it('a send that resolves above the confirmation threshold is refused with a console pointer', async () => {
+    executeSend.mockResolvedValue({ status: 409, body: { error: 'confirmation_required', deviceCount: 250 } });
+    const out = JSON.parse(await tool().handler(sendInput, makeAuth()));
+    expect(out.error).toBe('confirmation_required');
+    expect(out.message).toMatch(/100 devices/);
+  });
+
+  it('the approval card names severity, the target selector and acknowledgement, never the text', () => {
+    const r = checkGuardrails('send_endpoint_message', {
+      ...sendInput, severity: 'critical', requiresAck: true, targets: { siteIds: [DEVICE, DEVICE] }, title: 'secret title', body: 'secret body',
+    });
+    expect(r.description).toBe('Show a critical message to every device in 2 site(s), acknowledgement required. Review the title and body in the details before approving.');
+    expect(r.description).not.toContain('secret');
+  });
+
+  it('is denied to autonomous agents above any allowlist (AGENT_HUMAN_ONLY_TOOLS)', async () => {
+    const { AGENT_HUMAN_ONLY_TOOLS } = await import('./aiToolExposure');
+    expect(AGENT_HUMAN_ONLY_TOOLS.has('send_endpoint_message')).toBe(true);
+  });
+
   it('send surfaces a refused outcome as a tool error', async () => {
     executeSend.mockResolvedValue({ status: 429, body: { error: 'rate_limited' } });
     const out = JSON.parse(await tool().handler(sendInput, makeAuth()));

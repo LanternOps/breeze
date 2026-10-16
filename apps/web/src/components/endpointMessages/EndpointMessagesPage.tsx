@@ -45,6 +45,10 @@ export default function EndpointMessagesPage() {
   const [confirmRetract, setConfirmRetract] = useState(false);
   const [busy, setBusy] = useState(false);
   const detailSeq = useRef(0);
+  // The selection after an await: a mutation's refresh must not replace a
+  // different message the user selected meanwhile.
+  const selectedRef = useRef(selectedId);
+  selectedRef.current = selectedId;
 
   const loadFirstPage = useCallback(async () => {
     try {
@@ -126,7 +130,7 @@ export default function EndpointMessagesPage() {
             : t(`${h}.messages.retractSuccess`);
         },
       });
-      await loadDetail(detail.id);
+      if (selectedRef.current === detail.id) await loadDetail(detail.id);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) showToast({ message: t(`${h}.messages.retractFailed`), type: 'error' });
@@ -144,7 +148,7 @@ export default function EndpointMessagesPage() {
         friendly: (code) => (RESEND_ERROR_CODES.has(code) ? t(`${h}.resendErrors.${code}`) : undefined),
         successMessage: (data) => t(`${h}.messages.resendSuccess`, { count: data.deviceCount }),
       });
-      await Promise.all([loadDetail(detail.id), loadFirstPage()]);
+      await Promise.all([selectedRef.current === detail.id ? loadDetail(detail.id) : Promise.resolve(), loadFirstPage()]);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) showToast({ message: t(`${h}.messages.resendFailed`), type: 'error' });

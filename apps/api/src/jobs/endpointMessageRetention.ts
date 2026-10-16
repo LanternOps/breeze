@@ -42,13 +42,15 @@ function rowCount(res: unknown): number {
   return Number((r as { count?: number }).count ?? (r as { rowCount?: number }).rowCount ?? 0);
 }
 
-async function batched(run: () => Promise<number>): Promise<number> {
+async function batched(pass: string, run: () => Promise<number>): Promise<number> {
   let total = 0;
   for (let i = 0; i < MAX_BATCHES_PER_PASS; i += 1) {
     const n = await run();
     total += n;
-    if (n < BATCH) break;
+    if (n < BATCH) return total;
   }
+  // Backlog larger than one pass: the next scheduled run continues it.
+  console.warn(`[endpointMessageRetention] ${pass} hit the per-pass cap (${MAX_BATCHES_PER_PASS * BATCH} rows); remainder deferred to the next run`);
   return total;
 }
 
@@ -56,7 +58,7 @@ async function batched(run: () => Promise<number>): Promise<number> {
 export async function runEndpointMessageRetentionOnce(now: Date = new Date()): Promise<EndpointMessageRetentionResult> {
   const nowIso = now.toISOString();
   return withSystemDbAccessContext(async () => {
-    const bodiesPurged = await batched(async () => rowCount(await db.execute(sql`
+    const bodiesPurged = await batched('body purge', async () => rowCount(await db.execute(sql`
       UPDATE endpoint_messages
          SET title = NULL, body = NULL, body_purged_at = ${nowIso}::timestamptz
        WHERE id IN (
@@ -68,7 +70,7 @@ export async function runEndpointMessageRetentionOnce(now: Date = new Date()): P
        )
       RETURNING id`)));
 
-    const deliveriesExpired = await batched(async () => rowCount(await db.execute(sql`
+    const deliveriesExpired = await batched('expiry close-out', async () => rowCount(await db.execute(sql`
       UPDATE endpoint_message_deliveries
          SET status = 'expired', updated_at = ${nowIso}::timestamptz
        WHERE id IN (
@@ -81,7 +83,7 @@ export async function runEndpointMessageRetentionOnce(now: Date = new Date()): P
          AND status IN ('queued', 'delivered', 'displayed')
       RETURNING id`)));
 
-    const messagesDeleted = await batched(async () => rowCount(await db.execute(sql`
+    const messagesDeleted = await batched('history delete', async () => rowCount(await db.execute(sql`
       DELETE FROM endpoint_messages
        WHERE id IN (
          SELECT id FROM endpoint_messages
@@ -91,7 +93,7 @@ export async function runEndpointMessageRetentionOnce(now: Date = new Date()): P
        )
       RETURNING id`)));
 
-    const detachedDeliveriesDeleted = await batched(async () => rowCount(await db.execute(sql`
+    const detachedDeliveriesDeleted = await batched('detached history delete', async () => rowCount(await db.execute(sql`
       DELETE FROM endpoint_message_deliveries
        WHERE id IN (
          SELECT id FROM endpoint_message_deliveries

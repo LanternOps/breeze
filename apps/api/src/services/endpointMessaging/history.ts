@@ -22,6 +22,13 @@ function siteFilter(permissions: SitePerms): SQL | undefined {
   return inArray(devices.siteId, allowed);
 }
 
+/** Same rule as siteFilter, against the raw `dv` alias used in correlated subqueries. */
+function siteFilterRaw(permissions: SitePerms): SQL {
+  const allowed = permissions?.allowedSiteIds;
+  if (!Array.isArray(allowed) || allowed.length === 0) return sql`false`;
+  return sql`dv.site_id IN (${sql.join(allowed.map((s) => sql`${s}::uuid`), sql`, `)})`;
+}
+
 export interface MessageListItem {
   id: string;
   orgId: string;
@@ -71,6 +78,15 @@ export async function listEndpointMessages(args: {
     .where(and(
       auth.orgCondition(endpointMessages.orgId),
       orgId ? eq(endpointMessages.orgId, orgId) : undefined,
+      // A site-restricted reader lists only messages that reached one of their sites.
+      args.permissions?.allowedSiteIds !== undefined
+        ? sql`EXISTS (
+            SELECT 1 FROM endpoint_message_deliveries d
+              JOIN devices dv ON dv.id = d.device_id
+             WHERE d.endpoint_message_id = ${endpointMessages.id}
+               AND ${siteFilterRaw(args.permissions)}
+          )`
+        : undefined,
       cursor
         ? or(
             lt(endpointMessages.createdAt, cursor.createdAt),
@@ -256,7 +272,11 @@ export async function getEndpointMessageDetail(args: {
   };
 }
 
-/** Devices a resend reaches: attached deliveries that never reached anyone. */
+/**
+ * Devices a resend reaches: attached deliveries that failed or expired
+ * WITHOUT ever being shown, and that no earlier resend of this message
+ * already covers (so repeated resends never re-pop a card).
+ */
 export async function resendTargets(messageRowId: string): Promise<string[]> {
   const rows = await db
     .select({ deviceId: endpointMessageDeliveries.deviceId })
@@ -264,6 +284,14 @@ export async function resendTargets(messageRowId: string): Promise<string[]> {
     .where(and(
       eq(endpointMessageDeliveries.endpointMessageId, messageRowId),
       inArray(endpointMessageDeliveries.status, ['failed', 'expired']),
+      sql`${endpointMessageDeliveries.displayedAt} IS NULL`,
+      sql`${endpointMessageDeliveries.acknowledgedAt} IS NULL`,
+      sql`NOT EXISTS (
+        SELECT 1 FROM endpoint_message_deliveries r
+          JOIN endpoint_messages rm ON rm.id = r.endpoint_message_id
+         WHERE rm.resend_of_id = ${messageRowId}::uuid
+           AND r.device_id = ${endpointMessageDeliveries.deviceId}
+      )`,
     ));
   return rows.map((r) => r.deviceId);
 }

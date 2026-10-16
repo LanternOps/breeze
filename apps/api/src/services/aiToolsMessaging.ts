@@ -12,7 +12,7 @@
  * read-only Tier 1.
  */
 import { randomUUID } from 'node:crypto';
-import { endpointMessageSendSchema } from '@breeze/shared';
+import { ENDPOINT_MESSAGE_LIMITS, endpointMessageSendSchema } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { executeEndpointMessageSend } from '../routes/endpointMessages/send';
@@ -42,13 +42,23 @@ async function permissionsFor(auth: AuthContext) {
 
 async function sendAction(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
   // An autonomous agent must never author end-user-visible text under the
-  // MSP's brand; a human-attended session (chat, MCP key) approves each send.
+  // MSP's brand.
   if (isAiAgentPrincipal(auth)) return jsonError('send_endpoint_message is not available to autonomous agents');
+  // Only a human chat session, where every send passes the approval card. An
+  // MCP credential (API key or OAuth grant) can be opted into unattended
+  // Tier 3 (MCP_UNATTENDED_TIER3_PRINCIPALS), which would skip approval and
+  // MFA for text shown to end users; that never applies to this tool.
+  if (auth.principal?.kind !== 'user_session') {
+    return jsonError('send_endpoint_message is only available in an interactive chat session');
+  }
   // Without an origin the persisted row and queued commands would carry no AI
   // attribution (aiDispatch refuses the same way for device work).
   if (!auth.aiOrigin) return jsonError('send_endpoint_message requires an AI session origin');
 
-  const { action: _action, ...fields } = input;
+  // `confirmedCount` is a human's confirmation of a large send; the model can
+  // never supply it. A send resolving above the threshold is refused below and
+  // must be made from the console.
+  const { action: _action, confirmedCount: _ignored, ...fields } = input;
   const parsed = endpointMessageSendSchema.safeParse({ ...fields, messageId: randomUUID() });
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -66,6 +76,13 @@ async function sendAction(input: Record<string, unknown>, auth: AuthContext): Pr
     );
     if (outcome.status !== 200) {
       const code = typeof outcome.body.error === 'string' ? outcome.body.error : 'send_failed';
+      if (code === 'confirmation_required') {
+        return jsonError(code, {
+          ...outcome.body,
+          status: outcome.status,
+          message: `This send resolves to more than ${ENDPOINT_MESSAGE_LIMITS.confirmAbove} devices; the assistant cannot confirm that. Narrow the targets or send it from the Messages page.`,
+        });
+      }
       return jsonError(code, { ...outcome.body, status: outcome.status });
     }
     return JSON.stringify(outcome.body);
@@ -115,7 +132,7 @@ export function registerMessagingTools(aiTools: Map<string, AiTool>): void {
     definition: {
       name: 'send_endpoint_message',
       description:
-        'Show a message card to the person at one or more devices. send always needs approval; list/get read history. Actions: send,list,get.',
+        'Show a message card to the person at up to 100 devices. send always needs approval; list/get read history. Actions: send,list,get.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -135,7 +152,6 @@ export function registerMessagingTools(aiTools: Map<string, AiTool>): void {
           severity: { type: 'string', enum: ['info', 'warning', 'critical'], description: 'send: card severity' },
           requiresAck: { type: 'boolean', description: 'send: require the user to acknowledge' },
           expiresInMinutes: { type: 'number', description: 'send: lifetime in minutes (default 1440, max 10080; null = until closed)' },
-          confirmedCount: { type: 'number', description: 'send: required above 100 devices; must equal the resolved device count' },
           orgId: { type: 'string', description: 'list: filter to one organization' },
           limit: { type: 'number', description: 'Max messages to return (default 50, max 100)' },
           cursor: { type: 'string', description: 'list: cursor from the previous page' },

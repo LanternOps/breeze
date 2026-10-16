@@ -96,11 +96,25 @@ export async function persistSend(input: PersistSendInput): Promise<Map<string, 
   }));
 }
 
-/** Records the notify_user command id on a delivery (first writer wins). */
-export async function attachDeliveryCommand(deliveryId: string, commandId: string): Promise<void> {
-  await inSystem(() => db.update(endpointMessageDeliveries)
-    .set({ commandId, updatedAt: new Date() })
-    .where(and(eq(endpointMessageDeliveries.id, deliveryId), isNull(endpointMessageDeliveries.commandId))));
+/**
+ * Records the notify_user command id on a delivery (first writer wins).
+ * Returns `'retracted'` when the operator retracted the message while this
+ * send was still working through its devices: the caller must then withdraw
+ * the command it just queued.
+ */
+export async function attachDeliveryCommand(deliveryId: string, commandId: string): Promise<'attached' | 'retracted' | 'missing'> {
+  return inSystem(async () => {
+    const [row] = await db.update(endpointMessageDeliveries)
+      .set({ commandId, updatedAt: new Date() })
+      .where(and(eq(endpointMessageDeliveries.id, deliveryId), isNull(endpointMessageDeliveries.commandId)))
+      .returning({ status: endpointMessageDeliveries.status });
+    const status = row?.status ?? (await db.select({ status: endpointMessageDeliveries.status })
+      .from(endpointMessageDeliveries)
+      .where(eq(endpointMessageDeliveries.id, deliveryId))
+      .limit(1))[0]?.status;
+    if (status === undefined) return 'missing';
+    return status === 'retracted' ? 'retracted' : 'attached';
+  });
 }
 
 /** A command that could not be queued: queued -> failed, never a regression. */

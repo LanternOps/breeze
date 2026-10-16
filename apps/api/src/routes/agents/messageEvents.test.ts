@@ -26,7 +26,8 @@ vi.mock('../../db', () => ({
       from: vi.fn(() => ({
         where: vi.fn((cond: unknown) => {
           h.selectWhere(cond);
-          return { limit: vi.fn(async () => h.commandRows) };
+          const limit = vi.fn(async () => h.commandRows);
+          return { limit, orderBy: vi.fn(() => ({ limit })) };
         }),
       })),
     })),
@@ -34,7 +35,7 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
-  deviceCommands: { id: 'id', deviceId: 'deviceId', type: 'type', payload: 'payload' },
+  deviceCommands: { id: 'id', deviceId: 'deviceId', type: 'type', payload: 'payload', createdAt: 'createdAt' },
 }));
 
 vi.mock('../../services/redis', () => ({

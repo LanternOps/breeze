@@ -121,6 +121,7 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   'caller_verify',
   // #8742 W02: endpoint-message delivery state follows the notify_user result.
   'notify_user',
+  'retract_message',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);

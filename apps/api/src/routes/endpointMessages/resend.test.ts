@@ -16,7 +16,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('../../db', () => ({
   db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: async () => h.rows }) }) }),
+    select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: async () => h.rows }) }) }) }),
   },
 }));
 vi.mock('../../db/schema', () => ({ endpointMessages: { id: 'id', orgId: 'orgId' } }));

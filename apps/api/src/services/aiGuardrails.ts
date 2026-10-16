@@ -3060,6 +3060,29 @@ function buildApprovalDescription(
       break;
     }
 
+    // Endpoint messaging (#8742 W02). Names severity, reach and acknowledgement
+    // so the approver knows what they approve; like the ticket copy, it never
+    // echoes the message text (that is in the input details below the card).
+    case 'send_endpoint_message': {
+      if (action !== 'send') { parts.push(`${toolName}${action ? `: ${action}` : ''}`); break; }
+      const t = (input.targets && typeof input.targets === 'object' ? input.targets : {}) as Record<string, unknown>;
+      const count = (k: string) => (Array.isArray(t[k]) ? (t[k] as unknown[]).length : 0);
+      const reach = [
+        count('deviceIds') ? `${count('deviceIds')} device(s)` : null,
+        count('siteIds') ? `every device in ${count('siteIds')} site(s)` : null,
+        count('deviceGroupIds') ? `every device in ${count('deviceGroupIds')} group(s)` : null,
+      ].filter((x): x is string => x !== null);
+      const scope = reach.length > 0
+        ? reach.join(' and ')
+        : (typeof t.orgId === 'string' ? 'every device in an organization' : 'no targets');
+      const severity = typeof input.severity === 'string' ? input.severity : 'info';
+      parts.push(
+        `Show a ${severity} message to ${scope}${input.requiresAck === true ? ', acknowledgement required' : ''}.`
+        + ' Review the title and body in the details before approving.',
+      );
+      break;
+    }
+
     case 'run_script':
       parts.push(`Run script ${(input.scriptId as string)?.slice(0, 8) ?? 'unknown'}...`);
       if (Array.isArray(input.deviceIds)) parts.push(`on ${input.deviceIds.length} device(s)`);

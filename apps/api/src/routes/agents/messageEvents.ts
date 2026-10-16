@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db, runOutsideDbContext } from '../../db';
@@ -71,6 +71,9 @@ messageEventsRoutes.post(
         eq(deviceCommands.type, 'notify_user'),
         sql`${deviceCommands.payload}->>'messageId' = ${event.messageId}`,
       ))
+      // A client message id is reused when an all-failed send is retried; the
+      // newest command on this device is the one the card came from.
+      .orderBy(desc(deviceCommands.createdAt))
       .limit(1);
     if (!sent) return c.json({ error: 'Unknown message' }, 404);
 

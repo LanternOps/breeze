@@ -12,11 +12,11 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { deviceCommands, endpointMessageDeliveries, endpointMessageReceipts, endpointMessages } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
-import { persistSend } from '../../services/endpointMessaging/persistence';
-import { handleNotifyUserResult } from '../../services/endpointMessaging/commandResults';
+import { attachDeliveryCommand, persistSend } from '../../services/endpointMessaging/persistence';
+import { handleNotifyUserResult, handleRetractMessageResult } from '../../services/endpointMessaging/commandResults';
 import { recordDeliveryEvent } from '../../services/endpointMessaging/receipts';
 import { retractEndpointMessage } from '../../services/endpointMessaging/retract';
-import { getEndpointMessageDetail, listEndpointMessages } from '../../services/endpointMessaging/history';
+import { getEndpointMessageDetail, listEndpointMessages, resendTargets } from '../../services/endpointMessaging/history';
 import { runEndpointMessageRetentionOnce } from '../../jobs/endpointMessageRetention';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
@@ -243,6 +243,61 @@ describe('endpoint messaging W02 flow (real Postgres)', () => {
     const [retractCmd] = await sys(() => db.select().from(deviceCommands).where(eq(deviceCommands.id, row.retractCommandId!)));
     expect(retractCmd).toMatchObject({ type: 'retract_message', deviceId: f.devA1 });
     expect(retractCmd!.payload).toEqual({ messageId: input.clientMessageId });
+  });
+
+  it('review fixes: a queued delivery with no command yet is retracted without a command, and the send then refuses to attach', async () => {
+    const input = sendInput(f, { devices: [{ deviceId: f.devA1, orgId: f.orgA, status: 'queued' }] });
+    const map = await persistSend(input);
+    const d1 = map.get(f.devA1)!;
+    const [msg] = await sys(() => db.select({ id: endpointMessages.id }).from(endpointMessages).where(eq(endpointMessages.batchId, input.batchId)));
+    const out = await asOrg(f.orgA, f.partnerId, () => retractEndpointMessage({ auth: fakeAuth(f.userId, f.orgA), messageRowId: msg!.id }));
+    expect(out).toMatchObject({ kind: 'ok', results: [{ deviceId: f.devA1, status: 'retracted', via: 'not_sent' }] });
+    // The in-flight send now queues its command: attach reports the retraction.
+    const cmd = await insertCommand(f.devA1, { source: 'endpoint_message', batchId: input.batchId, messageId: input.clientMessageId }, 'pending');
+    expect(await attachDeliveryCommand(d1, cmd)).toBe('retracted');
+    expect((await delivery(d1)).status).toBe('retracted');
+  });
+
+  it('review fixes: a site-restricted caller cannot retract a message reaching devices outside their sites', async () => {
+    const input = sendInput(f);
+    await persistSend(input);
+    const [msg] = await sys(() => db.select().from(endpointMessages).where(eq(endpointMessages.batchId, input.batchId)));
+    const out = await asOrg(f.orgA, f.partnerId, () => retractEndpointMessage({
+      auth: fakeAuth(f.userId, f.orgA), permissions: { allowedSiteIds: [randomUUID()] }, messageRowId: msg!.id,
+    }));
+    expect(out).toEqual({ kind: 'forbidden' });
+    const [after] = await sys(() => db.select().from(endpointMessages).where(eq(endpointMessages.id, msg!.id)));
+    expect(after!.retractedAt).toBeNull();
+  });
+
+  it('review fixes: resend targets exclude devices that saw the card or were already resent', async () => {
+    const input = sendInput(f, {
+      devices: [
+        { deviceId: f.devA1, orgId: f.orgA, status: 'failed', errorCode: 'no_helper' },
+        { deviceId: f.devA2, orgId: f.orgA, status: 'queued' },
+      ],
+    });
+    const map = await persistSend(input);
+    // devA2 was displayed, then expired: the user saw it.
+    await sys(() => db.update(endpointMessageDeliveries).set({ status: 'expired', displayedAt: new Date() }).where(eq(endpointMessageDeliveries.id, map.get(f.devA2)!)));
+    const [msg] = await sys(() => db.select({ id: endpointMessages.id }).from(endpointMessages).where(eq(endpointMessages.batchId, input.batchId)));
+    expect(await asOrg(f.orgA, f.partnerId, () => resendTargets(msg!.id))).toEqual([f.devA1]);
+    // Once devA1 is covered by a resend, a second resend reaches nobody.
+    await persistSend(sendInput(f, { resendOfId: msg!.id, devices: [{ deviceId: f.devA1, orgId: f.orgA, status: 'queued' }] }));
+    expect(await asOrg(f.orgA, f.partnerId, () => resendTargets(msg!.id))).toEqual([]);
+  });
+
+  it('review fixes: a failed retract_message result is recorded on the delivery', async () => {
+    const input = sendInput(f, { devices: [{ deviceId: f.devA1, orgId: f.orgA, status: 'queued' }] });
+    const map = await persistSend(input);
+    const retractCmd = await insertCommand(f.devA1, { messageId: input.clientMessageId }, 'failed', 'retract_message');
+    await sys(() => db.update(endpointMessageDeliveries).set({ status: 'retracted', retractCommandId: retractCmd }).where(eq(endpointMessageDeliveries.id, map.get(f.devA1)!)));
+    const command = (await sys(() => db.select().from(deviceCommands).where(eq(deviceCommands.id, retractCmd))))[0]!;
+    await asOrg(f.orgA, f.partnerId, () => handleRetractMessageResult({
+      agentId: 'a', command, commandId: retractCmd, resolvedDeviceId: f.devA1,
+      result: { status: 'failed', error: 'could not reach the assist helper to retract the message' } as never, stdout: undefined,
+    }));
+    expect((await delivery(map.get(f.devA1)!)).errorCode).toBe('retract_failed');
   });
 
   it('history: list counts statuses per batch for the caller org only; detail carries deliveries and receipts', async () => {

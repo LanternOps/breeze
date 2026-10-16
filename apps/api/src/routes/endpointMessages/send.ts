@@ -31,6 +31,7 @@ import {
   persistSend,
   type PersistDeviceInput,
 } from '../../services/endpointMessaging/persistence';
+import { withdrawCommand } from '../../services/endpointMessaging/retract';
 import { resolveTargetsDetailed, type TargetGroup } from './resolveTargets';
 
 export type SendErrorCode =
@@ -40,7 +41,9 @@ export type SendErrorCode =
   | 'rate_limited'
   | 'cap_exceeded'
   | 'feature_disabled'
-  | 'queue_failed';
+  | 'queue_failed'
+  // A retract landed while this send was still queueing its devices.
+  | 'retracted';
 
 export interface DeviceSendResult {
   deviceId: string;
@@ -207,10 +210,15 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
   const results: DeviceSendResult[] = [];
   const perOrg = new Map<string, DeviceSendResult[]>();
 
-  async function recordQueueOutcome(deliveryId: string | undefined, result: DeviceSendResult): Promise<void> {
-    if (!deliveryId) return;
+  async function recordQueueOutcome(
+    deliveryId: string | undefined,
+    result: DeviceSendResult,
+    agentVersion: string | null,
+  ): Promise<DeviceSendResult> {
+    if (!deliveryId) return result;
+    let attached: Awaited<ReturnType<typeof attachDeliveryCommand>> | undefined;
     try {
-      if (result.status === 'queued' && result.commandId) await attachDeliveryCommand(deliveryId, result.commandId);
+      if (result.status === 'queued' && result.commandId) attached = await attachDeliveryCommand(deliveryId, result.commandId);
       else if (result.status === 'failed') await markDeliveryQueueFailed(deliveryId, result.errorCode ?? 'queue_failed');
     } catch (err) {
       // The command is already queued (or refused). Losing this bookkeeping
@@ -218,9 +226,30 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
       // by batch, and the expiry sweep closes it otherwise.
       console.error('[endpoint-messages] delivery bookkeeping failed', {
         deliveryId,
+        batchId,
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    if (attached !== 'retracted' || !result.commandId) return result;
+
+    // The operator retracted this message while the send was still working
+    // through its devices: take back the command just queued.
+    const withdrawn = await withdrawCommand({
+      deviceId: result.deviceId,
+      orgId: result.orgId,
+      commandId: result.commandId,
+      clientMessageId: input.messageId,
+      expiresAt: new Date(expiresAtMs),
+      agentVersion,
+      userId: auth.user.id,
+      aiOrigin: auth.aiOrigin,
+    });
+    if (withdrawn.kind === 'failed') {
+      console.error('[endpoint-messages] could not withdraw a message retracted mid-send', {
+        deviceId: result.deviceId, batchId, errorCode: withdrawn.errorCode,
+      });
+    }
+    return { deviceId: result.deviceId, orgId: result.orgId, status: 'failed', errorCode: 'retracted' };
   }
 
   async function queueOne(deviceId: string, orgId: string, branding: MessageBranding): Promise<DeviceSendResult> {
@@ -284,7 +313,7 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
         result = { deviceId: d.id, orgId: g.orgId, status: 'failed', errorCode: failure ?? 'queue_failed' };
       } else {
         result = await queueOne(d.id, g.orgId, brand.branding);
-        await recordQueueOutcome(deliveryByDevice.get(d.id), result);
+        result = await recordQueueOutcome(deliveryByDevice.get(d.id), result, d.agentVersion);
       }
       results.push(result);
       orgResults.push(result);

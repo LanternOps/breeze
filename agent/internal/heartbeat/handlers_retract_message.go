@@ -34,13 +34,21 @@ func handleRetractMessage(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	wasPending := h.endpointMessageStore().MarkTerminal(raw)
+	wasPending := h.endpointMessageStore().Retract(raw, time.Now())
 
 	// Tell the helper even when the store had no entry: the store write may have
 	// failed after the card was drawn, and the helper side is idempotent.
+	// The store is already terminal (replay suppressed), so a failed take-down is
+	// reported without undoing that. No Assist session at all is a success: the
+	// native toast is transient.
 	if s := h.messagingAssistSession(); s != nil {
 		if err := s.SendNotify("msg-retract-"+cmd.ID, ipc.TypeMessageRetract, ipc.MessageRef{MessageID: raw}); err != nil {
 			log.Warn("could not tell the assist helper to retract a message", "messageId", raw, "error", err.Error())
+			return tools.CommandResult{
+				Status:     "failed",
+				Error:      "could not reach the assist helper to retract the message",
+				DurationMs: time.Since(start).Milliseconds(),
+			}
 		}
 	}
 

@@ -28,8 +28,9 @@ const h = vi.hoisted(() => ({
   releaseIdem: vi.fn(async () => {}),
   requirePermission: vi.fn(),
   persist: vi.fn(),
-  attach: vi.fn(async () => {}),
+  attach: vi.fn(async (): Promise<string | void> => {}),
   markFailed: vi.fn(async () => {}),
+  withdraw: vi.fn(),
   order: [] as string[],
   auth: {} as Record<string, unknown>,
   outsideDepth: 0,
@@ -86,6 +87,9 @@ vi.mock('../../services/endpointMessaging/persistence', () => ({
   persistSend: h.persist,
   attachDeliveryCommand: h.attach,
   markDeliveryQueueFailed: h.markFailed,
+}));
+vi.mock('../../services/endpointMessaging/retract', () => ({
+  withdrawCommand: h.withdraw,
 }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.7' }));
 
@@ -597,6 +601,16 @@ describe('POST /endpoint-messages (#8741)', () => {
       ]);
       expect(h.attach).toHaveBeenCalledWith(`del-${dev(1)}`, `cmd-${dev(1)}`);
       expect(h.attach).toHaveBeenCalledTimes(1);
+    });
+
+    it('a retract that landed mid-send withdraws the command just queued and reports the device retracted', async () => {
+      h.attach.mockResolvedValueOnce('retracted');
+      h.withdraw.mockResolvedValue({ kind: 'cancelled' });
+      const { json } = await post(baseBody());
+      expect(h.withdraw).toHaveBeenCalledWith(expect.objectContaining({
+        deviceId: dev(1), orgId: ORG_A, commandId: `cmd-${dev(1)}`, clientMessageId: MSG, agentVersion: '999.0.0', userId: USER,
+      }));
+      expect(json.results[0]).toMatchObject({ deviceId: dev(1), status: 'failed', errorCode: 'retracted' });
     });
 
     it('records a queue refusal on the delivery row', async () => {

@@ -28,7 +28,6 @@ export const sendEndpointMessageShape = {
     severity: z.enum(ENDPOINT_MESSAGE_SEVERITIES).optional(),
     requiresAck: z.boolean().optional(),
     expiresInMinutes: z.number().int().min(1).max(ENDPOINT_MESSAGE_LIMITS.maxExpiresInMinutes).nullable().optional(),
-    confirmedCount: z.number().int().min(0).optional(),
     // list
     orgId: uuid.optional(),
     limit: z.number().int().min(1).max(100).optional(),

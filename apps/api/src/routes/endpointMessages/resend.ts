@@ -43,7 +43,12 @@ resendRoutes.post(
       .select()
       .from(endpointMessages)
       .where(and(eq(endpointMessages.id, id), auth.orgCondition(endpointMessages.orgId)))
-      .limit(1);
+      .limit(1)
+      // Serializes concurrent resends of one message: the request transaction
+      // holds this lock until it ends, and the first resend's deliveries are
+      // committed (persistSend) before that, so a second resend computes its
+      // targets after them and finds nothing left to resend.
+      .for('update');
     if (!m || !auth.canAccessOrg(m.orgId)) return c.json({ error: 'not_found' }, 404);
     if (m.retractedAt) return c.json({ error: 'retracted' }, 409);
     if (m.bodyPurgedAt || m.title === null || m.body === null) return c.json({ error: 'body_purged' }, 409);

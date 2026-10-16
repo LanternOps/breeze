@@ -30,6 +30,8 @@ retractRoutes.post(
       messageRowId: id,
     });
     if (outcome.kind === 'not_found') return c.json({ error: 'not_found' }, 404);
+    // Site-restricted caller, message reaches devices outside their sites.
+    if (outcome.kind === 'forbidden') return c.json({ error: 'site_restricted' }, 403);
 
     const failedByCode: Record<string, number> = {};
     for (const r of outcome.results) if (r.status === 'failed') failedByCode[r.errorCode] = (failedByCode[r.errorCode] ?? 0) + 1;

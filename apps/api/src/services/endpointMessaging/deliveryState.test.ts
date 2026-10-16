@@ -68,6 +68,9 @@ describe('endpoint message delivery state machine', () => {
       .toEqual({ status: 'failed', errorCode: 'no_helper' });
     expect(deliveryStatusFromCommandResult({ status: 'failed', error: 'unknown command type: notify_user' }))
       .toEqual({ status: 'failed', errorCode: 'agent_unsupported' });
+    // The agent refused a message it had already been told to retract.
+    expect(deliveryStatusFromCommandResult({ status: 'completed', stdout: JSON.stringify({ delivered: false, retracted: true }) }))
+      .toEqual({ status: 'retracted' });
     expect(deliveryStatusFromCommandResult({ status: 'timeout' }))
       .toEqual({ status: 'failed', errorCode: 'undelivered' });
   });

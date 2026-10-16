@@ -44,8 +44,30 @@ export async function handleNotifyUserResult({ command, commandId, resolvedDevic
     byBatch ? or(eq(endpointMessageDeliveries.commandId, commandId), byBatch) : eq(endpointMessageDeliveries.commandId, commandId),
   );
 
+  const [match] = await db.select({ id: endpointMessageDeliveries.id })
+    .from(endpointMessageDeliveries)
+    .where(rowFilter)
+    .limit(1);
+  if (!match) {
+    // A W2 send always has a delivery row; a miss means it was erased or the
+    // device moved and detached it. Not an error for the agent, but visible.
+    console.warn('[endpoint-messages] notify_user result matched no delivery', { commandId, deviceId: resolvedDeviceId, batchId });
+    return;
+  }
+
   const outcome = deliveryStatusFromCommandResult({ status: result.status, error: result.error, stdout });
   const now = new Date();
+  if (outcome.status === 'retracted') {
+    await db.update(endpointMessageDeliveries)
+      .set({
+        status: 'retracted',
+        commandId: sql`COALESCE(${endpointMessageDeliveries.commandId}, ${commandId}::uuid)`,
+        updatedAt: now,
+        ...transitionTimestamps('retracted', now),
+      })
+      .where(transitionWhere('retracted', rowFilter));
+    return;
+  }
   if (outcome.status === 'delivered') {
     await db.update(endpointMessageDeliveries)
       .set({
@@ -75,4 +97,26 @@ export async function handleNotifyUserResult({ command, commandId, resolvedDevic
       updatedAt: now,
     })
     .where(transitionWhere('failed', rowFilter));
+}
+
+/**
+ * retract_message results (#8742 W02). The delivery was marked `retracted`
+ * when the operator asked; a retract the agent could not carry out (no helper
+ * reachable, timeout, unknown type) is recorded as `error_code =
+ * 'retract_failed'` so the history shows the card may still be on screen.
+ * Ownership: the delivery naming this retract command on the
+ * transport-authenticated device.
+ */
+export async function handleRetractMessageResult({ commandId, resolvedDeviceId, result }: HandlerParams): Promise<void> {
+  if (result.status === 'completed') return;
+  const updated = await db.update(endpointMessageDeliveries)
+    .set({ errorCode: 'retract_failed', updatedAt: new Date() })
+    .where(and(
+      eq(endpointMessageDeliveries.retractCommandId, commandId),
+      eq(endpointMessageDeliveries.deviceId, resolvedDeviceId),
+    ))
+    .returning({ id: endpointMessageDeliveries.id });
+  if (updated.length === 0) {
+    console.warn('[endpoint-messages] retract_message result matched no delivery', { commandId, deviceId: resolvedDeviceId });
+  }
 }
