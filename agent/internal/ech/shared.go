@@ -14,19 +14,18 @@ var (
 )
 
 // Shared is the process-wide ECH dialer. Like netcache.Shared it does not
-// create the data dir; the agent does at startup. A config load error leaves
-// both flags at their default (true).
+// create the data dir; the agent does at startup. It deliberately does not
+// touch the config package (Load takes a non-reentrant lock and rebinds the
+// global viper instance). It starts with both flags true; each process must
+// call Configure(cfg.ECH, cfg.ECHServerEnabled) with the config it already
+// holds.
 func Shared() *Dialer {
 	sharedOnce.Do(func() {
-		local, server := true, true
-		if cfg, err := config.Load(""); err == nil {
-			local, server = cfg.ECH, cfg.ECHServerEnabled
-		}
 		shared = New(Options{
 			TCPDial:       netcache.Shared().DialContext,
 			Cache:         NewCache(filepath.Join(config.GetDataDir(), "ech-cache.json")),
-			LocalEnabled:  local,
-			ServerEnabled: server,
+			LocalEnabled:  true,
+			ServerEnabled: true,
 		})
 	})
 	return shared

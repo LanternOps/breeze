@@ -29,3 +29,15 @@ func TestNewTransport_WiresDialTLSAndNetcache(t *testing.T) {
 		t.Fatalf("NewClient timeout/transport wrong: %v %v", c.Timeout, c.Transport)
 	}
 }
+
+func TestConfigure_SetsSharedFlags(t *testing.T) {
+	t.Cleanup(func() { Configure(true, true) })
+	for _, c := range []struct{ local, server, want bool }{
+		{false, true, false}, {true, false, false}, {true, true, true},
+	} {
+		Configure(c.local, c.server)
+		if got := Shared().enabled(); got != c.want {
+			t.Fatalf("Configure(%v,%v): enabled()=%v want %v", c.local, c.server, got, c.want)
+		}
+	}
+}
