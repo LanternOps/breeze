@@ -4,6 +4,7 @@ package helper
 
 import (
 	"fmt"
+	"math"
 	"os/user"
 	"runtime"
 	"strconv"
@@ -107,6 +108,13 @@ func spawnCredentialFromIDs(uid, gid string, groupIDs []string, groupIDsErr erro
 		return nil, "", fmt.Errorf("parse gid %q: %w", gid, err)
 	}
 
+	// breezeGID is a platform int from the group database; a gid can never
+	// exceed uint32, so anything outside that range counts as unresolved.
+	breezeGID32, hasBreezeGID := uint32(0), false
+	if breezeGID > 0 && uint64(breezeGID) <= math.MaxUint32 {
+		breezeGID32, hasBreezeGID = uint32(breezeGID), true
+	}
+
 	cred := &syscall.Credential{Uid: uint32(uidN), Gid: uint32(gidN)}
 	seen := make(map[uint32]bool)
 	add := func(g uint32) {
@@ -123,8 +131,8 @@ func spawnCredentialFromIDs(uid, gid string, groupIDs []string, groupIDsErr erro
 
 	var warning string
 	if groupIDsErr != nil {
-		if breezeGID > 0 {
-			add(uint32(breezeGID))
+		if hasBreezeGID {
+			add(breezeGID32)
 		}
 		return cred, fmt.Sprintf("could not list the user's groups for the helper spawn; using primary group plus breeze only: %v", groupIDsErr), nil
 	}
@@ -136,14 +144,14 @@ func spawnCredentialFromIDs(uid, gid string, groupIDs []string, groupIDsErr erro
 		if err != nil || n == 0 {
 			continue
 		}
-		if breezeGID > 0 && n == uint64(breezeGID) {
+		if hasBreezeGID && uint32(n) == breezeGID32 {
 			memberOfBreeze = true
 			continue
 		}
 		rest = append(rest, uint32(n))
 	}
 	if memberOfBreeze {
-		add(uint32(breezeGID))
+		add(breezeGID32)
 	}
 	for _, g := range rest {
 		add(g)
