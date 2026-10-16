@@ -47,7 +47,8 @@ vi.mock('../db', () => ({
 }));
 
 import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { deliveryTtlMs } from '../services/commandOfflinePolicy';
+import { ACCEPTED_COMMAND_RESULT_STATUSES } from '../services/commandResultAcceptance';
+import { jobSchedule } from './scheduleRegistry';
 import {
   __testOnly,
   initializeRestorePointAttemptRetention,
@@ -118,7 +119,9 @@ describe('restore-point attempt retention', () => {
     // command-lifetime ceiling folded into the cutoff.
     expect(text).toContain('a.device_command_id IS NULL OR NOT EXISTS');
     expect(text).toContain('c.id = a.device_command_id AND c.status IN ($2, $3)');
-    expect(query.params.slice(1, 3)).toEqual(['pending', 'sent']);
+    // Follows the canonical "can still accept a result" set, not a copy of it.
+    expect(query.params.slice(1, 3)).toEqual([...ACCEPTED_COMMAND_RESULT_STATUSES]);
+    expect(ACCEPTED_COMMAND_RESULT_STATUSES).toEqual(['pending', 'sent']);
     expect(text).toContain('ORDER BY a.requested_at LIMIT $4 FOR UPDATE OF a SKIP LOCKED');
   });
 
@@ -127,11 +130,26 @@ describe('restore-point attempt retention', () => {
 
     const query = render(executeMock.mock.calls[0]![0]);
     const cutoffMs = Date.parse(query.params[0] as string);
-    const ceilingMs = deliveryTtlMs('standard') + __testOnly.COMMAND_EXECUTION_ALLOWANCE_MS;
-    expect(cutoffMs).toBeCloseTo(Date.now() - ceilingMs, -4);
+    // Default `standard` delivery TTL: 168 h, plus one day of execution.
+    expect(cutoffMs).toBeCloseTo(Date.now() - (168 * 3_600_000 + __testOnly.COMMAND_EXECUTION_ALLOWANCE_MS), -4);
     // The terminal sweep keeps the configured window.
     const terminal = render(pruneMock.mock.calls[0]![0].where);
     expect(Date.parse(terminal.params[0] as string)).toBeCloseTo(Date.now() - DAY_MS, -4);
+  });
+
+  it('reads the delivery TTL knobs per run, and takes the longest class', async () => {
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_TTL_HOURS', '48');
+    vi.stubEnv('DEVICE_COMMAND_QUEUE_SHORT_TTL_HOURS', '72');
+    try {
+      await runRestorePointAttemptRetention({ retentionDays: 1 });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const query = render(executeMock.mock.calls[0]![0]);
+    expect(Date.parse(query.params[0] as string)).toBeCloseTo(
+      Date.now() - (72 * 3_600_000 + __testOnly.COMMAND_EXECUTION_ALLOWANCE_MS),
+      -4,
+    );
   });
 
   it('uses the retention window for orphans when it is longer than the ceiling', async () => {
@@ -174,6 +192,46 @@ describe('restore-point attempt retention', () => {
     });
   });
 
+  it('does not report a backlog when the cap is reached on a short batch', async () => {
+    executeMock.mockResolvedValueOnce({ count: 1 });
+
+    const result = await runRestorePointAttemptRetention({ batchSize: 3, maxBatches: 1 });
+
+    expect(result.hasMore).toBe(false);
+    expect(recordRetentionRunMock).toHaveBeenCalledWith('restore_point_attempt_retention', {
+      rowsDeleted: 1,
+      incomplete: false,
+    });
+  });
+
+  it('stops on an exact multiple: a full batch, then an empty one', async () => {
+    executeMock.mockResolvedValueOnce({ count: 3 }).mockResolvedValueOnce({ count: 0 });
+
+    const result = await runRestorePointAttemptRetention({ batchSize: 3, maxBatches: 10 });
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.orphansDeleted).toBe(3);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('carries a terminal-sweep backlog into the result, the warning and the metric', async () => {
+    pruneMock.mockResolvedValue({ deleted: 5, batches: 3, hasMore: true });
+
+    const result = await runRestorePointAttemptRetention();
+
+    expect(result.hasMore).toBe(true);
+    expect(result.batches).toBe(4);
+    expect(warnMock).toHaveBeenCalledWith(
+      '[RestorePointAttemptRetention]',
+      'device_restore_point_attempts',
+      { deleted: 5, batches: 4, hasMore: true },
+    );
+    expect(recordRetentionRunMock).toHaveBeenCalledWith('restore_point_attempt_retention', {
+      rowsDeleted: 5,
+      incomplete: true,
+    });
+  });
+
   it('records both sweeps in one retention metric', async () => {
     executeMock.mockResolvedValueOnce({ count: 1 });
     pruneMock.mockResolvedValue({ deleted: 6, batches: 1, hasMore: false });
@@ -198,7 +256,7 @@ describe('restore-point attempt retention', () => {
     expect(attachMock).toHaveBeenCalledWith(expect.anything(), 'restorePointAttemptRetention');
     expect(upsertJobSchedulerMock).toHaveBeenCalledWith(
       'restore-point-attempt-retention',
-      { pattern: '8 22 * * *' },
+      { pattern: jobSchedule('restore-point-attempt-retention') },
       expect.objectContaining({
         name: 'sweep',
         data: {

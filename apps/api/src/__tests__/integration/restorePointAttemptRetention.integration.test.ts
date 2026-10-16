@@ -17,7 +17,7 @@
  * the command-lifetime ceiling. The EXPLAIN case proves the orphan scan's
  * predicate is one `device_restore_point_attempts_pending_idx` can serve.
  */
-import './setup';
+import { getTestDb } from './setup';
 
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
@@ -44,13 +44,18 @@ async function seedDevice(): Promise<{ orgId: string; deviceId: string }> {
   return { orgId: org.id, deviceId: device.id };
 }
 
-async function insertCommand(deviceId: string, status: string): Promise<string> {
+async function insertCommand(
+  deviceId: string,
+  status: string,
+  result: Record<string, unknown> | null = null,
+): Promise<string> {
   return withSystemDbAccessContext(async () => {
     const [row] = await db.insert(deviceCommands).values({
       deviceId,
       type: 'script',
       status,
       payload: {},
+      result,
     }).returning({ id: deviceCommands.id });
     return row!.id;
   });
@@ -88,6 +93,15 @@ describe('restore-point attempt retention (real Postgres, breeze_app)', () => {
     const t = await seedDevice();
     const doneCommand = await insertCommand(t.deviceId, 'completed');
     const liveCommand = await insertCommand(t.deviceId, 'sent');
+    // Queued for an offline device: the main long-wait case.
+    const queuedCommand = await insertCommand(t.deviceId, 'pending');
+    // Server-side timeout: reopenable for a late genuine result
+    // (commandAcceptsAgentResultCondition). Accepted edge, documented in the
+    // job header: past BOTH bounds its row is deleted anyway.
+    const timedOutCommand = await insertCommand(t.deviceId, 'failed', {
+      status: 'timeout',
+      timedOutBy: 'staleCommandReaper',
+    });
 
     const old = 120 * DAY_MS;
     const orphanCommandDone = await insertAttempt(t, { status: 'requested', ageMs: old, deviceCommandId: doneCommand });
@@ -95,30 +109,37 @@ describe('restore-point attempt retention (real Postgres, breeze_app)', () => {
     // Command row no longer exists at all (no FK on device_command_id).
     const orphanCommandGone = await insertAttempt(t, { status: 'requested', ageMs: old, deviceCommandId: randomUUID() });
     const oldButCommandLive = await insertAttempt(t, { status: 'requested', ageMs: old, deviceCommandId: liveCommand });
+    const oldButCommandQueued = await insertAttempt(t, { status: 'requested', ageMs: old, deviceCommandId: queuedCommand });
+    const orphanServerTimedOut = await insertAttempt(t, { status: 'requested', ageMs: old, deviceCommandId: timedOutCommand });
     const freshRequested = await insertAttempt(t, { status: 'requested', ageMs: HOUR_MS, deviceCommandId: doneCommand });
     const oldTerminal = await insertAttempt(t, { status: 'created', ageMs: old, deviceCommandId: doneCommand });
     const recentTerminal = await insertAttempt(t, { status: 'failed', ageMs: 10 * DAY_MS, deviceCommandId: doneCommand });
     const all = [
-      orphanCommandDone, orphanUnlinked, orphanCommandGone, oldButCommandLive,
-      freshRequested, oldTerminal, recentTerminal,
+      orphanCommandDone, orphanUnlinked, orphanCommandGone, oldButCommandLive, oldButCommandQueued,
+      orphanServerTimedOut, freshRequested, oldTerminal, recentTerminal,
     ];
 
     // batchSize 1 drives several committed batches per sweep.
     const result = await runRestorePointAttemptRetention({ retentionDays: 90, batchSize: 1, maxBatches: 50 });
 
-    expect(result.orphansDeleted).toBe(3);
+    expect(result.orphansDeleted).toBe(4);
     expect(result.terminalDeleted).toBe(1);
     expect(result.hasMore).toBe(false);
-    expect(await remainingIds(all)).toEqual(new Set([oldButCommandLive, freshRequested, recentTerminal]));
+    expect(await remainingIds(all)).toEqual(
+      new Set([oldButCommandLive, oldButCommandQueued, freshRequested, recentTerminal]),
+    );
 
     // The job never touches the command rows themselves.
     const commands = await withSystemDbAccessContext(() =>
       db.select({ id: deviceCommands.id, status: deviceCommands.status })
         .from(deviceCommands)
-        .where(inArray(deviceCommands.id, [doneCommand, liveCommand])),
+        .where(inArray(deviceCommands.id, [doneCommand, liveCommand, queuedCommand, timedOutCommand])),
     );
     expect(new Map(commands.map((c) => [c.id, c.status]))).toEqual(
-      new Map([[doneCommand, 'completed'], [liveCommand, 'sent']]),
+      new Map([
+        [doneCommand, 'completed'], [liveCommand, 'sent'],
+        [queuedCommand, 'pending'], [timedOutCommand, 'failed'],
+      ]),
     );
   });
 
@@ -138,6 +159,24 @@ describe('restore-point attempt retention (real Postgres, breeze_app)', () => {
     expect(await remainingIds([insideCeiling, unlinkedInsideCeiling, pastCeiling, terminalPastWindow]))
       .toEqual(new Set([insideCeiling, unlinkedInsideCeiling]));
   });
+
+  runDb('steps over a row another transaction holds (SKIP LOCKED) instead of waiting on it', async () => {
+    const t = await seedDevice();
+    const old = 120 * DAY_MS;
+    const held = await insertAttempt(t, { status: 'requested', ageMs: old, deviceCommandId: null });
+    const free = await insertAttempt(t, { status: 'requested', ageMs: old, deviceCommandId: null });
+
+    // Stand-in for the ingest compare-and-set: a separate connection holding
+    // the row lock for the whole run. Without SKIP LOCKED the job's first
+    // batch blocks on it and this test times out.
+    const result = await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM device_restore_point_attempts WHERE id = ${held} FOR UPDATE`);
+      return runRestorePointAttemptRetention({ retentionDays: 90 });
+    });
+
+    expect(result.orphansDeleted).toBe(1);
+    expect(await remainingIds([held, free])).toEqual(new Set([held]));
+  }, 60_000);
 
   runDb('the orphan scan is servable by device_restore_point_attempts_pending_idx', async () => {
     const cutoff = new Date(Date.now() - 90 * DAY_MS).toISOString();

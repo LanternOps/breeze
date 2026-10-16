@@ -10,14 +10,22 @@
  *      (#4758) ignores the request block, a lost result, a reaped command, an
  *      unlinked row. Those rows are deleted once they are past the retention
  *      window AND past their command's deadline:
- *        - linked rows: the `device_commands` row is gone, or no longer in a
- *          state that can accept an agent result (`pending` / `sent`), so the
- *          ingest path (services/restorePointIngest.ts, which runs only after
- *          that command's terminal compare-and-set) can no longer reach it;
+ *        - linked rows: the `device_commands` row is gone, or no longer
+ *          `pending` / `sent` (the command has been answered, reaped or
+ *          expired). The ingest path (services/restorePointIngest.ts) runs only
+ *          after that command's terminal compare-and-set;
  *        - every row, linked or not: older than the longest a queued command
- *          can wait and then run (the `standard` delivery TTL plus a day of
+ *          can wait and then run (the longest delivery TTL class plus a day of
  *          execution), so a 1-day retention setting still cannot delete the
- *          row a late result is about to terminalise.
+ *          row a normal result is about to terminalise.
+ *      ONE accepted edge: a command the SERVER timed out stays reopenable for
+ *      a late genuine result, with no time bound
+ *      (commandAcceptsAgentResultCondition, services/commandResultAcceptance.ts).
+ *      Its row is still deleted once past both bounds above (90 days by
+ *      default). A result arriving after that is discarded by ingest as
+ *      `no_requested_row` (logged and sent to Sentry), not silently. Keeping
+ *      such rows until a result that may never come would grow the table
+ *      without bound: every pre-W07 agent leaves its row `requested`.
  *      The scan rides `device_restore_point_attempts_pending_idx`
  *      (`(requested_at) WHERE status = 'requested'`): the candidate query
  *      filters on exactly that predicate.
@@ -44,7 +52,7 @@ import { sql, type SQL } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { extractRowCount } from '../db/rowCount';
-import { deliveryTtlMs } from '../services/commandOfflinePolicy';
+import { deliveryTtlMs, type DeliveryTtlClass } from '../services/commandOfflinePolicy';
 import { ACCEPTED_COMMAND_RESULT_STATUSES } from '../services/commandResultAcceptance';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
@@ -79,13 +87,22 @@ const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'RESTORE_POINT_ATTEMPT_RETEN
 const COMMAND_EXECUTION_ALLOWANCE_MS = DAY_MS;
 
 /**
+ * Every delivery TTL class (commandOfflinePolicy.ts). Keyed by the union so
+ * that a new class fails typecheck here until it is listed.
+ */
+const DELIVERY_TTL_CLASSES = Object.keys({
+  live: true, live_only: true, standard: true, short: true, power_state: true, time_sync: true,
+} satisfies Record<DeliveryTtlClass, true>) as DeliveryTtlClass[];
+
+/**
  * The youngest a `requested` row may be and still be an orphan: a command
- * queued for an offline device may wait the whole `standard` delivery TTL
- * (DEVICE_COMMAND_QUEUE_TTL_HOURS, default 7 days) and then run. Read per run,
- * not at import, so it follows the same env knob the command path reads.
+ * queued for an offline device may wait its whole delivery TTL (the longest
+ * class is `standard`, DEVICE_COMMAND_QUEUE_TTL_HOURS, default 7 days, unless
+ * an operator raised another class above it) and then run. Read per run, not
+ * at import, so it follows the same env knobs the command path reads.
  */
 function commandLifetimeCeilingMs(): number {
-  return deliveryTtlMs('standard') + COMMAND_EXECUTION_ALLOWANCE_MS;
+  return Math.max(...DELIVERY_TTL_CLASSES.map(deliveryTtlMs)) + COMMAND_EXECUTION_ALLOWANCE_MS;
 }
 
 export interface RetentionJobData {
