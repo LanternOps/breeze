@@ -1,5 +1,5 @@
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { captureException } from '../../services/sentry';
+import { captureException, captureMessage } from '../../services/sentry';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { z } from 'zod';
 import type { commandResultSchema } from './schemas';
@@ -81,7 +81,7 @@ vi.mock('../../services/filesystemAnalysis', () => ({
   upsertFilesystemScanState: vi.fn(),
 }));
 vi.mock('../../services/cloudflareMtls', () => ({ CloudflareMtlsService: vi.fn() }));
-vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('../metrics', () => ({ recordSoftwareRemediationDecision: vi.fn() }));
 vi.mock('../../services/aiRemoteToolsPolicy', () => ({
   checkDeviceRemoteToolsPolicy: vi.fn(async () => ({ allowed: true })),
@@ -427,15 +427,84 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
     expect(upsertFilesystemScanState).toHaveBeenLastCalledWith(DEVICE_ID, ORG_ID, '/', expect.any(Object), tx);
   });
 
-  it.each(['superseded', 'already_applied', 'unknown device', 'unparseable stdout'])(
-    'captures %s with the command id', async (reason) => {
-      selectQueue.push(reason === 'unknown device' ? [] : [{ osType: 'linux' }]);
-      if (reason === 'unparseable stdout') vi.mocked(parseFilesystemAnalysisStdout).mockReturnValue({});
-      if (reason === 'superseded' || reason === 'already_applied') vi.mocked(claimFilesystemScanGeneration).mockResolvedValue(reason);
-      await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
-      expect(captureException).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('00000000-0000-4000-8000-0000000000cc') }));
-    },
-  );
+  // #8024 / Sentry BREEZE-39. Every drop used to be captureException(new
+  // Error(`... ${command.id} dropped: ...`)). scrubEvent replaces an exception's
+  // value with '[redacted]' and these carried no allowlisted tag, so all of
+  // them reached Sentry as one contentless "Error: [redacted]" whose culprit is
+  // this handler — indistinguishable from a crash, and the expected supersede
+  // case was reported as an error on every overlapping scan.
+  it('logs a superseded result without reporting it to Sentry', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    selectQueue.push([{ osType: 'linux' }]);
+    vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('superseded');
+    await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('00000000-0000-4000-8000-0000000000cc'));
+    warn.mockRestore();
+  });
+
+  it.each([
+    ['already_applied', 'filesystem_analysis_result_duplicate'],
+    ['unknown device', 'filesystem_analysis_result_unknown_device'],
+    ['unparseable stdout', 'filesystem_analysis_result_unparseable'],
+  ] as const)('reports %s under its own event code, never as an exception', async (reason, eventCode) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    selectQueue.push(reason === 'unknown device' ? [] : [{ osType: 'linux' }]);
+    if (reason === 'unparseable stdout') vi.mocked(parseFilesystemAnalysisStdout).mockReturnValue({});
+    if (reason === 'already_applied') vi.mocked(claimFilesystemScanGeneration).mockResolvedValue(reason);
+    await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), { eventCode });
+    // The id is unbounded: it belongs in the console line, never in the event.
+    expect(JSON.stringify(vi.mocked(captureMessage).mock.calls[0])).not.toContain('00000000-0000-4000-8000-0000000000cc');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('00000000-0000-4000-8000-0000000000cc'));
+    warn.mockRestore();
+  });
+ });
+
+describe('handleFilesystemAnalysisCommandResult — malformed result shapes (#8024)', () => {
+  // The real parser, not the mock: these are the shapes a completed result can
+  // arrive in (stdout is optional in commandResultSchema; an agent can send
+  // truncated or non-object JSON) and none of them may throw or write.
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import('../../services/filesystemAnalysis')>(
+      '../../services/filesystemAnalysis',
+    );
+    vi.mocked(parseFilesystemAnalysisStdout).mockImplementation(actual.parseFilesystemAnalysisStdout);
+  });
+
+  it.each([
+    ['no stdout', undefined],
+    ['empty stdout', ''],
+    ['truncated JSON', '{"path":"/","summary":{"filesScanned":12'],
+    ['a JSON array', '[{"path":"/"}]'],
+    ['JSON null', 'null'],
+    ['a JSON string', '"ok"'],
+  ])('a completed result with %s is reported as unparseable, not thrown', async (_label, stdout) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const completed = { status: 'completed', exitCode: 0, ...(stdout === undefined ? {} : { stdout }) } as never;
+    await expect(handleFilesystemAnalysisCommandResult(baselineCommand(), completed, ORG_ID)).resolves.toBeUndefined();
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+    expect(captureMessage).toHaveBeenCalledWith(expect.any(String), { eventCode: 'filesystem_analysis_result_unparseable' });
+    warn.mockRestore();
+  });
+
+  it.each([
+    ['failed with an agent error and no stdout', { status: 'failed', exitCode: 1, error: 'failed to stat path: no such file' }],
+    ['timeout with no stdout', { status: 'timeout' }],
+  ])('a %s result writes nothing and reports nothing', async (_label, shape) => {
+    await expect(handleFilesystemAnalysisCommandResult(baselineCommand(), shape as never, ORG_ID)).resolves.toBeUndefined();
+    expect(dbMock.transaction).not.toHaveBeenCalled();
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
+    expect(captureException).not.toHaveBeenCalled();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
  });
 
 describe('filesystem analysis for a device parked in a holding org', () => {

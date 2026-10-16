@@ -297,6 +297,20 @@ export const SENTRY_EVENT_CODES = [
   /** Snapshots are unattributable because two orgs share a destination. */
   'backup_snapshot_ambiguous_destination',
 
+  // --- filesystem analysis results (#8024) ------------------------------
+  /** A `filesystem_analysis` result reported `completed` but its stdout was
+   *  empty or not a JSON object, so no snapshot was written and the Disk
+   *  Cleanup tab shows nothing. The agent always marshals an object on success,
+   *  so a run of these is a producer or transport defect. */
+  'filesystem_analysis_result_unparseable',
+  /** A `filesystem_analysis` result arrived for a device id with no `devices`
+   *  row (deleted mid-scan, or invisible under RLS); the result was dropped. */
+  'filesystem_analysis_result_unknown_device',
+  /** A `filesystem_analysis` result whose scan was already applied reached the
+   *  snapshot write again. The terminal compare-and-set should stop a replay
+   *  before this, so any occurrence means that guard was bypassed. */
+  'filesystem_analysis_result_duplicate',
+
   // --- tenant erasure -----------------------------------------------------
   /**
    * An org-erasure attempt was refused because a backup snapshot for that org

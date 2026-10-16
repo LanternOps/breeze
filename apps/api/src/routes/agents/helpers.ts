@@ -80,7 +80,7 @@ import {
 } from '../../services/workloads/configUpdate';
 import { loadLegacyDirectConnection, type LegacyDirectConnection } from '../../services/m365DirectGraph';
 import { peekUserGroupMembershipCached, resolveUserGroupMembershipCached, type GroupMembershipResult } from '../../services/onedriveGraph';
-import { captureException } from '../../services/sentry';
+import { captureException, captureMessage } from '../../services/sentry';
 import { orgAgentUpdateConfigCache } from '../../services/agentOrgSettingsCache';
 import { isParkedDevice } from '../../services/unassignedPool/deliveryEligibility';
 import { checkDeviceRemoteToolsPolicy } from '../../services/aiRemoteToolsPolicy';
@@ -1776,14 +1776,22 @@ export async function handleFilesystemAnalysisCommandResult(
   const snapshotTrigger = trigger === 'threshold' ? 'threshold' : 'on_demand';
   const scanMode = asString(payload.scanMode) === 'incremental' ? 'incremental' : 'baseline';
 
+  // #8024 (Sentry BREEZE-39): the drops below are reported with captureMessage
+  // and a registered event code, never captureException(new Error(...)).
+  // scrubEvent replaces an exception's value with '[redacted]', so the old
+  // reports all reached Sentry as one contentless "Error: [redacted]" with this
+  // function as culprit: it read as the handler throwing, and nothing said
+  // which drop it was. The ids stay in the console line, out of the event.
   const parsed = parseFilesystemAnalysisStdout(resultData.stdout ?? '');
   if (Object.keys(parsed).length === 0) {
-    captureException(new Error(`filesystem_analysis command ${command.id} dropped: unparseable stdout`));
     // A completed scan whose stdout is empty or non-JSON produces no snapshot,
     // which surfaces to the user as an empty Disk Cleanup tab with no error.
     console.warn(
       `[agents/helpers] filesystem_analysis command ${command.id} (device ${command.deviceId}) completed with unparseable/empty stdout (len=${resultData.stdout?.length ?? 0}); no snapshot written`
     );
+    captureMessage('filesystem_analysis result dropped: unparseable stdout', {
+      eventCode: 'filesystem_analysis_result_unparseable',
+    });
     return;
   }
 
@@ -1799,10 +1807,12 @@ export async function handleFilesystemAnalysisCommandResult(
     .limit(1);
 
   if (!deviceRow) {
-    captureException(new Error(`filesystem_analysis command ${command.id} dropped: unknown device`));
     console.warn(
       `[agents/helpers] filesystem_analysis command ${command.id} has no devices row for ${command.deviceId}; no snapshot written`
     );
+    captureMessage('filesystem_analysis result dropped: unknown device', {
+      eventCode: 'filesystem_analysis_result_unknown_device',
+    });
     return;
   }
 
@@ -1816,8 +1826,22 @@ export async function handleFilesystemAnalysisCommandResult(
   // both writes, even when the caller catches a post-processing failure.
   const persisted = await db.transaction(async (tx) => {
     const claim = await claimFilesystemScanGeneration(command.deviceId, scanPath, command.id, tx, orgId);
-    if (claim === 'superseded' || claim === 'already_applied') {
-      captureException(new Error(`filesystem_analysis command ${command.id} dropped: ${claim}`));
+    if (claim === 'superseded') {
+      // Expected, not an error: a newer scan of this volume was queued after
+      // this one (a second click, the AI tool, a threshold or resume trigger)
+      // and owns the snapshot. Reporting it put every overlap in Sentry.
+      console.warn(
+        `[agents/helpers] filesystem_analysis command ${command.id} (device ${command.deviceId}) superseded by a newer scan of ${scanPath}; result not applied`
+      );
+      return null;
+    }
+    if (claim === 'already_applied') {
+      console.warn(
+        `[agents/helpers] filesystem_analysis command ${command.id} (device ${command.deviceId}) was already applied; duplicate result ignored`
+      );
+      captureMessage('filesystem_analysis result dropped: already applied', {
+        eventCode: 'filesystem_analysis_result_duplicate',
+      });
       return null;
     }
 
