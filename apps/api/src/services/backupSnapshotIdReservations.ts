@@ -250,11 +250,18 @@ export async function loadReservationKeyRoot(
 export async function loadSnapshotIdClaims(
   snapshotIds: string[],
   orgId: string,
-): Promise<{ foreign: Set<string>; live: Set<string>; currentJobs: Map<string, string> }> {
+): Promise<{
+  foreign: Set<string>;
+  live: Set<string>;
+  currentJobs: Map<string, string>;
+  /** The key root recorded on each id's reservation (#7081), verbatim. */
+  roots: Map<string, { keyLayout: string; keyPrefix: string | null }>;
+}> {
   const foreign = new Set<string>();
   const live = new Set<string>();
   const currentJobs = new Map<string, string>();
-  if (snapshotIds.length === 0) return { foreign, live, currentJobs };
+  const roots = new Map<string, { keyLayout: string; keyPrefix: string | null }>();
+  if (snapshotIds.length === 0) return { foreign, live, currentJobs, roots };
   const rows = await db
     .select({
       snapshotId: backupSnapshotIdReservations.snapshotId,
@@ -263,6 +270,8 @@ export async function loadSnapshotIdClaims(
       source: backupSnapshotIdReservations.source,
       currentJobId: backupSnapshotIdReservations.currentJobId,
       jobStatus: backupJobs.status,
+      keyLayout: backupSnapshotIdReservations.keyLayout,
+      keyPrefix: backupSnapshotIdReservations.keyPrefix,
     })
     .from(backupSnapshotIdReservations)
     .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshotIdReservations.currentJobId))
@@ -277,8 +286,9 @@ export async function loadSnapshotIdClaims(
       live.add(row.snapshotId);
     }
     if (row.source === 'server_minted' && row.currentJobId) currentJobs.set(row.snapshotId, row.currentJobId);
+    roots.set(row.snapshotId, { keyLayout: row.keyLayout, keyPrefix: row.keyPrefix });
   }
-  return { foreign, live, currentJobs };
+  return { foreign, live, currentJobs, roots };
 }
 
 // ── Storage reclaim (jobs/backupRetention.ts, system context) ──────────────

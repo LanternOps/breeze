@@ -12,10 +12,17 @@ import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   backupSnapshotManifestKey,
   backupSnapshotRootPrefix,
-  fetchBackupObjectText,
-  iterateBackupObjectsUnderPrefix,
   MANIFEST_FETCH_MAX_BYTES,
 } from './backupSnapshotStorage';
+import {
+  keyRootForNewSnapshot,
+  keyRootId,
+  LEGACY_FLAT_ROOT,
+  sameKeyRoot,
+  snapshotKeyRootOf,
+  type SnapshotKeyRoot,
+} from './backupKeyLayout';
+import { fetchRootedObjectText, iterateRootedObjects } from './backupRootedStorage';
 
 /**
  * Orphaned-snapshot reconciliation (#3006).
@@ -182,7 +189,14 @@ export type ReconcileSkipReason =
    *  rejected by backupResultPersistence.ts's late-result fence
    *  (errorLog contains publish_lease_expired or base_retired) — re-adopting
    *  it here would resurrect exactly what that fence exists to prevent. */
-  | 'late-result-fenced';
+  | 'late-result-fenced'
+  /** #7081: the snapshot was found under a key root other than the one its
+   *  id is reserved under (or, under a prefixed root, has no reservation) —
+   *  adopting it would record a root its objects do not live under. */
+  | 'key-root-mismatch'
+  /** #7081 (I4): the manifest's declared base is recorded under another key
+   *  root, or one this server cannot read — chains never span roots. */
+  | 'base-key-root-mismatch';
 
 export type ReconcileCandidate = {
   snapshotId: string;
@@ -252,6 +266,12 @@ type SnapshotClaims = {
    * change, so they are never adopted; the job's own result publishes them.
    */
   liveReserved: Set<string>;
+  /**
+   * #7081: the key root recorded on each id's reservation, verbatim. Adoption
+   * copies it onto the restore point, so a snapshot is adopted only from the
+   * root its reservation names.
+   */
+  reservationRoots: Map<string, { keyLayout: string; keyPrefix: string | null }>;
 };
 
 type AdoptableJob = {
@@ -424,6 +444,7 @@ async function loadClaimsAndSharing(params: {
       const jobs = new Map<string, ClaimingJob>();
       const foreignClaimed = new Set<string>();
       const liveReserved = new Set<string>();
+      const reservationRoots = new Map<string, { keyLayout: string; keyPrefix: string | null }>();
 
       // Rank for the dedupe below: a claim on THIS destination beats one on a
       // sibling config (a customer who deleted and recreated a config against
@@ -457,6 +478,7 @@ async function loadClaimsAndSharing(params: {
         const reservationClaims = await loadSnapshotIdClaims(batch, orgId);
         for (const id of reservationClaims.foreign) foreignClaimed.add(id);
         for (const id of reservationClaims.live) liveReserved.add(id);
+        for (const [id, root] of reservationClaims.roots) reservationRoots.set(id, root);
         // A server-issued id is published only by the job its reservation
         // currently names: that job wins the dedupe below whatever the rank
         // of the others (after a takeover, earlier jobs still carry the id).
@@ -523,7 +545,7 @@ async function loadClaimsAndSharing(params: {
         );
       });
 
-      return { claims: { restorable, jobs, foreignClaimed, liveReserved }, sharedDestination };
+      return { claims: { restorable, jobs, foreignClaimed, liveReserved, reservationRoots }, sharedDestination };
     })
   );
 }
@@ -615,6 +637,8 @@ export function manifestToCommandResult(params: {
   snapshotId: string;
   manifestText: string;
   matchedBy: 'job-snapshot-id' | 'time-window';
+  /** The key root the manifest was found under (#7081); legacy when omitted. */
+  root?: SnapshotKeyRoot;
 }): ParsedBackupCommandResult {
   const parsed = reconcileManifestSchema.parse(JSON.parse(params.manifestText));
 
@@ -691,12 +715,49 @@ export function manifestToCommandResult(params: {
     },
     metadata: {
       // Consumed by backupResultPersistence to set backup_snapshots.location.
-      storagePrefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${params.snapshotId}`,
+      // A prefixed snapshot's location and keys come from its recorded root
+      // (the row's key_layout / key_prefix, copied from its reservation),
+      // never from this helper-style field, so it is not set for one (#7081).
+      ...((params.root ?? LEGACY_FLAT_ROOT).layout === 'legacy_flat'
+        ? { storagePrefix: `${BACKUP_SNAPSHOT_ROOT_DIR}/${params.snapshotId}` }
+        : {}),
       reconciledFromStorage: true,
       reconciledAt: new Date().toISOString(),
       reconcileMatchedBy: params.matchedBy,
     },
   };
+}
+
+/**
+ * The key roots reconcile lists for a destination (#7081): the root a new
+ * snapshot on it is written under (its prefix, when valid) and always the
+ * legacy root. A stored prefix that fails validation lists the legacy root
+ * only — never a guessed location.
+ */
+function reconcileKeyRoots(provider: string, providerConfig: Record<string, unknown>, configId: string): SnapshotKeyRoot[] {
+  const current = keyRootForNewSnapshot(provider, providerConfig);
+  if (!current.ok) {
+    console.warn(
+      `[BackupReconcile] config ${configId} has an invalid key prefix; reconciling the legacy key root only`,
+    );
+    return [LEGACY_FLAT_ROOT];
+  }
+  return current.root.layout === 'legacy_flat' ? [LEGACY_FLAT_ROOT] : [current.root, LEGACY_FLAT_ROOT];
+}
+
+/**
+ * Whether a snapshot found under `foundUnder` may be adopted given its
+ * reservation's recorded root (#7081): equal roots only; an id with no
+ * reservation is adopted as legacy_flat (backupResultPersistence), so only
+ * from the legacy root.
+ */
+function foundUnderRecordedRoot(
+  foundUnder: SnapshotKeyRoot,
+  reservationRoot: { keyLayout: string; keyPrefix: string | null } | undefined,
+): boolean {
+  if (!reservationRoot) return foundUnder.layout === 'legacy_flat';
+  const recorded = snapshotKeyRootOf(reservationRoot);
+  return recorded !== null && sameKeyRoot(recorded, foundUnder);
 }
 
 /**
@@ -761,13 +822,20 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     );
   }
 
-  let storageSnapshots: Map<string, Date | null>;
+  // #7081: the destination's key roots this org may own snapshots under —
+  // its current prefix's root, and the legacy root (every snapshot written
+  // before prefixes applied). Each root is listed on its own; an orphan is
+  // only adopted from the root its reservation records.
+  const roots = reconcileKeyRoots(config.provider, asRecord(config.providerConfig), params.configId);
+  const storageSnapshots: Array<{ snapshotId: string; writtenAt: Date | null; root: SnapshotKeyRoot }> = [];
   try {
-    storageSnapshots = await extractManifestBearingSnapshots(iterateBackupObjectsUnderPrefix({
-      provider: config.provider,
-      providerConfig: config.providerConfig,
-      prefix: backupSnapshotRootPrefix(),
-    }));
+    for (const root of roots) {
+      const found = await extractManifestBearingSnapshots(iterateRootedObjects(
+        { provider: config.provider, providerConfig: config.providerConfig, root },
+        backupSnapshotRootPrefix(),
+      ));
+      for (const [snapshotId, writtenAt] of found) storageSnapshots.push({ snapshotId, writtenAt, root });
+    }
   } catch (error) {
     // A bad credential, a deleted bucket, or a provider 5xx is an upstream
     // failure, not a malformed request — and it is invisible unless it is
@@ -781,7 +849,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     throw new BackupReconcileError('destination_unreadable', message);
   }
 
-  const snapshotIds = [...storageSnapshots.keys()];
+  const snapshotIds = [...new Set(storageSnapshots.map((s) => s.snapshotId))];
 
   const providerConfigRecord = asRecord(config.providerConfig);
   const storageIdentity = normalizeStorageIdentity(config.provider, providerConfigRecord);
@@ -815,10 +883,12 @@ export async function reconcileOrphanedBackupSnapshots(params: {
 
   // Process oldest-written first so the time-window matcher consumes jobs
   // deterministically and a rerun produces the same attribution.
-  const ordered = snapshotIds.slice().sort((a, b) => {
-    const aTime = storageSnapshots.get(a)?.getTime() ?? 0;
-    const bTime = storageSnapshots.get(b)?.getTime() ?? 0;
-    return aTime === bTime ? a.localeCompare(b) : aTime - bTime;
+  const ordered = storageSnapshots.slice().sort((a, b) => {
+    const aTime = a.writtenAt?.getTime() ?? 0;
+    const bTime = b.writtenAt?.getTime() ?? 0;
+    if (aTime !== bTime) return aTime - bTime;
+    const byId = a.snapshotId.localeCompare(b.snapshotId);
+    return byId !== 0 ? byId : keyRootId(a.root).localeCompare(keyRootId(b.root));
   });
 
   const now = new Date();
@@ -829,13 +899,13 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     deviceId: string;
     matchedBy: 'job-snapshot-id' | 'time-window';
     writtenAt: Date | null;
+    root: SnapshotKeyRoot;
   }[] = [];
 
   let unattributedJobs: AdoptableJob[] | null = null;
   const consumedJobIds = new Set<string>();
 
-  for (const snapshotId of ordered) {
-    const writtenAt = storageSnapshots.get(snapshotId) ?? null;
+  for (const { snapshotId, writtenAt, root } of ordered) {
     const skip = (skipReason: ReconcileSkipReason) => {
       candidates.push({
         snapshotId,
@@ -862,6 +932,14 @@ export async function reconcileOrphanedBackupSnapshots(params: {
 
     if (claims.liveReserved.has(snapshotId)) {
       skip('reserved-for-active-backup');
+      continue;
+    }
+
+    // #7081: adoption records the id's reservation root, so the snapshot must
+    // have been found under exactly that root. An id with no reservation is
+    // adopted as legacy_flat, so only from the legacy root.
+    if (!foundUnderRecordedRoot(root, claims.reservationRoots.get(snapshotId))) {
+      skip('key-root-mismatch');
       continue;
     }
 
@@ -928,6 +1006,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
         deviceId: claimingJob.deviceId,
         matchedBy: 'job-snapshot-id',
         writtenAt,
+        root,
       });
       continue;
     }
@@ -978,6 +1057,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       deviceId: job.deviceId,
       matchedBy: 'time-window',
       writtenAt,
+      root,
     });
   }
 
@@ -1021,16 +1101,16 @@ export async function reconcileOrphanedBackupSnapshots(params: {
     // to look at a bucket that is perfectly fine.
     let result: ParsedBackupCommandResult;
     try {
-      const manifestText = await fetchBackupObjectText({
-        provider: config.provider,
-        providerConfig: config.providerConfig,
-        key: backupSnapshotManifestKey(entry.snapshotId),
-        maxBytes: MANIFEST_FETCH_MAX_BYTES,
-      });
+      const manifestText = await fetchRootedObjectText(
+        { provider: config.provider, providerConfig: config.providerConfig, root: entry.root },
+        backupSnapshotManifestKey(entry.snapshotId),
+        MANIFEST_FETCH_MAX_BYTES,
+      );
       result = manifestToCommandResult({
         snapshotId: entry.snapshotId,
         manifestText,
         matchedBy: entry.matchedBy,
+        root: entry.root,
       });
     } catch (error) {
       candidate.skipReason = 'manifest-unreadable';
@@ -1049,7 +1129,7 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       const declaredBase = result.snapshot.baseSnapshotId;
       const [liveBase] = await runInDbContext(() =>
         db
-          .select({ id: backupSnapshots.id })
+          .select({ id: backupSnapshots.id, keyLayout: backupSnapshots.keyLayout, keyPrefix: backupSnapshots.keyPrefix })
           .from(backupSnapshots)
           .leftJoin(
             backupSnapshotRetirements,
@@ -1070,6 +1150,20 @@ export async function reconcileOrphanedBackupSnapshots(params: {
       if (!liveBase) {
         candidate.skipReason = 'base-missing';
         candidate.error = `manifest declares base ${declaredBase}, which has no live, unretired row`;
+        candidates.push(candidate);
+        continue;
+      }
+      // #7081 (I4): a chain never spans key roots — the base must be
+      // recorded under the root this snapshot was found under.
+      const baseRoot = snapshotKeyRootOf(liveBase);
+      if (!baseRoot || !sameKeyRoot(baseRoot, entry.root)) {
+        candidate.skipReason = 'base-key-root-mismatch';
+        candidate.error = `manifest declares base ${declaredBase}, which is not recorded under the same storage key root`;
+        console.warn(
+          `[BackupReconcile] base_key_root_mismatch: snapshot ${entry.snapshotId} (config ${params.configId}, ` +
+          `key root ${keyRootId(entry.root)}) declares base ${declaredBase} under ` +
+          `${baseRoot ? keyRootId(baseRoot) : 'an unreadable key root'} — not adopted`,
+        );
         candidates.push(candidate);
         continue;
       }
