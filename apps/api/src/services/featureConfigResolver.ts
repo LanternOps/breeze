@@ -1000,17 +1000,6 @@ export async function resolveSoftwarePolicyForDevice(
 }
 
 /**
- * Batch resolver: finds all device IDs that should be governed by a given software policy
- * via config policy assignments. Used by the compliance worker.
- *
- * Steps:
- * 1. Find all config policies that link to this software policy
- * 2. Get all assignments for those config policies
- * 3. Resolve each assignment to device IDs based on level/targetId
- * 4. For each device, verify this software policy is the "winning" one
- *    (closest wins — if a device has a closer assignment linking to a different policy, exclude it)
- */
-/**
  * Resolve the candidate device IDs for one config-policy assignment row, by
  * level. Extracted from {@link resolveDeviceIdsForSoftwarePolicy}'s switch so
  * {@link resolveAllSecurityScanScheduledDevices} (#6263 W01) doesn't need a
@@ -1072,6 +1061,9 @@ export type ResolvedSecurityAgentsLink = {
   inlineSettings: SecurityAgentsInlineSettings;
 };
 
+/** Links already logged as unparseable; see resolveSecurityAgentsLinkForDevice. */
+const warnedUnparseableSecurityAgentsLinks = new Set<string>();
+
 /**
  * #6960: the winning `security_agents` link for a device. Closest wins WITHIN
  * this feature type, using the same hierarchy walk and effective-links view as
@@ -1085,8 +1077,6 @@ export type ResolvedSecurityAgentsLink = {
  * field the device reports about itself is not a valid target here: the same
  * field-provenance rule resolveEffectiveConfig applies to its display.
  */
-const warnedUnparseableSecurityAgentsLinks = new Set<string>();
-
 export async function resolveSecurityAgentsLinkForDevice(
   deviceId: string
 ): Promise<ResolvedSecurityAgentsLink | null> {
@@ -1219,6 +1209,17 @@ async function resolveDeviceIdsForManagedSoftwarePolicy(managedByLinkId: string)
   return verified;
 }
 
+/**
+ * Batch resolver: finds all device IDs that should be governed by a given software policy
+ * via config policy assignments. Used by the compliance worker.
+ *
+ * Steps:
+ * 1. Find all config policies that link to this software policy
+ * 2. Get all assignments for those config policies
+ * 3. Resolve each assignment to device IDs based on level/targetId
+ * 4. For each device, verify this software policy is the "winning" one
+ *    (closest wins — if a device has a closer assignment linking to a different policy, exclude it)
+ */
 export async function resolveDeviceIdsForSoftwarePolicy(
   softwarePolicyId: string
 ): Promise<string[]> {

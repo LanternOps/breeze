@@ -3353,10 +3353,14 @@ export async function validateFeaturePolicyExists(
       return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found — no owning organization or partner` };
     }
 
+    // #6960: a software policy GENERATED from a security_agents link belongs to
+    // that link and resolves through its own dimension; linking it as an
+    // ordinary software_policy would let a customer link arm or shadow it.
+    const managedExclusion = featureType === 'software_policy' ? [isNull(softwarePolicies.managedByLinkId)] : [];
     const [row] = await db
       .select({ id: dualAxis.table.id })
       .from(dualAxis.table)
-      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions)))
+      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions), ...managedExclusion))
       .limit(1);
 
     if (!row) {
