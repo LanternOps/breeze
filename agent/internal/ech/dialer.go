@@ -178,10 +178,13 @@ func (d *Dialer) Status(host string) HostStatus {
 // every attempt clones it. The returned net.Conn is a *tls.Conn.
 //
 // Flow: in ECH mode (and enabled) try ECH once (with at most one retry on a
-// server-supplied retry config); if that fails for any reason, make one plain
-// attempt and return its result. Otherwise make a plain attempt; on a filter
-// signature with one-shot enabled, fetch a config synchronously and try ECH
-// once, falling back to one more plain attempt. No path loops.
+// server-supplied retry config) under a capped handshake budget; if its TCP
+// connect fails, return that error (the path is down either way); if ECH
+// fails otherwise, make one plain attempt and return its result. Outside ECH
+// mode make a plain attempt; on a filter signature with one-shot enabled (and
+// the host not in cooldown), fetch a config synchronously and try ECH once,
+// then one more plain attempt, returning the original signature error if
+// that fails too. No path loops.
 func (d *Dialer) DialTLS(base *tls.Config, nextProtos []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, _, err := net.SplitHostPort(addr)
@@ -192,13 +195,16 @@ func (d *Dialer) DialTLS(base *tls.Config, nextProtos []string) func(ctx context
 
 		mode := d.update(host, func(st *hostState) bool { st.Mode(d.opts.Now()); return false })
 		if mode == ModeECH && d.enabled() {
-			tc, err := a.ech(ctx, true)
+			tc, tcpFailed, err := a.ech(ctx)
 			if err == nil {
 				return tc, nil
 			}
+			if tcpFailed {
+				return nil, err
+			}
 			return a.plainFallback(ctx)
 		}
-		return a.plainInitial(ctx)
+		return a.plainInitial(ctx, mode)
 	}
 }
 
@@ -224,16 +230,16 @@ func (a *attempt) config() *tls.Config {
 	return cfg
 }
 
-// handshake dials TCP and runs the TLS handshake under HandshakeTimeout.
+// handshake dials TCP and runs the TLS handshake under budget(ctx).
 // tcpFailed reports that the TCP dial itself failed. On any handshake error
 // the TCP connection is closed.
-func (a *attempt) handshake(ctx context.Context, cfg *tls.Config) (tc *tls.Conn, tcpFailed bool, err error) {
+func (a *attempt) handshake(ctx context.Context, cfg *tls.Config, budget func(context.Context) time.Duration) (tc *tls.Conn, tcpFailed bool, err error) {
 	raw, err := a.d.opts.TCPDial(ctx, a.network, a.addr)
 	if err != nil {
 		return nil, true, err
 	}
 	tc = tls.Client(raw, cfg)
-	hctx, cancel := context.WithTimeout(ctx, a.d.opts.HandshakeTimeout)
+	hctx, cancel := context.WithTimeout(ctx, budget(ctx))
 	defer cancel()
 	if err := tc.HandshakeContext(hctx); err != nil {
 		_ = raw.Close()
@@ -242,10 +248,27 @@ func (a *attempt) handshake(ctx context.Context, cfg *tls.Config) (tc *tls.Conn,
 	return tc, false, nil
 }
 
+// plainBudget is the full HandshakeTimeout (today's behaviour).
+func (a *attempt) plainBudget(context.Context) time.Duration { return a.d.opts.HandshakeTimeout }
+
+// echBudget caps an ECH handshake at min(HandshakeTimeout/2, half the
+// caller's remaining budget), so a middlebox that blackholes ECH
+// ClientHellos cannot starve the plain fallback.
+func (a *attempt) echBudget(ctx context.Context) time.Duration {
+	b := a.d.opts.HandshakeTimeout / 2
+	if dl, ok := ctx.Deadline(); ok {
+		if half := time.Until(dl) / 2; half < b {
+			b = half
+		}
+	}
+	return b
+}
+
 // plainInitial is the default path: exactly today's dial. A filter signature
-// is recorded; with one-shot it leads to one synchronous fetch and one ECH try.
-func (a *attempt) plainInitial(ctx context.Context) (net.Conn, error) {
-	tc, _, err := a.handshake(ctx, a.config())
+// is recorded; with one-shot (and mode not cooldown) it leads to one
+// synchronous fetch and one ECH try.
+func (a *attempt) plainInitial(ctx context.Context, mode Mode) (net.Conn, error) {
+	tc, _, err := a.handshake(ctx, a.config(), a.plainBudget)
 	if err == nil {
 		a.notePlainSuccess("plain")
 		return tc, nil
@@ -258,7 +281,7 @@ func (a *attempt) plainInitial(ctx context.Context) (net.Conn, error) {
 	if engaged {
 		a.d.fetchAsync(a.host)
 	}
-	if !a.d.oneShot.Load() || !a.d.enabled() {
+	if !a.d.oneShot.Load() || !a.d.enabled() || mode == ModeCooldown {
 		return nil, err
 	}
 	if _, _, ok := a.d.opts.Cache.Get(a.host); !ok {
@@ -267,8 +290,12 @@ func (a *attempt) plainInitial(ctx context.Context) (net.Conn, error) {
 			return nil, err
 		}
 	}
-	if etc, eerr := a.ech(ctx, true); eerr == nil {
+	etc, tcpFailed, eerr := a.ech(ctx)
+	if eerr == nil {
 		return etc, nil
+	}
+	if tcpFailed {
+		return nil, err
 	}
 	if ptc, perr := a.plainFallback(ctx); perr == nil {
 		return ptc, nil
@@ -280,7 +307,7 @@ func (a *attempt) plainInitial(ctx context.Context) (net.Conn, error) {
 // never re-enters ECH. Success while the host is in ModeECH moves it back to
 // ModePlain: plain works, so the filter is gone.
 func (a *attempt) plainFallback(ctx context.Context) (net.Conn, error) {
-	tc, _, err := a.handshake(ctx, a.config())
+	tc, _, err := a.handshake(ctx, a.config(), a.plainBudget)
 	if err == nil {
 		a.d.update(a.host, func(st *hostState) bool { st.NotePlainSuccess(); return false })
 		a.notePlainSuccess("plain-fallback")
@@ -295,46 +322,55 @@ func (a *attempt) plainFallback(ctx context.Context) (net.Conn, error) {
 	return nil, err
 }
 
-// ech makes one ECH attempt with the cached config; allowRetry permits one
-// further attempt with a server-supplied retry config. A nil error means
-// ECH was accepted.
-func (a *attempt) ech(ctx context.Context, allowRetry bool) (*tls.Conn, error) {
+// ech makes one ECH attempt with the cached config, plus at most one retry
+// with a server-supplied retry config. A nil error means ECH was accepted;
+// tcpFailed means the TCP connect failed (not counted against ECH).
+func (a *attempt) ech(ctx context.Context) (tc *tls.Conn, tcpFailed bool, err error) {
 	d := a.d
 	list, fresh, ok := d.opts.Cache.Get(a.host)
 	if !ok {
 		d.fetchAsync(a.host)
 		log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "error", errNoCachedConfig.Error())
-		return nil, errNoCachedConfig
+		return nil, false, errNoCachedConfig
 	}
 	if !fresh {
 		d.fetchAsync(a.host)
 	}
+	return a.echWith(ctx, list, true)
+}
+
+func (a *attempt) echWith(ctx context.Context, list []byte, allowRetry bool) (*tls.Conn, bool, error) {
+	d := a.d
 	cfg := a.config()
 	cfg.MinVersion = tls.VersionTLS13
 	cfg.EncryptedClientHelloConfigList = list
-	tc, tcpFailed, err := a.handshake(ctx, cfg)
+	tc, tcpFailed, err := a.handshake(ctx, cfg, a.echBudget)
 	if err == nil {
 		d.update(a.host, func(st *hostState) bool { st.NoteECHSuccess(); return false })
 		log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "result", "accepted")
-		return tc, nil
+		return tc, false, nil
 	}
 	log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "error", err.Error())
+	if tcpFailed {
+		// Path-independent: the plain attempt would hit the same failure.
+		return nil, true, err
+	}
 	var rej *tls.ECHRejectionError
 	if errors.As(err, &rej) {
 		if len(rej.RetryConfigList) > 0 && allowRetry {
 			d.opts.Cache.Put(a.host, ECHConfig{ConfigList: rej.RetryConfigList, TTL: retryConfigTTL})
-			return a.ech(ctx, false)
+			return a.echWith(ctx, rej.RetryConfigList, false)
 		}
 		if len(rej.RetryConfigList) == 0 {
 			d.opts.Cache.Delete(a.host)
 		}
 	}
-	// A failed TCP connect or a cancelled caller is not evidence against
-	// ECH, so it does not count toward cooldown.
-	if !tcpFailed && ctx.Err() == nil {
+	// Only a caller cancellation is exempt; an expired handshake budget
+	// (ours or the caller's deadline) counts against ECH.
+	if !errors.Is(ctx.Err(), context.Canceled) {
 		a.noteECHFailure()
 	}
-	return nil, err
+	return nil, false, err
 }
 
 func (a *attempt) noteECHFailure() {
@@ -373,8 +409,9 @@ func (a *attempt) notePlainSuccess(kind string) {
 
 // fetchAsync refreshes host's config in the background, at most one fetch
 // per host at a time. It never blocks the caller. A failed fetch (including
-// ErrNoECHConfig) counts one ECH failure for host; that is a no-op unless the
-// host is in ModeECH.
+// ErrNoECHConfig) counts one ECH failure for host when no list is cached; a
+// failed refresh of a still-cached (stale) list does not. Counting is a
+// no-op unless the host is in ModeECH.
 func (d *Dialer) fetchAsync(host string) {
 	d.mu.Lock()
 	if d.fetching[host] {
@@ -394,8 +431,10 @@ func (d *Dialer) fetchAsync(host string) {
 		cfg, err := d.opts.Resolver.Lookup(ctx, host)
 		if err != nil {
 			log.Debug("ech config fetch failed", "host", host, "error", err.Error())
-			now := d.opts.Now()
-			d.update(host, func(st *hostState) bool { st.NoteECHFailure(now); return false })
+			if _, _, cached := d.opts.Cache.Get(host); !cached {
+				now := d.opts.Now()
+				d.update(host, func(st *hostState) bool { st.NoteECHFailure(now); return false })
+			}
 			return
 		}
 		d.opts.Cache.Put(host, cfg)

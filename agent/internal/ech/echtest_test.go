@@ -54,6 +54,13 @@ func newECHConfigList(t *testing.T, publicName string) ([]byte, tls.EncryptedCli
 // echKeys may be nil (plain-only server). h2 is negotiated via NextProtos.
 func startTLSServer(t *testing.T, names []string, echKeys []tls.EncryptedClientHelloKey, handler http.Handler) (string, *x509.CertPool) {
 	t.Helper()
+	return startTLSServerWith(t, names, echKeys, handler, nil)
+}
+
+// startTLSServerWith is startTLSServer with a hook to adjust the server's
+// tls.Config (e.g. MaxVersion) before it starts listening.
+func startTLSServerWith(t *testing.T, names []string, echKeys []tls.EncryptedClientHelloKey, handler http.Handler, mutate func(*tls.Config)) (string, *x509.CertPool) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -85,12 +92,16 @@ func startTLSServer(t *testing.T, names []string, echKeys []tls.EncryptedClientH
 	if err != nil {
 		t.Fatal(err)
 	}
-	tlsLn := tls.NewListener(ln, &tls.Config{
+	srvCfg := &tls.Config{
 		Certificates:             []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
 		MinVersion:               tls.VersionTLS13,
 		EncryptedClientHelloKeys: echKeys,
 		NextProtos:               []string{"h2", "http/1.1"},
-	})
+	}
+	if mutate != nil {
+		mutate(srvCfg)
+	}
+	tlsLn := tls.NewListener(ln, srvCfg)
 	srv := &http.Server{Handler: handler}
 	go func() { _ = srv.Serve(tlsLn) }()
 	t.Cleanup(func() {

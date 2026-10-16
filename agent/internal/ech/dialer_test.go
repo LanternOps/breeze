@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -42,30 +43,87 @@ func (c *fakeClock) Set(t time.Time) {
 }
 
 // dialRig is the counting TCPDial wrapper. It ignores the addr it is given
-// (always dialAddr) and dials the current target instead; when next is set,
-// the target switches to it after one dial.
+// (always dialAddr) and dials the current target instead; queued targets
+// (thenTarget) take over one per dial.
 type dialRig struct {
-	target atomic.Pointer[string]
-	next   atomic.Pointer[string]
+	mu     sync.Mutex
+	target string
+	queue  []string
 	dials  atomic.Int32
 }
 
-func newRig(target string) *dialRig {
-	r := &dialRig{}
-	r.setTarget(target)
-	return r
+func newRig(target string) *dialRig { return &dialRig{target: target} }
+
+// setTarget sets the current target and clears any queued ones.
+func (r *dialRig) setTarget(addr string) {
+	r.mu.Lock()
+	r.target, r.queue = addr, nil
+	r.mu.Unlock()
 }
 
-func (r *dialRig) setTarget(addr string)  { r.target.Store(&addr) }
-func (r *dialRig) thenTarget(addr string) { r.next.Store(&addr) }
+// thenTarget queues targets for the following dials, one per dial.
+func (r *dialRig) thenTarget(addrs ...string) {
+	r.mu.Lock()
+	r.queue = append(r.queue, addrs...)
+	r.mu.Unlock()
+}
 
 func (r *dialRig) dial(ctx context.Context, network, _ string) (net.Conn, error) {
 	r.dials.Add(1)
-	target := *r.target.Load()
-	if n := r.next.Swap(nil); n != nil {
-		r.target.Store(n)
+	r.mu.Lock()
+	target := r.target
+	if len(r.queue) > 0 {
+		r.target, r.queue = r.queue[0], r.queue[1:]
 	}
+	r.mu.Unlock()
 	return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, target)
+}
+
+// startBlackhole accepts TCP connections and never answers, like a
+// middlebox that drops ECH ClientHellos.
+func startBlackhole(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		mu    sync.Mutex
+		conns []net.Conn
+	)
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		for _, c := range conns {
+			c.Close()
+		}
+		mu.Unlock()
+	})
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+			go func() { _, _ = io.Copy(io.Discard, c) }()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// closedAddr returns a loopback address with nothing listening.
+func closedAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	return addr
 }
 
 // failResolver counts DoH hits; any hit is a test error.
@@ -106,11 +164,14 @@ func listResolver(t *testing.T, list []byte) *Resolver {
 	return NewResolver(srv.Client(), srv.URL)
 }
 
-// hangResolver never answers until the request context ends.
-func hangResolver(t *testing.T) *Resolver {
+// hangResolver never answers until the request context ends. It counts
+// requests.
+func hangResolver(t *testing.T) (*Resolver, *atomic.Int32) {
 	t.Helper()
 	done := make(chan struct{})
+	hits := new(atomic.Int32)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		select {
 		case <-r.Context().Done():
 		case <-done:
@@ -118,19 +179,29 @@ func hangResolver(t *testing.T) *Resolver {
 	}))
 	t.Cleanup(srv.Close)
 	t.Cleanup(func() { close(done) }) // runs before srv.Close (LIFO)
-	return NewResolver(srv.Client(), srv.URL)
+	return NewResolver(srv.Client(), srv.URL), hits
 }
 
-func newTestDialer(t *testing.T, rig *dialRig, res *Resolver, clock *fakeClock) *Dialer {
+func newTestDialer(t *testing.T, rig *dialRig, res *Resolver, clock *fakeClock, mods ...func(*Options)) *Dialer {
 	t.Helper()
-	return New(Options{
+	opts := Options{
 		TCPDial:       rig.dial,
 		Resolver:      res,
 		Cache:         NewCache(""),
 		LocalEnabled:  true,
 		ServerEnabled: true,
 		Now:           clock.Now,
-	})
+	}
+	for _, m := range mods {
+		m(&opts)
+	}
+	return New(opts)
+}
+
+func echFailures(d *Dialer, host string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.state(host).echFailures
 }
 
 func forceMode(d *Dialer, host string, m Mode) {
@@ -172,6 +243,11 @@ func dialTLS(t *testing.T, d *Dialer, base *tls.Config, nextProtos []string) (*t
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
+	return dialTLSCtx(t, ctx, d, base, nextProtos)
+}
+
+func dialTLSCtx(t *testing.T, ctx context.Context, d *Dialer, base *tls.Config, nextProtos []string) (*tls.Conn, error) {
+	t.Helper()
 	c, err := d.DialTLS(base, nextProtos)(ctx, "tcp", dialAddr)
 	if err != nil {
 		if c != nil {
@@ -603,7 +679,8 @@ func TestDial_OneShotDoHDownFallsThrough(t *testing.T) {
 	filterAddr, _ := startFilterListener(t)
 	_, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
 	rig := newRig(filterAddr)
-	d := newTestDialer(t, rig, hangResolver(t), &fakeClock{t: dialT0})
+	res, hits := hangResolver(t)
+	d := newTestDialer(t, rig, res, &fakeClock{t: dialT0})
 	d.SetOneShot(true)
 
 	start := time.Now()
@@ -612,8 +689,14 @@ func TestDial_OneShotDoHDownFallsThrough(t *testing.T) {
 	if !IsFilterSignature(err) {
 		t.Fatalf("err = %v, want the original filter signature", err)
 	}
-	if elapsed >= 5500*time.Millisecond {
-		t.Fatalf("elapsed = %v, want < 5.5s", elapsed)
+	if elapsed >= 5500*time.Millisecond || elapsed < 4500*time.Millisecond {
+		t.Fatalf("elapsed = %v, want the 5 s one-shot budget (4.5s..5.5s)", elapsed)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("DoH hits = %d, want 1", n)
+	}
+	if n := rig.dials.Load(); n != 1 {
+		t.Fatalf("TCP dials = %d, want 1", n)
 	}
 	if _, _, ok := d.opts.Cache.Get(dialHost); ok {
 		t.Fatal("cache populated although DoH was down")
@@ -701,11 +784,11 @@ func TestDial_ConcurrentDialsSameHost(t *testing.T) {
 			t.Fatalf("filter@t0: err = %v, want filter signature", r.err)
 		}
 	}
+	// The engaging (second) signature is one serial dial, so the next batch
+	// runs with a settled mode.
 	clock.Set(dialT0.Add(2 * time.Minute))
-	for _, r := range phase("filter@t0+2m") {
-		if !IsFilterSignature(r.err) {
-			t.Fatalf("filter@t0+2m: err = %v, want filter signature", r.err)
-		}
+	if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
+		t.Fatalf("engaging dial: err = %v, want filter signature", err)
 	}
 	if m := d.Status(dialHost).Mode; m != ModeECH {
 		t.Fatalf("Mode after threshold = %v, want ech", m)
@@ -723,5 +806,215 @@ func TestDial_ConcurrentDialsSameHost(t *testing.T) {
 	}
 	if st := d.Status(dialHost); st.Mode != ModeECH || !st.ECHActive {
 		t.Fatalf("Status = %+v, want ech active", st)
+	}
+}
+
+func TestDial_ECHHandshakeDeadlineCountsFailure(t *testing.T) {
+	list, _ := newECHConfigList(t, "public.test")
+	plainAddr, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+	filterAddr, _ := startFilterListener(t)
+	hole := startBlackhole(t)
+
+	setup := func(t *testing.T, mods ...func(*Options)) (*Dialer, *dialRig) {
+		rig := newRig(hole)
+		res, _ := failResolver(t)
+		d := newTestDialer(t, rig, res, &fakeClock{t: dialT0}, mods...)
+		d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+		forceMode(d, dialHost, ModeECH)
+		return d, rig
+	}
+
+	t.Run("HandshakeTimeoutCap", func(t *testing.T) {
+		// ECH cap = HandshakeTimeout/2 = 500ms; uncapped it would be 1s.
+		d, rig := setup(t, func(o *Options) { o.HandshakeTimeout = time.Second })
+		rig.thenTarget(plainAddr)
+		start := time.Now()
+		tc, err := dialTLS(t, d, baseCfg(pool), nil)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		if tc.ConnectionState().ECHAccepted {
+			t.Fatal("ECHAccepted through a blackhole")
+		}
+		if elapsed >= 900*time.Millisecond {
+			t.Fatalf("elapsed = %v, want < 900ms (ECH handshake capped at 500ms)", elapsed)
+		}
+		if m := d.Status(dialHost).Mode; m != ModePlain {
+			t.Fatalf("Mode = %v, want plain (plain fallback succeeded)", m)
+		}
+	})
+
+	t.Run("CallerDeadlineCapCountsFailure", func(t *testing.T) {
+		// Default 10s HandshakeTimeout; the caller allows 1s, so ECH gets
+		// ~500ms and the plain fallback still runs (and hits the filter, so
+		// the host stays in ECH and the failure stays visible).
+		d, rig := setup(t)
+		rig.thenTarget(filterAddr)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		_, err := dialTLSCtx(t, ctx, d, baseCfg(pool), nil)
+		if !IsFilterSignature(err) {
+			t.Fatalf("err = %v, want the plain fallback's filter signature", err)
+		}
+		if n := echFailures(d, dialHost); n != 1 {
+			t.Fatalf("echFailures = %d, want 1 (deadline expiry counts)", n)
+		}
+		if m := d.Status(dialHost).Mode; m != ModeECH {
+			t.Fatalf("Mode = %v, want ech", m)
+		}
+		if n := rig.dials.Load(); n != 2 {
+			t.Fatalf("TCP dials = %d, want 2", n)
+		}
+	})
+
+	t.Run("CallerCancelledMidHandshake", func(t *testing.T) {
+		d, _ := setup(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		time.AfterFunc(100*time.Millisecond, cancel)
+		if _, err := dialTLSCtx(t, ctx, d, baseCfg(pool), nil); err == nil {
+			t.Fatal("dial succeeded after cancel")
+		}
+		if n := echFailures(d, dialHost); n != 0 {
+			t.Fatalf("echFailures = %d, want 0 (caller cancel is exempt)", n)
+		}
+	})
+
+	t.Run("CallerCancelledBeforeDial", func(t *testing.T) {
+		d, _ := setup(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := dialTLSCtx(t, ctx, d, baseCfg(pool), nil); err == nil {
+			t.Fatal("dial succeeded with a cancelled ctx")
+		}
+		if n := echFailures(d, dialHost); n != 0 {
+			t.Fatalf("echFailures = %d, want 0", n)
+		}
+	})
+}
+
+func TestDial_ECHTCPFailureReturnsImmediately(t *testing.T) {
+	list, _ := newECHConfigList(t, "public.test")
+	_, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+	rig := newRig(closedAddr(t))
+	res, _ := failResolver(t)
+	d := newTestDialer(t, rig, res, &fakeClock{t: dialT0})
+	d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+	forceMode(d, dialHost, ModeECH)
+
+	if _, err := dialTLS(t, d, baseCfg(pool), nil); err == nil {
+		t.Fatal("dial to a closed port succeeded")
+	}
+	if n := rig.dials.Load(); n != 1 {
+		t.Fatalf("TCP dials = %d, want 1 (no plain re-connect)", n)
+	}
+	if n := echFailures(d, dialHost); n != 0 {
+		t.Fatalf("echFailures = %d, want 0", n)
+	}
+	if m := d.Status(dialHost).Mode; m != ModeECH {
+		t.Fatalf("Mode = %v, want ech", m)
+	}
+}
+
+func TestDial_OneShotECHFailsThenPlain(t *testing.T) {
+	list, _ := newECHConfigList(t, "public.test")
+	noECHAddr, pool := startTLSServer(t, []string{dialHost, "public.test"}, nil, okHandler())
+	filterAddr, _ := startFilterListener(t)
+
+	setup := func(t *testing.T, third string) (*Dialer, *dialRig) {
+		// Dials: plain → filter; ECH retry → no-ECH server (rejection,
+		// empty retry list); extra plain → third.
+		rig := newRig(filterAddr)
+		rig.thenTarget(noECHAddr, third)
+		d := newTestDialer(t, rig, listResolver(t, list), &fakeClock{t: dialT0})
+		d.SetOneShot(true)
+		return d, rig
+	}
+
+	t.Run("PlainSucceeds", func(t *testing.T) {
+		d, rig := setup(t, noECHAddr)
+		tc, err := dialTLS(t, d, baseCfg(pool), nil)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		if tc.ConnectionState().ECHAccepted {
+			t.Fatal("ECHAccepted on the extra plain attempt")
+		}
+		if n := rig.dials.Load(); n != 3 {
+			t.Fatalf("TCP dials = %d, want 3", n)
+		}
+	})
+
+	t.Run("PlainFiltered", func(t *testing.T) {
+		d, rig := setup(t, filterAddr)
+		if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
+			t.Fatalf("err = %v, want filter signature", err)
+		}
+		if n := rig.dials.Load(); n != 3 {
+			t.Fatalf("TCP dials = %d, want 3", n)
+		}
+	})
+}
+
+func TestDial_PlainPathKeepsTLS12(t *testing.T) {
+	addr, pool := startTLSServerWith(t, []string{dialHost}, nil, okHandler(), func(c *tls.Config) {
+		c.MinVersion = tls.VersionTLS12
+		c.MaxVersion = tls.VersionTLS12
+	})
+	rig := newRig(addr)
+	res, _ := failResolver(t)
+	d := newTestDialer(t, rig, res, &fakeClock{t: dialT0})
+	tc := mustDial(t, d, baseCfg(pool))
+	if v := tc.ConnectionState().Version; v != tls.VersionTLS12 {
+		t.Fatalf("Version = %x, want TLS 1.2", v)
+	}
+}
+
+func TestDial_OneShotSkipsInCooldown(t *testing.T) {
+	filterAddr, _ := startFilterListener(t)
+	_, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+	rig := newRig(filterAddr)
+	res, hits := failResolver(t)
+	clock := &fakeClock{t: dialT0}
+	d := newTestDialer(t, rig, res, clock)
+	d.SetOneShot(true)
+	d.mu.Lock()
+	st := d.state(dialHost)
+	st.mode = ModeCooldown
+	st.cooldownUntil = dialT0.Add(time.Hour)
+	d.mu.Unlock()
+
+	if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
+		t.Fatalf("err = %v, want filter signature", err)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("DoH hits = %d, want 0", n)
+	}
+	if n := rig.dials.Load(); n != 1 {
+		t.Fatalf("TCP dials = %d, want 1", n)
+	}
+}
+
+func TestDial_StaleRefreshFailureNotCounted(t *testing.T) {
+	list, _ := newECHConfigList(t, "public.test")
+	filterAddr, _ := startFilterListener(t)
+	_, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+	rig := newRig(filterAddr)
+	res, hits := noECHResolver(t)
+	d := newTestDialer(t, rig, res, &fakeClock{t: dialT0})
+	// TTL 0: cached but stale, so the dial triggers a refresh that fails.
+	d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: 0})
+	forceMode(d, dialHost, ModeECH)
+
+	// ECH attempt and plain fallback both hit the filter: one ECH failure.
+	if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
+		t.Fatalf("err = %v, want filter signature", err)
+	}
+	waitFetchIdle(t, d, dialHost)
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("DoH hits = %d, want 1", n)
+	}
+	if n := echFailures(d, dialHost); n != 1 {
+		t.Fatalf("echFailures = %d, want 1 (failed refresh of a cached list is not counted)", n)
 	}
 }
