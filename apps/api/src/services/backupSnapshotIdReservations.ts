@@ -297,13 +297,22 @@ export async function loadSnapshotIdClaims(
 export async function loadReservationGcState(
   nowMs: number,
   abandonedGraceMs: number,
-): Promise<{ protectedIds: Set<string>; reclaimable: Array<{ snapshotId: string; storageIdentity: string }> }> {
+): Promise<{
+  protectedIds: Set<string>;
+  /**
+   * `root` is the key root the id's objects were written under (#7081), null
+   * when unreadable — storage reclaim then never proves the prefix gone.
+   */
+  reclaimable: Array<{ snapshotId: string; storageIdentity: string; root: SnapshotKeyRoot | null }>;
+}> {
   const rows = await db
     .select({
       snapshotId: backupSnapshotIdReservations.snapshotId,
       state: backupSnapshotIdReservations.state,
       storageIdentity: backupSnapshotIdReservations.storageIdentity,
       updatedAt: backupSnapshotIdReservations.updatedAt,
+      keyLayout: backupSnapshotIdReservations.keyLayout,
+      keyPrefix: backupSnapshotIdReservations.keyPrefix,
     })
     .from(backupSnapshotIdReservations)
     .where(and(
@@ -311,12 +320,16 @@ export async function loadReservationGcState(
       inArray(backupSnapshotIdReservations.state, ['reserved', 'sealing', 'abandoned']),
     ));
   const protectedIds = new Set<string>();
-  const reclaimable: Array<{ snapshotId: string; storageIdentity: string }> = [];
+  const reclaimable: Array<{ snapshotId: string; storageIdentity: string; root: SnapshotKeyRoot | null }> = [];
   for (const row of rows) {
     if (row.state !== 'abandoned' || nowMs - row.updatedAt.getTime() < abandonedGraceMs) {
       protectedIds.add(row.snapshotId);
     } else if (row.storageIdentity) {
-      reclaimable.push({ snapshotId: row.snapshotId, storageIdentity: row.storageIdentity });
+      reclaimable.push({
+        snapshotId: row.snapshotId,
+        storageIdentity: row.storageIdentity,
+        root: snapshotKeyRootOf({ keyLayout: row.keyLayout, keyPrefix: row.keyPrefix }),
+      });
     }
   }
   return { protectedIds, reclaimable };

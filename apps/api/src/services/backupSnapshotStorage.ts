@@ -61,6 +61,19 @@ export type ProviderCapabilityStatus = {
   };
 };
 
+type BackupS3ClientFactory = (providerConfig: Record<string, unknown>) => Pick<S3Client, 'send'>;
+let s3ClientFactoryForTests: BackupS3ClientFactory | null = null;
+
+/**
+ * Test seam: routes this module's S3 calls (list / get / delete) to a fake
+ * client, so integration tests exercise the real key handling against an
+ * in-memory bucket (src/__tests__/helpers/inMemoryS3.ts). Never set in
+ * production code; null restores the real client.
+ */
+export function __setBackupS3ClientFactoryForTests(factory: BackupS3ClientFactory | null): void {
+  s3ClientFactoryForTests = factory;
+}
+
 export function buildS3StorageClient(providerConfig: Record<string, unknown>, overrides: S3ClientOverrides = {}) {
   const bucket = getStringValue(providerConfig, 'bucket') || getStringValue(providerConfig, 'bucketName');
   const region =
@@ -68,6 +81,9 @@ export function buildS3StorageClient(providerConfig: Record<string, unknown>, ov
     deriveS3RegionFromEndpoint(getStringValue(providerConfig, 'endpoint'));
   if (!bucket || !region) {
     throw new Error('S3 backup storage is misconfigured');
+  }
+  if (s3ClientFactoryForTests) {
+    return { bucket, client: s3ClientFactoryForTests(providerConfig) as S3Client };
   }
 
   return {

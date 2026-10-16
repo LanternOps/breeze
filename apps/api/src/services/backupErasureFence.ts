@@ -392,6 +392,12 @@ export async function captureBackupErasureFence(
 export interface BackupErasureFenceSet {
   /** Fenced snapshot ids among those asked about (prefix snapshots/<id>/) → the org(s) whose erasure fenced them. */
   snapshotSubjects: Map<string, Set<string>>;
+  /**
+   * The key root each fenced snapshot id's targets record (#7081), verbatim,
+   * one entry per target; NULL on a target captured before roots were
+   * recorded (all legacy then). GC reads a fenced manifest only under it.
+   */
+  snapshotRoots: Map<string, Array<{ keyLayout: string | null; keyPrefix: string | null }>>;
   /** Fenced recovery-media object keys among those asked about (or all, when none were passed). */
   objectKeys: Set<string>;
 }
@@ -411,9 +417,15 @@ export async function loadBackupErasureFences(
 ): Promise<BackupErasureFenceSet> {
   const ids = [...new Set(snapshotIds)];
   const snapshotSubjects = new Map<string, Set<string>>();
+  const snapshotRoots = new Map<string, Array<{ keyLayout: string | null; keyPrefix: string | null }>>();
   for (let i = 0; i < ids.length; i += 1000) {
     const rows = await dbModule.db
-      .select({ snapshotId: backupErasureTargets.snapshotId, subjectOrgId: backupErasureTargets.subjectOrgId })
+      .select({
+        snapshotId: backupErasureTargets.snapshotId,
+        subjectOrgId: backupErasureTargets.subjectOrgId,
+        keyLayout: backupErasureTargets.keyLayout,
+        keyPrefix: backupErasureTargets.keyPrefix,
+      })
       .from(backupErasureTargets)
       .where(sql`${backupErasureTargets.kind} = 'snapshot_prefix' AND ${inArray(backupErasureTargets.snapshotId, ids.slice(i, i + 1000))}`);
     for (const row of rows) {
@@ -424,6 +436,12 @@ export async function loadBackupErasureFences(
         snapshotSubjects.set(row.snapshotId, subjects);
       }
       subjects.add(row.subjectOrgId);
+      let roots = snapshotRoots.get(row.snapshotId);
+      if (!roots) {
+        roots = [];
+        snapshotRoots.set(row.snapshotId, roots);
+      }
+      roots.push({ keyLayout: row.keyLayout, keyPrefix: row.keyPrefix });
     }
   }
   const fencedKeys = new Set<string>();
@@ -443,7 +461,7 @@ export async function loadBackupErasureFences(
       for (const row of rows) if (row.objectKey) fencedKeys.add(row.objectKey);
     }
   }
-  return { snapshotSubjects, objectKeys: fencedKeys };
+  return { snapshotSubjects, snapshotRoots, objectKeys: fencedKeys };
 }
 
 /**

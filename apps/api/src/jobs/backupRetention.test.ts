@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import v8 from 'node:v8';
+import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import { backupSnapshots } from '../db/schema';
 
@@ -159,6 +160,20 @@ vi.mock('../services/backupSnapshotIdReservations', () => ({
   markReservationRetired: vi.fn(async () => undefined),
   reclaimAbandonedReservations: vi.fn(async () => 0),
   tombstoneRetiredReservations: vi.fn(async () => 0),
+}));
+// Key roots per storage identity (#7081) are proven against real Postgres
+// (backupGcKeyRoots.integration.test.ts). By default every identity has only
+// the legacy root and no recorded root index, so every pre-existing test runs
+// exactly the single-root sweep it always did; the per-root tests below
+// override this per call.
+const listIdentityKeyRootsMock = vi.fn(async (_input: { storageIdentity: string; nullIdentityConfigIds?: readonly string[] }) => ({
+  roots: [{ layout: 'legacy_flat', prefix: null }] as Array<{ layout: 'legacy_flat'; prefix: null } | { layout: 'prefixed_flat'; prefix: string }>,
+  invalid: [] as Array<{ source: string; snapshotId: string | null; keyLayout: unknown; keyPrefix: unknown }>,
+  rootIdsBySnapshotId: new Map<string, Set<string>>(),
+}));
+vi.mock('../services/backupKeyRoots', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/backupKeyRoots')>()),
+  listIdentityKeyRoots: listIdentityKeyRootsMock,
 }));
 // Org-erasure fences are proven against real Postgres
 // (backupErasureFence.integration.test.ts); here nothing is fenced.
@@ -558,10 +573,53 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     expect(selectQueue).toEqual([]);
   });
 
-  it('never retires an expired prefixed_flat row while GC does not support that layout', async () => {
+  it('retires an expired prefixed_flat row and records its key root on the retirement (#7081)', async () => {
     selectQueue.push([
-      { id: 'snap-prefixed', snapshotId: 'snap-prefixed-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'prefixed_flat', backupType: 'file' },
+      {
+        id: 'snap-prefixed', snapshotId: 'snap-prefixed-provider', deviceId: 'device-1', configId: 'config-1',
+        storageIdentity: 's3::e::b', keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme', backupType: 'file',
+      },
     ]); // expired query
+    selectQueue.push([{ id: 'snap-prefixed', legalHold: false, isImmutable: false, immutableUntil: null }]); // FOR UPDATE lock
+    selectQueue.push([]); // backup pin
+    selectQueue.push([]); // restore pin
+    selectQueue.push([]); // recovery pin
+    selectQueue.push([]); // chain-base pin
+    selectQueue.push([]); // versionBoundSnapshots query
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await cleanupExpiredSnapshots('org-1');
+    log.mockRestore();
+
+    expect(result.deleted).toBe(1);
+    expect(result.skippedUnsupportedLayout).toBe(0);
+    expect(insertedRows).toEqual([
+      expect.objectContaining({ snapshotId: 'snap-prefixed-provider', keyLayout: 'prefixed_flat', keyPrefix: 'msp/acme' }),
+    ]);
+  });
+
+  it('records the legacy root on a legacy retirement', async () => {
+    selectQueue.push([
+      { id: 'snap-l', snapshotId: 'snap-l-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', keyLayout: 'legacy_flat', keyPrefix: null, backupType: 'file' },
+    ]);
+    selectQueue.push([{ id: 'snap-l', legalHold: false, isImmutable: false, immutableUntil: null }]);
+    selectQueue.push([], [], [], [], []); // pins, then versionBoundSnapshots
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await cleanupExpiredSnapshots('org-1');
+    log.mockRestore();
+
+    expect(insertedRows).toEqual([expect.objectContaining({ keyLayout: 'legacy_flat', keyPrefix: null })]);
+  });
+
+  it.each([
+    ['a prefixed row with no prefix', { keyLayout: 'prefixed_flat', keyPrefix: null }],
+    ['a prefixed row whose prefix is not in normalized form', { keyLayout: 'prefixed_flat', keyPrefix: 'a//b' }],
+    ['a legacy row carrying a prefix', { keyLayout: 'legacy_flat', keyPrefix: 'p' }],
+  ])('never retires %s (unreadable key root) and counts it', async (_name, root) => {
+    selectQueue.push([
+      { id: 'snap-bad', snapshotId: 'snap-bad-provider', deviceId: 'device-1', configId: 'config-1', storageIdentity: 's3::e::b', backupType: 'file', ...root },
+    ]);
     selectQueue.push([]); // versionBoundSnapshots query
 
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -569,7 +627,6 @@ describe('cleanupExpiredSnapshots -- pins + retirement (D18 W01 section 3.2/3.3/
     log.mockRestore();
 
     expect(result.skippedUnsupportedLayout).toBe(1);
-    expect(result.deleted).toBe(0);
     expect(mockDb.delete).not.toHaveBeenCalled();
     expect(insertedRows).toEqual([]);
     expect(selectQueue).toEqual([]);
@@ -767,9 +824,6 @@ describe('sweepUnreferencedBackupObjects', () => {
       ['recorded under the identity', () => ({ storageIdentity: identityKeyFor(destination), configId: 'cfg-9', keyLayout: 'device_scoped' })],
       ['with a NULL identity whose config maps to it', () => ({ storageIdentity: null, configId: 'cfg-1', keyLayout: 'device_scoped' })],
       ['recorded under a stale identity string, whose config now maps to it', () => ({ storageIdentity: 's3::stale::backups', configId: 'cfg-1', keyLayout: 'device_scoped' })],
-      // Readable but not yet GC-supported: a root-blind sweep must never touch
-      // an identity holding a prefixed snapshot.
-      ['in the readable-but-not-GC-supported prefixed_flat layout', () => ({ storageIdentity: identityKeyFor(destination), configId: 'cfg-9', keyLayout: 'prefixed_flat' })],
     ])('skips the whole identity — no listing, no deletes — for a row in an unsupported key layout %s', async (_name, row) => {
       pushRunLevel([destination], [], { unsupportedLayouts: [row()] });
 
@@ -803,6 +857,289 @@ describe('sweepUnreferencedBackupObjects', () => {
       } finally {
         error.mockRestore();
       }
+    });
+
+    it('a prefixed_flat row no longer blocks its identity: GC sweeps per key root (#7081)', async () => {
+      pushRunLevel([destination], [], {
+        unsupportedLayouts: [{ storageIdentity: identityKeyFor(destination), configId: 'cfg-1', keyLayout: 'prefixed_flat' }],
+      });
+      pushIdentity();
+      rootListingMock.mockResolvedValueOnce([]);
+
+      const result = await sweepUnreferencedBackupObjects();
+      expect(result.skippedIdentities).toBe(0);
+      expect(iterateBackupObjectsMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('per key root sweep (#7081)', () => {
+    type Root = { layout: 'legacy_flat'; prefix: null } | { layout: 'prefixed_flat'; prefix: string };
+    const LEGACY: Root = { layout: 'legacy_flat', prefix: null };
+    const P: Root = { layout: 'prefixed_flat', prefix: 'orgB' };
+    const old = () => new Date(Date.now() - 20 * DAY_MS);
+
+    function rootsAre(roots: Root[], index: Record<string, string[]> = {}, invalid: unknown[] = []) {
+      listIdentityKeyRootsMock.mockResolvedValueOnce({
+        roots,
+        invalid: invalid as never,
+        rootIdsBySnapshotId: new Map(Object.entries(index).map(([id, ids]) => [id, new Set(ids)])),
+      });
+    }
+
+    // One bucket for every listing in the test: each call sees exactly the
+    // keys under its own `<prefix>/` (what the real lister's forced trailing
+    // slash gives), and a prefix listed in `failing` throws.
+    function bucket(items: { key: string; lastModified: Date | null }[], failing: string[] = []) {
+      iterateBackupObjectsMock.mockImplementation(async function* (input: { prefix: string }) {
+        if (failing.includes(input.prefix)) throw new Error(`listing ${input.prefix} failed`);
+        const scoped = items.filter((i) => i.key.startsWith(`${input.prefix}/`));
+        if (scoped.length > 0) yield scoped;
+      } as never);
+    }
+
+    function deletesSucceed() {
+      deleteBackupObjectKeysMock.mockImplementation(async (input: { keys: string[] }) => ({ deletedKeys: input.keys, failedKeys: [] }));
+    }
+
+    function manifests(byKey: Record<string, string>) {
+      fetchBackupObjectTextMock.mockImplementation(async (input: { key: string }) => {
+        const body = byKey[input.key];
+        if (body === undefined) throw notFoundError();
+        return body;
+      });
+    }
+
+    const listedPrefixes = () => iterateBackupObjectsMock.mock.calls.map(([input]) => (input as { prefix: string }).prefix);
+    const deletedKeys = () => deleteBackupObjectKeysMock.mock.calls.flatMap(([input]) => (input as { keys: string[] }).keys);
+
+    beforeEach(() => {
+      listIdentityKeyRootsMock.mockClear();
+    });
+
+    it('(a) a legacy-only identity lists exactly as before: one root pass at `snapshots`', async () => {
+      pushRunLevel([destination]);
+      pushIdentity();
+      bucket([]);
+
+      await sweepUnreferencedBackupObjects();
+
+      expect(listedPrefixes()).toEqual(['snapshots']);
+      expect(listIdentityKeyRootsMock).toHaveBeenCalledWith({ storageIdentity: identityKeyFor(destination), nullIdentityConfigIds: ['cfg-1'] });
+    });
+
+    it('(b) an identity with roots [legacy, P] lists `snapshots` and `P/snapshots`, each once', async () => {
+      rootsAre([LEGACY, P]);
+      pushRunLevel([destination]);
+      pushIdentity(); // P (prefixed roots are swept first)
+      pushIdentity(); // legacy
+      bucket([]);
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(listedPrefixes().sort()).toEqual(['orgB/snapshots', 'snapshots']);
+      expect(result.skippedIdentities).toBe(0);
+      expect(result.blockedIdentities).toBe(0);
+    });
+
+    it('(c) deletes a retired prefixed snapshot at its physical keys under P, manifest last', async () => {
+      rootsAre([LEGACY, P], { b2: ['prefixed:orgB'] });
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'ret-b2', snapshotId: 'b2' }] }); // P
+      pushIdentity(); // legacy
+      bucket([
+        { key: 'orgB/snapshots/b2/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/b2/files/x.dat', lastModified: old() },
+      ]);
+      deletesSucceed();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deleteBackupObjectKeysMock.mock.calls.map(([input]) => (input as { keys: string[] }).keys)).toEqual([
+        ['orgB/snapshots/b2/files/x.dat'],
+        ['orgB/snapshots/b2/manifest.json'],
+      ]);
+      expect(result.deleted).toBe(2);
+    });
+
+    it('(d) never deletes an id listed under one root that a row records under another, and reports it', async () => {
+      rootsAre([LEGACY, P], { a1: ['legacy'] });
+      pushRunLevel([destination]);
+      pushIdentity(); // P: nothing of its own
+      pushIdentity({ retained: [{ snapshotId: 'a1' }] }); // legacy
+      bucket([
+        { key: 'snapshots/a1/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/a1/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/a1/files/x.dat', lastModified: old() },
+      ]);
+      manifests({ 'snapshots/a1/manifest.json': manifestJson([]) });
+      deletesSucceed();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(deletedKeys()).toEqual([]);
+        expect(result.deleted).toBe(0);
+        expect(warn.mock.calls.some(([msg]) => String(msg).includes('snapshot a1 is recorded under root legacy')
+          && String(msg).includes('protected'))).toBe(true);
+        expect(captureExceptionMock.mock.calls.filter(([e]) => String((e as Error).message).includes('recorded under another key root'))).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('(e) skips the whole identity when a row records a key root this server cannot read', async () => {
+      rootsAre([LEGACY], {}, [{ source: 'snapshot', snapshotId: 'bad', keyLayout: 'prefixed_flat', keyPrefix: null }]);
+      pushRunLevel([destination]);
+      bucket([{ key: 'snapshots/zz/files/old.dat', lastModified: old() }]);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(result.skippedIdentities).toBe(1);
+        expect(iterateBackupObjectsMock).not.toHaveBeenCalled();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('key_root_invalid'))).toBe(true);
+        expect(captureExceptionMock).toHaveBeenCalled();
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('skips a local identity that records a prefixed root (prefixes are S3-only)', async () => {
+      const localDir = await mkdtemp(join(tmpdir(), 'breeze-gc-root-'));
+      const local = { id: 'cfg-l', provider: 'local', providerConfig: { path: localDir } };
+      rootsAre([LEGACY, P]);
+      pushRunLevel([local]);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(result.skippedIdentities).toBe(1);
+        expect(iterateBackupObjectsMock).not.toHaveBeenCalled();
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('key_root_invalid'))).toBe(true);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('(f) skips the whole identity, deleting nothing, when a prefixed manifest references an object under the legacy root', async () => {
+      rootsAre([LEGACY, P], { b1: ['prefixed:orgB'], a1: ['legacy'] });
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'b1' }] }); // P
+      bucket([
+        { key: 'orgB/snapshots/b1/manifest.json', lastModified: old() },
+        { key: 'orgB/snapshots/b1/files/stale.dat', lastModified: old() },
+        { key: 'snapshots/a1/files/f.dat', lastModified: old() },
+        { key: 'snapshots/zz/files/orphan.dat', lastModified: old() },
+      ]);
+      manifests({ 'orgB/snapshots/b1/manifest.json': manifestJson([{ backupPath: 'snapshots/a1/files/f.dat' }]) });
+      deletesSucceed();
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(deleteBackupObjectKeysMock).not.toHaveBeenCalled();
+        expect(result.deleted).toBe(0);
+        expect(result.skippedIdentities).toBeGreaterThanOrEqual(1);
+        expect(error.mock.calls.some(([msg]) => String(msg).includes('cross_root_reference'))).toBe(true);
+        expect(captureExceptionMock.mock.calls.some(([e]) => String((e as Error).message).includes('cross_root_reference'))).toBe(true);
+        // The legacy root was never swept after the reference was found.
+        expect(listedPrefixes()).not.toContain('snapshots/zz');
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('an external ref into an origin with no recorded root is followed under the legacy root, as before', async () => {
+      pushRunLevel([destination]);
+      pushIdentity({ retained: [{ snapshotId: 'a2' }] });
+      bucket([
+        { key: 'snapshots/a2/manifest.json', lastModified: old() },
+        { key: 'snapshots/a0/files/base.dat', lastModified: old() },
+      ]);
+      manifests({ 'snapshots/a2/manifest.json': manifestJson([{ backupPath: 'snapshots/a0/files/base.dat' }]) });
+      deletesSucceed();
+
+      const result = await sweepUnreferencedBackupObjects();
+
+      expect(deletedKeys()).toEqual([]);
+      expect(result.skippedIdentities).toBe(0);
+    });
+
+    it('(g) a root-B retirement is not confirmed swept by a run whose root-B listing failed while the legacy root listed fine', async () => {
+      rootsAre([LEGACY, P], { b2: ['prefixed:orgB'] });
+      pushRunLevel([destination]);
+      pushIdentity(); // legacy (P never loads state: its listing failed)
+      bucket([], ['orgB/snapshots']);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const result = await sweepUnreferencedBackupObjects();
+        expect(result.retiredSwept).toBe(0);
+        expect(updateCalls.filter((c) => 'sweptAt' in c.payload)).toEqual([]);
+        expect(result.blockedIdentities).toBe(1);
+        expect(listedPrefixes().sort()).toEqual(['orgB/snapshots', 'snapshots']);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('(h) an abandoned root-B reservation is not reclaimed on the evidence of the legacy root\'s listing', async () => {
+      const reservations = await import('../services/backupSnapshotIdReservations');
+      vi.mocked(reservations.loadReservationGcState).mockResolvedValueOnce({
+        protectedIds: new Set<string>(),
+        reclaimable: [
+          { snapshotId: 'r-b', storageIdentity: identityKeyFor(destination), root: P },
+          { snapshotId: 'r-a', storageIdentity: identityKeyFor(destination), root: LEGACY },
+        ],
+      } as never);
+      rootsAre([LEGACY, P], { 'r-b': ['prefixed:orgB'], 'r-a': ['legacy'] });
+      pushRunLevel([destination]);
+      pushIdentity(); // legacy
+      bucket([], ['orgB/snapshots']);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        await sweepUnreferencedBackupObjects();
+        expect(vi.mocked(reservations.reclaimAbandonedReservations)).toHaveBeenCalledWith(['r-a']);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('an abandoned reservation with an unreadable root is never reclaimed', async () => {
+      const reservations = await import('../services/backupSnapshotIdReservations');
+      vi.mocked(reservations.loadReservationGcState).mockResolvedValueOnce({
+        protectedIds: new Set<string>(),
+        reclaimable: [{ snapshotId: 'r-x', storageIdentity: identityKeyFor(destination), root: null }],
+      } as never);
+      pushRunLevel([destination]);
+      pushIdentity();
+      bucket([]);
+
+      await sweepUnreferencedBackupObjects();
+      expect(vi.mocked(reservations.reclaimAbandonedReservations)).not.toHaveBeenCalled();
+    });
+
+    it('keys the failed-delete skip set per root, leaving the legacy set name unchanged', async () => {
+      rootsAre([LEGACY, P], { b2: ['prefixed:orgB'] });
+      pushRunLevel([destination]);
+      pushIdentity({ retirements: [{ id: 'ret-b2', snapshotId: 'b2' }] }); // P
+      pushIdentity(); // legacy
+      bucket([{ key: 'orgB/snapshots/b2/files/x.dat', lastModified: old() }]);
+      deleteBackupObjectKeysMock.mockResolvedValue({
+        deletedKeys: [], failedKeys: [{ key: 'orgB/snapshots/b2/files/x.dat', error: 'AccessDenied' }],
+      });
+
+      await sweepUnreferencedBackupObjects();
+
+      const legacyName = `backup-gc:failed:${createHash('sha1').update(identityKeyFor(destination)).digest('hex')}`;
+      const setNames = redisSmembersMock.mock.calls.map(([name]) => name as string);
+      expect(setNames).toHaveLength(2);
+      expect(setNames).toContain(legacyName);
+      const prefixedName = setNames.find((name) => name !== legacyName);
+      expect(prefixedName).toBeDefined();
+      expect(redisSaddMock).toHaveBeenCalledWith(prefixedName, 'snapshots/b2/files/x.dat');
     });
   });
 

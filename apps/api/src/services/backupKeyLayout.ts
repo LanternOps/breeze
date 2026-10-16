@@ -49,11 +49,13 @@ export function isSupportedKeyLayout(value: unknown): value is BackupKeyLayout {
 }
 
 /**
- * Layouts storage GC may sweep. Kept narrower than `BACKUP_KEY_LAYOUTS` until
- * GC lists and deletes per key root; until then a `prefixed_flat` row makes GC
- * skip its storage identity, exactly like an unknown layout.
+ * Layouts storage GC may sweep. GC lists, marks and deletes per key root
+ * (jobs/backupRetention.ts), so every readable layout is sweepable; the set
+ * stays separate from `BACKUP_KEY_LAYOUTS` so a layout readers learn first is
+ * not swept until GC learns it too (a row in any other layout makes GC skip
+ * its storage identity).
  */
-export const GC_SUPPORTED_KEY_LAYOUTS = ['legacy_flat'] as const satisfies readonly BackupKeyLayout[];
+export const GC_SUPPORTED_KEY_LAYOUTS = ['legacy_flat', 'prefixed_flat'] as const satisfies readonly BackupKeyLayout[];
 
 export function isGcSupportedKeyLayout(value: unknown): boolean {
   return typeof value === 'string' && (GC_SUPPORTED_KEY_LAYOUTS as readonly string[]).includes(value);

@@ -87,10 +87,11 @@ describe('backup snapshot key layout', () => {
     expect(attestedKeyLayoutFor('device_scoped')).toBe('device_scoped');
   });
 
-  it('readable vs GC-supported sets diverge until W02', () => {
-    expect(GC_SUPPORTED_KEY_LAYOUTS).toEqual(['legacy_flat']);
-    expect(isGcSupportedKeyLayout('prefixed_flat')).toBe(false); // W02 flips this assertion
+  it('GC sweeps every readable layout once it works per key root (W02)', () => {
+    expect(GC_SUPPORTED_KEY_LAYOUTS).toEqual(['legacy_flat', 'prefixed_flat']);
+    expect(isGcSupportedKeyLayout('prefixed_flat')).toBe(true);
     expect(isGcSupportedKeyLayout('legacy_flat')).toBe(true);
+    expect(isGcSupportedKeyLayout('device_scoped')).toBe(false);
   });
 });
 
