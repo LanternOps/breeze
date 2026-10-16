@@ -306,9 +306,11 @@ export const SENTRY_EVENT_CODES = [
   /** A `filesystem_analysis` result arrived for a device id with no `devices`
    *  row (deleted mid-scan, or invisible under RLS); the result was dropped. */
   'filesystem_analysis_result_unknown_device',
-  /** A `filesystem_analysis` result whose scan was already applied reached the
-   *  snapshot write again. The terminal compare-and-set should stop a replay
-   *  before this, so any occurrence means that guard was bypassed. */
+  /** A `filesystem_analysis` result whose command id is already the volume's
+   *  applied receipt reached the snapshot write again. The terminal
+   *  compare-and-set runs first in the same transaction and should stop a
+   *  replay, so an occurrence is unexpected: a bypassed guard or a stale
+   *  receipt. */
   'filesystem_analysis_result_duplicate',
 
   // --- tenant erasure -----------------------------------------------------

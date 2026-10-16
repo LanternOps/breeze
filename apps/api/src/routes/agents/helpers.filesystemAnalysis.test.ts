@@ -438,10 +438,13 @@ describe('handleFilesystemAnalysisCommandResult — scan-path keying (spec §5.1
     selectQueue.push([{ osType: 'linux' }]);
     vi.mocked(claimFilesystemScanGeneration).mockResolvedValue('superseded');
     await handleFilesystemAnalysisCommandResult(baselineCommand(), result(), ORG_ID);
+    expect(claimFilesystemScanGeneration).toHaveBeenCalledTimes(1);
     expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
     expect(captureException).not.toHaveBeenCalled();
     expect(captureMessage).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('00000000-0000-4000-8000-0000000000cc'));
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(
+      /filesystem_analysis command 00000000-0000-4000-8000-0000000000cc .*superseded by a newer scan of \/;/,
+    ));
     warn.mockRestore();
   });
 

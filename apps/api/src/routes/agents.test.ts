@@ -242,6 +242,7 @@ vi.mock('../services/topology/flags', () => ({
 
 vi.mock('../services/sentry', () => ({
   captureException: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
 vi.mock('./backup/verificationService', () => ({

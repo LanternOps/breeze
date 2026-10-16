@@ -1779,9 +1779,9 @@ export async function handleFilesystemAnalysisCommandResult(
   // #8024 (Sentry BREEZE-39): the drops below are reported with captureMessage
   // and a registered event code, never captureException(new Error(...)).
   // scrubEvent replaces an exception's value with '[redacted]', so the old
-  // reports all reached Sentry as one contentless "Error: [redacted]" with this
-  // function as culprit: it read as the handler throwing, and nothing said
-  // which drop it was. The ids stay in the console line, out of the event.
+  // reports all reached Sentry as one contentless "Error: [redacted]"
+  // attributed to this function: it read as the handler throwing, and nothing
+  // said which drop it was. The ids stay in the console line, out of the event.
   const parsed = parseFilesystemAnalysisStdout(resultData.stdout ?? '');
   if (Object.keys(parsed).length === 0) {
     // A completed scan whose stdout is empty or non-JSON produces no snapshot,
