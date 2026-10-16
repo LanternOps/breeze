@@ -3,14 +3,15 @@
 //!
 //! On the NVIDIA kernel driver, WebKitGTK's DMA-BUF renderer paints nothing:
 //! the viewer window opens solid gray with no UI. Setting
-//! `WEBKIT_DISABLE_DMABUF_RENDERER=1` sends WebKitGTK down its older
-//! compositing path, which still renders on the GPU.
+//! `WEBKIT_DISABLE_DMABUF_RENDERER=1` sends WebKitGTK (2.42+, where the
+//! DMA-BUF renderer was introduced) down its older compositing path.
 
 use std::ffi::OsStr;
 use std::path::Path;
 
-/// WebKitGTK reads this once, when the first webview is created. Any value
-/// other than `0` disables the DMA-BUF renderer.
+/// WebKitGTK consults this when it sets up its first webview, so it must be in
+/// the environment before then. `0` is the only value that keeps the DMA-BUF
+/// renderer enabled; anything else (including an empty string) disables it.
 pub(crate) const DMABUF_ENV: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 
 /// Paths, relative to the filesystem root, that exist only while the NVIDIA
@@ -44,6 +45,8 @@ pub(crate) fn dmabuf_override(
 #[cfg(target_os = "linux")]
 pub(crate) fn apply() {
     let existing = std::env::var_os(DMABUF_ENV);
+    // `dmabuf_override` already ignores `nvidia` when a value exists; this
+    // guard only skips the filesystem probe in that case.
     let nvidia = existing.is_none() && nvidia_driver_loaded(Path::new("/"));
     if let Some(value) = dmabuf_override(existing.as_deref(), nvidia) {
         std::env::set_var(DMABUF_ENV, value);

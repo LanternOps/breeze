@@ -1243,9 +1243,9 @@ async fn auto_update(app: tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Linux: WebKitGTK reads its renderer env vars when the first webview is
-    // created, so this must run before the builder below — and first, while
-    // the process is still single-threaded (#8764).
+    // Linux: WebKitGTK picks its renderer when the first webview is set up,
+    // so this must run before the builder below — and first, while the
+    // process is still single-threaded (#8764).
     #[cfg(target_os = "linux")]
     linux_webkit_env::apply();
 

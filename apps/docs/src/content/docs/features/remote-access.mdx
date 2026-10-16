@@ -647,7 +647,7 @@ If the process shows up in `ps` but nothing is drawn, FUSE is working and the pr
 
 ### Gray window with no controls on NVIDIA
 
-On the NVIDIA driver, webkit2gtk's DMA-BUF renderer can fail to paint anything: the viewer window opens solid gray, with no toolbar, no transport badge and no buttons. The viewer now works around this itself. At startup on Linux it checks whether the NVIDIA kernel driver is loaded (`/proc/driver/nvidia/version` or `/sys/module/nvidia` exists) and, if so, sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before its first window opens. webkit2gtk then uses its older compositing path, which still renders on the GPU. Run from a terminal, the viewer prints a line saying it did this.
+On the NVIDIA driver, webkit2gtk's DMA-BUF renderer can fail to paint anything: the viewer window opens solid gray, with no toolbar, no transport badge and no buttons. The viewer now works around this itself. At startup on Linux it checks whether the NVIDIA kernel driver is loaded (`/proc/driver/nvidia/version` or `/sys/module/nvidia` exists) and, if so, sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` before its first window opens. webkit2gtk then falls back to its older compositing path. Run from a terminal, the viewer prints a line saying it did this.
 
 The viewer never overrides a value you set yourself:
 
@@ -666,7 +666,7 @@ The viewer never overrides a value you set yourself:
 To make either choice permanent, export the variable from your shell profile or put it in a small launcher script.
 
 <Aside type="caution" title="Do not set LIBGL_ALWAYS_SOFTWARE or GDK_BACKEND">
-  Workarounds posted for other webkit2gtk apps often also set `LIBGL_ALWAYS_SOFTWARE=1` and `GDK_BACKEND=x11`. Neither is needed for the gray window. `LIBGL_ALWAYS_SOFTWARE=1` moves all rendering onto the CPU, which makes remote video slow and has been reported alongside the remote screen never appearing. `GDK_BACKEND=x11` forces XWayland on a Wayland desktop. If you added either to a launcher script for the viewer, remove it.
+  Workarounds posted for other webkit2gtk apps often also set `LIBGL_ALWAYS_SOFTWARE=1` and `GDK_BACKEND=x11`. Neither is needed for the gray window. `LIBGL_ALWAYS_SOFTWARE=1` moves all rendering onto the CPU, which makes remote video slow. `GDK_BACKEND=x11` forces XWayland on a Wayland desktop. If you added either to a launcher script for the viewer, remove it.
 </Aside>
 
 ---
