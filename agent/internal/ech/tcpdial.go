@@ -43,9 +43,11 @@ func TCPDialHonouringContext(fallback TCPDialFunc) TCPDialFunc {
 
 // DialTLSVia is DialTLS with every TCP connection opened by tcp, so a caller
 // that owns the TCP leg (netpolicy: one validated resolution, no unsafe
-// addresses) keeps it while sharing this Dialer's per-host ECH state. It fails
-// closed: a connection the Dialer opened some other way is closed and
-// ErrTCPDialBypassed returned.
+// addresses) keeps it while sharing this Dialer's per-host ECH state. The
+// primary guard is that every dial path in this package honours the
+// context-carried TCP dial (TestShared_TCPDialHonoursContext); as a backstop,
+// a connection the Dialer opened some other way is closed after the handshake
+// and ErrTCPDialBypassed returned, so no application data crosses it.
 func (d *Dialer) DialTLSVia(tcp TCPDialFunc, base *tls.Config, nextProtos []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	inner := d.DialTLS(base, nextProtos)
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {

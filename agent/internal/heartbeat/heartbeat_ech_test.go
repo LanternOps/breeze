@@ -210,6 +210,11 @@ func TestControlPlaneComponent_Table(t *testing.T) {
 			health.Degraded, "control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)"},
 		{"cooldown", ech.HostStatus{Mode: ech.ModeCooldown, InCooldown: true, FilterSignatureSeenAt: now.Add(-time.Hour)},
 			health.Degraded, "encrypted client hello unavailable; retrying later"},
+		// Another client on the same host exhausted ECH while the heartbeat
+		// still holds a live ECH connection: the next reconnect is stranded
+		// for the cooldown, so the warning must not be hidden by the live wire.
+		{"ech active, cooldown", ech.HostStatus{Mode: ech.ModeCooldown, ECHActive: true, InCooldown: true, FilterSignatureSeenAt: now.Add(-time.Minute)},
+			health.Degraded, "encrypted client hello unavailable; retrying later"},
 		// Kill switch on a live ECH connection (#8869 lab): the wire is still
 		// ECH, so this is not a filter block; the next reconnect dials plain.
 		{"ech active, server switch off", ech.HostStatus{Mode: ech.ModeECH, ECHActive: true, Disabled: ech.DisabledByServer, FilterSignatureSeenAt: now.Add(-time.Minute)},

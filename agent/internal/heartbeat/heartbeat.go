@@ -4673,7 +4673,7 @@ func filterSignatureCurrent(st ech.HostStatus) bool {
 // controlPlaneComponent maps a host's ECH state to the control_plane health
 // component. Row order matters: ECH active with ECH switched off (the live
 // connection is still ECH, but the next reconnect dials plain), then ECH
-// active, then a current filter signature (newer than the last plain success)
+// active while the host is in cooldown, then ECH active, then a current filter signature (newer than the last plain success)
 // seen within the last 10 minutes, then cooldown.
 func controlPlaneComponent(st ech.HostStatus) (status health.Status, message string) {
 	switch {
@@ -4681,6 +4681,11 @@ func controlPlaneComponent(st ech.HostStatus) (status health.Status, message str
 		return health.Degraded, "encrypted client hello disabled by configuration; the next reconnect dials plain"
 	case st.ECHActive && st.Disabled == ech.DisabledByServer:
 		return health.Degraded, "encrypted client hello disabled by control plane; the next reconnect dials plain"
+	case st.ECHActive && st.InCooldown:
+		// ECH state is per host and shared by every client in the process:
+		// another client exhausted ECH while this connection is still live,
+		// so the next reconnect is stranded until the cooldown ends.
+		return health.Degraded, "encrypted client hello unavailable; retrying later"
 	case st.ECHActive:
 		return health.Healthy, "reachable via encrypted client hello"
 	case filterSignatureCurrent(st) && time.Since(st.FilterSignatureSeenAt) < 10*time.Minute:

@@ -18,10 +18,17 @@ var ControlPlaneNextProtos = []string{"h2", "http/1.1"}
 // CONNECT and does TLS itself using TLSClientConfig), so ECH is NOT applied
 // through a proxy.
 func NewTransport(base *tls.Config) *http.Transport {
+	// Clone: with ForceAttemptHTTP2 net/http rewrites TLSClientConfig.NextProtos
+	// on the first request, and several control-plane transports share one
+	// mTLS config while the WebSocket and ECH dialers read it concurrently.
+	var cfg *tls.Config
+	if base != nil {
+		cfg = base.Clone()
+	}
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DialContext = netcache.Shared().DialContext
-	t.DialTLSContext = Shared().DialTLS(base, ControlPlaneNextProtos)
-	t.TLSClientConfig = base
+	t.DialTLSContext = Shared().DialTLS(cfg, ControlPlaneNextProtos)
+	t.TLSClientConfig = cfg
 	t.ForceAttemptHTTP2 = true
 	return t
 }

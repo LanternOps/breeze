@@ -16,8 +16,17 @@ func TestNewTransport_WiresDialTLSAndNetcache(t *testing.T) {
 	if tr.DialContext == nil {
 		t.Fatal("DialContext not set")
 	}
-	if tr.TLSClientConfig != base {
-		t.Fatal("TLSClientConfig must be the base config")
+	// A clone, not the caller's pointer: ForceAttemptHTTP2 makes net/http
+	// rewrite NextProtos on first use, and the base is shared with the
+	// WebSocket dialer and other control-plane transports.
+	if tr.TLSClientConfig == base {
+		t.Fatal("TLSClientConfig must be a clone of the base config, not the same pointer")
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("TLSClientConfig must keep the base settings: %+v", tr.TLSClientConfig)
+	}
+	if nilTr := NewTransport(nil); nilTr.TLSClientConfig != nil {
+		t.Fatal("nil base must stay nil")
 	}
 	if !tr.ForceAttemptHTTP2 {
 		t.Fatal("ForceAttemptHTTP2 must be true")
