@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { connectionHealthIncidents as chi } from '../../db/schema';
 import type { Permission } from '../permissions';
@@ -76,6 +76,12 @@ export async function loadTracked(kind: ConnectionSourceKind, now: Date): Promis
   return [...bySource.values()];
 }
 
+/** Whether the kind has any incident row at all (open, pending or resolved). */
+export async function hasIncidentsForKind(kind: ConnectionSourceKind): Promise<boolean> {
+  const rows = await db.select({ id: chi.id }).from(chi).where(eq(chi.sourceKind, kind)).limit(1);
+  return rows.length > 0;
+}
+
 export async function applyActions(
   actions: readonly TransitionAction[],
   now: Date,
@@ -135,7 +141,8 @@ export async function applyActions(
         break;
       case 'reopen':
         // Resolve's mark-read already retired the old notices; the fresh opened_at
-        // gives the new 'opened' notice its own dedupe key.
+        // gives the new 'opened' notice its own dedupe key. Only a resolved row
+        // reopens: on a row that is still open this is a no-op.
         await db.update(chi).set({
           ...observedColumns(a.obs, now),
           resolvedAt: null,
@@ -144,7 +151,7 @@ export async function applyActions(
           healthyStreak: 0,
           flapCount: sql`${chi.flapCount} + 1`,
           pendingNotice: 'opened',
-        }).where(eq(chi.id, a.incidentId));
+        }).where(and(eq(chi.id, a.incidentId), isNotNull(chi.resolvedAt)));
         counts.opened += 1;
         break;
       case 'deletePending':

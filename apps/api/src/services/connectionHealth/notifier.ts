@@ -89,8 +89,8 @@ async function deliverOne(incidentId: string): Promise<void> {
   await db.update(chi).set({
     pendingNotice: null,
     // 'opened' starts an episode, so the stale list is replaced. 'escalated'
-    // adds to the episode's recipients. Merged in JS: the reconciler runs at
-    // concurrency 1 and the row is locked, so no writer races this.
+    // adds to the episode's recipients. Merged in JS: the row was read FOR
+    // UPDATE in this transaction, so no other writer can change it meanwhile.
     notifiedUserIds: escalated ? [...new Set([...row.notifiedUserIds, ...recipients])] : recipients,
   }).where(eq(chi.id, row.id));
 }

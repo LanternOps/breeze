@@ -150,6 +150,14 @@ describe('connection health store', () => {
     });
   });
 
+  it('reopen on a row that is still open is a no-op', async () => {
+    await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs(), notify: false }], EARLIER));
+    const [before] = await allRows();
+    await asSystem(() => applyActions([{ type: 'reopen', incidentId: before!.id, obs: obs({ detail: 'again' }) }], NOW));
+    const [after] = await allRows();
+    expect(after).toEqual(before);
+  });
+
   it('deletePending removes only never-opened rows', async () => {
     await asSystem(() => applyActions([
       { type: 'insertPending', obs: obs({ sourceId: 'p' }) },

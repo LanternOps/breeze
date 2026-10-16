@@ -18,7 +18,7 @@ import {
   createUser,
   grantRolePermissions,
 } from './db-utils';
-import { getTestRedis } from './setup';
+import { getTestDb, getTestRedis } from './setup';
 import { runReconcile } from '../../services/connectionHealth/reconcile';
 import { oauthGrantSource } from '../../services/connectionHealth/sources/oauthGrant';
 import { applyActions } from '../../services/connectionHealth/store';
@@ -152,6 +152,40 @@ describe('runReconcile (end to end)', () => {
     expect(await incidents()).toHaveLength(2);
     // Only the new incident notifies: one notice each for the admin and the owner.
     expect(await noticesFor([u1, o1])).toHaveLength(2);
+  });
+
+  it('a lost seeded key does not reseed when the kind already has incident rows: the run notifies', async () => {
+    const redis = getTestRedis();
+    // An existing incident for the kind (any row counts), and no seeded key.
+    await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs({ sourceId: `${o1}:older` }), notify: false }], daysAgo(1)));
+    expect(await redis.get(SEEDED_KEY)).toBeNull();
+    const r = await reconcile(T0);
+    expect(r.kinds[0]).toMatchObject({ status: 'ok' });
+    const fresh = (await incidents()).find((x) => x.sourceId === `${o1}:${clientId}`);
+    expect(fresh).toMatchObject({ pendingNotice: null });
+    expect(fresh!.notifiedUserIds.sort()).toEqual([u1, o1].sort());
+    expect(await noticesFor([u1, o1])).toHaveLength(2);
+    expect(r.kinds[0]).toMatchObject({ seeded: false });
+    // The run still records the kind as seeded, so the DB check is not repeated.
+    expect(await redis.get(SEEDED_KEY)).toBe('1');
+  });
+
+  it('a kind whose advisory lock another run holds is skipped and its incidents are unchanged', async () => {
+    const redis = getTestRedis();
+    await redis.set(SEEDED_KEY, '1');
+    await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs({ sourceId: `${o1}:tracked` }), notify: false }], T0));
+    const before = await incidents();
+    let result: Awaited<ReturnType<typeof reconcile>> | undefined;
+    // A separate connection holds the kind's lock for the length of the run.
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('connection-health:oauth_grant'))`);
+      result = await reconcile(plusMin(T0, 15));
+    });
+    expect(result!.kinds).toEqual([expect.objectContaining({ kind: 'oauth_grant', status: 'skipped_locked' })]);
+    // The broken grant was not opened and the tracked row was not retired.
+    expect(await incidents()).toEqual(before);
+    expect(await redis.get('connection-health:kind:oauth_grant:last-ok')).toBeNull();
+    expect(await redis.get('connection-health:kind:oauth_grant:failures')).toBeNull();
   });
 
   it('without Redis it never seeds: the first run notifies', async () => {

@@ -1,7 +1,10 @@
 /**
- * Connection health reconciler worker (spec 2026-10-15 §1.2). One repeatable
- * job, one global consumer at concurrency 1, and a stable jobId, so runs never
- * overlap. The work itself lives in services/connectionHealth/reconcile.ts.
+ * Connection health reconciler worker (spec 2026-10-15 §1.2). The stable jobId
+ * dedupes the repeatable schedule; it does not stop two runs overlapping. What
+ * keeps runs apart is one job per tick, a global consumer at concurrency 1, the
+ * run's 60s budget, and, as the hard guarantee, a per-kind advisory lock taken
+ * in each kind's transaction (a run that cannot get it skips that kind). The
+ * work itself lives in services/connectionHealth/reconcile.ts.
  */
 import { Queue, Worker } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';

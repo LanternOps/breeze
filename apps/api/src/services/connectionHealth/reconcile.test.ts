@@ -6,11 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const calls: string[] = [];
 const tightenMock = vi.fn(async (_db: unknown, ms: number) => { calls.push(`tighten:${ms}`); return 0; });
 const loadTrackedMock = vi.fn();
+const hasIncidentsMock = vi.fn(async (..._a: unknown[]) => { calls.push('has-rows'); return false; });
+const executeMock = vi.fn(async (..._a: unknown[]) => { calls.push('lock'); return [{ acquired: true }]; });
 const applyActionsMock = vi.fn();
 const planMock = vi.fn();
 
 vi.mock('../../db', () => ({
-  db: { execute: vi.fn() },
+  db: { execute: (...a: unknown[]) => executeMock(...a) },
   runOutsideDbContext: (fn: () => unknown) => { calls.push('outside'); return fn(); },
   withSystemDbAccessContext: async (fn: () => Promise<unknown>, label?: string) => {
     calls.push(`system:${label}`);
@@ -24,6 +26,7 @@ vi.mock('./notifier', () => ({ deliverPendingNotices: vi.fn() }));
 vi.mock('./sources', () => ({ HEALTH_SOURCES: [] }));
 vi.mock('./store', () => ({
   loadTracked: (...a: unknown[]) => loadTrackedMock(...a),
+  hasIncidentsForKind: (...a: unknown[]) => hasIncidentsMock(...a),
   applyActions: (...a: unknown[]) => applyActionsMock(...a),
   deleteExpiredResolved: vi.fn(),
 }));
@@ -200,6 +203,19 @@ describe('runReconcile', () => {
     expect(redis.store.get('connection-health:kind:a:seeded')).toBe('1');
   });
 
+  it('a kind whose lock another run holds is skipped_locked: no failure, no success, still due', async () => {
+    const redis = fakeRedis();
+    const alert = vi.fn().mockResolvedValue(true);
+    redis.store.set('connection-health:kind:a:failures', '2');
+    const runKind = vi.fn().mockResolvedValue('locked');
+    const r = await runReconcile({ sources: [src('a', 15), src('b', 15)], redis, runKind: vi.fn(async (s: HealthSource) => (s.kind === ('a' as HealthSource['kind']) ? runKind() : okCounts)), alert, now: () => T0, ...noopsExceptAlert });
+    expect(r.kinds.map((k) => [k.kind, k.status])).toEqual([['a', 'skipped_locked'], ['b', 'ok']]);
+    expect(redis.store.get('connection-health:kind:a:failures')).toBe('2');
+    expect(redis.store.has('connection-health:kind:a:last-ok')).toBe(false);
+    expect(redis.store.has('connection-health:kind:a:seeded')).toBe(false);
+    expect(alert).not.toHaveBeenCalled();
+  });
+
   it('does not mark a kind seeded when the seed run failed', async () => {
     const redis = fakeRedis();
     const runKind = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue(okCounts);
@@ -234,12 +250,43 @@ describe('runKindInSystemScope', () => {
 
     const r = await runKindInSystemScope(source, T0, true);
 
-    expect(r).toEqual({ opened: 1, resolved: 2, pending: 3, observations: 1 });
-    expect(calls).toEqual(['outside', 'system:connectionHealth.reconcile.oauth_grant', 'tighten:5000', 'load', 'observe', 'plan', 'apply']);
+    expect(r).toEqual({ opened: 1, resolved: 2, pending: 3, observations: 1, seeded: true });
+    expect(calls).toEqual(['outside', 'system:connectionHealth.reconcile.oauth_grant', 'lock', 'tighten:5000', 'has-rows', 'load', 'observe', 'plan', 'apply']);
+    expect(hasIncidentsMock).toHaveBeenCalledWith('oauth_grant');
     expect(loadTrackedMock).toHaveBeenCalledWith('oauth_grant', T0);
     expect(source.observe).toHaveBeenCalledWith(T0, ['s1']);
     expect(planMock).toHaveBeenCalledWith({ observations: [observation], tracked, now: T0, seed: true });
     expect(applyActionsMock).toHaveBeenCalledWith([{ type: 'deletePending', incidentId: 'i1' }], T0);
+  });
+
+  it('a seed candidate does not seed when the kind already has incident rows (lost Redis key)', async () => {
+    loadTrackedMock.mockResolvedValue(tracked);
+    hasIncidentsMock.mockResolvedValueOnce(true);
+    planMock.mockReturnValue([]);
+    applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: async () => [] };
+    const r = await runKindInSystemScope(source, T0, true);
+    expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
+    expect(r).toMatchObject({ seeded: false });
+  });
+
+  it('a non-seed run never checks for rows', async () => {
+    loadTrackedMock.mockResolvedValue(tracked);
+    planMock.mockReturnValue([]);
+    applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: async () => [] };
+    await runKindInSystemScope(source, T0, false);
+    expect(hasIncidentsMock).not.toHaveBeenCalled();
+    expect(planMock).toHaveBeenCalledWith(expect.objectContaining({ seed: false }));
+  });
+
+  it('returns locked without touching incidents when the per-kind advisory lock is taken', async () => {
+    executeMock.mockImplementationOnce(async () => { calls.push('lock'); return [{ acquired: false }]; });
+    const source: HealthSource = { kind: 'oauth_grant', intervalMinutes: 15, observe: vi.fn(async () => []) };
+    expect(await runKindInSystemScope(source, T0, true)).toBe('locked');
+    expect(calls).toEqual(['outside', 'system:connectionHealth.reconcile.oauth_grant', 'lock']);
+    expect(source.observe).not.toHaveBeenCalled();
+    expect(applyActionsMock).not.toHaveBeenCalled();
   });
 
   it('propagates an observe failure without applying anything', async () => {

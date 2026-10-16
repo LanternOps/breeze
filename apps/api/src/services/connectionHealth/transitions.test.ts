@@ -94,6 +94,12 @@ describe('planTransitions', () => {
       { type: 'insertOpen', obs: obs({ severity: 'permanent' }), notify: false },
     ]);
   });
+  it('a seeded run that promotes a pending row does not notify', () => {
+    const pending = open({ openedAt: null });
+    expect(plan([obs()], [pending], true)).toEqual([
+      { type: 'promotePending', incidentId: 'i1', obs: obs(), notify: false },
+    ]);
+  });
   it('a healthy observation with nothing tracked produces nothing', () => {
     expect(plan([obs({ state: 'healthy' })], [])).toEqual([]);
   });
