@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import InvoiceSendComposer from './InvoiceSendComposer';
+import InvoiceSendComposer, { invoiceEmailSubjectPreview } from './InvoiceSendComposer';
 import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
@@ -21,6 +21,28 @@ beforeEach(() => {
   } as unknown as Response);
 });
 
+describe('invoiceEmailSubjectPreview', () => {
+  it('fills the saved subject with this invoice', () => {
+    expect(invoiceEmailSubjectPreview({
+      templateSubject: 'Please pay {{invoice_number}} from {{partner_name}}',
+      invoiceNumber: 'INV-2026-0002',
+      partnerName: 'CloudWise',
+      total: 'CA$90.00',
+      dueDate: 'Oct 17, 2026',
+    })).toBe('Please pay INV-2026-0002 from CloudWise');
+  });
+
+  it('uses the built-in subject when nothing is saved', () => {
+    expect(invoiceEmailSubjectPreview({
+      templateSubject: null,
+      invoiceNumber: 'INV-0007',
+      partnerName: 'Acme MSP',
+      total: '$100.00',
+      dueDate: 'Jun 30, 2026',
+    })).toBe('Invoice INV-0007 from Acme MSP');
+  });
+});
+
 describe('InvoiceSendComposer device appendix (#3205 W07)', () => {
   it('defaults to the partner setting and sends the field ONLY when changed', async () => {
     render(<InvoiceSendComposer {...props} />);
@@ -33,6 +55,17 @@ describe('InvoiceSendComposer device appendix (#3205 W07)', () => {
     await userEvent.click(box);
     await userEvent.click(screen.getByTestId('invoice-send-confirm'));
     expect(onSend.mock.calls[0]![0]).toMatchObject({ includeDeviceAppendix: false });
+  });
+
+  it('keeps what the user typed when the invoice props change while open (e.g. Issue & Send numbered it, then the send failed)', async () => {
+    const { rerender } = render(<InvoiceSendComposer {...props} />);
+    await waitFor(() => expect(screen.getByTestId('invoice-send-to')).toHaveValue('billing@example.test'));
+    fireEvent.change(screen.getByTestId('invoice-send-subject'), { target: { value: 'My subject' } });
+
+    rerender(<InvoiceSendComposer {...props} invoiceNumber="INV-9" />);
+
+    expect(screen.getByTestId('invoice-send-subject')).toHaveValue('My subject');
+    expect(screen.getByTestId('invoice-send-to')).toHaveValue('billing@example.test');
   });
 
   it('does not offer an appendix override for an issued invoice', () => {

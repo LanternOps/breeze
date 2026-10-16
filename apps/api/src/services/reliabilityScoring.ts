@@ -12,6 +12,13 @@ import {
   type ReliabilityTopIssue,
 } from '../db/schema';
 import { shouldProduceMlOutput } from './mlFeatureFlags';
+import { activeBaselineIdSql, getActiveReliabilityBaseline, reliabilityProvisionalSql } from './reliabilityBaselineQueries';
+import {
+  BASELINE_PROVISIONAL_REPORTED_DAYS,
+  type ActiveReliabilityBaseline,
+  type ReliabilityBaselineDetails,
+  readBaselineDetails,
+} from './reliabilityBaselinePolicy';
 import { captureException } from './sentry';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -102,7 +109,7 @@ type ReliabilityRow = typeof deviceReliability.$inferSelect;
 // of the per-row payload — from every 90-day read. Typing the existing scorer
 // consumers with this narrower type makes reading rawMetrics/id/etc a compile
 // error on those paths (it does NOT constrain a future free-standing db.select).
-type ScoringHistoryRow = Pick<
+export type ScoringHistoryRow = Pick<
   HistoryRow,
   'collectedAt' | 'uptimeSeconds' | 'bootTime' | 'crashEvents' | 'appHangs' | 'serviceFailures' | 'hardwareErrors'
 >;
@@ -151,7 +158,7 @@ type AggregateState = {
   lastProcessedAt: Date | null;
 };
 
-type LatestHistorySnapshot = {
+export type LatestHistorySnapshot = {
   collectedAt: Date;
   uptimeSeconds: number;
   bootTime: Date;
@@ -199,6 +206,10 @@ export interface ReliabilityListItem {
   // Device enrollment time (ISO). Lets the UI relabel fixed windows ("30d") to
   // the actually-observed age on young devices ("since enroll · 13d"). Issue #1907.
   enrolledAt?: string | null;
+  // #5876: true while an active baseline marker's post-marker window is still short.
+  provisional: boolean;
+  // Active baseline marker details; only populated by getDeviceReliability.
+  baseline?: ReliabilityBaselineDetails | null;
 }
 
 export interface DeviceReliabilityHistoryPoint {
@@ -210,6 +221,8 @@ export interface DeviceReliabilityHistoryPoint {
   serviceFailureCount: number;
   hardwareErrorCount: number;
   reliabilityEstimate: number;
+  // #5876: day precedes the active baseline marker (flagged, not dropped).
+  beforeBaseline: boolean;
 }
 
 // Issue #1907: per-device drill-down. A count tile ("service failure count 30d:
@@ -925,6 +938,40 @@ function isBreezeSelfServiceFailure(serviceName: string | undefined): boolean {
 // not the row's collectedAt. An event near midnight can be re-reported in rows
 // on either side of a day boundary; anchoring on the event timestamp keeps the
 // distinct event in exactly one bucket regardless of which rows reported it.
+function eventTimestampMs(eventTimestamp: string | undefined, fallback: Date): number {
+  if (eventTimestamp) {
+    const ms = Date.parse(eventTimestamp);
+    if (!Number.isNaN(ms)) return ms;
+  }
+  return fallback.getTime();
+}
+
+/**
+ * #5876 baseline cut, at EVENT granularity. Rows collected before the marker are
+ * dropped whole (their samples must not count as observed days). Inside rows
+ * collected at/after it, events whose own timestamp precedes the marker are
+ * dropped — the agent posts ~every 24h, so a post-marker row can carry
+ * pre-marker events. Events without a parseable timestamp fall back to the
+ * row's collectedAt, matching eventDayKey().
+ */
+function applyBaselineToRows<T extends ScoringHistoryRow>(rows: T[], baselineAt: Date | null): T[] {
+  if (!baselineAt) return rows;
+  const cutMs = baselineAt.getTime();
+  return rows
+    .filter((row) => row.collectedAt.getTime() >= cutMs)
+    .map((row) => {
+      const keep = <E extends { timestamp?: string }>(events: E[]): E[] =>
+        events.filter((event) => eventTimestampMs(event.timestamp, row.collectedAt) >= cutMs);
+      return {
+        ...row,
+        crashEvents: keep(row.crashEvents),
+        appHangs: keep(row.appHangs),
+        serviceFailures: keep(row.serviceFailures),
+        hardwareErrors: keep(row.hardwareErrors),
+      };
+    });
+}
+
 function eventDayKey(eventTimestamp: string | undefined, fallback: Date): string {
   if (eventTimestamp) {
     const ms = Date.parse(eventTimestamp);
@@ -1347,8 +1394,8 @@ export function computeReliabilityEvaluationSummary(
   };
 }
 
-async function getHistoryForDevice(deviceId: string, days: number): Promise<ScoringHistoryRow[]> {
-  const since = getSince(days);
+async function getHistoryForDevice(deviceId: string, days: number, windowEnd: Date = new Date()): Promise<ScoringHistoryRow[]> {
+  const since = new Date(windowEnd.getTime() - days * DAY_MS);
   // #event-loop-hardening: explicit column list (NOT SELECT *) — drops raw_metrics
   // JSONB (~2KB/row) which the scorer never reads. Uses
   // reliability_history_device_collected_idx (device_id, collected_at).
@@ -1364,11 +1411,15 @@ async function getHistoryForDevice(deviceId: string, days: number): Promise<Scor
   return db
     .select(SCORING_HISTORY_COLUMNS)
     .from(deviceReliabilityHistory)
-    .where(and(eq(deviceReliabilityHistory.deviceId, deviceId), gte(deviceReliabilityHistory.collectedAt, since)))
+    .where(and(
+      eq(deviceReliabilityHistory.deviceId, deviceId),
+      gte(deviceReliabilityHistory.collectedAt, since),
+      lte(deviceReliabilityHistory.collectedAt, windowEnd),
+    ))
     .orderBy(asc(deviceReliabilityHistory.collectedAt));
 }
 
-async function getLatestHistoryForDevice(deviceId: string): Promise<LatestHistorySnapshot | null> {
+async function getLatestHistoryForDevice(deviceId: string, windowEnd: Date = new Date()): Promise<LatestHistorySnapshot | null> {
   const [row] = await db
     .select({
       collectedAt: deviceReliabilityHistory.collectedAt,
@@ -1376,12 +1427,10 @@ async function getLatestHistoryForDevice(deviceId: string): Promise<LatestHistor
       bootTime: deviceReliabilityHistory.bootTime,
     })
     .from(deviceReliabilityHistory)
-    .where(eq(deviceReliabilityHistory.deviceId, deviceId))
+    .where(and(eq(deviceReliabilityHistory.deviceId, deviceId), lte(deviceReliabilityHistory.collectedAt, windowEnd)))
     .orderBy(desc(deviceReliabilityHistory.collectedAt))
     .limit(1);
-
-  if (!row) return null;
-  return row;
+  return row ?? null;
 }
 
 
@@ -1396,75 +1445,83 @@ function getLatestCollectedAt(rows: ScoringHistoryRow[]): Date | null {
   return latest;
 }
 
-export async function computeAndPersistDeviceReliability(deviceId: string): Promise<boolean> {
-  const [device] = await db
-    .select({
-      id: devices.id,
-      orgId: devices.orgId,
-      enrolledAt: devices.enrolledAt,
-      deviceRole: devices.deviceRole,
-    })
-    .from(devices)
-    .where(eq(devices.id, deviceId))
-    .limit(1);
+export type ReliabilityScoreValues = Omit<typeof deviceReliability.$inferInsert, 'deviceId' | 'orgId'>;
 
-  if (!device) return false;
-  if (!(await shouldProduceMlOutput(device.orgId, 'ml.device_reliability.enabled'))) {
-    return false;
-  }
+export interface ReliabilityScoringInput {
+  rows: ScoringHistoryRow[];
+  latest: LatestHistorySnapshot | null;
+  deviceRole: string | null;
+  enrolledAt: Date | null;
+  windowEnd: Date;
+  baseline: ActiveReliabilityBaseline | null;
+}
 
-  const now = new Date();
-  const lookbackStart = getSince(90);
+export interface ReliabilityScoringResult {
+  values: ReliabilityScoreValues;
+  /** Whole days between the earliest scored sample and windowEnd (0–90). */
+  coverageDays: number;
+  weightProfile: string;
+}
 
-  const latest = await getLatestHistoryForDevice(deviceId);
+function laterOf(a: Date | null, b: Date | null): Date | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a.getTime() >= b.getTime() ? a : b;
+}
+
+/**
+ * Pure reliability scorer (#5876). Everything time-relative keys off
+ * `windowEnd` (no wall clock), so the same function produces the live score
+ * (windowEnd = now) and a frozen as-of snapshot (windowEnd = baseline_at).
+ * A baseline cuts events at event granularity (applyBaselineToRows) and
+ * clamps every window start, generalising the #1738 enrolledAt clamp.
+ */
+export function scoreDeviceReliability(input: ReliabilityScoringInput): ReliabilityScoringResult {
+  const { windowEnd, baseline } = input;
+  const baselineAt = baseline?.baselineAt ?? null;
+  const lookbackStart = new Date(windowEnd.getTime() - 90 * DAY_MS);
+  const rows = applyBaselineToRows(input.rows, baselineAt);
+  const windowFloor = laterOf(input.enrolledAt, baselineAt);
+  const spanStart = laterOf(lookbackStart, baselineAt)!;
 
   const dailyBucketMap = new Map<string, DailyAggregateBucket>();
-
-  // Issue #1904: event counts must be deduplicated across the WHOLE window, so
-  // we always rebuild buckets from the full 90-day raw history in a single
-  // deduping pass. The previous incremental cache (reuse cached buckets, merge
-  // only rows after `lastProcessedAt`) is incompatible with global dedup: the
-  // cached buckets hold collapsed counts without the per-event keys, so a
-  // duplicate event re-reported in a row past the cursor would be counted again
-  // on top of the cached count. Rebuilding from raw rows is cheap (history is a
-  // bounded 90-day window) and is exactly what the old cold path already did.
-  const allRows = await getHistoryForDevice(deviceId, 90);
-  mergeRowsIntoDailyBuckets(dailyBucketMap, allRows);
-  pruneDailyBuckets(dailyBucketMap, lookbackStart, now);
+  mergeRowsIntoDailyBuckets(dailyBucketMap, rows);
+  pruneDailyBuckets(dailyBucketMap, lookbackStart, windowEnd);
   const dailyBuckets = sortDailyBuckets(dailyBucketMap);
 
-  const enrolledAt = device.enrolledAt ?? null;
   const observedDays = observedUpDayKeys(dailyBuckets);
   // Credit days covered by any reported boot span: an agent posting gap inside
   // an unbroken boot is proof of uptime, not downtime (see bootSpanUpDayKeys).
-  for (const key of bootSpanUpDayKeys(allRows, lookbackStart, now)) observedDays.add(key);
-  const observedUpDays30 = countObservedUpDaysInWindow(dailyBuckets, 30, now);
-  const uptime7d = computeUptimePercent(latest, observedDays, 7, now, enrolledAt);
-  const uptime30d = computeUptimePercent(latest, observedDays, 30, now, enrolledAt);
-  const availability90d = computeUptimeAvailability(latest, observedDays, 90, now, enrolledAt);
+  for (const key of bootSpanUpDayKeys(rows, spanStart, windowEnd)) observedDays.add(key);
+  const observedUpDays30 = countObservedUpDaysInWindow(dailyBuckets, 30, windowEnd);
+  // A latest sample collected before the marker would credit pre-marker boot days as up.
+  const latest = baselineAt && input.latest && input.latest.collectedAt.getTime() < baselineAt.getTime() ? null : input.latest;
+  const uptime7d = computeUptimePercent(latest, observedDays, 7, windowEnd, windowFloor);
+  const uptime30d = computeUptimePercent(latest, observedDays, 30, windowEnd, windowFloor);
+  const availability90d = computeUptimeAvailability(latest, observedDays, 90, windowEnd, windowFloor);
   const uptime90d = availability90d.percent;
 
-  const crashCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.crashCount);
-  const crashCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.crashCount);
-  const crashCount90d = sumBucketsInWindow(dailyBuckets, 90, now, (bucket) => bucket.crashCount);
-  const appCrashCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.appCrashCount);
-  const appCrashCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.appCrashCount);
+  const crashCount7d = sumBucketsInWindow(dailyBuckets, 7, windowEnd, (bucket) => bucket.crashCount);
+  const crashCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.crashCount);
+  const crashCount90d = sumBucketsInWindow(dailyBuckets, 90, windowEnd, (bucket) => bucket.crashCount);
+  const appCrashCount7d = sumBucketsInWindow(dailyBuckets, 7, windowEnd, (bucket) => bucket.appCrashCount);
+  const appCrashCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.appCrashCount);
 
-  const hangCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.hangCount);
-  const hangCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hangCount);
-  const unresolvedHangCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.unresolvedHangCount);
+  const hangCount7d = sumBucketsInWindow(dailyBuckets, 7, windowEnd, (bucket) => bucket.hangCount);
+  const hangCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.hangCount);
+  const unresolvedHangCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.unresolvedHangCount);
 
-  const serviceFailureCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.serviceFailureCount);
-  const serviceFailureCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.serviceFailureCount);
-  const recoveredServiceCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.recoveredServiceCount);
-  const selfServiceFailureCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.selfServiceFailureCount);
-  const recoveredSelfServiceCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.recoveredSelfServiceCount);
+  const serviceFailureCount7d = sumBucketsInWindow(dailyBuckets, 7, windowEnd, (bucket) => bucket.serviceFailureCount);
+  const serviceFailureCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.serviceFailureCount);
+  const recoveredServiceCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.recoveredServiceCount);
+  const selfServiceFailureCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.selfServiceFailureCount);
+  const recoveredSelfServiceCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.recoveredSelfServiceCount);
 
-  const hardwareErrorCount7d = sumBucketsInWindow(dailyBuckets, 7, now, (bucket) => bucket.hardwareErrorCount);
-  const hardwareErrorCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hardwareErrorCount);
-  const criticalHardwareCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hardwareCriticalCount);
-  const errorHardwareCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hardwareErrorSeverityCount);
-  const warningHardwareCount30d = sumBucketsInWindow(dailyBuckets, 30, now, (bucket) => bucket.hardwareWarningCount);
+  const hardwareErrorCount7d = sumBucketsInWindow(dailyBuckets, 7, windowEnd, (bucket) => bucket.hardwareErrorCount);
+  const hardwareErrorCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.hardwareErrorCount);
+  const criticalHardwareCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.hardwareCriticalCount);
+  const errorHardwareCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.hardwareErrorSeverityCount);
+  const warningHardwareCount30d = sumBucketsInWindow(dailyBuckets, 30, windowEnd, (bucket) => bucket.hardwareWarningCount);
 
   const uptimeScore = scoreUptime(uptime90d);
   const crashScore = scoreCrashes(
@@ -1489,8 +1546,8 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
 
   // Issue #1721: pick a device-type-aware weight profile so a normally-rebooting
   // workstation/laptop isn't penalised on uptime the way an always-on server is.
-  const { name: weightProfile, weights } = resolveWeightProfile(device.deviceRole);
-  const suppressUptimeIssue = isWorkstationRole(device.deviceRole);
+  const { name: weightProfile, weights } = resolveWeightProfile(input.deviceRole);
+  const suppressUptimeIssue = isWorkstationRole(input.deviceRole);
 
   const reliabilityScore = clampScore(
     uptimeScore * (weights.uptime / 100)
@@ -1500,11 +1557,11 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
     + hardwareErrorScore * (weights.hardwareErrors / 100)
   );
 
-  const trend = computeTrend(dailyBuckets, now);
-  const mtbfHours = computeMtbfHours(dailyBuckets, availability90d.upDays, now);
+  const trend = computeTrend(dailyBuckets, windowEnd);
+  const mtbfHours = computeMtbfHours(dailyBuckets, availability90d.upDays, windowEnd);
   const topIssues = computeTopIssues({
     dailyBuckets,
-    now,
+    now: windowEnd,
     uptime30d,
     crashCount30d,
     hangCount30d,
@@ -1514,10 +1571,26 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
     suppressUptimeIssue,
   });
 
+  const reportedDaysSinceBaseline = new Set(rows.map((row) => toDayKey(row.collectedAt))).size;
+  const provisional = baseline !== null && reportedDaysSinceBaseline < BASELINE_PROVISIONAL_REPORTED_DAYS;
+  const finalTrend = provisional ? { direction: 'stable' as const, confidence: 0 } : trend;
+  const finalMtbfHours = provisional ? null : mtbfHours;
+
   const latestProcessedAt = maxTimestamp([
-    getLatestCollectedAt(allRows)?.toISOString(),
+    getLatestCollectedAt(rows)?.toISOString(),
     latest?.collectedAt.toISOString(),
-  ]) ?? now.toISOString();
+  ]) ?? windowEnd.toISOString();
+
+  const baselineDetails: ReliabilityBaselineDetails | undefined = baseline
+    ? {
+        id: baseline.id,
+        baselineAt: baseline.baselineAt.toISOString(),
+        reason: baseline.reason,
+        source: baseline.source,
+        reportedDaysSinceBaseline,
+        provisional,
+      }
+    : undefined;
 
   const detailsPayload = {
     // Issue #1721: record which device-type-aware weight profile was applied so
@@ -1558,14 +1631,17 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
       lastProcessedAt: latestProcessedAt,
       dailyBuckets: serializeDailyBuckets(dailyBuckets),
     },
+    ...(baselineDetails ? { baseline: baselineDetails } : {}),
   };
 
-  await db
-    .insert(deviceReliability)
-    .values({
-      deviceId: device.id,
-      orgId: device.orgId,
-      computedAt: now,
+  const earliest = rows.length > 0 ? rows[0]!.collectedAt.getTime() : null;
+  const coverageDays = earliest === null ? 0 : Math.min(90, Math.max(1, Math.ceil((windowEnd.getTime() - earliest) / DAY_MS)));
+
+  return {
+    weightProfile,
+    coverageDays,
+    values: {
+      computedAt: windowEnd,
       reliabilityScore,
       uptimeScore,
       crashScore,
@@ -1584,44 +1660,92 @@ export async function computeAndPersistDeviceReliability(deviceId: string): Prom
       serviceFailureCount30d,
       hardwareErrorCount7d,
       hardwareErrorCount30d,
-      mtbfHours,
-      trendDirection: trend.direction,
-      trendConfidence: trend.confidence,
+      mtbfHours: finalMtbfHours,
+      trendDirection: finalTrend.direction,
+      trendConfidence: finalTrend.confidence,
       topIssues,
       details: detailsPayload,
+    },
+  };
+}
+
+export async function scoreDeviceReliabilityAsOf(
+  device: { id: string; deviceRole: string | null; enrolledAt: Date | null },
+  windowEnd: Date,
+  baseline: ActiveReliabilityBaseline | null,
+): Promise<ReliabilityScoringResult> {
+  const [rows, latest] = await Promise.all([
+    getHistoryForDevice(device.id, 90, windowEnd),
+    getLatestHistoryForDevice(device.id, windowEnd),
+  ]);
+  return scoreDeviceReliability({ rows, latest, deviceRole: device.deviceRole, enrolledAt: device.enrolledAt, windowEnd, baseline });
+}
+
+export async function computeAndPersistDeviceReliability(deviceId: string): Promise<boolean> {
+  const [device] = await db
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      enrolledAt: devices.enrolledAt,
+      deviceRole: devices.deviceRole,
     })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
+  if (!device) return false;
+  if (!(await shouldProduceMlOutput(device.orgId, 'ml.device_reliability.enabled'))) {
+    return false;
+  }
+
+  // Issue #1904: event counts must be deduplicated across the WHOLE window, so
+  // we always rebuild buckets from the full 90-day raw history in a single
+  // deduping pass. The previous incremental cache (reuse cached buckets, merge
+  // only rows after `lastProcessedAt`) is incompatible with global dedup: the
+  // cached buckets hold collapsed counts without the per-event keys, so a
+  // duplicate event re-reported in a row past the cursor would be counted again
+  // on top of the cached count. Rebuilding from raw rows is cheap (history is a
+  // bounded 90-day window) and is exactly what the old cold path already did.
+  // The setWhere guard in persistDeviceReliability reads the marker table with the
+  // upsert statement's ORIGINAL snapshot (READ COMMITTED). If this upsert blocks on a
+  // row lock held by a marker-route transaction, it wakes after that commit but its
+  // guard subquery still sees the OLD active marker, so the guard passes and a stale
+  // score would overwrite the marker-aware one. The re-read below is a NEW statement
+  // (fresh snapshot), so it sees whatever commit the upsert waited on; if the marker
+  // moved, re-score against it. This is not redundant with the guard.
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const baseline = await getActiveReliabilityBaseline(device.id);
+    const { values } = await scoreDeviceReliabilityAsOf(
+      { id: device.id, deviceRole: device.deviceRole, enrolledAt: device.enrolledAt ?? null },
+      new Date(),
+      baseline,
+    );
+    await persistDeviceReliability(device, values, baseline?.id ?? null);
+    const after = await getActiveReliabilityBaseline(device.id);
+    if ((after?.id ?? null) === (baseline?.id ?? null)) return true;
+  }
+  console.warn('[reliability] active baseline kept changing; giving up after 3 attempts', { deviceId: device.id });
+  return true;
+}
+
+export async function persistDeviceReliability(
+  device: { id: string; orgId: string },
+  values: ReliabilityScoreValues,
+  baselineIdUsed: string | null,
+): Promise<void> {
+  // #5876 compare-and-set: only overwrite when the marker this run scored against
+  // is still the active one. A worker run that loaded the old marker and finishes
+  // after a marker change commits is skipped; the marker route's own recompute
+  // wins. INSERT (first-ever row) is unguarded by design — see spec "Concurrency".
+  await db
+    .insert(deviceReliability)
+    .values({ deviceId: device.id, orgId: device.orgId, ...values })
     .onConflictDoUpdate({
       target: deviceReliability.deviceId,
-      set: {
-        orgId: device.orgId,
-        computedAt: now,
-        reliabilityScore,
-        uptimeScore,
-        crashScore,
-        hangScore,
-        serviceFailureScore,
-        hardwareErrorScore,
-        uptime7d,
-        uptime30d,
-        uptime90d,
-        crashCount7d,
-        crashCount30d,
-        crashCount90d,
-        hangCount7d,
-        hangCount30d,
-        serviceFailureCount7d,
-        serviceFailureCount30d,
-        hardwareErrorCount7d,
-        hardwareErrorCount30d,
-        mtbfHours,
-        trendDirection: trend.direction,
-        trendConfidence: trend.confidence,
-        topIssues,
-        details: detailsPayload,
-      },
+      set: { orgId: device.orgId, ...values },
+      setWhere: sql`${activeBaselineIdSql(device.id)} IS NOT DISTINCT FROM ${baselineIdUsed}::uuid`,
     });
-
-  return true;
 }
 
 async function runConcurrently<T>(
@@ -1751,6 +1875,7 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
         mtbfHours: deviceReliability.mtbfHours,
         topIssues: deviceReliability.topIssues,
         computedAt: deviceReliability.computedAt,
+        provisional: reliabilityProvisionalSql,
       })
       .from(deviceReliability)
       .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
@@ -1788,6 +1913,7 @@ export async function listReliabilityDevices(filter: ReliabilityListFilter): Pro
     mtbfHours: row.mtbfHours,
     topIssues: Array.isArray(row.topIssues) ? row.topIssues : [],
     computedAt: row.computedAt.toISOString(),
+    provisional: Boolean(row.provisional),
   }));
 
   return { total, rows };
@@ -1864,6 +1990,7 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
     .limit(1);
 
   if (!row) return null;
+  const baseline = readBaselineDetails(row.details);
   return {
     deviceId: row.deviceId,
     orgId: row.orgId,
@@ -1884,6 +2011,8 @@ export async function getDeviceReliability(deviceId: string): Promise<Reliabilit
     computedAt: row.computedAt.toISOString(),
     drivers: buildReliabilityDrivers(row.details),
     enrolledAt: row.enrolledAt ? row.enrolledAt.toISOString() : null,
+    provisional: baseline?.provisional ?? false,
+    baseline,
   };
 }
 
@@ -1913,6 +2042,7 @@ export async function evaluateReliabilityScores(input: ReliabilityEvaluationInpu
       hostname: devices.hostname,
       reliabilityScore: deviceReliability.reliabilityScore,
       computedAt: deviceReliability.computedAt,
+      baselineAt: sql<string | null>`${deviceReliability.details}->'baseline'->>'baselineAt'`,
     })
     .from(deviceReliability)
     .innerJoin(devices, eq(deviceReliability.deviceId, devices.id))
@@ -1938,96 +2068,62 @@ export async function evaluateReliabilityScores(input: ReliabilityEvaluationInpu
     ));
 
   const deviceIds = new Set(deviceRows.map((row) => row.deviceId));
+  const baselineByDevice = new Map(deviceRows.map((row) => [row.deviceId, row.baselineAt ? Date.parse(row.baselineAt) : null]));
   const labels = labelRows
     .filter((row): row is typeof row & { outcome: 'failure_confirmed' | 'replaced' | 'false_alarm' } => (
       deviceIds.has(row.deviceId)
       && (row.outcome === 'failure_confirmed' || row.outcome === 'replaced' || row.outcome === 'false_alarm')
     ))
+    // #5876: a failure label recorded before the device's active marker describes
+    // the pre-fix machine; scoring it against the post-fix score would be noise.
+    .filter((row) => {
+      const cut = baselineByDevice.get(row.deviceId);
+      return cut == null || Number.isNaN(cut) || row.occurredAt.getTime() >= cut;
+    })
     .map((row) => ({
       deviceId: row.deviceId,
       outcome: row.outcome,
       occurredAt: row.occurredAt,
     }));
 
-  return computeReliabilityEvaluationSummary(deviceRows, labels, { atRiskMaxScore, labelWindowDays });
+  return computeReliabilityEvaluationSummary(
+    deviceRows.map(({ baselineAt: _baselineAt, ...rest }) => rest),
+    labels, { atRiskMaxScore, labelWindowDays },
+  );
+}
+
+function buildHistoryPoints(
+  rows: ScoringHistoryRow[],
+  baselineAt: Date | null,
+  windowEnd: Date,
+  days: number,
+): DeviceReliabilityHistoryPoint[] {
+  // #5876: same global dedupe + genuine-hardware filter + event-timestamp bucketing
+  // as the scorer (the legacy per-row .length sum re-inflated counts, #1904).
+  // Pre-marker days are flagged, not dropped, so a chart can draw the cut.
+  const map = new Map<string, DailyAggregateBucket>();
+  mergeRowsIntoDailyBuckets(map, rows);
+  const baselineDay = baselineAt ? toDayKey(baselineAt) : null;
+  return bucketsInWindow(sortDailyBuckets(map), days, windowEnd).map((bucket) => ({
+    date: bucket.date,
+    sampleCount: bucket.sampleCount,
+    uptimeSecondsMax: bucket.uptimeSecondsMax,
+    crashCount: bucket.crashCount,
+    hangCount: bucket.hangCount,
+    serviceFailureCount: bucket.serviceFailureCount,
+    hardwareErrorCount: bucket.hardwareErrorCount,
+    reliabilityEstimate: scoreDailyBucket(bucket),
+    beforeBaseline: baselineDay !== null && bucket.date < baselineDay,
+  }));
 }
 
 export async function getDeviceReliabilityHistory(deviceId: string, days: number): Promise<DeviceReliabilityHistoryPoint[]> {
-  const since = getSince(days);
-  const rows = await db
-    .select({
-      collectedAt: deviceReliabilityHistory.collectedAt,
-      uptimeSeconds: deviceReliabilityHistory.uptimeSeconds,
-      crashEvents: deviceReliabilityHistory.crashEvents,
-      appHangs: deviceReliabilityHistory.appHangs,
-      serviceFailures: deviceReliabilityHistory.serviceFailures,
-      hardwareErrors: deviceReliabilityHistory.hardwareErrors,
-    })
-    .from(deviceReliabilityHistory)
-    .where(and(eq(deviceReliabilityHistory.deviceId, deviceId), gte(deviceReliabilityHistory.collectedAt, since)))
-    .orderBy(asc(deviceReliabilityHistory.collectedAt));
-
-  const daily = new Map<string, {
-    sampleCount: number;
-    uptimeSecondsMax: number;
-    crashCount: number;
-    hangCount: number;
-    serviceFailureCount: number;
-    hardwareErrorCount: number;
-    hwCritical: number;
-    hwError: number;
-    hwWarning: number;
-  }>();
-
-  for (const row of rows) {
-    const dayKey = row.collectedAt.toISOString().slice(0, 10);
-    const entry = daily.get(dayKey) ?? {
-      sampleCount: 0,
-      uptimeSecondsMax: 0,
-      crashCount: 0,
-      hangCount: 0,
-      serviceFailureCount: 0,
-      hardwareErrorCount: 0,
-      hwCritical: 0,
-      hwError: 0,
-      hwWarning: 0,
-    };
-
-    entry.sampleCount += 1;
-    entry.uptimeSecondsMax = Math.max(entry.uptimeSecondsMax, row.uptimeSeconds);
-    entry.crashCount += row.crashEvents.length;
-    entry.hangCount += row.appHangs.length;
-    entry.serviceFailureCount += row.serviceFailures.length;
-    entry.hardwareErrorCount += row.hardwareErrors.length;
-    entry.hwCritical += row.hardwareErrors.filter((event) => event.severity === 'critical').length;
-    entry.hwError += row.hardwareErrors.filter((event) => event.severity === 'error').length;
-    entry.hwWarning += row.hardwareErrors.filter((event) => event.severity === 'warning').length;
-    daily.set(dayKey, entry);
-  }
-
-  return Array.from(daily.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([date, entry]) => {
-      const reliabilityEstimate = clampScore(
-        100
-        - entry.crashCount * 20
-        - entry.hangCount * 10
-        - entry.serviceFailureCount * 12
-        - entry.hwCritical * 30
-        - entry.hwError * 15
-        - entry.hwWarning * 5
-      );
-      return {
-        date,
-        sampleCount: entry.sampleCount,
-        uptimeSecondsMax: entry.uptimeSecondsMax,
-        crashCount: entry.crashCount,
-        hangCount: entry.hangCount,
-        serviceFailureCount: entry.serviceFailureCount,
-        hardwareErrorCount: entry.hardwareErrorCount,
-        reliabilityEstimate,
-      };
-    });
+  const windowEnd = new Date();
+  const [rows, baseline] = await Promise.all([
+    getHistoryForDevice(deviceId, days, windowEnd),
+    getActiveReliabilityBaseline(deviceId),
+  ]);
+  return buildHistoryPoints(rows, baseline?.baselineAt ?? null, windowEnd, days);
 }
 
 const DEFAULT_OFFENDER_LIMIT = 5;
@@ -2170,14 +2266,17 @@ export async function getDeviceReliabilityOffenders(
   limit: number = DEFAULT_OFFENDER_LIMIT
 ): Promise<DeviceReliabilityOffenders> {
   const now = new Date();
-  const rows = await getHistoryForDevice(deviceId, days);
+  const [rows, baseline] = await Promise.all([
+    getHistoryForDevice(deviceId, days),
+    getActiveReliabilityBaseline(deviceId),
+  ]);
   // Mirror the headline tiles' event-day window (bucketsInWindow) so the
   // drill-down counts reconcile with the tile they sit under.
   const window: OffenderWindow = {
     sinceKey: toDayKey(new Date(now.getTime() - days * DAY_MS)),
     todayKey: toDayKey(now),
   };
-  return aggregateReliabilityOffenders(rows, limit, window);
+  return aggregateReliabilityOffenders(applyBaselineToRows(rows, baseline?.baselineAt ?? null), limit, window);
 }
 
 export async function getOrgReliabilitySummary(orgId: string, options: { siteIds?: string[] } = {}): Promise<{
@@ -2252,6 +2351,8 @@ export async function getOrgReliabilitySummary(orgId: string, options: { siteIds
 }
 
 export const reliabilityScoringInternals = {
+  applyBaselineToRows,
+  buildHistoryPoints,
   parseAggregateState,
   mergeRowsIntoDailyBuckets,
   sortDailyBuckets,

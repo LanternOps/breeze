@@ -115,7 +115,7 @@ Discussion #7891 established that the right direction is to **evolve contacts**,
 | Same-level matches | **Return all** | Multiple valid responsible contacts may intentionally exist. |
 | `contacts.roles[]` | **Temporary compatibility projection** | Existing consumers and writers must not break during transition. |
 | Existing site association | **Preserve during backfill; keep `contacts.site_id` distinct from responsibility scope afterward** | Prevents accidental authority widening while allowing explicit responsibility scope. |
-| Scoped-write gate | **No Site/Group writes until authorization-sensitive consumers read `contact_roles`** | Prevents a scoped `admin` from becoming org-wide through the legacy projection. |
+| Scoped-write gate | **No independently selected Site/Group writes until scope-sensitive readers have migrated and legacy responsibility writers are retired** | The exact Site scope mechanically derived from a legacy `contacts.site_id` pin remains the only compatibility exception. |
 | Scope deletion | **`ON DELETE CASCADE` for Site and Device Group assignment FKs** | Deleting a scope deletes the assignment instead of widening it to Organization. |
 | Nested groups | **Parent assignments apply transitively; nearest matching group wins** | Device groups nest via `parent_id`; inherited responsibility must be deterministic. |
 | Delivery order | **Backend/resolver first; UI follow-up** | Isolates migration and authorization-sensitive behavior before exposing scoped writes. |
@@ -472,6 +472,8 @@ contacts.site_id = Site A
 → Site A scope
 ```
 
+For this compatibility window, **legacy-derived** means the contact's whole responsibility assignment set represented by that legacy write, not a subset layered beside independently scoped rows. Reconciliation therefore replaces that whole legacy-derived assignment set.
+
 A legacy create, update, import, or re-pin MUST atomically reconcile the legacy-derived `contact_roles` assignments to that derived scope in the same transaction as the `contacts` mutation. In particular, pinning a legacy contact that currently projects `admin @ Organization` to Site A must move the legacy-derived assignment to `admin @ Site A`; unpinning performs the inverse derivation. This is required so a legacy pin cannot become an organization-wide authorization after scope-aware readers land.
 
 The rule that changing `contacts.site_id` does **not** rewrite existing `contact_roles` starts only after legacy responsibility writers are retired. From that point forward, responsibility scope changes require an explicit responsibility mutation, and an explicit Organization-scoped assignment remains independent of contact affiliation/primacy.
@@ -553,7 +555,7 @@ Billing contact resolution
 Report Series recipients
 ```
 
-Writer migration and atomic dual-write must land before any of these readers switch to `contact_roles`; otherwise `contact_roles` can become stale while a migrated reader treats it as authoritative. The narrow legacy exception above preserves the existing pin semantics while preventing an `admin` or `billing` role from being written at a scope broader than the legacy contact's own `site_id`. Independent Site/Group scoped editing remains disabled until the scope-sensitive readers have migrated.
+Writer migration and atomic dual-write must land before any of these readers switch to `contact_roles`; otherwise `contact_roles` can become stale while a migrated reader treats it as authoritative. The narrow legacy exception above preserves the existing pin semantics while preventing an `admin` or `billing` role from being written at a scope broader than the legacy contact's own `site_id`. Independent Site/Group scoped editing remains disabled until the scope-sensitive readers have migrated **and the legacy responsibility writers are retired at the end of Phase 3**. This removes any overlap where an explicit scoped mutation could race a legacy re-pin reconciliation for the same contact.
 
 ## 9. Writer Inventory
 
@@ -579,6 +581,17 @@ compatibility-only
 removed
 not applicable
 ```
+
+V1 implementation classification after Phase 3:
+
+```text
+services/contacts/crud.ts       compatibility-only adapter → canonical contact_roles mutation
+compat.ts direct writers        compatibility-only adapter → canonical contact_roles mutation
+loginLink.ts                    compatibility-only caller of Contacts CRUD adapter
+import.ts direct insert         compatibility-only adapter → canonical contact_roles mutation
+```
+
+These paths may retain their legacy wire shape during V1, but `contacts.roles[]` is never authoritative: the adapter replaces the canonical assignment set first and re-projects the distinct legacy roles from that set in the same transaction.
 
 Any production path that continues writing only `contacts.roles[]` after `contact_roles` becomes source of truth is a correctness bug.
 
@@ -1300,7 +1313,7 @@ Billing contact resolution
 Report Series recipient resolution
 ```
 
-This phase must complete before any write path may create an independently selected non-Organization scope. The only earlier non-Organization write allowed is the exact Site scope mechanically derived from a legacy path's resulting `contacts.site_id` under §7.4/§8.4.
+This phase must complete before any independently selected non-Organization scope can be considered safe, but the scoped-write gate remains closed until the legacy responsibility writers are retired at the end of Phase 3. The only earlier non-Organization write allowed is the exact Site scope mechanically derived from a legacy path's resulting `contacts.site_id` under §7.4/§8.4.
 
 ### Phase 3 — V1 Consumer Validation and Compatibility Verification
 
@@ -1353,7 +1366,7 @@ Implementation is complete only when all applicable statements are true:
 - [ ] Caller Verification cannot widen Site/Group admins into organization admins.
 - [ ] an explicitly scoped `admin @ Organization` remains authoritative even for a site-pinned contact after Caller Verification migration; legacy re-pins first apply the §7.4 derivation rule until legacy responsibility writers are retired.
 - [ ] Org Account Readiness, Billing contact resolution, and Report Series recipients are migrated to explicit scope semantics before independently selected Site/Group scoped writes are enabled.
-- [ ] before the security gate is satisfied, no write path can create a scope that differs from the scope mechanically derived from its resulting `contacts.site_id`, except migration backfill; no independent Site/Group scoped editing is enabled.
+- [ ] before the security gate is satisfied, no write path can create a scope that differs from the scope mechanically derived from its resulting `contacts.site_id`, except migration backfill; no independent Site/Group scoped editing is enabled until scope-sensitive readers have migrated and legacy responsibility writers are retired.
 - [ ] regression coverage proves both `legacy pin after admin @ Organization` and `import with siteId + admin` derive Site scope without widening authority.
 - [ ] `contact_roles` participates in organization cascade/erasure.
 - [ ] `contact_roles` participates in tenant export.

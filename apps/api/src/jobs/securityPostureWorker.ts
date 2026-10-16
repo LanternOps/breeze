@@ -8,7 +8,7 @@ import { getBullMQConnection } from '../services/redis';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { computeAndPersistOrgSecurityPosture } from '../services/securityPosture';
 import { attachWorkerObservability } from './workerObservability';
-import { isReusableState } from '../services/bullmqUtils';
+import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
@@ -284,7 +284,7 @@ export async function shutdownSecurityPostureWorker(): Promise<void> {
 export async function triggerSecurityPostureRecompute(orgId: string): Promise<string> {
   const queue = getSecurityPostureQueue();
   const slot = Math.floor(Date.now() / SECURITY_POSTURE_ON_DEMAND_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `security-posture-recompute:${orgId}:${slot}`;
+  const jobId = bullmqJobId('security-posture-recompute', orgId, slot);
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

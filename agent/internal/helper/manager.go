@@ -30,13 +30,7 @@ var sweepLegacyAutoStart = runtime.GOOS == "windows"
 
 // Settings mirrors the API HelperSettings shape.
 type Settings struct {
-	Enabled bool `json:"enabled" yaml:"-"`
-	// ShowTrayIcon controls whether Breeze Assist draws its system-tray icon.
-	// Independent of Enabled: the helper still serves chat, remote-access
-	// consent and PAM dialogs with the icon hidden (#3202). Callers must
-	// default this to TRUE when the server omits the field — see
-	// heartbeat.HelperSettings.ShowTrayIcon, which is a *bool for that reason.
-	ShowTrayIcon       bool   `json:"showTrayIcon" yaml:"show_tray_icon"`
+	Enabled            bool   `json:"enabled" yaml:"-"`
 	ShowOpenPortal     bool   `json:"showOpenPortal" yaml:"show_open_portal"`
 	ShowDeviceInfo     bool   `json:"showDeviceInfo" yaml:"show_device_info"`
 	ShowRequestSupport bool   `json:"showRequestSupport" yaml:"show_request_support"`
@@ -47,7 +41,6 @@ const watcherStopTimeout = 2 * time.Second
 
 // Config is the YAML shape written to helper_config.yaml.
 type Config struct {
-	ShowTrayIcon       bool   `yaml:"show_tray_icon"`
 	ShowOpenPortal     bool   `yaml:"show_open_portal"`
 	ShowDeviceInfo     bool   `yaml:"show_device_info"`
 	ShowRequestSupport bool   `yaml:"show_request_support"`
@@ -369,8 +362,9 @@ func (m *Manager) Apply(settings *Settings) {
 		return
 	}
 
-	// Snapshot install state BEFORE migrateFromLegacyName — on Linux (and
-	// old-name darwin/windows) it can delete the binary, and we must still
+	// Snapshot install state BEFORE migrateFromLegacyName — on darwin/windows
+	// an old-name install is deleted there (Linux has no separate old name, so
+	// it is left alone; #8541), and we must still
 	// finish uninstall cleanup exactly once for a legacy box upgrading with
 	// Assist disabled.
 	wasInstalled := m.isInstalled()
@@ -614,7 +608,6 @@ func (m *Manager) hasResidualState() bool {
 
 func settingsToConfig(s *Settings) *Config {
 	return &Config{
-		ShowTrayIcon:       s.ShowTrayIcon,
 		ShowOpenPortal:     s.ShowOpenPortal,
 		ShowDeviceInfo:     s.ShowDeviceInfo,
 		ShowRequestSupport: s.ShowRequestSupport,

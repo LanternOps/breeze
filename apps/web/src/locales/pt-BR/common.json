@@ -110,7 +110,11 @@
     "timeSync": "Sincronização de horário",
     "aiModels": "Modelos de IA",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Incidentes",
+    "ticketsServiceRequests": "Solicitações de serviço",
+    "ticketsProblems": "Problemas",
+    "ticketsChanges": "Mudanças"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -408,7 +412,9 @@
       "unratedPending": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
       "unratedPending_one": "{{count}} patch não avaliado pendente (não será aprovado automaticamente)",
       "unratedPending_other": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
-      "empty": "Ainda sem dados de patches"
+      "empty": "Ainda sem dados de patches",
+      "imagesNotChecked_one": "{{count}} imagem de contêiner não verificada",
+      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas"
     },
     "vuln": {
       "title": "Vulnerabilidades",
@@ -494,7 +500,9 @@
       "noGroups": "Nenhum grupo de dispositivos disponível",
       "deviceCount": "{{count}} dispositivos",
       "loadSaved": "Carregar filtro salvo:",
-      "select": "Selecionar"
+      "select": "Selecionar",
+      "dynamic": "Dinâmico",
+      "refusedGroup": "Indisponível como alvo: as regras deste grupo usam campos que o próprio dispositivo informa ({{fields}})."
     },
     "preview": {
       "title": "Dispositivos correspondentes",
@@ -1307,6 +1315,26 @@
           "ticketCreated": {
             "description": "Acionado quando um ticket é criado.",
             "label": "Ticket criado"
+          },
+          "ticketCommented": {
+            "description": "Acionado quando um comentário ou nota é adicionado a um ticket.",
+            "label": "Ticket comentado"
+          },
+          "ticketStatusChanged": {
+            "description": "Acionado quando um ticket muda de status.",
+            "label": "Status do ticket alterado"
+          },
+          "ticketUpdated": {
+            "description": "Acionado quando os campos de um ticket são editados.",
+            "label": "Ticket atualizado"
+          },
+          "ticketAssigned": {
+            "description": "Acionado quando um ticket é atribuído ou desatribuído.",
+            "label": "Ticket atribuído"
+          },
+          "migrationWindowClosed": {
+            "description": "Acionado uma vez por organização quando uma janela de migração de tickets é encerrada, com as contagens importadas.",
+            "label": "Janela de migração encerrada"
           }
         },
         "fields": {
@@ -1431,6 +1459,7 @@
           "created": "Webhook criado",
           "disabled": "Webhook desativado",
           "enabled": "Webhook ativado",
+          "retryQueued": "Nova tentativa de entrega enfileirada",
           "testQueued": "Entrega de teste enfileirada",
           "updated": "Webhook atualizado"
         },
@@ -1688,7 +1717,8 @@
         "deleteEntry": "Excluir entrada {{id}}",
         "deleteConfirmTitle": "Excluir entrada de tempo?",
         "deleteConfirmMessage": "Isso remove permanentemente a entrada de {{duration}} do ticket {{ticket}}. Não é possível desfazer.",
-        "deleteConfirmMessageNoTicket": "Isso remove permanentemente a entrada de {{duration}}. Não é possível desfazer."
+        "deleteConfirmMessageNoTicket": "Isso remove permanentemente a entrada de {{duration}}. Não é possível desfazer.",
+        "noteInvoiceCue": "Os clientes veem esta observação na fatura, a menos que suas configurações de faturamento ocultem observações."
       },
       "sourceBadge": {
         "timer": "Cronômetro",
@@ -2175,7 +2205,8 @@
         "viewInSource": "Ver em {{source}}",
         "promoteFromEdr": "Promover a partir da visualização de EDR",
         "pagination": "Página {{page}} de {{totalPages}} ({{total}} no total)",
-        "previous": "Anterior"
+        "previous": "Anterior",
+        "genericEdrProvider": "Provedor de EDR"
       },
       "IncidentDetailPage": {
         "errors": {

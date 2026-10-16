@@ -43,6 +43,14 @@ describe('filterOperatorSchema', () => {
 // ============================================
 
 describe('filterValueSchema', () => {
+  // #8760 review: `new Date(['server-1'])` parses as 2001-01-01, so a
+  // one-element list that looks date-ish must stay a list, not become a Date.
+  it.each([['server-1'], ['Floor 2'], ['idf-1'], ['2026']])('keeps the one-element list %j an array', (...v) => {
+    const parsed = filterValueSchema.safeParse(v);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data).toEqual(v);
+  });
+
   it('should accept string values', () => {
     expect(filterValueSchema.safeParse('hello').success).toBe(true);
   });

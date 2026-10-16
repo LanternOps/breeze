@@ -38,6 +38,11 @@ vi.mock('../db', () => {
     withDbAccessContext: vi.fn((_context: unknown, fn: () => any) => fn()),
   };
 });
+const refreshReadinessMock = vi.hoisted(() => vi.fn());
+vi.mock('./bareMetalReadinessRefresh', () => ({
+  refreshReadinessAfterRecovery: refreshReadinessMock,
+}));
+
 vi.mock('./auditService', () => ({
   createAuditLogAsync: (entry: Record<string, unknown>) => createAuditLogAsyncMock(entry),
 }));
@@ -419,6 +424,21 @@ describe('applyRebuildCommandResult', () => {
     expect(set).toMatchObject({ status: 'completed' });
     expect(set.validatedAt).toBeInstanceOf(Date);
     expect(set.completedAt).toBeInstanceOf(Date);
+    expect(refreshReadinessMock).toHaveBeenCalledTimes(1);
+    expect(refreshReadinessMock).toHaveBeenCalledWith(ORG_ID, expect.any(String));
+  });
+
+  it('does not refresh readiness for a refusal or when the guarded update lost the race (W08)', async () => {
+    refreshReadinessMock.mockClear();
+    selectMock.mockReturnValueOnce(chainMock([recoveryRow({ identity: 'new', status: 'media_booted' })]));
+    updateMock.mockReturnValueOnce(chainMock([recoveryRow({ status: 'refused' })]));
+    await applyRebuildCommandResult({ recoveryId: RECOVERY_ID, orgId: ORG_ID, result: { status: 'failed', result: { status: 'refused', refusal: 'no' } } });
+
+    selectMock.mockReturnValueOnce(chainMock([recoveryRow({ status: 'restoring' })]));
+    updateMock.mockReturnValueOnce(chainMock([]));
+    await applyRebuildCommandResult({ recoveryId: RECOVERY_ID, orgId: ORG_ID, result: { status: 'failed', error: 'x' } });
+
+    expect(refreshReadinessMock).not.toHaveBeenCalled();
   });
 
   it('records a refusal as refused with the refusal text as failureReason', async () => {

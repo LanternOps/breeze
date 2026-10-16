@@ -213,7 +213,13 @@ vi.mock('../../services/featureConfigResolver', async (importOriginal) => {
     buildRoleOsFilterConditions: vi.fn(() => []),
   };
 });
-vi.mock('../../services/onedriveGraph', () => ({ resolveUserGroupMembershipCached: vi.fn() }));
+vi.mock('../../services/onedriveGraph', () => ({
+  resolveUserGroupMembershipCached: vi.fn(),
+  peekUserGroupMembershipCached: vi.fn(() => null),
+}));
+const loadConnectionMock = vi.hoisted(() => vi.fn(async () => null as unknown));
+// Fully mocked (no importOriginal): the real module pulls in secretCrypto / c2cM365.
+vi.mock('../../services/m365DirectGraph', () => ({ loadLegacyDirectConnection: loadConnectionMock }));
 vi.mock('../../services/filesystemAnalysis', () => ({
   getFilesystemScanState: vi.fn(),
   mergeFilesystemAnalysisPayload: vi.fn(),
@@ -238,7 +244,11 @@ import {
   buildPamConfigUpdate,
   buildHelperConfigUpdate,
   buildOnedriveHelperConfigUpdate,
+  finishOnedriveHelperConfig,
+  loadOnedriveHelperConfigPlan,
+  type OnedriveConfigPlan,
 } from './helpers';
+import { peekUserGroupMembershipCached, resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared';
 
 const DEVICE_ID = '00000000-0000-4000-8000-000000000001';
@@ -590,5 +600,77 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       'EX',
       120,
     );
+  });
+});
+
+describe('OneDrive: DB phase captures, Graph phase never reads the DB (#8142)', () => {
+  const graphLib = {
+    id: 'lib-row-1', settingsId: 'set-1', orgId: ORG_ID, libraryId: 'lib-1', displayName: 'Docs', siteUrl: null,
+    siteId: null, webId: null, listId: null, targetingMode: 'graph_group', groupId: 'G-1', groupName: null,
+    hiveScope: 'hkcu', sortOrder: 0, enabled: true,
+  };
+  const base = {
+    silentAccountConfig: true, filesOnDemand: true, kfmSilentOptIn: false, kfmFolders: [],
+    kfmBlockOptOut: false, tenantAssociationId: null, restartOnChange: false,
+  };
+  const connection = { orgId: ORG_ID, clientId: 'c-1' };
+
+  beforeEach(() => {
+    vi.mocked(resolveUserGroupMembershipCached).mockReset();
+    vi.mocked(peekUserGroupMembershipCached).mockReset().mockReturnValue(null);
+    loadConnectionMock.mockReset().mockResolvedValue(null);
+  });
+
+  it('DB phase: captures hits, and loads the connection only because one UPN missed', async () => {
+    dbMock._resetQueue([
+      deviceRow, orgWithPartner, [],
+      [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', ...base }],
+      [graphLib],
+      [{ signedInUpns: ['a@contoso.com', 'b@contoso.com'] }],
+    ]);
+    const hit = { kind: 'ok' as const, data: { groupIds: ['g-1'] } };
+    vi.mocked(peekUserGroupMembershipCached).mockImplementation((_org, upn) => (upn === 'a@contoso.com' ? hit : null));
+    loadConnectionMock.mockResolvedValueOnce(connection);
+
+    const plan = await loadOnedriveHelperConfigPlan(DEVICE_ID);
+
+    expect(plan?.upnLookups).toEqual([{ upn: 'a@contoso.com', cached: hit }, { upn: 'b@contoso.com', cached: null }]);
+    expect(plan?.connection).toEqual(connection);
+    expect(loadConnectionMock).toHaveBeenCalledWith(ORG_ID);
+    expect(resolveUserGroupMembershipCached).not.toHaveBeenCalled();
+  });
+
+  it('DB phase: every UPN a hit -> no connection read', async () => {
+    dbMock._resetQueue([
+      deviceRow, orgWithPartner, [],
+      [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', ...base }],
+      [graphLib],
+      [{ signedInUpns: ['a@contoso.com'] }],
+    ]);
+    vi.mocked(peekUserGroupMembershipCached).mockReturnValue({ kind: 'ok', data: { groupIds: ['g-1'] } });
+    const plan = await loadOnedriveHelperConfigPlan(DEVICE_ID);
+    expect(plan?.connection).toBeNull();
+    expect(loadConnectionMock).not.toHaveBeenCalled();
+  });
+
+  it('Graph phase: a captured hit is used even if the cache has since expired; a miss uses the preloaded connection; zero DB', async () => {
+    const plan: OnedriveConfigPlan = {
+      deviceId: DEVICE_ID, orgId: ORG_ID, base, libs: [graphLib as never],
+      upnLookups: [
+        { upn: 'a@contoso.com', cached: { kind: 'ok', data: { groupIds: ['g-1'] } } },
+        { upn: 'b@contoso.com', cached: null },
+      ],
+      connection: connection as never,
+    };
+    vi.mocked(resolveUserGroupMembershipCached).mockResolvedValueOnce({ kind: 'ok', data: { groupIds: ['{G-1}'] } });
+    dbMock.select.mockClear();
+
+    const out = await finishOnedriveHelperConfig(plan);
+
+    expect(out.libraries[0]!.allowedUpns).toEqual(['a@contoso.com', 'b@contoso.com']);
+    expect(resolveUserGroupMembershipCached).toHaveBeenCalledTimes(1);
+    expect(resolveUserGroupMembershipCached).toHaveBeenCalledWith(ORG_ID, 'b@contoso.com', { connection });
+    expect(dbMock.select).not.toHaveBeenCalled();
+    expect(loadConnectionMock).not.toHaveBeenCalled();
   });
 });

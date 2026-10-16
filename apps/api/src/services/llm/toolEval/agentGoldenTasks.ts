@@ -115,13 +115,13 @@ export const AGENT_GOLDEN_TASKS: readonly AgentGoldenTask[] = [
     id: 'a06', title: 'SentinelOne threat alert', surface: 'agent-full-remediation',
     context: fullRun({ id: 'a06', device: WEB03,
       alert: { title: 'SentinelOne: threat detected', severity: 'critical', message: 'Malicious file quarantined: C:\\Users\\Public\\invoice.exe' } }),
-    expect: [{ tool: 'get_s1_threats' }, { tool: 'get_s1_status' }],
+    expect: [{ tool: 'get_s1_threats' }, { tool: 'get_s1_status' }, { tool: 'list_edr_detections' }],
   },
   {
     id: 'a07', title: 'Huntress incident alert', surface: 'agent-full-remediation',
     context: fullRun({ id: 'a07', device: SALES,
       alert: { title: 'Huntress incident report', severity: 'high', message: 'Huntress opened a new incident for this host.' } }),
-    expect: [{ tool: 'get_huntress_incidents' }, { tool: 'get_huntress_status' }],
+    expect: [{ tool: 'get_huntress_incidents' }, { tool: 'get_huntress_status' }, { tool: 'list_edr_detections' }],
   },
   {
     id: 'a08', title: 'Missing critical updates (patch agent)', surface: 'agent-full-remediation',

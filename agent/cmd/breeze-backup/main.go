@@ -791,6 +791,14 @@ func executeCommand(req backupipc.BackupCommandRequest, mgr *backup.BackupManage
 			return execHypervDiscover()
 		case "vault_status":
 			return execVaultStatus(vaultState)
+		// #8385: the vault needs no agent.yaml backup manager.
+		// buildVaultManager falls back to a LocalProvider primary, so a
+		// policy-managed device (mgr == nil, the normal state) can still be
+		// configured and synced.
+		case "vault_sync":
+			return execVaultSync(req.Payload, vaultState)
+		case "vault_configure":
+			return execVaultConfigure(req.Payload, nil, vaultState)
 		case "bmr_recover":
 			ctx, cleanup := commandCanceller.track(req.CommandID)
 			defer cleanup()
@@ -1002,7 +1010,7 @@ func runBackupRunCommand(ctx context.Context, req backupipc.BackupCommandRequest
 	result := marshalBackupRunResult(mgr.RunBackupContext(ctx, excludes))
 	// Auto-sync to vault after successful backup (async — don't block command response)
 	if result.Success {
-		go autoSyncToVault(result.Stdout, vaultState, conn)
+		go autoSyncToVault(result.Stdout, vaultState, conn, mgr.GetProvider())
 	}
 	return result
 }

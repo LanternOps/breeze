@@ -154,6 +154,29 @@ require_grep 'minisign -S' .github/workflows/release.yml \
   "release workflow must sign the release artifact manifest"
 require_grep 'minisign -V' .github/workflows/release.yml \
   "release workflow must verify the release artifact manifest signature before publishing"
+
+# Signing material (release-manifest private keys, Tauri updater key, Apple,
+# Azure Trusted Signing, SSL.com) is stored only in the signing-production /
+# signing-prerelease environments, whose deployment policy admits v* tags
+# alone. The per-job rule for every workflow lives in
+# .github/scripts/check-workflow-security.mjs
+# (signing-secrets-must-use-signing-environment); pin that it stays wired, and
+# that the job holding the manifest private keys declares the environment.
+require_grep "SIGNING_ENVIRONMENT_RULE = 'signing-secrets-must-use-signing-environment'" \
+  .github/scripts/check-workflow-security.mjs \
+  "workflow security checker must enforce signing-secrets-must-use-signing-environment"
+require_grep 'signingEnvironmentViolations\(file, lines\)' \
+  .github/scripts/check-workflow-security.mjs \
+  "workflow security checker must run the signing-environment rule on every workflow"
+CREATE_RELEASE_JOB="$GUARD_TMP_DIR/create-release.yml"
+extract_yaml_job create-release .github/workflows/release.yml "$CREATE_RELEASE_JOB"
+require_grep 'secrets\.RELEASE_MANIFEST_ED25519_PRIVATE_KEY' "$CREATE_RELEASE_JOB" \
+  "create-release must be the job that signs the release artifact manifest"
+require_grep "^    environment:\$" "$CREATE_RELEASE_JOB" \
+  "create-release must declare a signing environment (manifest private keys live only there)"
+require_grep "^      name: \\\$\\{\\{ contains\\(github\\.ref_name, '-'\\) && 'signing-prerelease' \\|\\| 'signing-production' \\}\\}\$" \
+  "$CREATE_RELEASE_JOB" \
+  "create-release must select signing-prerelease for prerelease tags and signing-production otherwise"
 require_grep 'releaseArtifactManifest' apps/api/src/services/installerBuilder.ts \
   "installer fallback fetches must use API-side release artifact manifest verification"
 require_grep 'RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS' apps/api/src/services/releaseArtifactManifest.ts \

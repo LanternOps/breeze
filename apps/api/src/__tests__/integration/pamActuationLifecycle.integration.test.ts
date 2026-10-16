@@ -268,7 +268,9 @@ describe('PAM actuation lifecycle schema governance', () => {
   it('cascades both lifecycle rows with a device', async () => {
     const actuationId = await insertActuation(fixtureA);
     await insertResult(fixtureA, actuationId);
-    await withDbAccessContext(orgContext(fixtureA.orgId), () => db.transaction(async (tx) => {
+    // System scope, as every production caller runs the cascade (its fix-memory
+    // step refuses any other scope, #7278).
+    await withSystemDbAccessContext(() => db.transaction(async (tx) => {
       await deleteDeviceCascade(tx as unknown as DeviceDeletionTx, fixtureA.deviceId);
     }));
     const [counts] = await getTestDb().execute(sql`

@@ -301,3 +301,80 @@ pub fn hide_banner_window(app: &AppHandle) {
         }
     }
 }
+
+/// Create the small dedicated card window for an endpoint message (#8293).
+/// NEVER the main Assist window (#8138): the card is its own
+/// `message-<messageId>` webview, so a user who has not opened Assist does not
+/// get a large app window.
+///
+/// Window contract: `message-<id>` / `index.html#message/<id>`, 400x300,
+/// bottom-right of the primary monitor, undecorated, `skip_taskbar`.
+/// `plan.always_on_top` / `plan.focused` come from the surfacing rules
+/// (`info` never focuses; `critical` focus is rate limited).
+pub fn show_message_window(
+    app: &AppHandle,
+    plan: &super::message::CardPlan,
+    view: &super::message::MessageView,
+) -> Result<(), String> {
+    use super::message::{window_label, window_url, MessageBridge, MsgEvent};
+
+    let label = window_label(&view.message_id);
+    if app.get_webview_window(&label).is_some() {
+        // The tracker already de-duplicates; never build a duplicate label.
+        return Ok(());
+    }
+
+    const CARD_W: f64 = 400.0;
+    const CARD_H: f64 = 300.0;
+    let builder = WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::App(window_url(&view.message_id).into()),
+    )
+    .title("Message from your IT provider")
+    .inner_size(CARD_W, CARD_H)
+    .decorations(false)
+    .always_on_top(plan.always_on_top)
+    .focused(plan.focused)
+    .skip_taskbar(true)
+    .resizable(false);
+    let builder = match primary_bottom_right(app, CARD_W, CARD_H) {
+        Some((x, y)) => builder.position(x, y),
+        None => builder.center(),
+    };
+
+    let win = builder
+        .build()
+        .map_err(|e| format!("create message window: {}", e))?;
+    // A card the OS closed (Alt+F4) without Acknowledge/Close is a dismissal;
+    // the tracker ignores this when the message was already resolved.
+    let handle = app.clone();
+    let id = view.message_id.clone();
+    win.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Some(bridge) = handle.try_state::<std::sync::Arc<MessageBridge>>() {
+                bridge.submit(MsgEvent::Closed(id.clone()));
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Close one message card (ack, retract, expiry).
+pub fn close_message_window(app: &AppHandle, message_id: &str) {
+    if let Some(win) = app.get_webview_window(&super::message::window_label(message_id)) {
+        if let Err(e) = win.close() {
+            eprintln!("[helper] failed to close message window: {}", e);
+        }
+    }
+}
+
+/// Logical bottom-right coordinates for a `w`x`h` window on the primary monitor.
+fn primary_bottom_right(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
+    let monitor = app.primary_monitor().ok().flatten()?;
+    let scale = monitor.scale_factor();
+    let size = monitor.size().to_logical::<f64>(scale);
+    let pos = monitor.position().to_logical::<f64>(scale);
+    // 16px in from the right, clear of a bottom taskbar (~48px).
+    Some((pos.x + size.width - w - 16.0, pos.y + size.height - h - 64.0))
+}

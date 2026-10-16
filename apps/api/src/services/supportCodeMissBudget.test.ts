@@ -91,6 +91,44 @@ afterEach(() => {
   _resetSupportCodeMissBudgetStateForTests();
 });
 
+describe('caller-verification namespace (#6354 W03)', () => {
+  const cvSource = (folded: string) => `caller-verification:miss-budget:src:${folded}`;
+
+  it('caller-verification misses never exhaust Quick Support, and vice versa', async () => {
+    const redis = fakeRedis();
+    for (let n = 0; n < MISS_BUDGET_PER_SOURCE_PER_WINDOW; n++) await recordSupportCodeMiss(redis, IP_A, 'caller-verification');
+    expect(await isSupportCodeMissBudgetExhausted(redis, IP_A, 'caller-verification')).toBe(true);
+    expect(await isSupportCodeMissBudgetExhausted(redis, IP_A)).toBe(false);
+    expect(await isSupportCodeMissBudgetExhausted(redis, IP_B, 'caller-verification')).toBe(false);
+    expect(redis.countSource(IP_A)).toBe(0);
+    expect(redis.countGlobal()).toBe(0);
+  });
+
+  it('keeps its own global backstop', async () => {
+    const redis = fakeRedis({ 'caller-verification:miss-budget': fresh(MISS_BUDGET_GLOBAL_PER_WINDOW) });
+    expect(await isSupportCodeMissBudgetExhausted(redis, IP_A, 'caller-verification')).toBe(true);
+    expect(await isSupportCodeMissBudgetExhausted(redis, IP_A)).toBe(false);
+  });
+
+  it('never touches Quick Support metrics or its once-per-window warn', async () => {
+    const onMiss = vi.fn(), onGlobalBudgetTrip = vi.fn(), onSourceBudgetTrip = vi.fn();
+    setSupportCodeMetricsRecorder({ onMiss, onGlobalBudgetTrip, onSourceBudgetTrip });
+    const redis = fakeRedis({
+      'caller-verification:miss-budget': fresh(MISS_BUDGET_GLOBAL_PER_WINDOW),
+      [cvSource(IP_A)]: fresh(MISS_BUDGET_PER_SOURCE_PER_WINDOW - 1),
+    });
+    await recordSupportCodeMiss(redis, IP_A, 'caller-verification');
+    expect(onMiss).not.toHaveBeenCalled();
+    expect(onGlobalBudgetTrip).not.toHaveBeenCalled();
+    expect(onSourceBudgetTrip).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    // The support latch is still armed: a real support trip still warns.
+    const support = fakeRedis({ [GLOBAL_KEY]: fresh(MISS_BUDGET_GLOBAL_PER_WINDOW) });
+    await recordSupportCodeMiss(support, IP_A);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('isSupportCodeMissBudgetExhausted', () => {
   it('is exhausted when the caller /64 sub-budget is at its limit', async () => {
     const under = fakeRedis({ [sourceKey(IP_A)]: fresh(MISS_BUDGET_PER_SOURCE_PER_WINDOW - 1) });

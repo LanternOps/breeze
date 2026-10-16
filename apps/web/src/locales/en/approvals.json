@@ -147,5 +147,18 @@
       "private_keys": "Private keys (SSH, GnuPG, TLS)",
       "session_tokens": "Stored session tokens and cloud credentials"
     }
+  },
+  "operatorPlan": {
+    "title": "Plan for AI Operator task",
+    "summary_one": "{{count}} effect, plan revision {{revision}}",
+    "summary_other": "{{count}} effects, plan revision {{revision}}",
+    "groupBreeze": "Breeze devices",
+    "groupM365": "Microsoft 365",
+    "groupGoogle": "Google Workspace",
+    "effectOrdinal": "Step {{ordinal}}",
+    "targetLine": "{{targetLabel}} ({{principalLabel}})",
+    "orderNote": "Effects run in this order. Sign-in is disabled last, so stopping early never leaves mail unrouted.",
+    "empty": "This plan contains no effects.",
+    "invalid": "This plan could not be displayed in full. Do not approve it."
   }
 }

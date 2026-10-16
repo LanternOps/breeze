@@ -14,7 +14,10 @@ export const PORTAL_CUSTOM_CSS_MAX_LENGTH = 65_536;
 // apps/api re-exports it from services/portal/portalFlags.ts. Waves 5 and 6 of
 // the portal advanced visibility feature (#7730) add enablePatchDetail and
 // enableVulnerabilityDetail.
-export const PORTAL_SENSITIVE_FLAG_KEYS = ['enableNetworkAlerts'] as const;
+// enableHourBlock (block hours W04) exposes a prepaid-hours balance.
+// enablePatchDetail (visibility W05) exposes per-host missing/pending patches.
+// enableVulnerabilityDetail (visibility W06) exposes per-host CVE findings.
+export const PORTAL_SENSITIVE_FLAG_KEYS = ['enableNetworkAlerts', 'enableHourBlock', 'enablePatchDetail', 'enableVulnerabilityDetail'] as const;
 export type PortalSensitiveFlag = typeof PORTAL_SENSITIVE_FLAG_KEYS[number];
 
 // This CSS is served verbatim to end users of the customer portal (no
@@ -119,9 +122,25 @@ export const updatePortalSettingsSchema = z.object({
   enableHardwareHealth: z.boolean().optional(),
   // Portal advanced visibility W02 (#7732): hardware inventory, fail closed.
   enableHardwareInventory: z.boolean().optional(),
+  // Portal advanced visibility W03 (#7733): performance metrics, fail closed.
+  enablePerformanceMetrics: z.boolean().optional(),
+  // Portal advanced visibility W04 (#7734): software inventory, fail closed.
+  enableSoftwareInventory: z.boolean().optional(),
   // Customer Portal Network Visibility (#5861): fail closed by default.
   enableNetworkVisibility: z.boolean().optional(),
   enableNetworkAlerts: z.boolean().optional(),
+  // EDR provider framework W02 (#8166): managed endpoint protection, fail closed.
+  // Strict but NOT sensitive: "Enable all" sets it.
+  enableEdrVisibility: z.boolean().optional(),
+  // Block hours W04 (#8179): fail closed, default false. NOT a visibility
+  // flag ("Enable all" never sets it).
+  enableHourBlock: z.boolean().optional(),
+  // Portal advanced visibility W05 (#7735): patch detail, fail closed. Sensitive:
+  // "Enable all" never sets it.
+  enablePatchDetail: z.boolean().optional(),
+  // Portal advanced visibility W06 (#7736): vulnerability detail, fail closed. Sensitive:
+  // "Enable all" never sets it.
+  enableVulnerabilityDetail: z.boolean().optional(),
   supportEmail: z.string().email().max(255).nullable().optional(),
   supportPhone: z.string().max(50).nullable().optional(),
   welcomeMessage: z.string().max(2000).nullable().optional(),

@@ -228,6 +228,10 @@ For Windows devices, you can push the baseline audit policy settings directly to
 
    A different user (the requester cannot approve their own request) calls `POST /audit-baselines/apply-requests/:approvalId/decision` with `decision: "approved"` or `decision: "rejected"`.
 
+   Approving needs MFA when your MFA policy requires it: if the approver's session has not completed MFA, the API returns `403` with `code: "MFA_REQUIRED"`. API keys and other non-interactive principals have no MFA session, so they cannot approve apply requests while MFA is enabled. Rejecting a request does not need MFA.
+
+   When approving, every device in the request must still exist in the organization. If any device has since been removed (decommissioned or deleted) or moved to another organization, approval returns `409` and the request stays pending. Reject it and have the requester submit a new one. Only a pending request can be decided. If another decision or the expiry lands first, the API returns `409` ("Apply request was already decided").
+
    Approval requests expire after a configurable duration (default: 60 minutes, range: 5-1440 minutes). Expired requests are automatically marked as `expired` and cannot be approved.
 
 3. **Execute the apply**
@@ -235,7 +239,7 @@ For Windows devices, you can push the baseline audit policy settings directly to
    Call `POST /audit-baselines/apply` with the baseline ID, device IDs, and the `approvalRequestId`. The API:
 
    - Verifies the approval is in `approved` status and has not been consumed or expired.
-   - Verifies the device set matches the originally approved set.
+   - Verifies the device set matches the originally approved set, and that every approved device still exists in the organization and is not decommissioned. Otherwise it returns `409` and leaves the approval unconsumed.
    - Atomically marks the approval as `consumed` (preventing double-use).
    - Queues an `apply_audit_policy_baseline` command for each eligible device with the baseline settings as the payload.
 

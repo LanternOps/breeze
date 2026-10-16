@@ -5,10 +5,10 @@
  * foreign offering is never described by any other reason.
  */
 import {
-  GATEWAY_CONNECTION_KINDS,
+  AI_DISPATCHABLE_CONNECTION_KINDS,
   TOOL_REQUIRING_SURFACES,
+  type AiDispatchableConnectionKind,
   type AiSurface,
-  type GatewayConnectionKind,
   type OfferingEnableBlocker,
 } from '@breeze/shared';
 import type { RateSnapshot } from './pricing';
@@ -35,15 +35,15 @@ export type ResolveFailureReason =
   /** Task 6A: the partner has not been cut over to the registry yet and could not be now. */
   | 'registry_unavailable';
 
-export type ConnectionKind = 'platform' | 'anthropic_byok' | 'catalog' | GatewayConnectionKind;
+export type ConnectionKind = AiDispatchableConnectionKind;
 
 /**
  * Dispatchable kinds. W06 added the gateway kinds (openai_compatible), whose
  * capabilities come only from a current verification (gatewayCapabilities.ts);
- * W07 widens GATEWAY_CONNECTION_KINDS with the cloud kinds.
+ * W07 widens the shared connection-kind lists with the cloud kinds.
  */
 const DISPATCHABLE_KINDS: ReadonlySet<ConnectionKind> = new Set<ConnectionKind>([
-  'platform', 'anthropic_byok', 'catalog', ...GATEWAY_CONNECTION_KINDS,
+  ...AI_DISPATCHABLE_CONNECTION_KINDS,
 ]);
 
 export interface CandidateFacts {

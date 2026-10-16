@@ -811,9 +811,9 @@ Network discovery, SNMP polling, and connectivity checks for monitoring.
 
 | Param | Type | Default | Description |
 |---|---|---|---|
-| `subnets` | string[] | -- | CIDR subnets to scan (e.g. `["192.168.1.0/24"]`) |
+| `subnets` | string[] | Required | CIDR subnets to scan (e.g. `["192.168.1.0/24"]`) |
 | `excludeIps` | string[] | -- | IP addresses to skip |
-| `methods` | string[] | -- | Scan methods: `ping`, `arp`, `port` |
+| `methods` | string[] | `arp`, `ping`, `port_scan`, `snmp` | Scan methods: `ping`, `arp`, `port_scan` (or `ports`), `snmp` |
 | `portRanges` | string[] | -- | Port ranges for port scanning (e.g. `["22", "80", "443"]`) |
 | `snmpCommunities` | string[] | -- | SNMPv1/v2c community strings to try |
 | `snmpCredentials` | object | -- | Structured SNMP credential (`version`, `username`, `authProtocol`, `authPassphrase`, `privacyProtocol`, `privacyPassphrase`, `port`, `timeout` in ms, `retries`); tried before `snmpCommunities`. `public` is only used when neither is set |
@@ -998,6 +998,7 @@ These commands require the user-mode helper process to be running in a user's se
 |---|---|---|
 | `notify_user` | Send a desktop notification | `title`, `body`, `icon`, `urgency`, `username`, `actions` |
 | `tray_update` | Update the system tray icon/menu | `status`, `tooltip`, `menuItems` |
+| `caller_verify` | Ask the console user to confirm a support request | `verificationId`, `username`, `choices`, `timeoutMs` |
 
 ### `notify_user`
 
@@ -1017,6 +1018,30 @@ These commands require the user-mode helper process to be running in a user's se
 | `status` | string | `"ok"` | Tray icon status indicator |
 | `tooltip` | string | `"Breeze Agent"` | Tooltip text |
 | `menuItems` | array | -- | Array of `{ id, label, enabled }` menu items |
+
+### `caller_verify`
+
+Asks the **explicitly selected console user** to confirm a support request on their screen. It needs a current Breeze agent and a Breeze Assist helper that advertises the `callerVerify` capability. The API creates the command in the same transaction as the verification, sends it after commit, and the start request returns while the technician polls status. The command is never queued for an offline device; it expires with the verification.
+
+| Payload field | Meaning |
+|---|---|
+| `verificationId` | Verification UUID |
+| `username` | Explicit OS login on that device; there is no "preferred user" fallback |
+| `technicianName`, `orgName` | Shown on the card |
+| `actionLabel`, `targetLabel` | The exact requested action and account |
+| `reverseCode` | Four-digit request code shown on the card |
+| `choices` | Three distinct two-digit numbers, in display order |
+| `timeoutMs` | 30,000–300,000 ms |
+
+The result (`stdout` JSON) contains `delivered`, an optional `choice` (one of the three numbers, `"not_me"` or `"timeout"`), an optional `principal` (exactly one of `sid` or numeric `uid`, plus `username` and an optional OS-provided `upn`), an optional `helperVersion`, and on `delivered: false` an `error` of `no_session_for_user`, `session_not_console` or `helper_outdated`. The agent reports the OS principal itself; the helper never supplies identity.
+
+- Only the Assist helper in the user's **active console session** can show the card. Remote (RDP/SSH) sessions and native user helpers cannot.
+- Closing the window, losing the helper, an unexpected answer or reaching the deadline never approves.
+- "This is not me" is honoured even after the command already finished, over either transport.
+- An answer from a principal already bound to the contact's directory identity is tier 3; any other workstation answer is tier 1.
+- Number matching confirms the request; it does not prove the technician's identity. If unsure, hang up and call the MSP on a number you already have.
+
+The feature stays hidden behind `CALLER_VERIFICATION_ENABLED`. Promote both the agent and the Assist helper before expecting workstation availability; the agent reports readiness in each heartbeat (`helperCapabilities`).
 
 ---
 

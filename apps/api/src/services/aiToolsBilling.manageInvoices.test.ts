@@ -10,6 +10,11 @@ vi.mock('./invoiceService', () => ({
   addContractLine: vi.fn().mockResolvedValue({ id: 'line-1' }),
   updateLine: vi.fn().mockResolvedValue({ id: 'inv-1', status: 'draft' }),
   removeLine: vi.fn().mockResolvedValue({ id: 'inv-1', status: 'draft' }),
+  refreshDraftTimeLines: vi.fn().mockResolvedValue({
+    invoiceId: 'inv-1', orgId: 'org-1',
+    summary: { refreshed: 1, unchanged: 0, skipped: 0, quantityDrifted: 0 },
+    lines: [{ lineId: 'line-1', status: 'refreshed', changed: ['description'] }],
+  }),
   updateInvoice: vi.fn().mockResolvedValue({ id: 'inv-1', status: 'draft' }),
   deleteDraftInvoice: vi.fn().mockResolvedValue(undefined),
   assembleDraftFromOrg: vi.fn().mockResolvedValue({ invoice: { id: 'inv-1' }, lines: [] }),
@@ -267,7 +272,7 @@ describe('manage_invoices', () => {
       periodTotal: '37.50',
       lines: [{ lineId: 'contract-line-1', lineType: 'per_device', quantity: 3, value: '37.50', live: true, counted: 3, included: null, overage: 0, overageMode: null, overageValue: '0.00' }],
       uncoveredDevices: null,
-      overages: [],
+      overages: [], hourBlock: null,
       };
     });
 
@@ -288,7 +293,7 @@ describe('manage_invoices', () => {
     );
 
     expect(contractService.getContract).toHaveBeenCalledWith('contract-1', contractActor);
-    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', contractActor, expect.any(Map));
+    expect(contractService.computeContractEstimate).toHaveBeenCalledWith('contract-1', contractActor, expect.any(Map), { includeHourBlock: false });
     expect(contractService.materializeContractLineOntoInvoice).toHaveBeenCalledWith(actor, {
       invoiceId: 'inv-1',
       contract: expect.objectContaining({ id: 'contract-1', currencyCode: 'USD' }),
@@ -309,7 +314,7 @@ describe('manage_invoices', () => {
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD', periodTotal: '12.50',
       lines: [{ lineId: line.id, lineType: 'flat', quantity: 1, value: '12.50', live: false, counted: 1, included: null, overage: 0, overageMode: null, overageValue: '0.00' }],
-      uncoveredDevices: null, overages: [],
+      uncoveredDevices: null, overages: [], hourBlock: null,
     });
 
     const out = JSON.parse(await getTool().handler({
@@ -372,7 +377,7 @@ describe('manage_invoices', () => {
     vi.mocked(contractService.computeContractEstimate).mockResolvedValueOnce({
       currencyCode: 'USD', periodTotal: '390.00',
       lines: [{ lineId: rereadLine.id, lineType: 'per_device', quantity: 30, value: '375.00', live: true, counted: 31, included: 30, overage: 1, overageMode: 'bill', overageValue: '15.00' }],
-      uncoveredDevices: null, overages: [],
+      uncoveredDevices: null, overages: [], hourBlock: null,
     });
 
     await getTool().handler({
@@ -396,7 +401,7 @@ describe('manage_invoices', () => {
       currencyCode: 'USD', periodTotal: '262.00',
       lines: [{ lineId: line.id, lineType: 'per_device', quantity: 25, value: '250.00', live: true, counted: 26, included: 25, overage: 1, overageMode: 'bill', overageValue: '12.00' }],
       uncoveredDevices: null,
-      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'bill' }],
+      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'bill' }], hourBlock: null,
     });
     vi.mocked(contractService.materializeContractLineOntoInvoice).mockResolvedValueOnce({
       baseLine: { id: 'base-line' }, overageLine: { id: 'overage-line' }, pricedFrom: 'contract_snapshot',
@@ -421,7 +426,7 @@ describe('manage_invoices', () => {
       currencyCode: 'USD', periodTotal: '250.00',
       lines: [{ lineId: line.id, lineType: 'per_device', quantity: 25, value: '250.00', live: true, counted: 26, included: 25, overage: 1, overageMode: 'flag', overageValue: '0.00' }],
       uncoveredDevices: null,
-      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'flag' }],
+      overages: [{ contractLineId: line.id, invoiceLineId: null, description: line.description, counted: 26, included: 25, overage: 1, mode: 'flag' }], hourBlock: null,
     });
     vi.mocked(contractService.materializeContractLineOntoInvoice).mockResolvedValueOnce({
       baseLine: { id: 'base-line' }, overageLine: null, pricedFrom: 'contract_snapshot',
@@ -646,6 +651,39 @@ describe('manage_invoices', () => {
     expect(parsed.code).toBe('VALIDATION_ERROR');
     expect(invoiceService.updateLine).not.toHaveBeenCalled();
   });
+
+  it('refresh_time_lines (#8606) refreshes the draft and returns the per-line outcome', async () => {
+    const out = await getTool().handler({ action: 'refresh_time_lines', invoiceId: 'inv-1' }, auth);
+    expect(JSON.parse(out)).toMatchObject({ summary: { refreshed: 1 }, lines: [{ lineId: 'line-1', status: 'refreshed' }] });
+    expect(invoiceService.refreshDraftTimeLines).toHaveBeenCalledWith('inv-1', expect.objectContaining({ partnerId: expect.anything() }));
+  });
+
+  it('refresh_time_lines warns the model when a billed-elsewhere line will block issue', async () => {
+    vi.mocked(invoiceService.refreshDraftTimeLines).mockResolvedValueOnce({
+      invoiceId: 'inv-1', orgId: 'org-1',
+      summary: { refreshed: 0, unchanged: 0, skipped: 1, quantityDrifted: 0 },
+      lines: [{ lineId: 'line-9', status: 'skipped', reason: 'billed_elsewhere' }],
+    });
+    const parsed = JSON.parse(await getTool().handler({ action: 'refresh_time_lines', invoiceId: 'inv-1' }, auth));
+    expect(parsed.issueBlockedByLineIds).toEqual(['line-9']);
+    expect(parsed.warning).toMatch(/SOURCE_ALREADY_BILLED/);
+  });
+
+  it('refresh_time_lines without invoiceId is refused before the service', async () => {
+    const out = await getTool().handler({ action: 'refresh_time_lines' }, auth);
+    expect(JSON.parse(out).code).toBe('VALIDATION_ERROR');
+    expect(invoiceService.refreshDraftTimeLines).not.toHaveBeenCalled();
+  });
+
+  it('refresh_time_lines is a Tier-2 invoices:write action in every schema and guardrail map', async () => {
+    const { toolInputSchemas } = await import('./aiToolSchemas');
+    const { TOOL_PERMISSIONS, TIER3_ACTIONS } = await import('./aiGuardrails');
+    expect(toolInputSchemas.manage_invoices!.safeParse({ action: 'refresh_time_lines', invoiceId: '11111111-1111-4111-8111-111111111111' }).success).toBe(true);
+    expect((TOOL_PERMISSIONS.manage_invoices as Record<string, unknown>).refresh_time_lines).toEqual({ resource: 'invoices', action: 'write' });
+    expect(TIER3_ACTIONS.manage_invoices).not.toContain('refresh_time_lines');
+    const def = getTool().definition.input_schema.properties as Record<string, { enum?: string[] }>;
+    expect(def.action!.enum).toContain('refresh_time_lines');
+  }, 60_000);
 
   it('update_header with an invalid patch field returns a structured VALIDATION_ERROR (BUG1 sibling fix)', async () => {
     const out = await getTool().handler(

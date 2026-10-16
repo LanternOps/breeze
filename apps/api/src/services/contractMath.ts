@@ -75,6 +75,52 @@ export function duePeriodStartFor(billingTiming: BillingTiming, nextBillingAt: s
   return billingTiming === 'advance' ? nextBillingAt : addMonthsClamped(nextBillingAt, -intervalMonths);
 }
 
+/** UTC calendar date of `asOf`. Contracts carry no timezone, so every "today" in
+ *  the billing code is UTC (the claim query and the hour-block boundaries use the
+ *  same convention). */
+export function todayISO(asOf: Date = new Date()): string {
+  return asOf.toISOString().slice(0, 10);
+}
+
+/**
+ * Index C9: the first period whose block-hours fee has not yet been claimed, i.e.
+ * where entitlement starts because the fee starts. Active: the period the billing
+ * pointer will claim next (advance: the next period; arrears: the period in
+ * progress). Draft: nothing is claimed, so the first period — provisional until
+ * activateContract re-stamps it. Null when a non-draft contract has no pointer.
+ *
+ * Built from computePeriod/periodIndexFor, NOT duePeriodStartFor: `nextBillingAt`
+ * is always a period boundary, so periodIndexFor returns its exact index k; the
+ * pointer is period k's START (advance) or END (arrears, so the period in
+ * progress is k-1). addMonthsClamped(nextBillingAt, -interval) would mis-derive
+ * month-end starts. This is the PURE candidate; the caller must still walk it past
+ * periods that are already claimed (advancePastClaimed) — a pause -> resume resets
+ * an advance pointer onto a claimed period.
+ */
+export function firstUnclaimedPeriodStart(c: {
+  status: string; startDate: string; intervalMonths: number;
+  billingTiming: BillingTiming; nextBillingAt: string | null;
+}): string | null {
+  if (c.status === 'draft') return c.startDate;
+  if (c.nextBillingAt === null) return null;
+  const k = periodIndexFor(c.startDate, c.intervalMonths, c.nextBillingAt);
+  const idx = c.billingTiming === 'arrears' ? Math.max(0, k - 1) : k;
+  return computePeriod(c.startDate, c.intervalMonths, idx).periodStart;
+}
+
+/** `candidate` is a period boundary; step forward one period at a time while it is in `claimedStarts`. */
+export function advancePastClaimed(
+  candidate: string, claimedStarts: ReadonlySet<string>, startDate: string, intervalMonths: number,
+): string {
+  let idx = periodIndexFor(startDate, intervalMonths, candidate);
+  let start = computePeriod(startDate, intervalMonths, idx).periodStart;
+  for (let guard = 0; claimedStarts.has(start) && guard < 100000; guard++) {
+    idx += 1;
+    start = computePeriod(startDate, intervalMonths, idx).periodStart;
+  }
+  return start;
+}
+
 /** True when asOf is in [endDate - noticeDays, endDate). */
 export function isWithinNoticeWindow(asOf: string, endDate: string, noticeDays: number): boolean {
   const windowStart = addDaysISO(endDate, -noticeDays);

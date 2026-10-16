@@ -321,6 +321,36 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     expect(post?.body?.orgId).toBe('org-1');
   });
 
+  it('rejects a past expiry inline, sets a min on the input, and does not submit', async () => {
+    seedOrgState({ currentOrgId: 'org-1', organizations: [makeOrg('org-1', 'Org One')] });
+    const calls = routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+    render(<EnrollmentKeyManager />);
+    await screen.findByText(EMPTY);
+
+    fireEvent.click(screen.getByText('Create Key'));
+    fireEvent.change(screen.getByPlaceholderText('e.g., Production servers'), {
+      target: { value: 'Past key' },
+    });
+    const siteSelect = screen.getByTestId('enrollment-key-site-select');
+    await waitFor(() => {
+      expect(siteSelect).toBeEnabled();
+      expect(siteSelect).toHaveValue('site-a');
+    });
+
+    const expiry = screen.getByTestId('enrollment-key-expires-at') as HTMLInputElement;
+    expect(expiry.min).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+
+    fireEvent.change(expiry, { target: { value: '2020-01-01T00:00' } });
+    expect(await screen.findByText('Expiry must be in the future.')).toBeInTheDocument();
+    const submit = document.querySelector('form button[type="submit"]') as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.submit(submit.closest('form')!);
+    expect(calls.some((c) => c.url === '/enrollment-keys' && c.method === 'POST')).toBe(false);
+
+    fireEvent.change(expiry, { target: { value: '' } });
+    expect(screen.queryByText('Expiry must be in the future.')).toBeNull();
+  });
+
   it('leaving the device-limit field blank sends the 50-device default, not a single-use maxUsage (#4126 paper cut #31)', async () => {
     seedOrgState({
       currentOrgId: 'org-1',

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
@@ -9,6 +9,8 @@ import { devicePatches, devices, patchComplianceReports, patches, patchSourceEnu
 import { getBullMQConnection, isRedisAvailable } from '../services/redis';
 import { EFFECTIVE_PATCH_SEVERITY_SQL } from '../services/patchSeverityOverlay';
 import { csvRow } from '../services/spreadsheetExport';
+import { patchReportStorageDir } from '../services/patchReportFiles';
+import { errnoCode } from '../utils/fsErrno';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -19,6 +21,12 @@ import {
 import { attachWorkerObservability } from './workerObservability';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { compliancePercentWithImageTerm, type ContainerImageComplianceTerms } from '@breeze/shared';
+import {
+  containerImageComplianceTerms,
+  imageTermAppliesToView,
+  sumContainerImageTerms,
+} from '../services/workloads/imageCompliance';
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -30,7 +38,6 @@ const runOutsideRequestDbContext = <T>(fn: () => Promise<T>): Promise<T> => {
 };
 
 const PATCH_COMPLIANCE_REPORT_QUEUE = 'patch-compliance-reports';
-const PATCH_REPORT_STORAGE_PATH = process.env.PATCH_REPORT_STORAGE_PATH || './data/patch-reports';
 
 /**
  * BullMQ's own job lock. A `running` row whose `started_at` is older than this
@@ -66,12 +73,17 @@ type ComplianceSummary = {
   missing: number;
   skipped: number;
   compliancePercent: number;
+  /** W06: present only when the org has container images to count (and the report is unfiltered). */
+  containerImages?: ContainerImageComplianceTerms;
 };
 
 let patchComplianceReportQueue: Queue<PatchComplianceReportJobData> | null = null;
 let patchComplianceReportWorker: Worker<PatchComplianceReportJobData> | null = null;
 
-function buildSummaryFromRows(rows: Array<{ status: string; count: number }>): ComplianceSummary {
+function buildSummaryFromRows(
+  rows: Array<{ status: string; count: number }>,
+  imageTerms: ContainerImageComplianceTerms | null = null,
+): ComplianceSummary {
   const summary = {
     total: 0,
     pending: 0,
@@ -90,13 +102,15 @@ function buildSummaryFromRows(rows: Array<{ status: string; count: number }>): C
     }
   }
 
-  const compliancePercent = summary.total > 0
-    ? Math.round((summary.installed / summary.total) * 100)
-    : 100;
+  // W06 (#8195): a stale image is one more pending item, a current image one
+  // more installed item; unknowns never enter the ratio. `total` and the
+  // status counts stay OS-patch counts (rowCount is derived from them).
+  const compliancePercent = compliancePercentWithImageTerm(summary.installed, summary.total, imageTerms);
 
   return {
     ...summary,
-    compliancePercent
+    compliancePercent,
+    ...(imageTerms ? { containerImages: imageTerms } : {})
   };
 }
 
@@ -151,11 +165,22 @@ export async function generateComplianceSummary(
     .where(and(...complianceConditions))
     .groupBy(devicePatches.status);
 
+  // Same device population as the aggregate above (org, non-ephemeral, not
+  // parked, the effective site scope). A severity/source-filtered report is
+  // about patches with that property, which an image does not have.
+  const imageTerms = imageTermAppliesToView({ source, severity })
+    ? sumContainerImageTerms((await containerImageComplianceTerms({
+        orgIds: [orgId],
+        ...(scope.kind === 'restricted' ? { siteIds: scope.siteIds } : {}),
+      })).values())
+    : null;
+
   return buildSummaryFromRows(
     statusCounts.map((row) => ({
       status: row.status,
       count: Number(row.count)
-    }))
+    })),
+    imageTerms
   );
 }
 
@@ -175,6 +200,13 @@ export function formatComplianceCsv(reportId: string, orgId: string, source: Pat
     ['skipped', summary.skipped],
     ['compliance_percent', summary.compliancePercent]
   ];
+  if (summary.containerImages) {
+    rows.push(
+      ['stale_images', summary.containerImages.stale],
+      ['current_images', summary.containerImages.current],
+      ['images_not_checked', summary.containerImages.unknown]
+    );
+  }
 
   return [
     csvRow(['metric', 'value']),
@@ -297,8 +329,9 @@ async function processGenerateComplianceReport(
     report.severity as PatchSeverity | null
   );
 
-  await mkdir(PATCH_REPORT_STORAGE_PATH, { recursive: true });
-  const outputPath = path.resolve(PATCH_REPORT_STORAGE_PATH, `${report.id}.csv`);
+  const storageDir = patchReportStorageDir();
+  await mkdir(storageDir, { recursive: true });
+  const outputPath = path.join(storageDir, `${report.id}.csv`);
   const csv = formatComplianceCsv(
     report.id,
     report.orgId,
@@ -309,7 +342,7 @@ async function processGenerateComplianceReport(
 
   await writeFile(outputPath, csv, 'utf8');
 
-  await db
+  const completed = await db
     .update(patchComplianceReports)
     .set({
       status: 'completed',
@@ -320,7 +353,24 @@ async function processGenerateComplianceReport(
       outputPath,
       errorMessage: null
     })
-    .where(eq(patchComplianceReports.id, report.id));
+    .where(eq(patchComplianceReports.id, report.id))
+    .returning({ id: patchComplianceReports.id });
+  if (completed.length === 0) {
+    // Belt-and-braces; not expected to run. The claim UPDATE above holds this
+    // row's lock in the same transaction, so an org erasure's DELETE waits
+    // for this transaction to commit and then removes the file itself (the
+    // cascade step returns the final output_path). Should the row ever be
+    // missing here anyway, nothing would point at the file, so remove it now
+    // rather than leave it to the retention job's orphan sweep.
+    try {
+      await unlink(outputPath);
+    } catch (err) {
+      if (errnoCode(err) !== 'ENOENT') {
+        console.error(`[PatchComplianceReportWorker] report ${report.id} was deleted during generation and its file could not be removed:`, err);
+      }
+    }
+    return null;
+  }
 
   return {
     outputPath,

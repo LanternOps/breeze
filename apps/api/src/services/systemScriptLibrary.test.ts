@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
 
 const h = vi.hoisted(() => ({
   cuts: [] as Array<{ scriptId: string; provenance: Record<string, unknown> }>,
@@ -135,6 +136,110 @@ describe('SYSTEM_LIBRARY_SCRIPTS definitions', () => {
       for (const pattern of blocked) {
         expect(def.content).not.toMatch(pattern);
       }
+    }
+  });
+});
+
+// #5016 — the script used to run the whole uninstall -> restore -> install
+// dance inside the agent's own script process. The uninstall stops that agent,
+// and a script cannot outlive its agent: current agents contain every script in
+// a KILL_ON_JOB_CLOSE Job Object (agent/internal/executor/job.go), which the
+// kernel fires the moment the agent process exits — killing the script between
+// the uninstall and the install and leaving the device agent-less. Only a
+// script that EXITS NORMALLY gets its containment released (releaseContainment)
+// so detached descendants survive. So the destructive leg must run in a
+// detached stage 2 that starts only after stage 1 has exited.
+describe('edition migration hand-off to a detached stage 2 (#5016)', () => {
+  const content = () => editionMigration!.content;
+  const stage2 = () => {
+    const c = content();
+    const start = c.indexOf("$stage2Script = @'");
+    const end = c.indexOf("\n'@", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return c.slice(start, end);
+  };
+  const stage1 = () => content().replace(stage2(), '');
+
+  it('stage 1 (the agent-hosted process) never runs msiexec itself', () => {
+    expect(stage1()).not.toMatch(/msiexec/i);
+    expect(stage2()).toMatch(/'\/x \{0\}/);
+    expect(stage2()).toMatch(/'\/i "\{0\}"/);
+  });
+
+  it('stage 1 launches stage 2 as a separate hidden powershell and exits 0 only after a go marker', () => {
+    const s1 = stage1();
+    expect(s1).toMatch(/Start-Process -FilePath \$psExe/);
+    expect(s1).toContain('-ParentPid');
+    const go = s1.indexOf('Set-Content -LiteralPath $go');
+    expect(go).toBeGreaterThan(-1);
+    // The go marker is the LAST thing stage 1 does before exit 0: stage 2 aborts
+    // (nothing touched) unless stage 1 got all the way through.
+    expect(s1.slice(go)).toMatch(/^Set-Content -LiteralPath \$go[^\n]*\n\s*exit 0/);
+  });
+
+  it('stage 2 waits for stage 1 to exit and checks the go marker before uninstalling', () => {
+    const s2 = stage2();
+    const wait = s2.indexOf('Wait-Process -Id $ParentPid');
+    const goCheck = s2.indexOf('Test-Path -LiteralPath $go');
+    const uninstall = s2.indexOf("'/x {0}");
+    expect(wait).toBeGreaterThan(-1);
+    expect(goCheck).toBeGreaterThan(wait);
+    expect(uninstall).toBeGreaterThan(goCheck);
+  });
+
+  it('stage 2 never writes to stdout/stderr (nothing reads them once the agent is gone)', () => {
+    expect(stage2()).not.toMatch(/Write-(Output|Host|Error|Warning)/);
+  });
+
+  it('stage 2 retries msiexec on 1618 (another installation in progress)', () => {
+    expect(stage2()).toContain('1618');
+  });
+
+  it('stage 2 keeps the identity backup unless the agent is confirmed running', () => {
+    const s2 = stage2();
+    const cleanup = s2.indexOf('Remove-Item -LiteralPath $bak');
+    const running = s2.indexOf("BreezeAgent running'");
+    expect(running).toBeGreaterThan(-1);
+    expect(cleanup).toBeGreaterThan(running);
+  });
+
+  it('stage 1 refuses a work dir owned by anyone but SYSTEM/Administrators (stage 2 runs from it as SYSTEM)', () => {
+    const s1 = stage1();
+    expect(s1).toContain('GetOwner([System.Security.Principal.SecurityIdentifier])');
+    expect(s1).toContain("'S-1-5-18'");
+    expect(s1).toContain("'S-1-5-32-544'");
+  });
+
+  it('stage 1 never re-uses a work dir it did not create or verify, and re-checks it after locking the ACL', () => {
+    const s1 = stage1();
+    // Created without -Force: if something appeared at the path after the
+    // checks (a planted junction), creation fails and the script aborts.
+    expect(s1).toContain('New-Item -ItemType Directory -Path $work -ErrorAction Stop');
+    expect(s1).not.toMatch(/New-Item -ItemType Directory -Force -Path \$work/);
+    // After icacls, the dir and every top-level entry must be a non-link owned
+    // by SYSTEM/Administrators — a child planted before the ACL landed aborts.
+    const lock = s1.indexOf('& icacls $work');
+    const recheck = s1.indexOf('Get-ChildItem -LiteralPath $work -Force');
+    expect(lock).toBeGreaterThan(-1);
+    expect(recheck).toBeGreaterThan(lock);
+  });
+
+  // Parses both stages with the real PowerShell parser when pwsh is on PATH
+  // (developer machines); CI images without pwsh skip it.
+  const hasPwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;
+  it.runIf(hasPwsh)('both stages parse without PowerShell syntax errors', () => {
+    for (const [label, src] of [['stage1', content()], ['stage2', stage2().replace("$stage2Script = @'\n", '')]] as const) {
+      const r = spawnSync(
+        'pwsh',
+        [
+          '-NoProfile',
+          '-Command',
+          '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(), [ref]$null, [ref]$e); if ($e.Count) { $e | ForEach-Object { $_.ToString() }; exit 1 }',
+        ],
+        { input: src, encoding: 'utf8' },
+      );
+      expect(r.status, `${label}: ${r.stdout}${r.stderr}`).toBe(0);
     }
   });
 });

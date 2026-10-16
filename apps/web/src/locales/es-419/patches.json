@@ -72,7 +72,9 @@
       "queued": "Informe de cumplimiento {{reportId}} en cola. Preparando descarga...",
       "ready": "El informe de cumplimiento {{reportId}} está listo. Iniciando descarga...",
       "failed": "Error en el informe de cumplimiento {{reportId}}",
+      "expired": "El informe de cumplimiento {{reportId}} venció. Genera un informe nuevo para descargarlo.",
       "checkFailed": "No se pudo verificar el estado del informe",
+      "downloadFailed": "No se pudo descargar el informe de cumplimiento {{reportId}}",
       "noReportId": "El informe estaba en cola pero no se devolvió ningún informe ID"
     },
     "summary": {
@@ -81,8 +83,12 @@
       "pendingDevices": "{{count}} tiene parches pendientes",
       "approved": "{{count}} aprobado",
       "pendingApproval": "{{count}} pendiente de aprobación",
+      "failedInstalls_one": "{{count}} instalación fallida",
+      "failedInstalls_other": "{{count}} instalaciones fallidas",
       "critical": "{{count}} crítico",
-      "reboot": "reiniciar {{count}}"
+      "reboot": "reiniciar {{count}}",
+      "imagesNotChecked_one": "{{count}} imagen de contenedor sin verificar",
+      "imagesNotChecked_other": "{{count}} imágenes de contenedor sin verificar"
     },
     "filters": {
       "allDevices": "Todos los dispositivos ({{count}})",
@@ -107,6 +113,8 @@
       "approvedTitle": "Parches excepcionales aprobados para su instalación",
       "pendingApproval": "Pendiente de aprobación",
       "pendingApprovalTitle": "Parches destacados aún pendientes de aprobación",
+      "failed": "Fallidos",
+      "failedTitle": "Parches pendientes cuyo último intento de instalación falló",
       "osPatches": "Parches OS",
       "osPatchesTitle": "Actualizaciones destacadas de los administradores de paquetes Windows Update, Apple o Linux",
       "thirdParty": "Tercero",
@@ -562,7 +570,26 @@
     "badges": {
       "manual": "Manual",
       "os": "SO: {{severities}}",
-      "thirdParty": "Apps de terceros"
+      "thirdParty": "Apps de terceros",
+      "appRules_one": "{{count}} regla de aplicación",
+      "appRules_other": "{{count}} reglas de aplicación"
     }
+  },
+  "ringAppRules": {
+    "applicationRules": "Reglas de aplicación",
+    "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloquee aplicaciones específicas para que no se apliquen parches automatizados o fíjelas a una versión máxima.",
+    "blocked": "Bloqueado",
+    "pinned": "Fijado",
+    "maxVersion": "versión máxima",
+    "pinnedApplicationsNeedAVersion": "Las aplicaciones fijadas necesitan una versión.",
+    "addApplication": "Agregar aplicación",
+    "searchCatalogAndDetectedApplications": "Buscar catálogo y aplicaciones detectadas...",
+    "searching": "Buscando...",
+    "catalog": "catálogo",
+    "couldnTLoadApplicationsYouCanStill": "No se pudieron cargar las aplicaciones; aún puede agregarlas mediante el paquete ID a continuación.",
+    "noMatches": "Sin coincidencias.",
+    "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
+    "removeRuleFor": "Eliminar regla para {{application}}",
+    "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo."
   }
 }

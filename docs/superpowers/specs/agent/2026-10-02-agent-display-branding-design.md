@@ -4,7 +4,7 @@ Discussion: LanternOps/breeze#7567
 Related: LanternOps/breeze#6365 (Helper white-labeling at runtime)
 Date: 2026-10-02
 Revised: 2026-10-05 (maintainer review on PR #7841)
-Status: approved (implementation in progress; see section 10)
+Status: approved 2026-10-05; implemented in #8061, with follow-ups in #8227 and #8228 (see section 10)
 Blast radius: display strings in the MSI, in the agent's service registration (Go) and in the systemd unit generated in Go; an explicit contract plus tests on the API's reliability rule, and service-name normalization in the agent's collector. No route or protocol changes.
 
 ## 1. Summary
@@ -174,6 +174,7 @@ Added on 2026-10-05, while implementing this spec. The approved text above is un
   - A branded MSI `1.0.0 -> 1.0.1` upgrade completed successfully and preserved `Manufacturer = Automos` plus both service display names; both services were running afterwards.
   - A Windows agent binary built with the same `BREEZE_BRAND_*` profile ran `service install --no-watchdog` successfully; it upgraded the existing `BreezeAgent` registration, kept `Name = BreezeAgent`, applied `DisplayName = Automos Agent` and the branded description, and left the service running.
   - A temporary Windows probe calling the production `updater.Restart()` function stopped and restarted the branded `BreezeAgent` successfully (`PID` changed and the service returned to `Running`), confirming that the updater still opens the fixed SCM name rather than the display name.
+- **Run-time validation of the brand values.** Since #8228, `branding_pwsh_test.go` runs `Assert-BrandingValue` and `Resolve-BrandingValue` with `pwsh` instead of only reading the script text. It covers the refusal of a double quote, `[ ] { }`, `$(` and `!(`, and a parity test keeps the Go and PowerShell rules from drifting apart. The same functions were also checked by hand on Windows PowerShell 5.1.
 
 **Not verified**
 
@@ -181,7 +182,6 @@ Added on 2026-10-05, while implementing this spec. The approved text above is un
 - A comparison with a **built original MSI**: the check was against the known text of today.
 - A full server-directed branded N -> N+1 update from the operator's release source (`BINARY_GITHUB_REPOSITORY` plus manifest key). The MSI N -> N+1 path and the production updater SCM restart path were verified independently as described above.
 - A real 7031 event from a branded service.
-- The double-quote refusal in `build-msi.ps1` **at run time** (only a structural test; the same expression did refuse `%` for real).
 - The `tsc` type check of `apps/api`.
 - **Three tests fail in the local environment** (container running as root, source mounted read-only): `internal/executor` (`TestConfigureRunAsElevatedWhenNotRoot`), `internal/remote/tools` (`TestAnalyzeFilesystemClassifiesThroughTheRuleTable`) and `internal/heartbeat` (`TestDesktopStreamStartAfterAllowStartsAndReportsUserConsent`). **All three fail the same way on `upstream/main`**, without these changes.
 

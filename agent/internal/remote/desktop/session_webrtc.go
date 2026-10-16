@@ -115,7 +115,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	session := &Session{
 		id:           sessionID,
 		peerConn:     peerConn,
-		inputHandler: NewInputHandler(m.config.DesktopContext),
+		inputHandler: NewSafeInput(NewInputHandler(m.config.DesktopContext), sessionID),
 		done:         make(chan struct{}),
 		isActive:     true,
 		fps:          defaultFrameRate,
@@ -123,8 +123,11 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		cursor:       newCursorOverlay(),
 		metrics:      newStreamMetrics(),
 		sasHandler:   m.OnSASRequest,
+
+		onClipboardSummary: m.OnClipboardSummary,
 	}
 	session.cursorStreamEnabled.Store(false)
+	session.wireInputEpochHooks()
 
 	m.mu.Lock()
 	m.sessions[sessionID] = session
@@ -409,11 +412,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 				HostToViewer: policy.ClipboardHostToViewer,
 				ViewerToHost: policy.ClipboardViewerToHost,
 			})
-			if policy.ClipboardHostToViewer {
-				clipboardDC.OnOpen(func() {
-					session.clipboardSync.Watch()
-				})
-			}
+			hostToViewer := policy.ClipboardHostToViewer
+			clipboardDC.OnOpen(func() {
+				onClipboardChannelOpen(session.clipboardSync, hostToViewer)
+			})
 		}
 	} else {
 		slog.Info("Clipboard sync disabled by policy", "session", sessionID)
@@ -464,21 +466,32 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 
 	// Handle incoming data channels (input + control from viewer)
 	peerConn.OnDataChannel(func(dc *webrtc.DataChannel) {
-		switch dc.Label() {
-		case "input":
-			session.mu.Lock()
-			session.dataChannel = dc
-			session.mu.Unlock()
+		label := dc.Label()
+		switch label {
+		case "input", "input-r":
+			reliable := isReliableOrdered(dc.Ordered(), dc.MaxRetransmits(), dc.MaxPacketLifeTime())
+			if !session.acceptViewerChannel(label, dc, reliable) {
+				_ = dc.Close()
+				return
+			}
+			if label == "input" {
+				session.mu.Lock()
+				session.dataChannel = dc
+				session.mu.Unlock()
+			}
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				session.onViewerDataChannelMessage("input", msg.Data)
+				session.viewerChannelMessage(label, dc, msg.Data)
 			})
+			dc.OnClose(func() { session.onViewerChannelClosed(label, dc) })
 		case "control":
 			session.mu.Lock()
 			session.controlDC = dc
 			session.mu.Unlock()
+			session.onViewerChannelAttached("control", dc)
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-				session.onViewerDataChannelMessage("control", msg.Data)
+				session.viewerChannelMessage("control", dc, msg.Data)
 			})
+			dc.OnClose(func() { session.onViewerChannelClosed("control", dc) })
 			dc.OnOpen(func() {
 				// Send the current cached desktop state to this viewer so it
 				// gets an initial state even if it connected after the watcher
@@ -574,6 +587,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 			}
 
 		case webrtc.PeerConnectionStateDisconnected:
+			// Release now, not after the grace: a viewer that may never come
+			// back cannot send its key-ups. Off the pion callback goroutine,
+			// because the release waits on the input worker.
+			go session.onPeerDisconnected()
 			// Transient: a brief network blip enters this state. We deliberately
 			// do NOT fire OnSessionStopped (peer_disconnected) here — doing so
 			// would mark the server session disconnected+revoked on a hiccup.

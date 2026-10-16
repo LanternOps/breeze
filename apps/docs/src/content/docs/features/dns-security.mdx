@@ -76,6 +76,12 @@ For Cisco Umbrella, `apiKey` and `apiSecret` come from an **Umbrella API Keys** 
   Cisco's Reporting API accepts a maximum 30-day query window. If an Umbrella integration has not synced for longer than that, Breeze requests the most recent 30 days; activity older than that window cannot be backfilled through the API.
 </Aside>
 
+For Cloudflare Gateway, `apiKey` is an API token for the Zero Trust account named by `config.accountId`. Give it **Account Analytics: Read** (DNS events are read from the Gateway analytics dataset through the GraphQL API) and **Zero Trust: Edit** (to add and remove domains on the lists named by `config.blocklistId` and `config.allowlistId`). The dataset is grouped, not per query, so events carry the Gateway location but no source IP; per-query logs with device attribution need Enterprise Logpush.
+
+<Aside>
+  Cloudflare keeps Gateway analytics for a limited time that depends on your Zero Trust plan (about a day on the Free plan). If a Cloudflare integration has not synced for longer than that, Breeze syncs from the oldest data Cloudflare still holds and logs a warning; the earlier stretch cannot be backfilled.
+</Aside>
+
 Pi-hole supports both the legacy v5 admin API and the newer v6 session-based API. Set `config.piholeVersion` to `v5` or `v6` to match your Pi-hole installation's major version.
 
 <Aside type="caution">

@@ -2452,3 +2452,50 @@ If W01 is not merged, base the PR on its actual branch and explicitly run the CI
 **Failure and lifecycle review:** Old helpers are detected by capability, not version. Timeout never approves. Rust serializes duplicate submissions and keeps the original envelope id. A missing initial frontend event cannot lose the prompt because the window hydrates pending state. The outbox owns dispatch retry, the persisted command owns transport correlation, and reconciliation owns crash repair. The worker remains active for cleanup even when readiness is off. No request waits on the human or holds a DB transaction across relay dispatch.
 
 **Verification limits:** This document is a plan; tests and platform releases have not been run during authoring. W01's plan defines the outbox ports and route module; their implemented source must be re-read after rebase before applying the integration fragments. The Unix UPN helper deliberately returns empty until an OS-verified provider exists; that is conservative tier behavior, not guessed identity. Coarse migration ordering is rechecked despite W02 adding no DDL. The literal migration-tail command currently returns `preflight`, so the SQL-only companion check is required.
+
+## W02 shipped wire contract
+
+Recorded at implementation (#6356). Where it differs from the tasks above, **this section is what shipped**; W05 and later waves build on it.
+
+### Device command `caller_verify`
+
+- Registered in `CommandTypes.CALLER_VERIFY`, `GATED_COMMAND_TYPES` (partner trust, not lifecycle), and the offline policy `LIVE` list (`defaultOfflinePolicy` = `reject`; never queued).
+- Row: `type='caller_verify'`, `target_role='agent'`, `status='pending'`, `created_by` = initiating technician, `submitted_org_id` = verification org, `deliver_by` = verification `expires_at`. Created by `ports.prepare` inside `start`'s transaction (direct insert, not `queueCommand`, whose closure reaches the socket registry); linked as `caller_verifications.agent_command_id`, display order stored in `challenge_choices`.
+- Payload (`workstationCommandSchema`, strict): `verificationId` (uuid), `username` (1–255), `technicianName` (1–255), `orgName` (1–255), `actionLabel` (`reset the password` | `disable the account` | `confirm a support request`), `targetLabel` (1–320), `reverseCode` (`^\d{4}$`), `choices` (three distinct `^\d{2}$`), `timeoutMs` (30 000–300 000; `expiresAt − createdAt` clamped).
+- Delivery (`ports.deliver` → `deliverWorkstation`, publisher): claim through `claimPendingCommandForDelivery` (same claim-time eligibility as the heartbeat), push the existing id with `dispatchCommandToAgent`. `sent`/`indeterminate` keep the claim; `offline`/`expired`/`owner_mismatch` release for heartbeat delivery; `infrastructure_error` releases and throws (publisher retries; 3 strikes → `undeliverable` reason `helper_outdated`). Nothing is pushed while `CALLER_VERIFICATION_ENABLED` is off.
+- Result `stdout` JSON (`workstationResultSchema`): `{ delivered: boolean, choice?: '<two digits>'|'not_me'|'timeout', principal?: { sid?: 'S-…' | uid?: number (exactly one), username, upn? }, helperVersion?, error?: 'no_session_for_user'|'session_not_console'|'helper_outdated' }`; `delivered:true` carries no `error`, `delivered:false` no `choice`.
+- API mapping (`decisionForResult`): unreadable → `undeliverable/invalid_result` (agent `unknown command type:` → `helper_outdated`); `not_me` → rejection; `delivered:false` → `undeliverable/<error>`; missing/`timeout` → timeout; a number **without a principal** → `undeliverable/invalid_result`; else `choice`. Principal: `sid`, or `uid:<uid>@<persisted device hostname>`. Only a just-verified matching number with an OS UPN reaches `observeLogin`.
+
+### Agent ↔ Assist helper IPC
+
+| Name | Direction | Shape |
+|---|---|---|
+| `capabilities` frame `{ "callerVerify": true }` | helper → agent, once after auth | Sent only by the real Assist app. The broker keeps it only for `HelperRoleAssist` + `consent_ui`. |
+| `caller_verify_request` | agent → helper | Envelope id `caller-verify-<verificationId>`; payload = the command payload above. |
+| `caller_verify_response` | helper → agent | Same envelope id; `{ "choice": "<offered number>"|"not_me"|"timeout", "helperVersion": "<semver>" }`. No approval flag, no principal. |
+
+- Selection (`Broker.CallerVerifySession`): explicit OS login (WTS/loginctl/console user) → it must be the single active console login (Windows: kernel-verified session id = active console id, type `console`; macOS: console; Linux: `seat0` + x11/wayland/mir; never remote) → an Assist helper with `consent_ui` + `callerVerify` whose kernel identity owns that login (Windows: `WinSessionVerified` + SID→account; Unix: peer UID). Refusals: `no_session_for_user`, `session_not_console`, `helper_outdated`.
+- Agent wait: `timeoutMs + 2 s`. Timeout, disconnect, error envelope, unoffered answer → `choice:"timeout"`. Unoffered answers are also dropped at the broker (`responseValidator`). A number is never reported without the agent-verified principal; `not_me` always is. A re-delivered command already waiting on the helper reports the `duplicate` marker.
+- Helper: deadline owned in Rust from insert; any choice at/after it becomes `timeout` (`not_me` excepted); single-use; pending prompts and `caller-verify-*` windows cleared on IPC disconnect.
+- Agent logs the cause of every non-answer (IPC timeout vs helper error vs malformed answer) while still reporting `timeout`.
+- Tauri commands: `get_caller_verify_request(verificationId)` → `{ request, deadlineMs }`, `submit_caller_verify(verificationId, choice)`; both refuse unless `window.label() == "caller-verify-<verificationId>"`. Window URL `index.html#caller-verify/<id>`; it is built only by `show_prompt_window` (`pub(super)` in `ipc`, called only from the `caller_verify_request` arm; never at launch or from the tray, #8138). Text limits: 320 characters on API, agent and helper.
+
+### Readiness telemetry
+
+- Heartbeat field `helperCapabilities: { callerVerify: boolean, usernames: string[] (≤32, 1–255) }`, always sent by current agents (main role only; watchdog beats never touch it). Malformed → absent.
+- Stored in Redis `caller-verify-cap:<orgId>:<deviceId>` (TTL 180 s), replaced every beat; absent/false/empty deletes it. Exact username match, read with one `MGET` per suggestion set. Telemetry is a hint; the agent re-resolves on every dispatch.
+- A missing/failing readiness store is logged and reported to Sentry (throttled) and surfaces as `readiness_unavailable` (start error code; suggestion `unavailableReason`), never as `helper_outdated`.
+
+### API surface
+
+- `GET /orgs/:orgId/caller-verifications/device-suggestions?contactId=<uuid>` → `{ data: Array<{ deviceId, hostname, username, hasBinding, available, unavailableReason?: 'helper_outdated' | 'readiness_unavailable' }> }`. Chain: auth → scope → readiness gate (404 `feature_disabled`) → id check → `orgs:read`; contact org + site reach. Matches `devices.last_user` against the contact's name, email (and local part), and active bindings' OS username/UPN (and local part). Never sets a tier.
+- `methodsForContact`: workstation is available iff any suggestion is ready, else `helper_outdated`. `start` with a hand-picked `deviceId` bypasses only that aggregate; `ports.prepare` then requires that exact device online + ready for that username + partner trust + not parked.
+- `/api/v1/helper/config` adds `branding: { partnerName, logoUrl (https only) } | null` (null while dark or on error).
+
+### Late rejection and recovery
+
+- HTTP: a `not_me` for a terminal command merges `{"callerVerificationNotMe": true}` into the owned row's `result` (status untouched) and applies the decision in the same savepoint; failure → 500, agent retries.
+- WS: owned lookup by the socket's agent, containment re-check, receipt committed in its own system context, decision in the agent's org context; failure is left to reconciliation.
+- `callerVerificationReconciliation` (BullMQ, every 30 s, concurrency 1, `socket-owner`): replays (a) still-pending verifications whose command is terminal (a server-side command timeout reads as expiry) and (b) unapplied receipts, through `handleCallerVerifyResult`; 30-day bound. Expiry stays with the publisher (now `socket-owner` too).
+- `cancel` withdraws the linked command while it is still `pending` (`status='cancelled'`, `result.reason='caller_verification_cancelled'`); a card already on screen expires on its own and its answer is a no-op.
+- Device org move: unchanged W01 hook (`moveDeviceOrgInTransaction`); the result handler share-locks the device row, and session ingestion does so only for reports carrying an OS principal, so both serialize with the move's `FOR UPDATE`.

@@ -176,6 +176,12 @@ export const CHECKSUM_RECONCILIATIONS: Record<
     reason:
       "#3316: bound the two backfill projections with left(...) at the destination column widths. The original raises 22001 on a sites.contact / organizations.billing_contact value longer than varchar(255)/(320)/(64), which aborts the whole migration run. Equivalent for any DB that already applied the original: applying it successfully proves no value exceeded a limit, so left(...) would have returned those same strings unchanged — heal the recorded checksum rather than crashing the upgrade.",
   },
+  '2026-12-12-120100-security-quarantine-execution-authority.sql': {
+    from: '1a2b018b817bf5e8a10b2b9efc02e68fec7d4f729a6fb1f6b0b2518a388386cc',
+    to: '70abfb92fbf75b96d5ed7788fdac76218403a71032ced4a4da853e7749641500',
+    reason:
+      'v0.122.1: SET CONSTRAINTS ALL IMMEDIATE after the grandfathering UPDATE. The UPDATE queues events on the deferred backup-settings parity trigger, so the ALTER TABLEs after it fail with "pending trigger events" on any DB with security feature links (v0.122.0 crash-looped there). The original only completed on DBs where the UPDATE matched no row, where firing zero pending events changes nothing; the hosted EU DB had the fixed file applied by hand under the original checksum. Heal the recorded checksum rather than crashing the upgrade.',
+  },
 };
 
 /**

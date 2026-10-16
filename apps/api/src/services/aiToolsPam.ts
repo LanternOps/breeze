@@ -22,6 +22,7 @@ import {
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
+import { currentOwnershipEpochSql } from './deviceOwnershipEpoch';
 
 // Input schemas for these tools live in the canonical `toolInputSchemas`
 // registry in ./aiToolSchemas (validated centrally by executeTool).
@@ -238,6 +239,7 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           siteId: device.siteId ?? null,
           partnerId: device.partnerId ?? auth.partnerId ?? null,
           deviceId: device.id,
+          deviceEpoch: currentOwnershipEpochSql(device.id),
           flowType: 'tech_jit_admin',
           // tech_jit_admin requires subject_user_id IS NOT NULL (DB CHECK
           // elevation_requests_flow_shape_chk). The subject is the operator on

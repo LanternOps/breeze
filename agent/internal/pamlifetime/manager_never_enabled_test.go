@@ -58,6 +58,27 @@ func managerState(t *testing.T, m *lifecycleManager) (enabled, admissionOpen, av
 	return m.enabled, m.admissionOpen, m.available, len(m.unresolved)
 }
 
+func TestReconcileAccountProvisioningProofIsFreshAndFailClosed(t *testing.T) {
+	win := &fakeWindowsPrimitives{privilegedTokenErr: unresolvableAccountErr()}
+	manager := newNeverEnabledManager(t, &fakeAccountLifecycle{}, win)
+	manager.Reconcile(context.Background())
+	if !manager.AccountProvisioningRequired() {
+		t.Fatal("verified empty history with absent account did not request provisioning")
+	}
+	// After the account is provisioned, a clean token scan proves a different
+	// state. Previous absence must not survive a later reconciliation.
+	win.privilegedTokenErr = nil
+	manager.Reconcile(context.Background())
+	if manager.AccountProvisioningRequired() || !manager.Available() {
+		t.Fatal("existing clean account retained stale absence proof")
+	}
+	win.privilegedTokenErr = syscall.Errno(errorAccessDenied)
+	manager.Reconcile(context.Background())
+	if manager.AccountProvisioningRequired() || manager.Available() {
+		t.Fatal("unknown token state allowed provisioning or admission")
+	}
+}
+
 // TestSetEnabledFalseOnNeverProvisionedAgentIsAQuietIdempotentNoOp pins the
 // amplifier that turned one failed probe into issue #4587's unbounded ERROR
 // stream. The manager is constructed enabled:true, and every heartbeat with no

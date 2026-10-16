@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, inArray, sql, desc, asc, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql, desc, asc, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
@@ -449,7 +449,9 @@ softwareInventoryRoutes.post('/approve', requireSoftwareInventoryWrite, requireM
       and(
         eq(softwarePolicies.orgId, orgId),
         eq(softwarePolicies.name, 'Default Allowlist'),
-        eq(softwarePolicies.mode, 'allowlist')
+        eq(softwarePolicies.mode, 'allowlist'),
+        // #6960: never adopt a policy generated from a config policy.
+        isNull(softwarePolicies.managedByLinkId)
       )
     )
     .limit(1);
@@ -582,7 +584,9 @@ softwareInventoryRoutes.post('/deny', requireSoftwareInventoryWrite, requireMfa(
       and(
         eq(softwarePolicies.orgId, orgId),
         eq(softwarePolicies.name, 'Default Blocklist'),
-        eq(softwarePolicies.mode, 'blocklist')
+        eq(softwarePolicies.mode, 'blocklist'),
+        // #6960: never adopt a policy generated from a config policy.
+        isNull(softwarePolicies.managedByLinkId)
       )
     )
     .limit(1);
@@ -712,7 +716,8 @@ softwareInventoryRoutes.post('/clear', requireSoftwareInventoryWrite, requireMfa
       and(
         eq(softwarePolicies.orgId, orgId),
         eq(softwarePolicies.isActive, true),
-        sql`${softwarePolicies.name} IN ('Default Allowlist', 'Default Blocklist')`
+        sql`${softwarePolicies.name} IN ('Default Allowlist', 'Default Blocklist')`,
+        isNull(softwarePolicies.managedByLinkId)
       )
     );
 

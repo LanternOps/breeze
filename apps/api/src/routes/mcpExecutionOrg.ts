@@ -101,7 +101,12 @@ async function liveResolveDeviceOrg(
   auth: AuthContext,
 ): Promise<McpDeviceOrgResolution> {
   const { verifyDeviceAccess } = await import('../services/aiTools');
-  const access = await verifyDeviceAccess(deviceId, auth);
+  const { inToolDbPhase } = await import('../services/aiToolDbContext');
+  // A tool that manages its own DB context gets no request transaction from
+  // the MCP auth middleware, so this read would otherwise run with no RLS
+  // settings and see no device at all (#8798). Reuse the caller's context
+  // when there is one; otherwise open a short one scoped to the caller.
+  const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth));
   if ('error' in access) return { error: access.error };
   return { orgId: access.device.orgId };
 }

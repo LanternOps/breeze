@@ -1005,7 +1005,7 @@ git commit -m "feat(helper/ui): show connecting state until IPC token arrives"
 
 - [ ] **Step 1: Windows VM smoke (per windows_test_vm memory)**
 
-Build the agent + Helper, install on the Windows test VM (`100.101.150.55`), and confirm:
+Build the agent + Helper, install on the Windows test VM (`<lab-windows-test-vm-ip>`), and confirm:
 - Agent log: assist session accepted (role=assist, scope=[assist]); a non-allowlisted binary connecting is rejected with `binary hash mismatch`.
 - Helper log: "helper token received via IPC"; chat works.
 - With the agent stopped, the Helper falls back to the file token (Phase 1) and still works; restart agent → IPC path resumes.

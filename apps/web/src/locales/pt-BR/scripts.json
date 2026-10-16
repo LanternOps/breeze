@@ -3,7 +3,8 @@
     "errors": {
       "fetch": "Falha ao buscar automação",
       "generic": "Ocorreu um erro",
-      "save": "Falha ao salvar automação"
+      "save": "Falha ao salvar automação",
+      "invalidTarget": "O alvo de dispositivos é inválido: {{detail}}"
     },
     "loading": "Carregando automação...",
     "breadcrumb": {
@@ -210,7 +211,9 @@
     },
     "empty": {
       "noActions": "Nenhuma ação definida. Clique em \"Adicionar ação\" para criar uma."
-    }
+    },
+    "partnerGroupsNote": "Automações de todo o parceiro não podem ter grupos de dispositivos ou dispositivos específicos como alvo, pois cada um pertence a uma única organização. Use Todos os dispositivos ou um filtro avançado.",
+    "partnerTargetBlocked": "Esta automação de todo o parceiro tem grupos de dispositivos ou dispositivos específicos como alvo, o que não é compatível. Altere o alvo para Todos os dispositivos ou um filtro avançado antes de salvar."
   },
   "automationList": {
     "elevated": "Privilégios elevados",
@@ -979,6 +982,43 @@
     },
     "toasts": {
       "runsWhenOnline": "Executa quando o dispositivo estiver online"
+    },
+    "targetMode": {
+      "label": "Executar em",
+      "devices": "Dispositivos",
+      "groups": "Grupos de dispositivos"
+    },
+    "groups": {
+      "title": "Selecionar grupos de dispositivos",
+      "searchPlaceholder": "Pesquisar grupos",
+      "selectedCount": "{{count}} grupo(s) selecionado(s)",
+      "dynamic": "Dinâmico",
+      "deviceCount": "{{count}} dispositivo(s)",
+      "refusedReason": "Indisponível como alvo de execução: as regras deste grupo usam campos que o próprio dispositivo informa ({{fields}}).",
+      "loading": "Carregando grupos de dispositivos...",
+      "loadFailed": "Não foi possível carregar os grupos de dispositivos.",
+      "retry": "Tentar novamente",
+      "empty": "Nenhum grupo de dispositivos encontrado.",
+      "tooManyGroups": "Uma execução pode ter no máximo {{max}} grupos como alvo.",
+      "countingMembers": "Contando membros...",
+      "countFailed": "Não foi possível contar os membros dos grupos selecionados. O servidor verifica o limite ao executar.",
+      "summaryUnique": "{{count}} dispositivo(s) único(s) nos grupos selecionados",
+      "summaryCompatible": "{{count}} podem executar este script (sistema operacional compatível)",
+      "summaryOffline": "{{count}} deles estão offline e serão executados quando o dispositivo estiver online",
+      "membershipNote": "A participação em grupos dinâmicos reflete a última avaliação e é lida novamente quando a execução começa.",
+      "overCap": "Estes grupos contêm {{count}} dispositivos únicos, acima do limite de {{max}} por execução. Desmarque um grupo ou divida a execução.",
+      "submitting": "Enviando para {{count}} grupo(s)...",
+      "warningsTitle": "Observações do servidor",
+      "confirmDescription": "Executar “{{name}}” em {{groups}} grupo(s) de dispositivos como {{runAs}}. Os scripts entram na fila e começam a ser executados imediatamente.",
+      "confirmMembers": "No momento, {{count}} dispositivo(s) único(s) fazem parte destes grupos; a participação é lida novamente ao confirmar.",
+      "confirmMembersUnknown": "A quantidade de dispositivos ainda não é conhecida; a participação é lida ao confirmar.",
+      "errors": {
+        "selectGroup": "Selecione pelo menos um grupo de dispositivos",
+        "tooManyTargets": "Estes grupos resultam em {{count}} dispositivos, acima do limite de {{max}} por execução. Desmarque um grupo ou divida a execução.",
+        "perGroup": "Dispositivos por grupo: {{groups}}.",
+        "groupNotFound": "{{count}} grupo(s) selecionado(s) não existem mais ou não estão acessíveis. Recarregue a lista e tente novamente.",
+        "noTargets": "Os grupos selecionados não contêm dispositivos que esta execução possa atingir; nada foi executado."
+      }
     }
   },
   "secretParameters": {

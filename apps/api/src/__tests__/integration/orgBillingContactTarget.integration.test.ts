@@ -21,7 +21,7 @@ import { Hono } from 'hono';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { invoiceSettingsRoutes } from '../../routes/invoices/settings';
 import { orgRoutes } from '../../routes/orgs';
-import { contacts, organizations } from '../../db/schema';
+import { contactRoles, contacts, organizations } from '../../db/schema';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
@@ -72,7 +72,17 @@ type Seeded = typeof contacts.$inferInsert;
 
 /** Privileged fixture insert (RLS-bypassing scaffolding, like every db-utils seed). */
 async function insertContact(values: Seeded): Promise<string> {
-  const [row] = await getTestDb().insert(contacts).values(values).returning({ id: contacts.id });
+  const [row] = await getTestDb().insert(contacts).values(values).returning({ id: contacts.id, siteId: contacts.siteId });
+  const roles = Array.isArray(values.roles) ? values.roles : [];
+  if (roles.length > 0) {
+    await getTestDb().insert(contactRoles).values(roles.map((role) => ({
+      contactId: row!.id,
+      orgId: values.orgId,
+      role,
+      siteId: row!.siteId,
+      deviceGroupId: null,
+    })));
+  }
   return row!.id;
 }
 

@@ -3,21 +3,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const dbState = vi.hoisted(() => ({
   inContext: false,
   deferred: [] as Array<() => unknown>,
+  // Commit-only work (runAfterDbContextCommit): flush to model COMMIT, discard to model ROLLBACK.
+  committed: [] as Array<() => unknown>,
   scope: undefined as 'system' | 'organization' | 'partner' | undefined,
+  ctx: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock('../db', () => ({
   hasDbAccessContext: () => dbState.inContext,
-  getCurrentDbAccessContext: () => (dbState.scope ? { scope: dbState.scope } : undefined),
+  getCurrentDbAccessContext: () => dbState.ctx ?? (dbState.scope ? { scope: dbState.scope } : undefined),
   // Inside a context the real helper defers until the transaction settles;
   // tests flush `deferred` to model the COMMIT.
   runAfterDbContextExit: (_label: string, work: () => unknown) => {
     if (dbState.inContext) dbState.deferred.push(work);
     else work();
   },
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => {
+    if (dbState.inContext) dbState.committed.push(work);
+    else work();
+  },
 }));
 
-import { DeferredCacheFills, HotPathTtlCache, __resetHotPathCachesForTests } from './hotPathCache';
+import { DeferredCacheFills, HotPathTtlCache, fillScopeIsCacheable, __resetHotPathCachesForTests } from './hotPathCache';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
+import { getClusterCacheTarget } from './clusterCacheRegistry';
+import { metricsRegistry } from './metricsRegistry';
 
 const T0 = Date.parse('2026-10-07T12:00:00Z');
 
@@ -36,6 +46,7 @@ describe('HotPathTtlCache (#8053)', () => {
     dbState.inContext = false;
     dbState.deferred = [];
     dbState.scope = undefined;
+    dbState.ctx = undefined;
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -177,6 +188,7 @@ describe('HotPathTtlCache deferred fills (#8053 W1a-1)', () => {
     vi.setSystemTime(T0);
     dbState.inContext = false;
     dbState.scope = undefined;
+    dbState.ctx = undefined;
   });
   afterEach(() => vi.useRealTimers());
 
@@ -266,5 +278,324 @@ describe('HotPathTtlCache deferred fills (#8053 W1a-1)', () => {
     expect(good.peek('org-1')).toEqual({ v: 'good' });
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+});
+
+describe('DeferredCacheFills — explicit org fill scope (#8142)', () => {
+  const ORG = 'org-1';
+  const PARTNER = 'partner-1';
+  const orgCtx = (over: Record<string, unknown> = {}) => ({
+    scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG], accessiblePartnerIds: [], currentPartnerId: PARTNER, ...over,
+  });
+
+  beforeEach(() => {
+    dbState.inContext = false;
+    dbState.scope = undefined;
+    dbState.ctx = undefined;
+  });
+
+  it('fillScopeIsCacheable: system always; org only with an exact org + partner match', () => {
+    expect(fillScopeIsCacheable({ scope: 'system' } as never)).toBe(true);
+    expect(fillScopeIsCacheable(orgCtx() as never)).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx() as never, { orgId: ORG, partnerId: PARTNER })).toBe(true);
+    expect(fillScopeIsCacheable(orgCtx() as never, { orgId: 'org-2', partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ currentPartnerId: 'partner-2' }) as never, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ currentPartnerId: null }) as never, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ accessibleOrgIds: [ORG, 'org-2'] }) as never, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable({ ...orgCtx(), scope: 'partner' } as never, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(undefined, { orgId: ORG, partnerId: PARTNER })).toBe(false);
+  });
+
+  it('an org context carrying a partner-level grant never fills (wider view must not be cached for the org)', () => {
+    const scope = { orgId: ORG, partnerId: PARTNER };
+    expect(fillScopeIsCacheable(orgCtx({ accessiblePartnerIds: [PARTNER] }) as never, scope)).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ accessiblePartnerIds: ['partner-9'] }) as never, scope)).toBe(false);
+    // null/undefined means no grant, same as empty
+    expect(fillScopeIsCacheable(orgCtx({ accessiblePartnerIds: null }) as never, scope)).toBe(true);
+    expect(fillScopeIsCacheable(orgCtx({ accessiblePartnerIds: undefined }) as never, scope)).toBe(true);
+  });
+
+  it('an org-scoped load with a matching fill scope is stored after flush', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    await fills.through(cache, ORG, async () => ({ v: 'loaded' }), { orgId: ORG, partnerId: PARTNER });
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    expect(cache.peek(ORG)).toEqual({ v: 'loaded' });
+  });
+
+  it('a key that is not the fill scope org is loaded and returned but never stored', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    expect(await fills.through(cache, 'org-B', async () => ({ v: 'narrowed' }), { orgId: ORG, partnerId: PARTNER })).toEqual({ v: 'narrowed' });
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    expect(cache.peek('org-B')).toBeUndefined();
+  });
+
+  it('an org-scoped load WITHOUT a fill scope is returned but never stored (unchanged rule)', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    expect(await fills.through(cache, ORG, async () => ({ v: 'loaded' }))).toEqual({ v: 'loaded' });
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    expect(cache.peek(ORG)).toBeUndefined();
+  });
+
+  it('rejects empty-string fill scope fields, even when the context carries the same empties', () => {
+    expect(fillScopeIsCacheable(orgCtx({ orgId: '', accessibleOrgIds: [''] }) as never, { orgId: '', partnerId: PARTNER })).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ currentPartnerId: '' }) as never, { orgId: ORG, partnerId: '' })).toBe(false);
+  });
+
+  it('an org context carrying a userId never fills (users self-read RLS branch)', () => {
+    const scope = { orgId: ORG, partnerId: PARTNER };
+    expect(fillScopeIsCacheable(orgCtx({ userId: 'user-1' }) as never, scope)).toBe(false);
+    expect(fillScopeIsCacheable(orgCtx({ userId: null }) as never, scope)).toBe(true);
+    expect(fillScopeIsCacheable(orgCtx({ userId: undefined }) as never, scope)).toBe(true);
+  });
+
+  // `through` end to end (not just fillScopeIsCacheable): the cache stays EMPTY.
+  for (const [label, ctx] of [
+    ['carries a userId', orgCtx({ userId: 'user-1' })],
+    ['is built for a different org', orgCtx({ orgId: 'org-2', accessibleOrgIds: ['org-2'] })],
+    ['is built for a different partner', orgCtx({ currentPartnerId: 'partner-2' })],
+  ] as const) {
+    it(`a context that ${label} returns the loaded value but leaves the cache empty after flush`, async () => {
+      const cache = makeCache();
+      const fills = new DeferredCacheFills();
+      dbState.ctx = ctx;
+      dbState.inContext = true;
+      expect(await fills.through(cache, ORG, async () => ({ v: 'narrowed' }), { orgId: ORG, partnerId: PARTNER })).toEqual({ v: 'narrowed' });
+      dbState.inContext = false;
+      dbState.ctx = undefined;
+      fills.flush();
+      expect(cache.peek(ORG)).toBeUndefined();
+    });
+  }
+
+  it('a throwing loader leaves the cache empty after flush', async () => {
+    const cache = makeCache();
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    await expect(
+      fills.through(cache, ORG, async () => { throw new Error('boom'); }, { orgId: ORG, partnerId: PARTNER }),
+    ).rejects.toThrow('boom');
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    expect(cache.peek(ORG)).toBeUndefined();
+  });
+});
+
+describe('DeferredCacheFills — sub-org keys and shouldCache (#7970)', () => {
+  const ORG = 'org-1';
+  const PARTNER = 'partner-1';
+  const scope = { orgId: ORG, partnerId: PARTNER };
+  const orgCtx = () => ({
+    scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG], accessiblePartnerIds: [], currentPartnerId: PARTNER,
+  });
+  const deviceCache = () => new HotPathTtlCache<string, boolean>({ name: 'test-device', ttlMs: 60_000, maxEntries: 10 });
+
+  async function throughInOrgContext(
+    cache: HotPathTtlCache<string, boolean>,
+    key: string,
+    value: boolean,
+    options: { keyOrgId?: string; shouldCache?: (v: boolean) => boolean },
+  ): Promise<boolean> {
+    const fills = new DeferredCacheFills();
+    dbState.ctx = orgCtx();
+    dbState.inContext = true;
+    const got = await fills.through(cache, key, async () => value, scope, options);
+    dbState.inContext = false;
+    dbState.ctx = undefined;
+    fills.flush();
+    return got;
+  }
+
+  beforeEach(() => {
+    dbState.inContext = false;
+    dbState.scope = undefined;
+    dbState.ctx = undefined;
+  });
+
+  it('a per-device key whose keyOrgId is the fill scope org is stored after flush', async () => {
+    const cache = deviceCache();
+    expect(await throughInOrgContext(cache, `${ORG}:dev-1`, false, { keyOrgId: ORG })).toBe(false);
+    expect(cache.peek(`${ORG}:dev-1`)).toBe(false);
+  });
+
+  it('a per-device key whose keyOrgId names another org is returned but never stored', async () => {
+    const cache = deviceCache();
+    expect(await throughInOrgContext(cache, 'org-B:dev-1', false, { keyOrgId: 'org-B' })).toBe(false);
+    expect(cache.peek('org-B:dev-1')).toBeUndefined();
+  });
+
+  it('a per-device key without keyOrgId is still bound to the org id and never stored', async () => {
+    const cache = deviceCache();
+    await throughInOrgContext(cache, `${ORG}:dev-1`, false, {});
+    expect(cache.peek(`${ORG}:dev-1`)).toBeUndefined();
+  });
+
+  it('shouldCache=false returns the value but stores nothing', async () => {
+    const cache = deviceCache();
+    expect(await throughInOrgContext(cache, `${ORG}:dev-1`, true, { keyOrgId: ORG, shouldCache: (present) => !present })).toBe(true);
+    expect(cache.peek(`${ORG}:dev-1`)).toBeUndefined();
+  });
+});
+
+describe('HotPathTtlCache cluster option (W05, #8144)', () => {
+  let published: Array<[string, string | null]>;
+  let bus: ClusterCacheBus;
+
+  function recordingBus(): ClusterCacheBus {
+    const b = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(b, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    return b;
+  }
+
+  function clusterCache(name = 'test-cluster') {
+    return new HotPathTtlCache<string, string>({ name, ttlMs: 60_000, maxEntries: 100, cluster: { bus } });
+  }
+
+  async function seed(cache: HotPathTtlCache<string, string>, key: string, value = 'v') {
+    await cache.getOrLoad(key, async () => value);
+  }
+
+  beforeEach(() => {
+    published = [];
+    bus = recordingBus();
+    dbState.inContext = false;
+    dbState.deferred = [];
+    dbState.committed = [];
+    dbState.scope = undefined;
+    dbState.ctx = undefined;
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('invalidate() stays local: it publishes nothing', async () => {
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    cache.invalidate('org-1');
+    expect(cache.peek('org-1')).toBeUndefined();
+    expect(published).toEqual([]);
+  });
+
+  it('invalidateAroundCommit(key) outside a context drops locally and publishes once', async () => {
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    cache.invalidateAroundCommit('org-1');
+    expect(cache.peek('org-1')).toBeUndefined();
+    expect(published).toEqual([['test-cluster', 'org-1']]);
+  });
+
+  it('invalidateAroundCommit() publishes key null', () => {
+    clusterCache().invalidateAroundCommit();
+    expect(published).toEqual([['test-cluster', null]]);
+  });
+
+  it('inside a context publishes only on COMMIT', async () => {
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    dbState.inContext = true;
+    cache.invalidateAroundCommit('org-1');
+    expect(published).toEqual([]);
+    dbState.inContext = false;
+    for (const w of dbState.committed.splice(0)) w();
+    expect(published).toEqual([['test-cluster', 'org-1']]);
+  });
+
+  it('a ROLLBACK publishes nothing but the local entry is still dropped', async () => {
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    dbState.inContext = true;
+    cache.invalidateAroundCommit('org-1');
+    dbState.inContext = false;
+    dbState.committed = []; // rollback discards commit-only work
+    for (const w of dbState.deferred.splice(0)) w(); // exit-work still runs
+    expect(published).toEqual([]);
+    expect(cache.peek('org-1')).toBeUndefined();
+  });
+
+  it('a non-cluster cache never publishes', () => {
+    __setClusterCacheBusForTests(bus);
+    new HotPathTtlCache<string, string>({ name: 'plain', ttlMs: 1_000, maxEntries: 10 }).invalidateAroundCommit('k');
+    expect(published).toEqual([]);
+  });
+
+  it('a non-string key on a cluster cache clears the whole cache and publishes null, without throwing', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    await seed(cache, 'org-2');
+    expect(() => cache.invalidateAroundCommit(42 as never)).not.toThrow();
+    expect(cache.size).toBe(0);
+    expect(published).toEqual([['test-cluster', null]]);
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('cluster: true registers by name and publishes through the bus installed after construction (D12)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = new HotPathTtlCache<string, string>({ name: 'late-bound', ttlMs: 1_000, maxEntries: 10, cluster: true });
+    const second = new HotPathTtlCache<string, string>({ name: 'late-bound', ttlMs: 1_000, maxEntries: 10, cluster: true });
+    expect(getClusterCacheTarget('late-bound')).toBe(second);
+    expect(first).not.toBe(second);
+    __setClusterCacheBusForTests(bus);
+    second.invalidateAroundCommit('org-9');
+    expect(published).toEqual([['late-bound', 'org-9']]);
+    warn.mockRestore();
+  });
+
+  it('counts hit, miss and bypass lookups per cache', async () => {
+    const cache = new HotPathTtlCache<string, string>({ name: 'lookup-count', ttlMs: 60_000, maxEntries: 10 });
+    await cache.getOrLoad('k', async () => 'v'); // miss
+    await cache.getOrLoad('k', async () => 'v'); // hit
+    dbState.inContext = true;
+    await cache.getOrLoad('k', async () => 'v'); // bypass
+    dbState.inContext = false;
+    const text = await metricsRegistry.getSingleMetricAsString('breeze_hot_path_cache_lookups_total');
+    expect(text).toContain('cache="lookup-count",result="miss"} 1');
+    expect(text).toContain('cache="lookup-count",result="hit"} 1');
+    expect(text).toContain('cache="lookup-count",result="bypass"} 1');
+  });
+
+  it('DeferredCacheFills.through counts hit, cacheable miss and uncacheable bypass', async () => {
+    const cache = new HotPathTtlCache<string, string>({ name: 'through-count', ttlMs: 60_000, maxEntries: 10 });
+    const fills = new DeferredCacheFills();
+    dbState.inContext = true;
+    dbState.scope = 'system';
+    await fills.through(cache, 'org-1', async () => 'v'); // miss (cacheable)
+    dbState.inContext = false;
+    fills.flush();
+    dbState.inContext = true;
+    await fills.through(cache, 'org-1', async () => 'v'); // hit
+    dbState.scope = 'partner';
+    await fills.through(cache, 'org-2', async () => 'v'); // bypass (not cacheable)
+    dbState.inContext = false;
+    const text = await metricsRegistry.getSingleMetricAsString('breeze_hot_path_cache_lookups_total');
+    expect(text).toContain('cache="through-count",result="miss"} 1');
+    expect(text).toContain('cache="through-count",result="hit"} 1');
+    expect(text).toContain('cache="through-count",result="bypass"} 1');
+  });
+
+  it('reports its size on the entries gauge', async () => {
+    const cache = new HotPathTtlCache<string, string>({ name: 'size-gauge', ttlMs: 60_000, maxEntries: 10 });
+    await seed(cache, 'a');
+    await seed(cache, 'b');
+    const text = await metricsRegistry.getSingleMetricAsString('breeze_hot_path_cache_entries');
+    expect(text).toContain('breeze_hot_path_cache_entries{cache="size-gauge"} 2');
   });
 });

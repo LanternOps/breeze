@@ -18,13 +18,17 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { AI_CONNECTION_ROW_KINDS, ANTHROPIC_API_CONNECTION_KINDS, type AiConnectionRowKind } from '@breeze/shared';
 import { aiPlatformModels } from './aiPlatformModels';
 import { llmProviderCatalog } from './llmProviderCatalog';
 import { organizations, partners } from './orgs';
 import { users } from './users';
 
-export const PARTNER_AI_CONNECTION_KINDS = ['anthropic_byok', 'catalog', 'openai_compatible'] as const;
-export type PartnerAiConnectionKind = (typeof PARTNER_AI_CONNECTION_KINDS)[number];
+/** Same array as the shared row kinds: one source for the DB CHECK, API and web (#7779). */
+export const PARTNER_AI_CONNECTION_KINDS = AI_CONNECTION_ROW_KINDS;
+export type PartnerAiConnectionKind = AiConnectionRowKind;
+const KIND_CHECK_LITERALS = PARTNER_AI_CONNECTION_KINDS.map((k) => `'${k}'`).join(', ');
+const ANTHROPIC_API_CHECK_LITERALS = ANTHROPIC_API_CONNECTION_KINDS.map((k) => `'${k}'`).join(', ');
 
 /**
  * Shape 3 (partner axis). `api_key_encrypted` is registered row-bound under
@@ -57,10 +61,10 @@ export const partnerAiConnections = pgTable('partner_ai_connections', {
   index('partner_ai_connections_partner_idx').on(t.partnerId),
   // Disconnected rows are kept as provenance (#7700 finding 1) and do not count.
   uniqueIndex('partner_ai_connections_compat_uq').on(t.partnerId)
-    .where(sql`${t.kind} IN ('anthropic_byok', 'catalog') AND ${t.status} <> 'disconnected'`),
-  check('partner_ai_connections_kind_chk', sql`${t.kind} IN ('anthropic_byok', 'catalog', 'openai_compatible')`),
+    .where(sql`${t.kind} IN (${sql.raw(ANTHROPIC_API_CHECK_LITERALS)}) AND ${t.status} <> 'disconnected'`),
+  check('partner_ai_connections_kind_chk', sql`${t.kind} IN (${sql.raw(KIND_CHECK_LITERALS)})`),
   check('partner_ai_connections_status_chk', sql`${t.status} IN ('active', 'error', 'disconnected')`),
-  check('partner_ai_connections_shape_chk', sql`(${t.kind} = 'catalog') = (${t.catalogEntryId} IS NOT NULL) AND (${t.kind} = 'openai_compatible') = (${t.baseUrl} IS NOT NULL) AND (${t.kind} NOT IN ('anthropic_byok', 'catalog') OR ${t.status} = 'disconnected' OR ${t.apiKeyEncrypted} IS NOT NULL)`),
+  check('partner_ai_connections_shape_chk', sql`(${t.kind} = 'catalog') = (${t.catalogEntryId} IS NOT NULL) AND (${t.kind} = 'openai_compatible') = (${t.baseUrl} IS NOT NULL) AND (${t.kind} NOT IN (${sql.raw(ANTHROPIC_API_CHECK_LITERALS)}) OR ${t.status} = 'disconnected' OR ${t.apiKeyEncrypted} IS NOT NULL)`),
   check('partner_ai_connections_disconnected_keyless_chk', sql`${t.status} <> 'disconnected' OR ${t.apiKeyEncrypted} IS NULL`),
   check('partner_ai_connections_key_triplet_chk', sql`num_nulls(${t.apiKeyEncrypted}, ${t.keyLast4}, ${t.keyFingerprint}) IN (0, 3)`),
   check('partner_ai_connections_config_version_chk', sql`${t.configVersion} >= 1`),

@@ -48,6 +48,12 @@ import type { AuthContext } from '../../middleware/auth';
 import { CommandTypes, queueCommandForExecution } from '../commandQueue';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { captureException } from '../sentry';
+import {
+  buildRestorePointRequest,
+  discardRestorePointRequest,
+  linkRestorePointCommand,
+  restorePointPayloadField,
+} from '../restorePointRequest';
 import { checkScriptMaintenanceSuppression } from '../scriptMaintenanceGate';
 import { hasTenantVariableBoundParameters } from '../sourcedParameters';
 import { getFleetFinding } from './query';
@@ -617,8 +623,9 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
   // string would be brittle, and attempting the enqueue at all is wasted work.
   // One bounded query (the chunk is <= REMEDIATION_CHUNK_SIZE) instead.
   const liveness = new Map<string, string>();
+  const osTypes = new Map<string, string | null>();
   for (const row of await db
-    .select({ id: devices.id, status: devices.status })
+    .select({ id: devices.id, status: devices.status, osType: devices.osType })
     .from(devices)
     .where(
       inArray(
@@ -627,6 +634,7 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
       )
     )) {
     liveness.set(row.id, row.status);
+    osTypes.set(row.id, row.osType ?? null);
   }
 
   // An unexpected throw inside the per-target loop is the same defect
@@ -799,15 +807,32 @@ export async function dispatchRunChunk(runId: string, chunkIndex: number): Promi
         payload = (run.parameterSnapshot ?? {}) as Record<string, unknown>;
       }
 
+      // #4609 W05: this path builds its own script payload, so it stamps the
+      // restore-point decision through the same chokepoint as
+      // dispatchScriptToDevice. A resolution error lands in the catch below
+      // and fails the target visibly.
+      const restorePoint = type === CommandTypes.SCRIPT
+        ? await buildRestorePointRequest({
+          deviceId: target.targetDeviceUuid,
+          orgId: target.orgId,
+          osType: osTypes.get(target.targetDeviceUuid) ?? null,
+          trigger: 'script',
+          label: 'run remediation script',
+        })
+        : null;
+      if (restorePoint) payload = { ...payload, ...restorePointPayloadField(restorePoint) };
+
       const result = await queueCommandForExecution(target.targetDeviceUuid, type, payload, {
         userId: run.createdBy ?? undefined,
         expectedOrgId: target.orgId,
       });
 
       if (result.error || !result.command) {
+        await discardRestorePointRequest(restorePoint);
         await markTargetFailed(runId, target.targetDeviceUuid, result.error ?? 'Failed to queue command');
         continue;
       }
+      await linkRestorePointCommand(restorePoint, result.command.id);
 
       // The claim already flipped status/queuedAt; just attach the resulting
       // command id onto the now-`queued` row.

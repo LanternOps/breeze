@@ -1,4 +1,7 @@
 export * from './errorCodes';
+// Partner service principal scope registry + task-named presets (#8173), shared
+// by the API validation layer and the web create dialog so they cannot drift.
+export * from './partnerServicePrincipalScopes';
 // Permission registry (resource:action grants) + derived literal-union types.
 export * from './permissions';
 
@@ -183,6 +186,7 @@ export * from './ticketAttachments';
 // Hardware & RAID monitoring (W01 #6856)
 export * from './hardwareHealth';
 export * from './timeSync';
+export * from './workloads';
 
 // Software-install time budgets, mirrored from the Go agent (#3578)
 export * from './softwareInstallTimeouts';

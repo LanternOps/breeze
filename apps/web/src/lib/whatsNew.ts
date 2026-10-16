@@ -18,6 +18,19 @@ export interface WhatsNewEntry {
  */
 export const WHATS_NEW_ENTRIES: WhatsNewEntry[] = [
   {
+    version: '0.122.0',
+    date: '2026-10-11',
+    title: 'Larger remote clipboard transfers, AI that researches fixes, and a clearer network map',
+    highlights: [
+      'With this release’s agent, the remote desktop clipboard handles large text, and a status chip shows which directions policy allows. Each session writes one audit entry for its clipboard activity.',
+      'AI suggested fixes can research a problem, propose fixes for you to review and remember the fixes that worked, so later triage checks them first.',
+      'The AI assistant can ask to read files in chosen folders on one device, read-only and only after an administrator approves. Passwords, keys and other credentials are never shared.',
+      'The network topology page opens on summary cards and role sections, and each device page shows who is already connected to it remotely.',
+      'Groundwork for customer-portal hardware and performance views: per-client toggles open read-only portal APIs for hardware health, hardware inventory and performance metrics. Portal pages come in a later release.',
+    ],
+    learnMoreUrl: 'https://breezermm.com/release-notes',
+  },
+  {
     version: '0.121.0',
     date: '2026-10-02',
     title: 'Pick your AI model, bring your own endpoint, and bill clients for AI usage',

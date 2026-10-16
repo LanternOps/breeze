@@ -682,6 +682,19 @@ describe('enrollment key routes — get, rotate, delete', () => {
       expect(impliedMinutes).toBeLessThanOrEqual(43201);
     });
 
+    it('rejects rotating to an expiresAt that is already in the past', async () => {
+
+      const res = await app.request(`/enrollment-keys/${KEY_ID}/rotate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ expiresAt: new Date(Date.now() - 60_000).toISOString() }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('Expiry must be in the future');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('allows rotating with an expiresAt at or under the partner cap', async () => {
       mockEnrollmentDefaults({ maxTtlMinutes: 1440 });
       mockSelectFromWhereLimit([makeEnrollmentKey()]);

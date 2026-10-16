@@ -60,6 +60,10 @@ elif [ -f "breeze-watchdog" ]; then
     echo "Installing watchdog..."
     cp breeze-watchdog /usr/local/bin/breeze-watchdog
     chmod 755 /usr/local/bin/breeze-watchdog
+elif [ ! -f "/usr/local/bin/breeze-watchdog" ]; then
+    # Nothing bundled and nothing installed: say so instead of finishing
+    # silently. The enrolled agent installs the watchdog itself (#8621).
+    echo "Warning: no watchdog bundled; the agent installs one after enrollment when the control plane offers a watchdog build for this platform" >&2
 fi
 
 # Install backup helper. The agent spawns breeze-backup from its own directory

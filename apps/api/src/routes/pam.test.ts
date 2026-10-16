@@ -80,6 +80,12 @@ vi.mock('../db/schema', async () => ({
     await vi.importActual<typeof import('../db/schema')>('../db/schema')
   ).normalizeSignerGroupEntries,
   devices: { id: 'id', hostname: 'hostname' },
+  deviceOwnershipEpochClosures: {
+    deviceId: 'deviceId',
+    epoch: 'epoch',
+    orgId: 'orgId',
+    hostnameSnapshot: 'hostnameSnapshot',
+  },
   sites: { id: 'id', name: 'name' },
   users: { id: 'id', name: 'name' },
   elevationRequests: {

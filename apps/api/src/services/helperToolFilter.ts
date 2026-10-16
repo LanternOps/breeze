@@ -23,6 +23,7 @@ const BASIC_TOOLS = [
   'get_device_details',
   'get_device_hardware_health',
   'get_device_time_status',
+  'query_device_workloads',
   'list_time_sync_issues',
   'analyze_metrics',
   'analyze_disk_usage',

@@ -17,7 +17,12 @@ var applyPeripheralPolicyV2Mu sync.Mutex
 // key-sorted canonical JSON contract. Marshal through generic JSON values so
 // encoding/json sorts every object key, including policies and exceptions.
 func DigestPeripheralPolicyEnvelopeV2(envelope PeripheralPolicyEnvelopeV2) (string, error) {
-	groupIDs := append([]string(nil), envelope.Identity.GroupIDs...)
+	// A non-nil slice even when the device is in no group: append onto a nil
+	// slice returns nil for zero elements, which json.Marshal writes as
+	// "groupIds":null — but the controller hashes [], so every ungrouped
+	// device rejected every envelope as malformed_digest.
+	groupIDs := make([]string, 0, len(envelope.Identity.GroupIDs))
+	groupIDs = append(groupIDs, envelope.Identity.GroupIDs...)
 	slices.Sort(groupIDs)
 	digestFields := map[string]any{
 		"schemaVersion": envelope.SchemaVersion,
@@ -126,7 +131,14 @@ func ApplyPeripheralPolicyV2(envelope PeripheralPolicyEnvelopeV2, local Peripher
 			Digest:            current.Digest,
 			EffectivePolicies: current.EffectivePolicies,
 		}
-		if validateEnvelopeV2(persisted, local) != "" {
+		// The last-known-good state must be this device's, intact (its digest
+		// still matches), but it may predate a move to another org or site
+		// (#8317): validated against the org/site it was applied under, it
+		// would otherwise refuse every envelope after the agent adopted its
+		// new identity. Revision ordering below still applies across the move.
+		persistedLocal := local
+		persistedLocal.OrgID, persistedLocal.SiteID = current.Identity.OrgID, current.Identity.SiteID
+		if current.Identity.DeviceID != local.DeviceID || validateEnvelopeV2(persisted, persistedLocal) != "" {
 			return rejectV2(envelope, "invalid_payload")
 		}
 		if envelope.Revision < current.Revision {

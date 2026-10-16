@@ -76,7 +76,7 @@ describe('audit baseline queue helpers', () => {
       'audit-policy-collection',
       expect.objectContaining({ orgId: 'org-1' }),
       expect.objectContaining({
-        jobId: expect.stringMatching(/^audit-policy-collection:org-1:[a-z0-9]+$/),
+        jobId: expect.stringMatching(/^audit-policy-collection-org-1-[a-z0-9]+$/),
       }),
     );
   });

@@ -15,6 +15,7 @@ export * from './backupHealth';
 export * from './edr';
 export * from './aiModelRegistry';
 export * from './aiModelQuality';
+export * from './hourBlock';
 
 // ============================================
 // Multi-Tenancy Types
@@ -1005,3 +1006,6 @@ export * from './businessReports';
 export * from './backupStatusReport';
 export * from './aiModelChoices';
 export * from './autopay';
+
+// Windows System Restore checkpoint requests (#4609 W05)
+export * from './restorePoint';

@@ -14,6 +14,7 @@ const sample: StackDescriptor = {
   apiUrl: 'http://localhost:53421/api',
   portalUrl: 'http://localhost:53421/portal',
   webPort: 53421,
+  caddyPortPinned: true,
   pgContainer: 'breeze-wt-feat-x-postgres-1',
   redisContainer: 'breeze-wt-feat-x-redis-1',
   admin: { email: 'admin@breeze.local', password: 'BreezeAdmin123!' },

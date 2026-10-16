@@ -50,6 +50,13 @@ type CollectorDeps struct {
 	// StateDir holds per-collector topology state (sequence, acknowledged
 	// digests). Empty disables the topology companion.
 	StateDir string
+	// Wake ends an idle wait early (#7970): the heartbeat signals it when the
+	// server says this device has collectors. Nil is valid: the loop then
+	// relies on the idle re-check alone.
+	Wake *Waker
+
+	// schedule overrides the fetch cadence; nil means defaultFetchSchedule.
+	schedule *fetchSchedule
 }
 
 // agentBase builds the per-agent endpoint prefix the API mounts under
@@ -344,12 +351,19 @@ func (t *topologyRun) build(deps CollectorDeps, cfg CollectorConfig, snap Snapsh
 	return report
 }
 
-// StartCollectorLoop periodically fetches this agent's collector configs from
-// GET /api/v1/agents/:id/unifi-collectors and runs each due collector. It spawns its
-// own goroutine and returns a channel that closes once the loop has exited
-// (after ctx is cancelled), so shutdownAgent can wait for a clean teardown
-// instead of leaking the loop across in-process restarts.
+// StartCollectorLoop fetches this agent's collector configs from
+// GET /api/v1/agents/:id/unifi-collectors and runs each due collector. It
+// fetches every ActiveFetchInterval while collectors are assigned and backs off
+// to a jittered IdleFetchInterval after an empty list; deps.Wake ends an idle
+// wait early (collector_schedule.go, #7970). It spawns its own goroutine and
+// returns a channel that closes once the loop has exited (after ctx is
+// cancelled), so shutdownAgent can wait for a clean teardown instead of
+// leaking the loop across in-process restarts.
 func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{} {
+	sched := defaultFetchSchedule
+	if deps.schedule != nil {
+		sched = *deps.schedule
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -357,19 +371,32 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 		// the sibling workspaceindex loop has carried this guard since it
 		// shipped; the collector never did.
 		defer observability.Recoverer("unifi.collector")
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
+		timer := time.NewTimer(sched.first)
+		defer timer.Stop()
 		lastRun := map[string]time.Time{}
+		// idle: the last successful fetch returned no collectors. A failed
+		// fetch keeps the current cadence, as the fixed ticker did.
+		idle := false
+		var lastFetch time.Time
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				configs, err := fetchConfigs(ctx, deps)
-				if err != nil {
-					deps.logf("[unifi] fetch configs: %v", err)
+			case <-deps.Wake.C():
+				// Only an idle loop gains anything; an active one fetches
+				// within ActiveFetchInterval anyway.
+				if !idle || time.Since(lastFetch) < sched.wakeGap {
 					continue
 				}
+				timer.Stop()
+			case <-timer.C:
+			}
+			configs, err := fetchConfigs(ctx, deps)
+			lastFetch = time.Now()
+			if err != nil {
+				deps.logf("[unifi] fetch configs: %v", err)
+			} else {
+				idle = len(configs) == 0
 				now := time.Now()
 				for _, cfg := range configs {
 					interval := time.Duration(maxInt(cfg.PollIntervalSeconds, 15)) * time.Second
@@ -382,6 +409,11 @@ func StartCollectorLoop(ctx context.Context, deps CollectorDeps) <-chan struct{}
 					}
 				}
 			}
+			next := sched.active
+			if idle {
+				next = sched.idle()
+			}
+			timer.Reset(next)
 		}
 	}()
 	return done

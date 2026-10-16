@@ -22,6 +22,8 @@ export const QUICK_ADD_CHIPS: QuickAddChip[] = [
   { id: 'needsPatches', label: 'Needs patches', translationKey: 'quickAddChips.chips.needsPatches', condition: { field: 'patches.pending', operator: 'equals', value: 'yes' } },
   { id: 'critical', label: 'Critical', translationKey: 'quickAddChips.chips.critical', condition: { field: 'alerts.critical', operator: 'equals', value: 'yes' } },
   { id: 'rebootNeeded', label: 'Reboot needed', translationKey: 'quickAddChips.chips.rebootNeeded', condition: { field: 'system.rebootRequired', operator: 'equals', value: 'yes' } },
+  // #8611: online devices whose log shipping has been failing for >= 30 min.
+  { id: 'logShippingFailing', label: 'Log shipping failing', translationKey: 'quickAddChips.chips.logShippingFailing', condition: { field: 'logShippingFailing', operator: 'equals', value: 'yes' } },
   { id: 'notSeen7d', label: 'Not seen 7d', translationKey: 'quickAddChips.chips.notSeen7d', condition: { field: 'daysSinceLastSeen', operator: 'greaterThan', value: 7 } },
   { id: 'lowDisk', label: 'Low disk', translationKey: 'quickAddChips.chips.lowDisk', condition: { field: 'metrics.diskPercent', operator: 'greaterThan', value: 90 } },
   { id: 'untagged', label: 'Untagged', translationKey: 'quickAddChips.chips.untagged', condition: { field: 'tags', operator: 'isEmpty', value: '' } }

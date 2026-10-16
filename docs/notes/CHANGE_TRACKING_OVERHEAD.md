@@ -1,7 +1,7 @@
 # Change Tracking Agent Overhead
 
 Technical reference for the BE-6 change tracker's resource footprint per collection
-cycle. Captured from live observation on Kit (Windows 11 Pro, dev/local docker deploy,
+cycle. Captured from live observation on lab-hyperv-host (Windows 11 Pro, dev/local docker deploy,
 2026-02-21). Intended to inform future decisions about configurable schedule intervals.
 
 ---

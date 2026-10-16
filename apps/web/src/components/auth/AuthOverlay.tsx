@@ -8,6 +8,7 @@ import * as Sentry from '@sentry/astro';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 const CF_ACCESS_LOGIN_PARAM = 'cf-access-login';
 const SSO_CODE_FRAGMENT_PREFIX = 'ssoCode=';
@@ -32,7 +33,7 @@ function consumeSsoCodeFragment(): SsoCodeFragment {
   const hash = window.location.hash.replace(/^#/, '');
   if (!hash.startsWith(SSO_CODE_FRAGMENT_PREFIX)) return { present: false };
   const raw = hash.slice(SSO_CODE_FRAGMENT_PREFIX.length).split('&')[0] ?? '';
-  window.history.replaceState({}, '', window.location.pathname + window.location.search);
+  replaceUrl(window.location.pathname + window.location.search);
   let code: string | null;
   try {
     code = decodeURIComponent(raw) || null;
@@ -52,7 +53,7 @@ function consumeCfAccessLoginParam(): boolean {
     window.location.pathname +
     (cleanSearch ? `?${cleanSearch}` : '') +
     window.location.hash;
-  window.history.replaceState({}, '', cleanUrl);
+  replaceUrl(cleanUrl);
   return true;
 }
 

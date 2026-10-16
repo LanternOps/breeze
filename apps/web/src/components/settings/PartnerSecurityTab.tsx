@@ -1,6 +1,7 @@
 import type { InheritableSecuritySettings, IpAllowlistStatus } from '@breeze/shared';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { SESSION_TIMEOUT_MAX_MINUTES } from '../../lib/sessionTimeout';
 
 type Props = {
   data: InheritableSecuritySettings;
@@ -99,7 +100,7 @@ export default function PartnerSecurityTab({ data, onChange, status, statusUnava
             placeholder={t('partnerSecurity.notSet')}
             className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             min={15}
-            max={240}
+            max={SESSION_TIMEOUT_MAX_MINUTES}
           />
         </div>
 

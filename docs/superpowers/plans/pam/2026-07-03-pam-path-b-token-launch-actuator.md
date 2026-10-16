@@ -737,7 +737,7 @@ git commit -m "test(agent/pam): token_launch failure still demotes ~breeze_elev"
 - [ ] **Step 1: Write the validation checklist**
 
 Create the file with:
-- **Enable:** on the Windows test VM (100.101.150.55), set in `agent.yaml`: `pam_enabled: true`, `pam_actuator_strategy: token_launch`; ensure a PAM rule auto-approves the test target (e.g. `mmc.exe`); restart the agent.
+- **Enable:** on the Windows test VM (`<lab-windows-test-vm-ip>`), set in `agent.yaml`: `pam_enabled: true`, `pam_actuator_strategy: token_launch`; ensure a PAM rule auto-approves the test target (e.g. `mmc.exe`); restart the agent.
 - **Case A (approve/launch):** standard user launches the target → Breeze auto-approves → assert: native consent.exe does not survive, target runs elevated (Task Manager: elevated, running as `~breeze_elev`), process is visible on the user's desktop (not session 0).
 - **Case B (deny/block):** rule set to auto-deny → target does not launch, consent.exe dismissed.
 - **Case C (lifecycle):** after each case, assert `~breeze_elev` is NOT in Administrators and its password was re-randomized (`net localgroup administrators`).

@@ -301,6 +301,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // refuses a held context; the handlers run their reads in short
   // withAuthDbAccessContext phases and call it with none held.
   { method: 'POST', pattern: /^\/api\/v1\/remediation-suggestions\/(?:generate|research)\/?$/ },
+  // #7943 — AI agents manual-run trigger. Admission
+  // (createAndEnqueueAgentRun) opens its own system transaction(s) and
+  // enqueues the BullMQ job after they commit; under the ambient request
+  // transaction each click pinned a second pooled connection for the whole
+  // admission (#2417 / #6671). The handler runs its agent + device
+  // authorization reads in one short withAuthDbAccessContext and admits with
+  // none held. GET on the same path (the run list) keeps the ambient tx.
+  { method: 'POST', pattern: /^\/api\/v1\/ai\/agents\/[^/]+\/runs\/?$/ },
   // #7347 — manual automation trigger (both spellings). The handler inserts the
   // automation_runs row and enqueues `execute-run`, which the automation worker
   // loads on its own connection. Under the ambient request transaction a fast
@@ -488,6 +496,21 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/backup\/providers\/connections\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/backup\/providers\/connections\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/backup\/providers\/connections\/[^/]+\/test\/?$/ },
+  // #8164 W01b — the same three for the EDR provider connections: each makes a
+  // REAL vendor `testConnection` call (GravityZone `getApiKeyDetails` against an
+  // operator-supplied Access URL) and so must not hold the request transaction
+  // across it (#1105). The handlers wrap their DB work in short
+  // `withAuthDbAccessContext` blocks. `/connections/:id/sync`, DELETE and
+  // `PUT /tenants/:id/mapping` make no outbound call and keep the ambient tx.
+  { method: 'POST', pattern: /^\/api\/v1\/edr\/connections\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/test\/?$/ },
+  // #8167 W03 — EDR response actions. `dispatchEdrAction` must COMMIT its
+  // `edr_actions` row (and audit) before the one vendor call, and must not hold
+  // a pooled connection across vendor HTTP (#1105): impossible inside the
+  // ambient request transaction. It asserts no context is held and opens its
+  // own short caller-scoped / system contexts. `GET /edr/actions` keeps the tx.
+  { method: 'POST', pattern: /^\/api\/v1\/edr\/actions\/?$/ },
   // Caller verification (#6354 W01): the three Graph-backed operations
   // (directory picker search, authoritative sync, manual binding) each open
   // short `withAuthDbAccessContext` phases around a Microsoft Graph read, so

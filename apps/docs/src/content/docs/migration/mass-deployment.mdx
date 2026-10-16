@@ -159,8 +159,12 @@ A typical JAMF policy:
 
    ```bash
    #!/bin/bash
+   # The PKG installs the agent to /Library/Breeze/bin or /usr/local/bin,
+   # depending on the Mac; use whichever it installed.
+   AGENT=/Library/Breeze/bin/breeze-agent
+   [ -f "$AGENT" ] && [ ! -L "$AGENT" ] || AGENT=/usr/local/bin/breeze-agent
    # Idempotent: enroll exits 0 with a notice if already enrolled.
-   /usr/local/bin/breeze-agent enroll "$4" \
+   "$AGENT" enroll "$4" \
      --server "$5" \
      --enrollment-secret "$6" \
      --quiet

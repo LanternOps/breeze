@@ -109,6 +109,19 @@ describe('aiTools get_fleet_health org scoping', () => {
     mockListUserRiskScores.mockResolvedValue({ total: 0, rows: [] });
   });
 
+  it('#5876: get_fleet_health items carry provisional', async () => {
+    mockListReliabilityDevices.mockResolvedValue({
+      total: 1,
+      rows: [{ reliabilityScore: 90, trendDirection: 'stable', topIssues: [], provisional: true }],
+    });
+    const auth = {
+      user: { id: 'user-1' }, orgId: null, scope: 'partner', accessibleOrgIds: ['org-1'],
+      canAccessOrg: () => true, orgCondition: () => undefined,
+    } as any;
+    const parsed = JSON.parse(await executeTool('get_fleet_health', {}, auth));
+    expect(parsed.devices[0].provisional).toBe(true);
+  });
+
   it('returns org context error when accessibleOrgIds is empty', async () => {
     const auth = {
       user: { id: 'user-1' },

@@ -11,12 +11,21 @@ import { devices } from '../db/schema';
 import { extractRowCount } from '../db/rowCount';
 import { resolveAlertsForRemovedComponents } from './hardwareHealth/retire';
 import { deleteOriginDeviceTopologyAlerts } from './siteOwnedAlerts';
+import { deleteDeviceFixOutcomes } from './fixMemory/store';
 import {
   DEVICE_DETACH_DEVICE_ID_TABLES,
   DEVICE_LINKED_DEVICE_ID_TABLES,
   DEVICE_LINK_DEPENDENT_COLUMNS,
+  DEVICE_CASCADE_DELETE_PREDICATES,
   getDeviceCascadeDeleteTables,
+  type DeviceCurrentOwnership,
 } from '../routes/devices/core';
+
+/** postgres-js returns the row array itself; node-postgres wraps it in `.rows`. */
+function asRows<T>(result: unknown): T[] {
+  const value = (result as { rows?: T[] } | null)?.rows ?? result;
+  return Array.isArray(value) ? (value as T[]) : [];
+}
 
 /**
  * Device-cascade tables that are append-only evidence with DELETE fully
@@ -373,7 +382,43 @@ export async function deleteDeviceCascade(
   await tx.execute(sql`SELECT breeze_detach_topology_inventory_binding(
     'device', d.id, d.org_id, d.site_id) FROM devices d WHERE d.id = ${deviceId}`);
 
+  // AI Suggested Fixes (#7278): fix_outcomes is fix_memory's proof. A bare
+  // DELETE would leave the derived aggregates counting attempts that no longer
+  // exist, so the store deletes them AND stale-marks every identity a counted
+  // one fed, in this transaction; the sweeper rebuilds. fix_outcomes stays in
+  // getDeviceCascadeDeleteTables() for the coverage contract; its generic
+  // DELETE below then finds nothing.
+  //
+  // Bounded like the parent-row lock: the store's identity advisory locks can
+  // queue behind a whole-partner fix-memory rebuild while this transaction
+  // holds the devices row, which would pin the connection and every writer of
+  // that row for as long as the rebuild runs. With the bound it fails fast
+  // with a 55P03 instead, which the routes and purge jobs already treat as
+  // retryable. Restored straight after, on the success path only, for the
+  // same reason as the restore above.
+  const fixMemoryPriorMs = await tightenLockTimeout(tx, DEVICE_LOCK_TIMEOUT_MS);
+  await deleteDeviceFixOutcomes(tx, deviceId);
+  if (lockTimeoutWasChanged(fixMemoryPriorMs, DEVICE_LOCK_TIMEOUT_MS)) {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${fixMemoryPriorMs}ms`}, true)`);
+  }
+
+  // PAM chain + ownership lineage delete by the device's EXACT current epoch
+  // (W2, #8204): earlier epochs are another org's evidence and outlive the
+  // device. Read once, under the row lock taken above. No device row means
+  // there is no current epoch to delete, so those tables match nothing.
+  const [ownershipRow] = asRows<{ org_id: string; ownership_epoch: number }>(await tx.execute(
+    sql`SELECT org_id::text AS org_id, ownership_epoch FROM devices WHERE id = ${deviceId}`,
+  ));
+  const ownership: DeviceCurrentOwnership | null = ownershipRow
+    ? { deviceId, orgId: ownershipRow.org_id, ownershipEpoch: Number(ownershipRow.ownership_epoch) }
+    : null;
+
   for (const table of getDeviceCascadeDeleteTables()) {
+    // Everything without a per-table predicate deletes by device_id.
+    const epochPredicate = DEVICE_CASCADE_DELETE_PREDICATES.get(table);
+    const predicate = epochPredicate
+      ? (ownership ? epochPredicate(ownership) : sql`false`)
+      : sql`device_id = ${deviceId}`;
     if (DEVICE_CASCADE_AUDIT_ADMIN_TABLES.has(table)) {
       // Append-only evidence: breeze_app has no DELETE grant (see
       // DEVICE_CASCADE_AUDIT_ADMIN_TABLES above). Arm both layers only for
@@ -381,11 +426,11 @@ export async function deleteDeviceCascade(
       // continuing through ordinary child tables.
       await tx.execute(sql`SET LOCAL ROLE breeze_audit_admin`);
       await tx.execute(sql`SET LOCAL breeze.allow_audit_retention = '1'`);
-      await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
+      await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE ${predicate}`);
       await tx.execute(sql`RESET ROLE`);
       continue;
     }
-    await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE device_id = ${deviceId}`);
+    await tx.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE ${predicate}`);
   }
 
   // #8165 (EDR provider framework W01, spec D14 applied to hard delete — plan

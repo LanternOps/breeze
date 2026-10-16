@@ -35,11 +35,11 @@ The agent reports a `SecurityStatus` payload on each heartbeat. The payload incl
 | **`providerVersion`** | Version string of the installed AV product |
 | **`definitionsVersion`** | Virus definition / signature version |
 | **`definitionsDate`** | Timestamp of the most recent definitions update |
-| **`realTimeProtection`** | Whether real-time scanning is active |
+| **`realTimeProtection`** | Whether real-time scanning is active. `null` when the agent could not read it (collection failed or never reported); the UI shows **Unknown** and the device is not counted as protected or unprotected |
 | **`lastScan`** | Timestamp of the most recent completed scan |
 | **`lastScanType`** | Type of last scan: `quick`, `full`, or `custom` |
 | **`threatCount`** | Number of active threats on the device |
-| **`firewallEnabled`** | Whether the host firewall is active |
+| **`firewallEnabled`** | Whether the host firewall is active. `null` when the agent could not read it; shown as **Unknown** |
 | **`encryptionStatus`** | Disk encryption state: `encrypted`, `partial`, or `unencrypted` |
 | **`encryptionDetails`** | Per-volume encryption breakdown (method, mount point, protection status) |
 | **`localAdminSummary`** | Local administrator account inventory with issue flags |
@@ -388,7 +388,9 @@ GET /security/dashboard?orgId={orgId}
 | `removedThreats` | Threats that have been removed |
 | `securityScore` | Fleet-wide average posture score (0-100) |
 | `providers` | AV provider distribution with device counts and coverage percentages |
-| `firewallEnabled` / `firewallDisabled` | Firewall state counts |
+| `antivirus` | Real-time protection counts: `protected`, `unprotected`, and `unknown` (state could not be read) |
+| `firewall` | Firewall counts: `enabled`, `disabled`, and `unknown` |
+| `firewallEnabled` / `firewallDisabled` | Firewall state counts (devices with an unknown state are in neither) |
 | `encryption` | BitLocker and FileVault enabled counts |
 | `passwordPolicyCompliance` | Average password policy factor score |
 | `adminAudit` | Summary of default/weak/stale admin account issues with top affected devices |

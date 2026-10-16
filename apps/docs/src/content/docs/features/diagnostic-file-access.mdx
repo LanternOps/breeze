@@ -1,0 +1,97 @@
+---
+title: Diagnostic File Access
+description: Let the Breeze AI assistant read specific log folders on one device, read-only, after an administrator approves it — and what can never be granted.
+sidebar:
+  label: "Diagnostic File Access"
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+By default the AI assistant cannot read files in locations such as a user's `AppData` folder, `/etc`, or other profile and system paths. **Diagnostic file access** lets it ask for **read-only** access to specific folders on one device, for a limited time, after an administrator approves the request. It is meant for application and crash logs that live in those locations.
+
+A grant never allows writes, deletes, renames, scripts or registry changes. It covers listing folders and reading files, and nothing else.
+
+## How a request works
+
+<Steps>
+
+1. **The assistant asks.** In AI chat or over MCP, the assistant calls `request_diagnostic_access` with the device, one to twenty absolute paths (each either *recursive* — the whole subtree — or *this folder only*), the operations it needs (list, read or both), a purpose, and a duration. Nothing is readable yet.
+
+2. **Administrators are notified.** The request appears in **Approvals** and on the Breeze mobile app for every eligible approver. The card shows the organization, device, every path with its recursion, the operations, the duration, who asked and the stated purpose.
+
+3. **An administrator decides.** Approving activates the grant for the requested duration, counted from approval. Denying closes it. The first decision wins; the other approvers' cards close.
+
+4. **The assistant reads.** While the grant is active, `diagnostic_list_directory` and `diagnostic_read_file` work on paths inside the approved locations, for the person or key that asked — nobody else's session can use it. Each command is authorized again when it is delivered, so revoking a grant stops every command the device has not yet received.
+
+</Steps>
+
+The requester or an administrator can end a grant early with `revoke_diagnostic_access`. A grant also ends when it expires, when the device moves to another organization, or when its organization is merged.
+
+### Who can request and approve
+
+| Role | Requirement |
+|---|---|
+| **Requester** | `devices:execute` on the device. A user session, an API key or an MCP OAuth connection can hold a grant; AI agent runs and partner service keys cannot. |
+| **Approver** | `devices:execute` **and** `approvals:decide` for the device's organization, plus access to the device's site. Eligibility is checked again at the moment of the decision. |
+
+### Request limits
+
+| Limit | Value |
+|---|---|
+| Paths per request | 1 to 20 |
+| Path depth | At least two levels below the drive or filesystem root (`C:\ProgramData\Vendor`, `/var/log`); `C:\`, `C:\Users` and `/home` are too broad |
+| Grant duration | 5 to 1,440 minutes (default 240), from approval |
+| Waiting for a decision | A request lapses after 1 hour |
+| Pending requests | At most 5 per device for the same requester |
+| Read size | Up to 992 KiB per read, paged with `offset` / `nextOffset` |
+| Listing size | Up to 5,000 entries per page |
+
+## What can never be granted
+
+Some locations are refused whatever the request says and whoever approves it. Requests that name them are rejected, a grant never covers them, and the Breeze agent on the device refuses them on its own as well — so a server-side mistake cannot reach them.
+
+- **The Breeze agent's own configuration and state** (for example `C:\ProgramData\Breeze`, `/etc/breeze`, `/Library/Application Support/Breeze`).
+- **Virtual and device filesystems**: `/proc`, `/sys` and `/dev`.
+- **Credential material**, wherever it sits inside an approved folder:
+  - **Browser secrets** — saved passwords, cookies and their encryption keys (Chrome/Edge `Login Data`, `Cookies`, `Local State`; Firefox `key4.db`, `logins.json`; Safari cookies).
+  - **Credential stores** — registry hives under `System32\config`, DPAPI master keys, Credential Manager and Vault, Windows Hello containers, macOS keychains, GNOME keyring and KWallet, `/etc/shadow` and `sudoers`, Kerberos keytabs, setup answer files (`unattend.xml`) and Group Policy preference files.
+  - **Private keys** — SSH user and host keys, GnuPG, TLS key files (`.pem`, `.key`, `.pfx`, `.p12`, `.ppk`) and Windows key containers.
+  - **Stored tokens** — `.aws`, `.kube`, `.azure`, gcloud and Docker credentials, `.env` files, git credentials, Kerberos ticket caches, browser web storage, and shell and PowerShell command history.
+
+When the assistant lists an approved folder, entries in these classes are left out entirely; the listing reports how many were withheld (`hiddenSensitive`). Reading one directly returns a `credential_material` refusal.
+
+The agent also refuses any path that reaches its target through a symbolic link, junction, mount redirection, 8.3 short name or extra hard link. Ask for the real location instead.
+
+<Aside type="caution">
+  These lists name **known** locations. Anything else inside an approved folder is readable, so approve only the folders the stated purpose needs.
+</Aside>
+
+## Content redaction
+
+Every file read under a grant is passed through secret redaction **before the AI assistant sees it**. Breeze reads 16 KiB of extra context on each side of the requested range and redacts over that whole window, so a read that starts inside a value or a key still returns no part of it; UTF-16 text is covered too. Because of that context, one read returns at most 992 KiB. Password and token assignments (`password=…`, `api_key: …`), bearer tokens, JWTs, cloud access key IDs, connection strings and PEM private-key blocks are replaced with a redaction marker. When anything was replaced, the result carries `contentRedacted: true`, so the assistant knows part of the file was withheld. Binary files read as base64 are redacted the same way and re-encoded; a file with nothing to redact is returned unchanged.
+
+Redaction is a second layer and recognizes known secret shapes only. It does not make credential stores readable — those stay refused as described above.
+
+## Self-approval by a sole operator
+
+The person who asked can never approve their own request while anyone else is eligible to. They get no approval card, and the decision path re-checks this live when anyone approves.
+
+When the requester is the **only** eligible approver — a one-person MSP, for example — they receive the single card, and approving it requires:
+
+- **A fresh second factor for this decision.** The approval must be signed with a hardware-backed factor at assurance level L3 or higher: a passkey on this device or the Breeze Authenticator on a registered phone. A plain session tap, a TOTP code or a step-up reused from an earlier approval does not count, and the request is shown at **critical** risk. See [Approval Security](/features/approval-security/) for the assurance levels.
+- **An audit record.** Breeze writes a `diagnostic_access.self_approval` record before the grant can become active. If that record cannot be written, the approval is refused and can be retried; a self-approved grant never becomes active without it. The `diagnostic_access.approved` record that follows confirms the activation; a self-approval record with no matching approval marks one that did not complete (for example, the request lapsed at that moment).
+
+A requester can always **deny** their own request.
+
+## Audit trail
+
+Every step is recorded in the audit log. File contents are never logged.
+
+| Event | When |
+|---|---|
+| `diagnostic_access.requested` | A request is created |
+| `diagnostic_access.self_approval` | A sole operator approves their own request (written before activation) |
+| `diagnostic_access.approved` / `diagnostic_access.denied` | A decision is made (the approved record says whether it was a self-approval) |
+| `diagnostic_access.revoked` | A grant is revoked or a pending request withdrawn |
+| `diagnostic_access.file_read_authorized` / `diagnostic_access.directory_list_authorized` | A signed authorization is handed to the device, before it reads anything |
+| `diagnostic_access.file_read` / `diagnostic_access.directory_listed` | Each read or listing, with the path, the location the device actually opened, the outcome and whether content was redacted |

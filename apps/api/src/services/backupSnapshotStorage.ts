@@ -11,11 +11,15 @@ import {
 import { deriveS3RegionFromEndpoint } from '@breeze/shared';
 import { buildS3Client, type S3ClientOverrides } from './recoveryMediaService';
 import { asRecord, getStringValue } from './recoveryBootstrap';
+import { physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
 
 type SnapshotStorageInput = {
   provider: string | null | undefined;
   providerConfig: unknown;
   snapshotId: string;
+  /** The snapshot row's recorded key root (#7081); see snapshotStoragePrefixFor. */
+  keyLayout: unknown;
+  keyPrefix: unknown;
   metadata: unknown;
 };
 
@@ -136,6 +140,21 @@ function normalizeStoragePrefix(
   // stranded the real objects. Only a per-snapshot recorded `storagePrefix`
   // (above) may relocate a snapshot.
   return `${BACKUP_SNAPSHOT_ROOT_DIR}/${snapshotId}`;
+}
+
+/**
+ * The storage prefix a snapshot's objects live under, from its RECORDED key
+ * root (#7081 I1): `<prefix>/snapshots/<id>` for prefixed_flat, which never
+ * consults helper-reported metadata; for legacy_flat, exactly what it has
+ * always been (normalizeStoragePrefix). A root this server cannot read is
+ * refused before any storage call (I5).
+ */
+function snapshotStoragePrefixFor(input: SnapshotStorageInput, provider: string | null): string {
+  const root = snapshotKeyRootOf({ keyLayout: input.keyLayout, keyPrefix: input.keyPrefix });
+  if (!root) throw new Error(`Snapshot ${input.snapshotId} has a storage key root this server cannot read`);
+  if (root.layout === 'legacy_flat') return normalizeStoragePrefix(provider, asRecord(input.metadata), input.snapshotId);
+  if (provider !== 's3') throw new Error(`Snapshot ${input.snapshotId} has a prefixed storage key root on a non-S3 destination`);
+  return physicalKeyFor(root, `${BACKUP_SNAPSHOT_ROOT_DIR}/${input.snapshotId}`);
 }
 
 function normalizeObjectPrefix(storagePrefix: string): string {
@@ -629,6 +648,13 @@ async function deleteS3Prefix(
   const { bucket, client } = buildS3StorageClient(providerConfig);
   const normalizedPrefix = normalizeObjectPrefix(storagePrefix);
 
+  // S3 reports per-key failures (object lock, permissions, provider quirks)
+  // inside a 200 response, and still does so with Quiet: true. Collect those
+  // per-key failures across all pages (delete as much as possible; a
+  // whole-request transport/auth error still aborts immediately), then throw so the caller
+  // never treats a prefix with surviving objects as deleted (#8364).
+  const failures: { key: string; error: string }[] = [];
+
   let continuationToken: string | undefined;
   do {
     const listed = await client.send(new ListObjectsV2Command({
@@ -645,17 +671,35 @@ async function deleteS3Prefix(
       );
 
     if (objects.length > 0) {
-      await client.send(new DeleteObjectsCommand({
+      const response = await client.send(new DeleteObjectsCommand({
         Bucket: bucket,
         Delete: {
           Objects: objects.map((Key) => ({ Key })),
           Quiet: true,
         },
       }));
+      for (const err of response?.Errors ?? []) {
+        failures.push({
+          key: typeof err.Key === 'string' ? err.Key : '(unknown key)',
+          // Code distinguishes object-lock from IAM denials; keep both.
+          error: [err.Code, err.Message].filter(Boolean).join(': ') || 'unknown S3 delete error',
+        });
+      }
     }
 
     continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
   } while (continuationToken);
+
+  if (failures.length > 0) {
+    const sample = failures
+      .slice(0, 5)
+      .map((f) => `${f.key} (${f.error})`)
+      .join('; ');
+    const more = failures.length > 5 ? `; +${failures.length - 5} more` : '';
+    throw new Error(
+      `Failed to delete ${failures.length} object(s) under S3 prefix ${normalizedPrefix}: ${sample}${more}`,
+    );
+  }
 }
 
 async function deleteLocalPrefix(
@@ -738,8 +782,7 @@ export async function deleteBackupSnapshotArtifacts(input: SnapshotStorageInput)
   }
 
   const providerConfig = asRecord(input.providerConfig);
-  const snapshotMetadata = asRecord(input.metadata);
-  const storagePrefix = normalizeStoragePrefix(provider, snapshotMetadata, input.snapshotId);
+  const storagePrefix = snapshotStoragePrefixFor(input, provider);
 
   if (provider === 's3') {
     await deleteS3Prefix(providerConfig, storagePrefix);
@@ -754,8 +797,7 @@ export async function applyBackupSnapshotImmutability(
 ): Promise<SnapshotImmutabilityResult> {
   const provider = input.provider ?? null;
   const providerConfig = asRecord(input.providerConfig);
-  const snapshotMetadata = asRecord(input.metadata);
-  const storagePrefix = normalizeStoragePrefix(provider, snapshotMetadata, input.snapshotId);
+  const storagePrefix = snapshotStoragePrefixFor(input, provider);
 
   if (provider === 's3') {
     return applyS3PrefixRetention(providerConfig, storagePrefix, input.retainUntil);

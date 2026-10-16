@@ -29,7 +29,10 @@ export const securityProviderEnum = pgEnum('security_provider', [
   'emsisoft',
   'webroot',
   'withsecure',
-  'other'
+  'other',
+  // Failed collection / not collected (#8538) — distinct from 'other', which
+  // is a real attribution for an unmapped product.
+  'unknown'
 ]);
 
 export const threatSeverityEnum = pgEnum('threat_severity', [

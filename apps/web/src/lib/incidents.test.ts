@@ -8,7 +8,60 @@ const { fetchWithAuth, showToast } = vi.hoisted(() => ({
 vi.mock('../stores/auth', () => ({ fetchWithAuth }));
 vi.mock('../components/shared/Toast', () => ({ showToast }));
 
-import { mapEdrSeverity, s1ThreatToIncident, huntressIncidentToIncident, promoteToIncident } from './incidents';
+import { mapEdrSeverity, s1ThreatToIncident, huntressIncidentToIncident, promoteToIncident, edrDetectionToIncident } from './incidents';
+import { ActionError } from './runAction';
+
+const edrDet: any = {
+  id: '11111111-1111-4111-8111-111111111111', orgId: 'org-1', provider: 'bitdefender',
+  providerLabel: 'Bitdefender GravityZone', severity: 'critical', status: 'open',
+  title: 'Ransomware behaviour', threatName: 'Ransom.X', breezeDeviceId: 'dev-1', deviceName: 'PC-1',
+  detectedAt: '2026-06-20T00:00:00.000Z', detached: false, promotedIncidentId: null,
+};
+
+describe('edrDetectionToIncident (#8166)', () => {
+  it('maps a framework detection to an edr_detection incident', () => {
+    const input = edrDetectionToIncident(edrDet);
+    expect(input).toMatchObject({
+      orgId: 'org-1',
+      title: 'Bitdefender GravityZone: Ransom.X',
+      classification: 'edr-detection',
+      severity: 'p1',
+      affectedDevices: ['dev-1'],
+      detectedAt: '2026-06-20T00:00:00.000Z',
+      sourceType: 'edr_detection',
+      sourceRef: edrDet.id,
+    });
+    expect(input.summary).toContain('PC-1');
+  });
+
+  it('falls back to title, then a generic name, and clamps; no device -> empty list', () => {
+    expect(edrDetectionToIncident({ ...edrDet, threatName: null }).title).toBe('Bitdefender GravityZone: Ransomware behaviour');
+    const bare = edrDetectionToIncident({ ...edrDet, threatName: null, title: null, breezeDeviceId: null, detectedAt: null });
+    expect(bare.title).toBe('Bitdefender GravityZone: Detection');
+    expect(bare.affectedDevices).toEqual([]);
+    expect(bare.detectedAt).toBeUndefined();
+    expect(edrDetectionToIncident({ ...edrDet, threatName: 'x'.repeat(900) }).title.length).toBe(500);
+  });
+});
+
+describe('promoteToIncident suppressErrorToast', () => {
+  const input: any = { orgId: 'o', title: 'abc', classification: 'edr-detection', severity: 'p3' };
+  const conflict = () => ({ ok: false, status: 409, statusText: 'Conflict', json: async () => ({ error: 'This finding has already been promoted to an incident' }) } as Response);
+
+  it('toasts a 409 by default (existing callers unchanged)', async () => {
+    fetchWithAuth.mockResolvedValueOnce(conflict());
+    await expect(promoteToIncident(input)).rejects.toBeInstanceOf(ActionError);
+    expect(showToast).toHaveBeenCalled();
+  });
+
+  it('suppresses the toast when asked, still throwing ActionError(409)', async () => {
+    fetchWithAuth.mockResolvedValueOnce(conflict());
+    const err = await promoteToIncident(input, { suppressErrorToast: (s) => s === 409 }).catch((e) => e);
+    expect(err).toBeInstanceOf(ActionError);
+    expect(err.status).toBe(409);
+    expect(showToast).not.toHaveBeenCalled();
+  });
+});
 
 function ok(b: unknown) {
   return { ok: true, status: 201, json: async () => b } as Response;

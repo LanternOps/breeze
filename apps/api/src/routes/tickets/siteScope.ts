@@ -129,3 +129,21 @@ export function ticketSiteScopeCondition(auth: AuthContext): SQL | undefined {
     )
   )!;
 }
+
+/**
+ * The visibility getScopedTicketOr404 applies to ONE ticket, as a list
+ * condition on the other end of a ticket link: the site axis, plus the
+ * exact-device axis of a device-bound AI run (allowedDeviceIds), which
+ * {@link ticketSiteScopeCondition} does not cover. Deviceless tickets stay
+ * visible on both axes, as there. Shared by GET /tickets/:id/links and the
+ * manage_tickets `list_links` action so the two cannot drift.
+ */
+export function ticketCounterpartScopeCondition(auth: AuthContext): SQL | undefined {
+  const site = ticketSiteScopeCondition(auth);
+  const allowed = auth.allowedDeviceIds;
+  if (!allowed) return site;
+  const device = allowed.length === 0
+    ? isNull(tickets.deviceId)
+    : or(isNull(tickets.deviceId), inArray(tickets.deviceId, allowed))!;
+  return site ? and(site, device) : device;
+}

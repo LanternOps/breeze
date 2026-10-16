@@ -14,7 +14,7 @@ import {
   evaluateDeviceAlerts,
   checkAllAutoResolve,
 } from '../services/alertService';
-import { isReusableState } from '../services/bullmqUtils';
+import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { createInstrumentedQueue } from '../services/bullmqQueue';
 import { attachWorkerObservability } from './workerObservability';
 import { envInt } from '../utils/envInt';
@@ -458,7 +458,7 @@ async function scheduleAlertJobs(): Promise<void> {
 export async function triggerDeviceEvaluation(deviceId: string, orgId: string): Promise<string> {
   const queue = getAlertQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_ALERT_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `alert-evaluate-device:${deviceId}:${slot}`;
+  const jobId = bullmqJobId('alert-evaluate-device', deviceId, slot);
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

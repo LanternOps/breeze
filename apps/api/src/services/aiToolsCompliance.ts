@@ -38,6 +38,7 @@ import {
   AI_AUTO_INSTALL_REFUSAL_MESSAGE,
   remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
+import { managedSoftwarePolicyRefusal } from './securityAgents/managedSoftwarePolicyGuard';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { getPolicyWithOrgCheck } from '../routes/policyManagement/helpers';
 import {
@@ -417,6 +418,10 @@ registerTool({
         return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
       }
 
+      // #6960: a generated (security_agents) policy is owned by its config policy.
+      const managed = await managedSoftwarePolicyRefusal(existing);
+      if (managed) return JSON.stringify(managed);
+
       // #5480: this tool has no field to set rules.executable[] directly, but
       // it CAN switch `mode` on an existing policy that already carries
       // executable rules set earlier through the HTTP route — the same change
@@ -524,6 +529,10 @@ registerTool({
         return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
       }
 
+      // #6960: a generated (security_agents) policy is owned by its config policy.
+      const managed = await managedSoftwarePolicyRefusal(existing);
+      if (managed) return JSON.stringify(managed);
+
       await db.transaction(async (tx) => {
         await tx
           .update(softwarePolicies)
@@ -593,6 +602,10 @@ registerTool({
 
     const [policy] = await db.select().from(softwarePolicies).where(and(...conditions)).limit(1);
     if (!policy) return JSON.stringify({ error: 'Policy not found or access denied' });
+
+    // #6960: never remediate a generated (security_agents) policy by hand.
+    const managed = await managedSoftwarePolicyRefusal(policy);
+    if (managed) return JSON.stringify(managed);
 
     // Arming gate (#3543, incident #3381). This tool used to refuse only
     // `mode === 'audit'`, so a detect-only policy — enforcement deliberately

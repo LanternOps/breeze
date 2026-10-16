@@ -245,7 +245,8 @@
       "deleteLost": "The entry changed while it was being deleted. Reload and try again.",
       "notFound": "This entry no longer exists."
     },
-    "deleteEntryWithDescription": "Delete {{duration}} time entry by {{tech}}: {{description}}"
+    "deleteEntryWithDescription": "Delete {{duration}} time entry by {{tech}}: {{description}}",
+    "noteInvoiceCue": "Customers see this note on their invoice unless your billing settings hide notes."
   },
   "inboundReviewQueue": {
     "title": "Review queue",
@@ -303,7 +304,8 @@
       "normal": "Normal",
       "high": "High",
       "urgent": "Urgent"
-    }
+    },
+    "type": "Type"
   },
   "ticketFormFields": {
     "selectPlaceholder": "Select…"
@@ -398,7 +400,9 @@
       "title_other": "Delete {{count}} tickets?",
       "message": "This hides them from all queues; an admin can restore them from Archived.",
       "confirm": "Delete tickets"
-    }
+    },
+    "filterByType": "Filter by type",
+    "allTypes": "All types"
   },
   "ticketWorkbench": {
     "notFound": "Ticket not found. It may have been deleted, or you may not have access to it.",
@@ -451,7 +455,9 @@
       "allMissingRate": "Nothing could be invoiced: every billable time entry on this ticket is missing an hourly rate.",
       "missingRateHeading": "Time entries with no hourly rate (not invoiced — set a rate and create the invoice again):",
       "missingRateEntry": "{{description}} — {{hours}} h",
-      "setRate": "Set a rate on the timesheet"
+      "setRate": "Set a rate on the timesheet",
+      "heldForHourBlock_one": "{{count}} time entry ({{hours}} hours) is held for this organization's block hours and will be billed when the block period closes.",
+      "heldForHourBlock_other": "{{count}} time entries ({{hours}} hours) are held for this organization's block hours and will be billed when the block period closes."
     },
     "move": {
       "open": "Move to another org…",
@@ -531,7 +537,8 @@
       "assigned": "Assigned",
       "unassigned": "Unassigned",
       "assignFailed": "Assign failed. Retry.",
-      "attachmentFailed": "Could not upload the attachment."
+      "attachmentFailed": "Could not upload the attachment.",
+      "typeUpdateFailed": "Could not update the ticket type."
     },
     "delete": {
       "failed": "Delete failed. Retry.",
@@ -541,7 +548,8 @@
       "title": "Delete this ticket?",
       "message": "This hides the ticket from all queues. An admin can restore it from the Archived queue.",
       "confirm": "Delete ticket"
-    }
+    },
+    "typeLabel": "Ticket type"
   },
   "billingOutcome": {
     "included": "Included",
@@ -551,5 +559,185 @@
     "missingRate": "Billable · rate not configured",
     "recalculated": "Billing is recalculated for this work type when saved.",
     "unavailable": "Billing outcome unavailable"
+  },
+  "ticketApproval": {
+    "errors": {
+      "requestNotPending": "This approval request is no longer pending.",
+      "requestChanged": "The request changed while you were looking at it. The latest version has been reloaded; review it and try again.",
+      "requestExpired": "This approval request has expired. Re-ask to send a new one.",
+      "requestAlreadyPending": "An approval request for this reason is already pending on this ticket.",
+      "requestNotReaskable": "Only a denied, expired or cancelled request that still has held time can be re-asked.",
+      "nothingHeld": "There is no held time on this ticket to ask approval for.",
+      "approvalsDisabled": "Customer approval is not enabled for this customer.",
+      "entryNotResolvable": "This time can only be written off once its approval request was denied, expired or cancelled.",
+      "approvalRequestPending": "This ticket has an approval request waiting on the customer, so it cannot be moved. Cancel or resolve the request first.",
+      "sourceAwaitingApproval": "Some time on this invoice is awaiting customer approval. Get it approved or write it off before issuing.",
+      "approvalRequired": "Customer approval is needed before billable time can be tracked on this ticket. Request approval from the ticket's Approvals panel."
+    },
+    "budget": {
+      "title": "Budget and approval",
+      "hours": "Budget (hours)",
+      "amount": "Budget amount",
+      "save": "Save budget",
+      "saved": "Budget saved",
+      "saveFailed": "Failed to save the budget",
+      "invalidHours": "Enter hours greater than 0, or leave it blank for no limit.",
+      "invalidAmount": "Enter an amount greater than 0 with at most 2 decimals, or leave it blank.",
+      "ceiling": "Ceiling {{ceiling}}",
+      "ceilingWithExtensions": "Ceiling {{ceiling}} (budget {{budget}} + {{extra}} approved)",
+      "noBudget": "No budget set",
+      "usedLegend": "Used {{value}}",
+      "heldLegend": "Awaiting approval {{value}}",
+      "unpriced_one": "{{count}} held entry has no price yet.",
+      "unpriced_other": "{{count}} held entries have no price yet.",
+      "barLabel": "Budget usage",
+      "requestApproval": "Request approval"
+    },
+    "request": {
+      "trigger": "Reason",
+      "triggerBudget": "Over budget",
+      "triggerAfterHours": "After-hours work",
+      "extensionMinutes": "Extra minutes",
+      "extensionAmount": "Extra amount",
+      "windowStart": "Covers from",
+      "windowEnd": "Covers until",
+      "message": "Message to the customer (optional)",
+      "submit": "Send request",
+      "sent": "Approval request sent",
+      "failed": "Failed to send the approval request",
+      "invalidExtension": "Enter extra minutes or an extra amount greater than 0.",
+      "invalidWindow": "Pick a start and an end, with the end after the start and at most 14 days apart."
+    },
+    "panel": {
+      "title": "Customer approvals",
+      "status": {
+        "pending": "Pending",
+        "approved": "Approved",
+        "denied": "Denied",
+        "expired": "Expired",
+        "cancelled": "Cancelled"
+      },
+      "revision": "Revision {{n}}",
+      "ask": "Asking for {{ask}}",
+      "window": "Covers {{from}} to {{to}}",
+      "expires": "Expires {{when}}",
+      "heldEntries_one": "{{count}} held entry",
+      "heldEntries_other": "{{count}} held entries",
+      "approvers": "Approvers",
+      "notified": "Notified",
+      "noneListed": "None",
+      "noApprover": "No approver on file: add a billing contact or record the decision on behalf.",
+      "decidedByCustomer": "Decided by {{who}}",
+      "customerFallback": "the customer",
+      "decidedOnBehalf": "Recorded by {{user}} on behalf of {{signer}} · {{method}} · {{reference}}",
+      "method": {
+        "verbal": "Verbal",
+        "email": "Email",
+        "signedDocument": "Signed document",
+        "other": "Other"
+      },
+      "cancel": "Cancel request",
+      "cancelConfirmTitle": "Cancel this approval request?",
+      "cancelConfirmMessage": "The customer will no longer be able to respond. Time already held stays held until you re-ask or write it off.",
+      "cancelled": "Approval request cancelled",
+      "cancelFailed": "Failed to cancel the request",
+      "reask": "Re-ask",
+      "reaskSubmit": "Send again",
+      "reasked": "Approval request sent again",
+      "reaskFailed": "Failed to re-ask",
+      "record": "Record decision"
+    },
+    "record": {
+      "title": "Record the customer's decision",
+      "intro": "Use this when the customer gave you their decision outside Breeze. It is logged under your name.",
+      "target": "Revision {{revision}} · {{ask}}",
+      "decision": "Decision",
+      "approve": "Approved",
+      "deny": "Denied",
+      "method": "How was it given?",
+      "reference": "Reference",
+      "referencePlaceholder": "e.g. phone call on 12 Oct, email subject, document number",
+      "signerName": "Customer name",
+      "signerEmail": "Customer email (optional)",
+      "note": "Note (optional)",
+      "submit": "Record decision",
+      "recorded": "Decision recorded",
+      "failed": "Failed to record the decision"
+    },
+    "held": {
+      "chip": "Awaiting customer approval",
+      "writeOff": "Write off",
+      "writeOffTitle": "Write off held time?",
+      "writeOffMessage": "This time is held because the customer did not approve it. Writing it off marks it no charge, so it will not be invoiced.",
+      "writtenOff": "Time written off",
+      "writeOffFailed": "Failed to write off the time"
+    },
+    "timer": {
+      "startNonBillable": "Start as non-billable"
+    },
+    "loadError": "Couldn't load customer approvals",
+    "retry": "Retry"
+  },
+  "ticketType": {
+    "incident": "Incident",
+    "service_request": "Service request",
+    "problem": "Problem",
+    "change": "Change"
+  },
+  "ticketLinks": {
+    "title": "Related tickets",
+    "loading": "Loading related tickets…",
+    "loadFailed": "Could not load related tickets.",
+    "empty": "No related tickets.",
+    "deleted": "Deleted",
+    "add": "Link a ticket",
+    "addTitle": "Link a ticket",
+    "linkType": "This ticket…",
+    "addType": {
+      "related": "is related to",
+      "caused_by": "was caused by",
+      "resolves": "resolves",
+      "duplicate_of": "is a duplicate of"
+    },
+    "searchLabel": "Find a ticket in this organization",
+    "searchPlaceholder": "Search by number or subject",
+    "searching": "Searching…",
+    "searchFailed": "Search failed. Try again.",
+    "noResults": "No matching tickets.",
+    "changePick": "Choose a different ticket",
+    "addSubmit": "Add link",
+    "adding": "Adding…",
+    "added": "Ticket linked.",
+    "addFailed": "Could not add the link.",
+    "removed": "Link removed.",
+    "removeFailed": "Could not remove the link.",
+    "remove": "Remove link to {{ticket}}",
+    "removeTitle": "Remove link?",
+    "removeMessage": "Remove the link to {{ticket}}? The tickets themselves are not changed.",
+    "removeConfirm": "Remove link",
+    "linkedIncidents": "{{count}} linked incidents",
+    "linkedIncidents_one": "{{count}} linked incident",
+    "linkedIncidents_other": "{{count}} linked incidents",
+    "group": {
+      "caused_by": "Caused by",
+      "causes": "Causes",
+      "resolves": "Resolves",
+      "resolved_by": "Resolved by",
+      "duplicate_of": "Duplicate of",
+      "duplicates": "Duplicates",
+      "related": "Related"
+    },
+    "errors": {
+      "ALREADY_LINKED": "These tickets are already linked.",
+      "LINK_CYCLE": "That link would create a circular chain of causes.",
+      "LINK_LIMIT": "A ticket can have at most 50 links, including links to tickets you cannot see. Remove a link before adding another.",
+      "SOURCE_ALREADY_DUPLICATE": "This ticket is already marked as a duplicate of another ticket (which may not be visible to you).",
+      "SOURCE_HAS_DUPLICATES": "Other tickets (possibly ones you cannot see) are marked as duplicates of this ticket, so it cannot be marked as a duplicate itself.",
+      "DUPLICATE_TARGET_IS_DUPLICATE": "That ticket is itself a duplicate. Link to the original ticket instead.",
+      "CROSS_ORG": "Tickets can only be linked within the same organization.",
+      "SELF_LINK": "A ticket cannot be linked to itself.",
+      "NOT_FOUND": "That ticket was not found or is no longer available.",
+      "LINK_GONE": "That link was already removed."
+    }
   }
 }

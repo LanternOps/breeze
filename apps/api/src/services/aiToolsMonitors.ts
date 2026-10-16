@@ -55,8 +55,10 @@ import { auditPartnerScopeId } from './auditReadScope';
 import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
+  APPLICATION_INFO_EVENT_PROVIDERS,
   MONITOR_KINDS,
   monitorConditionSchemas,
+  monitorEventLogCollectionWarnings,
   type MonitorKind,
 } from '@breeze/shared';
 import { z } from 'zod';
@@ -98,27 +100,29 @@ function describeMonitorKind(kind: MonitorKind): Record<string, unknown> {
 }
 
 /**
- * What the Windows agent collects per event_log category, and why an event_log
- * monitor cannot detect app installs/uninstalls (#7060, ported from the retired
- * alert_rule reference, #6669). Shown by `describe` and appended to rejected
- * event_log level/type errors.
+ * What the Windows agent collects per event_log category (#7060, ported from
+ * the retired alert_rule reference, #6669; Application info/warning provider
+ * allowlist #8174). Shown by `describe`; the app-presence hint below is also
+ * appended to rejected event_log level/type errors.
  */
 const EVENT_LOG_COLLECTION_GUIDANCE =
-  'What the Windows agent collects for event_log: application = Application log error/critical only; ' +
+  'What the Windows agent collects for event_log: application = Application log error/critical from every provider, ' +
+  `plus warning/information from these providers only: ${APPLICATION_INFO_EVENT_PROVIDERS.join(', ')} (#8174); ` +
   'system = System log error/critical from providers other than the hardware ones, plus unexpected-shutdown events; ' +
   'hardware = System log error/critical from disk, NTFS, volume/storage-controller, WHEA machine-check and thermal providers; ' +
   'security = Security log warning and above.';
 
 const EVENT_LOG_APP_PRESENCE_HINT =
-  'Information-level events can never match (the lowest level is "warning"), so an event_log monitor cannot detect software installs or uninstalls (MsiInstaller events are Information). ' +
-  'To detect a missing or removed app, use a configuration policy compliance rule with featureType "compliance" and { type: "required_software", softwareName } instead';
+  'Valid event_log levels are info, warning, error and critical ("information" is not a level). ' +
+  `Information-level Application events are collected only from ${APPLICATION_INFO_EVENT_PROVIDERS.join(', ')}, so an info or warning rule on any other Application source only matches that source's error/critical events. ` +
+  'To detect a missing or removed app, prefer a configuration policy compliance rule with featureType "compliance" and { type: "required_software", softwareName }';
 
-const EVENT_LOG_LEVELS: readonly string[] = ['warning', 'error', 'critical'];
+const EVENT_LOG_LEVELS: readonly string[] = ['info', 'warning', 'error', 'critical'];
 
 /**
  * True when an event_log condition carries the shape the model gets wrong when
  * it is trying to detect app presence: a `type` key (copied from the retired
- * alert_rule shape) or a `level` outside the warning|error|critical floor.
+ * alert_rule shape) or a `level` outside info|warning|error|critical.
  * Judged from the input itself because the zod message for a rejected
  * condition is only "condition does not match kind", with no field detail.
  */
@@ -535,7 +539,12 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           });
         }
         const created = await createMonitorDefinition(parsed.data, auth);
-        return JSON.stringify({ success: true, monitor: { ...presentMonitorDefinition(created), ownerScope: ownerScopeOf(created) } });
+        const warnings = monitorEventLogCollectionWarnings(created.kind, created.condition);
+        return JSON.stringify({
+          success: true,
+          monitor: { ...presentMonitorDefinition(created), ownerScope: ownerScopeOf(created) },
+          ...(warnings.length > 0 ? { warnings } : {}),
+        });
       }
 
       if (action === 'update' || action === 'enable' || action === 'disable') {
@@ -567,9 +576,11 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           });
         }
         const updated = await updateMonitorDefinition(input.monitorId as string, parsed.data, auth);
+        const warnings = action === 'update' ? monitorEventLogCollectionWarnings(updated.kind, updated.condition) : [];
         return JSON.stringify({
           success: true,
           monitor: { ...presentMonitorDefinition(updated), ownerScope: ownerScopeOf(updated) },
+          ...(warnings.length > 0 ? { warnings } : {}),
           ...(keptStored.length > 0
             ? { note: `${keptStored.join(' and ')} matched the displayed value, so the stored value was kept.` }
             : {}),

@@ -194,16 +194,45 @@ bpool/BOOT/ubuntu_abc123 /boot zfs rw,relatime 0 0`
 const procMountsZfsShadowedByOverlay = procMountsZfs + `
 overlay / overlay rw,relatime 0 0`
 
-func zfsPropsFixture(out string) func(string) (string, error) {
-	return func(dataset string) (string, error) {
-		if dataset != "rpool/ROOT/ubuntu_abc123" {
-			return "", errors.New("unexpected dataset " + dataset)
+// zfsPropsFixture answers `zfs get -H -o name,property,value` for the root
+// dataset only; out is its property<TAB>value lines. Other datasets are
+// absent from the output, as when they vanish between reading the mount table
+// and running the query.
+func zfsPropsFixture(out string) zfsGetFunc {
+	return func([]string) (string, error) {
+		var b strings.Builder
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			if line != "" {
+				b.WriteString("rpool/ROOT/ubuntu_abc123\t" + line + "\n")
+			}
 		}
-		return out, nil
+		return b.String(), nil
 	}
 }
 
-func noZfs(string) (string, error) {
+// zfsDatasetsFixture answers `zfs get -H -o name,property,value` from
+// per-dataset {encryption, keystatus, encryptionroot}, recording which
+// datasets were queried.
+func zfsDatasetsFixture(props map[string][3]string, queried *[]string) zfsGetFunc {
+	return func(datasets []string) (string, error) {
+		if queried != nil {
+			*queried = append(*queried, datasets...)
+		}
+		var b strings.Builder
+		for _, ds := range datasets {
+			p, ok := props[ds]
+			if !ok {
+				continue
+			}
+			b.WriteString(ds + "\tencryption\t" + p[0] + "\n")
+			b.WriteString(ds + "\tkeystatus\t" + p[1] + "\n")
+			b.WriteString(ds + "\tencryptionroot\t" + p[2] + "\n")
+		}
+		return b.String(), nil
+	}
+}
+
+func noZfs([]string) (string, error) {
 	return "", errors.New("zfs must not be queried for a non-zfs root")
 }
 
@@ -212,7 +241,7 @@ func TestEvaluateLinuxEncryptionRoot(t *testing.T) {
 		name          string
 		lsblk         string
 		mounts        string
-		zfs           func(string) (string, error)
+		zfs           zfsGetFunc
 		wantProtected bool
 		wantRootErr   string // substring; empty = no error
 		wantRootVol   map[string]any
@@ -349,9 +378,9 @@ func TestEvaluateLinuxEncryptionRoot(t *testing.T) {
 			name:          "zfs root natively encrypted",
 			lsblk:         lsblkZfsRoot,
 			mounts:        procMountsZfs,
-			zfs:           zfsPropsFixture("encryption\taes-256-gcm\nkeystatus\tavailable\n"),
+			zfs:           zfsPropsFixture("encryption\taes-256-gcm\nkeystatus\tavailable\nencryptionroot\trpool/ROOT\n"),
 			wantProtected: true,
-			wantRootVol:   map[string]any{"mount": "/", "device": "rpool/ROOT/ubuntu_abc123", "method": "zfs", "protected": true, "status": "available", "encryption": "aes-256-gcm"},
+			wantRootVol:   map[string]any{"mount": "/", "device": "rpool/ROOT/ubuntu_abc123", "method": "zfs", "protected": true, "status": "available", "encryption": "aes-256-gcm", "encryptionRoot": "rpool/ROOT"},
 		},
 		{
 			name:          "zfs root encrypted with key unavailable",
@@ -365,16 +394,16 @@ func TestEvaluateLinuxEncryptionRoot(t *testing.T) {
 			name:          "zfs root encryption off",
 			lsblk:         lsblkZfsRoot,
 			mounts:        procMountsZfs,
-			zfs:           zfsPropsFixture("encryption\toff\nkeystatus\t-\n"),
+			zfs:           zfsPropsFixture("encryption\toff\nkeystatus\t-\nencryptionroot\t-\n"),
 			wantProtected: false,
 			wantRootVol:   map[string]any{"mount": "/", "device": "rpool/ROOT/ubuntu_abc123", "method": "none", "protected": false, "encryption": "off"},
-			wantNoKeys:    []string{"status"},
+			wantNoKeys:    []string{"status", "encryptionRoot"},
 		},
 		{
 			name:        "zfs query fails yields unknown, not unencrypted",
 			lsblk:       lsblkZfsRoot,
 			mounts:      procMountsZfs,
-			zfs:         func(string) (string, error) { return "", errors.New("zfs: command not found") },
+			zfs:         func([]string) (string, error) { return "", errors.New("zfs: command not found") },
 			wantRootErr: "zfs",
 		},
 		{
@@ -477,7 +506,7 @@ func TestEvaluateLinuxEncryptionVolumesPerMount(t *testing.T) {
 }
 
 func TestEvaluateLinuxEncryptionUnknownRootKeepsOtherVolumes(t *testing.T) {
-	report, err := evaluateLinuxEncryption(lsblkZfsRoot, procMountsZfs, func(string) (string, error) {
+	report, err := evaluateLinuxEncryption(lsblkZfsRoot, procMountsZfs, func([]string) (string, error) {
 		return "", errors.New("zfs: command not found")
 	})
 	if err != nil {

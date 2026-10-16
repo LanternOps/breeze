@@ -84,4 +84,6 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g65', prompt: 'Who requested admin elevation on LAB-WS-042 this week?', expect: [{ tool: 'get_elevation_history' }, { tool: 'resolve_device_context' }] },
   { id: 'g66', prompt: 'Which Contoso users have the highest security risk score?', expect: [{ tool: 'get_user_risk_scores' }] },
   { id: 'g67', prompt: 'Who has had a remote session open to KIOSK-1 recently?', expect: [{ tool: 'list_remote_sessions' }, { tool: 'resolve_device_context' }] },
+  // #8167 W03: containment through a framework EDR vendor (Bitdefender), not SentinelOne.
+  { id: 'g68', prompt: 'Isolate SALES-LT-12 with Bitdefender — it has a ransomware detection.', expect: [{ tool: 'edr_endpoint_action', action: 'isolate' }, { tool: 'resolve_device_context' }, { tool: 'list_edr_detections' }] },
 ];

@@ -135,20 +135,17 @@ func spawnWithConfig(binaryPath, sessionKey, configPath string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("lookup uid %s: %w", sessionKey, err)
 	}
-	gid, err := strconv.ParseUint(u.Gid, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("parse gid %q: %w", u.Gid, err)
-	}
 
 	cmd := exec.Command(binaryPath, "--config", configPath)
 	cmd.Dir = filepath.Dir(binaryPath)
 	if os.Geteuid() == 0 && uint32(uid) != uint32(os.Geteuid()) {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			Credential: &syscall.Credential{
-				Uid: uint32(uid),
-				Gid: uint32(gid),
-			},
+		// spawnCredential carries the user's supplementary groups (notably
+		// breeze) across the drop; see #8398.
+		cred, err := spawnCredential(u)
+		if err != nil {
+			return 0, fmt.Errorf("build credential for uid %s: %w", sessionKey, err)
 		}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	}
 	cmd.Env = append(os.Environ(),
 		"HOME="+u.HomeDir,

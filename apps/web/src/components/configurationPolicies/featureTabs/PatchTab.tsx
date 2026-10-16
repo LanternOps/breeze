@@ -6,9 +6,8 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import { fetchWithAuth } from "../../../stores/auth";
-import PatchAppRulesSection, {
-  type PolicyAppRule,
-} from "./PatchAppRulesSection";
+import type { RingAppRule } from "../../patches/RingAppRulesSection";
+import { extractApiError } from "@/lib/apiError";
 import { Dialog } from "../../shared/Dialog";
 import UpdateRingForm, {
   type UpdateRingFormValues,
@@ -18,18 +17,23 @@ import { normalizeRing } from "../../patches/patchHelpers";
 import { showToast } from "../../shared/Toast";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import {
+  rebootPromptTextSchemas,
+  REBOOT_PROMPT_TITLE_MAX,
+  REBOOT_PROMPT_BODY_MAX,
+  REBOOT_PROMPT_BUTTON_MAX,
+  REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER,
+} from "@breeze/shared";
 type ScheduleFrequency = "daily" | "weekly" | "monthly";
 type RebootPolicy = "never" | "if_required" | "always" | "maintenance_window";
 /** #5128 W3 — what a scheduled install does when the device is offline. */
 type OfflineBehavior = "skip" | "queue";
 type PatchSourceOption = "os" | "third_party";
-type PatchSeverity = "critical" | "important" | "moderate" | "low";
+// #8187: no approval keys (`autoApprove*`, `apps`). The Update Ring owns them,
+// and the API judges any sent one as an attempt to edit ring-owned rules
+// (400 APPROVAL_RULES_MOVED_TO_RING), so the tab neither holds nor sends them.
 type PatchDeploymentSettings = {
   sources: PatchSourceOption[];
-  autoApprove: boolean;
-  autoApproveSeverities: PatchSeverity[];
-  autoApproveDeferralDays: number;
-  apps: PolicyAppRule[];
   scheduleFrequency: ScheduleFrequency;
   scheduleTime: string;
   scheduleDayOfWeek: string;
@@ -41,14 +45,15 @@ type PatchDeploymentSettings = {
   rebootAllowDeferral: boolean;
   rebootMaxDeferrals: number;
   rebootDeferralMinutes: number;
+  // #8030: optional end-user restart-prompt text. null keeps the agent's
+  // built-in copy; `{{countdown}}` is filled in by the agent.
+  rebootPromptTitle: string | null;
+  rebootPromptBody: string | null;
+  rebootPromptButton: string | null;
   exclusiveWindowsUpdate: boolean;
 };
 const defaults: PatchDeploymentSettings = {
   sources: ["os"],
-  autoApprove: false,
-  autoApproveSeverities: [],
-  autoApproveDeferralDays: 0,
-  apps: [],
   scheduleFrequency: "weekly",
   scheduleTime: "02:00",
   scheduleDayOfWeek: "sun",
@@ -59,8 +64,41 @@ const defaults: PatchDeploymentSettings = {
   rebootAllowDeferral: false,
   rebootMaxDeferrals: 3,
   rebootDeferralMinutes: 60,
+  rebootPromptTitle: null,
+  rebootPromptBody: null,
+  rebootPromptButton: null,
   exclusiveWindowsUpdate: false,
 };
+/** Keys a link may still store from before the Update Ring owned approval (#8187). */
+const RING_OWNED_APPROVAL_KEYS = new Set([
+  "apps",
+  "autoApprove",
+  "autoApproveSeverities",
+  "autoApproveDeferralDays",
+]);
+/** The link's stored settings as tab state, minus the ring-owned approval keys. */
+function settingsFromInline(
+  inline: Record<string, unknown> | null | undefined,
+): Partial<PatchDeploymentSettings> {
+  const kept = Object.fromEntries(
+    Object.entries(inline ?? {}).filter(([key]) => !RING_OWNED_APPROVAL_KEYS.has(key)),
+  ) as Partial<PatchDeploymentSettings>;
+  return { ...kept, sources: normalizeSources(kept.sources) };
+}
+/** The legacy app rules a link still stores (W04 strips them), for the repair prompt. */
+function legacyAppRules(inline: Record<string, unknown> | null | undefined): RingAppRule[] {
+  const apps = inline?.apps;
+  return Array.isArray(apps)
+    ? apps.filter(
+        (rule): rule is RingAppRule =>
+          !!rule && typeof rule === "object" && typeof (rule as RingAppRule).packageId === "string",
+      )
+    : [];
+}
+/** Blank input means "use the built-in text", stored as null. */
+function promptTextOrNull(value: string): string | null {
+  return value.trim() === "" ? null : value;
+}
 const OS_VALUE_ALIASES = new Set(["os", "microsoft", "apple", "linux"]);
 const THIRD_PARTY_VALUE_ALIASES = new Set(["third_party", "custom"]);
 function normalizeSources(raw: unknown): PatchSourceOption[] {
@@ -217,18 +255,15 @@ export default function PatchTab({
   );
   const [rings, setRings] = useState<UpdateRing[]>([]);
   const [ringsLoading, setRingsLoading] = useState(false);
+  // Only a successful load can say a linked ring is missing from the list.
+  const [ringsLoaded, setRingsLoaded] = useState(false);
   const [ringsError, setRingsError] = useState<string>();
-  const [settings, setSettings] = useState<PatchDeploymentSettings>(() => {
-    const inline = effectiveLink?.inlineSettings as
-      | Partial<PatchDeploymentSettings>
-      | undefined;
-    return {
-      ...defaults,
-      ...inline,
-      sources: normalizeSources(inline?.sources),
-    };
-  });
+  const [settings, setSettings] = useState<PatchDeploymentSettings>(() => ({
+    ...defaults,
+    ...settingsFromInline(effectiveLink?.inlineSettings),
+  }));
   const [validationError, setValidationError] = useState<string>();
+  const [promptError, setPromptError] = useState<string>();
   // Inline ring create/edit — the same editor as /patches, so an admin never
   // has to leave the policy to author the ring it links to.
   const [ringEditorOpen, setRingEditorOpen] = useState(false);
@@ -240,6 +275,8 @@ export default function PatchTab({
   const fetchRings = useCallback(async () => {
     setRingsLoading(true);
     setRingsError(undefined);
+    // A stale list must not mark a linked (or just-created) ring unavailable.
+    setRingsLoaded(false);
     try {
       const response = await fetchWithAuth("/update-rings");
       // fetchWithAuth doesn't throw on 4xx/5xx — without this the picker would
@@ -261,6 +298,7 @@ export default function PatchTab({
       // auto_approve JSONB is `{}` — the DB default / pre-#1317 rows — would
       // otherwise fail the editor's zod validation and silently refuse to save).
       setRings(raw.map((r: Record<string, unknown>) => normalizeRing(r)));
+      setRingsLoaded(true);
     } catch (err) {
       setRingsError(
         err instanceof Error ? err.message : "Failed to load update rings",
@@ -278,12 +316,8 @@ export default function PatchTab({
       setSelectedRingId(link.featurePolicyId);
     }
     if (link?.inlineSettings) {
-      const inline = link.inlineSettings as Partial<PatchDeploymentSettings>;
-      setSettings((prev) => ({
-        ...prev,
-        ...inline,
-        sources: normalizeSources(inline.sources),
-      }));
+      const inline = link.inlineSettings;
+      setSettings((prev) => ({ ...prev, ...settingsFromInline(inline) }));
     }
   }, [existingLink, parentLink]);
   const update = <K extends keyof PatchDeploymentSettings>(
@@ -292,21 +326,44 @@ export default function PatchTab({
   ) => setSettings((prev) => ({ ...prev, [key]: value }));
   // Client-side mirror of the server-side Zod checks so users get inline
   // feedback instead of a round-trip rejection.
-  const validateSettings = (): string | null => {
-    if (
-      settings.apps.some(
-        (app) => app.action === "pin" && !app.pinnedVersion?.trim(),
-      )
-    ) {
-      return "Pinned applications need a version.";
-    }
+  // #8030: same schema the API applies, so plain-text / length / placeholder
+  // problems surface before the save rather than as a rejected one. Checked
+  // whatever the reboot policy: the fields are hidden under "never" but are
+  // still sent, and the server validates them either way.
+  const validatePromptText = (): string | null => {
+    const valid =
+      rebootPromptTextSchemas.title.safeParse(settings.rebootPromptTitle)
+        .success &&
+      rebootPromptTextSchemas.body.safeParse(settings.rebootPromptBody)
+        .success &&
+      rebootPromptTextSchemas.button.safeParse(settings.rebootPromptButton)
+        .success;
+    return valid
+      ? null
+      : i18n.t(
+          "policies:configurationPolicies.featureTabs.patchTab.rebootPromptInvalid",
+          { placeholder: REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER },
+        );
+  };
+  /**
+   * Every pre-save check. Returns the banner message, "" when the only problem
+   * is already shown inline next to the prompt-text fields (so it is not shown
+   * twice), or null when the save may proceed.
+   */
+  const validateBeforeSave = (): string | null => {
+    const promptMessage = validatePromptText();
+    const promptFieldsVisible = settings.rebootPolicy !== "never";
+    setPromptError(
+      promptMessage && promptFieldsVisible ? promptMessage : undefined,
+    );
+    if (promptMessage) return promptFieldsVisible ? "" : promptMessage;
     return null;
   };
   const handleSave = async () => {
     clearError();
-    const validation = validateSettings();
+    const validation = validateBeforeSave();
     setValidationError(validation ?? undefined);
-    if (validation) return;
+    if (validation !== null) return;
     const result = await save(existingLink?.id ?? null, {
       featureType: "patch",
       featurePolicyId: selectedRingId || null,
@@ -339,9 +396,9 @@ export default function PatchTab({
   };
   const handleOverride = async () => {
     clearError();
-    const validation = validateSettings();
+    const validation = validateBeforeSave();
     setValidationError(validation ?? undefined);
-    if (validation) return;
+    if (validation !== null) return;
     const result = await save(null, {
       featureType: "patch",
       featurePolicyId: selectedRingId || null,
@@ -371,6 +428,12 @@ export default function PatchTab({
     }
   };
   const selectedRing = rings.find((r) => r.id === selectedRingId);
+  // #8186: a link whose ring vanished, was never valid, or belongs to another
+  // partner fails closed (no auto-approval). Say so and keep the picker usable
+  // so the link can be repaired.
+  const ringInvalid =
+    ringsLoaded && !ringsLoading && selectedRingId !== "" && !selectedRing;
+  const ringLegacyRules = legacyAppRules(effectiveLink?.inlineSettings);
   const meta = FEATURE_META.patch;
   const openCreateRing = () => {
     setRingEditorError(undefined);
@@ -403,11 +466,17 @@ export default function PatchTab({
           gracePeriodHours: values.gracePeriodHours,
           autoApprove: values.autoApprove,
           categoryRules: values.categoryRules,
+          appRules: values.appRules,
         }),
       });
       if (!response.ok) {
+        // Surface the server's reason (e.g. a duplicate application rule).
+        const body: unknown = await response.json().catch(() => null);
         throw new Error(
-          editing ? "Failed to update ring" : "Failed to create update ring",
+          extractApiError(
+            body,
+            editing ? "Failed to update ring" : "Failed to create update ring",
+          ),
         );
       }
       let createdId: string | undefined;
@@ -481,6 +550,13 @@ export default function PatchTab({
                   "policies:configurationPolicies.featureTabs.patchTab.noRingManualApprovalsOnly",
                 )}
               </option>
+              {ringInvalid && (
+                <option value={selectedRingId} disabled>
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.patchTab.unavailableRingOption",
+                  )}
+                </option>
+              )}
               {rings.map((ring) => (
                 <option key={ring.id} value={ring.id}>
                   [{ring.ringOrder}] {ring.name}
@@ -514,6 +590,49 @@ export default function PatchTab({
         )}
         {ringsError && (
           <p className="mt-2 text-xs text-destructive">{ringsError}</p>
+        )}
+        {ringInvalid ? (
+          <div
+            role="alert"
+            data-testid="patch-ring-invalid"
+            className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs"
+          >
+            <p className="font-medium text-destructive">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.ringInvalidTitle",
+              )}
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.ringInvalidBody",
+              )}
+            </p>
+            {ringLegacyRules.length > 0 && (
+              <p className="mt-1 text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.ringInvalidLegacyRules",
+                  {
+                    rules: ringLegacyRules
+                      .map((rule) => rule.displayName ?? rule.packageId)
+                      .join(", "),
+                  },
+                )}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p
+            className="mt-2 text-xs text-muted-foreground"
+            data-testid="patch-ring-owns-approval-hint"
+          >
+            {selectedRingId
+              ? i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.ringOwnsApprovalHint",
+                )
+              : i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.noRingManualApprovalHint",
+                )}
+          </p>
         )}
         {selectedRing && (
           <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
@@ -602,8 +721,6 @@ export default function PatchTab({
           {i18n.t("policies:configurationPolicies.featureTabs.patchTab.thirdPartyRingHint")}
         </p>
       </div>
-
-      <PatchAppRulesSection apps={settings.apps} onChange={(apps) => update('apps', apps)} />
 
       {/* Schedule */}
       <div className="mt-6">
@@ -932,6 +1049,101 @@ export default function PatchTab({
             )}
           </div>
         )}
+        {/* Custom restart-prompt text (#8030). Blank keeps the built-in copy. */}
+        {settings.rebootPolicy !== "never" && (
+          <div className="mt-4 rounded-md border bg-background px-4 py-3">
+            <p className="text-sm font-medium">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.rebootPromptText",
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t(
+                "policies:configurationPolicies.featureTabs.patchTab.rebootPromptTextDescription",
+              )}
+            </p>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="patch-reboot-prompt-title"
+                  className="text-xs text-muted-foreground"
+                >
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.patchTab.rebootPromptTitle",
+                  )}
+                </label>
+                <input
+                  id="patch-reboot-prompt-title"
+                  data-testid="patch-reboot-prompt-title"
+                  type="text"
+                  maxLength={REBOOT_PROMPT_TITLE_MAX}
+                  value={settings.rebootPromptTitle ?? ""}
+                  onChange={(e) =>
+                    update("rebootPromptTitle", promptTextOrNull(e.target.value))
+                  }
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="patch-reboot-prompt-button"
+                  className="text-xs text-muted-foreground"
+                >
+                  {i18n.t(
+                    "policies:configurationPolicies.featureTabs.patchTab.rebootPromptButton",
+                  )}
+                </label>
+                <input
+                  id="patch-reboot-prompt-button"
+                  data-testid="patch-reboot-prompt-button"
+                  type="text"
+                  maxLength={REBOOT_PROMPT_BUTTON_MAX}
+                  value={settings.rebootPromptButton ?? ""}
+                  onChange={(e) =>
+                    update("rebootPromptButton", promptTextOrNull(e.target.value))
+                  }
+                  className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
+                />
+              </div>
+            </div>
+            <div className="mt-3">
+              <label
+                htmlFor="patch-reboot-prompt-body"
+                className="text-xs text-muted-foreground"
+              >
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.rebootPromptBody",
+                )}
+              </label>
+              <textarea
+                id="patch-reboot-prompt-body"
+                data-testid="patch-reboot-prompt-body"
+                rows={3}
+                maxLength={REBOOT_PROMPT_BODY_MAX}
+                value={settings.rebootPromptBody ?? ""}
+                onChange={(e) =>
+                  update("rebootPromptBody", promptTextOrNull(e.target.value))
+                }
+                className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.rebootPromptBodyDescription",
+                  { placeholder: REBOOT_PROMPT_COUNTDOWN_PLACEHOLDER },
+                )}
+              </p>
+            </div>
+            {promptError && (
+              <p
+                data-testid="patch-reboot-prompt-error"
+                role="alert"
+                className="mt-2 text-xs text-destructive"
+              >
+                {promptError}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Windows Update source enforcement (#1872) */}
@@ -1061,6 +1273,7 @@ export default function PatchTab({
                       deferralDays: 0,
                     },
                     categoryRules: selectedRing.categoryRules,
+                    appRules: selectedRing.appRules ?? [],
                   }
                 : undefined
             }

@@ -24,7 +24,8 @@
         "perDeviceRole": "Por função do dispositivo",
         "perDeviceGroup": "Por grupo de dispositivos",
         "perSeat": "Por assento",
-        "manual": "Quantidade manual"
+        "manual": "Quantidade manual",
+        "hourBlock": "Banco de horas"
       },
       "dynamicGroup": "dinâmico",
       "deletedGroup": "{{name}} (grupo excluído)",
@@ -588,6 +589,62 @@
       "warnings": {
         "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos acordos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Horas incluídas por período",
+        "extraRate": "Preço por hora extra",
+        "rolloverMode": "Horas não usadas no fim do período",
+        "rolloverExpire": "Expiram",
+        "rolloverCarry": "Acumulam",
+        "carryCap": "Limite de horas acumuláveis (vazio para sem limite)",
+        "alertPct": "Alertar ao usar este % do banco (opcional)",
+        "required": "Informe as horas incluídas e o preço por hora extra.",
+        "firstPeriod": "As horas contam a partir do primeiro período de cobrança ainda não faturado; em um contrato em rascunho isso é definido na ativação. O tempo anterior é cobrado normalmente.",
+        "midPeriodEdit": "As alterações valem para o período aberto atual ({{start}} – {{end}}) quando ele for encerrado.",
+        "midPeriodEditNoDates": "As alterações valem para o período aberto atual quando ele for encerrado.",
+        "onlyOne": "Esta organização já tem um banco ativo. Desative-o antes de adicionar outro."
+      },
+      "row": {
+        "perPeriod": "{{hours}} horas por período",
+        "retiredBadge": "Desativado",
+        "startsOn": "Conta a partir de {{date}}"
+      },
+      "errors": {
+        "exists": "Esta organização já tem uma linha de banco de horas ativa. Desative-a primeiro e depois adicione a nova.",
+        "locked": "Esse campo não pode ser alterado em uma linha de banco de horas."
+      },
+      "retire": {
+        "title": "Desativar banco de horas",
+        "message": "\"{{description}}\" tem histórico de cobrança, por isso é desativado em vez de excluído. Sem novos períodos; os períodos já faturados ainda são liquidados. Os períodos encerrados permanecem no contrato.",
+        "confirm": "Desativar banco",
+        "toast": "Banco de horas desativado"
+      },
+      "detail": {
+        "title": "Banco de horas",
+        "usage": "{{used}} de {{included}} horas usadas · {{remaining}} restantes · o período termina em {{end}}",
+        "carried": "Inclui {{hours}} horas acumuladas.",
+        "unapproved": "{{hours}} horas deste tempo ainda não foram aprovadas.",
+        "foreign": "{{hours}} horas foram registradas em outra moeda; elas ainda consomem o banco.",
+        "over": "{{hours}} horas acima do banco → {{amount}} no fechamento do período",
+        "advanceNote": "O excedente é cobrado na fatura seguinte.",
+        "arrearsNote": "O excedente é cobrado na fatura deste período.",
+        "lateEntry": "{{hours}} horas foram lançadas depois do fechamento do período e são cobradas separadamente.",
+        "startsLater": "O banco começa em {{date}}.",
+        "extraRate": "Horas extras: {{rate}} cada",
+        "loadFailed": "Não foi possível carregar o uso do banco."
+      },
+      "history": {
+        "title": "Períodos do banco encerrados",
+        "empty": "Nenhum período do banco foi encerrado ainda.",
+        "included": "Incluídas",
+        "carriedIn": "Acumuladas na entrada",
+        "used": "Usadas",
+        "over": "Excedente",
+        "carriedOut": "Acumuladas na saída",
+        "loadMore": "Carregar mais",
+        "invoiceRemoved": "Fatura do excedente removida — horas não cobradas"
+      }
     }
   },
   "agreements": {
@@ -911,7 +968,8 @@
         "skuHelp": "Seu número de estoque de catálogo ou distribuidor para este item.",
         "skuOptional": "SKU (opcional)",
         "tidyWithAi": "Aprimorar com IA",
-        "unitCost": "Custo unitário"
+        "unitCost": "Custo unitário",
+        "partNumberRequiredHint": "Adicione um número de peça para incluir isto no pedido de peças."
       },
       "liveTotals": {
         "annualRecurring": "Recorrente anual",
@@ -1148,7 +1206,10 @@
         "tooManyRecipients": "Use no máximo {{max}} endereços.",
         "zeroTotalWarning": "Este orçamento totaliza {{zero}} — verifique se os itens têm preço antes de enviar.",
         "noBillingContactHint": "Esta organização não tem um contato de cobrança salvo — digite um e-mail ou adicione um nas <orgLink>configurações da organização</orgLink>.",
-        "revisionWarning": "Enviar substitui {{number}} e desativa o link que o cliente já possui."
+        "revisionWarning": "Enviar substitui {{number}} e desativa o link que o cliente já possui.",
+        "noPartNumberWarning_one": "{{count}} linha de produto não tem número de peça e não será adicionada ao pedido de peças.",
+        "noPartNumberWarning_other": "{{count}} linhas de produto não têm número de peça e não serão adicionadas ao pedido de peças.",
+        "sendAnyway": "Enviar mesmo assim"
       },
       "sendEmailWarning": {
         "noBillingContact": "Proposta marcada como Enviada, mas nenhum e-mail foi entregue — {{orgName}} não tem e-mail de contato de cobrança. Adicione um nas configurações da organização e envie novamente.",
@@ -1321,7 +1382,9 @@
           "vendor": "Fornecedor"
         },
         "title": "A encomendar",
-        "unknownVendor": "Outro / fornecedor desconhecido"
+        "unknownVendor": "Outro / fornecedor desconhecido",
+        "excluded": "Fora deste pedido (sem número de peça): {{names}}",
+        "untitledLine": "Linha sem título"
       },
       "pax8Order": {
         "message_one": "Esta cotação preparou um pedido da Pax8 ({{count}} item) aguardando os detalhes de provisionamento",
@@ -1708,7 +1771,8 @@
       "saveNotes": "Não foi possível salvar as observações.",
       "saveTerms": "Não foi possível salvar os termos.",
       "updateLine": "Não foi possível atualizar a linha.",
-      "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual."
+      "noPriceForCurrency": "Este item não tem preço em {{currency}}. Adicione um no catálogo ou insira uma linha manual.",
+      "saveLineDetail": "Não foi possível atualizar como os apontamentos são impressos"
     },
     "fields": {
       "descriptionOptional": "Descrição (opcional)",
@@ -1775,6 +1839,35 @@
     "linesScrollAria": "Linhas da fatura — role para os lados para ver mais colunas",
     "unsavedField": {
       "lines": "Itens"
+    },
+    "lineDetail": {
+      "default": "Padrão de faturamento",
+      "grouping": "Disposição",
+      "groupingDay": "Agrupar por dia",
+      "groupingEntry": "Uma linha por apontamento",
+      "help": "Substitui o padrão de faturamento somente neste rascunho.",
+      "hide": "Ocultar",
+      "show": "Mostrar",
+      "showDate": "Data trabalhada",
+      "showNote": "Observação do técnico",
+      "showWorkedTime": "Tempo trabalhado vs. faturado",
+      "title": "Linhas de apontamento de horas"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} linhas vão bloquear a emissão: os apontamentos foram faturados em outra fatura. Remova-as antes de emitir:",
+      "billedElsewhere_one": "{{count}} linha vai bloquear a emissão: o apontamento foi faturado em outra fatura. Remova-a antes de emitir:",
+      "billedElsewhere_other": "{{count}} linhas vão bloquear a emissão: os apontamentos foram faturados em outra fatura. Remova-as antes de emitir:",
+      "button": "Atualizar a partir dos apontamentos",
+      "drifted": "{{count}} linhas mantidas: o tempo faturado dos apontamentos não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "drifted_one": "{{count}} linha mantida: o tempo faturado do apontamento não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "drifted_other": "{{count}} linhas mantidas: o tempo faturado dos apontamentos não corresponde mais à quantidade. Edite a quantidade ou gere um novo rascunho.",
+      "error": "Não foi possível atualizar a partir dos apontamentos",
+      "help": "Atualiza notas, datas trabalhadas e aprovação a partir dos apontamentos de horas. Quantidades, preços e descrições editadas à mão nunca mudam.",
+      "running": "Atualizando…",
+      "skipped": "{{count}} linhas ignoradas: os apontamentos foram faturados em outra fatura, removidos ou não são mais faturáveis neste rascunho.",
+      "skipped_one": "{{count}} linha ignorada: o apontamento foi faturado em outra fatura, removido ou não é mais faturável neste rascunho.",
+      "skipped_other": "{{count}} linhas ignoradas: os apontamentos foram faturados em outra fatura, removidos ou não são mais faturáveis neste rascunho.",
+      "summary": "Atualizadas: {{refreshed}} · Já atualizadas: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -2022,6 +2115,7 @@
     "empty": "Esta fatura ainda não tem itens.",
     "fallbackTitle": "Fatura",
     "issued": "Emitida",
+    "laborLine": "Mão de obra",
     "preview": {
       "description": "Isto é o que o cliente vê na fatura.",
       "downloadError": "Não foi possível baixar o PDF da fatura.",
@@ -2118,7 +2212,9 @@
       "sourceAria": "Origem da fatura",
       "title": "Nova fatura",
       "to": "Até",
-      "working": "Processando…"
+      "working": "Processando…",
+      "heldForHourBlock_one": "{{count}} lançamento de tempo ({{hours}} horas) está retido para o banco de horas desta organização e será cobrado quando o período do banco for encerrado.",
+      "heldForHourBlock_other": "{{count}} lançamentos de tempo ({{hours}} horas) estão retidos para o banco de horas desta organização e serão cobrados quando o período do banco for encerrado."
     },
     "empty": {
       "description": "Monte horas e peças não faturadas em um rascunho ou inicie uma fatura em branco.",
@@ -2286,7 +2382,18 @@
       "invoiceNumberPrefix": "Prefixo do número da fatura",
       "markupHelp": "Margem padrão sobre o custo do distribuidor, usada para preencher o preço de venda ao importar itens do catálogo. A margem bruta resultante é exibida durante a importação.",
       "paymentTermsDays": "Prazo de pagamento (dias)",
-      "title": "Padrões de cobrança"
+      "prefixInvalid": "Informe um prefixo de 1 a 12 caracteres.",
+      "taxRateInvalid": "Informe uma alíquota de imposto de 0 a 100.",
+      "termsDaysInvalid": "Informe um número inteiro de dias de 0 a 365.",
+      "title": "Padrões de cobrança",
+      "lineDetailTitle": "Linhas de apontamento de horas nas faturas",
+      "lineDetailHelp": "Escolha o que os clientes veem nos apontamentos de horas. Um rascunho de fatura pode substituir esta opção; ela é congelada quando a fatura é emitida.",
+      "lineShowDate": "Mostrar a data trabalhada",
+      "lineShowNote": "Mostrar a observação do técnico",
+      "lineShowWorkedTime": "Mostrar tempo trabalhado vs. faturado",
+      "lineGrouping": "Disposição",
+      "lineGroupingEntry": "Uma linha por apontamento",
+      "lineGroupingDay": "Agrupar por dia"
     },
     "loadError": "Falha ao carregar as configurações de cobrança.",
     "loading": "Carregando configurações de cobrança…",
@@ -2636,6 +2743,23 @@
       "schedule_inactive": "Esta fatura não está mais agendada para pagamento automático.",
       "generic": "Não foi possível iniciar o pagamento automático. Atualize a fatura para ver o status atual.",
       "excluded_contract": "O contrato desta fatura está excluído dos pagamentos automáticos, então nada foi cobrado. Se o cliente tinha sido avisado deste pagamento, recebeu um e-mail informando que ele não acontecerá."
+    },
+    "stepUp": {
+      "heading": "Confirme que é você",
+      "intro": {
+        "autopay_charge_now": "Cobrar esta fatura agora exige uma nova verificação de segundo fator.",
+        "partner_payment_settings_update": "Alterar as configurações de pagamento exige uma nova verificação de segundo fator para estes valores exatos.",
+        "org_payment_settings_update": "Alterar as configurações de pagamento desta organização exige uma nova verificação de segundo fator para estes valores exatos.",
+        "autopay_request_recipient": "Enviar a solicitação de autorização para um endereço diferente do contato de cobrança exige uma nova verificação de segundo fator."
+      },
+      "code": "Código do autenticador",
+      "passkey": "Você confirmará com sua passkey.",
+      "noFactor": "Primeiro adicione um aplicativo autenticador ou uma passkey à sua conta.",
+      "noFactorSmsOnly": "Códigos por mensagem de texto não podem confirmar esta ação. Primeiro adicione um aplicativo autenticador ou uma passkey à sua conta.",
+      "enrollLink": "Configurar um segundo fator",
+      "confirm": "Confirmar",
+      "failed": "Falha na verificação. Tente novamente.",
+      "unavailable": "Não foi possível iniciar a verificação"
     }
   },
   "reminders": {

@@ -162,6 +162,12 @@ Fable and Codex (xhigh, read-only, 2026-10-02) agreed on the direction; Codex's 
   when exactly one exists. Known limitation, stated in the group's provenance text: a roaming device
   reporting the same private prefix *and* gateway address joins the office group; corroboration by
   gateway MAC (neighbour cache, C:190) is the follow-up.
+  **Amended 2026-10-03 (site location):** a `lan` card carries `declaration` (declared/undeclared for
+  the viewed site by exact prefix). When the site declares at least one network, undeclared cards move off the
+  canvas into the "Other / unidentified networks" roster (toggle "Show other networks on the map");
+  with no declarations the canvas is unchanged and shows a declare-networks hint. From W2, devices whose
+  presence is `visiting` another site leave the home site's cards and render on the matched site's card
+  as presentation-only visitors (`site-location` spec §4, §8).
 - **Q3 — revised.** Pins are honoured, including `source:'legacy'` (they mix snapshot pins with later
   explicit edits). A pinned group member keeps its coordinates; its group becomes a fixed obstacle sized
   to contain it. When pins distort the grouped map the explorer offers **"Use grouped layout"**: editors

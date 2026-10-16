@@ -261,7 +261,7 @@ describe('allowance + overage generation (real DB) #3205 W04', () => {
     expect(again.skipped).toBe('not_due');
     expect(again).toEqual({
       generated: false, autoIssue: false, skipped: 'not_due', priceBookGaps: [],
-      uncoveredDevices: null, overages: [],
+      uncoveredDevices: null, overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
     });
     expect(firstLineCount).toBe(2);
     expect(await readLines(first.invoiceId!)).toHaveLength(firstLineCount);

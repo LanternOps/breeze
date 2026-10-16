@@ -19,7 +19,8 @@ import { quoteProcessingFee } from './processingFee';
 import { acceptedCollectionFee, collectionFeePolicyChanged } from './collectionFee';
 import { fromMinorUnits, toMinorUnits } from '../stripeMoney';
 import { AR_OPEN_STATUSES } from '../../db/schema/invoices';
-import { isPublicLinkOrgStatusLive, isPublicLinkPartnerStatusLive } from '../publicLinkOrgGate';
+import { isPublicLinkOrgStatusLive } from '../publicLinkOrgGate';
+import { isAutopayPartnerChargeable } from './autopayGate';
 type Tx = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 export type { AutopayTerms } from '@breeze/shared';
 export async function enqueueAutopayNotice(tx: Tx, scheduleId: string): Promise<void> {
@@ -135,7 +136,8 @@ const validateAutopayNotice: NoticePreSendValidator = async (tx, row) => {
   const [org] = await tx.select().from(organizations).where(eq(organizations.id, row.orgId)).limit(1);
   if (!org || org.partnerId !== invoice.partnerId || org.deletedAt || !isPublicLinkOrgStatusLive(org.status)) return obsolete;
   const [partner] = await tx.select().from(partners).where(eq(partners.id, invoice.partnerId)).limit(1);
-  if (!partner || partner.deletedAt || !isPublicLinkPartnerStatusLive(partner.status) || !partner.autopayEnabled) return obsolete;
+  // The planner applies the same partner bar (isAutopayEnabledForPartner), so a notice refused here is never re-planned.
+  if (!isAutopayPartnerChargeable(partner)) return obsolete;
   const terms = parseAutopayTerms(schedule.termsSnapshot);
   const frozen = (row.rendered as { frozen?: Record<string, unknown> }).frozen;
   if (!terms || terms.noticeSeq !== row.seq || terms.currency !== invoice.currencyCode

@@ -3,7 +3,7 @@ import { CONFIG_FEATURE_TYPES, RETIRED_CONFIG_FEATURE_TYPES } from './configFeat
 import { getPolicyBaselineDefaults, getRemoteAccessBaseline, getPamBaseline } from './policyBaselineDefaults';
 import { PAM_DEFAULTS } from '../routes/agents/pamSettings';
 import { configFeatureTypeEnum } from '../db/schema/configurationPolicies';
-import { TIME_SYNC_DEFAULTS } from '@breeze/shared';
+import { TIME_SYNC_DEFAULTS, WORKLOAD_INVENTORY_DEFAULTS } from '@breeze/shared';
 
 describe('policyBaselineDefaults', () => {
   it('has exactly one entry per ConfigFeatureType', () => {
@@ -58,6 +58,12 @@ describe('policyBaselineDefaults', () => {
         .inlineSettings,
     ).toEqual(TIME_SYNC_DEFAULTS);
   });
+
+  it('shows workload inventory as off by default and detection-only', () => {
+    const entry = getPolicyBaselineDefaults().find((x) => x.featureType === 'workload_inventory')!;
+    expect(entry).toMatchObject({ applied: false, inlineSettings: WORKLOAD_INVENTORY_DEFAULTS });
+    expect(entry.behavior).toMatch(/off by default/i);
+  });
 });
 
 describe('pam defaults single source of truth', () => {
@@ -104,6 +110,11 @@ describe('CONFIG_FEATURE_TYPES parity with DB enum (W05d: canonical ∪ retired)
   it('canonical plus retired matches configFeatureTypeEnum.enumValues exactly', () => {
     expect([...CONFIG_FEATURE_TYPES, ...RETIRED_CONFIG_FEATURE_TYPES].sort())
       .toEqual([...configFeatureTypeEnum.enumValues].sort());
+  });
+  it('security_agents (#6960) is in the DB enum and has a not-enforced baseline', () => {
+    expect([...configFeatureTypeEnum.enumValues]).toContain('security_agents');
+    const entry = getPolicyBaselineDefaults().find((e) => e.featureType === 'security_agents');
+    expect(entry).toMatchObject({ applied: false, inlineSettings: null });
   });
   it('the two lists are disjoint and retired types have no baseline entry', () => {
     const baseline = getPolicyBaselineDefaults().map((e) => e.featureType);

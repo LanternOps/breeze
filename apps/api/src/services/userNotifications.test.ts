@@ -6,10 +6,16 @@ const state = vi.hoisted(() => ({
   conflictHandled: false,
   conflictTarget: null as unknown,
   publishUserEvent: vi.fn(),
+  updateSet: null as Record<string, unknown> | null,
+  updateWhere: null as unknown,
+  updatedRows: [] as Array<{ id: string }>,
 }));
 
 vi.mock('drizzle-orm', () => ({
   sql: Object.assign(() => ({}), { raw: () => ({}) }),
+  and: (...args: unknown[]) => ({ and: args }),
+  eq: (col: unknown, val: unknown) => ({ eq: [col, val] }),
+  inArray: (col: unknown, vals: unknown) => ({ inArray: [col, vals] }),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -18,11 +24,23 @@ vi.mock('../db/schema', () => ({
     userId: 'userNotifications.userId',
     dedupeKey: 'userNotifications.dedupeKey',
     read: 'userNotifications.read',
+    readAt: 'userNotifications.readAt',
   },
 }));
 
 vi.mock('../db', () => ({
   db: {
+    update: vi.fn(() => ({
+      set: vi.fn((values: Record<string, unknown>) => {
+        state.updateSet = values;
+        return {
+          where: vi.fn((cond: unknown) => {
+            state.updateWhere = cond;
+            return { returning: vi.fn(async () => state.updatedRows) };
+          }),
+        };
+      }),
+    })),
     insert: vi.fn(() => ({
       values: vi.fn((values: Record<string, unknown>) => {
         state.insertedValues = values;
@@ -42,7 +60,7 @@ vi.mock('./eventBus', () => ({
   getEventBus: () => ({ publishUserEvent: state.publishUserEvent }),
 }));
 
-import { createNotification } from './userNotifications';
+import { createNotification, markNotificationsReadByDedupeKeys } from './userNotifications';
 
 const BASE = {
   userId: 'user-1',
@@ -57,10 +75,26 @@ beforeEach(() => {
   state.returnedRows = [{ id: 'n-1' }];
   state.conflictHandled = false;
   state.conflictTarget = null;
+  state.updateSet = null;
+  state.updateWhere = null;
+  state.updatedRows = [];
   state.publishUserEvent.mockResolvedValue('evt-1');
 });
 
 describe('createNotification', () => {
+  it('accepts a partner-wide notice with no org (connection health)', async () => {
+    await createNotification({ userId: 'user-1', orgId: null, type: 'integration', title: 'Huntress sync failing' });
+    expect(state.insertedValues).toMatchObject({ orgId: null, type: 'integration' });
+  });
+
+  it('skips the org-fanned live nudge when there is no org', async () => {
+    // The WS transport fans out per org; a null-org notice has no channel, so
+    // the 30s bell poll surfaces it instead.
+    const id = await createNotification({ userId: 'user-1', orgId: null, type: 'integration', title: 't' });
+    expect(id).toBe('n-1');
+    expect(state.publishUserEvent).not.toHaveBeenCalled();
+  });
+
   it('writes the row and nudges only the addressed user', async () => {
     const id = await createNotification({ ...BASE, link: '/approvals', dedupeKey: 'k1' });
 
@@ -162,5 +196,23 @@ describe('createNotification', () => {
       metadata: null,
       dedupeKey: null,
     });
+  });
+});
+
+describe('markNotificationsReadByDedupeKeys', () => {
+  it('returns 0 without touching the db for empty inputs', async () => {
+    expect(await markNotificationsReadByDedupeKeys([], ['k'])).toBe(0);
+    expect(await markNotificationsReadByDedupeKeys(['u'], [])).toBe(0);
+    expect(state.updateSet).toBeNull();
+  });
+
+  it('marks unread rows for the named users and keys, returning the count', async () => {
+    state.updatedRows = [{ id: 'a' }, { id: 'b' }];
+    const n = await markNotificationsReadByDedupeKeys(['u1', 'u2'], ['k1']);
+    expect(n).toBe(2);
+    expect(state.updateSet).toMatchObject({ read: true });
+    expect(state.updateSet?.readAt).toBeInstanceOf(Date);
+    expect(JSON.stringify(state.updateWhere)).toContain('userNotifications.userId');
+    expect(JSON.stringify(state.updateWhere)).toContain('userNotifications.dedupeKey');
   });
 });

@@ -6,9 +6,11 @@
  *
  * recipient_count is |customer| (INDEX ruling); internal CC is excluded.
  */
-import { and, arrayOverlaps, eq, inArray, isNotNull, isNull, or, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { contacts, reportScheduleRecipients } from '../../db/schema';
+import { resolveOrganizationResponsibilitiesForOrgs } from '../contacts/responsibilities';
+import { CONTACT_ROLES, type ContactRole } from '../contacts/types';
 import type { SeriesRecipientRule, SeriesTx } from './types';
 
 /** The same loose regex as ReportBuilder's chips and the schedule worker. */
@@ -62,11 +64,10 @@ export function mergeSeriesRecipients(input: {
   return { customer: customer.emails, cc: cc.emails, dropped: customer.dropped + cc.dropped };
 }
 
-function ruleCondition(rule: SeriesRecipientRule): SQL | undefined {
+function ruleCondition(rule: SeriesRecipientRule, roleContactIds: readonly string[]): SQL | undefined {
   const arms: SQL[] = [];
-  // Org-level primary contact only (a site-level primary is a site's contact).
   if (rule.primaryContact) arms.push(and(eq(contacts.isPrimary, true), isNull(contacts.siteId))!);
-  if (rule.roles.length > 0) arms.push(arrayOverlaps(contacts.roles, rule.roles));
+  if (roleContactIds.length > 0) arms.push(inArray(contacts.id, [...roleContactIds]));
   if (arms.length === 0) return undefined;
   return arms.length === 1 ? arms[0] : or(...arms);
 }
@@ -76,8 +77,16 @@ async function loadRuleMatches(
   rule: SeriesRecipientRule,
   tx: SeriesTx,
 ): Promise<Array<RecipientContact & { orgId: string }>> {
-  const condition = ruleCondition(rule);
-  if (!condition || orgIds.length === 0) return [];
+  if (orgIds.length === 0) return [];
+
+  const roles = rule.roles.filter(
+    (role): role is ContactRole => (CONTACT_ROLES as readonly string[]).includes(role),
+  );
+  const resolved = await resolveOrganizationResponsibilitiesForOrgs(tx, { orgIds, roles });
+  const roleContactIds = [...new Set(resolved.map((assignment) => assignment.contactId))];
+  const condition = ruleCondition(rule, roleContactIds);
+  if (!condition) return [];
+
   return tx
     .select({ orgId: contacts.orgId, contactId: contacts.id, email: contacts.email })
     .from(contacts)

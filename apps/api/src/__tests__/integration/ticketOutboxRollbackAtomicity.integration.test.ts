@@ -172,7 +172,7 @@ describe('ticket_outbox rollback atomicity (real Postgres, hostile-ticket scenar
         .where(and(eq(ticketOutbox.ticketId, ticket.id), eq(ticketOutbox.eventType, 'ticket.status_changed')))
     );
     expect(statusChangedRows).toHaveLength(1);
-    expect(statusChangedRows[0]!.payload).toEqual({ from: 'new', to: 'open' });
+    expect(statusChangedRows[0]!.payload).toEqual({ from: 'new', to: 'open', statusId: null });
 
     const ticketRows = await withSystemDbAccessContext(() =>
       db.select({ status: tickets.status }).from(tickets).where(eq(tickets.id, ticket.id))

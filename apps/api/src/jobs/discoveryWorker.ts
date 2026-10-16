@@ -39,6 +39,7 @@ import type { discoveredAssetTypeEnum } from '../db/schema';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { buildEventFingerprint, normalizeBaselineScanSchedule } from '../services/networkBaseline';
 import { linkBmcAssetFromAgentReport, normalizeBmcMac } from '../services/discovery/agentReportedBmcLink';
+import { reconcilePlacementOnLinkOrThrow } from '../services/assetPlacement';
 import { captureException } from '../services/sentry';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
@@ -52,6 +53,12 @@ import {
 import { reconcileTopology } from './reconcileTopology';
 import { withLegacyCollectorAbsence } from '../services/topology/legacyDeleteCause';
 import { markTopologyIdentityDirty } from '../services/topology/identityDirty';
+import {
+  loadSiteDiscoveryAgentCandidates,
+  pinnedAgentNotConnectedMessage,
+  rankDiscoveryAgentCandidates,
+  resolvePinnedDiscoveryAgent,
+} from './discoveryAgentSelection';
 import { prepareDiscoveryTopologyDispatch, type DiscoveryTopologyCommandBlock } from '../services/topology/discoveryDispatch';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 
@@ -624,11 +631,48 @@ type DispatchScanInputs =
   | {
       status: 'ok';
       profile: typeof discoveryProfiles.$inferSelect;
-      agentId: string;
+      /**
+       * Agents to try, best first (#7969). Exactly one for 'requested' and
+       * 'pinned' — those never fall back. For the site paths, phase 2 walks
+       * this list until one is websocket-connected.
+       */
+      candidates: DispatchAgentCandidate[];
       requestedAgentId: string | null;
-      selectionSource: 'requested' | 'site-auto';
+      selectionSource: DiscoveryAgentSelectionSource;
+      /** Snapshot prepared for candidates[0]; re-prepared if phase 2 picks another. */
       topology: DiscoveryTopologyCommandBlock | null;
     };
+
+/**
+ * How the dispatch agent was chosen (#7969):
+ * - requested: an explicit agent on a manual scan (wins over the pin)
+ * - pinned: the profile's pinned device — fails rather than falls back
+ * - subnet-match: unpinned; top candidate has an address in a profile subnet
+ * - site-auto: unpinned; no candidate overlaps a profile subnet
+ */
+type DiscoveryAgentSelectionSource = 'requested' | 'pinned' | 'subnet-match' | 'site-auto';
+
+type DispatchAgentCandidate = { agentId: string; label: string };
+
+/** Cap on websocket-connectivity probes per dispatch (Redis round-trips). */
+const MAX_CONNECTIVITY_PROBES = 25;
+
+async function prepareTopologyForAgent(
+  data: DispatchScanJobData,
+  profile: typeof discoveryProfiles.$inferSelect,
+  agentId: string,
+): Promise<DiscoveryTopologyCommandBlock | null> {
+  // M2 D7: persist the topology dispatch authorization snapshot BEFORE the
+  // command can leave the server. A failure here degrades to a legacy-only
+  // dispatch; it never blocks discovery.
+  try {
+    return await prepareDiscoveryTopologyDispatch({ jobId: data.jobId, orgId: data.orgId, siteId: data.siteId, profile, agentId });
+  } catch (err) {
+    console.error(`[DiscoveryWorker] Topology dispatch snapshot failed for job ${data.jobId}; dispatching legacy-only:`, err);
+    captureException(err);
+    return null;
+  }
+}
 
 /**
  * Phase 1 of a dispatch-scan job: load the profile and resolve/validate the
@@ -666,44 +710,42 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
     return { status: 'profile-missing' };
   }
 
-  // Find an online agent to run the scan
-  let agentId = data.agentId;
+  // Resolve who runs the scan (#7969). Precedence: an explicit agent on a
+  // manual scan, then the profile's pinned device, then the best site agent.
   const requestedAgentId = data.agentId ?? null;
-  const selectionSource: 'requested' | 'site-auto' = requestedAgentId ? 'requested' : 'site-auto';
+  let selectionSource: DiscoveryAgentSelectionSource;
+  let candidates: DispatchAgentCandidate[];
   if (requestedAgentId) {
     const validation = await validateRequestedAgentForDiscovery(requestedAgentId, data.orgId, data.siteId);
     if (!validation.ok) {
       await markJobFailed(data.jobId, validation.message);
       return { status: 'invalid-agent' };
     }
-  }
-  if (!agentId) {
-    // Pick an online agent from the same site.
-    //
-    // Quick Support exclusion: ephemeral devices (`devices.isEphemeral`) live in
-    // the hidden per-partner 'quick_support' org and are a stranger's personal
-    // machine borrowed for one ~20-minute session. That org stays inside
-    // technicians' accessibleOrgIds for RLS reasons, so a bare "any online
-    // device here" pick could conscript a home PC into network-scanning the
-    // stranger's own LAN.
-    const [onlineAgent] = await db
-      .select({ agentId: devices.agentId })
-      .from(devices)
-      .where(
-        and(
-          eq(devices.orgId, data.orgId),
-          eq(devices.isEphemeral, false),
-          notParkedDeviceCondition(),
-          eq(devices.siteId, data.siteId),
-          eq(devices.status, 'online')
-        )
-      )
-      .limit(1);
-
-    agentId = onlineAgent?.agentId ?? null;
+    selectionSource = 'requested';
+    candidates = [{ agentId: requestedAgentId, label: requestedAgentId }];
+  } else if (profile.pinnedDeviceId) {
+    // Pinned: that device or nothing. Falling back would scan from a network
+    // the operator explicitly ruled out, and hide that the pin is broken.
+    const pinned = await resolvePinnedDiscoveryAgent(profile.pinnedDeviceId, data.orgId, data.siteId);
+    if (!pinned.ok) {
+      console.warn(
+        `[DiscoveryWorker] Pinned agent unavailable for job ${data.jobId} (profile=${data.profileId}, pinnedDevice=${profile.pinnedDeviceId}): ${pinned.message}`
+      );
+      await markJobFailed(data.jobId, pinned.message, pinned.agentId);
+      return { status: 'invalid-agent' };
+    }
+    selectionSource = 'pinned';
+    candidates = [{ agentId: pinned.agentId, label: pinned.label }];
+  } else {
+    const ranked = rankDiscoveryAgentCandidates(
+      await loadSiteDiscoveryAgentCandidates(data.orgId, data.siteId),
+      profile.subnets ?? [],
+    );
+    selectionSource = ranked[0]?.subnetMatch ? 'subnet-match' : 'site-auto';
+    candidates = ranked.map(({ agentId, label }) => ({ agentId, label }));
   }
 
-  if (!agentId) {
+  if (candidates.length === 0) {
     console.warn(
       `[DiscoveryWorker] No candidate agent found for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource})`
     );
@@ -711,18 +753,11 @@ async function loadDispatchScanInputs(data: DispatchScanJobData): Promise<Dispat
     return { status: 'no-agent' };
   }
 
-  // M2 D7: persist the topology dispatch authorization snapshot in this same
-  // short context, BEFORE the command can leave the server. A failure here
-  // degrades to a legacy-only dispatch; it never blocks discovery.
-  let topology: DiscoveryTopologyCommandBlock | null = null;
-  try {
-    topology = await prepareDiscoveryTopologyDispatch({ jobId: data.jobId, orgId: data.orgId, siteId: data.siteId, profile, agentId });
-  } catch (err) {
-    console.error(`[DiscoveryWorker] Topology dispatch snapshot failed for job ${data.jobId}; dispatching legacy-only:`, err);
-    captureException(err);
-  }
+  // In this same short context, prepared for the top candidate. Phase 2
+  // re-prepares in a fresh context only if it falls through to another agent.
+  const topology = await prepareTopologyForAgent(data, profile, candidates[0]!.agentId);
 
-  return { status: 'ok', profile, agentId, requestedAgentId, selectionSource, topology };
+  return { status: 'ok', profile, candidates, requestedAgentId, selectionSource, topology };
 }
 
 /**
@@ -744,20 +779,58 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
 
-  const { profile, agentId, requestedAgentId, selectionSource: initialSelectionSource, topology } = inputs;
+  const { profile, candidates, requestedAgentId, selectionSource } = inputs;
 
-  // Phase 2 — connectivity check with NO DB context open (#1105).
-  if (!(await isAgentConnectedAnywhere(agentId))) {
+  // Phase 2 — connectivity check with NO DB context open (#1105). Requested
+  // and pinned dispatches have one candidate and never fall back; the site
+  // paths walk the ranked list past agents whose DB row says online but whose
+  // websocket is gone, so a stale top pick cannot fail every scheduled run.
+  let chosen: DispatchAgentCandidate | null = null;
+  if (candidates.length > MAX_CONNECTIVITY_PROBES) {
     console.warn(
-      `[DiscoveryWorker] Selected agent is not websocket-connected for job ${data.jobId} (agent=${agentId}, requestedAgent=${requestedAgentId ?? 'none'}, source=${initialSelectionSource})`
+      `[DiscoveryWorker] Probing only the top ${MAX_CONNECTIVITY_PROBES} of ${candidates.length} candidate agents for job ${data.jobId} (source=${selectionSource})`
     );
-    await runWithSystemDbAccess(() => markJobFailed(data.jobId, 'No online agent available for this site'));
+  }
+  for (const candidate of candidates.slice(0, MAX_CONNECTIVITY_PROBES)) {
+    if (await isAgentConnectedAnywhere(candidate.agentId)) {
+      chosen = candidate;
+      break;
+    }
+    console.warn(
+      `[DiscoveryWorker] Candidate agent is not websocket-connected for job ${data.jobId} (agent=${candidate.agentId}, requestedAgent=${requestedAgentId ?? 'none'}, source=${selectionSource})`
+    );
+  }
+  if (!chosen) {
+    const pinnedCandidate = selectionSource === 'pinned' ? candidates[0]! : null;
+    await runWithSystemDbAccess(() =>
+      pinnedCandidate
+        ? markJobFailed(data.jobId, pinnedAgentNotConnectedMessage(pinnedCandidate.label), pinnedCandidate.agentId)
+        : markJobFailed(data.jobId, 'No online agent available for this site')
+    );
     return { dispatched: false, agentId: null, durationMs: Date.now() - startTime };
   }
+  const agentId = chosen.agentId;
+  // The phase-1 snapshot names candidates[0]'s device; re-bind it to the
+  // agent actually used, in its own short context.
+  let topology = inputs.topology;
+  if (chosen !== candidates[0]) {
+    topology = await runWithSystemDbAccess(async () => {
+      const rebound = await prepareTopologyForAgent(data, profile, agentId);
+      if (!rebound) {
+        // No snapshot for the agent actually used: drop the one phase 1 wrote
+        // for the skipped agent so the job row does not name a device that
+        // never ran it.
+        await db
+          .update(discoveryJobs)
+          .set({ topologyDispatch: null, topologyDeadlineAt: null, topologyConfigGeneration: null, updatedAt: new Date() })
+          .where(eq(discoveryJobs.id, data.jobId));
+      }
+      return rebound;
+    });
+  }
 
-  const selectionSource = requestedAgentId ? initialSelectionSource : 'site-auto';
   console.log(
-    `[DiscoveryWorker] Selected agent ${agentId} for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource}${requestedAgentId ? `, requestedAgent=${requestedAgentId}` : ''})`
+    `[DiscoveryWorker] Selected agent ${agentId} (${chosen.label}) for job ${data.jobId} (profile=${data.profileId}, org=${data.orgId}, site=${data.siteId}, source=${selectionSource}${requestedAgentId ? `, requestedAgent=${requestedAgentId}` : ''})`
   );
 
   // Build the command payload from the profile
@@ -788,9 +861,12 @@ async function processDispatchScan(data: DispatchScanJobData): Promise<{
     await runWithSystemDbAccess(() =>
       markJobFailed(
         data.jobId,
-        outcome.status === 'offline'
-          ? 'Failed to send command to agent'
-          : `Failed to send command to agent (dispatch outcome ${outcome.status})`,
+        selectionSource === 'pinned'
+          ? `Failed to send command to pinned scan agent "${chosen.label}" (dispatch outcome ${outcome.status}); the scan was not run from any other agent.`
+          : outcome.status === 'offline'
+            ? 'Failed to send command to agent'
+            : `Failed to send command to agent (dispatch outcome ${outcome.status})`,
+        agentId,
       )
     );
     return { dispatched: false, agentId, durationMs: Date.now() - startTime };
@@ -1339,16 +1415,35 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
             // suppressed asset) already occupies. Only a row this update
             // actually touched may go on to flip approval / propagate
             // classification below.
-            const linked = await db
-              .update(discoveredAssets)
-              .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved', linkSource: 'auto' })
-              .where(and(
-                eq(discoveredAssets.id, upsertedAssetId),
-                sql`${discoveredAssets.linkSource} IS DISTINCT FROM 'agent_report'`,
-                sql`${discoveredAssets.linkedDeviceId} IS NULL`,
-                sql`${discoveredAssets.autoLinkSuppressedAt} IS NULL`,
-              ))
-              .returning({ id: discoveredAssets.id });
+            //
+            // The link write and the placement reconcile share one savepoint
+            // (as the BMC link paths do): if the reconcile fails, the link is
+            // undone with it and the catch below logs it, instead of a failed
+            // statement aborting the scan's whole transaction.
+            const linked = await db.transaction(async (tx) => {
+              const rows = await tx
+                .update(discoveredAssets)
+                .set({ linkedDeviceId: match.deviceId, approvalStatus: 'approved', linkSource: 'auto' })
+                .where(and(
+                  eq(discoveredAssets.id, upsertedAssetId),
+                  sql`${discoveredAssets.linkSource} IS DISTINCT FROM 'agent_report'`,
+                  sql`${discoveredAssets.linkedDeviceId} IS NULL`,
+                  sql`${discoveredAssets.autoLinkSuppressedAt} IS NULL`,
+                ))
+                .returning({ id: discoveredAssets.id });
+              if (rows.length) {
+                // One physical box, one authoritative placement (spec §5.1): the
+                // device keeps its own; a placement held only by the asset moves
+                // to the device. An automatic link never reports a conflict.
+                await reconcilePlacementOnLinkOrThrow({
+                  discoveredAssetId: upsertedAssetId,
+                  deviceId: match.deviceId,
+                  mode: 'automatic',
+                  executor: tx,
+                });
+              }
+              return rows;
+            });
 
             if (linked.length) {
               autoLinkedDeviceId = match.deviceId;
@@ -1746,7 +1841,7 @@ export async function cleanupSpeculativeTopologyLinks(
   return deleted.length;
 }
 
-async function markJobFailed(jobId: string, error: string): Promise<void> {
+async function markJobFailed(jobId: string, error: string, agentId?: string | null): Promise<void> {
   // Conditional on status: a job the operator already cancelled (or one a
   // concurrent worker attempt already resolved) must not be overwritten with
   // 'failed' — that regression made an explicit cancel invisible in the UI
@@ -1757,6 +1852,9 @@ async function markJobFailed(jobId: string, error: string): Promise<void> {
       status: 'failed',
       completedAt: new Date(),
       errors: { message: error },
+      // #7969: a pinned dispatch that could not run records which agent it
+      // was bound to, so the job history shows what to fix.
+      ...(agentId ? { agentId } : {}),
       updatedAt: new Date()
     })
     .where(and(eq(discoveryJobs.id, jobId), inArray(discoveryJobs.status, ['scheduled', 'running'])));

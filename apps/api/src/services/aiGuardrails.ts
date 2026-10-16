@@ -64,6 +64,13 @@ export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
 // resolution always goes through checkGuardrails().
 export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_policy_feature_link: ['describe'],
+  // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
+  // so it runs without approval. The tool's base tier is 3, so every OTHER
+  // action — isolate, release, and any value not offered yet (no adapter
+  // implements the agent-update or process-kill actions; the approvalScope
+  // contract forbids classifying actions outside the real enum) — stays
+  // Tier 3 / four_eyes.
+  edr_endpoint_action: ['scan'],
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
   manage_tickets: [
     'create',
@@ -82,12 +89,20 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
     'log_time_entry',
     'start_timer',
     'stop_timer',
+    'update_time_entry',
     // P2-4 (#4191) ticket triage: same family as update_fields — low-risk,
     // ticket-scoped mutations an autonomous triage run makes. link_device
     // only sets a currently-null device_id (never overwrites); draft only
     // writes an internal ticket_drafts row, never a customer-visible comment.
     'link_device',
-    'draft'
+    'draft',
+    // #8596: ticket-to-ticket links. Same tier as comment/assign: internal,
+    // reversible, bounded to one org (the service refuses cross-org links).
+    // Listing them here is also what denies them to a ticket-triggered
+    // (device-less) agent run — ticketShadowGuardrail.contract.test.ts
+    // derives its mutation set from this list.
+    'link_ticket',
+    'unlink_ticket'
   ],
   // #6930: ticket-scoped checklist step edits, same family as update_fields.
   // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
@@ -103,7 +118,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // (POST /devices/:id/filesystem/system-cleanup/list needs devices:execute).
   // `status` reads the stored run and stays Tier 1 (TIER1_READ_ACTIONS).
   system_cleanup: ['list'],
-  // SR5-01 partial relaxation (2026-07-20): directory LISTING is recon-only —
+  // Privileged-read rule, partial relaxation (2026-07-20): directory LISTING is recon-only —
   // filenames leak far less than contents — so it auto-executes with audit.
   // file READ stays Tier 3 below: the agent runs as root/LocalSystem and an
   // unapproved read can exfiltrate any file's contents.
@@ -119,7 +134,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   //
   // Deliberately NOT downgraded, despite being nominally "read" operations:
   //   - file_read: arbitrary-file exfiltration off a root/LocalSystem agent
-  //     (same SR5-01 rationale as file_operations read).
+  //     (same privileged-read rationale as file_operations read).
   //   - kill_process, start/stop/restart_service: mutating.
   //   - list_services: agent/internal/remote/tools/services_{windows,linux}.go
   //     populates ServiceInfo.Path from the service's full binary path/command
@@ -149,7 +164,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // Fleet tools — Tier 2 actions (auto-execute + audit)
   manage_configuration_policy: ['activate', 'deactivate'],
   manage_deployments: ['pause', 'resume'],
-  // SR5-01 (2026-09-17 audit §2.4): registry reads are privileged agent
+  // Privileged-read rule (2026-09-17 audit §2.4): registry reads are privileged agent
   // executions, not device reads — Tier 1 gave them no approval gate AND no
   // MFA. Raised alongside their devices:execute mapping below. Deliberately
   // NOT added to TIER2_READONLY_ACTIONS: unlike file_operations.list these
@@ -184,7 +199,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
 // call is exactly the approval-fatigue scenario #3088 measured (25 prompts in
 // 35 minutes). Entries here keep Tier 2 — and its ai_tool_executions
 // audit-ledger row; they are deliberately NOT demoted to Tier 1, which never
-// writes one (recon reads stay in the audit trail, SR5-01 precedent) — but
+// writes one (recon reads stay in the audit trail, privileged-read precedent) — but
 // auto-execute under every session approval mode. A paused session still
 // prompts (aiAgentSdk.ts gates on !isPaused).
 //
@@ -294,7 +309,7 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_service_monitors: ['list'],
   manage_software_policies: ['list', 'get'],
   manage_ticket_checklist: ['list', 'list_templates', 'get_template'],
-  manage_tickets: ['list', 'get', 'list_work_types'],
+  manage_tickets: ['list', 'get', 'list_work_types', 'list_links'],
   manage_update_rings: ['list', 'get'],
   query_agent_versions: ['list_versions', 'check_upgrades'],
   query_analytics: ['sla_compliance', 'capacity_predictions', 'sla_definitions'],
@@ -307,7 +322,7 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER3_ACTIONS: Record<string, string[]> = {
-  // SR5-01: filesystem READ is privileged. The endpoint agent runs as
+  // Privileged-read rule: filesystem READ is privileged. The endpoint agent runs as
   // root/LocalSystem and does not restrict reads to an approved root, so an
   // unapproved read can exfiltrate any file (/etc/shadow, SAM hive, SSH keys).
   // Require interactive approval (Tier 3) for read, same as the mutations.
@@ -436,6 +451,11 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // too: rollback (containment RELEASE) is four_eyes, kill/quarantine
   // (containment/mitigation) are supervised. See spec §3.2.
   s1_threat_action: ['kill', 'quarantine', 'rollback'],
+  // EDR response actions (#8167 W03, spec §4.10). Same split as
+  // s1_threat_action: isolate is protective containment (supervised),
+  // releasing isolation reverses a mitigation (four_eyes). Listed by hand —
+  // the tier-table contracts parse this file as text.
+  edr_endpoint_action: ['isolate', 'unisolate'],
 };
 
 // Spec 2026-08-05 §3: within tier 3, `four_eyes` requires a SECOND human
@@ -502,6 +522,8 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // quarantine are protective mitigation and stay supervised (same rationale
   // as s1_isolate_device isolate — urgent protective action must not wait).
   s1_threat_action: ['rollback'],
+  // Containment RELEASE, same rationale as s1_threat_action rollback (#8167).
+  edr_endpoint_action: ['unisolate'],
 };
 
 export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
@@ -522,6 +544,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // headless registry via makeSessionAwareHandler, but still carry a real
   // tier via m365ToolTiers).
   'm365_disable_user', 'm365_reset_password',
+  // AI Operator plan approval — ONE four-eyes decision over an ordered,
+  // digest-pinned set of provider effects (Recipe Library spec §6.4). Four-eyes
+  // for the same reason every effect inside it is: the set can destroy a
+  // person's access across two providers.
+  'operator_plan',
   // Identity / account control — Google Workspace. Every mutating Google tool
   // acts on a human identity/mailbox/account, not a device, so the whole
   // mutating surface is classified four_eyes (categorical reading of spec
@@ -543,6 +570,9 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // TIER3_FOUR_EYES_ACTIONS/TIER3_SUPERVISED_ACTIONS above, so this only
   // matters if the action is missing/unrecognized — fail-safe.
   's1_threat_action',
+  // EDR response actions whole-tool catch-all (#8167): an unknown action
+  // string fails closed to four_eyes instead of falling through.
+  'edr_endpoint_action',
   // PAM elevation grant: rule auto-approve can grant elevated device access
   // with no further human review (see TOOL_PERMISSIONS comment on
   // request_elevation above). Not named in spec §3.2; classified four_eyes
@@ -614,6 +644,8 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // rather than four_eyes — see spec §5.
   manage_organizations: ['create_site', 'add_contact'],
   s1_threat_action: ['kill', 'quarantine'],
+  // Protective containment must not wait on a second approver (#8167).
+  edr_endpoint_action: ['isolate'],
 };
 
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
@@ -864,10 +896,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_time_entries: { resource: 'time_entries', action: 'read' },
   get_running_timer: { resource: 'time_entries', action: 'read' },
   get_timesheet: { resource: 'time_entries', action: 'read' },
+  get_ticket_approval_status: { resource: 'tickets', action: 'read' },
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   get_device_hardware_health: { resource: 'devices', action: 'read' },
   get_device_time_status: { resource: 'devices', action: 'read' },
+  query_device_workloads: { resource: 'devices', action: 'read' },
   list_time_sync_issues: { resource: 'devices', action: 'read' },
   get_vulnerability_report: { resource: 'devices', action: 'read' },
   get_device_vulnerabilities: { resource: 'devices', action: 'read' },
@@ -877,8 +911,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   analyze_metrics: { resource: 'devices', action: 'read' },
   get_s1_status: { resource: 'devices', action: 'read' },
   get_s1_threats: { resource: 'devices', action: 'read' },
+  get_edr_status: { resource: 'devices', action: 'read' },
+  list_edr_detections: { resource: 'devices', action: 'read' },
   s1_isolate_device: { resource: 'devices', action: 'execute' },
   s1_threat_action: { resource: 'devices', action: 'execute' },
+  edr_endpoint_action: { resource: 'devices', action: 'execute' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
   // Authoring is inert, but it is still script work: whoever may read the
@@ -918,6 +955,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     log_time_entry: { resource: 'time_entries', action: 'write' },
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },
+    update_time_entry: { resource: 'time_entries', action: 'write' },
     // P2-4 (#4191): deliberately 'update', not 'write' — no seeded role
     // grants `tickets:update` (seed.ts only ever grants tickets:read/write/
     // manage), so this fails CLOSED for `checkToolPermission`'s interactive
@@ -928,6 +966,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     // caller of these two actions needs a real permission grant added first.
     link_device: { resource: 'tickets', action: 'update' },
     draft: { resource: 'tickets', action: 'update' },
+    // #8596 — same grants as routes/tickets/links.ts (GET read, POST/DELETE write).
+    list_links: { resource: 'tickets', action: 'read' },
+    link_ticket: { resource: 'tickets', action: 'write' },
+    unlink_ticket: { resource: 'tickets', action: 'write' },
   },
   // #6930 — same grants as routes/tickets/checklist.ts (TICKETS_READ/WRITE)
   // and the templates route (reads are TICKETS_READ).
@@ -955,6 +997,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_draft: { resource: 'invoices', action: 'write' },
     assemble_from_org: { resource: 'invoices', action: 'write' },
     assemble_from_ticket: { resource: 'invoices', action: 'write' },
+    refresh_time_lines: { resource: 'invoices', action: 'write' },
     issue: { resource: 'invoices', action: 'send' },
     void: { resource: 'invoices', action: 'send' },
     record_payment: { resource: 'invoices', action: 'send' },
@@ -1105,7 +1148,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     status: { resource: 'devices', action: 'read' },
   },
   file_operations: {
-    // SR5-01: read/list require devices.execute (not devices.read). Reading an
+    // Privileged-read rule: read/list require devices.execute (not devices.read). Reading an
     // arbitrary file off a root/LocalSystem agent is a privileged operation.
     list: { resource: 'devices', action: 'execute' },
     read: { resource: 'devices', action: 'execute' },
@@ -1351,6 +1394,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Security + reliability read tools
   get_security_posture: { resource: 'devices', action: 'read' },
   get_fleet_health: { resource: 'devices', action: 'read' },
+  get_fleet_device_stats: { resource: 'devices', action: 'read' },
   get_invite_funnel: { resource: 'devices', action: 'read' },
   // Fleet hygiene findings (Task 8) — read-only, mirrors the
   // GET /fleet/findings route's requireFindingsRead (DEVICES_READ) gate.
@@ -1368,7 +1412,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   query_custom_fields: { resource: 'devices', action: 'read' },
   registry_operations: {
-    // SR5-01 precedent, applied (2026-09-17 audit §2.4). These are not device
+    // Privileged-read precedent, applied (2026-09-17 audit §2.4). These are not device
     // reads: the handler dispatches a real agent command
     // (aiToolsScripts.ts, aiExecuteCommand(auth, 'registry_operations', …)),
     // and the HTTP path for agent commands requires DEVICES_EXECUTE plus
@@ -1476,9 +1520,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   },
   get_service_monitoring_status: { resource: 'devices', action: 'read' },
   // Integration & webhook tools
-  // Matches REST GET /webhooks (routes/webhooks.ts — organizations:read),
-  // bound in aiGuardrails.routeBinding.contract.test.ts.
-  query_webhooks: { resource: 'organizations', action: 'read' },
+  // Matches REST GET /webhooks and GET /webhooks/:id/deliveries
+  // (routes/webhooks.ts — webhooks:read), bound in
+  // aiGuardrails.routeBinding.contract.test.ts.
+  query_webhooks: { resource: 'webhooks', action: 'read' },
   // Route requires organizations:read (routes/psa.ts:435); the tool matches
   // it (aiGuardrails.routeBinding.contract.test.ts).
   query_psa_status: { resource: 'organizations', action: 'read' },
@@ -1545,6 +1590,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   m365_recent_signins: { resource: 'organizations', action: 'read' },
   m365_list_group_memberships: { resource: 'organizations', action: 'read' },
   m365_disable_user: { resource: 'organizations', action: 'write' },
+  // Org-wide identity governance, provider-neutral: a plan may hold M365,
+  // Google and device effects at once, so it takes the identity-tenant ceiling.
+  operator_plan: { resource: 'organizations', action: 'write' },
   m365_reset_password: { resource: 'organizations', action: 'write' },
   // Google Workspace helpdesk tools (DWD service-account-backed). Same
   // reasoning as the M365 block above; routes/google.ts:29-30 gates the
@@ -2977,6 +3025,11 @@ function buildApprovalDescription(
   const parts: string[] = [];
 
   switch (toolName) {
+    case 'operator_plan': {
+      const n = Array.isArray(input.effects) ? input.effects.length : 0;
+      parts.push(`Approve a ${n}-effect plan for AI Operator task ${String(input.taskId ?? '')}`);
+      break;
+    }
     case 'execute_command': {
       const commandType = nonEmptyText(input.commandType);
       const payload = (input.payload && typeof input.payload === 'object'

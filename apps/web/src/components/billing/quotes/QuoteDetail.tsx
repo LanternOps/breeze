@@ -10,7 +10,7 @@ import { runAction, handleActionError, ActionError } from '../../../lib/runActio
 import { useAuthedImage } from './useQuoteImage';
 import QuoteActions, { QuoteSendOutcomeBanners } from './QuoteActions';
 import AcceptanceEvidenceControl from './AcceptanceEvidenceControl';
-import QuoteOrderBreakdown, { orderableLines } from './QuoteOrderBreakdown';
+import QuoteOrderBreakdown, { QuoteOrderExcludedNote, orderableLines, unorderableProductLines } from './QuoteOrderBreakdown';
 import { RecurringBillingNote, MarginPanel, MarginToggle, useShowMargin } from '../billingUi';
 import ChangeCurrencyDialog, { type CurrencyChangeMode } from '../ChangeCurrencyDialog';
 import { computeQuoteProfit, type QuoteProfit } from '@breeze/shared';
@@ -171,6 +171,9 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
   // "completed"), the Detail tab grows a procurement view of the SKU-bearing
   // lines so the tech can order without re-deriving a PO from the pricing tables.
   const orderLines = useMemo(() => orderableLines(lines), [lines]);
+  // Product-like lines with no SKU/part number stay out of the order (#8232);
+  // they're named in a footer rather than dropped silently.
+  const excludedOrderLines = useMemo(() => unorderableProductLines(lines), [lines]);
   const quoteWon = quote.status === 'accepted' || quote.status === 'converted';
 
   const hasRecurring =
@@ -233,6 +236,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
           {quoteWon && orderLines.length > 0 && (
             <QuoteOrderBreakdown
               lines={orderLines}
+              excludedLines={excludedOrderLines}
               currency={currency}
               showCost={canSeeMargin && showMargin}
               quoteId={quote.id}
@@ -241,6 +245,13 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
               orders={detail.orders}
               onChanged={onChanged}
             />
+          )}
+          {/* Nothing made it into the order, but product lines exist: still say
+              why, or the "To be ordered" section just never appears. */}
+          {quoteWon && orderLines.length === 0 && excludedOrderLines.length > 0 && (
+            <div className="rounded-lg border bg-card shadow-xs">
+              <QuoteOrderExcludedNote lines={excludedOrderLines} />
+            </div>
           )}
         </div>
 

@@ -839,3 +839,39 @@ describe('diagnose_connectivity (topology M4-D3)', () => {
     expect(await computeEffectDigestOutcome('diagnose_connectivity', {}, makeFakeDb([]).database)).toEqual({ kind: 'unresolved', reason: 'missing_arg' });
   });
 });
+
+describe('operator_plan (Recipe Library E4)', () => {
+  const ARGS = { taskId: '00000000-0000-4000-8000-0000000000a1', planRevision: 1 };
+  const row = (ordinal: number, over: Record<string, unknown> = {}) => ({
+    ordinal,
+    toolName: 'm365_disable_user',
+    provider: 'm365',
+    targetId: null,
+    accountExternalId: `acct-${ordinal}`,
+    argumentDigest: String(ordinal + 1).repeat(64).slice(0, 64),
+    ...over,
+  });
+
+  it('pins a stable digest over the stored rows', async () => {
+    const a = await computeEffectDigestForRelease('operator_plan', ARGS, makeFakeDb([[row(0), row(1)]]).database);
+    const b = await computeEffectDigestForRelease('operator_plan', ARGS, makeFakeDb([[row(0), row(1)]]).database);
+    expect(a.digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.digest).toBe(b.digest);
+  });
+
+  it('a different row set pins a different digest', async () => {
+    const base = await digestFor('operator_plan', ARGS, makeFakeDb([[row(0), row(1)]]).database);
+    const changedDigest = await digestFor('operator_plan', ARGS, makeFakeDb([[row(0), row(1, { argumentDigest: 'f'.repeat(64) })]]).database);
+    const fewer = await digestFor('operator_plan', ARGS, makeFakeDb([[row(0)]]).database);
+    expect(new Set([base, changedDigest, fewer]).size).toBe(3);
+  });
+
+  it('no rows is unresolved (target_absent), and a malformed set never throws', async () => {
+    expect(await computeEffectDigestOutcome('operator_plan', ARGS, makeFakeDb([[]]).database))
+      .toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    expect(await computeEffectDigestOutcome('operator_plan', ARGS, makeFakeDb([[row(0, { argumentDigest: 'nothex' })]]).database))
+      .toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    expect(await computeEffectDigestOutcome('operator_plan', { taskId: 't' }, makeFakeDb([]).database))
+      .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+  });
+});

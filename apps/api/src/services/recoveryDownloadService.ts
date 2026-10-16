@@ -11,7 +11,8 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
 import { backupSnapshotFiles, backupSnapshotOrigins, backupSnapshots, recoveryTokens } from '../db/schema';
 import { backupSnapshotAttestations } from '../db/schema/backupSnapshotAttestations';
-import { isSupportedKeyLayout } from './backupKeyLayout';
+import { resolveSnapshotPhysicalKey, snapshotKeyRootOf } from './backupKeyLayout';
+import { loadOriginKeyRoots } from './backupOriginKeyRoots';
 import { boundIndexCondition, indexMatchesAttestation } from './backupRestoreIntegrity';
 import { classifyBackupObjectKey, hasMembershipCapability } from './backupObjectKey';
 import {
@@ -271,7 +272,12 @@ export async function getAuthenticatedRecoveryDownloadTarget(
   }
 
   const [lineage] = await db
-    .select({ orgId: backupSnapshots.orgId, deviceId: backupSnapshots.deviceId, keyLayout: backupSnapshots.keyLayout })
+    .select({
+      orgId: backupSnapshots.orgId,
+      deviceId: backupSnapshots.deviceId,
+      keyLayout: backupSnapshots.keyLayout,
+      keyPrefix: backupSnapshots.keyPrefix,
+    })
     .from(backupSnapshots)
     .where(and(
       eq(backupSnapshots.id, snapshotDbId),
@@ -281,9 +287,10 @@ export async function getAuthenticatedRecoveryDownloadTarget(
   if (!lineage || lineage.orgId !== tokenRow.orgId || lineage.deviceId !== tokenRow.deviceId) {
     return { unavailable: true, reason: 'Recovery snapshot lineage is unavailable.' } as const;
   }
-  // Object keys are derived from the snapshot's layout; one this server does
-  // not understand is refused rather than guessed.
-  if (!isSupportedKeyLayout(lineage.keyLayout)) {
+  // Object keys are derived from the snapshot's recorded key root (#7081);
+  // one this server does not understand is refused rather than guessed.
+  const keyRoot = snapshotKeyRootOf(lineage);
+  if (!keyRoot) {
     return { unavailable: true, reason: 'This backup was written in a storage format this server version cannot read.' } as const;
   }
 
@@ -371,7 +378,39 @@ export async function getAuthenticatedRecoveryDownloadTarget(
       secretAccessKey: getStringValue(providerConfig, 'secretKey') || getStringValue(providerConfig, 'secretAccessKey') || undefined,
       sessionToken: getStringValue(providerConfig, 'sessionToken') ?? undefined,
     });
-    const key = deriveRemoteStorageKey(normalizedRemotePath, snapshotMetadata, originStoragePrefix);
+    let key: string | null;
+    if (keyRoot.layout === 'legacy_flat') {
+      // Unchanged for every snapshot written before key roots were recorded.
+      key = deriveRemoteStorageKey(normalizedRemotePath, snapshotMetadata, originStoragePrefix);
+    } else {
+      // A recorded root is the only source of the physical key (I1):
+      // metadata.storagePrefix and origin_storage_prefix are never read. An
+      // external ref resolves through its origin's recorded root, which must
+      // be this snapshot's own (I4); anything else is refused.
+      const originRoots = scope.kind === 'external' && pinnedStorageIdentity !== null
+        ? await loadOriginKeyRoots({
+          orgId: tokenRow.orgId,
+          storageIdentity: pinnedStorageIdentity,
+          originSnapshotIds: [scope.originSnapshotId],
+        })
+        : new Map();
+      key = resolveSnapshotPhysicalKey({
+        ownRoot: keyRoot,
+        ownSnapshotId,
+        logicalKey: normalizedRemotePath,
+        originRoots,
+      });
+      if (key === null) {
+        console.warn(
+          `[getAuthenticatedRecoveryDownloadTarget] refused token ${tokenRow.id}: key outside the snapshot key root`,
+          { tokenId: tokenRow.id, snapshotDbId, key: normalizedRemotePath },
+        );
+        return {
+          unavailable: true,
+          reason: 'Requested path references an object this recovery is not authorized to read.',
+        } as const;
+      }
+    }
     const expiresInSeconds = Math.max(
       1,
       Math.min(300, Math.floor((downloadExpiry.getTime() - Date.now()) / 1000))
@@ -392,7 +431,8 @@ export async function getAuthenticatedRecoveryDownloadTarget(
     };
   }
 
-  if (resolved.providerType === 'local') {
+  // Local destinations always record the legacy root (#7081 I7).
+  if (resolved.providerType === 'local' && keyRoot.layout === 'legacy_flat') {
     const rootPath = getStringValue(providerConfig, 'path') || getStringValue(providerConfig, 'basePath');
     if (!rootPath) {
       return { unavailable: true, reason: 'Snapshot storage is misconfigured.' } as const;

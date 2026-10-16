@@ -13,6 +13,8 @@ import {
   withSystemDbAccessContext,
 } from '../../db';
 import { tickets, timeEntries } from '../../db/schema';
+import { hourBlockCoverageForOrg } from './hourBlockCoverage';
+import { allocateBlockCoverage, isHeldByBlock } from './hourBlockWindows';
 
 type UsageRow = {
   ticketNumber: string;
@@ -24,8 +26,12 @@ type UsageRow = {
     | 'not_billed'
     | 'billed'
     | 'no_charge'
-    | 'contract';
+    | 'contract'
+    | 'awaiting_approval';
   isApproved: boolean;
+  endedAt: Date | null;
+  /** Non-null only when a block close drew this entry (billing_status = 'contract'). */
+  contractLineId: string | null;
 };
 
 function amount(minutes: number) {
@@ -40,6 +46,8 @@ export async function supportUsageForOrg(args: {
   month: string;
   timezone: string;
   portalUserId: string;
+  /** Test seam / consistent clock for the block-hours reads; defaults to now. */
+  asOf?: Date;
 }): Promise<SupportUsageDto> {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(args.month)) {
     throw new Error('month must use YYYY-MM');
@@ -57,9 +65,14 @@ export async function supportUsageForOrg(args: {
   )`;
   const end = sql`${start} + interval '1 month'`;
 
-  const rows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() =>
-      db
+  const { coverage, rows } = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      // Block hours W04: null unless the org's Support hours flag is on. Called
+      // inside THIS context (it opens none of its own), so one request holds
+      // one pooled connection.
+      const coverage = await hourBlockCoverageForOrg(args.orgId, args.asOf);
+
+      const rows = (await db
         .select({
           ticketNumber: tickets.ticketNumber,
           title: sql<string | null>`
@@ -73,6 +86,8 @@ export async function supportUsageForOrg(args: {
           billableMinutes: timeEntries.billableMinutes,
           billingStatus: timeEntries.billingStatus,
           isApproved: timeEntries.isApproved,
+          endedAt: timeEntries.endedAt,
+          contractLineId: timeEntries.contractLineId,
         })
         .from(timeEntries)
         .innerJoin(
@@ -90,14 +105,23 @@ export async function supportUsageForOrg(args: {
           isNull(tickets.deletedAt),
           sql`${timeEntries.startedAt} AT TIME ZONE 'UTC' >= ${start}`,
           sql`${timeEntries.startedAt} AT TIME ZONE 'UTC' < ${end}`,
-        )) as Promise<UsageRow[]>,
-    ),
+        ))) as UsageRow[];
+
+      return { coverage, rows };
+    }),
   );
 
   let billed = 0;
   let toBeBilled = 0;
   let coveredByContract = 0;
   let pendingReview = 0;
+  const blockRows: Array<{
+    key: string;
+    row: UsageRow;
+    billedQuantity: number;
+    ticket: SupportUsageDto['tickets'][number];
+  }> = [];
+  let awaitingApproval = 0;
 
   const ticketsByNumber = new Map<
     string,
@@ -118,15 +142,34 @@ export async function supportUsageForOrg(args: {
       toBeBilledMinutes: 0,
       coveredByContractMinutes: 0,
       pendingReviewMinutes: 0,
+      ...(coverage ? { coveredByBlockMinutes: 0, overBlockMinutes: 0 } : {}),
+      awaitingApprovalMinutes: 0,
     };
 
     // Bucket precedence: an unapproved entry always lands in pendingReview,
     // regardless of its billingStatus — approval gates billed/contract/
     // toBeBilled classification, so those three are only considered once a
     // row is approved.
-    if (!row.isApproved) {
+    // #4617: held time waits on the CUSTOMER's consent, whatever its internal
+    // review state — shown as "awaiting your approval", never as billed or
+    // to be billed. Billed quantity, like toBeBilled: it is what they approve.
+    if (row.billingStatus === 'awaiting_approval') {
+      awaitingApproval += billedQuantity;
+      ticket.awaitingApprovalMinutes = (ticket.awaitingApprovalMinutes ?? 0) + billedQuantity;
+    } else if (!row.isApproved) {
       pendingReview += minutes;
       ticket.pendingReviewMinutes += minutes;
+    } else if (
+      coverage &&
+      ((row.billingStatus === 'contract' && row.contractLineId !== null) ||
+        (row.billingStatus === 'not_billed' && isHeldByBlock(row.endedAt, coverage.windows)))
+    ) {
+      // Block hours W04. Drawn at a close (contract + line id) or reserved for
+      // the open period (the same hold windows ad-hoc assembly uses). Split
+      // into covered vs over AFTER the loop, once every entry of a period is
+      // known. Reported in the BILLED quantity so the hours tie to the Support
+      // hours card, which draws COALESCE(billable_minutes, duration_minutes).
+      blockRows.push({ key: String(blockRows.length), row, billedQuantity, ticket });
     } else if (row.billingStatus === 'billed') {
       billed += billedQuantity;
       ticket.billedMinutes += billedQuantity;
@@ -141,6 +184,22 @@ export async function supportUsageForOrg(args: {
     ticketsByNumber.set(row.ticketNumber, ticket);
   }
 
+  let coveredByBlock = 0;
+  let overBlock = 0;
+  if (coverage) {
+    const split = allocateBlockCoverage(
+      blockRows.map((b) => ({ key: b.key, endedAt: b.row.endedAt, minutes: b.billedQuantity })),
+      coverage.periods,
+    );
+    for (const b of blockRows) {
+      const { covered, over } = split.get(b.key)!;
+      coveredByBlock += covered;
+      overBlock += over;
+      b.ticket.coveredByBlockMinutes = (b.ticket.coveredByBlockMinutes ?? 0) + covered;
+      b.ticket.overBlockMinutes = (b.ticket.overBlockMinutes ?? 0) + over;
+    }
+  }
+
   return {
     dataStatus: rows.length > 0 ? 'ok' : 'no_data',
     asOf: new Date().toISOString(),
@@ -151,6 +210,8 @@ export async function supportUsageForOrg(args: {
       toBeBilled: amount(toBeBilled),
       coveredByContract: amount(coveredByContract),
       pendingReview: amount(pendingReview),
+      ...(coverage ? { coveredByBlock: amount(coveredByBlock), overBlock: amount(overBlock) } : {}),
+      awaitingApproval: amount(awaitingApproval),
     },
     tickets: [...ticketsByNumber.values()],
   };

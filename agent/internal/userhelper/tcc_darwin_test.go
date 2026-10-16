@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ipc"
 )
 
 // maybeRequestScreenRecording must never raise the macOS consent dialog when we
@@ -130,3 +132,29 @@ func writeMarker(t *testing.T, path, body string) {
 }
 
 func timePtr(v time.Time) *time.Time { return &v }
+
+// #8058 addendum: only the desktop helper's loop raises the Screen Recording
+// consent dialog; `breeze-agent user-helper` must not, even when the
+// permission is missing and the rate-limit marker is absent.
+func TestRequestScreenRecordingAtLoopStart_OnlyDesktopHelper(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		want bool
+	}{
+		{ipc.HelperBinaryDesktopHelper, true},
+		{ipc.HelperBinaryUserHelper, false},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			requested := false
+			restore := stubScreenRecordingFns(t, false, func() bool { requested = true; return false })
+			defer restore()
+			markerPath := filepath.Join(t.TempDir(), "screen-recording-requested")
+
+			requestScreenRecordingAtLoopStart(tccLoopPolicyFor(tc.kind), markerPath, time.Now())
+
+			if requested != tc.want {
+				t.Fatalf("consent dialog requested = %v, want %v", requested, tc.want)
+			}
+		})
+	}
+}

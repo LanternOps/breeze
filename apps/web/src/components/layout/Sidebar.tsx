@@ -85,12 +85,41 @@ import BrandHeader from './BrandHeader';
 import { ENABLE_EDR_INTEGRATIONS } from '../../lib/featureFlags';
 import { useExtensionNavigation } from '../extensions/useExtensionNavigation';
 import '../../lib/i18n';
+import { URL_CHANGE_EVENT } from '../../lib/replaceUrl';
+import { ticketTypeFromHash, type TicketType } from '../tickets/ticketType';
 
 interface SidebarProps {
   currentPath?: string;
 }
 
 type SidebarMode = 'open' | 'hover' | 'collapsed';
+
+// ---------------------------------------------------------------------------
+// Hash tracking (#7900 W3): the Service Desk's typed entries share `/tickets`
+// and differ only by `#type=<type>`, so active state needs the live hash.
+// `history.replaceState` (what `replaceUrl` uses) fires neither hashchange nor
+// popstate, hence the explicit `breeze:urlchange` event. Starts '' so the first
+// client render matches SSR, then adopts `window.location.hash` on mount so a
+// deep link `/tickets#type=problem` highlights the right entry.
+// ---------------------------------------------------------------------------
+function useCurrentHash(): string {
+  const [hash, setHash] = useState('');
+  useEffect(() => {
+    const update = () => setHash(window.location.hash);
+    update();
+    window.addEventListener('hashchange', update);
+    window.addEventListener('popstate', update);
+    window.addEventListener(URL_CHANGE_EVENT, update);
+    document.addEventListener('astro:after-swap', update);
+    return () => {
+      window.removeEventListener('hashchange', update);
+      window.removeEventListener('popstate', update);
+      window.removeEventListener(URL_CHANGE_EVENT, update);
+      document.removeEventListener('astro:after-swap', update);
+    };
+  }, []);
+  return hash;
+}
 
 // ---------------------------------------------------------------------------
 // Path tracking (reactive across Astro View Transitions)
@@ -161,6 +190,11 @@ type NavItem = {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   badgeKind?: 'deletion-requests' | 'approvals';
+  // #7900 W3: a Service Desk entry that filters /tickets to one ticket type.
+  // Active only when the page hash parses to this type (see activeHref).
+  ticketType?: TicketType;
+  // Stable e2e/test hook for entries that share a pathname.
+  testId?: string;
   // Hidden unless the current user is a platform admin. Keeps cross-tenant
   // platform-operator nav (and its badge fetch) out of ordinary users' UI.
   platformAdminOnly?: boolean;
@@ -344,7 +378,13 @@ export const navSections: NavSection[] = [
     icon: Ticket,
     requiresModule: 'service_management',
     items: [
-      { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Tickets', labelKey: 'nav.tickets', href: '/tickets', icon: Ticket, testId: 'nav-tickets-all', requiredPermission: { resource: 'tickets', action: 'read' } },
+      // #7900 W3: one entry per ticket type, in ITIL order. Same page, filtered
+      // through the `type=` hash segment (see TicketsPage parseHash).
+      { name: 'Incidents', labelKey: 'nav.ticketsIncidents', href: '/tickets#type=incident', icon: Ticket, ticketType: 'incident', testId: 'nav-tickets-incident', requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Service Requests', labelKey: 'nav.ticketsServiceRequests', href: '/tickets#type=service_request', icon: Ticket, ticketType: 'service_request', testId: 'nav-tickets-service_request', requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Problems', labelKey: 'nav.ticketsProblems', href: '/tickets#type=problem', icon: Ticket, ticketType: 'problem', testId: 'nav-tickets-problem', requiredPermission: { resource: 'tickets', action: 'read' } },
+      { name: 'Changes', labelKey: 'nav.ticketsChanges', href: '/tickets#type=change', icon: Ticket, ticketType: 'change', testId: 'nav-tickets-change', requiredPermission: { resource: 'tickets', action: 'read' } },
       { name: 'Timesheets', labelKey: 'nav.timesheets', href: '/timesheet', icon: Clock, requiredPermission: { resource: 'time_entries', action: 'read' } },
     ],
   },
@@ -474,6 +514,7 @@ function saveExpandedSections(state: Record<string, boolean>) {
 // on the server, so the flag cannot cause a hydration mismatch.
 export const RECENT_DEVICES_EXPANDED_KEY = 'sidebar-recent-devices';
 const RECENT_DEVICES_HREF = '/devices';
+const TICKETS_PATH = '/tickets';
 
 function readRecentDevicesExpanded(): boolean {
   try {
@@ -602,6 +643,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     });
   }, []);
   const currentPath = useCurrentPath(initialPath);
+  const currentHash = useCurrentHash();
   const navScrollRef = useSidebarScrollPersist();
   const isPlatformAdmin = useAuthStore((s) => s.user?.isPlatformAdmin === true);
   const storedPermissions = useAuthStore((s) => s.user?.permissions);
@@ -766,17 +808,31 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const resolvedPath = pathAliases[currentPath] ?? currentPath;
   const activeHref = useMemo(() => {
     let best: string | null = null;
+    let bestLen = -1;
+    // Typed ticket entries share `/tickets` with plain Tickets: match on the
+    // parsed hash type (never the href string — the hash also carries the
+    // selection and sort), so exactly one of them is active.
+    const hashType = ticketTypeFromHash(currentHash);
     const candidates = extensionsSection ? [...allNavItems, ...extensionsSection.items] : allNavItems;
     for (const item of candidates) {
-      const matches = item.href === '/'
-        ? resolvedPath === '/'
-        : resolvedPath === item.href || resolvedPath.startsWith(item.href + '/');
-      if (matches && (!best || item.href.length > best.length)) {
+      const hrefPath = item.href.split('#')[0];
+      let matches: boolean;
+      if (item.ticketType) {
+        matches = resolvedPath === hrefPath && hashType === item.ticketType;
+      } else if (hrefPath === TICKETS_PATH) {
+        matches = resolvedPath === TICKETS_PATH ? hashType === null : resolvedPath.startsWith(TICKETS_PATH + '/');
+      } else if (hrefPath === '/') {
+        matches = resolvedPath === '/';
+      } else {
+        matches = resolvedPath === hrefPath || resolvedPath.startsWith(hrefPath + '/');
+      }
+      if (matches && hrefPath.length > bestLen) {
         best = item.href;
+        bestLen = hrefPath.length;
       }
     }
     return best;
-  }, [resolvedPath, extensionsSection]);
+  }, [resolvedPath, currentHash, extensionsSection]);
 
   // Auto-expand: the section containing the active page should be expanded.
   // Falls back to the extensions section (not covered by the static
@@ -883,9 +939,10 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const withRecents = item.href === RECENT_DEVICES_HREF && labels && recentDevices.length > 0;
     const anchor = (
       <a
-        data-testid={item.href === '/billing/autopay' ? 'autopay-nav' : undefined}
+        data-testid={item.testId ?? (item.href === '/billing/autopay' ? 'autopay-nav' : undefined)}
         key={withRecents ? undefined : item.name}
         href={item.href}
+        aria-current={isActive ? 'page' : undefined}
         title={narrow && !hovered ? label : undefined}
         onClick={forMobileOverlay ? () => closeMobileMenu() : undefined}
         className={cn(

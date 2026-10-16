@@ -39,6 +39,8 @@ vi.mock('./secretCrypto', () => ({
 vi.mock('./portalUrl', () => ({ portalBase: () => 'https://portal.example.test/portal' }));
 const { captureMock } = vi.hoisted(() => ({ captureMock: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: captureMock }));
+const { revokeLinksMock } = vi.hoisted(() => ({ revokeLinksMock: vi.fn(async () => 0) }));
+vi.mock('./autopay/linkTokens', () => ({ revokeBillingLinkTokens: revokeLinksMock }));
 
 import {
   getOrMintInvoiceLink, resetInvoiceLink, resolveInvoiceByLinkToken,
@@ -47,6 +49,7 @@ import {
 import { columnAad, encryptedColumnRegistry } from './encryptedColumnRegistry';
 
 const INV_ID = '11111111-1111-1111-1111-111111111111';
+const ORG_ID = '22222222-2222-4222-8222-222222222222';
 const CT_SPEC = encryptedColumnRegistry.find((s) => s.table === 'invoices' && s.column === 'public_link_token_ct')!;
 const aad = columnAad(CT_SPEC, INV_ID);
 
@@ -146,11 +149,17 @@ describe('getOrMintInvoiceLink', () => {
 
 describe('resetInvoiceLink', () => {
   it('unconditionally replaces the link', async () => {
-    updateReturning.push([{ id: INV_ID }]);
+    updateReturning.push([{ id: INV_ID, orgId: ORG_ID }]);
     const link = await resetInvoiceLink({ id: INV_ID, dueDate: null });
     expect(link.origin).toBe('reset');
     const written = updateSetMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(written.publicLinkTokenHash).toBe(sha(link.token));
+  });
+
+  it('also revokes every autopay link tied to the invoice', async () => {
+    updateReturning.push([{ id: INV_ID, orgId: ORG_ID }]);
+    await resetInvoiceLink({ id: INV_ID, dueDate: null });
+    expect(revokeLinksMock).toHaveBeenCalledExactlyOnceWith(expect.anything(), { orgId: ORG_ID, invoiceId: INV_ID });
   });
 });
 

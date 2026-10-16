@@ -58,7 +58,7 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
       kind: 'select',
       options: ['security', 'hardware', 'application', 'system'],
     },
-    { key: 'level', labelKey: 'monitoring:fields.level', kind: 'select', options: ['warning', 'error', 'critical'] },
+    { key: 'level', labelKey: 'monitoring:fields.level', kind: 'select', options: ['info', 'warning', 'error', 'critical'] },
     { key: 'sourcePattern', labelKey: 'monitoring:fields.sourcePattern', kind: 'text', optional: true },
     { key: 'messagePattern', labelKey: 'monitoring:fields.messagePattern', kind: 'text', optional: true },
     { key: 'countThreshold', labelKey: 'monitoring:fields.countThreshold', kind: 'number', min: 1 },
@@ -293,6 +293,15 @@ export const MONITOR_KIND_FIELDS: Record<MonitorKind, readonly KindField[]> = {
       max: 10,
     },
   ],
+  container_image_currency: [
+    {
+      key: 'minDaysBehind',
+      labelKey: 'monitoring:monitors.fields.container_image_currency.minDaysBehind',
+      kind: 'number',
+      min: 0,
+      max: 365,
+    },
+  ],
 };
 
 /**
@@ -379,5 +388,7 @@ export function defaultConditionFor(kind: MonitorKind): Record<string, unknown> 
         findings: ['sync_stale', 'sync_disabled'],
         consecutiveSnapshots: 2,
       };
+    case 'container_image_currency':
+      return { minDaysBehind: 7 };
   }
 }

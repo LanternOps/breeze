@@ -1,11 +1,15 @@
 import { z } from 'zod';
 import { optionalQueryBoolean } from './queryParams';
 
-export const billingStatusSchema = z.enum(['not_billed', 'billed', 'no_charge', 'contract']);
+// 'awaiting_approval' (#4617): held from billing until the customer approves.
+// Readable (list filter, responses) but never client-writable: only the
+// server-side approval gate sets or clears it.
+export const billingStatusSchema = z.enum(['not_billed', 'billed', 'no_charge', 'contract', 'awaiting_approval']);
 export type BillingStatus = z.infer<typeof billingStatusSchema>;
 // `billed` is an invoice lifecycle fact, not a routine time/part disposition.
 // Invoice issue writes it internally after locking the invoice and every source;
 // public create/update inputs retain the technician-owned dispositions only.
+// `awaiting_approval` is excluded for the same reason (the approval gate owns it).
 const routineBillingStatusSchema = z.enum(['not_billed', 'no_charge', 'contract']);
 
 const CLOCK_SKEW_MS = 5 * 60_000;
@@ -55,9 +59,22 @@ function requiredDate(fieldName: string) {
 // partner currency when a standalone entry first carries a rate) and never
 // restamps it (multi-currency spec §7). Editing hourlyRate/unitPrice does not
 // change the snapshot; billed rows reject monetary edits (ENTRY_BILLED / PART_BILLED).
+// #4186: the only provenance values a client may assert. 'timer' is the /start
+// default; 'location' marks an arrival-prompt start (and its offline replay on
+// POST /). Every other source stays server-stamped.
+export const clientTimeEntrySourceSchema = z.enum(['timer', 'location']);
+
+const siteRequiresOrgOrTicket = {
+  check: (v: { siteId?: string; orgId?: string; ticketId?: string }) => !v.siteId || !!v.orgId || !!v.ticketId,
+  params: { message: 'siteId requires orgId or ticketId', path: ['siteId'] }
+};
+
 export const createTimeEntrySchema = z.object({
   workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
+  source: z.literal('location').optional(),
   startedAt: requiredDate('startedAt').refine(notFarFuture, { message: 'startedAt cannot be in the future' }),
   endedAt: requiredDate('endedAt'),
   description: z.string().max(10_000).optional(),
@@ -68,7 +85,7 @@ export const createTimeEntrySchema = z.object({
 }).refine((v) => v.endedAt.getTime() > v.startedAt.getTime(), {
   message: 'endedAt must be after startedAt',
   path: ['endedAt']
-});
+}).refine(siteRequiresOrgOrTicket.check, siteRequiresOrgOrTicket.params);
 
 export const updateTimeEntrySchema = z.object({
   resetBilling: z.boolean().optional(),
@@ -86,8 +103,13 @@ export const updateTimeEntrySchema = z.object({
 export const startTimerSchema = z.object({
   workTypeId: z.string().uuid().nullable().optional(),
   ticketId: z.string().guid().optional(),
-  description: z.string().max(10_000).optional()
-});
+  orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
+  source: clientTimeEntrySourceSchema.optional(),
+  description: z.string().max(10_000).optional(),
+  // #4617: "log as non-billable" when a hard approval policy refuses a billable start.
+  isBillable: z.boolean().optional()
+}).refine(siteRequiresOrgOrTicket.check, siteRequiresOrgOrTicket.params);
 
 export const stopTimerSchema = z.object({
   description: z.string().max(10_000).optional(),
@@ -98,6 +120,7 @@ export const listTimeEntriesQuerySchema = z.object({
   userId: z.string().guid().optional(),
   ticketId: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
+  siteId: z.string().guid().optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   running: optionalQueryBoolean,

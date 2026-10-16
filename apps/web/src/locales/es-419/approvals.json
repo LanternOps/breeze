@@ -147,5 +147,18 @@
       "private_keys": "Claves privadas (SSH, GnuPG, TLS)",
       "session_tokens": "Tokens de sesión y credenciales de nube guardados"
     }
+  },
+  "operatorPlan": {
+    "title": "Plan para la tarea del operador de IA",
+    "summary_one": "{{count}} efecto, revisión {{revision}} del plan",
+    "summary_other": "{{count}} efectos, revisión {{revision}} del plan",
+    "groupBreeze": "Dispositivos de Breeze",
+    "groupM365": "Microsoft 365",
+    "groupGoogle": "Google Workspace",
+    "effectOrdinal": "Paso {{ordinal}}",
+    "targetLine": "{{targetLabel}} ({{principalLabel}})",
+    "orderNote": "Los efectos se ejecutan en este orden. El inicio de sesión se deshabilita al final, así que detenerse antes nunca deja el correo sin enrutar.",
+    "empty": "Este plan no contiene efectos.",
+    "invalid": "No se pudo mostrar este plan completo. No lo apruebes."
   }
 }

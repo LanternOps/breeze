@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import TopologyExplorer from './TopologyExplorer';
 import { topologyGraphFixture, topologySettingsFixture, SITE, NODE } from './topologyFixtures';
+import { groupedGraphFixture } from './groupedGraphFixture';
 import { fetchWithAuth } from '../../stores/auth';
 import { packTopologyLayout } from './layoutAdapter';
 import type { LayoutPosition, LayoutRequest } from './layoutTypes';
@@ -17,10 +18,20 @@ beforeEach(() => {
     return new Response(JSON.stringify(topologyGraphFixture()));
   });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); window.location.hash = ''; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (document as { fonts?: unknown }).fonts; window.location.hash = ''; });
+/**
+ * Arrange is a no-op until the first measurement lands (`boxes` is set after `document.fonts.ready`), so a click
+ * before that is silently dropped and the draft never becomes dirty. `data-layout-applied` is the component's own
+ * signal that a layout reached the canvas (#8360); gate every user arrangement on it.
+ */
+const layoutApplied = () => waitFor(() => expect(screen.getByTestId('topology-explorer')).toHaveAttribute('data-layout-applied', 'true'));
+/** Delay font readiness so measurement lands after the data does: the slow-CI ordering, made deterministic (#8360). */
+const slowFonts = (ms = 400) => Object.defineProperty(document, 'fonts', { configurable: true, value: { ready: new Promise<void>((resolve) => setTimeout(resolve, ms)) } });
 it('renders a passive snapshot, and local arrangement never persists', async () => {
+  slowFonts();
   render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
   expect(await screen.findByTestId('topology-health-internet')).toHaveTextContent('Not measured');
+  await layoutApplied();
   fireEvent.click(screen.getByTestId('topology-arrange'));
   await screen.findByTestId('topology-unsaved-layout');
   expect(vi.mocked(fetchWithAuth).mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
@@ -53,6 +64,7 @@ it('provides keyboard-equivalent list inspection and preserves conflict drafts',
   fireEvent.click(screen.getByTestId(`topology-node-${NODE}`));
   expect(await screen.findByTestId('topology-inspector')).toBeVisible();
   expect(screen.getByRole('heading', { name: 'Reported gateway' })).toHaveFocus();
+  await layoutApplied();
   fireEvent.click(screen.getByTestId('topology-arrange'));
   await screen.findByTestId('topology-unsaved-layout');
   fireEvent.click(screen.getByTestId('topology-layout-save'));
@@ -63,7 +75,7 @@ it('provides keyboard-equivalent list inspection and preserves conflict drafts',
   expect(screen.getByTestId('topology-list-toggle')).toHaveFocus();
 });
 it('read-only users can arrange but cannot save shared coordinates', async () => {
-  vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: false, canDiagnose: false, canConfigureMonitoring: false } })));
+  vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: false, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false } })));
   render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
   await screen.findByTestId('topology-arrange');
   expect(screen.queryByTestId('topology-layout-save')).not.toBeInTheDocument();
@@ -143,7 +155,7 @@ it('lists connections hidden from the view and restores one through runAction', 
 it('takes diagnose and monitoring authority from the site settings, not the graph projection (M3 Task 11)', async () => {
   // The graph read reports canDiagnose/canConfigureMonitoring false by design; the
   // per-site settings read carries the real execute/configure + MFA answer.
-  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false } })));
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify({ ...topologyGraphFixture(), permissions: { canEdit: true, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false } })));
   const settings = topologySettingsFixture();
   render(<TopologyExplorer siteId={SITE} settings={settings} />);
   await screen.findByTestId('topology-health-internet');
@@ -277,4 +289,37 @@ it('collapses an expansion back to the base read (#7818)', async () => {
   await waitFor(() => expect(container.querySelector(`[data-node-id="${added.id}"]`)).toBeNull());
   expect(screen.queryByTestId('topology-collapse')).not.toBeInTheDocument();
   expect(screen.getByTestId('topology-frontier')).toBeVisible();
+});
+
+it('moves undeclared networks to the roster, offers the toggle, and keeps its state in the hash', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(groupedGraphFixture([
+    { prefix: '10.1.2.0/24', declaration: 'declared', members: 3 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]))));
+  render(<TopologyExplorer siteId={SITE} siteName="Main Office" settings={topologySettingsFixture()} />);
+  expect(await screen.findByTestId('topology-site-intro')).toHaveTextContent('Devices assigned to Main Office, grouped by the network each one reports');
+  expect(screen.queryByTestId('topology-declare-hint')).toBeNull();
+  const roster = screen.getByTestId('topology-site-roster');
+  expect(roster).toHaveTextContent("Devices not on this site's networks (2)");
+  const toggle = screen.getByTestId('topology-show-other-networks');
+  expect(toggle).not.toBeChecked();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(screen.getByTestId('topology-show-other-networks')).toBeChecked());
+  expect(window.location.hash).toContain('/others/1');
+  expect(screen.queryByTestId('topology-site-roster')).toBeNull();
+});
+
+it('hints at declaring networks, and offers no toggle, when the site declares none', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(groupedGraphFixture([
+    { prefix: '10.1.2.0/24', declaration: 'undeclared', members: 3 }, { prefix: '10.1.5.0/24', declaration: 'undeclared', members: 2 }]))));
+  render(<TopologyExplorer siteId={SITE} siteName="Main Office" settings={topologySettingsFixture()} />);
+  const hint = await screen.findByTestId('topology-declare-hint');
+  expect(hint).toHaveTextContent('No networks are declared for Main Office.');
+  expect(hint.querySelector('a')).toHaveAttribute('href', '/discovery#profiles');
+  expect(screen.queryByTestId('topology-show-other-networks')).toBeNull();
+  expect(screen.queryByTestId('topology-site-roster')).toBeNull();
+});
+
+it('falls back to "this site" when no site name is known', async () => {
+  vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(groupedGraphFixture([{ prefix: '10.1.2.0/24', declaration: 'undeclared', members: 3 }]))));
+  render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  expect(await screen.findByTestId('topology-declare-hint')).toHaveTextContent('No networks are declared for this site.');
 });

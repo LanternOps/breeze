@@ -6,6 +6,8 @@ import {
   FileSearch,
   HardDrive,
   Clock,
+  Container,
+  History,
   Layers,
   LifeBuoy,
   PackageCheck,
@@ -139,6 +141,19 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
     },
     Icon: Clock,
   },
+  workload_inventory: {
+    get label() {
+      return i18n.t("devices:workloads.policy.title");
+    },
+    Icon: Container,
+  },
+  system_protection: {
+    get label() {
+      return i18n.t("policies:configurationPolicies.featureTabs.systemProtectionTab.title");
+    },
+    Icon: History,
+  },
+  security_agents: { label: "Security Agents", Icon: ShieldCheck },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the
@@ -194,11 +209,13 @@ function summarizeSettings(
 // shown, but the approval evaluator never consults them — with an update ring
 // linked the ring decides, and without one only manual approvals apply. Showing
 // "Auto approve: no" read as the effective setting, so the patch card drops
-// them and states where approval actually comes from instead.
+// them and states where approval actually comes from instead. #8187: the same
+// holds for the legacy per-app `apps` list, which the linked ring now owns.
 const PATCH_UNUSED_APPROVAL_KEYS = new Set([
   "autoApprove",
   "autoApproveSeverities",
   "autoApproveDeferralDays",
+  "apps",
 ]);
 
 function summarizeFeatureSettings(

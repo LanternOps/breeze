@@ -25,6 +25,7 @@ export const PUBLIC_DEVICE_FIELDS = [
   'hostname', 'displayName', 'osType', 'deviceRole', 'deviceRoleSource',
   'deviceFunction', 'deviceFunctionSource',
   'isVirtual', 'virtualizationPlatform', 'osVersion', 'osBuild', 'architecture',
+  'hostsWorkloads', 'workloadRuntimes',
   'agentVersion', 'helperLifecycleMode', 'status', 'isEphemeral',
   'maintenanceStartedAt', 'maintenanceUntil', 'maintenanceReason', 'maintenanceStartedBy',
   'lastSeenAt', 'lastLogAt', 'enrolledAt', 'enrolledBy', 'linkGroupId', 'linkGroupRole',

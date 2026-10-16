@@ -164,6 +164,35 @@ type Config struct {
 	RequestTimeout    time.Duration
 	CommandDelay      time.Duration
 	Commander         CommanderConfig
+
+	// Storm scenarios (W06). Storm nil = a plain run: no timeline, pool or
+	// storm sections in the report.
+	Storm          *Scenario
+	StormPath      string        // for the report
+	StormPreWindow time.Duration // baseline window before each event (60 s; tests shorten it)
+	Timeline       bool          // per-step timeline without a storm
+	TimelineStep   time.Duration
+	// Pool sampler: scrape /metrics/scrape when ScrapeToken is set
+	// (METRICS_SCRAPE_TOKEN, never a flag). ScrapeURL overrides ServerURL+/metrics/scrape.
+	ScrapeURL      string
+	ScrapeToken    string
+	ScrapeInterval time.Duration
+	// Gates are opt-in pass/fail thresholds; zero = not evaluated. The
+	// consuming waves (W04/W08/W09) own the values: there are no defaults.
+	Gates Gates
+	// LegacyRetryFraction of agents ignore Retry-After (agents older than v0.64.3).
+	LegacyRetryFraction float64
+
+	executor Executor // tests only; nil = osExecutor
+}
+
+// Gates are the optional storm pass/fail thresholds. A zero field is off.
+type Gates struct {
+	HeartbeatP95 time.Duration // max of the storm and recovery phase p95
+	PoolRecovery time.Duration // pool back to max (effective == permits, not wedged) after the end
+	MaxGap       time.Duration // longest time one agent went without a successful heartbeat
+	PoolMinRatio float64       // minimum effective/permits over the event
+	LostPct      float64       // logical requests lost after retries, percent
 }
 
 // DefaultConfig is the smoke-test shape: 20 agents for 3 minutes.
@@ -186,6 +215,9 @@ func DefaultConfig() Config {
 		RequestTimeout:    30 * time.Second, // heartbeat.go newHeartbeatHTTPClient
 		CommandDelay:      250 * time.Millisecond,
 		Commander:         CommanderConfig{CommandType: "refresh_inventory"},
+		StormPreWindow:    preWindow,
+		TimelineStep:      time.Second,
+		ScrapeInterval:    5 * time.Second,
 	}
 }
 
@@ -243,7 +275,34 @@ func (c Config) Validate() error {
 	if c.RampPerSecond > 0 && c.Duration > 0 {
 		if open, closeAt := c.SteadyWindow(); open >= closeAt {
 			errs = append(errs, fmt.Errorf("--duration %s leaves no steady window: the ramp plus --warmup takes %s", closeAt, open))
+		} else if c.Storm != nil {
+			if err := c.Storm.FitsWindow(closeAt - open); err != nil {
+				errs = append(errs, fmt.Errorf("--storm does not fit this run (raise --duration): %w", err))
+			}
 		}
+	}
+	if (c.Storm != nil || c.Timeline) && c.TimelineStep <= 0 {
+		errs = append(errs, errors.New("the timeline step must be positive"))
+	}
+	if c.Storm != nil && c.StormPreWindow <= 0 {
+		errs = append(errs, errors.New("the storm pre window must be positive"))
+	}
+	if c.LegacyRetryFraction < 0 || c.LegacyRetryFraction > 1 {
+		errs = append(errs, fmt.Errorf("--legacy-retry-fraction must be in [0,1], got %v", c.LegacyRetryFraction))
+	}
+	if c.ScrapeToken != "" {
+		if c.ScrapeInterval < time.Second {
+			errs = append(errs, fmt.Errorf("--scrape-interval must be at least 1s, got %s", c.ScrapeInterval))
+		}
+		if c.ScrapeURL != "" {
+			if u, err := url.Parse(c.ScrapeURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				errs = append(errs, fmt.Errorf("--scrape-url must be an http(s) URL, got %q", c.ScrapeURL))
+			}
+		}
+	}
+	g := c.Gates
+	if g.HeartbeatP95 < 0 || g.PoolRecovery < 0 || g.MaxGap < 0 || g.PoolMinRatio < 0 || g.PoolMinRatio > 1 || g.LostPct < 0 || g.LostPct > 100 {
+		errs = append(errs, errors.New("gate thresholds cannot be negative; --gate-pool-min-ratio is in [0,1] and --gate-lost-pct in [0,100]"))
 	}
 	return errors.Join(errs...)
 }

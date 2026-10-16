@@ -13,6 +13,7 @@
 import { isIP } from 'node:net';
 import { z } from 'zod';
 import { maskOidShapedModel, nicVendorFromMac } from './assetIdentity';
+import { readPlacement, resolvePlacementAuthority } from './assetPlacement';
 import { db } from '../db';
 import {
   devices,
@@ -81,6 +82,14 @@ function normalizeIpLiteral(value: string): string | null {
   if (parsed === 0) return null;
   return parsed === 6 ? withoutZone.toLowerCase() : withoutZone;
 }
+
+// network_discovery scanType -> the agent's scan methods. `full` is the
+// agent's own default set (agent/internal/discovery/scanner.go normalizeConfig).
+const DISCOVERY_SCAN_METHODS: Record<string, string[]> = {
+  ping: ['ping'],
+  arp: ['arp'],
+  full: ['arp', 'ping', 'port_scan', 'snmp'],
+};
 
 async function verifyDeviceAccess(
   deviceId: string,
@@ -245,7 +254,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: [],
     definition: {
       name: 'get_network_asset',
-      description: 'Get a discovered network asset by UUID with its model, IP, MAC, linked device and last-seen time.',
+      description: 'Get a discovered network asset by UUID with its model, IP, MAC, linked device, last-seen time and physical placement (room, rack, rack unit).',
       input_schema: {
         type: 'object', properties: { assetId: { type: 'string', description: 'Discovered asset UUID' } }, required: ['assetId'],
       },
@@ -265,7 +274,16 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         || (auth.scope === 'organization' && row.orgId !== auth.orgId)
         || (auth.scope === 'partner' && !(auth.accessibleOrgIds ?? []).includes(row.orgId))
         || deviceSiteDenied(auth, row.siteId, row.linkedDeviceId)) return jsonError('Asset not found');
-      return JSON.stringify({ asset: { ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) } });
+      // #8134: a linked asset's placement is its managed device's (the sole authority for that box).
+      const { authority, linked } = await resolvePlacementAuthority({ kind: 'discovered', id: row.id, orgId: row.orgId, siteId: row.siteId });
+      // Same rule as GET /discovery/assets/:id/placement: a linked device's
+      // placement is withheld when that device's site is outside the caller's.
+      const placementDenied = linked && deviceSiteDenied(auth, authority.siteId, authority.id);
+      return JSON.stringify({
+        asset: { ...row, model: maskOidShapedModel(row.model), nicVendor: nicVendorFromMac(row.macAddress) },
+        placement: placementDenied ? null : await readPlacement(authority.kind, authority.id),
+        placementAuthority: { kind: authority.kind, id: authority.id, linked },
+      });
     },
   });
 
@@ -935,7 +953,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           subnet: { type: 'string', description: 'CIDR subnet to scan (e.g., "192.168.1.0/24")' },
           scanType: { type: 'string', enum: ['ping', 'arp', 'full'], description: 'Type of scan (default: ping)' }
         },
-        required: ['deviceId']
+        required: ['deviceId', 'subnet']
       }
     },
     handler: async (input, auth) => {
@@ -944,9 +962,15 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const access = await inToolDbPhase(auth, () => verifyDeviceAccess(deviceId, auth, true));
       if ('error' in access) return JSON.stringify({ error: access.error });
 
+      // The agent's handleNetworkDiscovery reads `subnets` and `methods`
+      // (agent/internal/heartbeat/handlers_network.go), the same shape the
+      // discovery-profile worker sends. A singular `subnet` / `scanType` left
+      // Subnets empty and every scan failed with "no valid subnets provided"
+      // (#8799).
+      const scanType = (input.scanType as string | undefined) ?? 'ping';
       const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {
-        subnet: input.subnet,
-        scanType: input.scanType ?? 'ping'
+        subnets: [input.subnet as string],
+        methods: DISCOVERY_SCAN_METHODS[scanType] ?? DISCOVERY_SCAN_METHODS.ping,
       }, { userId: auth.user.id, timeoutMs: 120000 });
 
       return JSON.stringify(result);

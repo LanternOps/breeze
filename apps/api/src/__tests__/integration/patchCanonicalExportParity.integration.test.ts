@@ -558,6 +558,53 @@ runDb('a partner-wide patch policy round-trips the reboot deferral settings', as
   });
 });
 
+// #8030. Same join, three nullable text columns: set text exports verbatim, an
+// unset column exports as null, and neither trips the exact-key check that
+// fails the whole policy closed.
+runDb('a partner-wide patch policy round-trips the restart-prompt text', async () => {
+  const db = getTestDb();
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const [policy] = await db.insert(configurationPolicies).values({
+    orgId: null,
+    partnerId: partner.id,
+    name: 'Partner-wide patch policy with prompt text',
+    status: 'active',
+  }).returning();
+  if (!policy) throw new Error('partner-wide policy insert failed');
+  const [link] = await db.insert(configPolicyFeatureLinks).values({
+    configPolicyId: policy.id,
+    featureType: 'patch',
+    inlineSettings: {},
+  }).returning();
+  if (!link) throw new Error('partner-wide patch link insert failed');
+  await db.insert(configPolicyAssignments).values({
+    configPolicyId: policy.id,
+    level: 'organization',
+    targetId: org.id,
+  });
+  await db.execute(sql`
+    INSERT INTO public.config_policy_patch_settings
+      (feature_link_id, reboot_prompt_title, reboot_prompt_body)
+    VALUES (${link.id}::uuid, 'Neustart geplant', 'Neustart in {{countdown}}.')
+  `);
+
+  const response = await configurationExportApp(partner.id, org.id).request('/configuration-policies');
+  expect(response.status, await response.clone().text()).toBe(200);
+  const body = await response.json() as {
+    data: Array<{ features: Array<{ type: string; settings: Record<string, unknown> }> }>;
+    blocked?: unknown[];
+  };
+  expect(body.blocked ?? []).toEqual([]);
+  expect(body.data).toHaveLength(1);
+  const patch = body.data[0]!.features.find((feature) => feature.type === 'patch')?.settings;
+  expect(patch).toMatchObject({
+    rebootPromptTitle: 'Neustart geplant',
+    rebootPromptBody: 'Neustart in {{countdown}}.',
+    rebootPromptButton: null,
+  });
+});
+
 function configurationExportApp(partnerId: string, orgId: string): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {

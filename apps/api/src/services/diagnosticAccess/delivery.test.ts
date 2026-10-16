@@ -96,6 +96,18 @@ describe('prepareDiagnosticDelivery', () => {
     expect(verify(null, canonicalDiagnosticAuthorizationBytes(unsigned), signingKey.current!.publicKey, Buffer.from(signature, 'base64'))).toBe(true);
   });
 
+  it('never names a sensitive class, even for a grant row that recorded one', async () => {
+    loadGrantMock.mockResolvedValue(activeGrant({ sensitiveClasses: ['browser_secrets', 'private_keys'] }));
+    const out = await prepareDiagnosticDelivery('read', payload(), ctx);
+    expect((out.diagnosticAuthorization as DiagnosticAuthorizationV1).sensitiveClasses).toEqual([]);
+  });
+
+  it('refuses to deliver a read of credential material', async () => {
+    await expect(
+      prepareDiagnosticDelivery('read', { ...payload(), path: `${LOGS}\\server.pem` }, ctx),
+    ).rejects.toThrow(/credential_material/);
+  });
+
   it('never outlives the grant', async () => {
     const grantExpiry = new Date(Date.now() + 90_000);
     loadGrantMock.mockResolvedValue(activeGrant({ expiresAt: grantExpiry }));

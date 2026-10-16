@@ -850,7 +850,7 @@ In `<InstallExecuteSequence>`, immediately after the existing `EnrollAgent` line
 
 - [ ] **Step 4: Validate the WiX source builds (CI / Windows VM)**
 
-This step requires a Windows + WiX v4 environment (the Windows test VM, Tailscale `100.101.150.55`, or CI). The plan's local checkpoint is a structural lint; the authoritative build happens in CI (Task 7 runs the same `build-msi.ps1`).
+This step requires a Windows + WiX v4 environment (the Windows test VM, Tailscale `<lab-windows-test-vm-ip>`, or CI). The plan's local checkpoint is a structural lint; the authoritative build happens in CI (Task 7 runs the same `build-msi.ps1`).
 
 Local check (non-Windows): confirm the XML is well-formed and the new IDs are referenced consistently. Use `xmllint` (no external-entity resolution) rather than a Python stdlib parser.
 
@@ -935,7 +935,7 @@ Expected: no drift.
 
 - [ ] **Step 4: Manual install matrix on the Windows test VM**
 
-On the Windows test VM (Tailscale `100.101.150.55`, see the `windows_test_vm` memory), build a signed MSI via CI (or the VM), then verify each row enrolls/behaves as expected. Record PASS/FAIL per row:
+On the Windows test VM (Tailscale `<lab-windows-test-vm-ip>`, see the `windows_test_vm` memory), build a signed MSI via CI (or the VM), then verify each row enrolls/behaves as expected. Record PASS/FAIL per row:
 
 | Scenario | Command / action | Expected |
 |---|---|---|

@@ -1,0 +1,23 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import ApprovalsList from '../../components/portal/ApprovalsList';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+
+const response = await portalApi.getApprovals(buildServerApiConfig(Astro.request));
+
+if (response.statusCode === 401) {
+  // Dead session: clear the stale cookie and come back here after sign-in.
+  return redirectToLoginAfter401(Astro);
+}
+
+// Approvals ride the tickets flag: PORTAL_TICKETS_DISABLED bounces to the
+// ungated home instead of rendering a dead page.
+if (isPortalPageDisabled(response)) return redirectToPortalHomeAfterDisabled(Astro);
+---
+
+<PortalLayout title="Approvals">
+  <ApprovalsList client:load approvals={response.data?.data ?? []} error={response.error} />
+</PortalLayout>

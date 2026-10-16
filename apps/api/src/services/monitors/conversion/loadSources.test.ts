@@ -4,17 +4,17 @@ import type { SQL } from 'drizzle-orm';
 
 const { dbMock, queries, reset } = vi.hoisted(() => {
   let queue: unknown[][] = [];
-  const queries: Array<{ predicates: unknown[] }> = [];
+  const queries: Array<{ predicates: unknown[]; orderBys: unknown[][] }> = [];
   const dbMock = {
     select: vi.fn(() => {
       const result = queue.shift() ?? [];
-      const query = { predicates: [] as unknown[] };
+      const query = { predicates: [] as unknown[], orderBys: [] as unknown[][] };
       queries.push(query);
       const chain: any = {
         from: vi.fn(() => chain), innerJoin: vi.fn((_table, predicate) => { query.predicates.push(predicate); return chain; }),
         leftJoin: vi.fn((_table, predicate) => { query.predicates.push(predicate); return chain; }),
         where: vi.fn((predicate) => { query.predicates.push(predicate); return chain; }),
-        orderBy: vi.fn(() => chain), groupBy: vi.fn(() => chain), limit: vi.fn(() => chain),
+        orderBy: vi.fn((...cols: unknown[]) => { query.orderBys.push(cols); return chain; }), groupBy: vi.fn(() => chain), limit: vi.fn(() => chain),
         then: (resolve: any, reject: any) => Promise.resolve(result).then(resolve, reject),
       };
       return chain;
@@ -28,6 +28,8 @@ vi.mock('../../../db', () => ({
   withSystemDbAccessContext: vi.fn(() => { throw new Error('conversion must not elevate scope'); }),
 }));
 import { countPendingConversions, loadPolicySources, OPEN_ALERT_STATUSES } from './loadSources';
+import { automations } from '../../../db/schema/automations';
+import { configPolicyAlertRules, configPolicyAutomations, configPolicyFeatureLinks, configPolicyMonitoringSettings, configPolicyMonitoringWatches } from '../../../db/schema/configurationPolicies';
 
 const dialect = new PgDialect();
 function predicates(index: number) {
@@ -58,6 +60,22 @@ describe('loadPolicySources', () => {
     expect(predicates(6)[0]!.params).toContain('o1');
     expect(predicates(7)[0]!.params).toEqual(['r1', ...OPEN_ALERT_STATUSES]);
     expect(predicates(8).map((p) => p.sql).join(' ')).toContain('"retired_at" is null');
+  });
+  // #6888 item 3: the preview hash is built from these lists in load order, so
+  // every query must have a total order or equal sort_order rows can swap
+  // between the preview and the confirm and surface as a spurious preview_stale.
+  it('orders every source query totally (sort_order ties broken by id)', async () => {
+    reset([[policy], [
+      { id: 'lr', featureType: 'alert_rule' }, { id: 'lw', featureType: 'monitoring' }, { id: 'la', featureType: 'automation' },
+    ], [{ id: 'r1' }], [{ id: 'settings1' }], [], [], [], [{ n: 0 }]]);
+    await loadPolicySources('policy1');
+    const orderOf = (i: number) => queries[i]!.orderBys.flat();
+    expect(orderOf(1)).toEqual([configPolicyFeatureLinks.id]);
+    expect(orderOf(2)).toEqual([configPolicyAlertRules.sortOrder, configPolicyAlertRules.id]);
+    expect(orderOf(3)).toEqual([configPolicyMonitoringSettings.id]);
+    expect(orderOf(4)).toEqual([configPolicyMonitoringWatches.sortOrder, configPolicyMonitoringWatches.id]);
+    expect(orderOf(5)).toEqual([configPolicyAutomations.id]);
+    expect(orderOf(6)).toEqual([automations.id]);
   });
   it.each(['monitoring', 'monitors'])('loads normalized watches from a %s settings link', async (featureType) => {
     reset([[{ ...policy, parentPolicyId: null }], [{ id: 'watch-link', featureType }],

@@ -7,6 +7,7 @@ import type { ScriptExecution, ScriptCustomFieldWriteResult } from './ExecutionH
 import { computeDurationSeconds, formatDuration } from './ExecutionHistory';
 import { executionDetailStatusConfig as statusConfig, resolveExecutionStatusLabel } from './executionStatus';
 import { RunContextChip } from '@/components/common/RunContext';
+import RestorePointInline from '../restorePoints/RestorePointInline';
 import { hasPermission } from '@/lib/permissions';
 import type { Permission } from '@/stores/auth';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
@@ -399,6 +400,8 @@ export default function ExecutionDetails({
               <p className="text-sm font-medium mt-1">{formatDateTime(execution.completedAt, timezone)}</p>
             </div>
           )}
+
+          <RestorePointInline outcome={execution.restorePoint} />
 
           {/* Output Sections */}
           <div className="space-y-4">

@@ -4,7 +4,9 @@ import type { PgColumn } from 'drizzle-orm/pg-core';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { db } from '../db';
-import { incidents, huntressIncidents, s1Threats, type IncidentTimelineEntry } from '../db/schema';
+import { incidents, huntressIncidents, s1Threats, edrDetections, type IncidentTimelineEntry } from '../db/schema';
+import { isEdrProviderKey, type EdrProviderKey } from '../services/edrProviders/providerKeys';
+import { edrSitePredicate } from '../services/edrProviders/readScope';
 import type { AuthContext } from '../middleware/auth';
 import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
 import {
@@ -135,9 +137,12 @@ export async function getIncidentWithOrgCheck(incidentId: string, auth: AuthCont
   return incident ?? null;
 }
 
+export type IncidentFeedSource = 'breeze' | 'huntress' | 's1' | EdrProviderKey;
+
 export type IncidentFeedRow = {
   kind: 'tracked' | 'finding';
-  source: 'breeze' | 'huntress' | 's1';
+  /** 'breeze' | 'huntress' | 's1', or an EDR-framework provider key (#8166). */
+  source: IncidentFeedSource;
   sourceId: string;
   title: string;
   severity: 'p1' | 'p2' | 'p3' | 'p4';
@@ -179,16 +184,46 @@ function edrSeverityRank(col: SQL<unknown> | PgColumn): SQL<number> {
     ELSE 3 END`;
 }
 
+// EDR-framework normalized severity -> rank. `info` is p4 like `low`;
+// `unknown` stays p3 (an unclassified vendor finding is not demoted).
+function edrFrameworkSeverityRank(): SQL<number> {
+  return sql<number>`CASE ${edrDetections.severity}
+    WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3
+    WHEN 'low' THEN 4 WHEN 'info' THEN 4 ELSE 3 END`;
+}
+
 // Native p1..p4 enum -> same rank space.
 function nativeSeverityRank(): SQL<number> {
   return sql<number>`CASE ${incidents.severity}
     WHEN 'p1' THEN 1 WHEN 'p2' THEN 2 WHEN 'p4' THEN 4 ELSE 3 END`;
 }
 
+export type FeedLegKey = 'tracked' | 'huntress' | 's1' | 'edr';
+export type FeedLeg = { key: FeedLegKey; include: boolean; query: any };
+
+/**
+ * Combine the included feed legs into one UNION ALL, preserving leg order.
+ * Returns null when no leg is included (empty feed); a single included leg is
+ * returned as-is. Production uses Drizzle's VARIADIC `unionAll(q0, q1, ...)`
+ * (a flat UNION ALL, the same SQL the old per-combination ternary emitted);
+ * the combiner is injectable so the 2^n include matrix is unit-testable
+ * without a DB. The legs are typed `any` because Drizzle cannot infer the
+ * union of table names across a dynamic list.
+ */
+export function foldLegs(
+  legs: FeedLeg[],
+  combine: (queries: any[]) => any = (queries) => (unionAll as any)(...queries),
+): any | null {
+  const queries = legs.filter((l) => l.include).map((l) => l.query);
+  if (queries.length === 0) return null;
+  if (queries.length === 1) return queries[0];
+  return combine(queries);
+}
+
 export type IncidentFeedParams = {
   orgId?: string;
   kind?: 'tracked' | 'finding';
-  source?: 'breeze' | 'huntress' | 's1';
+  source?: IncidentFeedSource;
   limit: number;
   offset: number;
   /**
@@ -210,6 +245,14 @@ export type IncidentFeedParams = {
    * callers must declare their site-restriction posture explicitly.
    */
   allowedDeviceIds: string[] | null;
+  /**
+   * The caller's site allowlist (`permissions.allowedSiteIds`), or null when
+   * not site-restricted. Used only by the EDR-framework leg (#8166, D14): a
+   * detection whose device link was cleared by an org move / device delete
+   * keeps its `last_site_id`, and only callers allowed that site see it.
+   * Required for the same reason as `allowedDeviceIds`.
+   */
+  allowedSiteIds: string[] | null;
 };
 
 /**
@@ -229,6 +272,7 @@ export function buildIncidentFeedQueries(
   const orgIncidents = resolveOrgFilter(auth, params.orgId, incidents.orgId);
   const orgHuntress = resolveOrgFilter(auth, params.orgId, huntressIncidents.orgId);
   const orgS1 = resolveOrgFilter(auth, params.orgId, s1Threats.orgId);
+  const orgEdr = resolveOrgFilter(auth, params.orgId, edrDetections.orgId);
   if (orgIncidents.error) {
     throw new FeedScopeError(orgIncidents.error.status, orgIncidents.error.message);
   }
@@ -319,34 +363,57 @@ export function buildIncidentFeedQueries(
       )
     );
 
+  // EDR-framework detections (#8166) NOT already promoted. Live rows only (a
+  // D13 tombstone is never a feed row); site rule per D14 (see readScope.ts).
+  // `details` is projected as NULL: vendor jsonb never reaches the feed.
+  const edrSourceFilter = params.source && isEdrProviderKey(params.source)
+    ? eq(edrDetections.provider, params.source)
+    : undefined;
+  const edrQ = db
+    .select({
+      kind: sql<string>`'finding'`.as('kind'),
+      source: sql<string>`${edrDetections.provider}`.as('source'),
+      sourceId: sql<string>`${edrDetections.id}::text`.as('sourceId'),
+      title: sql<string>`coalesce(${edrDetections.title}, ${edrDetections.threatName}, 'EDR detection')`.as('title'),
+      rank: edrFrameworkSeverityRank().as('rank'),
+      edrStatus: sql<string | null>`${edrDetections.status}`.as('edrStatus'),
+      status: sql<string | null>`null::text`.as('status'),
+      deviceId: sql<string | null>`${edrDetections.breezeDeviceId}::text`.as('deviceId'),
+      detectedAt: sql<Date>`coalesce(${edrDetections.detectedAt}, ${edrDetections.createdAt})`.as('detectedAt'),
+      trackedIncidentId: sql<string | null>`null::text`.as('trackedIncidentId'),
+      details: sql<unknown>`null::jsonb`.as('details'),
+    })
+    .from(edrDetections)
+    .where(
+      and(
+        orgEdr.condition,
+        isNull(edrDetections.detachedAt),
+        edrSourceFilter,
+        edrSitePredicate({ allowedDeviceIds: params.allowedDeviceIds, allowedSiteIds: params.allowedSiteIds }),
+        sql`NOT EXISTS (SELECT 1 FROM incidents i WHERE i.org_id = ${edrDetections.orgId}
+          AND i.source_type = 'edr_detection' AND i.source_ref = ${edrDetections.id}::text)`
+      )
+    );
+
   // Determine which legs to include based on filters. The raw EDR finding legs
   // require `devices:read`; a caller with only `alerts:read` (hasDevicesRead ===
   // false) gets native tracked incidents only. Fail-closed: only include EDR
   // when the caller explicitly signals devices:read. This composes with the
   // kind/source filters: a no-devices-read caller passing source=huntress simply
   // yields no legs → empty feed (null), not an error.
-  const includeEdr = params.hasDevicesRead === true;
-  const includeTracked = params.kind !== 'finding' && params.source !== 'huntress' && params.source !== 's1';
-  const includeHuntress = includeEdr && params.kind !== 'tracked' && (params.source === undefined || params.source === 'huntress');
-  const includeS1 = includeEdr && params.kind !== 'tracked' && (params.source === undefined || params.source === 's1');
-  if (!includeTracked && !includeHuntress && !includeS1) return null;
-
-  // Build UNION ALL explicitly per active combination so Drizzle can infer
-  // each call's table-name union type (dynamic `legs[]` array spreads lose it).
-  const baseQ: any =
-    includeTracked && includeHuntress && includeS1
-      ? unionAll(trackedQ, huntressQ, s1Q)
-      : includeHuntress && includeS1
-        ? unionAll(huntressQ, s1Q)
-        : includeTracked && includeHuntress
-          ? unionAll(trackedQ, huntressQ)
-          : includeTracked && includeS1
-            ? unionAll(trackedQ, s1Q)
-            : includeTracked
-              ? trackedQ
-              : includeHuntress
-                ? huntressQ
-                : s1Q;
+  const findingLegsAllowed = params.hasDevicesRead === true;
+  const isEdrSource = params.source !== undefined && isEdrProviderKey(params.source);
+  const includeTracked = params.kind !== 'finding' && (params.source === undefined || params.source === 'breeze');
+  const includeHuntress = findingLegsAllowed && params.kind !== 'tracked' && (params.source === undefined || params.source === 'huntress');
+  const includeS1 = findingLegsAllowed && params.kind !== 'tracked' && (params.source === undefined || params.source === 's1');
+  const includeEdrLeg = findingLegsAllowed && params.kind !== 'tracked' && (params.source === undefined || isEdrSource);
+  if (!includeTracked && !includeHuntress && !includeS1 && !includeEdrLeg) return null;
+  const baseQ: any = foldLegs([
+    { key: 'tracked', include: includeTracked, query: trackedQ },
+    { key: 'huntress', include: includeHuntress, query: huntressQ },
+    { key: 's1', include: includeS1, query: s1Q },
+    { key: 'edr', include: includeEdrLeg, query: edrQ },
+  ]);
   const sub = baseQ.as('feed');
 
   const countQuery = db.select({ count: sql<number>`count(*)` }).from(sub);
@@ -395,7 +462,7 @@ export async function buildIncidentFeed(
 
   return {
     rows: rows.map((r) => {
-      const source = r.source as 'breeze' | 'huntress' | 's1';
+      const source = r.source as IncidentFeedSource;
       return {
         kind: r.kind as 'tracked' | 'finding',
         source,
@@ -407,7 +474,8 @@ export async function buildIncidentFeed(
         deviceId: r.deviceId,
         detectedAt: dateFromSqlValue(r.detectedAt as unknown as string).toISOString(),
         trackedIncidentId: r.trackedIncidentId,
-        linkOut: source === 'breeze' ? null : resolveFindingLinkOut(r.details),
+        // EDR-framework rows carry no vendor deep link in W02 (details is NULL).
+        linkOut: source === 'breeze' || isEdrProviderKey(source) ? null : resolveFindingLinkOut(r.details),
       };
     }),
     total: Number(countRows[0]?.count ?? 0),

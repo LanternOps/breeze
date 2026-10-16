@@ -92,6 +92,10 @@ func startWatch(ctx context.Context, deps Deps, src SourceConfig) (stop func()) 
 		var timerC <-chan time.Time
 
 		resetTimer := func() {
+			if deps.watchFlushC != nil {
+				timerC = deps.watchFlushC
+				return
+			}
 			if timer == nil {
 				timer = time.NewTimer(deps.WatchDebounce)
 			} else {
@@ -209,7 +213,11 @@ func startWatch(ctx context.Context, deps Deps, src SourceConfig) (stop func()) 
 				if !ok {
 					return
 				}
-				if !handleEvent(event) {
+				keepWatching := handleEvent(event)
+				if deps.watchEventHandled != nil {
+					deps.watchEventHandled(event)
+				}
+				if !keepWatching {
 					return
 				}
 			case <-timerC:

@@ -18,13 +18,15 @@ import { resolveBillingPaymentSettings } from './billingPaymentSettings';
 import { completeAutopaySetup } from './enrollmentService';
 import { verifiedFeeText } from './feeDisclosure';
 import { autopayConsentSnapshotSchema } from './types';
+import { autopayPartnerLiveCondition, isAutopayPartnerChargeable } from './autopayGate';
 export interface AutopayIdentity {orgId:string;partnerId:string;tokenId?:string;enrollmentId?:string;generation?:number}
 declare module 'hono' { interface ContextVariableMap {autopayIdentity:AutopayIdentity;autopayPartnerId:string} }
 const scoped=<T>(fn:()=>Promise<T>)=>runOutsideDbContext(()=>withSystemDbAccessContext(fn));
 export async function resolveAutopayOrgIdentity(orgId:string):Promise<AutopayIdentity|null>{
   return scoped(async()=>{
     const [org]=await db.select({orgId:organizations.id,partnerId:organizations.partnerId}).from(organizations)
-      .where(and(eq(organizations.id,orgId),isNull(organizations.deletedAt),inArray(organizations.status,['active','trial']))).limit(1);
+      .where(and(eq(organizations.id,orgId),isNull(organizations.deletedAt),inArray(organizations.status,['active','trial']),
+        autopayPartnerLiveCondition(organizations.partnerId))).limit(1);
     return org??null;
   });
 }
@@ -35,14 +37,17 @@ export async function resolveAutopayLinkIdentity(token:string,purpose:BillingLin
   });
 }
 
+/** Links that only reduce charging. A client can use them whatever the partner's status. */
+const CHARGE_REDUCING_PURPOSES:readonly BillingLinkPurpose[]=['stop_autopay','skip_invoice'];
 // Runs in the caller's short context so both admission paths share the same
-// active-org and enrollment-generation checks.
+// active-org, active-partner and enrollment-generation checks.
 async function identityForLink(link:typeof billingLinkTokens.$inferSelect):Promise<AutopayIdentity|null>{
   if(!link.enrollmentId)return null;
   const [row]=await db.select({orgId:organizations.id,partnerId:organizations.partnerId,enrollmentId:orgAutopayEnrollments.id,generation:orgAutopayEnrollments.generation})
     .from(organizations).innerJoin(orgAutopayEnrollments,and(eq(orgAutopayEnrollments.orgId,organizations.id),eq(orgAutopayEnrollments.partnerId,organizations.partnerId)))
     .where(and(eq(organizations.id,link.orgId),eq(orgAutopayEnrollments.id,link.enrollmentId),
-      isNull(organizations.deletedAt),inArray(organizations.status,['active','trial']))).limit(1);
+      isNull(organizations.deletedAt),inArray(organizations.status,['active','trial']),
+      CHARGE_REDUCING_PURPOSES.includes(link.purpose)?undefined:autopayPartnerLiveCondition(organizations.partnerId))).limit(1);
   if(!row||row.generation!==link.generation)return null;
   return {...row,tokenId:link.id};
 }
@@ -97,7 +102,8 @@ export async function describeAutopayLinkFailure(token:string,purpose:BillingLin
     const {row,failure}=await inspectBillingLinkToken(db,token,purpose);
     if(!row)return invalid;
     const [org]=await db.select().from(organizations).where(and(eq(organizations.id,row.orgId),isNull(organizations.deletedAt),
-      inArray(organizations.status,['active','trial']))).limit(1);
+      inArray(organizations.status,['active','trial']),
+      CHARGE_REDUCING_PURPOSES.includes(purpose)?undefined:autopayPartnerLiveCondition(organizations.partnerId))).limit(1);
     if(!org||org.id!==row.orgId||org.deletedAt||!['active','trial'].includes(org.status))return invalid;
     const [enrollment]=row.enrollmentId?await db.select().from(orgAutopayEnrollments).where(and(
       eq(orgAutopayEnrollments.id,row.enrollmentId),eq(orgAutopayEnrollments.orgId,org.id))).limit(1):[];
@@ -109,7 +115,9 @@ export async function describeAutopayLinkFailure(token:string,purpose:BillingLin
       :'link_invalid';
     if(code==='link_invalid')return invalid;
     // FP-4: a skip or confirm link belongs to an invoice; offer it (its link came in the same email). Read-only: never minted here.
-    const [invoice]=row.invoiceId?await db.select().from(invoices).where(and(eq(invoices.id,row.invoiceId),eq(invoices.orgId,org.id))).limit(1):[];
+    // A revoked link offers nothing: resetting the invoice link revokes its autopay links, and the
+    // invoice link from that email no longer works.
+    const [invoice]=row.invoiceId&&!row.revokedAt?await db.select().from(invoices).where(and(eq(invoices.id,row.invoiceId),eq(invoices.orgId,org.id))).limit(1):[];
     const live=invoice&&invoice.orgId===org.id&&invoice.status!=='void'?peekInvoiceLink(invoice):null;
     return {error:LINK_FAILURE_TEXT[code],code,data:{...await loadAutopayBranding(db,{orgId:org.id,partnerId:org.partnerId}),
       enrollmentStatus:enrollment?.status??null,...(live?{invoiceUrl:buildPublicInvoiceUrl(live.token)}:{})}};
@@ -135,10 +143,11 @@ export async function getAutopayCustomerPage(orgId:string,options?:{allowStopOnl
   return scoped(async()=>{
     const [org]=await db.select().from(organizations).where(eq(organizations.id,orgId)).limit(1);
     if(!org)throw new HTTPException(404,{message:'Automatic payments not found'});
-    const [partner]=await db.select({name:partners.name,autopayEnabled:partners.autopayEnabled,billingEmail:partners.billingEmail}).from(partners).where(eq(partners.id,org.partnerId)).limit(1);
+    const [partner]=await db.select({name:partners.name,autopayEnabled:partners.autopayEnabled,status:partners.status,deletedAt:partners.deletedAt,
+      billingEmail:partners.billingEmail}).from(partners).where(eq(partners.id,org.partnerId)).limit(1);
     const [brand]=await db.select({logoUrl:portalBranding.logoUrl,primaryColor:portalBranding.primaryColor}).from(portalBranding).where(eq(portalBranding.orgId,orgId)).limit(1);
     const [enrollment]=await db.select().from(orgAutopayEnrollments).where(eq(orgAutopayEnrollments.orgId,orgId)).limit(1);
-    const stopOnly=options?.allowStopOnly===true&&partner?.autopayEnabled!==true;
+    const stopOnly=options?.allowStopOnly===true&&!isAutopayPartnerChargeable(partner);
     if(stopOnly&&(!enrollment||enrollment.status==='cancelled'))throw new HTTPException(404,{
       res:Response.json({error:'Automatic payments are not enabled',code:'autopay_not_enabled'},{status:404}),
     });

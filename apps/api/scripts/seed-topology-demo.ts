@@ -1,6 +1,7 @@
 /**
- * Topology demo seed: a synthetic, large single-office site for refining the
- * topology explorer on a LOCAL stack. QA fixture only; refuses any non-local DB.
+ * Topology demo seed: a synthetic, large single-office site (plus a small sister
+ * site, "Lakeside") for refining the topology explorer on a LOCAL stack. QA
+ * fixture only; refuses any non-local DB.
  *
  *   npx tsx scripts/seed-topology-demo.ts                 # (re)seed, then exit
  *   npx tsx scripts/seed-topology-demo.ts --keep-fresh    # (re)seed, then keep online agents fresh
@@ -14,6 +15,23 @@
  *   docker exec -d -w /app/apps/api $C sh -c 'npx tsx scripts/seed-topology-demo.ts --keep-fresh-only > /tmp/topology-demo-keep-fresh.log 2>&1'
  * The site is reachable at /discovery#topology/site/<DEMO_SITE_ID> after switching to the demo org.
  *
+ * Lakeside scenario (site location W1). The org has two sites. Lakeside owns the
+ * second LAN 10.1.5.0/24: its own discovery profile and four agents on that LAN (two fresh
+ * observers that corroborate the gateway MAC, two offline), plus a fifth Lakeside agent,
+ * LAPTOP-LOV-01, visiting Main Office. Deliberately mixed in:
+ *  - two online Main-Office-assigned desktops (DESKTOP-HD7K2QF, WIN-HD4M8T2C9) that
+ *    sit on 10.1.5.0/24: misassigned devices;
+ *  - LAPTOP-LOV-01, assigned to Lakeside but visiting Main Office's LAN (10.1.2.0/24);
+ *  - LAPTOP-HOME-01, assigned to Main Office, reporting from a home network 192.168.1.0/24.
+ * Each agent reports through the site it is ASSIGNED to. Verify in the browser:
+ *  - Main Office (#topology/site/<DEMO_SITE_ID>): 10.1.5.0/24 and 192.168.1.0/24 appear
+ *    only in the "Other / unidentified networks" roster, not as declared network cards;
+ *  - Lakeside (#topology/site/<DEMO_LAKESIDE_SITE_ID>): its own 10.1.5.0/24 card.
+ * Site location W3: after the first presence evaluation the seed inserts SYNTHETIC daily presence history
+ * (demoPresenceHistory) and evaluates again, so Main Office's roster shows "Probably assigned to the wrong site" for
+ * the two desktops (with "Move to Lakeside" / "Keep at Main Office") and the travelling laptop shows no suggestion.
+ * Production history is prospective only; nothing here moves a device.
+ *
  * Options: --interval=<seconds> (keep-fresh cadence, default 60)
  *          --partner-email=<email> (partner user whose partner owns the demo org; default admin@breeze.local)
  *          --complete-caches (no truncated neighbor cache, so #7816 neighbor upgrades can apply)
@@ -22,7 +40,7 @@
  * erased through the real tenant-erasure cascade (cascadeDeleteOrg) and rebuilt.
  *
  * Paths used (real code wherever one exists):
- *  - Inventory rows (orgs, sites, devices, device_network, discovery profile/jobs,
+ *  - Inventory rows (orgs, sites, devices, device_network, discovery profiles (one per site) and Main's jobs,
  *    discovered_assets, legacy topology_layout pins) are written to their normal
  *    tables; their SQL capture triggers emit the legacy `binding.changed` /
  *    `layout.upsert` outbox events exactly as production writes do.
@@ -38,8 +56,8 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
-  DAY, DEMO_ORG_ID, DEMO_ORG_NAME, DEMO_ORG_SLUG, DEMO_SITE_ID, DEMO_SITE_NAME, HOUR, MAIN_LAN, SECOND_LAN,
-  assertLocalDevDatabase, demoAssets, demoDevices, demoLegacyPins, demoMac,
+  DAY, DEMO_LAKESIDE_SITE_ID, DEMO_LAKESIDE_SITE_NAME, DEMO_ORG_ID, DEMO_ORG_NAME, DEMO_ORG_SLUG, DEMO_SITE_ID, DEMO_SITE_NAME, HOME_LAN, HOUR,
+  MAIN_LAN, SECOND_LAN, assertLocalDevDatabase, demoAssets, demoDevices, demoDiscoveryProfiles, demoLegacyPins, demoMac, demoPresenceHistory,
   type DemoAsset, type DemoDevice,
 } from './seed-topology-demo.lib';
 
@@ -60,6 +78,7 @@ const { sql } = await import('drizzle-orm');
 const { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } = await import('../src/db');
 const { networkContextFullSchema } = await import('@breeze/shared');
 const { resolveTopologyFlags, withResolvedTopologyFlags } = await import('../src/services/topology/flags');
+const { invalidateAgentOrgSettingsCaches } = await import('../src/services/agentOrgSettingsCache');
 const { topologyHeartbeat } = await import('../src/services/topology/heartbeat');
 const { importLegacyTopologySite } = await import('../src/services/topology/legacyImport');
 const { reconcileTopologySite } = await import('../src/services/topology/reconcile');
@@ -68,8 +87,12 @@ const { topologyContextDigest, topologySectionDigest } = await import('../src/se
 const { registerTopologyPhysicalAuthorities } = await import('../src/services/topology/physicalAuthorities');
 const { retryableTopologyTransaction } = await import('../src/services/topology/transactionRetry');
 const { cascadeDeleteOrg } = await import('../src/services/tenantCascade');
+const { evaluateOrgPresence } = await import('../src/services/topology/presenceEvaluator');
 type NetworkContextFull = import('@breeze/shared').NetworkContextFull;
 type Scope = { orgId: string; siteId: string };
+type Scopes = { main: Scope; lakeside: Scope };
+const lakesideScope = (orgId: string): Scope => ({ orgId, siteId: DEMO_LAKESIDE_SITE_ID });
+const scopeFor = (scopes: Scopes, d: DemoDevice): Scope => (d.siteId === 'lakeside' ? scopes.lakeside : scopes.main);
 type DeviceRow = { id: string; hostname: string; status: string };
 
 const system = <T>(fn: () => Promise<T>, label: string) => runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
@@ -119,6 +142,8 @@ async function resetDemo(owner: { userId: string; email: string; partnerId: stri
   log(`erasing previous demo org ${existing.orgId} through cascadeDeleteOrg…`);
   // Stop the API's topology workers from re-dirtying the site mid-erasure.
   await system(() => db.execute(sql`UPDATE organizations SET settings=COALESCE(settings,'{}'::jsonb)-'topologyFeatureFlags' WHERE id=${existing.orgId}::uuid`), 'demo flags off');
+  // W05 (#8144): running API instances drop their cached topology flags for this org now.
+  invalidateAgentOrgSettingsCaches(existing.orgId);
   await retrying('erase demo org', () => cascadeDeleteOrg(existing.orgId, owner.userId, owner.email));
 }
 
@@ -133,12 +158,14 @@ async function seedInventory(partnerId: string, devices: DemoDevice[], assets: D
     const orgId = org!.id;
     const [site] = await db.execute<{ id: string }>(sql`INSERT INTO sites (id,org_id,name,timezone) VALUES (${DEMO_SITE_ID}::uuid,${orgId}::uuid,${DEMO_SITE_NAME},'America/Chicago') RETURNING id`);
     const siteId = site!.id;
+    await db.execute(sql`INSERT INTO sites (id,org_id,name,timezone) VALUES (${DEMO_LAKESIDE_SITE_ID}::uuid,${orgId}::uuid,${DEMO_LAKESIDE_SITE_NAME},'America/Chicago')`);
+    const siteIds = { main: siteId, lakeside: DEMO_LAKESIDE_SITE_ID } as const;
     const deviceIds = new Map<string, string>();
     for (const d of devices) {
       const lastSeen = isoAgo(now, d.lastSeenAgoMs);
       const [row] = await db.execute<{ id: string }>(sql`INSERT INTO devices
         (org_id,site_id,agent_id,hostname,os_type,os_version,architecture,agent_version,agent_token_hash,status,last_seen_at,device_role,enrolled_at)
-        VALUES (${orgId}::uuid,${siteId}::uuid,${`topology-demo-${d.key}`},${d.hostname},'windows',
+        VALUES (${orgId}::uuid,${siteIds[d.siteId]}::uuid,${`topology-demo-${d.key}`},${d.hostname},'windows',
           ${d.role === 'server' ? '10.0.20348' : '10.0.19045'},'amd64',${d.agentVersion},${randomBytes(32).toString('hex')},
           ${d.status},${lastSeen},${d.role},${isoAgo(now, 400 * DAY)}) RETURNING id`);
       deviceIds.set(d.key, row!.id);
@@ -146,14 +173,19 @@ async function seedInventory(partnerId: string, devices: DemoDevice[], assets: D
       await db.execute(sql`INSERT INTO device_network (device_id,org_id,interface_name,mac_address,ip_address,ip_type,is_primary)
         VALUES (${row!.id}::uuid,${orgId}::uuid,${d.role === 'server' ? 'Ethernet0' : 'Ethernet'},${d.mac},${d.ip},'ipv4',true)`);
     }
-    // Discovery: one profile, the latest completed scan 2 h ago, the one before it
+    // Discovery: one profile per site. Main's has the latest completed scan 2 h ago, the one before it
     // 26 h ago, and older completed scans the stale assets were last seen in.
-    const [profile] = await db.execute<{ id: string }>(sql`INSERT INTO discovery_profiles (org_id,site_id,name,subnets,methods,schedule)
-      VALUES (${orgId}::uuid,${siteId}::uuid,'Main LAN sweep',ARRAY[${MAIN_LAN.prefix}]::text[],ARRAY['arp','ping']::discovery_method[],
-        ${JSON.stringify({ type: 'interval', intervalHours: 24 })}::jsonb) RETURNING id`);
+    const profileIds = new Map<string, string>();
+    for (const p of demoDiscoveryProfiles()) {
+      const [row] = await db.execute<{ id: string }>(sql`INSERT INTO discovery_profiles (org_id,site_id,name,subnets,methods,schedule)
+        VALUES (${orgId}::uuid,${p.siteId}::uuid,${p.name},ARRAY[${sql.join(p.subnets.map(n => sql`${n}`), sql`,`)}]::text[],ARRAY['arp','ping']::discovery_method[],
+          ${JSON.stringify({ type: 'interval', intervalHours: 24 })}::jsonb) RETURNING id`);
+      profileIds.set(p.siteId, row!.id);
+    }
+    const profile = { id: profileIds.get(DEMO_SITE_ID)! };
     const job = async (completedAgoMs: number, hostsDiscovered: number) => {
       const [row] = await db.execute<{ id: string }>(sql`INSERT INTO discovery_jobs (profile_id,org_id,site_id,agent_id,status,scheduled_at,started_at,completed_at,hosts_scanned,hosts_discovered,new_assets)
-        VALUES (${profile!.id}::uuid,${orgId}::uuid,${siteId}::uuid,${'topology-demo-server-01'},'completed',${isoAgo(now, completedAgoMs + 5 * 60_000)},
+        VALUES (${profile.id}::uuid,${orgId}::uuid,${siteId}::uuid,${'topology-demo-server-01'},'completed',${isoAgo(now, completedAgoMs + 5 * 60_000)},
           ${isoAgo(now, completedAgoMs + 4 * 60_000)},${isoAgo(now, completedAgoMs)},254,${hostsDiscovered},0) RETURNING id`);
       return row!.id;
     };
@@ -190,6 +222,7 @@ async function seedInventory(partnerId: string, devices: DemoDevice[], assets: D
 async function enableTopology(scope: Scope) {
   await system(() => db.execute(sql`UPDATE organizations
     SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{topologyFeatureFlags}',${JSON.stringify(FLAGS)}::jsonb,true) WHERE id=${scope.orgId}::uuid`), 'demo flags on');
+  invalidateAgentOrgSettingsCaches(scope.orgId);
   for (let pass = 0; pass < 50; pass++) {
     const result = await retrying('legacy import', () => system(
       () => withResolvedTopologyFlags({ orgId: scope.orgId, flags: resolvedFlags }, () => importLegacyTopologySite(scope, { batchSize: 200 })), 'demo legacy import'));
@@ -200,6 +233,8 @@ async function enableTopology(scope: Scope) {
 
 // --------------------------------------------------------- network context ---
 
+/** The home router's MAC; distinct from every demoMac(3|9, …) used on the office LANs. */
+const HOME_ROUTER_MAC = demoMac(5, 1);
 /** Canonical (URL-normalized) IPv6 link-local address for one device. */
 const linkLocalFor = (index: number) => `fe80::b7:${(0x1a00 + index).toString(16)}:${(0x2c00 + index * 13).toString(16)}`;
 
@@ -208,6 +243,10 @@ function neighborRows(d: DemoDevice, index: number, devices: DemoDevice[], asset
   const rows: Row['rows'] = [];
   const add = (address: string, mac: string, state: 'reachable' | 'stale' | 'delay' | 'permanent', isRouter = false) =>
     rows.push({ rowKey: `n4-${address}`, address, family: 'ipv4', zone: null, interfaceKey: 'if-lan', mac, state, isRouter });
+  if (d.lan === 'home') {
+    add(HOME_LAN.gateway, HOME_ROUTER_MAC, 'reachable', true);
+    return rows;
+  }
   if (d.lan === 'second') {
     add(SECOND_LAN.gateway, demoMac(3, 1), 'reachable', true);
     for (const peer of devices.filter(p => p.lan === 'second' && p.key !== d.key)) add(peer.ip, peer.mac, 'stale');
@@ -234,7 +273,7 @@ function neighborRows(d: DemoDevice, index: number, devices: DemoDevice[], asset
 }
 
 function fullReport(d: DemoDevice, index: number, devices: DemoDevice[], assets: DemoAsset[], cfg: { producerEpoch: string; sourceIdentity: string }, sequence: string): NetworkContextFull {
-  const lan = d.lan === 'main' ? MAIN_LAN : SECOND_LAN;
+  const lan = d.lan === 'main' ? MAIN_LAN : d.lan === 'second' ? SECOND_LAN : HOME_LAN;
   type Iface = Extract<NetworkContextFull['sections'][number], { kind: 'interfaces' }>['rows'][number];
   type Route = Extract<NetworkContextFull['sections'][number], { kind: 'routes' }>['rows'][number];
   const interfaces: Iface[] = [];
@@ -343,36 +382,77 @@ async function seed() {
   const devices = demoDevices();
   const assets = demoAssets(devices);
   const { orgId, siteId, deviceIds } = await seedInventory(owner.partnerId, devices, assets, now);
-  const scope = { orgId, siteId };
-  log(`inventory: org ${orgId}, site ${siteId}, ${devices.length} devices, ${assets.length} discovered assets`);
-  await enableTopology(scope);
+  const scopes: Scopes = { main: { orgId, siteId }, lakeside: lakesideScope(orgId) };
+  const scope = scopes.main;
+  log(`inventory: org ${orgId}, sites ${siteId} + ${scopes.lakeside.siteId}, ${devices.length} devices, ${assets.length} discovered assets`);
+  await enableTopology(scopes.main);
+  await enableTopology(scopes.lakeside);
   // Device nodes must be published before their own network context projects.
-  await publishUntilClean(scope);
-  for (const [index, d] of devices.entries()) if (d.capture) await reportFull(scope, deviceIds.get(d.key)!, d, index + 1, devices, assets, '1');
-  await publishUntilClean(scope);
+  await publishUntilClean(scopes.main);
+  await publishUntilClean(scopes.lakeside);
+  // Each agent reports through the site it is assigned to.
+  for (const [index, d] of devices.entries()) if (d.capture) await reportFull(scopeFor(scopes, d), deviceIds.get(d.key)!, d, index + 1, devices, assets, '1');
+  await publishUntilClean(scopes.main);
+  await publishUntilClean(scopes.lakeside);
   // The retention worker's pass: support last confirmed > 7 days ago is archived.
-  const aging = await retrying('retention', () => system(() => expireTopologyEvidence(scope, new Date()), 'demo retention'));
-  log(`retention pass: archived ${aging.archived} support rows`);
-  await publishUntilClean(scope);
-  await summary(scope);
+  for (const s of [scopes.main, scopes.lakeside]) {
+    const aging = await retrying('retention', () => system(() => expireTopologyEvidence(s, new Date()), 'demo retention'));
+    log(`retention pass (${s.siteId}): archived ${aging.archived} support rows`);
+    await publishUntilClean(s);
+  }
+  await summary(scopes.main);
+  await summary(scopes.lakeside);
+  await seedPresenceHistory(orgId, deviceIds, devices);
   return scope;
+}
+
+/** W3: evaluate, insert the synthetic day history, evaluate again (the second pass computes the suggestions). */
+async function seedPresenceHistory(orgId: string, deviceIds: Map<string, string>, devices: DemoDevice[]) {
+  const first = await evaluateOrgPresence(orgId);
+  const siteOf = { main: DEMO_SITE_ID, lakeside: DEMO_LAKESIDE_SITE_ID } as const;
+  const rows = demoPresenceHistory(new Date());
+  await system(async () => {
+    for (const r of rows) {
+      const key = devices.find((d) => d.hostname === r.hostname)?.key;
+      const deviceId = key ? deviceIds.get(key) : undefined;
+      if (!deviceId) throw new Error(`presence history: no demo device ${r.hostname}`);
+      const matched = r.matched ? siteOf[r.matched] : null;
+      await db.execute(sql`INSERT INTO topology_device_presence_days (org_id, device_id, day, assigned_site_id, state, matched_site_id, match_key,
+          first_observed_at, last_observed_at)
+        VALUES (${orgId}::uuid, ${deviceId}::uuid, ${r.day}::date, ${siteOf[r.assigned]}::uuid, ${r.state}, ${matched}::uuid,
+          ${`${r.state}:${matched ?? '-'}`}, ${r.firstObservedAt}::timestamptz, ${r.lastObservedAt}::timestamptz)
+        ON CONFLICT (device_id, day, assigned_site_id, match_key) DO NOTHING`);
+    }
+  }, 'demo presence history');
+  const second = await evaluateOrgPresence(orgId);
+  const suggested = await system(() => db.execute<{ hostname: string; days: number }>(sql`SELECT d.hostname, p.suggestion_days AS days
+    FROM topology_device_presence p JOIN devices d ON d.id = p.device_id WHERE p.org_id = ${orgId}::uuid AND p.suggested_site_id IS NOT NULL
+    ORDER BY d.hostname`), 'demo suggestions');
+  log(`presence: evaluated ${first.status}/${second.status} (coverage ${second.coverage}); ${rows.length} synthetic day rows; `
+    + `suggestions: ${suggested.map((r) => `${r.hostname} (${r.days} days)`).join(', ') || 'none'}`);
+  // The demo exists to show the suggestions: fail loudly rather than leave a demo that looks seeded but shows none.
+  if (second.status !== 'evaluated' || suggested.length !== 2) {
+    throw new Error(`presence demo: expected 2 suggestions after evaluation, got ${suggested.length} (status ${second.status}, coverage ${second.coverage})`);
+  }
 }
 
 // -------------------------------------------------------------- keep fresh ---
 
-async function keepFresh(scope: Scope) {
+async function keepFresh(scopes: Scopes) {
   const devices = demoDevices();
   const assets = demoAssets(devices);
   const onlineHosts = devices.filter(d => d.status === 'online').map(d => d.hostname);
   log(`keep-fresh: every ${INTERVAL_SECONDS}s re-heartbeat ${onlineHosts.length} online agents (Ctrl-C to stop)`);
   const tick = async () => {
-    const rows = await system(() => db.execute<DeviceRow>(sql`UPDATE devices SET last_seen_at=now(), status='online', updated_at=now()
-      WHERE org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid AND hostname IN (${sql.join(onlineHosts.map(h => sql`${h}`), sql`,`)})
-      RETURNING id, hostname, status`), 'demo last_seen');
+    const rows = await system(() => db.execute<DeviceRow & { site_id: string }>(sql`UPDATE devices SET last_seen_at=now(), status='online', updated_at=now()
+      WHERE org_id=${scopes.main.orgId}::uuid AND site_id IN (${scopes.main.siteId}::uuid, ${scopes.lakeside.siteId}::uuid)
+        AND hostname IN (${sql.join(onlineHosts.map(h => sql`${h}`), sql`,`)})
+      RETURNING id, hostname, status, site_id`), 'demo last_seen');
     let confirmed = 0;
     for (const row of rows) {
       const index = devices.findIndex(d => d.hostname === row.hostname);
       const d = devices[index]!;
+      const scope = scopeFor(scopes, d);
       if (d.capture?.mode !== 'fresh') continue; // stalled collectors stay stale on purpose
       const [root] = await system(() => db.execute<{ producer_epoch: string; accepted_sequence: string; base_snapshot_id: string | null; content_digest: string | null }>(sql`
         SELECT producer_epoch, accepted_sequence::text AS accepted_sequence, base_snapshot_id, content_digest FROM topology_collection_sources
@@ -405,8 +485,8 @@ async function main() {
     scope = await findDemo(owner.partnerId);
     if (!scope?.siteId) throw new Error('No demo site yet; run without --keep-fresh-only first.');
   }
-  log(`done. Open /discovery#topology/site/${scope.siteId} as a user of partner ${PARTNER_EMAIL}.`);
-  if (KEEP_FRESH) await keepFresh(scope);
+  log(`done. Open /discovery#topology/site/${scope.siteId} (Main Office) or /discovery#topology/site/${DEMO_LAKESIDE_SITE_ID} (Lakeside) as a user of partner ${PARTNER_EMAIL}.`);
+  if (KEEP_FRESH) await keepFresh({ main: scope, lakeside: lakesideScope(scope.orgId) });
   process.exit(0);
 }
 

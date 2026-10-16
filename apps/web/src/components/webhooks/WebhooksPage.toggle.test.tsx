@@ -3,6 +3,13 @@ import '../../lib/i18n';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const fetchWithAuth = vi.fn();
+// This suite drives webhook writes, so the caller can read webhooks and manage
+// them (organizations:write). Read-only behaviour is covered in
+// WebhooksPage.permissions.test.tsx.
+const GRANTED = vi.hoisted(() => new Set(['webhooks:read', 'organizations:write']));
+vi.mock('../../lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => GRANTED.has(`${r}:${a}`) }),
+}));
 vi.mock('../../stores/auth', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/auth')>()),
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
@@ -131,5 +138,35 @@ describe('WebhooksPage — enable/disable (#6767)', () => {
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Webhook updated' }))
     );
+  });
+});
+
+describe('WebhooksPage — delivery retry', () => {
+  beforeEach(() => {
+    fetchWithAuth.mockReset();
+    vi.mocked(showToast).mockReset();
+  });
+
+  it('POSTs the real API route /webhooks/:id/retry/:deliveryId, toasts, and refetches deliveries', async () => {
+    const failed = { id: 'del-9', eventType: 'alert.created', status: 'failed', createdAt: '2026-10-01T00:00:00Z' };
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return url === '/webhooks/wh-1/retry/del-9'
+          ? json({ message: 'Delivery retry queued', delivery: { id: 'del-10', status: 'pending' } }, 202)
+          : json({ error: 'Not Found' }, 404);
+      }
+      if (url.startsWith('/webhooks/wh-1/deliveries')) return json({ data: [failed] });
+      if (url.startsWith('/webhooks')) return json({ data: [webhook()] });
+      return json({}, 404);
+    });
+    render(<WebhooksPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /^retry$/i }));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Delivery retry queued' }))
+    );
+    const deliveryFetches = fetchWithAuth.mock.calls.filter(([u]) => String(u).startsWith('/webhooks/wh-1/deliveries'));
+    expect(deliveryFetches.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -151,6 +151,14 @@ export const partners = pgTable('partners', {
   // keeps gate === read-back with no #3608 stored-false ambiguity. Resolved
   // ONCE at issue onto invoices.device_appendix; never read at render time.
   invoiceDeviceAppendix: boolean('invoice_device_appendix').notNull().default(false),
+  // #8604: invoice labor line itemization defaults (resolver:
+  // resolveInvoiceLineDetail in @breeze/shared). Defaults reproduce the
+  // pre-#8604 document. Frozen at issue onto invoices.line_*; never read at
+  // render time for an issued invoice. grouping is CHECK ('entry','day') in SQL.
+  invoiceLineGrouping: varchar('invoice_line_grouping', { length: 8 }).notNull().default('entry'),
+  invoiceLineShowDate: boolean('invoice_line_show_date').notNull().default(false),
+  invoiceLineShowNote: boolean('invoice_line_show_note').notNull().default(true),
+  invoiceLineShowWorkedTime: boolean('invoice_line_show_worked_time').notNull().default(true),
   // Partner-authored AI copy style for enrich/polish (NULL = built-in house
   // format: generic customer-friendly name + "• "-bulleted spec description).
   catalogAiStyle: text('catalog_ai_style'),
@@ -265,7 +273,17 @@ export const sites = pgTable('sites', {
   settings: jsonb('settings').default({}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-  partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
+  partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull(),
+  // #4186: deliberately pinned site coordinate (never a technician position).
+  latitude: numeric('latitude', { precision: 9, scale: 6, mode: 'number' }),
+  longitude: numeric('longitude', { precision: 9, scale: 6, mode: 'number' }),
+  geofenceRadiusM: integer('geofence_radius_m'),
+  locationSource: varchar('location_source', { length: 16 }).$type<'technician' | 'manual' | 'geocoded'>(),
+  // FK sites_location_set_by_fkey -> users(id) ON DELETE SET NULL is defined in
+  // the SQL migration (authoritative): users.ts imports orgs.ts, so a Drizzle
+  // reference here would be cyclic.
+  locationSetBy: uuid('location_set_by'),
+  locationSetAt: timestamp('location_set_at', { withTimezone: true }),
 }, (table) => ({
   idOrgUnique: uniqueIndex('sites_id_org_id_uniq').on(table.id, table.orgId),
   orgIdIdx: index('sites_org_id_idx').on(table.orgId),
@@ -332,3 +350,23 @@ export const orgMergeEvents = pgTable('org_merge_events', {
   summary: jsonb('summary').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// PAM ownership epochs W5 (#8207): a merged-away org whose shell must outlive
+// the merge because it still owns PAM-chain evidence (or is the survivor of a
+// held shell). Shape 3, partner-axis; no org_id column by design. Written in
+// merge Phase B, released only by the erasure path (services/orgEvidenceHold.ts).
+// survivor_org_id and merge_event_id are ON DELETE RESTRICT; loser_org_id has
+// no FK. Writes are system-only (RESTRICTIVE policies, migration
+// 2026-12-24-220000-org-evidence-holds.sql).
+export const orgEvidenceHolds = pgTable('org_evidence_holds', {
+  loserOrgId: uuid('loser_org_id').primaryKey(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id, { onDelete: 'cascade' }),
+  survivorOrgId: uuid('survivor_org_id').notNull().references(() => organizations.id, { onDelete: 'restrict' }),
+  mergeEventId: uuid('merge_event_id').notNull().references(() => orgMergeEvents.id, { onDelete: 'restrict' }),
+  reason: varchar('reason', { length: 32 }).$type<'pam_evidence' | 'transitive'>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  survivorIdx: index('org_evidence_holds_survivor_idx').on(table.survivorOrgId),
+  partnerIdx: index('org_evidence_holds_partner_idx').on(table.partnerId),
+  mergeEventIdx: index('org_evidence_holds_merge_event_idx').on(table.mergeEventId),
+}));

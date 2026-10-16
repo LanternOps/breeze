@@ -77,7 +77,24 @@ export type ThreatDetectionSummary = {
     breezeDevices: number | null;
     agentsOffline: number | null;
     devicesWithoutAgent: number | null;
+    /**
+     * EDR provider framework (#8164): endpoints an EDR connector reports for
+     * this org. ADDITIVE and absent (or null) when the org has no EDR
+     * endpoints, so a no-EDR org's persisted snapshot is unchanged and a
+     * legacy snapshot still renders. Never rendered as 0.
+     */
+    edrEndpoints?: number | null;
   };
+  /**
+   * EDR provider framework (#8164): detections CURRENTLY open (open /
+   * in_progress / unknown, tombstones excluded) across the org's EDR
+   * connectors — a point-in-time count at generation, not a window count.
+   * Absent (or null) when the org has no EDR coverage.
+   */
+  edrDetections?: {
+    open: number;
+    bySeverity: Record<string, number>;
+  } | null;
   incidents?: {
     opened: number | null;
     resolved: number | null;

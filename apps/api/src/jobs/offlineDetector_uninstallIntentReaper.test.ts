@@ -36,6 +36,7 @@ vi.mock('drizzle-orm', () => ({
   inArray: (col: unknown, vals: unknown[]) => ({ op: 'inArray', col, vals }),
   isNull: (col: unknown) => ({ op: 'isNull', col }),
   notInArray: (col: unknown, vals: unknown[]) => ({ op: 'notInArray', col, vals }),
+  sql: (strings: TemplateStringsArray, ...vals: unknown[]) => ({ op: 'sql', strings: [...strings], vals }),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -47,6 +48,7 @@ vi.mock('../db/schema', () => ({
     status: 'devices.status',
     lastSeenAt: 'devices.lastSeenAt',
     uninstallIntentAt: 'devices.uninstallIntentAt',
+    editionMigrationDispatchedAt: 'devices.editionMigrationDispatchedAt',
     possibleReplacementOfDeviceId: 'devices.possibleReplacementOfDeviceId',
   },
   alertRules: {},
@@ -252,6 +254,39 @@ describe('processReapUninstallIntent — predicate + decommission (#2764)', () =
       col: 'devices.status',
       vals: ['decommissioned', 'quarantined'],
     });
+  });
+
+  // #5016 — the edition migration's own `msiexec /x` fires UninstallNotify, so a
+  // device whose reinstall then failed carries an uninstall-intent stamp and,
+  // 24h later, was silently decommissioned: hidden from the fleet, its token
+  // 403'd (so even a hand-restored identity cannot come back), and the per-org
+  // canary hold released. An intent stamped inside the migration window is the
+  // migration's, not a real removal, and must not be reaped.
+  it('never reaps an uninstall intent the edition migration itself stamped (#5016)', async () => {
+    selectFleetState.fleet = [{ id: 'dev-stale', orgId: 'org-1', hostname: 'host-stale', displayName: null }];
+
+    await processReapUninstallIntent();
+
+    const whereArg = updateWhereMock.mock.calls[0]![0] as { op: string; args: unknown[] };
+    const migrationExclusion = whereArg.args.find((a) => {
+      const c = a as { op: string; args?: unknown[] };
+      return c.op === 'or' && JSON.stringify(c.args).includes('devices.editionMigrationDispatchedAt');
+    }) as { args: unknown[] } | undefined;
+    expect(migrationExclusion).toBeDefined();
+    // Reapable only when no migration was dispatched, or the intent falls
+    // outside [dispatched, dispatched + settle window].
+    expect(migrationExclusion!.args[0]).toEqual({ op: 'isNull', col: 'devices.editionMigrationDispatchedAt' });
+    expect(migrationExclusion!.args[1]).toEqual({
+      op: 'lt',
+      col: 'devices.uninstallIntentAt',
+      val: 'devices.editionMigrationDispatchedAt',
+    });
+    const upper = migrationExclusion!.args[2] as { op: string; col: unknown; val: { op: string; vals: unknown[] } };
+    expect(upper.op).toBe('gt');
+    expect(upper.col).toBe('devices.uninstallIntentAt');
+    expect(upper.val.op).toBe('sql');
+    expect(upper.val.vals).toEqual(['devices.editionMigrationDispatchedAt', '2 hours']);
+    // Same predicate on the SELECT (the scan) as on the guarded UPDATE.
   });
 
   it('respects UNINSTALL_INTENT_DECOMMISSION_HOURS in the actual cutoff math (not hardcoded 24)', async () => {

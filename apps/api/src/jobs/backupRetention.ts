@@ -30,7 +30,7 @@ import {
   resolveBackupOrphanManifestMaxAgeMs,
 } from '../services/backupGcKnobs';
 import { backupHelperSupportsServerBase } from '../services/backupHelperCapabilities';
-import { BACKUP_KEY_LAYOUTS, isSupportedKeyLayout } from '../services/backupKeyLayout';
+import { GC_SUPPORTED_KEY_LAYOUTS, isGcSupportedKeyLayout } from '../services/backupKeyLayout';
 import {
   BACKUP_SNAPSHOT_ROOT_DIR,
   BACKUP_SNAPSHOT_MANIFEST_KEY,
@@ -532,7 +532,7 @@ export async function cleanupExpiredSnapshots(
   );
 
   for (const snap of expired) {
-    if (!isSupportedKeyLayout(snap.keyLayout)) {
+    if (!isGcSupportedKeyLayout(snap.keyLayout)) {
       result.skippedUnsupportedLayout++;
       continue;
     }
@@ -590,7 +590,7 @@ export async function cleanupExpiredSnapshots(
     if (!maxVersions || maxVersions < 1 || groupRows.length <= maxVersions) continue;
 
     for (const snap of groupRows.slice(maxVersions)) {
-      if (!isSupportedKeyLayout(snap.keyLayout)) {
+      if (!isGcSupportedKeyLayout(snap.keyLayout)) {
         result.skippedUnsupportedLayout++;
         continue;
       }
@@ -2320,10 +2320,10 @@ export async function sweepUnreferencedBackupObjects(): Promise<BackupGcResult> 
           // index instead of scanning every snapshot row each run.
           .where(and(
             sql`${backupSnapshots.keyLayout} <> 'legacy_flat'`,
-            notInArray(backupSnapshots.keyLayout, [...BACKUP_KEY_LAYOUTS]),
+            notInArray(backupSnapshots.keyLayout, [...GC_SUPPORTED_KEY_LAYOUTS]),
           ));
         for (const row of unsupportedLayoutRows) {
-          if (isSupportedKeyLayout(row.keyLayout)) continue;
+          if (isGcSupportedKeyLayout(row.keyLayout)) continue;
           if (row.storageIdentity !== null) layoutBlockedIdentityKeys.add(row.storageIdentity);
           const configKey = row.configId ? identityKeyByConfigId.get(row.configId) : undefined;
           if (configKey) layoutBlockedIdentityKeys.add(configKey);

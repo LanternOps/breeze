@@ -68,9 +68,22 @@ vi.mock('../db/schema', () => ({
   configPolicyEffectiveFeatureLinks: { id: 'fl.id', configPolicyId: 'fl.cpId', featureType: 'fl.type' },
   configPolicyAssignments: { configPolicyId: 'a.cpId', level: 'a.level', targetId: 'a.targetId' },
   patchJobs: { id: 'pj.id', configPolicyId: 'pj.cpId', orgId: 'pj.orgId', createdAt: 'pj.createdAt' },
-  devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
+  devices: {
+    id: 'devices.id',
+    orgId: 'devices.orgId',
+    siteId: 'devices.siteId',
+    isEphemeral: 'devices.isEphemeral',
+    deviceRole: 'devices.deviceRole',
+    osType: 'devices.osType',
+  },
   deviceGroupMemberships: { deviceId: 'dgm.deviceId', groupId: 'dgm.groupId', orgId: 'dgm.orgId' },
-  organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId', settings: 'organizations.settings' },
+  deviceGroups: { id: 'dg.id', orgId: 'dg.orgId' },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId',
+    settings: 'organizations.settings',
+    type: 'organizations.type',
+  },
   partners: { id: 'partners.id', timezone: 'partners.timezone', settings: 'partners.settings' },
   sites: { id: 'sites.id', timezone: 'sites.timezone' },
 }));
@@ -79,7 +92,11 @@ const checkDeviceMaintenanceWindow = vi.fn(async () => {
   maintenanceDepths.push(contextDepth);
   return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false };
 });
-vi.mock('../services/featureConfigResolver', () => ({ checkDeviceMaintenanceWindow }));
+vi.mock('../services/featureConfigResolver', async (importActual) => ({
+  // The real role/OS predicate (pure) is used by the shared assignment resolver.
+  matchesRoleOsFilter: (await importActual<typeof import('../services/featureConfigResolver')>()).matchesRoleOsFilter,
+  checkDeviceMaintenanceWindow,
+}));
 
 const loadPolicyLocalPatchConfig = vi.fn(async () => ({
   ring: { valid: true, ringId: 'ring-1', classification: 'ok' },
@@ -142,7 +159,7 @@ describe('patchSchedulerWorker.scanAndCreateJobs — DB context boundaries (#189
       // 2. assignments
       [{ level: 'device', targetId: 'dev-1' }],
       // 3. resolveDeviceIdsForAssignment (device case)
-      [{ id: 'dev-1' }],
+      [{ id: 'dev-1', deviceRole: 'workstation', osType: 'windows' }],
       // 4. loadDeviceSchedulingContexts (join) — UTC device so 02:00 schedule is due
       [{ deviceId: 'dev-1', orgId: 'org-1', siteTimezone: 'UTC', orgSettings: null, partnerTimezone: null, partnerSettings: null }],
       // 5. hasExistingOccurrenceJob — none exists yet

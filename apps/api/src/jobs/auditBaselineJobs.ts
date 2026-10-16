@@ -6,7 +6,7 @@ import { queueCommandForExecution } from '../services/commandQueue';
 import { getBullMQConnection } from '../services/redis';
 import { evaluateAuditBaselineDrift } from '../services/auditBaselineService';
 import { captureException } from '../services/sentry';
-import { isReusableState } from '../services/bullmqUtils';
+import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { jobSchedule } from './scheduleRegistry';
 import { attachWorkerObservability } from './workerObservability';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
@@ -184,7 +184,7 @@ export async function shutdownAuditBaselineJobs(): Promise<void> {
 export async function enqueueAuditPolicyCollection(orgId?: string): Promise<string> {
   const queue = getAuditBaselineQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_AUDIT_BASELINE_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `audit-policy-collection:${orgId ?? 'all'}:${slot}`;
+  const jobId = bullmqJobId('audit-policy-collection', orgId ?? 'all', slot);
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();
@@ -215,7 +215,7 @@ export async function enqueueAuditPolicyCollection(orgId?: string): Promise<stri
 export async function enqueueAuditDriftEvaluation(orgId?: string): Promise<string> {
   const queue = getAuditBaselineQueue();
   const slot = Math.floor(Date.now() / ON_DEMAND_AUDIT_BASELINE_DEDUPE_WINDOW_MS).toString(36);
-  const jobId = `audit-drift-evaluator:${orgId ?? 'all'}:${slot}`;
+  const jobId = bullmqJobId('audit-drift-evaluator', orgId ?? 'all', slot);
   const existing = await queue.getJob(jobId);
   if (existing) {
     const state = await existing.getState();

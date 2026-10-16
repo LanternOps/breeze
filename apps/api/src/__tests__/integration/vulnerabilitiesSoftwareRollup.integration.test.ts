@@ -13,6 +13,7 @@ import {
   patchApprovals,
   patches,
   softwareInventory,
+  softwareProductResolutions,
   softwareProducts,
   softwareVulnerabilities,
   tickets,
@@ -57,6 +58,7 @@ beforeEach(async () => {
     await db.delete(patches);
     await db.delete(deviceVulnerabilities);
     await db.delete(softwareVulnerabilities);
+    await db.delete(softwareProductResolutions);
     await db.delete(softwareProducts);
     await db.delete(vulnerabilities);
     await db.delete(vulnerabilitySources);
@@ -566,5 +568,81 @@ describe('fleet software rollup (#2262)', () => {
     const detail = await get<{ versions: unknown[]; devices: Array<{ installedVersions: string[] }> }>(env, `/software/${encodeURIComponent('sw:7-zip|')}`);
     expect(detail.body.versions).toEqual([]);
     expect(detail.body.devices.every((d) => d.installedVersions.length === 0)).toBe(true);
+  });
+
+  runDb('targetVersion: version-aware max of each CVE fix, null while any CVE has no fix (#7071)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    await seedChromeFleet(env);
+    const [product] = await getTestDb()
+      .insert(softwareProducts)
+      .values({ normalizedName: `google chrome ${Date.now()}`, normalizedVendor: 'google' })
+      .returning({ id: softwareProducts.id });
+    await getTestDb().insert(softwareProductResolutions).values({
+      lookupName: 'google chrome',
+      lookupVendor: 'google llc',
+      normalizedName: 'google chrome',
+      softwareProductId: product!.id,
+      confidence: 'authoritative',
+      matchedVia: 'test',
+      resolverVersion: 1,
+      resolvedAt: new Date(),
+    });
+    const addFix = async (cveId: string, endExcluding: string | null) => {
+      const [row] = await getTestDb().select({ id: vulnerabilities.id }).from(vulnerabilities).where(eq(vulnerabilities.cveId, cveId));
+      await getTestDb().insert(softwareVulnerabilities).values({
+        productId: product!.id,
+        vulnerabilityId: row!.id,
+        versionEndExcluding: endExcluding,
+      });
+    };
+    const chromeTarget = async () => {
+      const list = await get<{ items: Array<{ groupKey: string; targetVersion: string | null }> }>(env, '/software');
+      return list.body.items.find((g) => g.groupKey === CHROME_KEY)?.targetVersion;
+    };
+
+    await addFix('CVE-2026-70001', '141.0.5');
+    await addFix('CVE-2026-70002', '141.0.9');
+    await addFix('CVE-2026-70003', '141.0.10');
+    // CVE-70004 has no fix row yet → partial knowledge must not render as a target.
+    expect(await chromeTarget()).toBeNull();
+
+    await addFix('CVE-2026-70004', '140.5');
+    // Numeric max (141.0.10), not the string max (141.0.9).
+    expect(await chromeTarget()).toBe('141.0.10');
+
+    const detail = await get<{ group: { targetVersion: string | null } }>(env, `/software/${encodeURIComponent(CHROME_KEY)}`);
+    expect(detail.body.group.targetVersion).toBe('141.0.10');
+
+    // A severity filter narrows the displayed CVEs, not what must be fixed:
+    // the target still clears the whole group.
+    const filtered = await get<{ items: Array<{ groupKey: string; cveCount: number; targetVersion: string | null }> }>(env, '/software?severity=critical');
+    const chrome = filtered.body.items.find((g) => g.groupKey === CHROME_KEY);
+    expect(chrome?.cveCount).toBe(1);
+    expect(chrome?.targetVersion).toBe('141.0.10');
+  });
+
+  runDb('targetVersion: vendorless software resolves through a NULL lookup_vendor (#7071)', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const d1 = await seedDevice(env, 'rollup-target-nullvendor');
+    const inv = await seedInventory(env, d1, '7-Zip', null, '23.0');
+    const cve = await seedCve('CVE-2026-74001');
+    await seedFinding(env, d1, cve, { softwareInventoryId: inv });
+    const [product] = await getTestDb()
+      .insert(softwareProducts)
+      .values({ normalizedName: `7-zip ${Date.now()}`, normalizedVendor: null })
+      .returning({ id: softwareProducts.id });
+    await getTestDb().insert(softwareProductResolutions).values({
+      lookupName: '7-zip',
+      lookupVendor: null,
+      normalizedName: '7-zip',
+      softwareProductId: product!.id,
+      confidence: 'authoritative',
+      matchedVia: 'test',
+      resolverVersion: 1,
+      resolvedAt: new Date(),
+    });
+    await getTestDb().insert(softwareVulnerabilities).values({ productId: product!.id, vulnerabilityId: cve, versionEndExcluding: '23.01' });
+    const list = await get<{ items: Array<{ groupKey: string; targetVersion: string | null }> }>(env, '/software');
+    expect(list.body.items.find((g) => g.groupKey === 'sw:7-zip|')?.targetVersion).toBe('23.01');
   });
 });

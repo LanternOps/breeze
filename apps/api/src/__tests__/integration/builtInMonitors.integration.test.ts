@@ -142,7 +142,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     const resolution = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(device.id));
     expect(resolution).toEqual({ kind: 'resolved', monitors: [] });
 
-    expect(await marker(partner.id)).toMatchObject({ version: 5 });
+    expect(await marker(partner.id)).toMatchObject({ version: 6 });
   });
 
   it('is a no-op on the second call', async () => {
@@ -171,7 +171,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
   // The production shape every existing partner is in: marker at version 2
   // with legacy rows (one deleted, one edited) gains the eight later defaults,
   // keeps surviving rows and edits, never resurrects the deleted one, and moves
-  // the marker to version 5 with provisionedAt kept.
+  // the marker to version 6 with provisionedAt kept.
   it('upgrades version 2 without restoring deleted defaults or overwriting edits', async () => {
     const partner = await newPartner();
     await withDbAccessContext(SYSTEM_CTX, () =>
@@ -235,7 +235,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     for (const row of before)
       expect(after.find((next) => next.id === row.id)).toEqual(row);
     expect(await marker(partner.id)).toMatchObject({
-      version: 5,
+      version: 6,
       provisionedAt: '2026-01-01T00:00:00.000Z',
     });
     expect(
@@ -297,7 +297,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     for (const row of before)
       expect(after.find((r) => r.id === row.id)).toEqual(row);
     expect(await marker(partner.id)).toMatchObject({
-      version: 5,
+      version: 6,
       provisionedAt: '2026-01-01T00:00:00.000Z',
     });
     expect(
@@ -340,7 +340,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     expect(
       rows.filter((row) => row.builtinKey === 'time_policy_not_applied'),
     ).toHaveLength(1);
-    expect(await marker(partner.id)).toMatchObject({ version: 5 });
+    expect(await marker(partner.id)).toMatchObject({ version: 6 });
     expect(
       await withDbAccessContext(SYSTEM_CTX, () =>
         db
@@ -349,6 +349,34 @@ describe('ensureBuiltInMonitorsForPartner', () => {
           .where(eq(configurationPolicies.partnerId, partner.id)),
       ),
     ).toEqual([]);
+  });
+
+  // W06 (#8195): a v5 partner gains only the container image default; once at
+  // v6 a deleted image default never comes back.
+  it('upgrades v5 with only the container image monitor and never resurrects it', async () => {
+    const partner = await newPartner();
+    await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
+    const deleteImageDefault = () => withDbAccessContext(SYSTEM_CTX, () =>
+      db.delete(monitorDefinitions).where(and(
+        eq(monitorDefinitions.partnerId, partner.id),
+        eq(monitorDefinitions.builtinKey, 'container_image_out_of_date'),
+      )));
+    await deleteImageDefault();
+    await withDbAccessContext(SYSTEM_CTX, () =>
+      db.update(partners)
+        .set({ settings: sql`jsonb_set(${partners.settings}, '{builtInMonitors,version}', '5'::jsonb)` })
+        .where(eq(partners.id, partner.id)));
+    const upgraded = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
+    expect(upgraded.monitorIds).toHaveLength(1);
+    const image = (await builtInsFor(partner.id)).filter((r) => r.builtinKey === 'container_image_out_of_date');
+    expect(image).toHaveLength(1);
+    expect(image[0]).toMatchObject({ kind: 'container_image_currency', orgId: null, partnerId: partner.id, condition: { minDaysBehind: 7 } });
+    expect(await marker(partner.id)).toMatchObject({ version: 6 });
+
+    await deleteImageDefault();
+    expect(await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id)))
+      .toEqual({ provisioned: false, monitorIds: [] });
+    expect((await builtInsFor(partner.id)).some((r) => r.builtinKey === 'container_image_out_of_date')).toBe(false);
   });
 
   it('refuses an org-owned row carrying a builtin_key (CHECK)', async () => {
@@ -400,7 +428,7 @@ describe('createPartner() hook', () => {
     const rows = await builtInsFor(created.partnerId);
     expect(rows).toHaveLength(BUILT_IN_MONITOR_DEFAULTS.length);
     expect(rows.every((r) => r.createdBy === created.adminUserId)).toBe(true);
-    expect(await marker(created.partnerId)).toMatchObject({ version: 5 });
+    expect(await marker(created.partnerId)).toMatchObject({ version: 6 });
   });
 });
 

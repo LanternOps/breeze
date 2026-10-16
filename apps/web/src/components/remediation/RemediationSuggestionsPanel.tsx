@@ -156,9 +156,11 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
       if (err instanceof ActionError) {
         // runAction already toasted; the panel keeps the reason on screen too.
         if (err.code) research.denyFromError(err.code, err.message);
+        else research.failRequest(depth); // no denial code: still an explicit, retryable state
         return;
       }
       showToast({ type: 'error', message: t('longTail.remediation.RemediationSuggestionsPanel.errors.researchFailed') });
+      research.failRequest(depth);
     } finally {
       setResearchBusy(false);
     }
@@ -459,7 +461,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
   };
 
   const groups = groupSuggestions(suggestions, memory);
-  const panelState = researchPanelState(research.status, research.denial);
+  const panelState = researchPanelState(research.status, research.denial, research.requestError);
   const everyGroupEmpty = groups.proven.length === 0 && groups.provenRecordsOnly.length === 0 && groups.ai.length === 0
     && groups.similar.length === 0 && groups.legacy.length === 0;
 
@@ -507,7 +509,7 @@ export default function RemediationSuggestionsPanel({ sourceType, sourceId, orgI
           onRefresh={() => { research.restartPolling(); void fetchSuggestions(true); }}
           onGenerate={() => void generateSuggestions()}
           onResearchDeeper={() => void requestResearch('deep')}
-          onRetry={() => void requestResearch(research.status?.depth ?? 'quick')}
+          onRetry={() => void requestResearch(panelState.kind === 'request_error' ? panelState.depth : research.status?.depth ?? 'quick')}
         />
       </div>
 

@@ -67,6 +67,12 @@ export async function upsertTicketExternalRef(input: {
   ticketId: string;
   externalId: string;
   externalUrl?: string | null;
+  /**
+   * The source's human-facing number (#8313, the import writer only). Left
+   * untouched on an existing ref when omitted, so the Partner API's upsert
+   * keeps its behaviour.
+   */
+  externalNumber?: string | null;
 }): Promise<TicketExternalRef> {
   const [ticket] = await db
     .select({ orgId: tickets.orgId })
@@ -84,10 +90,17 @@ export async function upsertTicketExternalRef(input: {
           partnerServicePrincipalId: input.principalId,
           externalId: input.externalId,
           externalUrl: input.externalUrl ?? null,
+          ...(input.externalNumber !== undefined ? { externalNumber: input.externalNumber } : {}),
         })
         .onConflictDoUpdate({
           target: [ticketExternalRefs.partnerServicePrincipalId, ticketExternalRefs.ticketId],
-          set: { orgId: ticket.orgId, externalId: input.externalId, externalUrl: input.externalUrl ?? null, updatedAt: new Date() },
+          set: {
+            orgId: ticket.orgId,
+            externalId: input.externalId,
+            externalUrl: input.externalUrl ?? null,
+            ...(input.externalNumber !== undefined ? { externalNumber: input.externalNumber } : {}),
+            updatedAt: new Date(),
+          },
         })
         .returning({ ticketId: ticketExternalRefs.ticketId, externalId: ticketExternalRefs.externalId, externalUrl: ticketExternalRefs.externalUrl }),
     );

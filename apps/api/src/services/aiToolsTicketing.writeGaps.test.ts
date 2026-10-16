@@ -46,6 +46,20 @@ vi.mock('../db', () => ({
   db: { select: mockSelect, update: mockUpdate },
 }));
 
+// #8596 ticket-to-ticket link actions: the service must never run for a
+// ticket the caller cannot see.
+const linkMocks = vi.hoisted(() => ({
+  addTicketLink: vi.fn(),
+  removeTicketLink: vi.fn(),
+  listTicketLinks: vi.fn(),
+  getTicketLinkForTicket: vi.fn(),
+  findTicketIdByNumber: vi.fn(),
+}));
+vi.mock('./ticketLinkService', async () => {
+  const actual = await vi.importActual<typeof import('./ticketLinkService')>('./ticketLinkService');
+  return { ...actual, ...linkMocks };
+});
+
 vi.mock('../middleware/auth', () => ({
   siteAccessCheck: (allowed: string[]) => (siteId?: string | null) => !!siteId && allowed.includes(siteId),
   isAiAgentPrincipal: (auth: { principal?: { kind?: string } }) => auth?.principal?.kind === 'ai_agent',
@@ -54,6 +68,7 @@ vi.mock('../middleware/auth', () => ({
 vi.mock('../routes/tickets/siteScope', () => ({
   deviceInSiteScope: siteScopeMocks.deviceInSiteScope,
   ticketSiteScopeCondition: siteScopeMocks.ticketSiteScopeCondition,
+  ticketCounterpartScopeCondition: () => undefined,
 }));
 
 vi.mock('./permissions', () => ({
@@ -370,5 +385,39 @@ describe('manage_tickets write-gap actions', () => {
       expect.objectContaining({ userId: 'user-1' }),
       { canManageAny: false, expectedTicketId: OTHER_TICKET_ID }
     );
+  });
+
+  it('link_ticket returns error and does not call service when ticket access is denied (#8596)', async () => {
+    mockDeniedTicket();
+
+    const out = await getTool().handler(
+      { action: 'link_ticket', ticketId: TICKET_ID, targetTicketId: OTHER_TICKET_ID, linkType: 'related' },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
+    expect(linkMocks.addTicketLink).not.toHaveBeenCalled();
+  });
+
+  it('unlink_ticket returns error and does not call service when ticket access is denied (#8596)', async () => {
+    mockDeniedTicket();
+
+    const out = await getTool().handler(
+      { action: 'unlink_ticket', ticketId: TICKET_ID, linkId: COMMENT_ID },
+      makeAuth()
+    );
+
+    expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
+    expect(linkMocks.getTicketLinkForTicket).not.toHaveBeenCalled();
+    expect(linkMocks.removeTicketLink).not.toHaveBeenCalled();
+  });
+
+  it('list_links returns error and does not call service when ticket access is denied (#8596)', async () => {
+    mockDeniedTicket();
+
+    const out = await getTool().handler({ action: 'list_links', ticketId: TICKET_ID }, makeAuth());
+
+    expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
+    expect(linkMocks.listTicketLinks).not.toHaveBeenCalled();
   });
 });

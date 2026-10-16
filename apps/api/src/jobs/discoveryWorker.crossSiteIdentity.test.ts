@@ -21,6 +21,8 @@ const { mockDb } = vi.hoisted(() => ({
     select: vi.fn(),
     update: vi.fn(),
     insert: vi.fn(),
+    // A nested db.transaction is a savepoint; the mock hands back the same db.
+    transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(mockDb)),
   },
 }));
 
@@ -34,6 +36,11 @@ vi.mock('bullmq', () => ({
 vi.mock('../db', () => ({
   db: mockDb,
   withSystemDbAccessContext: undefined,
+}));
+
+// Placement reconciliation on auto-link is covered by services/assetPlacement.test.ts.
+vi.mock('../services/assetPlacement', () => ({
+  reconcilePlacementOnLinkOrThrow: vi.fn(async () => 'noop'),
 }));
 
 vi.mock('../db/schema', () => ({

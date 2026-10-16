@@ -7,6 +7,8 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
+mod screenshot;
+mod session_menu;
 mod update_diagnostics;
 use update_diagnostics::{classify_update_error, UpdateFailStage, UpdateStep, UPDATER_LOG_FILE};
 
@@ -51,6 +53,14 @@ fn register_url_scheme() -> Result<(), String> {
 /// terminate sequence is already fragile enough to need the `RunEvent::Exit`
 /// workaround at the bottom of `run()`; re-entering it is not worth finding out.
 static EXIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set once the operator confirms Cmd+Q with sessions open (#8241).
+static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set by the session window when it has shown the quit confirmation. If it
+/// never does (no listener, webview not ready), Cmd+Q falls back to quitting.
+static QUIT_PROMPT_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const QUIT_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 // ── Linux `breeze://` registration ───────────────────────────────────────
 // The helpers below are compiled on Linux, and under `cfg(test)` everywhere so
@@ -862,6 +872,85 @@ fn request_exit(app: &tauri::AppHandle, code: i32) {
     }
 }
 
+/// Cmd+Q (macOS menu, #8241). With remote sessions open, ask in the focused
+/// session window first (it renders the confirmation and calls `confirm_quit`);
+/// otherwise quit straight away.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn request_quit(app: &tauri::AppHandle) {
+    let sessions = active_session_window_count(app);
+    let confirmed = QUIT_CONFIRMED.load(std::sync::atomic::Ordering::SeqCst);
+    if !session_menu::should_confirm_quit(sessions, confirmed) {
+        request_exit(app, 0);
+        return;
+    }
+    let counter = app.state::<WindowCounter>();
+    let n = *lock_or_recover(&counter.0, "window_counter");
+    let windows: Vec<_> = (1..=n)
+        .rev()
+        .filter_map(|i| app.get_webview_window(&format!("session-{}", i)))
+        .collect();
+    let target = windows
+        .iter()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .or_else(|| windows.first());
+    match target {
+        Some(window) => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            QUIT_PROMPT_SHOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+            if let Err(err) = app.emit_to(window.label(), "quit-requested", sessions) {
+                // Nobody can answer the prompt; do what Cmd+Q always did.
+                eprintln!("Failed to ask for quit confirmation: {err}");
+                request_exit(app, 0);
+                return;
+            }
+            // An emit reaches no one if the window is not listening; never let
+            // Cmd+Q silently do nothing.
+            let handle = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(QUIT_PROMPT_ACK_TIMEOUT);
+                if !QUIT_PROMPT_SHOWN.load(std::sync::atomic::Ordering::SeqCst) {
+                    eprintln!("Quit confirmation was not shown; quitting");
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || request_exit(&h, 0));
+                }
+            });
+        }
+        None => request_exit(app, 0),
+    }
+}
+
+#[tauri::command]
+fn quit_prompt_shown() {
+    QUIT_PROMPT_SHOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn confirm_quit(app: tauri::AppHandle) {
+    QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
+    request_exit(&app, 0);
+}
+
+/// Saves a session screenshot (PNG bytes as the raw invoke body) into the
+/// user's Pictures folder, falling back to Downloads. The folder and file name
+/// are chosen here, never by the page. Returns the saved path for display.
+#[tauri::command]
+fn save_screenshot(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected raw PNG bytes".into());
+    };
+    let dir = app
+        .path()
+        .picture_dir()
+        .or_else(|_| app.path().download_dir())
+        .map_err(|e| format!("no folder to save into: {e}"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    screenshot::write_screenshot(&dir, bytes, now).map(|p| p.display().to_string())
+}
+
 /// Whether the app should quit now that `label` was destroyed.
 ///
 /// Session windows are the app's reason to exist; `main` is only on screen
@@ -1158,6 +1247,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Per-device viewer preferences (#8241), kept on this machine only.
+        .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             get_pending_deep_link,
             clear_pending_deep_link,
@@ -1168,7 +1259,22 @@ pub fn run() {
             apply_pending_update,
             dismiss_pending_update,
             get_scheme_registration_error,
+            save_screenshot,
+            quit_prompt_shown,
+            confirm_quit,
         ]);
+
+    // macOS: an app menu without the Cmd+W/H/M key equivalents, so those
+    // reach the remote; Cmd+Q confirms while sessions are open (K9, #8241).
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .menu(|app| session_menu::build(app))
+            .on_menu_event(|app, event| match event.id().as_ref() {
+                session_menu::MENU_QUIT => request_quit(app),
+                id => session_menu::handle_window_item(app, id),
+            });
+    }
 
     // Single instance plugin (desktop only) — ensures deep links open in existing
     // process. A second remote session is launched by the OS handing the running

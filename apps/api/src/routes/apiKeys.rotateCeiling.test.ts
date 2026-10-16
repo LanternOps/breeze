@@ -12,7 +12,9 @@ import { Hono } from 'hono';
 const KEY_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
-const { authRef, permissionsRef, existingKeyRef, creatorAuthzRef } = vi.hoisted(() => ({
+const { authRef, permissionsRef, existingKeyRef, creatorAuthzRef, selectCalls, rotatedSet } = vi.hoisted(() => ({
+  selectCalls: { count: 0 },
+  rotatedSet: { current: null as any },
   authRef: { current: null as any },
   permissionsRef: { current: null as any },
   existingKeyRef: { current: null as any },
@@ -26,12 +28,18 @@ vi.mock('../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve([existingKeyRef.current])),
+          limit: vi.fn(() => {
+            // First read: the key. Second: the creator's guarded users row.
+            selectCalls.count += 1;
+            return Promise.resolve(selectCalls.count === 1 ? [existingKeyRef.current] : [{ credentialEpoch: 9 }]);
+          }),
         })),
       })),
     })),
     update: vi.fn(() => ({
-      set: vi.fn(() => ({
+      set: vi.fn((values: any) => {
+        rotatedSet.current = values;
+        return {
         where: vi.fn(() => ({
           returning: vi.fn(() =>
             Promise.resolve([
@@ -46,14 +54,15 @@ vi.mock('../db', () => ({
             ])
           ),
         })),
-      })),
+        };
+      }),
     })),
   },
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => any) => fn()),
 }));
 
-vi.mock('../db/schema', () => ({ apiKeys: {}, organizations: {} }));
+vi.mock('../db/schema', () => ({ apiKeys: {}, organizations: {}, users: {} }));
 
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
 
@@ -88,6 +97,7 @@ function superiorCaller() {
     orgId: ORG_ID,
     allowedSiteIds: undefined,
     user: { id: 'boss', email: 'boss@example.com' },
+    token: { aep: 4, mep: 2 },
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
   };
   permissionsRef.current = {
@@ -111,12 +121,16 @@ describe('POST /api-keys/:id/rotate — delegation ceiling (§1.4)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    selectCalls.count = 0;
+    rotatedSet.current = null;
     superiorCaller();
     existingKeyRef.current = {
       id: KEY_ID,
       orgId: ORG_ID,
       status: 'active',
-      createdBy: 'victim',
+      // The rotator is the key's creator: only the creator may re-mint it
+      // (non-creator cases below). The ceiling still applies to the creator.
+      createdBy: 'boss',
       scopes: ['devices:read'],
       principalType: 'human',
       principalId: null,
@@ -142,6 +156,51 @@ describe('POST /api-keys/:id/rotate — delegation ceiling (§1.4)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.key).toMatch(/^brz_/);
+  });
+
+  it('re-binds a rotated key to the creator\'s current session and credential state', async () => {
+    const res = await rotate(app);
+    expect(res.status).toBe(200);
+    expect(rotatedSet.current).toMatchObject({
+      creatorAuthEpoch: 4,
+      creatorMfaEpoch: 2,
+      creatorCredentialEpoch: 9,
+    });
+  });
+
+  it('refuses rotation when the session no longer matches the creator\'s live row', async () => {
+    const { db } = await import('../db');
+    vi.mocked(db.select).mockImplementationOnce(() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([existingKeyRef.current]) }) }),
+    }) as any).mockImplementationOnce(() => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    }) as any);
+
+    const res = await rotate(app);
+    expect(res.status).toBe(401);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses rotation by anyone other than the key\'s creator, before any write', async () => {
+    const { db } = await import('../db');
+    existingKeyRef.current.createdBy = 'someone-else';
+
+    const res = await rotate(app);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.code).toBe('API_KEY_CREATOR_REQUIRED');
+    expect(body.key).toBeUndefined();
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses rotation of a service-principal key by anyone other than its creator', async () => {
+    existingKeyRef.current.createdBy = 'someone-else';
+    existingKeyRef.current.principalType = 'service';
+    existingKeyRef.current.principalId = 'sp-1';
+
+    const res = await rotate(app);
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('API_KEY_CREATOR_REQUIRED');
   });
 
   it('denies on the PERMISSION axis when the key carries a scope the rotator lacks', async () => {

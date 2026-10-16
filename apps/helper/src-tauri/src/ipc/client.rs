@@ -18,6 +18,9 @@ use super::consent::{
     ConsentRequest, ConsentTracker, Outbound, RequestAction, UiEvent, CONSENT_PROTOCOL_VERSION,
 };
 use super::desktop::{self, ConsentBridge};
+use super::message::{
+    MessageRetract, MessageShow, MessageTracker, MsgEvent, ShowAction, PRESENTED_FAILED,
+};
 use super::envelope::{read_frame, write_frame, IpcError, PROTOCOL_VERSION};
 use super::token::HelperToken;
 use super::transport::{
@@ -101,6 +104,10 @@ struct AuthRequest {
     /// The consent prompt exchange this helper speaks (see `consent.rs`).
     #[serde(rename = "consentProtocolVersion")]
     consent_protocol_version: i32,
+    /// This helper renders `message_show` cards (#8293). The agent grants the
+    /// `messaging` scope only to an assist helper that says so.
+    #[serde(rename = "supportsMessaging")]
+    supports_messaging: bool,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -154,6 +161,7 @@ fn build_auth_request(id: &PeerIdentity) -> AuthRequest {
         binary_kind: "assist_helper".to_string(),
         desktop_context: String::new(),
         consent_protocol_version: CONSENT_PROTOCOL_VERSION,
+        supports_messaging: true,
     }
 }
 
@@ -176,6 +184,13 @@ fn parse_payload<T: for<'de> Deserialize<'de>>(
         .map_err(|e| IpcError::Protocol(format!("parse payload: {}", e)))
 }
 
+/// The `capabilities` frame the helper sends after auth (camelCase on the wire).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Capabilities {
+    caller_verify: bool,
+}
+
 /// Tauri-side hooks the IPC session needs to drive the desktop consent/banner
 /// UI. Kept `Option`al so the protocol-level tests can run the session loop with
 /// no Tauri app handle (they exercise auth/token/ping paths only).
@@ -183,6 +198,8 @@ fn parse_payload<T: for<'de> Deserialize<'de>>(
 pub struct DesktopCtx {
     pub app: AppHandle,
     pub bridge: std::sync::Arc<ConsentBridge>,
+    pub caller_verify: std::sync::Arc<super::caller_verify::CallerVerifyBridge>,
+    pub messages: std::sync::Arc<super::message::MessageBridge>,
 }
 
 /// Run a single IPC session over an already-connected `stream` with an explicit
@@ -269,9 +286,38 @@ where
     }
     // On any session-loop exit, clear the bridge so a later command on a
     // dead session fails fast instead of writing into the orphaned channel.
+    // Caller verification (W02) is offered only to the real Assist app. With
+    // no desktop context the receiver is a never-ready placeholder (its sender
+    // stays alive in `_caller_idle_tx`, so recv() pends instead of resolving).
+    let (_caller_idle_tx, idle_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut caller_rx = match desktop_ctx {
+        Some(ctx) => ctx.caller_verify.connect(),
+        None => idle_rx,
+    };
+    // Constructed before the capabilities write so a failed write still cleans up.
     let _bridge_guard = BridgeClearGuard {
         bridge: desktop_ctx.map(|c| c.bridge.clone()),
+        caller: desktop_ctx.map(|c| c.caller_verify.clone()),
+        app: desktop_ctx.map(|c| c.app.clone()),
+        messages: desktop_ctx.map(|c| c.messages.clone()),
     };
+    // Endpoint messages (#8293): card events (ack / closed) arrive here.
+    let (msg_tx, mut msg_rx) = tokio::sync::mpsc::unbounded_channel::<MsgEvent>();
+    if let Some(ctx) = desktop_ctx {
+        ctx.messages.set_sender(msg_tx);
+    }
+    let mut caller_tick = tokio::time::interval(Duration::from_millis(250));
+    if desktop_ctx.is_some() {
+        write_frame(
+            &mut stream,
+            &session_key,
+            &mut send_seq,
+            "capabilities",
+            "capabilities",
+            Some(to_raw_payload(&Capabilities { caller_verify: true })?),
+        )
+        .await?;
+    }
     let mut consent = ConsentTracker::default();
 
     // --- Receive loop (session key) ---
@@ -282,6 +328,53 @@ where
             Some(event) = event_rx.recv() => {
                 if let Some(frame) = consent.on_ui_event(event) {
                     write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
+                continue;
+            }
+            // A message card event: Acknowledge, or closed without one.
+            Some(event) = msg_rx.recv() => {
+                if let Some(ctx) = desktop_ctx {
+                    let frame = match event {
+                        MsgEvent::Ack(id) => ctx.messages.tracker().on_ack(&id),
+                        MsgEvent::Closed(id) => ctx.messages.tracker().on_closed(&id),
+                    };
+                    if let Some(frame) = frame {
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
+                }
+                continue;
+            }
+            // A caller-verification answer (choice, not_me, or timeout).
+            Some(response) = caller_rx.recv() => {
+                let payload = serde_json::json!({
+                    "choice": response.choice,
+                    "helperVersion": env!("CARGO_PKG_VERSION"),
+                });
+                write_frame(
+                    &mut stream,
+                    &session_key,
+                    &mut send_seq,
+                    &response.envelope_id,
+                    "caller_verify_response",
+                    Some(to_raw_payload(&payload)?),
+                )
+                .await?;
+                continue;
+            }
+            // Deadline polling is owned by this loop (no detached timers that
+            // could outlive a reconnect).
+            _ = caller_tick.tick() => {
+                if let Some(ctx) = desktop_ctx {
+                    for id in ctx.caller_verify.expire_due() {
+                        super::caller_verify::close_window(&ctx.app, &id);
+                    }
+                    // Message cards past `expiresAt` close themselves; the
+                    // agent is told `message_dismissed` reason `expired`.
+                    let due = ctx.messages.tracker().expire_due(now_unix_ms());
+                    for (id, frame) in due {
+                        desktop::close_message_window(&ctx.app, &id);
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
                 }
                 continue;
             }
@@ -348,6 +441,72 @@ where
                         if let Some(ctx) = desktop_ctx {
                             desktop::close_consent_window(&ctx.app);
                         }
+                    }
+                }
+            }
+            "caller_verify_request" => {
+                // Only the real Assist app can show the prompt; anything
+                // invalid is ignored (never approved).
+                if let Some(ctx) = desktop_ctx {
+                    match parse_payload::<super::caller_verify::Request>(&env.payload) {
+                        Ok(req) => {
+                            let id = req.verification_id.clone();
+                            // The answer reuses the request's envelope id,
+                            // which the contract fixes to caller-verify-<id>.
+                            if env.id != format!("caller-verify-{id}") {
+                                eprintln!("[helper] caller_verify_request: envelope id mismatch");
+                            } else if ctx.caller_verify.insert(env.id.clone(), req).is_ok() {
+                                if let Err(e) = super::caller_verify::show_prompt_window(&ctx.app, &id) {
+                                    eprintln!("[helper] caller verify window could not be shown: {}", e);
+                                    let _ = ctx.caller_verify.submit(&id, "timeout");
+                                }
+                            } else {
+                                eprintln!("[helper] caller_verify_request rejected");
+                            }
+                        }
+                        Err(e) => eprintln!("[helper] bad caller_verify_request payload: {}", e),
+                    }
+                }
+            }
+            "message_show" => match parse_payload::<MessageShow>(&env.payload) {
+                Ok(req) => {
+                    // Never log title/body. The card is its own window; the
+                    // main Assist window is never shown for a message (#8138).
+                    let action =
+                        desktop_ctx.map(|ctx| ctx.messages.tracker().on_show(now_unix_ms(), &req));
+                    let frames: Vec<Outbound> = match (action, desktop_ctx) {
+                        (Some(ShowAction::Show { plan, view }), Some(ctx)) => {
+                            match desktop::show_message_window(&ctx.app, &plan, &view) {
+                                Ok(()) => vec![MessageTracker::presented(&env.id, &req.message_id)],
+                                Err(e) => {
+                                    eprintln!("[helper] message card could not be shown: {}", e);
+                                    ctx.messages.tracker().on_show_failed(&req.message_id);
+                                    vec![MessageTracker::presented_with_status(
+                                        &env.id,
+                                        &req.message_id,
+                                        PRESENTED_FAILED,
+                                    )]
+                                }
+                            }
+                        }
+                        (Some(action), _) => {
+                            if let ShowAction::Reject(why) = &action {
+                                eprintln!("[helper] message_show rejected: {}", why);
+                            }
+                            MessageTracker::replies_for(&env.id, &req.message_id, action)
+                        }
+                        _ => Vec::new(),
+                    };
+                    for frame in frames {
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
+                }
+                Err(e) => eprintln!("[helper] bad message_show payload: {}", e),
+            },
+            "message_retract" => {
+                if let (Ok(r), Some(ctx)) = (parse_payload::<MessageRetract>(&env.payload), desktop_ctx) {
+                    if ctx.messages.tracker().on_retract(&r.message_id) {
+                        desktop::close_message_window(&ctx.app, &r.message_id);
                     }
                 }
             }
@@ -422,12 +581,42 @@ where
 /// fast rather than queueing into a channel no one reads.
 struct BridgeClearGuard {
     bridge: Option<std::sync::Arc<ConsentBridge>>,
+    caller: Option<std::sync::Arc<super::caller_verify::CallerVerifyBridge>>,
+    app: Option<AppHandle>,
+    messages: Option<std::sync::Arc<super::message::MessageBridge>>,
+}
+
+/// Wall-clock milliseconds since the Unix epoch.
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl Drop for BridgeClearGuard {
     fn drop(&mut self) {
+        // Message cards die with the session: the helper stores nothing and
+        // the agent replays sticky messages after the next auth (#8293).
+        if let Some(messages) = &self.messages {
+            messages.clear_sender();
+            let ids = messages.tracker().clear();
+            if let Some(app) = &self.app {
+                for id in ids {
+                    desktop::close_message_window(app, &id);
+                }
+            }
+        }
         if let Some(bridge) = &self.bridge {
             bridge.clear_sender();
+        }
+        // Pending caller verifications die with the session; close their
+        // windows so a stale prompt cannot be answered on a later session.
+        if let Some(caller) = &self.caller {
+            caller.clear();
+        }
+        if let Some(app) = &self.app {
+            super::caller_verify::close_all_windows(app);
         }
     }
 }
@@ -642,6 +831,9 @@ mod tests {
         // The agent only hands v2 consent prompts to a helper that says it
         // speaks v2.
         assert_eq!(v["consentProtocolVersion"], 2);
+        // Endpoint messaging (#8293): the agent grants the `messaging` scope only
+        // to an assist helper that advertises this.
+        assert_eq!(v["supportsMessaging"], true);
 
         // 2. Reply auth_response (still ZERO key) with a fixed session key.
         let session_key = [7u8; 32];
@@ -845,6 +1037,63 @@ mod tests {
 
         let res = session.await.expect("join");
         assert!(matches!(res, Ok(())), "expected clean Ok, got {:?}", res);
+    }
+
+    /// The capabilities frame is camelCase on the wire (frozen contract).
+    #[test]
+    fn test_capabilities_wire_shape() {
+        assert_eq!(
+            serde_json::to_value(Capabilities { caller_verify: true }).unwrap(),
+            serde_json::json!({"callerVerify": true})
+        );
+    }
+
+    /// With no desktop context (not the real Assist app) the helper sends no
+    /// capabilities frame and ignores caller_verify_request: the very next
+    /// frame after a ping is the pong, never a response/capabilities frame.
+    #[tokio::test]
+    async fn test_caller_verify_request_ignored_without_desktop_context() {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let session = tokio::spawn(async move {
+            run_session_with_identity(client_half, &token, &id, None).await
+        });
+        let mut broker_send = 0u64;
+        let mut broker_recv = 0u64;
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut broker_recv)
+            .await
+            .expect("read auth_request");
+        let session_key = [9u8; 32];
+        let resp = format!(
+            r#"{{"accepted":true,"sessionKey":"{}"}}"#,
+            hex::encode(session_key)
+        );
+        write_frame(&mut broker_half, &ZERO_KEY, &mut broker_send, &env.id, "auth_response", Some(raw(&resp)))
+            .await
+            .expect("write auth_response");
+        let req = r#"{"verificationId":"11111111-1111-4111-8111-111111111111","username":"a","technicianName":"S","orgName":"A","actionLabel":"x","targetLabel":"y","reverseCode":"7319","choices":["42","17","86"],"timeoutMs":30000}"#;
+        write_frame(
+            &mut broker_half,
+            &session_key,
+            &mut broker_send,
+            "caller-verify-11111111-1111-4111-8111-111111111111",
+            "caller_verify_request",
+            Some(raw(req)),
+        )
+        .await
+        .expect("write request");
+        write_frame(&mut broker_half, &session_key, &mut broker_send, "p1", "ping", None)
+            .await
+            .expect("write ping");
+        let pong = read_frame(&mut broker_half, &session_key, &mut broker_recv)
+            .await
+            .expect("read pong");
+        assert_eq!(pong.typ, "pong");
+        write_frame(&mut broker_half, &session_key, &mut broker_send, "bye", "disconnect", None)
+            .await
+            .expect("write disconnect");
+        assert!(matches!(session.await.expect("join"), Ok(())));
     }
 
     /// A v2 consent prompt that cannot be shown (here: no window at all) is

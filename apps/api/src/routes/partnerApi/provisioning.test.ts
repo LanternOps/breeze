@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   sourceCidrs: [] as string[],
   rateLimiter: vi.fn(),
   update: vi.fn(),
+  delete: vi.fn(),
   transaction: vi.fn(),
 }));
 
@@ -39,6 +40,7 @@ vi.mock('../../db', () => ({
     select: mocks.select,
     insert: mocks.insert,
     update: mocks.update,
+    delete: mocks.delete,
     execute: mocks.execute,
     transaction: mocks.transaction,
   },
@@ -127,6 +129,10 @@ function primeDb() {
       };
     }),
   }));
+  mocks.update.mockImplementation(() => ({
+    set: vi.fn(() => ({ where: vi.fn(async () => []) })),
+  }));
+  mocks.delete.mockImplementation(() => ({ where: vi.fn(async () => []) }));
   mocks.execute.mockResolvedValue([]);
 }
 
@@ -395,12 +401,10 @@ describe('POST /organizations', () => {
 
 describe('POST /sites', () => {
   function primeSuccess() {
-    // Two inserts now, in order: the site row, then the contacts mirror's
-    // insert (`applyToContactRow` reads back `created!.id` from `.returning()`
-    // to record caller-verification destination provenance, #6354) — priming
-    // only the site row leaves that second insert's `.returning()` empty and
-    // `created` undefined.
-    insertResults = [[siteRow], [{ id: 'contact-1' }]];
+    // Four inserts now, in order: site, contacts mirror, canonical
+    // contact_roles assignment, then caller-verification destination provenance.
+    // Only the first two RETURNING payloads are consumed by this path.
+    insertResults = [[siteRow], [{ id: 'contact-1', siteId: SITE_ID, roles: ['site'] }], [], []];
     // Two reads now, in order: the contacts mirror's existing-primary lookup
     // (none — the site was just created), then the partner-export stamp
     // re-read. Priming only the stamp would feed its row to the mirror, which

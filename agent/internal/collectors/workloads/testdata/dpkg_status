@@ -1,0 +1,12 @@
+Package: libc6
+Status: install ok installed
+Version: 2.36-9
+
+Package: pve-manager
+Status: install ok installed
+Priority: optional
+Version: 8.2.4
+Description: Proxmox Virtual Environment Management Tools
+
+Package: zlib1g
+Version: 1:1.2.13

@@ -8,6 +8,7 @@ import AccessDenied from '../shared/AccessDenied';
 import AssignParkedDeviceDialog, { type ParkedDeviceSummary } from './AssignParkedDeviceDialog';
 import { useHashState } from '../../lib/useHashState';
 import '../../lib/i18n';
+import { replaceUrl } from '../../lib/replaceUrl';
 
 /** One row of GET /pre-assignment/devices. Identity fields are device-reported. */
 export interface ParkedDeviceRow extends ParkedDeviceSummary {
@@ -31,7 +32,7 @@ function writeHash(deviceId: string | null) {
   if (deviceId) {
     window.location.hash = encodeURIComponent(deviceId);
   } else if (window.location.hash) {
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    replaceUrl(window.location.pathname + window.location.search);
   }
 }
 

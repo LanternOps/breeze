@@ -24,6 +24,7 @@ import {
 import EmailTemplatesTab from './EmailTemplatesTab';
 import SettingsSectionNav from './SettingsSectionNav';
 import { fetchWithAuth } from '../../stores/auth';
+import { PartnerCallerVerificationPolicy } from '../callerVerification/CallerVerificationPolicyForm';
 import { getJwtClaims } from '../../lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
 import PartnerSecurityTab, { currentIpCovered } from './PartnerSecurityTab';
@@ -704,6 +705,13 @@ export default function PartnerSettingsPage() {
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
             </section>
+          )}
+          {/* Caller verification (#6354): partner baseline, self-saving and
+              hidden unless the server flag is on. */}
+          {activeTab === 'security' && (
+            <div className="mt-4">
+              <PartnerCallerVerificationPolicy />
+            </div>
           )}
 
           {activeTab === 'notifications' && (
