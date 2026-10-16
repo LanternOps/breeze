@@ -28,6 +28,53 @@ func swapSharedECHDialer(t *testing.T) *ech.Dialer {
 	return d
 }
 
+// Startup half of the kill switch: the constructor applies the persisted
+// operator flag (ech) and server switch (ech_server_enabled) to the shared
+// dialer before building any transport. Each case starts the dialer in the
+// opposite state, so only NewWithVersion's Configure call can produce want.
+func TestNewWithVersion_AppliesECHSwitchesToSharedDialer(t *testing.T) {
+	cases := []struct {
+		name         string
+		local        bool
+		server       bool
+		want         bool
+		wantDisabled ech.DisabledBy
+	}{
+		{"server kill switch off", true, false, false, ech.DisabledByServer},
+		{"operator opt-out", false, true, false, ech.DisabledByConfig},
+		{"both on", true, true, true, ech.DisabledByNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			start := !tc.want
+			d := ech.New(ech.Options{LocalEnabled: start, ServerEnabled: start})
+			t.Cleanup(ech.SetSharedForTest(d))
+			if ech.SharedEnabledForTest() != start {
+				t.Fatalf("precondition: shared dialer enabled = %v, want %v", !start, start)
+			}
+
+			_ = NewWithVersion(&config.Config{
+				AgentID:          "agent-1",
+				ServerURL:        "http://127.0.0.1:1",
+				AuthToken:        "t",
+				ECH:              tc.local,
+				ECHServerEnabled: tc.server,
+			}, "test", nil, nil)
+
+			if got := ech.SharedEnabledForTest(); got != tc.want {
+				t.Fatalf("shared ECH dialer enabled = %v after NewWithVersion(ech=%v, ech_server_enabled=%v), want %v",
+					got, tc.local, tc.server, tc.want)
+			}
+			if got := ech.Shared().Status("cp.example.com").Disabled; got != tc.wantDisabled {
+				t.Fatalf("Disabled = %s, want %s", got, tc.wantDisabled)
+			}
+		})
+	}
+}
+
 func TestNewHeartbeatHTTPClient_UsesECHTransport(t *testing.T) {
 	c := newHeartbeatHTTPClient(nil)
 	tr, ok := c.Transport.(*http.Transport)
