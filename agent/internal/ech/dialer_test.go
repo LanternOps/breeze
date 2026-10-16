@@ -81,14 +81,17 @@ func failResolver(t *testing.T) (*Resolver, *atomic.Int32) {
 	return NewResolver(srv.Client(), srv.URL), hits
 }
 
-// noECHResolver answers with no HTTPS record, so Lookup returns ErrNoECHConfig.
-func noECHResolver(t *testing.T) *Resolver {
+// noECHResolver answers with no HTTPS record, so Lookup returns
+// ErrNoECHConfig. It counts requests.
+func noECHResolver(t *testing.T) (*Resolver, *atomic.Int32) {
 	t.Helper()
+	hits := new(atomic.Int32)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		_, _ = w.Write([]byte(`{"Status":0,"Answer":[]}`))
 	}))
 	t.Cleanup(srv.Close)
-	return NewResolver(srv.Client(), srv.URL)
+	return NewResolver(srv.Client(), srv.URL), hits
 }
 
 // listResolver serves list as the host's ech= SvcParam.
@@ -136,10 +139,28 @@ func forceMode(d *Dialer, host string, m Mode) {
 	d.mu.Unlock()
 }
 
-func echFailures(d *Dialer, host string) int {
+// waitFetchIdle blocks until no async config fetch is in flight for host.
+func waitFetchIdle(t *testing.T, d *Dialer, host string) {
+	t.Helper()
+	for {
+		d.mu.Lock()
+		busy := d.fetching[host]
+		d.mu.Unlock()
+		if !busy {
+			return
+		}
+		select {
+		case <-t.Context().Done():
+			t.Fatal("async fetch never finished")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+func rawMode(d *Dialer, host string, now time.Time) Mode {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.state(host).echFailures
+	return d.state(host).Mode(now)
 }
 
 func okHandler() http.Handler {
@@ -319,7 +340,8 @@ func TestDial_SingleSignatureStaysPlain(t *testing.T) {
 func TestDial_ECHModeNoConfigFallsBackPlainImmediately(t *testing.T) {
 	addr, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
 	rig := newRig(addr)
-	d := newTestDialer(t, rig, noECHResolver(t), &fakeClock{t: dialT0})
+	res, _ := noECHResolver(t)
+	d := newTestDialer(t, rig, res, &fakeClock{t: dialT0})
 	forceMode(d, dialHost, ModeECH)
 
 	start := time.Now()
@@ -334,8 +356,9 @@ func TestDial_ECHModeNoConfigFallsBackPlainImmediately(t *testing.T) {
 	if elapsed >= 200*time.Millisecond {
 		t.Fatalf("elapsed = %v, want < 200ms", elapsed)
 	}
-	if n := echFailures(d, dialHost); n != 1 {
-		t.Fatalf("echFailures = %d, want 1", n)
+	// Plain worked inside ECH mode, so the host left ECH.
+	if m := d.Status(dialHost).Mode; m != ModePlain {
+		t.Fatalf("Mode = %v, want plain", m)
 	}
 }
 
@@ -370,33 +393,120 @@ func TestDial_RejectionWithRetryConfigRetriesOnce(t *testing.T) {
 
 func TestDial_ECHFailuresCooldownThenPlain(t *testing.T) {
 	list, _ := newECHConfigList(t, "public.test")
-	addr, pool := startTLSServer(t, []string{dialHost, "public.test"}, nil, okHandler())
-	rig := newRig(addr)
+	noECHAddr, pool := startTLSServer(t, []string{dialHost, "public.test"}, nil, okHandler())
+	filterAddr, _ := startFilterListener(t)
+	rig := newRig(filterAddr)
+	res, hits := failResolver(t)
 	clock := &fakeClock{t: dialT0}
-	d := newTestDialer(t, rig, noECHResolver(t), clock)
-	d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+	d := newTestDialer(t, rig, res, clock)
 	forceMode(d, dialHost, ModeECH)
 
 	for i := 1; i <= 3; i++ {
-		tc := mustDial(t, d, baseCfg(pool))
-		if tc.ConnectionState().ECHAccepted {
-			t.Fatalf("dial %d: ECHAccepted against a no-ECH server", i)
+		// ECH attempt → server without ECH keys (rejection, empty retry
+		// list); plain fallback → the filter, so the host stays in ECH.
+		d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+		rig.setTarget(noECHAddr)
+		rig.thenTarget(filterAddr)
+		before := rig.dials.Load()
+		if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
+			t.Fatalf("dial %d: err = %v, want filter signature", i, err)
+		}
+		if n := rig.dials.Load() - before; n != 2 {
+			t.Fatalf("dial %d: TCP dials = %d, want 2 (ech + plain)", i, n)
+		}
+		if _, _, ok := d.opts.Cache.Get(dialHost); ok {
+			t.Fatalf("dial %d: rejection with empty retry list did not delete the cached config", i)
+		}
+		if i < 3 {
+			if m := rawMode(d, dialHost, clock.Now()); m != ModeECH {
+				t.Fatalf("dial %d: mode = %v, want ech", i, m)
+			}
 		}
 	}
-	d.mu.Lock()
-	mode := d.state(dialHost).Mode(clock.Now())
-	d.mu.Unlock()
-	if mode != ModeCooldown {
-		t.Fatalf("mode after 3 ECH failures = %v, want cooldown", mode)
+	if m := rawMode(d, dialHost, clock.Now()); m != ModeCooldown {
+		t.Fatalf("mode after 3 ECH failures = %v, want cooldown", m)
 	}
 	if st := d.Status(dialHost); !st.InCooldown || st.ECHActive {
 		t.Fatalf("Status = %+v, want InCooldown", st)
 	}
 
+	d.opts.Cache.Put(dialHost, ECHConfig{ConfigList: list, TTL: time.Hour})
+	rig.setTarget(filterAddr)
 	before := rig.dials.Load()
-	mustDial(t, d, baseCfg(pool))
+	if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
+		t.Fatalf("cooldown dial: err = %v, want filter signature", err)
+	}
 	if n := rig.dials.Load() - before; n != 1 {
 		t.Fatalf("cooldown dial made %d TCP dials, want 1", n)
+	}
+	if n := hits.Load(); n != 0 {
+		t.Fatalf("DoH hits = %d, want 0", n)
+	}
+}
+
+func TestDial_FetchFailuresCooldown(t *testing.T) {
+	filterAddr, _ := startFilterListener(t)
+	_, pool := startTLSServer(t, []string{dialHost}, nil, okHandler())
+	rig := newRig(filterAddr)
+
+	// The resolver holds each request until the test releases it, so a burst
+	// of dials happens while one fetch is in flight; it then answers with no
+	// ech= parameter.
+	release := make(chan struct{})
+	hits := new(atomic.Int32)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte(`{"Status":0,"Answer":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	clock := &fakeClock{t: dialT0}
+	d := newTestDialer(t, rig, NewResolver(srv.Client(), srv.URL), clock)
+	forceMode(d, dialHost, ModeECH)
+
+	failures := func() int {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.state(dialHost).echFailures
+	}
+	for i := 1; i <= 3; i++ {
+		// A burst of cache-miss dials while the fetch is in flight: each
+		// falls through to plain (1 TCP dial) and none counts as a failure.
+		for b := 0; b < 3; b++ {
+			before := rig.dials.Load()
+			if _, err := dialTLS(t, d, baseCfg(pool), nil); !IsFilterSignature(err) {
+				t.Fatalf("round %d dial %d: err = %v, want filter signature", i, b, err)
+			}
+			if n := rig.dials.Load() - before; n != 1 {
+				t.Fatalf("round %d dial %d: TCP dials = %d, want 1 (cache miss → plain only)", i, b, n)
+			}
+		}
+		if n := failures(); n != i-1 {
+			t.Fatalf("round %d: echFailures before the fetch failed = %d, want %d", i, n, i-1)
+		}
+		if m := rawMode(d, dialHost, clock.Now()); m != ModeECH {
+			t.Fatalf("round %d: mode before the fetch failed = %v, want ech", i, m)
+		}
+		select {
+		case release <- struct{}{}:
+		case <-t.Context().Done():
+			t.Fatalf("round %d: fetch never reached the resolver", i)
+		}
+		waitFetchIdle(t, d, dialHost)
+		want := ModeECH
+		if i == 3 {
+			want = ModeCooldown
+		}
+		if m := rawMode(d, dialHost, clock.Now()); m != want {
+			t.Fatalf("after round %d: mode = %v, want %v", i, m, want)
+		}
+	}
+	if n := hits.Load(); n != 3 {
+		t.Fatalf("DoH hits = %d, want 3 (one deduped fetch per round)", n)
 	}
 }
 

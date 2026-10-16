@@ -18,6 +18,7 @@ const (
 )
 
 // errNoCachedConfig marks an ECH attempt skipped because no config is cached.
+// A miss is not an ECH failure: the fetch it triggers counts one if it fails.
 var errNoCachedConfig = errors.New("ech: no cached config")
 
 // Options configures a Dialer. Zero values select the documented defaults.
@@ -269,15 +270,19 @@ func (a *attempt) plainInitial(ctx context.Context) (net.Conn, error) {
 	if etc, eerr := a.ech(ctx, true); eerr == nil {
 		return etc, nil
 	}
-	return a.plainFallback(ctx)
+	if ptc, perr := a.plainFallback(ctx); perr == nil {
+		return ptc, nil
+	}
+	return nil, err
 }
 
 // plainFallback is the single plain attempt after ECH could not be used. It
-// never re-enters ECH and does not leave ECH mode on success: only the
-// consecutive-failure limit (cooldown) does that.
+// never re-enters ECH. Success while the host is in ModeECH moves it back to
+// ModePlain: plain works, so the filter is gone.
 func (a *attempt) plainFallback(ctx context.Context) (net.Conn, error) {
 	tc, _, err := a.handshake(ctx, a.config())
 	if err == nil {
+		a.d.update(a.host, func(st *hostState) bool { st.NotePlainSuccess(); return false })
 		a.notePlainSuccess("plain-fallback")
 		return tc, nil
 	}
@@ -298,7 +303,6 @@ func (a *attempt) ech(ctx context.Context, allowRetry bool) (*tls.Conn, error) {
 	list, fresh, ok := d.opts.Cache.Get(a.host)
 	if !ok {
 		d.fetchAsync(a.host)
-		a.noteECHFailure()
 		log.Debug("ech dial attempt", "host", a.host, "attempt", "ech", "error", errNoCachedConfig.Error())
 		return nil, errNoCachedConfig
 	}
@@ -368,7 +372,9 @@ func (a *attempt) notePlainSuccess(kind string) {
 }
 
 // fetchAsync refreshes host's config in the background, at most one fetch
-// per host at a time. It never blocks the caller.
+// per host at a time. It never blocks the caller. A failed fetch (including
+// ErrNoECHConfig) counts one ECH failure for host; that is a no-op unless the
+// host is in ModeECH.
 func (d *Dialer) fetchAsync(host string) {
 	d.mu.Lock()
 	if d.fetching[host] {
@@ -388,6 +394,8 @@ func (d *Dialer) fetchAsync(host string) {
 		cfg, err := d.opts.Resolver.Lookup(ctx, host)
 		if err != nil {
 			log.Debug("ech config fetch failed", "host", host, "error", err.Error())
+			now := d.opts.Now()
+			d.update(host, func(st *hostState) bool { st.NoteECHFailure(now); return false })
 			return
 		}
 		d.opts.Cache.Put(host, cfg)
