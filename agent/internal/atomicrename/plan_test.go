@@ -14,7 +14,7 @@ func newTestPlanner(infoEx, legacy renameFunc) (*planner, *int) {
 	p := &planner{
 		infoEx: infoEx,
 		legacy: legacy,
-		warn:   func(uint32, error) { warnings++ },
+		warn:   func(uint32, string, error) { warnings++ },
 	}
 	return p, &warnings
 }
@@ -88,14 +88,15 @@ func TestReplacePlannedFallsBackWhenInfoExIsUnsupported(t *testing.T) {
 func TestReplacePlannedWarnsOnceWhenFallbackFires(t *testing.T) {
 	infoErr := &os.PathError{Op: "rename", Path: "new", Err: winErrInvalidParameter}
 	var warnedBuild uint32
+	var warnedPath string
 	var warnedErr error
 	warnings := 0
 	p := &planner{
 		infoEx: func(string, string) error { return infoErr },
 		legacy: okRename,
-		warn: func(build uint32, err error) {
+		warn: func(build uint32, newpath string, err error) {
 			warnings++
-			warnedBuild, warnedErr = build, err
+			warnedBuild, warnedPath, warnedErr = build, newpath, err
 		},
 	}
 	for i := 0; i < 3; i++ {
@@ -106,8 +107,41 @@ func TestReplacePlannedWarnsOnceWhenFallbackFires(t *testing.T) {
 	if warnings != 1 {
 		t.Fatalf("warnings = %d, want exactly 1 across 3 fallbacks", warnings)
 	}
-	if warnedBuild != 19045 || !errors.Is(warnedErr, winErrInvalidParameter) {
-		t.Fatalf("warning got build=%d err=%v, want 19045 and the infoEx error", warnedBuild, warnedErr)
+	if warnedBuild != 19045 || warnedPath != "new" || !errors.Is(warnedErr, winErrInvalidParameter) {
+		t.Fatalf("warning got build=%d path=%q err=%v, want 19045, %q and the infoEx error", warnedBuild, warnedPath, warnedErr, "new")
+	}
+}
+
+// TestReplacePlannedNotesLegacyBuildOnce: a pre-1607 build has no POSIX
+// rename, so a reader can make every rename fail with access denied. The
+// process must say once which primitive it is on, or that failure carries no
+// hint of the cause.
+func TestReplacePlannedNotesLegacyBuildOnce(t *testing.T) {
+	var notedBuild uint32
+	notes := 0
+	p := &planner{
+		infoEx: boom("infoEx"),
+		legacy: okRename,
+		noteLegacyBuild: func(build uint32) {
+			notes++
+			notedBuild = build
+		},
+	}
+	for i := 0; i < 3; i++ {
+		if err := p.replace(10240, "old", "new"); err != nil {
+			t.Fatalf("rename %d: %v", i, err)
+		}
+	}
+	if notes != 1 || notedBuild != 10240 {
+		t.Fatalf("notes = %d (build %d), want exactly 1 for build 10240", notes, notedBuild)
+	}
+
+	p2 := &planner{infoEx: okRename, legacy: boom("legacy"), noteLegacyBuild: func(uint32) { notes++ }}
+	if err := p2.replace(14393, "old", "new"); err != nil {
+		t.Fatalf("rename on 1607: %v", err)
+	}
+	if notes != 1 {
+		t.Fatalf("notes = %d after a 1607 rename, want no note on a build with POSIX rename", notes)
 	}
 }
 

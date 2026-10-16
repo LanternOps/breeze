@@ -22,9 +22,10 @@ const (
 var log = logging.L("atomicrename")
 
 var defaultPlanner = &planner{
-	infoEx: renameWithInfoEx,
-	legacy: renameWithMoveFile,
-	warn:   warnFallback,
+	infoEx:          renameWithInfoEx,
+	legacy:          renameWithMoveFile,
+	warn:            warnFallback,
+	noteLegacyBuild: noteLegacyBuild,
 }
 
 // Replace atomically replaces newpath with oldpath. Builds that support
@@ -34,12 +35,23 @@ func Replace(oldpath, newpath string) error {
 	return defaultPlanner.replace(windows.RtlGetVersion().BuildNumber, oldpath, newpath)
 }
 
-// warnFallback records that this process lost POSIX rename semantics on a
-// build that should have them. Renames still succeed through MoveFileEx, but a
-// concurrent reader can now make them fail with ERROR_ACCESS_DENIED.
-func warnFallback(build uint32, err error) {
-	log.Warn("FileRenameInfoEx rename refused on a build that should support it; falling back to MoveFileEx (no POSIX rename semantics) for this process",
-		"build", build, "error", err.Error())
+// warnFallback records that a 1607+ build refused FileRenameInfoEx, so that
+// rename lost POSIX semantics: MoveFileEx still replaces the file, but a
+// concurrent reader can make it fail with ERROR_ACCESS_DENIED. Later renames
+// try FileRenameInfoEx again; only this log line is once per process. The
+// path is logged because the refusal can depend on the volume (FAT, SMB).
+func warnFallback(build uint32, newpath string, err error) {
+	log.Warn("FileRenameInfoEx rename refused on a build that should support it; fell back to MoveFileEx without POSIX rename semantics (logged once per process)",
+		"build", build, "path", newpath, "error", err.Error())
+}
+
+// noteLegacyBuild records once that this OS build predates FileRenameInfoEx, so
+// every rename uses MoveFileEx. A rename that later fails with
+// ERROR_ACCESS_DENIED because a reader held the target open then has a cause
+// in the log.
+func noteLegacyBuild(build uint32) {
+	log.Info("Windows build predates FileRenameInfoEx; file replacement uses MoveFileEx without POSIX rename semantics",
+		"build", build, "minBuild", fileRenameInfoExMinBuild)
 }
 
 func renameWithMoveFile(oldpath, newpath string) error {

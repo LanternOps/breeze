@@ -26,13 +26,21 @@ const (
 type renameFunc func(oldpath, newpath string) error
 
 // planner picks the rename primitive for an OS build. infoEx is the POSIX
-// rename (FileRenameInfoEx on Windows); legacy is MoveFileEx. warn is called at
-// most once per planner, the first time a 1607+ build has to fall back.
+// rename (FileRenameInfoEx on Windows); legacy is MoveFileEx.
+//
+// Each hook fires at most once per planner, so a process that renames on every
+// heartbeat leaves one line, not one per write:
+//   - warn: the first time a 1607+ build has to fall back. The fallback itself
+//     is decided per call; only the log line is once per process.
+//   - noteLegacyBuild: the first rename on a build that predates
+//     FileRenameInfoEx and so never has POSIX rename semantics.
 type planner struct {
-	infoEx   renameFunc
-	legacy   renameFunc
-	warn     func(build uint32, err error)
-	warnOnce sync.Once
+	infoEx          renameFunc
+	legacy          renameFunc
+	warn            func(build uint32, newpath string, err error)
+	warnOnce        sync.Once
+	noteLegacyBuild func(build uint32)
+	legacyNoteOnce  sync.Once
 }
 
 // replace renames oldpath over newpath.
@@ -46,6 +54,9 @@ type planner struct {
 // case POSIX rename exists to survive and MoveFileEx fails it the same way.
 func (p *planner) replace(build uint32, oldpath, newpath string) error {
 	if build < fileRenameInfoExMinBuild {
+		if p.noteLegacyBuild != nil {
+			p.legacyNoteOnce.Do(func() { p.noteLegacyBuild(build) })
+		}
 		return p.legacy(oldpath, newpath)
 	}
 	err := p.infoEx(oldpath, newpath)
@@ -53,7 +64,7 @@ func (p *planner) replace(build uint32, oldpath, newpath string) error {
 		return err
 	}
 	if p.warn != nil {
-		p.warnOnce.Do(func() { p.warn(build, err) })
+		p.warnOnce.Do(func() { p.warn(build, newpath, err) })
 	}
 	if ferr := p.legacy(oldpath, newpath); ferr != nil {
 		return fmt.Errorf("%w; legacy rename: %w", err, ferr)

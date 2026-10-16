@@ -10,9 +10,10 @@
 //
 // Windows 10 2015 LTSB (build 10240) does not implement FileRenameInfoEx:
 // SetFileInformationByHandle returns ERROR_INVALID_PARAMETER and retrying the
-// same call cannot succeed. Those builds use MoveFileEx (#8858, #8860). A 1607+
-// kernel that still refuses the class also falls back, once per call, and the
-// first such fallback in a process logs a warning.
+// same call cannot succeed. Those builds use MoveFileEx (#8858, #8860) and log
+// that once per process. A 1607+ kernel that still refuses the class falls
+// back to MoveFileEx for that call; the first such fallback in a process logs
+// a warning with the path.
 //
 // On every other OS, Replace is os.Rename.
 package atomicrename
