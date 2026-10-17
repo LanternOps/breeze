@@ -28,6 +28,7 @@ import { db } from '../../db';
 import { deviceFunctionAssessments, deviceGroupMemberships, deviceGroups, devices } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 import { requestLikeFromSnapshot, writeAuditEvent, type RequestLike } from '../auditEvents';
 import {
   assignPolicy,
@@ -551,6 +552,12 @@ async function stepRoleCorrections(ctx: ApplyCtx, tx: ApplyTransaction): Promise
       ))
       .returning({ id: devices.id });
     if (!updated) throw new Error(`role_is_manual: ${rc.deviceId}`);
+    // Dynamic groups store membership; a rule on deviceRole is stale until
+    // re-evaluated (#8943). After-commit so the worker sees the new role.
+    requestDeviceGroupReevaluationAfterCommit({
+      deviceId: rc.deviceId, orgId: ctx.orgId, eventType: 'device.updated',
+      changedFields: ['deviceRole'], reason: 'fleet_design_apply',
+    });
     const row = await recordApplied({
       orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'role_correction', step: 5,
       beforeImage: { deviceRole: current.deviceRole, deviceRoleSource: current.deviceRoleSource },
