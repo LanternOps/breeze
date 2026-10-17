@@ -27,6 +27,11 @@ vi.mock('../services/trustPage/template', () => svc);
 const auditMock = vi.hoisted(() => vi.fn());
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: auditMock }));
 const partnerRows = vi.hoisted(() => ({ rows: [] as unknown[][] }));
+const sanitize = vi.hoisted(() => ({ override: null as string | null }));
+vi.mock('../services/richTextSanitize', async (orig) => {
+  const real = await orig<typeof import('../services/richTextSanitize')>();
+  return { ...real, sanitizeFlowRichTextHtml: (h: string) => sanitize.override ?? real.sanitizeFlowRichTextHtml(h) };
+});
 vi.mock('../db', () => {
   const chain = () => { const c: any = {}; for (const m of ['select', 'from', 'where', 'limit']) c[m] = vi.fn(() => c); c.then = (r: any) => Promise.resolve(partnerRows.rows.shift() ?? []).then(r); return c; };
   return { db: chain() };
@@ -46,6 +51,7 @@ describe('trust page template routes (W02g)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     partnerRows.rows = [];
+    sanitize.override = null;
     svc.loadPartnerTemplate.mockResolvedValue(null);
     svc.savePartnerTemplate.mockResolvedValue({ ok: true, settings: SETTINGS, revision: 1 });
   });
@@ -104,7 +110,7 @@ describe('trust page template routes (W02g)', () => {
       expect((await res.json()).data).toMatchObject({ template: SETTINGS, revision: 1 });
       expect(svc.savePartnerTemplate).toHaveBeenCalledWith({ partnerId: PARTNER, expectedRevision: 0, patch: { showManagedBy: false }, actorUserId: 'u1', actor: expect.objectContaining({ scope: 'partner', partnerOrgAccess: 'all' }) });
       expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        orgId: null, action: 'trust_page_template.update', resourceType: 'trust_page_template', resourceId: PARTNER,
+        orgId: null, partnerId: PARTNER, action: 'trust_page_template.update', resourceType: 'trust_page_template', resourceId: PARTNER,
         details: expect.objectContaining({ fields: ['showManagedBy'], revision: 1 }),
       }));
     });
@@ -149,6 +155,23 @@ describe('trust page template routes (W02g)', () => {
       expect(svc.savePartnerTemplate.mock.calls[2]![0].patch).toEqual({ introHtml: null });
     });
 
+    it('an intro that grows past the stored bound after sanitizing is 422 INTRO_TOO_LONG, never saved as no intro', async () => {
+      partnerRows.rows.push([{ id: PARTNER, country: null }]);
+      sanitize.override = `<p>${'x'.repeat(40_001)}</p>`;
+      const res = await put({ expectedRevision: 1, introHtml: '<p>short</p>' });
+      expect(res.status).toBe(422);
+      expect((await res.json()).code).toBe('INTRO_TOO_LONG');
+      expect(svc.savePartnerTemplate).not.toHaveBeenCalled();
+    });
+
+    it('an empty custom list ([]) stays [] and null stays null (clear) for hiddenControlIds and frameworkView', async () => {
+      partnerRows.rows.push([{ id: PARTNER, country: null }], [{ id: PARTNER, country: null }]);
+      await put({ expectedRevision: 1, hiddenControlIds: [], frameworkView: [] });
+      expect(svc.savePartnerTemplate.mock.calls[0]![0].patch).toEqual({ hiddenControlIds: [], frameworkView: [] });
+      await put({ expectedRevision: 1, hiddenControlIds: null, frameworkView: null });
+      expect(svc.savePartnerTemplate.mock.calls[1]![0].patch).toEqual({ hiddenControlIds: null, frameworkView: null });
+    });
+
     it('rejects org-only fields and a missing expectedRevision (400)', async () => {
       expect((await put({ expectedRevision: 0, ndaText: 'x' })).status).toBe(400);
       expect((await put({ showManagedBy: true })).status).toBe(400);
@@ -160,6 +183,8 @@ describe('trust page template routes (W02g)', () => {
       const res = await put({ expectedRevision: 0, showHistory: true }, { 'x-scope': 'system' }, `?partnerId=${PARTNER}`);
       expect(res.status).toBe(200);
       expect(svc.savePartnerTemplate).toHaveBeenCalledWith(expect.objectContaining({ partnerId: PARTNER }));
+      // The audit row is attributed to the partner whose defaults changed, not left partner-less.
+      expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ partnerId: PARTNER }));
     });
   });
 });

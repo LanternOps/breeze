@@ -247,6 +247,7 @@
           "template": "İş ortağı şablonunun girişini kullan",
           "none": "Giriş yok",
           "custom": "Özel",
+          "inheritedAfterSave": "Bu sayfanın şu anda kendi girişi var. Devralınan girişe geçmek için kaydedin.",
           "inheritedEmpty": "Hiçbir şey devralınmıyor, bu yüzden sayfada giriş gösterilmez."
         },
         "template": {

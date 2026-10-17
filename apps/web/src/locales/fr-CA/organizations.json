@@ -247,6 +247,7 @@
           "template": "Utiliser l'introduction du modèle du partenaire",
           "none": "Pas d'introduction",
           "custom": "Personnalisée",
+          "inheritedAfterSave": "Cette page a actuellement sa propre introduction. Enregistrez pour passer à l'introduction héritée.",
           "inheritedEmpty": "Rien n'est hérité, la page n'affiche donc pas d'introduction."
         },
         "template": {

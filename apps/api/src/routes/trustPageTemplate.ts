@@ -15,6 +15,7 @@ import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from 
 import { writeRouteAudit } from '../services/auditEvents';
 import { loadPartnerTemplate, savePartnerTemplate, type PartnerTemplatePatch } from '../services/trustPage/template';
 import { sanitizeIntro } from '../services/trustPage/payloadBuilder';
+import { sanitizeFlowRichTextHtml } from '../services/richTextSanitize';
 import { defaultFrameworkView, frameworkOptionsFor } from '../services/trustPage/sections/frameworks';
 import { TRUST_BUILTIN_DEFAULTS, TRUST_INTRO_STORED_MAX_CHARS, trustTemplateUpdateSchema } from '@breeze/shared';
 
@@ -71,6 +72,11 @@ trustPageTemplateRoutes.put('/', scopes, orgWrite, requireMfa(), zValidator('que
   if (body.introHtml !== undefined) {
     // null = the template sets no intro (pages inherit the Breeze default: none); any string is the template's
     // intro, and one that sanitizes to nothing is '' — explicitly "no intro", same rule as the org page.
+    // sanitizeIntro returns null for HTML that grows past the stored bound, which `?? ''` would silently save as
+    // "no intro" — measure the sanitized length first so an over-long intro is a 422, never a quiet blank.
+    if (body.introHtml !== null && sanitizeFlowRichTextHtml(body.introHtml).trim().length > TRUST_INTRO_STORED_MAX_CHARS) {
+      return c.json({ error: 'The intro is too long after formatting; shorten it.', code: 'INTRO_TOO_LONG' }, 422);
+    }
     const intro = body.introHtml === null ? null : (sanitizeIntro(body.introHtml) ?? '');
     if (intro !== null && intro.length > TRUST_INTRO_STORED_MAX_CHARS) {
       return c.json({ error: 'The intro is too long after formatting; shorten it.', code: 'INTRO_TOO_LONG' }, 422);
@@ -86,6 +92,8 @@ trustPageTemplateRoutes.put('/', scopes, orgWrite, requireMfa(), zValidator('que
 
   writeRouteAudit(c, {
     orgId: null,
+    // Explicit: a system-scope edit must land in THIS partner's audit trail, not with partner_id NULL.
+    partnerId: resolved.partnerId,
     action: 'trust_page_template.update',
     resourceType: 'trust_page_template',
     resourceId: resolved.partnerId,

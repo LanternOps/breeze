@@ -247,6 +247,7 @@
           "template": "Einleitung der Partnervorlage verwenden",
           "none": "Keine Einleitung",
           "custom": "Eigene",
+          "inheritedAfterSave": "Diese Seite hat derzeit eine eigene Einleitung. Speichern Sie, um zur geerbten zu wechseln.",
           "inheritedEmpty": "Es wird nichts geerbt, daher zeigt die Seite keine Einleitung."
         },
         "template": {

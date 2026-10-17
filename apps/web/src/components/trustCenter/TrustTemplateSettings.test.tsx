@@ -6,6 +6,8 @@ const api = vi.hoisted(() => ({ getTrustPageTemplate: vi.fn(), updateTrustPageTe
 vi.mock('@/lib/api/trustPageTemplate', () => api);
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('@/components/shared/Toast', () => ({ showToast: toast }));
 vi.mock('@/components/common/RichTextEditor', () => ({
   default: ({ value, onChange, testId }: { value: string; onChange: (h: string) => void; testId: string }) => (
     <textarea data-testid={testId} value={value} onChange={(e) => onChange(e.target.value)} />
@@ -96,8 +98,27 @@ describe('TrustTemplateSettings (W02g)', () => {
     render(<TrustTemplateSettings />);
     await screen.findByTestId('trust-template-save');
     api.updateTrustPageTemplate.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'stale', code: 'REVISION_MISMATCH' }), { status: 409 }));
+    api.getTrustPageTemplate.mockResolvedValueOnce(loaded({ template: { ...EMPTY, showHistory: true }, revision: 7 }));
     fireEvent.click(screen.getByTestId('trust-template-save'));
     await waitFor(() => expect(api.getTrustPageTemplate).toHaveBeenCalledTimes(2));
+    // The other admin's values replace the stale draft, and the next save carries their revision.
+    expect(await screen.findByTestId('trust-template-showHistory')).toHaveValue('on');
+    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await waitFor(() => expect(sentBody()).toMatchObject({ showHistory: true, expectedRevision: 7 }));
+  });
+
+  it('a failed save is toasted: a network error with the fallback, a partner-wide 403 with the read-only reason', async () => {
+    render(<TrustTemplateSettings />);
+    await screen.findByTestId('trust-template-save');
+    api.updateTrustPageTemplate.mockRejectedValueOnce(new TypeError('network down'));
+    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: "Couldn't save the Trust Center defaults" })));
+    toast.mockClear();
+    api.updateTrustPageTemplate.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'no', code: 'PARTNER_WIDE_REQUIRED' }), { status: 403 }));
+    fireEvent.click(screen.getByTestId('trust-template-save'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringContaining('Only partner admins') })));
+    // A failed save keeps the form (and its revision) in place.
+    expect(api.getTrustPageTemplate).toHaveBeenCalledTimes(1);
   });
 
   it('read-only for a partner user without access to every organization', async () => {

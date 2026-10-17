@@ -247,6 +247,7 @@
           "template": "Usar la introducción de la plantilla del socio",
           "none": "Sin introducción",
           "custom": "Personalizada",
+          "inheritedAfterSave": "Esta página tiene ahora su propia introducción. Guarde para cambiarla por la heredada.",
           "inheritedEmpty": "No se hereda nada, así que la página no muestra introducción."
         },
         "template": {

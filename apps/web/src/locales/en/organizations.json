@@ -247,6 +247,7 @@
           "template": "Use the partner template intro",
           "none": "No intro",
           "custom": "Custom",
+          "inheritedAfterSave": "This page has its own intro now. Save to switch it to the inherited one.",
           "inheritedEmpty": "Nothing is inherited, so the page shows no intro."
         },
         "template": {

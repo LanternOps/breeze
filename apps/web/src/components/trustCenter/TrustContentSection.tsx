@@ -113,7 +113,10 @@ export default function TrustContentSection({ orgId, orgFetch, state, canWrite, 
           </div>
         ) : introSource !== 'page' ? (
           <p className="text-xs text-muted-foreground" data-testid="trust-content-intro-inherited-empty">{tr('inheritance.intro.inheritedEmpty')}</p>
-        ) : null)}
+        ) : (
+          // The page's own intro is what the editor knows; the inherited one is resolved server-side after the save.
+          <p className="text-xs text-muted-foreground" data-testid="trust-content-intro-inherited-after-save">{tr('inheritance.intro.inheritedAfterSave')}</p>
+        ))}
         {mode === 'custom' && (
           <>
             <RichTextEditor value={intro} onChange={setIntro} ariaLabel={tr('content.introLabel')} testId="trust-content-intro" />

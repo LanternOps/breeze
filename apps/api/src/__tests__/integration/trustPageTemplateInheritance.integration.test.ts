@@ -126,6 +126,19 @@ describe('trust page partner template inheritance', () => {
     expect(second.page.publicationRevision).toBe(2);
   });
 
+  it('savePartnerTemplate against Postgres: a second "first save" and a stale update are refused; a current one bumps', async () => {
+    const save = (expectedRevision: number, patch: Parameters<typeof savePartnerTemplate>[0]['patch']) =>
+      sys(() => savePartnerTemplate({ partnerId: s.partnerId, expectedRevision, patch, actorUserId: s.userId, actor: { scope: 'system' } }));
+    await expect(save(0, { showHistory: true })).resolves.toMatchObject({ ok: true, revision: 1 });
+    // Two admins who both loaded "no template": the loser's ON CONFLICT … WHERE revision = 0 matches nothing.
+    await expect(save(0, { showHistory: false })).resolves.toEqual({ ok: false, reason: 'REVISION_MISMATCH' });
+    await expect(save(5, { showHistory: false })).resolves.toEqual({ ok: false, reason: 'REVISION_MISMATCH' });
+    const bumped = await save(1, { showManagedBy: false });
+    expect(bumped).toMatchObject({ ok: true, revision: 2 });
+    // A partial patch leaves the other columns alone.
+    expect(await sys(() => loadPartnerTemplate(s.partnerId))).toMatchObject({ revision: 2, settings: { showHistory: true, showManagedBy: false } });
+  });
+
   it('an editor that loaded "no template" (null) is refused once a template exists', async () => {
     await freshPage(s);
     expect(await sys(() => loadPartnerTemplate(s.partnerId))).toBeNull();

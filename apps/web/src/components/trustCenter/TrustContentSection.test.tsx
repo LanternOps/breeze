@@ -66,6 +66,12 @@ describe('TrustContentSection', () => {
       fireEvent.click(screen.getByTestId('trust-content-save'));
       await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', expect.objectContaining({ introHtml: null })));
     });
+    it('switching a page with its own intro to the template says the inherited one appears after saving', () => {
+      mount();
+      fireEvent.click(screen.getByTestId('trust-content-intro-mode-template'));
+      expect(screen.getByTestId('trust-content-intro-inherited-after-save')).toBeInTheDocument();
+      expect(screen.queryByTestId('trust-content-intro-inherited-empty')).toBeNull();
+    });
     it('"No intro" saves the explicit empty intro \'\'', async () => {
       mount(true, { ...page, introHtml: null }, inherited('<p>From template</p>', 'template'));
       fireEvent.click(screen.getByTestId('trust-content-intro-mode-none'));
