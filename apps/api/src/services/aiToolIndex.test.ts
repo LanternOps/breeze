@@ -145,6 +145,9 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // #8742 W02: `send_endpoint_message (send/list/get)` on the Tickets line
     // took it to 6684. Paid for by tightening the scripts note's wording (same
     // guidance), not by raising the ceiling.
+    // #8584: `list_device_restore_point_attempts` on the Automations line took
+    // it to 6690. Paid for by dropping the scripts note's "(editor Test Run,
+    // history)" aside and three shorter phrasings (same tools, same sentences).
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.5 * 1024);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });
