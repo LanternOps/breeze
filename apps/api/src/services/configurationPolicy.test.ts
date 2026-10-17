@@ -1179,6 +1179,24 @@ describe('validateFeaturePolicyExists — software_policy dual-axis linking (#21
     expect(result.valid).toBe(true);
   });
 
+  it('never resolves a software policy GENERATED from a security_agents link (#6960 carry-forward)', async () => {
+    const chain = selectLimitRows([{ id: 'sw-1' }]);
+    vi.mocked(db.select).mockReturnValue(chain as never);
+    await validateFeaturePolicyExists('software_policy', 'sw-1', { orgId: 'org-1', partnerId: null });
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const rendered = new PgDialect().sqlToQuery(chain.where.mock.calls.at(-1)[0]).sql;
+    expect(rendered).toMatch(/"managed_by_link_id" is null/i);
+  });
+
+  it('does not add the managed predicate to other dual-axis types', async () => {
+    const chain = selectLimitRows([{ id: 'sec-1' }]);
+    vi.mocked(db.select).mockReturnValue(chain as never);
+    await validateFeaturePolicyExists('security', 'sec-1', { orgId: 'org-1', partnerId: null });
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const rendered = new PgDialect().sqlToQuery(chain.where.mock.calls.at(-1)[0]).sql;
+    expect(rendered).not.toMatch(/managed_by_link_id/i);
+  });
+
   it('rejects a security policy id that resolves to neither axis', async () => {
     mockLookupReturns([]);
     const result = await validateFeaturePolicyExists('security', 'missing', { orgId: 'org-1', partnerId: null });

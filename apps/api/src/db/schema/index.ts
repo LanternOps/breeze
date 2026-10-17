@@ -157,6 +157,7 @@ export * from './serviceDeliverables';
 export * from './deliverableTemplates';
 export * from './orgDocuments';
 export * from './trustPages';
+export * from './trustPageTemplates';
 export * from './trustSigningKeys';
 export * from './orgKeyDates';
 export * from './quotes';

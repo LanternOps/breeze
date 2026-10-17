@@ -1641,6 +1641,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     maxChars: z.number().int().min(1).max(6000).optional(),
   }),
 
+  // Trust Center W2 (Ruling 15): read-only page status.
+  get_trust_page_status: z.object({
+    orgId: uuid,
+  }),
+
   export_dataset: z.object({
     dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
     format: z.enum(['jsonl', 'csv']).optional(),

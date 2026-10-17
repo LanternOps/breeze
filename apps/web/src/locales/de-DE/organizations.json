@@ -197,15 +197,72 @@
         "title": "Erklärte Kontrollen"
       },
       "frameworks": {
+        "description": "Legen Sie fest, welchen Sicherheits-Frameworks die öffentliche Seite ihre Kontrollen zuordnet. Die Zuordnungen sind Richtwerte und keine Konformitätserklärung.",
+        "source": {
+          "page": "Auf dieser Seite festgelegt.",
+          "template": "Von der Partnervorlage übernommen.",
+          "default": "Integrierter Standard wird verwendet."
+        },
+        "suggested": "Für Ihre Region empfohlen",
+        "cisLocked": "Verfügbar, sobald die CIS-Lizenz bestätigt ist",
+        "useDefault": "Standard verwenden",
+        "save": "Speichern",
+        "saved": "Framework-Ansicht gespeichert.",
+        "saveFailed": "Die Framework-Ansicht konnte nicht gespeichert werden.",
+        "revisionChanged": "Die Seite hat sich seit dem Öffnen geändert. Bitte neu laden und erneut versuchen.",
         "title": "Framework-Ansicht"
       },
       "subprocessors": {
+        "description": "Dritte, die im Auftrag Ihres Kunden Daten verarbeiten. Erkannte Tools sind nur Vorschläge; erst mit der Veröffentlichung der Seite wird etwas veröffentlicht.",
+        "addDetected": "Aus erkannten Tools hinzufügen",
+        "addManual": "Manuell hinzufügen",
+        "noSuggestions": "Keine weiteren erkannten Tools zum Hinzufügen.",
+        "empty": "Noch keine Unterauftragsverarbeiter aufgeführt.",
+        "name": "Bezeichnung",
+        "purpose": "Zweck",
+        "location": "Standort",
+        "website": "Webseite",
+        "websiteInvalid": "Verwenden Sie eine https://-Adresse.",
+        "moveUp": "Nach oben",
+        "moveDown": "Nach unten",
+        "remove": "Entfernen",
+        "save": "Unterauftragsverarbeiter speichern",
+        "saved": "Unterauftragsverarbeiter gespeichert",
+        "saveFailed": "Unterauftragsverarbeiter konnten nicht gespeichert werden",
+        "loadFailed": "Unterauftragsverarbeiter konnten nicht geladen werden.",
+        "suggestionsFailed": "Erkannte Tools konnten nicht geladen werden. Zum erneuten Versuch schließen und wieder öffnen.",
+        "duplicate": "Dasselbe erkannte Tool kommt mehrfach vor.",
+        "limit": "Höchstzahl von {{max}} Unterauftragsverarbeitern erreicht.",
         "title": "Unterauftragsverarbeiter"
       },
       "faq": {
+        "description": "Antworten auf die Fragen, die Käufer und Prüfer am häufigsten stellen. Werden mit der Seite veröffentlicht.",
+        "add": "Frage hinzufügen",
+        "question": "Frage",
+        "questionShort": "Die Frage muss mindestens {{min}} Zeichen lang sein.",
+        "answer": "Antwort",
+        "answerTooLong": "Diese Antwort ist zu lang; kürzen Sie sie.",
+        "moveUp": "Nach oben",
+        "moveDown": "Nach unten",
+        "remove": "Entfernen",
+        "save": "FAQ speichern",
+        "saved": "FAQ gespeichert",
+        "saveFailed": "FAQ konnte nicht gespeichert werden",
+        "loadFailed": "FAQ konnte nicht geladen werden.",
+        "empty": "Noch keine Fragen.",
+        "limit": "Höchstzahl von {{max}} Fragen erreicht.",
         "title": "Häufig gestellte Fragen"
       },
       "history": {
+        "toggle": "Erfüllte Kontrollen im Zeitverlauf anzeigen",
+        "description": "Fügt ein 90-Tage-Diagramm hinzu, wie viele Kontrollen erfüllt waren. Jede Änderung wird erfasst, wenn Breeze die Seite neu bewertet.",
+        "saved": "Verlaufseinstellung gespeichert",
+        "saveFailed": "Verlaufseinstellung konnte nicht gespeichert werden",
+        "source": {
+          "page": "Für diese Organisation festgelegt",
+          "template": "Aus der Partnervorlage",
+          "default": "Standard"
+        },
         "title": "Erfüllte Kontrollen im Zeitverlauf"
       },
       "access": {
@@ -272,6 +329,42 @@
         "title": "Anfragen für Dokumentzugriff"
       },
       "inheritance": {
+        "sources": {
+          "page": "Für diese Organisation festgelegt",
+          "template": "Partnervorlage",
+          "default": "Breeze-Standard"
+        },
+        "reset": "Auf geerbten Wert zurücksetzen",
+        "intro": {
+          "template": "Einleitung der Partnervorlage verwenden",
+          "none": "Keine Einleitung",
+          "custom": "Eigene",
+          "inheritedAfterSave": "Diese Seite hat derzeit eine eigene Einleitung. Speichern Sie, um zur geerbten zu wechseln.",
+          "inheritedEmpty": "Es wird nichts geerbt, daher zeigt die Seite keine Einleitung."
+        },
+        "template": {
+          "heading": "Standardwerte des Vertrauenszentrums",
+          "description": "Standardwerte für alle Vertrauensseiten Ihrer Kunden. Eine Einstellung, die eine Organisation selbst wählt, hat immer Vorrang. Veröffentlichte Seiten übernehmen Änderungen bei der nächsten erneuten Veröffentlichung.",
+          "readOnly": "Nur Partner-Administratoren mit Zugriff auf alle Organisationen können diese Standardwerte ändern.",
+          "loadFailed": "Die Standardwerte des Vertrauenszentrums konnten nicht geladen werden.",
+          "inheritOption": "Breeze-Standard ({{value}})",
+          "on": "An",
+          "off": "Aus",
+          "introLabel": "Standard-Einleitung",
+          "introHint": "Leer lassen für keine Einleitung.",
+          "hiddenLabel": "Standardmäßig ausgeblendete Kontrollen",
+          "hiddenDefault": "Breeze-Standard (alle Kontrollen anzeigen)",
+          "hiddenCustom": "Die von mir gewählten Kontrollen ausblenden",
+          "frameworksLabel": "Framework-Ansicht",
+          "frameworksCustom": "Die von mir gewählten Frameworks anzeigen",
+          "showHistoryLabel": "90-Tage-Verlauf anzeigen",
+          "showHistoryDescription": "Ein Diagramm, wie viele Kontrollen in den letzten 90 Tagen erfüllt waren.",
+          "save": "Standardwerte speichern",
+          "saved": "Standardwerte des Vertrauenszentrums gespeichert",
+          "saveFailed": "Die Standardwerte des Vertrauenszentrums konnten nicht gespeichert werden",
+          "mfaRequired": "Zum Ändern dieser Standardwerte ist eine Multi-Faktor-Authentifizierung erforderlich. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut.",
+          "revisionMismatch": "Jemand anderes hat diese Standardwerte geändert. Laden Sie neu, um die Änderungen zu sehen."
+        },
         "title": "Geerbte Einstellungen"
       },
       "title": "Vertrauenszentrum",

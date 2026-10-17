@@ -22,6 +22,7 @@ import {
   M365ConnectionUnavailableError,
 } from './m365ToolsHeadless';
 import { m365ToolTiers } from './aiToolsM365';
+import { M365_WRITE_ACTION_IDS, M365_PROBE_ACTION_IDS } from '@breeze/shared/m365';
 
 const ORG = '44444444-4444-4444-8444-444444444444';
 
@@ -96,5 +97,84 @@ describe('executeM365ToolHeadless', () => {
       expect.objectContaining({ type: 'm365.user.disable' }),
       expect.objectContaining({ idempotencyKey: INTENT_ID }),
     );
+  });
+});
+
+const GROUP = '55555555-5555-4555-8555-555555555555';
+const SKU = '66666666-6666-4666-8666-666666666666';
+const DEVICE = '77777777-7777-4777-8777-777777777777';
+
+describe('M365 headless ten-entry map (Operator Recipe Library M1)', () => {
+  it('pins the exact tool -> action id map', () => {
+    expect(M365_HEADLESS_ACTIONS).toEqual({
+      m365_disable_user: 'm365.user.disable',
+      m365_reset_password: 'm365.user.reset_password',
+      m365_revoke_sessions: 'm365.user.revoke_sessions',
+      m365_remove_license: 'm365.user.license.remove',
+      m365_assign_license: 'm365.user.license.assign',
+      m365_remove_from_group: 'm365.group.membership.remove',
+      m365_add_to_group: 'm365.group.membership.add',
+      m365_retire_intune_device: 'm365.intune.device.retire',
+      m365_create_user: 'm365.user.create',
+      m365_set_auto_reply: 'm365.user.mailbox.auto_reply',
+    });
+  });
+
+  it('every mapped action is a write id and none is a probe id', () => {
+    const writes = new Set<string>(M365_WRITE_ACTION_IDS);
+    const probes = new Set<string>(M365_PROBE_ACTION_IDS);
+    for (const id of Object.values(M365_HEADLESS_ACTIONS)) {
+      expect(writes.has(id)).toBe(true);
+      expect(probes.has(id)).toBe(false);
+    }
+  });
+
+  it('fails closed (throws unavailable) on consent_upgrade_required', async () => {
+    execByOrg.mockResolvedValue({ ok: false, code: 'consent_upgrade_required', message: 'reconsent' });
+    await expect(executeM365ToolHeadless('m365_revoke_sessions', { userIdentifier: 'a@b.com', reason: 'x' }, ORG))
+      .rejects.toBeInstanceOf(M365ConnectionUnavailableError);
+  });
+
+  const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+    ['m365_revoke_sessions', { userIdentifier: 'a@b.com', reason: 'r' },
+      { type: 'm365.user.revoke_sessions', userIdentifier: 'a@b.com', reason: 'r' }],
+    ['m365_remove_license', { userIdentifier: 'a@b.com', skuIds: [SKU], reason: 'r' },
+      { type: 'm365.user.license.remove', userIdentifier: 'a@b.com', skuIds: [SKU], reason: 'r' }],
+    ['m365_assign_license', { userIdentifier: 'a@b.com', skuIds: [SKU], reason: 'r' },
+      { type: 'm365.user.license.assign', userIdentifier: 'a@b.com', skuIds: [SKU], reason: 'r' }],
+    ['m365_remove_from_group', { groupId: GROUP, userIdentifier: 'a@b.com', reason: 'r' },
+      { type: 'm365.group.membership.remove', groupId: GROUP, userIdentifier: 'a@b.com', reason: 'r' }],
+    ['m365_add_to_group', { groupId: GROUP, userIdentifier: 'a@b.com', reason: 'r' },
+      { type: 'm365.group.membership.add', groupId: GROUP, userIdentifier: 'a@b.com', reason: 'r' }],
+    ['m365_retire_intune_device', { managedDeviceId: DEVICE, reason: 'r' },
+      { type: 'm365.intune.device.retire', managedDeviceId: DEVICE, reason: 'r' }],
+    ['m365_create_user',
+      { userPrincipalName: 'n@b.com', displayName: 'New U', mailNickname: 'nu', usageLocation: 'US', reason: 'r' },
+      { type: 'm365.user.create', userPrincipalName: 'n@b.com', displayName: 'New U', mailNickname: 'nu', usageLocation: 'US', reason: 'r' }],
+    ['m365_set_auto_reply', { userIdentifier: 'a@b.com', status: 'alwaysEnabled', internalReplyMessage: 'away', reason: 'r' },
+      { type: 'm365.user.mailbox.auto_reply', userIdentifier: 'a@b.com', status: 'alwaysEnabled', internalReplyMessage: 'away', reason: 'r' }],
+  ];
+
+  it.each(cases)('%s builds the exact typed action from captured arguments', async (tool, args, expected) => {
+    execByOrg.mockResolvedValue({ ok: true, result: { success: true } });
+    await executeM365ToolHeadless(tool, args, ORG, 'intent-1');
+    expect(execByOrg).toHaveBeenCalledWith(ORG, expected, expect.objectContaining({ idempotencyKey: 'intent-1' }));
+  });
+
+  it.each(cases)('%s with invalid captured arguments returns a JSON error and never calls the service', async (tool) => {
+    const out = await executeM365ToolHeadless(tool, { reason: '' }, ORG);
+    expect(JSON.parse(out).error).toBeTruthy();
+    expect(execByOrg).not.toHaveBeenCalled();
+  });
+
+  it('does not spread stray keys: an extra captured key is dropped, not forwarded', async () => {
+    execByOrg.mockResolvedValue({ ok: true, result: { success: true } });
+    await executeM365ToolHeadless('m365_revoke_sessions', { userIdentifier: 'a@b.com', reason: 'r', evil: 1 }, ORG);
+    expect(execByOrg.mock.calls[0]![1]).not.toHaveProperty('evil');
+  });
+
+  it('buildWriteAction is exported', async () => {
+    const mod = await import('./m365ToolsHeadless');
+    expect(typeof mod.buildWriteAction).toBe('function');
   });
 });

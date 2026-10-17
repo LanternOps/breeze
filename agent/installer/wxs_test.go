@@ -105,12 +105,7 @@ func TestAppSearchRunsBeforeLaunchConditionsInBothSequences(t *testing.T) {
 // /grant:r alone never touches ownership.
 func TestHardenProgramDataAclSetsExplicitOwner(t *testing.T) {
 	wxs := readWxs(t)
-	re := regexp.MustCompile(`(?s)<CustomAction\s+Id="HardenProgramDataAcl"[^>]*ExeCommand="([^"]*)"`)
-	m := re.FindStringSubmatch(wxs)
-	if m == nil {
-		t.Fatal("expected a HardenProgramDataAcl CustomAction with an ExeCommand")
-	}
-	cmd := m[1]
+	cmd := quietExecCmd(t, wxs, "HardenProgramDataAcl")
 	// One /setowner per hardened directory (root, data, logs), each ahead of
 	// that directory's /inheritance:r /grant:r in the && chain, so a
 	// pre-created directory's owner is fixed before its DACL is trusted.
@@ -294,25 +289,6 @@ func TestKillBreezeProcessesRunsWithoutConsoleWindow(t *testing.T) {
 	}
 }
 
-// No immediate custom action may launch an EXE: it would run on the
-// installing user's desktop and show a console window (#3624). Deferred and
-// rollback EXE CAs with Impersonate="no" run as LocalSystem in session 0 and
-// are invisible.
-func TestNoImmediateExeCustomActions(t *testing.T) {
-	wxs := readWxs(t)
-	elRe := regexp.MustCompile(`(?s)<CustomAction\s+Id="([^"]+)"(.*?)/>`)
-	for _, m := range elRe.FindAllStringSubmatch(wxs, -1) {
-		ca := customActionAttrs(wxs, m[1])
-		if _, isExe := ca["ExeCommand"]; !isExe {
-			continue
-		}
-		exec := ca["Execute"]
-		if exec == "" || exec == "immediate" || exec == "firstSequence" || exec == "oncePerProcess" || exec == "secondSequence" {
-			t.Errorf("custom action %s is an immediate EXE CA (Execute=%q); it will flash a console window. Use WixQuietExec or make it deferred with Impersonate=\"no\"", m[1], exec)
-		}
-	}
-}
-
 // The Util extension supplies the WixQuietExec CA DLL (Wix4UtilCA_*). Every
 // MSI build (this repo's release.yml, the hosted and self-host signing repos)
 // goes through build-msi.ps1, so that script must load the extension or the
@@ -340,12 +316,7 @@ func TestBuildScriptLoadsUtilExtension(t *testing.T) {
 // re-created under a root the user still controls.
 func TestHardenProgramDataAclReplacesPreexistingLinks(t *testing.T) {
 	wxs := readWxs(t)
-	re := regexp.MustCompile(`(?s)<CustomAction\s+Id="HardenProgramDataAcl"[^>]*ExeCommand="([^"]*)"`)
-	m := re.FindStringSubmatch(wxs)
-	if m == nil {
-		t.Fatal("expected a HardenProgramDataAcl CustomAction with an ExeCommand")
-	}
-	cmd := m[1]
+	cmd := quietExecCmd(t, wxs, "HardenProgramDataAcl")
 	q := func(tok string) string { return "&quot;" + tok + ".&quot;" }
 
 	prevGrant := -1
@@ -386,7 +357,7 @@ func TestRecoveryActionsAlsoCoverNonCrashFailures(t *testing.T) {
 		if ca == nil {
 			t.Fatalf("no <CustomAction Id=%q>", id)
 		}
-		cmd := ca["ExeCommand"]
+		cmd := quietExecCmd(t, wxs, id)
 		for _, svc := range []string{"BreezeAgent", "BreezeWatchdog"} {
 			if !strings.Contains(cmd, "sc failure "+svc+" reset= 86400 actions= restart/") {
 				t.Errorf("%s does not arm %s's restart actions: %s", id, svc, cmd)

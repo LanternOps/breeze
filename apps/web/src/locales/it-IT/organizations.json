@@ -197,15 +197,72 @@
         "title": "Controlli dichiarati"
       },
       "frameworks": {
+        "description": "Scegli a quali framework di sicurezza la pagina pubblica associa i propri controlli. Le corrispondenze sono indicative e non una dichiarazione di conformità.",
+        "source": {
+          "page": "Impostato su questa pagina.",
+          "template": "Ereditato dal modello del partner.",
+          "default": "Viene usato il valore predefinito integrato."
+        },
+        "suggested": "Suggerito per la tua regione",
+        "cisLocked": "Disponibile dopo la conferma della licenza CIS",
+        "useDefault": "Usa predefinito",
+        "save": "Salva",
+        "saved": "Vista per framework salvata.",
+        "saveFailed": "Impossibile salvare la vista per framework.",
+        "revisionChanged": "La pagina è cambiata da quando l’hai aperta. Ricarica e riprova.",
         "title": "Vista per framework"
       },
       "subprocessors": {
+        "description": "Terze parti che trattano dati per conto del vostro cliente. Gli strumenti rilevati sono solo suggerimenti; nulla viene pubblicato finché non pubblicate la pagina.",
+        "addDetected": "Aggiungi dagli strumenti rilevati",
+        "addManual": "Aggiungi manualmente",
+        "noSuggestions": "Non ci sono altri strumenti rilevati da aggiungere.",
+        "empty": "Nessun sub-responsabile elencato.",
+        "name": "Nome",
+        "purpose": "Finalità",
+        "location": "Ubicazione",
+        "website": "Sito web",
+        "websiteInvalid": "Usate un indirizzo https://.",
+        "moveUp": "Sposta su",
+        "moveDown": "Sposta giù",
+        "remove": "Rimuovi",
+        "save": "Salva i sub-responsabili",
+        "saved": "Sub-responsabili salvati",
+        "saveFailed": "Impossibile salvare i sub-responsabili",
+        "loadFailed": "Impossibile caricare i sub-responsabili.",
+        "suggestionsFailed": "Impossibile caricare gli strumenti rilevati. Chiudete e riaprite per riprovare.",
+        "duplicate": "Lo stesso strumento rilevato compare più volte.",
+        "limit": "Raggiunto il massimo di {{max}} sub-responsabili.",
         "title": "Sub-responsabili del trattamento"
       },
       "faq": {
+        "description": "Risposte alle domande più frequenti di acquirenti e revisori. Pubblicate insieme alla pagina.",
+        "add": "Aggiungi domanda",
+        "question": "Domanda",
+        "questionShort": "La domanda deve avere almeno {{min}} caratteri.",
+        "answer": "Risposta",
+        "answerTooLong": "Questa risposta è troppo lunga; accorciatela.",
+        "moveUp": "Sposta su",
+        "moveDown": "Sposta giù",
+        "remove": "Rimuovi",
+        "save": "Salva le FAQ",
+        "saved": "FAQ salvate",
+        "saveFailed": "Impossibile salvare le FAQ",
+        "loadFailed": "Impossibile caricare le FAQ.",
+        "empty": "Nessuna domanda per ora.",
+        "limit": "Raggiunto il massimo di {{max}} domande.",
         "title": "Domande frequenti"
       },
       "history": {
+        "toggle": "Mostra i controlli soddisfatti nel tempo",
+        "description": "Aggiunge un grafico di 90 giorni con il numero di controlli soddisfatti. Ogni variazione viene registrata quando Breeze rivaluta la pagina.",
+        "saved": "Impostazione della cronologia salvata",
+        "saveFailed": "Impossibile salvare l’impostazione della cronologia",
+        "source": {
+          "page": "Impostato su questa organizzazione",
+          "template": "Dal modello del partner",
+          "default": "Predefinito"
+        },
         "title": "Controlli soddisfatti nel tempo"
       },
       "access": {
@@ -272,6 +329,42 @@
         "title": "Richieste di accesso ai documenti"
       },
       "inheritance": {
+        "sources": {
+          "page": "Impostato per questa organizzazione",
+          "template": "Modello del partner",
+          "default": "Predefinito di Breeze"
+        },
+        "reset": "Ripristina il valore ereditato",
+        "intro": {
+          "template": "Usa l'introduzione del modello del partner",
+          "none": "Nessuna introduzione",
+          "custom": "Personalizzata",
+          "inheritedAfterSave": "Questa pagina ha ora una propria introduzione. Salva per passare a quella ereditata.",
+          "inheritedEmpty": "Non viene ereditato nulla, quindi la pagina non mostra un'introduzione."
+        },
+        "template": {
+          "heading": "Valori predefiniti del Centro di fiducia",
+          "description": "Valori predefiniti per tutte le pagine di fiducia dei clienti. Un'impostazione scelta da un'organizzazione per sé prevale sempre. Le pagine pubblicate ricevono le modifiche alla successiva ripubblicazione.",
+          "readOnly": "Solo gli amministratori del partner con accesso a tutte le organizzazioni possono modificare questi valori.",
+          "loadFailed": "Impossibile caricare i valori predefiniti del Centro di fiducia.",
+          "inheritOption": "Predefinito di Breeze ({{value}})",
+          "on": "Attivo",
+          "off": "Disattivo",
+          "introLabel": "Introduzione predefinita",
+          "introHint": "Lascia vuoto per non avere introduzione.",
+          "hiddenLabel": "Controlli nascosti per impostazione predefinita",
+          "hiddenDefault": "Predefinito di Breeze (mostra tutti i controlli)",
+          "hiddenCustom": "Nascondi i controlli che scelgo",
+          "frameworksLabel": "Vista per framework",
+          "frameworksCustom": "Mostra i framework che scelgo",
+          "showHistoryLabel": "Mostra lo storico di 90 giorni",
+          "showHistoryDescription": "Un grafico di quanti controlli sono stati soddisfatti negli ultimi 90 giorni.",
+          "save": "Salva i valori",
+          "saved": "Valori del Centro di fiducia salvati",
+          "saveFailed": "Impossibile salvare i valori del Centro di fiducia",
+          "mfaRequired": "Per modificare questi valori è necessaria l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del profilo e riprova.",
+          "revisionMismatch": "Qualcun altro ha modificato questi valori. Ricarica per vedere le modifiche."
+        },
         "title": "Impostazioni ereditate"
       },
       "title": "Centro di fiducia",

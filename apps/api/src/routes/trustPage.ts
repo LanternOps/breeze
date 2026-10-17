@@ -217,8 +217,28 @@ trustPageRoutes.post('/:orgId/trust-page/partner-home', scopes, orgWrite, requir
       return c.json({ error: 'This page is live without a recorded customer authorization. Unpublish it before removing the partner-home flag.', code: 'PARTNER_HOME_UNPUBLISH_FIRST' }, 422);
     }
     const previous = await db.transaction(async (tx) => {
-      const [prev] = await tx.select({ id: trustPages.id, orgId: trustPages.orgId }).from(trustPages).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true))).limit(1);
-      if (isPartnerHome) await tx.update(trustPages).set({ isPartnerHome: false, updatedAt: new Date() }).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true)));
+      // Serialize partner-home changes per partner: without it two concurrent moves both read the same (or no)
+      // current home and the second dies on trust_pages_partner_home_uq as a 500. Taken before the select, so the
+      // select below runs on a fresh READ COMMITTED snapshot that includes the other move's commit.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`trust-page-partner-home:${ctx.partnerId}`}, 0))`);
+      // Row-locked so a concurrent publish/unpublish of the current home cannot change the answer under us.
+      const [prev] = await tx.select({ id: trustPages.id, orgId: trustPages.orgId, publishedAt: trustPages.publishedAt, publicationAuthorizedBy: trustPages.publicationAuthorizedBy })
+        .from(trustPages).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true))).limit(1).for('update');
+      if (!isPartnerHome && prev && prev.id === page.id && prev.publishedAt && !prev.publicationAuthorizedBy) {
+        // The pre-check above read an unlocked row; a publish that committed since (home pages record no
+        // authorization) must still block the clear.
+        throw new TrustPageError('This page is live without a recorded customer authorization. Unpublish it before removing the partner-home flag.', 422, 'PARTNER_HOME_UNPUBLISH_FIRST');
+      }
+      if (isPartnerHome && prev && prev.id !== page.id) {
+        // Ruling 28: losing the flag turns the previous home into a customer-shaped page. If it is live without a
+        // recorded authorization, that page would be serving unattested — refuse (the throw rolls everything back).
+        if (prev.publishedAt && !prev.publicationAuthorizedBy) {
+          throw new TrustPageError('The current partner home page is live without a recorded customer authorization. Unpublish it before moving the partner home.', 422, 'PARTNER_HOME_UNPUBLISH_FIRST');
+        }
+        // Bump its revision: a publish of the previous page that started under the old flag 409s instead of
+        // freezing a stale partner-home path.
+        await tx.update(trustPages).set({ isPartnerHome: false, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date() }).where(eq(trustPages.id, prev.id));
+      }
       await tx.update(trustPages).set({ isPartnerHome, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: auth.user.id }).where(eq(trustPages.id, page.id));
       return prev ?? null;
     });
@@ -241,6 +261,20 @@ trustPageRoutes.post('/:orgId/trust-page/preview-token', scopes, orgWrite, zVali
     const page = await ensureTrustPage(orgId, auth.user.id);
     const token = await createTrustPreviewToken({ pageId: page.id, orgId });
     return c.json({ data: { token, expiresInSeconds: TRUST_PREVIEW_TTL_SECONDS, previewPath: `/trust/preview/${token}` } });
+  } catch (err) { return handleError(c, err); }
+});
+
+// Amendment 23: the org form warns before a slug rename breaks a live public URL. Read-only — unlike
+// GET /trust-page it never creates the draft row, so opening an org form leaves no trust page behind.
+trustPageRoutes.get('/:orgId/trust-page/publication', scopes, orgRead, zValidator('param', orgParam), async (c) => {
+  const { orgId } = c.req.valid('param');
+  const ctx = await resolveAccessibleOrg(c, orgId);
+  if (!ctx) return notFound(c);
+  try {
+    const [row] = await db.select({ publishedAt: trustPages.publishedAt, isPartnerHome: trustPages.isPartnerHome })
+      .from(trustPages).where(eq(trustPages.orgId, orgId)).limit(1);
+    const published = Boolean(row?.publishedAt);
+    return c.json({ data: { published, publicPath: row && published ? publicPaths(ctx, row.isPartnerHome).publicPath : null } });
   } catch (err) { return handleError(c, err); }
 });
 

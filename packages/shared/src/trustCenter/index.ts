@@ -6,3 +6,4 @@ export * from './evaluate';
 export * from './frameworkCoverage';
 export * from './copy';
 export * from './effectiveSettings';
+export * from './questionnaireExport';

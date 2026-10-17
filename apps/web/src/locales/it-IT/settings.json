@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Centro di fiducia",
+        "description": "Valori predefiniti per le pagine di fiducia dei tuoi clienti"
+      },
       "company": {
         "label": "Azienda",
         "description": "Nome, indirizzo, contatti"
@@ -5721,6 +5725,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Questa organizzazione ha una pagina pubblica del Centro di fiducia. Se modifichi lo slug, cambia l’URL pubblico e il vecchio link smetterà di funzionare.",
     "actions": {
       "save": "Salva organizzazione"
     },

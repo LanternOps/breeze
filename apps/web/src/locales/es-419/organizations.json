@@ -197,15 +197,72 @@
         "title": "Controles declarados"
       },
       "frameworks": {
+        "description": "Elige a qué marcos de seguridad asocia la página pública sus controles. Las correspondencias son indicativas y no una declaración de cumplimiento.",
+        "source": {
+          "page": "Definido en esta página.",
+          "template": "Heredado de la plantilla del socio.",
+          "default": "Usando el valor predeterminado integrado."
+        },
+        "suggested": "Sugerido para tu región",
+        "cisLocked": "Disponible cuando se confirme la licencia de CIS",
+        "useDefault": "Usar valor predeterminado",
+        "save": "Guardar",
+        "saved": "Vista por marco guardada.",
+        "saveFailed": "No se pudo guardar la vista por marco.",
+        "revisionChanged": "La página cambió desde que la abriste. Vuelve a cargar e inténtalo de nuevo.",
         "title": "Vista por marco"
       },
       "subprocessors": {
+        "description": "Terceros que procesan datos en nombre de su cliente. Las herramientas detectadas son solo sugerencias; nada se publica hasta que publique la página.",
+        "addDetected": "Agregar desde las herramientas detectadas",
+        "addManual": "Agregar manualmente",
+        "noSuggestions": "No quedan herramientas detectadas por agregar.",
+        "empty": "Aún no hay subencargados listados.",
+        "name": "Nombre",
+        "purpose": "Finalidad",
+        "location": "Ubicación",
+        "website": "Sitio web",
+        "websiteInvalid": "Use una dirección https://.",
+        "moveUp": "Subir",
+        "moveDown": "Bajar",
+        "remove": "Quitar",
+        "save": "Guardar subencargados",
+        "saved": "Subencargados guardados",
+        "saveFailed": "No se pudieron guardar los subencargados",
+        "loadFailed": "No se pudieron cargar los subencargados.",
+        "suggestionsFailed": "No se pudieron cargar las herramientas detectadas. Cierre y vuelva a abrir para reintentar.",
+        "duplicate": "La misma herramienta detectada aparece más de una vez.",
+        "limit": "Se alcanzó el máximo de {{max}} subencargados.",
         "title": "Subprocesadores"
       },
       "faq": {
+        "description": "Respuestas a las preguntas que más hacen compradores y auditores. Se publican con la página.",
+        "add": "Agregar pregunta",
+        "question": "Pregunta",
+        "questionShort": "La pregunta necesita al menos {{min}} caracteres.",
+        "answer": "Respuesta",
+        "answerTooLong": "Esta respuesta es demasiado larga; acórtela.",
+        "moveUp": "Subir",
+        "moveDown": "Bajar",
+        "remove": "Quitar",
+        "save": "Guardar preguntas frecuentes",
+        "saved": "Preguntas frecuentes guardadas",
+        "saveFailed": "No se pudieron guardar las preguntas frecuentes",
+        "loadFailed": "No se pudieron cargar las preguntas frecuentes.",
+        "empty": "Aún no hay preguntas.",
+        "limit": "Se alcanzó el máximo de {{max}} preguntas.",
         "title": "Preguntas frecuentes"
       },
       "history": {
+        "toggle": "Mostrar los controles cumplidos a lo largo del tiempo",
+        "description": "Agrega un gráfico de 90 días con cuántos controles se cumplieron. Cada cambio se registra cuando Breeze vuelve a evaluar la página.",
+        "saved": "Configuración del historial guardada",
+        "saveFailed": "No se pudo guardar la configuración del historial",
+        "source": {
+          "page": "Definido en esta organización",
+          "template": "De la plantilla del socio",
+          "default": "Predeterminado"
+        },
         "title": "Controles cumplidos a lo largo del tiempo"
       },
       "access": {
@@ -272,6 +329,42 @@
         "title": "Solicitudes de acceso a documentos"
       },
       "inheritance": {
+        "sources": {
+          "page": "Definido para esta organización",
+          "template": "Plantilla del socio",
+          "default": "Predeterminado de Breeze"
+        },
+        "reset": "Restablecer valor heredado",
+        "intro": {
+          "template": "Usar la introducción de la plantilla del socio",
+          "none": "Sin introducción",
+          "custom": "Personalizada",
+          "inheritedAfterSave": "Esta página tiene ahora su propia introducción. Guarde para cambiarla por la heredada.",
+          "inheritedEmpty": "No se hereda nada, así que la página no muestra introducción."
+        },
+        "template": {
+          "heading": "Valores predeterminados del Centro de confianza",
+          "description": "Valores predeterminados para todas las páginas de confianza de los clientes. Una configuración que la organización elige para sí siempre prevalece. Las páginas publicadas reciben los cambios la próxima vez que se vuelvan a publicar.",
+          "readOnly": "Solo los administradores del socio con acceso a todas las organizaciones pueden cambiar estos valores.",
+          "loadFailed": "No se pudieron cargar los valores predeterminados del Centro de confianza.",
+          "inheritOption": "Predeterminado de Breeze ({{value}})",
+          "on": "Activado",
+          "off": "Desactivado",
+          "introLabel": "Introducción predeterminada",
+          "introHint": "Déjelo en blanco para no tener introducción.",
+          "hiddenLabel": "Controles ocultos de forma predeterminada",
+          "hiddenDefault": "Predeterminado de Breeze (mostrar todos los controles)",
+          "hiddenCustom": "Ocultar los controles que elija",
+          "frameworksLabel": "Vista por marco",
+          "frameworksCustom": "Mostrar los marcos que elija",
+          "showHistoryLabel": "Mostrar el historial de 90 días",
+          "showHistoryDescription": "Un gráfico de cuántos controles se cumplieron en los últimos 90 días.",
+          "save": "Guardar valores",
+          "saved": "Valores del Centro de confianza guardados",
+          "saveFailed": "No se pudieron guardar los valores del Centro de confianza",
+          "mfaRequired": "Cambiar estos valores requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil e inténtelo de nuevo.",
+          "revisionMismatch": "Otra persona cambió estos valores. Recargue para ver sus cambios."
+        },
         "title": "Configuración heredada"
       },
       "title": "Centro de confianza",

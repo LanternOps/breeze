@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Trust Center",
+        "description": "Defaults for your customers' trust pages"
+      },
       "company": {
         "label": "Company",
         "description": "Name, address, contacts"
@@ -5721,6 +5725,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "This organization has a published trust page. Changing the slug changes its public URL, and the old link will stop working.",
     "actions": {
       "save": "Save organization"
     },

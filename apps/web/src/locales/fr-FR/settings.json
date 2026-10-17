@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Centre de confiance",
+        "description": "Valeurs par défaut des pages de confiance de vos clients"
+      },
       "company": {
         "label": "Entreprise",
         "description": "Nom, adresse, contacts"
@@ -5673,6 +5677,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Cette organisation a une page publique du Centre de confiance. Modifier l’identifiant d’URL change son adresse publique, et l’ancien lien ne fonctionnera plus.",
     "actions": {
       "save": "Enregistrer l’organisation"
     },

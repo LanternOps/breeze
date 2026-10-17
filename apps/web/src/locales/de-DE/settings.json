@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Vertrauenszentrum",
+        "description": "Standardwerte für die Vertrauensseiten Ihrer Kunden"
+      },
       "company": {
         "label": "Unternehmen",
         "description": "Name, Adresse, Kontakte"
@@ -5673,6 +5677,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Diese Organisation hat eine veröffentlichte Seite im Vertrauenszentrum. Wenn Sie das URL-Kürzel ändern, ändert sich die öffentliche URL, und der alte Link funktioniert nicht mehr.",
     "actions": {
       "save": "Organisation retten"
     },

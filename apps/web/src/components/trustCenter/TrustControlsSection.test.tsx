@@ -98,4 +98,51 @@ describe('TrustControlsSection', () => {
     expect(screen.getByTestId('trust-control-switch-edr_coverage')).toBeDisabled();
     expect(screen.getByTestId('trust-toggle-searchIndexable')).toBeDisabled();
   });
+
+  describe('W02g inheritance', () => {
+    const mountWithSources = (sources: Record<string, string>, pageOver: Record<string, unknown> = {}, canWrite = true) => {
+      const onReload = vi.fn(async () => {});
+      const s = state(pageOver);
+      s.effective = { ...s.effective, sources: { ...s.effective.sources, ...sources } };
+      render(<TrustControlsSection orgId="o1" orgFetch={orgFetch} state={s as never} controls={controls as never} canWrite={canWrite} onReload={onReload} />);
+      return onReload;
+    };
+
+    it('each toggle and the hidden-controls list badge where its value comes from (effective.sources)', () => {
+      mountWithSources({ showManagedBy: 'template', showPercentages: 'default', showDeviceCount: 'page', hiddenControlIds: 'template' }, { showManagedBy: null, showPercentages: null });
+      expect(screen.getByTestId('trust-inheritance-showManagedBy')).toHaveAttribute('data-source', 'template');
+      expect(screen.getByTestId('trust-inheritance-showManagedBy')).toHaveTextContent('Partner template');
+      expect(screen.getByTestId('trust-inheritance-showPercentages')).toHaveTextContent('Breeze default');
+      expect(screen.getByTestId('trust-inheritance-showDeviceCount')).toHaveTextContent('Set for this organization');
+      expect(screen.getByTestId('trust-inheritance-hiddenControlIds')).toHaveAttribute('data-source', 'template');
+    });
+
+    it('Reset to inherited is offered only for the page’s own values and sends null', async () => {
+      const onReload = mountWithSources({ showDeviceCount: 'page', showManagedBy: 'template' });
+      expect(screen.queryByTestId('trust-reset-showManagedBy')).toBeNull();
+      fireEvent.click(screen.getByTestId('trust-reset-showDeviceCount'));
+      await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { showDeviceCount: null }));
+      await waitFor(() => expect(onReload).toHaveBeenCalled());
+    });
+
+    it('resetting the hidden-controls list sends hiddenControlIds: null', async () => {
+      mountWithSources({ hiddenControlIds: 'page' }, { hiddenControlIds: ['edr_coverage'] });
+      fireEvent.click(screen.getByTestId('trust-reset-hiddenControlIds'));
+      await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { hiddenControlIds: null }));
+    });
+
+    it('a toggle flipped locally reads as set for this organization while the save is in flight', async () => {
+      let release: (r: Response) => void = () => {};
+      api.updateTrustPage.mockReturnValueOnce(new Promise<Response>((r) => { release = r; }));
+      mountWithSources({ showManagedBy: 'template' }, { showManagedBy: null });
+      fireEvent.click(screen.getByTestId('trust-toggle-showManagedBy'));
+      await waitFor(() => expect(screen.getByTestId('trust-inheritance-showManagedBy')).toHaveAttribute('data-source', 'page'));
+      release(ok());
+    });
+
+    it('no reset without write access', () => {
+      mountWithSources({ showDeviceCount: 'page' }, {}, false);
+      expect(screen.getByTestId('trust-reset-showDeviceCount')).toBeDisabled();
+    });
+  });
 });

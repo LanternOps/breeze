@@ -197,15 +197,72 @@
         "title": "Beyan edilen kontroller"
       },
       "frameworks": {
+        "description": "Herkese açık sayfanın kontrollerini hangi güvenlik çerçeveleriyle eşleştireceğini seçin. Eşleştirmeler yol göstericidir, uygunluk beyanı değildir.",
+        "source": {
+          "page": "Bu sayfada ayarlandı.",
+          "template": "İş ortağı şablonundan devralındı.",
+          "default": "Yerleşik varsayılan kullanılıyor."
+        },
+        "suggested": "Bölgeniz için önerilir",
+        "cisLocked": "CIS lisansı doğrulandığında kullanılabilir",
+        "useDefault": "Varsayılanı kullan",
+        "save": "Kaydet",
+        "saved": "Çerçeve görünümü kaydedildi.",
+        "saveFailed": "Çerçeve görünümü kaydedilemedi.",
+        "revisionChanged": "Sayfa siz açtıktan sonra değişti. Yeniden yükleyip tekrar deneyin.",
         "title": "Çerçeve görünümü"
       },
       "subprocessors": {
+        "description": "Müşterinizin adına veri işleyen üçüncü taraflar. Algılanan araçlar yalnızca öneridir; siz sayfayı yayımlayana kadar hiçbir şey yayımlanmaz.",
+        "addDetected": "Algılanan araçlardan ekle",
+        "addManual": "El ile ekle",
+        "noSuggestions": "Eklenecek başka algılanmış araç kalmadı.",
+        "empty": "Henüz alt veri işleyen listelenmedi.",
+        "name": "Ad",
+        "purpose": "Amaç",
+        "location": "Konum",
+        "website": "Web sitesi",
+        "websiteInvalid": "https:// adresi kullanın.",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "remove": "Kaldır",
+        "save": "Alt veri işleyenleri kaydet",
+        "saved": "Alt veri işleyenler kaydedildi",
+        "saveFailed": "Alt veri işleyenler kaydedilemedi",
+        "loadFailed": "Alt veri işleyenler yüklenemedi.",
+        "suggestionsFailed": "Algılanan araçlar yüklenemedi. Yeniden denemek için kapatıp tekrar açın.",
+        "duplicate": "Aynı algılanan araç birden fazla kez yer alıyor.",
+        "limit": "En fazla {{max}} alt veri işleyen sınırına ulaşıldı.",
         "title": "Alt işleyiciler"
       },
       "faq": {
+        "description": "Alıcıların ve denetçilerin en sık sorduğu soruların yanıtları. Sayfayla birlikte yayımlanır.",
+        "add": "Soru ekle",
+        "question": "Soru",
+        "questionShort": "Soru en az {{min}} karakter olmalıdır.",
+        "answer": "Yanıt",
+        "answerTooLong": "Bu yanıt çok uzun; kısaltın.",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "remove": "Kaldır",
+        "save": "SSS’yi kaydet",
+        "saved": "SSS kaydedildi",
+        "saveFailed": "SSS kaydedilemedi",
+        "loadFailed": "SSS yüklenemedi.",
+        "empty": "Henüz soru yok.",
+        "limit": "En fazla {{max}} soru sınırına ulaşıldı.",
         "title": "Sıkça sorulan sorular"
       },
       "history": {
+        "toggle": "Karşılanan kontrolleri zaman içinde göster",
+        "description": "Kaç kontrolün karşılandığını gösteren 90 günlük bir grafik ekler. Breeze sayfayı yeniden değerlendirdiğinde her değişiklik kaydedilir.",
+        "saved": "Geçmiş ayarı kaydedildi",
+        "saveFailed": "Geçmiş ayarı kaydedilemedi",
+        "source": {
+          "page": "Bu kuruluşta ayarlandı",
+          "template": "İş ortağı şablonundan",
+          "default": "Varsayılan"
+        },
         "title": "Zaman içinde karşılanan kontroller"
       },
       "access": {
@@ -272,6 +329,42 @@
         "title": "Belge erişim talepleri"
       },
       "inheritance": {
+        "sources": {
+          "page": "Bu kuruluş için ayarlandı",
+          "template": "İş ortağı şablonu",
+          "default": "Breeze varsayılanı"
+        },
+        "reset": "Devralınan değere sıfırla",
+        "intro": {
+          "template": "İş ortağı şablonunun girişini kullan",
+          "none": "Giriş yok",
+          "custom": "Özel",
+          "inheritedAfterSave": "Bu sayfanın şu anda kendi girişi var. Devralınan girişe geçmek için kaydedin.",
+          "inheritedEmpty": "Hiçbir şey devralınmıyor, bu yüzden sayfada giriş gösterilmez."
+        },
+        "template": {
+          "heading": "Güven Merkezi varsayılanları",
+          "description": "Tüm müşteri güven sayfaları için varsayılanlar. Bir kuruluşun kendisi için seçtiği ayar her zaman geçerlidir. Yayımlanmış sayfalar değişiklikleri bir sonraki yeniden yayımlamada alır.",
+          "readOnly": "Bu varsayılanları yalnızca tüm kuruluşlara erişimi olan iş ortağı yöneticileri değiştirebilir.",
+          "loadFailed": "Güven Merkezi varsayılanları yüklenemedi.",
+          "inheritOption": "Breeze varsayılanı ({{value}})",
+          "on": "Açık",
+          "off": "Kapalı",
+          "introLabel": "Varsayılan giriş",
+          "introHint": "Giriş olmaması için boş bırakın.",
+          "hiddenLabel": "Varsayılan olarak gizlenen kontroller",
+          "hiddenDefault": "Breeze varsayılanı (tüm kontrolleri göster)",
+          "hiddenCustom": "Seçtiğim kontrolleri gizle",
+          "frameworksLabel": "Çerçeve görünümü",
+          "frameworksCustom": "Seçtiğim çerçeveleri göster",
+          "showHistoryLabel": "90 günlük geçmişi göster",
+          "showHistoryDescription": "Son 90 günde kaç kontrolün karşılandığını gösteren bir grafik.",
+          "save": "Varsayılanları kaydet",
+          "saved": "Güven Merkezi varsayılanları kaydedildi",
+          "saveFailed": "Güven Merkezi varsayılanları kaydedilemedi",
+          "mfaRequired": "Bu varsayılanları değiştirmek için çok faktörlü kimlik doğrulama gerekir. Profil güvenlik ayarlarınızda MFA’yı etkinleştirip tekrar deneyin.",
+          "revisionMismatch": "Bu varsayılanları başka biri değiştirdi. Değişiklikleri görmek için yeniden yükleyin."
+        },
         "title": "Devralınan ayarlar"
       },
       "title": "Güven Merkezi",

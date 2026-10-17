@@ -53,9 +53,18 @@ describe('consumeM365WriteActionBudget', () => {
     vi.useRealTimers();
   });
 
-  it('exports the documented (tighter) per-minute and per-day limits', () => {
-    expect(M365_WRITE_ACTIONS_PER_MINUTE).toBe(10);
-    expect(M365_WRITE_ACTIONS_PER_DAY).toBe(100);
+  it('exports the documented per-minute and per-day limits (sized for one offboarding fan-out)', () => {
+    expect(M365_WRITE_ACTIONS_PER_MINUTE).toBe(30);
+    expect(M365_WRITE_ACTIONS_PER_DAY).toBe(300);
+  });
+
+  it('allows the 30th call in a minute and denies the 31st', async () => {
+    const at30 = buildMockRedis([[null, 30], [null, 1], [null, 30], [null, 1]]);
+    vi.mocked(getRedis).mockReturnValue(at30.redis);
+    expect((await consumeM365WriteActionBudget('conn-1')).allowed).toBe(true);
+    const at31 = buildMockRedis([[null, 31], [null, 1], [null, 31], [null, 1]]);
+    vi.mocked(getRedis).mockReturnValue(at31.redis);
+    expect((await consumeM365WriteActionBudget('conn-1')).allowed).toBe(false);
   });
 
   it('allows a call under both the minute and day limits', async () => {

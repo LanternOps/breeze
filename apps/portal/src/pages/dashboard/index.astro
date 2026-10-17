@@ -1,11 +1,15 @@
 ---
 import PortalLayout from '../../layouts/PortalLayout.astro';
 import { DashboardTiles, DashboardUnavailable } from '../../components/portal/DashboardTiles';
+import { TrustPageLink } from '../../components/portal/TrustPageLink';
 import { portalApi } from '../../lib/api';
+import { fetchTrustPageLink } from '../../lib/trustPageLinkApi';
 import { buildServerApiConfig, loadPortalBranding } from '../../lib/server';
 import { redirectToLoginAfter401 } from '../../lib/session';
 import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
 
+// Started alongside the dashboard read (never rejects; any failure is null) so the link adds no round trip.
+const trustPathPromise = fetchTrustPageLink(buildServerApiConfig(Astro.request));
 const response = await portalApi.getDashboard(
   buildServerApiConfig(Astro.request),
 );
@@ -29,12 +33,16 @@ if (isPortalPageDisabled(response)) {
 const supportEmail = response.data
   ? null
   : (await loadPortalBranding(Astro.request)).supportEmail;
+const trustPath = response.data ? await trustPathPromise : null;
 ---
 
 <PortalLayout title="Dashboard">
   {
     response.data
-      ? <DashboardTiles dashboard={response.data} />
+      ? <>
+          <DashboardTiles dashboard={response.data} />
+          <TrustPageLink publicPath={trustPath} />
+        </>
       : <DashboardUnavailable supportEmail={supportEmail} />
   }
 </PortalLayout>

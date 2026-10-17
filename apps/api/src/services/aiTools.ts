@@ -102,6 +102,7 @@ import { registerPamTools } from './aiToolsPam';
 import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
+import { registerTrustPageTools } from './aiToolsTrustPage';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -382,6 +383,7 @@ registerWorkspaceTools(aiTools);
 registerM365Tools(aiTools);
 registerExportTools(aiTools);
 registerArtifactTools(aiTools);
+registerTrustPageTools(aiTools);
 
 // A-W05 (D12): the compactor's truncation guidance follows the tool's real
 // paging shape. Covers extension-contributed tools too — they live in the
@@ -515,7 +517,7 @@ export function getToolAlwaysLoad(toolName: string): boolean {
  * headless `executeTool` path — i.e. it only runs via the inline chat path's
  * makeSessionAwareHandler, which threads a live SSE session id to reach the
  * per-tenant M365/Google OAuth connection. Covers the M365 mutation helpdesk
- * tools (m365_disable_user, m365_reset_password) and ALL Google tools (there is
+ * tools (m365_disable_user, m365_reset_password and the M1 identity write tools) and ALL Google tools (there is
  * no registerGoogleTools into the core map). The durable release worker uses
  * this to fail such intents with `session_required` instead of `Unknown tool`.
  * Phase 2 (headless dispatch) would make these executable and flip this to false.

@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Central de Confiança",
+        "description": "Padrões para as páginas de confiança dos seus clientes"
+      },
       "company": {
         "label": "Empresa",
         "description": "Nome, endereço, contatos"
@@ -5726,6 +5730,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Esta organização tem uma página pública da Central de Confiança. Alterar o slug muda o URL público, e o link antigo deixará de funcionar.",
     "actions": {
       "save": "Salvar organização"
     },

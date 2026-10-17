@@ -615,6 +615,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/approvals.ts': { exempt: 'portal', note: 'Customer work approval (#4617 spec §6.2): the customer\'s own approve/deny in the portal session. Human-only by design (spec §6.5): no AI tool may decide a request.' },
   'portal/reports.ts': { exempt: 'portal' },
   'portal/security.ts': { exempt: 'portal' },
+  'portal/trustPageLink.ts': { exempt: 'portal', note: 'Customer dashboard link to the org\'s public trust page; read-only, no MCP surface.' },
   'portal/service.ts': { exempt: 'portal' },
   'portal/tickets.ts': { exempt: 'portal' },
   'portal/trustPage.ts': { exempt: 'portal', note: 'Customer org-admin edits of their own trust page draft (Trust Center W3d); human-only, publishing stays with the MSP.' },
@@ -738,7 +739,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/templateApplications.ts': { gap: '#6778' },
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { gap: '#6778' },
-  'trustPage.ts': { exempt: 'tool_in_later_wave', note: "Editor/publish routes for the public trust page. Writes are human-attested (customer authorization + MFA) and stay human-only; a READ-ONLY status tool (get_trust_page_status) is a W2 candidate under #8770." },
+  'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },
   'trustPageAttestation.ts': { exempt: 'portal', note: 'Unauthenticated signed copy of the public trust payload plus its JWKS; read by insurer/auditor tooling, not a tool surface.' },
   // ---- Trust Center W2 (#8770) route modules. W02a created the stub routers (routes/trustPage{Declarations,
@@ -753,8 +754,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'trustAccessPublic.ts': { exempt: 'portal', note: 'Anonymous gated-document request/verify/download for end customers.' },
   //
   // W02f anchor: 'trustPageContent.ts': { exempt: 'tool_in_later_wave', note: 'Trust page FAQ/subprocessor editing; read access arrives via get_trust_page_status (#8770 W02i).' },
+  'trustPageContent.ts': { exempt: 'tool_in_later_wave', note: 'Trust page FAQ/subprocessor editing; read access arrives via get_trust_page_status (#8770 W02i).' },
   //
   // W02g anchor: 'trustPageTemplate.ts': { exempt: 'tool_in_later_wave', note: 'Partner Trust Center template; partner-wide admin + MFA (#8770 W02g).' },
+  'trustPageTemplate.ts': { exempt: 'tool_in_later_wave', note: 'Partner Trust Center template; partner-wide admin + MFA (#8770 W02g).' },
   //
   'tunnelHttp.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnelWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },

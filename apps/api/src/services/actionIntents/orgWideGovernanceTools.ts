@@ -75,6 +75,16 @@
 const IDENTITY_TENANT_WRITE_TOOLS = [
   'm365_disable_user',
   'm365_reset_password',
+  // M1 control-plane identity writes (Operator Recipe Library): tenant-wide
+  // directory/mailbox/device objects, so the same org-wide ceiling applies.
+  'm365_revoke_sessions',
+  'm365_remove_license',
+  'm365_assign_license',
+  'm365_remove_from_group',
+  'm365_add_to_group',
+  'm365_retire_intune_device',
+  'm365_create_user',
+  'm365_set_auto_reply',
   'google_add_mail_delegate',
   'google_add_to_group',
   'google_assign_license',

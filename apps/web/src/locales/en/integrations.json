@@ -201,6 +201,34 @@
       "revoke": "To revoke access later, disconnect here or remove the Breeze enterprise application in Microsoft Entra.",
       "continue": "Continue to Microsoft",
       "defaultTarget": "this organization's Microsoft 365 tenant"
+    },
+    "v2": {
+      "title": "Re-consent needed for the identity actions",
+      "intro": "This tenant consented to an earlier permission set. Re-consenting keeps everything that works today and adds the permissions below. Nothing changes for the customer until an administrator approves the new consent.",
+      "keepsWorking": "Disabling a user and resetting a password keep working on the current consent.",
+      "upgradeAction": "Review and approve new permissions",
+      "upgradeFailed": "Approval for the new permissions could not be started.",
+      "revokedGrant": "Microsoft 365 no longer shows a permission this connection already had: {{grants}}. Retest, then re-consent if it is still missing.",
+      "purpose": {
+        "userReadWrite": "Read and update user accounts — used to disable sign-in, change licences and create a new user.",
+        "userPasswordProfile": "Set a user's password — used to issue a temporary password on a reset or a new account.",
+        "userRevokeSessions": "Sign a user out of every session — used to revoke sign-in sessions when an account is compromised or offboarded.",
+        "groupMember": "Read groups and change who is in them — used to add and remove group memberships. It cannot create or delete a group.",
+        "intunePrivileged": "Retire an Intune-managed device — removes company data and unenrols the device. Breeze never performs a full wipe.",
+        "mailboxSettings": "Read and set mailbox settings — used to turn an automatic reply on or off and to confirm it took effect.",
+        "organizationRead": "Read the tenant's subscription inventory — used to check a licence seat is free before assigning one.",
+        "unknown": "Used by a Microsoft 365 action in Breeze."
+      }
+    },
+    "staleManifest": {
+      "title": "Organizations needing Microsoft 365 re-consent",
+      "description": "These customers are still on an earlier permission set. Open the organization to start re-consent.",
+      "empty": "No organizations need re-consent.",
+      "columnOrganization": "Organization",
+      "columnTenant": "Tenant",
+      "columnVersion": "Permission set",
+      "columnLastVerified": "Last verified",
+      "loadFailed": "The re-consent list could not be loaded."
     }
   },
   "m365ConfirmTenant": {

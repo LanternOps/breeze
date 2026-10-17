@@ -1,0 +1,59 @@
+---
+title: Trust Center questionnaire export
+description: Download your published Trust Center page as questionnaire answers in CSV or JSON, for security questionnaires and insurer forms.
+sidebar:
+  order: 10
+  label: Questionnaire export
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The Trust Center tab can export the answers your public page already gives as a spreadsheet-friendly **CSV** or a **JSON** file. Use it to fill in a customer or insurer questionnaire without retyping what the page says. It is an evidence summary computed by Breeze from device telemetry, **not a certification or attestation of compliance**.
+
+Open the organization record, go to the **Trust Center** tab, and use the **Export questionnaire answers** buttons in the status card.
+
+## Published page only
+
+The export is built in your browser from the same published data the public page renders. It never includes more than the public page shows: hidden controls stay hidden, percentages and device counts appear only if the page shows them, and an unpublished page cannot be exported (the buttons are disabled). If you change the draft, publish first; the export follows what is live.
+
+## Columns
+
+Each row is one control shown on the page, in page order: telemetry controls first, then declared controls.
+
+| Column | Meaning |
+| --- | --- |
+| `control_id`, `category` | Stable control identifier and its category |
+| `question` | Breeze's plain-English question for the control |
+| `answer` | `Yes`, `Partially`, `No` or `Not assessed` |
+| `status` | The page status (`met`, `attention`, `not_met`, `not_assessed`; declared controls use `current` or `expired`) |
+| `reason` | Why a control is not assessed (for example `no_data`); `declaration_expired` for an expired declaration |
+| `basis` | How the answer is known: "Continuously verified by Breeze RMM telemetry", or "Declared by … on …, expires …" |
+| `devices_assessed`, `devices_eligible`, `percent` | Empty when the page hides percentages |
+| `evidence_as_of` | When the evidence was last gathered |
+| `framework_refs` | Framework references, for example `cis_v8 10.1; nist_csf_2 PR.PS` |
+| `verification_paused` | `true` on every row when the page's evidence is stale |
+| `page_url`, `snapshot_id`, `generated_at`, `published_at` | Where the page lives and which published version the row came from |
+
+### Answer mapping
+
+- Met → `Yes`
+- Needs attention → `Partially`
+- Not met → `No`
+- Not assessed → `Not assessed`, with the reason in `reason`
+- A current declared control → `Yes`; an expired declaration → `Not assessed`
+
+When the page's evidence is stale, the answers keep the last verified values and every row carries `verification_paused` = `true`. Check that column before relying on an answer.
+
+Declared controls are statements made by a named person at your company. They are labeled as declared in `basis` and are never presented as measured.
+
+## JSON
+
+The JSON file carries the same rows plus the page metadata: `format` (`breeze-trust-questionnaire`), `version`, `pageUrl`, the organization name, `snapshotId`, `generatedAt`, `publishedAt`, `lastEvaluatedAt`, `stale`, the summary, the methodology and the disclaimer.
+
+## Spreadsheet safety
+
+Every CSV cell is checked before it is written. A value that begins with `=`, `+`, `-`, `@`, a tab or a line break is prefixed with a single quote so Excel and Sheets treat it as text instead of running it as a formula.
+
+<Aside type="tip">
+Need a copy a third party can verify? The export is a convenience format. The signed attestation is the verifiable machine-readable copy; see [Trust Center signed attestation](/security/trust-center-attestation/).
+</Aside>

@@ -549,6 +549,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // headless registry via makeSessionAwareHandler, but still carry a real
   // tier via m365ToolTiers).
   'm365_disable_user', 'm365_reset_password',
+  // Identity / account control — M365 control-plane identity catalog (Operator
+  // Recipe Library M1, spec §7.1): all Tier 3, all four-eyes.
+  'm365_revoke_sessions', 'm365_remove_license', 'm365_assign_license',
+  'm365_remove_from_group', 'm365_add_to_group', 'm365_retire_intune_device',
+  'm365_create_user', 'm365_set_auto_reply',
   // AI Operator plan approval — ONE four-eyes decision over an ordered,
   // digest-pinned set of provider effects (Recipe Library spec §6.4). Four-eyes
   // for the same reason every effect inside it is: the set can destroy a
@@ -1127,6 +1132,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // routes/aiArtifacts.ts) — the tool's scope is stricter (own run/session
   // only), not its permission.
   read_artifact: { resource: 'ai_agents', action: 'read' },
+  // Same permission as the editor's GET /orgs/:orgId/trust-page.
+  get_trust_page_status: { resource: 'organizations', action: 'read' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
@@ -1615,6 +1622,15 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Google and device effects at once, so it takes the identity-tenant ceiling.
   operator_plan: { resource: 'organizations', action: 'write' },
   m365_reset_password: { resource: 'organizations', action: 'write' },
+  // M1 control-plane identity writes: same org-governance ceiling as the pair above.
+  m365_revoke_sessions: { resource: 'organizations', action: 'write' },
+  m365_remove_license: { resource: 'organizations', action: 'write' },
+  m365_assign_license: { resource: 'organizations', action: 'write' },
+  m365_remove_from_group: { resource: 'organizations', action: 'write' },
+  m365_add_to_group: { resource: 'organizations', action: 'write' },
+  m365_retire_intune_device: { resource: 'organizations', action: 'write' },
+  m365_create_user: { resource: 'organizations', action: 'write' },
+  m365_set_auto_reply: { resource: 'organizations', action: 'write' },
   // Google Workspace helpdesk tools (DWD service-account-backed). Same
   // reasoning as the M365 block above; routes/google.ts:29-30 gates the
   // Google surface on ORGS_READ / ORGS_WRITE.

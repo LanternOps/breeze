@@ -13,6 +13,7 @@ import { updateTrustPage, type TrustControlsState, type TrustPageState } from '@
 import { handleActionError, runAction } from '@/lib/runAction';
 import { controlStatusPill } from './trustCenterPill';
 import { useTrustControlCopy } from './trustControlCopy';
+import { InheritanceBadge, ResetToInheritedButton, resetToInherited, sourceAfterLocalEdit } from './trustInheritance';
 
 type ControlValues = Pick<TrustSettingValues, 'showPercentages' | 'showDeviceCount' | 'showManagedBy' | 'searchIndexable' | 'hiddenControlIds'>;
 
@@ -59,11 +60,12 @@ export default function TrustControlsSection({ orgId, orgFetch, state, controls,
   const copy = useTrustControlCopy();
   // Optimistic overlay on top of the EFFECTIVE values (page → template → default: what publish would
   // freeze); cleared per key once the save settles (success: after the reload lands; failure: revert).
-  // Saves write explicit page values; the inherit/override UI is W02g's.
+  // Saves write explicit page values; "Reset to inherited" sends null so the value inherits again (W02g).
   const [local, setLocal] = useState<Partial<ControlValues>>({});
   const [busy, setBusy] = useState(false);
   const values: ControlValues = { ...state.effective.values, ...local };
   const published = state.page.publishedAt !== null;
+  const sourceOf = (key: keyof ControlValues) => sourceAfterLocalEdit(state.effective.sources[key], key in local);
 
   const save = async (patch: TrustPageUpdateInput, optimistic: Partial<ControlValues>) => {
     if (!canWrite) return;
@@ -96,6 +98,8 @@ export default function TrustControlsSection({ orgId, orgFetch, state, controls,
     void save({ hiddenControlIds: next }, { hiddenControlIds: next });
   };
   const toggleFlag = (key: ToggleKey) => void save({ [key]: !values[key] }, { [key]: !values[key] });
+  // No optimistic value: the inherited one is only known once the reload resolves it.
+  const reset = (key: keyof ControlValues) => void save(resetToInherited(key), {});
 
   const grouped = useMemo(() => {
     if (!controls) return [];
@@ -121,9 +125,15 @@ export default function TrustControlsSection({ orgId, orgFetch, state, controls,
       <div className="grid gap-2 sm:grid-cols-2">
         {TOGGLES.map((key) => (
           <div key={key} className="flex items-start justify-between gap-3 rounded-md border p-3">
-            <div id={`trust-toggle-${key}-label`} className="text-sm">
-              <div className="font-medium">{tr(`controls.toggles.${key}.label`)}</div>
-              <div className="text-xs text-muted-foreground">{tr(`controls.toggles.${key}.description`)}</div>
+            <div className="min-w-0 space-y-1">
+              <div id={`trust-toggle-${key}-label`} className="text-sm">
+                <div className="font-medium">{tr(`controls.toggles.${key}.label`)}</div>
+                <div className="text-xs text-muted-foreground">{tr(`controls.toggles.${key}.description`)}</div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <InheritanceBadge source={sourceOf(key)} testId={`trust-inheritance-${key}`} />
+                <ResetToInheritedButton source={sourceOf(key)} disabled={!canWrite || busy} onReset={() => reset(key)} testId={`trust-reset-${key}`} />
+              </div>
             </div>
             <Switch
               checked={values[key]}
@@ -134,6 +144,11 @@ export default function TrustControlsSection({ orgId, orgFetch, state, controls,
             />
           </div>
         ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2" data-testid="trust-controls-hidden-source">
+        <InheritanceBadge source={sourceOf('hiddenControlIds')} testId="trust-inheritance-hiddenControlIds" />
+        <ResetToInheritedButton source={sourceOf('hiddenControlIds')} disabled={!canWrite || busy} onReset={() => reset('hiddenControlIds')} testId="trust-reset-hiddenControlIds" />
       </div>
 
       {controls === null ? (
