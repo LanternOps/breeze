@@ -429,6 +429,43 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
     expect(mixed.params).toEqual([G1]);
   });
 
+  // #8773 sweep: an enum-typed column rejects a value outside the enum with
+  // 22P02 ("invalid input value for enum os_type"), failing the whole filter as
+  // a 500. Like the non-UUID group id above, an unknown enum value can match
+  // nothing, so it is dropped before it reaches Postgres.
+  describe('unknown enum values never reach a pg enum column', () => {
+    const params = (c: FilterCondition) => dialect.sqlToQuery(buildConditionSQL(c)).params;
+
+    it.each(['osType', 'status', 'watchdogStatus'])('%s equals/in with only unknown values match nothing', (field) => {
+      expect(render({ field, operator: 'equals', value: '2026' })).toMatch(/false/i);
+      expect(render({ field, operator: 'in', value: ['2026'] })).toMatch(/false/i);
+      expect(params({ field, operator: 'in', value: ['2026'] })).toEqual([]);
+    });
+
+    it('in keeps the known values and drops the unknown ones', () => {
+      expect(params({ field: 'osType', operator: 'in', value: ['2026', 'linux'] })).toEqual(['linux']);
+    });
+
+    it.each(['osType', 'status', 'watchdogStatus'])('%s notEquals/notIn with only unknown values match everything', (field) => {
+      expect(render({ field, operator: 'notEquals', value: '2026' })).toMatch(/true/i);
+      expect(render({ field, operator: 'notIn', value: ['2026'] })).toMatch(/true/i);
+      expect(params({ field, operator: 'notIn', value: ['2026'] })).toEqual([]);
+    });
+
+    it('notIn keeps the known values and drops the unknown ones', () => {
+      expect(params({ field: 'osType', operator: 'notIn', value: ['2026', 'linux'] })).toEqual(['linux']);
+    });
+
+    it('known enum values are untouched', () => {
+      expect(params({ field: 'osType', operator: 'equals', value: 'linux' })).toEqual(['linux']);
+      expect(render({ field: 'osType', operator: 'notEquals', value: 'linux' })).toMatch(/!=/);
+    });
+
+    it('non-enum varchar columns still pass any value through', () => {
+      expect(params({ field: 'deviceRole', operator: 'equals', value: 'whatever' })).toEqual(['whatever']);
+    });
+  });
+
   it('device-column fields still compare directly (no subquery)', () => {
     const sql = render({ field: 'hostname', operator: 'contains', value: 'web' });
     expect(sql).not.toMatch(/exists/i);

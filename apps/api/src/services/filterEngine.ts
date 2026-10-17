@@ -549,7 +549,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     if (!col) {
       throw new Error(`Unknown device field: ${fieldInfo.column}`);
     }
-    return applyOperator(sql`${col}`, operator, value);
+    return applyOperator(sql`${col}`, ...enumSafe(col, operator, value));
   }
   if (fieldInfo.table === 'hardware') {
     const col = deviceHardware[fieldInfo.column as keyof typeof deviceHardware];
@@ -557,7 +557,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
       throw new Error(`Unknown hardware field: ${fieldInfo.column}`);
     }
     // device_hardware is 1:1 with devices (device_id is PK).
-    return sql`EXISTS (SELECT 1 FROM ${deviceHardware} WHERE ${deviceHardware.deviceId} = ${devices.id} AND ${applyOperator(sql`${col}`, operator, value)})`;
+    return sql`EXISTS (SELECT 1 FROM ${deviceHardware} WHERE ${deviceHardware.deviceId} = ${devices.id} AND ${applyOperator(sql`${col}`, ...enumSafe(col, operator, value))})`;
   }
   if (fieldInfo.table === 'network') {
     const col = deviceNetwork[fieldInfo.column as keyof typeof deviceNetwork];
@@ -565,7 +565,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
       throw new Error(`Unknown network field: ${fieldInfo.column}`);
     }
     // device_network is 1:many (interfaces); EXISTS = "any interface matches".
-    return sql`EXISTS (SELECT 1 FROM ${deviceNetwork} WHERE ${deviceNetwork.deviceId} = ${devices.id} AND ${applyOperator(sql`${col}`, operator, value)})`;
+    return sql`EXISTS (SELECT 1 FROM ${deviceNetwork} WHERE ${deviceNetwork.deviceId} = ${devices.id} AND ${applyOperator(sql`${col}`, ...enumSafe(col, operator, value))})`;
   }
   if (fieldInfo.table === 'metrics') {
     const col = deviceMetrics[fieldInfo.column as keyof typeof deviceMetrics];
@@ -596,6 +596,23 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     throw new Error(`Unsupported operator for groupId: ${operator}`);
   }
   throw new Error(`Unsupported table: ${fieldInfo.table}`);
+}
+
+// #8773 sweep: a value outside a pg enum raises 22P02 ("invalid input value for
+// enum os_type") and fails the whole filter as a 500. Like a non-UUID group id,
+// an unknown enum value can equal nothing, so drop it before it reaches
+// Postgres: `equals`/`in` then match nothing (empty IN → FALSE) and
+// `notEquals`/`notIn` exclude nothing (empty NOT IN → TRUE).
+function enumSafe(col: unknown, operator: FilterOperator, value: FilterValue): [FilterOperator, FilterValue] {
+  const known = (col as { enumValues?: readonly string[] }).enumValues;
+  if (!Array.isArray(known)) return [operator, value];
+  const isKnown = (v: unknown) => typeof v === 'string' && known.includes(v);
+  if (operator === 'in' || operator === 'notIn') {
+    return Array.isArray(value) ? [operator, (value as unknown[]).filter(isKnown) as FilterValue] : [operator, value];
+  }
+  if (operator === 'equals' && !isKnown(value)) return ['in', []];
+  if (operator === 'notEquals' && !isKnown(value)) return ['notIn', []];
+  return [operator, value];
 }
 
 // Build a SQL predicate applying an operator to a column expression. The
