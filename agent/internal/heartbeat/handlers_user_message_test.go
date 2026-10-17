@@ -63,8 +63,9 @@ func (o *orderLog) indexOf(ev string) int {
 }
 
 // orderConn wraps the agent-side socket and appends each frame's type to the
-// probe's order log at Write time. ipc.Conn writes one whole frame per Write
-// under its own lock, so a single Write is a single envelope. Logging on the
+// probe's order log at Write time. ipc.Conn.Send writes a 4-byte length header
+// and then the JSON body under its own lock; only the body can contain the
+// type string, so each envelope is logged exactly once. Logging on the
 // helper's receive side instead races: each probe has its own reader goroutine,
 // so under -race the log order could differ from the agent's send order.
 type orderConn struct {
