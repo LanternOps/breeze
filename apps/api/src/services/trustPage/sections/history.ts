@@ -13,14 +13,19 @@ import type { SectionBuildContext } from './types';
 
 const WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 
-const met = sql<number | null>`(${trustPageSnapshots.payload}->'summary'->>'controlsMet')::int`;
-const shown = sql<number | null>`(${trustPageSnapshots.payload}->'summary'->>'controlsShown')::int`;
-const cols = { generatedAt: trustPageSnapshots.generatedAt, met, shown };
+// Built per call, not at module load: suites that mock `../db/schema` partially (routes/portal.test.ts and
+// friends) import this module transitively, and a top-level `trustPageSnapshots.payload` would throw there.
+const historyColumns = () => ({
+  generatedAt: trustPageSnapshots.generatedAt,
+  met: sql<number | null>`(${trustPageSnapshots.payload}->'summary'->>'controlsMet')::int`,
+  shown: sql<number | null>`(${trustPageSnapshots.payload}->'summary'->>'controlsShown')::int`,
+});
 
 export async function buildHistory(ctx: SectionBuildContext): Promise<TrustPagePublicPayload['history']> {
   if (!ctx.config.showHistory) return [];
   const windowStart = new Date(ctx.asOf.getTime() - WINDOW_MS);
   // The snapshot being built is not in the table yet, so it is excluded by construction.
+  const cols = historyColumns();
   const inWindow = await db.select(cols).from(trustPageSnapshots)
     .where(and(eq(trustPageSnapshots.trustPageId, ctx.page.id), gte(trustPageSnapshots.generatedAt, windowStart)))
     .orderBy(asc(trustPageSnapshots.generatedAt));
