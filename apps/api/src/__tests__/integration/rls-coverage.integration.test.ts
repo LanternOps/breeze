@@ -1199,6 +1199,14 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // Request paths are limited to the exact user owner; the explicit system
   // branch lets the bounded retry worker drain work for every user.
   'oauth_revocation_retries',
+  // Connection health W3 (#8847, spec §2.2/§2.3): pure Shape 6, user_id only, no
+  // org/partner axis. user_email_optouts is the user's own email opt-out (written
+  // by the user in My Account, or by the system-scope one-click unsubscribe);
+  // connection_health_digest_deliveries is the user's own digest delivery ledger,
+  // written only by the system-scope digest job. Behavioural proof:
+  // connectionHealthDigest.integration.test.ts.
+  'user_email_optouts',
+  'connection_health_digest_deliveries',
 ]);
 
 // Tables WITHOUT their own org_id whose permissive policies may admit rows by
@@ -1217,6 +1225,7 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
 const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
   'approval_requests', // step-up approval the requesting user creates and answers; their own decision record.
   'authenticator_devices', // the user's own approver device keys.
+  'connection_health_digest_deliveries', // the user's own digest delivery receipts: date, status and bare incident ids (no FK, no org content).
   'email_verification_tokens', // verification token for the user's own address; also carries its own partner_id.
   'mobile_devices', // the user's own registered phone/tablet.
   'oauth_interactions', // the user's own in-flight OAuth login interaction.
@@ -1225,6 +1234,7 @@ const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
   'refresh_token_families', // the user's own refresh-token chain.
   'sessions', // the user's own login session.
   'ticket_push_preferences', // the user's own push preference row (user_id PK, no ticket reference).
+  'user_email_optouts', // the user's own email opt-out choice (topic + source).
   'user_passkeys', // the user's own WebAuthn credentials.
   'user_sso_identities', // the user's own link to an external identity.
 ]);

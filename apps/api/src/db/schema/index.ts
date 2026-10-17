@@ -220,3 +220,4 @@ export * from './assetPhysicalPlacements';
 export * from './serviceCatalogs';
 export * from './connectionHealth';
 export * from './endpointMessages';
+export * from './emailOptouts';
