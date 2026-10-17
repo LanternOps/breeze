@@ -462,7 +462,7 @@ describe('applyFleetDesign — step 5 (role corrections)', () => {
     expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.role.ai_correction' }));
     expect(result.applied).toContain('roleCorrections:d1');
     expect(groupReevalMock.requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith(expect.objectContaining({
-      deviceId: 'd1', orgId: expect.any(String), eventType: 'device.updated', changedFields: ['deviceRole'], reason: 'fleet_design_apply',
+      deviceId: 'd1', orgId: ORG, eventType: 'device.updated', changedFields: ['deviceRole'], reason: 'fleet_design_apply',
     }));
   });
 });

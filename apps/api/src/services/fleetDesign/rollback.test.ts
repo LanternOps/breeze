@@ -537,7 +537,7 @@ describe('rollbackFleetDesign — role correction', () => {
     expect(dbHolder.updates[0]!.set).toMatchObject({ deviceRole: 'workstation', deviceRoleSource: 'discovered' });
     expect(result.rolledBack).toEqual(['roleCorrections:d9']);
     expect(groupReevalMock.requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith(expect.objectContaining({
-      deviceId: 'd9', orgId: expect.any(String), eventType: 'device.updated', changedFields: ['deviceRole'], reason: 'fleet_design_rollback',
+      deviceId: 'd9', orgId: ORG, eventType: 'device.updated', changedFields: ['deviceRole'], reason: 'fleet_design_rollback',
     }));
   });
 
