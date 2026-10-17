@@ -57,6 +57,27 @@ Controls can show references to safeguards in frameworks such as CIS Controls v8
 
 {/* W02d: gated documents */}
 
+## Documents available on request
+
+A linked document can be **Public** (anyone with the page link downloads it) or **Available on request**. A document on request is listed on the public page by title, with no download link. Changing a document's visibility asks you to confirm the disclosure again.
+
+A visitor who wants it fills in a short request form: name, work email, company and the reason they need it. Then:
+
+1. Breeze emails the visitor a confirmation link. The request reaches you only after they click **Confirm request** on that page. The link expires after 24 hours.
+2. Users who can edit the organization get an in-app notification and an email. If you turn on **Create a ticket for each confirmed request** in the **Document access requests** section, Breeze also opens a ticket.
+3. You approve or deny the request in the **Document access requests** section of the Trust Center tab. Approving requires multi-factor authentication. A denial emails the requester, with your note if you add one.
+4. An approved requester is emailed a download link that works for **7 days**. It covers the documents offered on request on the published page at the moment you approved. **Resend link** emails a new link and the old one stops working; the 7 days do not restart. **Revoke** ends access immediately.
+
+Requests open only while the page is published. Downloads stop if you unpublish the page, if the document is removed, deleted or replaced by a newer version, or if you switch it back to Public.
+
+### Non-disclosure terms
+
+You can add non-disclosure terms in the **Document access requests** section. Requesters must accept them before they can send a request, and Breeze records the exact text each requester accepted. The terms are shown as plain text and reach the public page when you next publish.
+
+### Privacy and retention
+
+Access links are single-purpose and only ever appear after the `#` in the address, so they are never sent to a server in a URL or written to an access log. Breeze stores only a hash of each link. Requests (name, email, company, purpose) are deleted 365 days after their last status change, except for an approval that is still in force. Expired links are deleted after 30 days. Each request, confirmation, decision and download is recorded in the audit log.
+
 {/* W02e: framework view */}
 
 {/* W02f: subprocessors, FAQ, history */}
