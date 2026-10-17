@@ -202,6 +202,10 @@ func (h *Heartbeat) deliverChatMessage(cmd Command, ipcType string) tools.Comman
 
 	unlock := store.lockSend(show.ConversationID)
 	defer unlock()
+	// A chat_close may have landed while we waited for the lock.
+	if snap, ok := store.snapshot(show.ConversationID); ok && snap.Closed {
+		return chatFail(start, chatErrWindowFailed)
+	}
 	// A duplicate may have completed while we waited for the lock.
 	if store.isDelivered(show.ConversationID, msg.MessageID) {
 		return chatDeliveredResult(start, session, true)

@@ -15,6 +15,9 @@ const (
 	maxChatMessages      = 50
 	maxChatNonces        = 256
 	chatClosedRetention  = time.Hour
+	// chatIdleClose matches the API's idle close: a conversation with no
+	// technician message or user reply for this long is dead.
+	chatIdleClose = 30 * time.Minute
 )
 
 type chatConv struct {
@@ -26,7 +29,7 @@ type chatConv struct {
 	closedAt   time.Time
 	lastActive time.Time
 	delivered  map[string]struct{}
-	nonces     map[string]struct{}
+	nonces     map[string]string // nonce -> inflight | sent | rejected | closed
 	nonceOrder []string
 	// sendMu serialises technician-message deliveries for this conversation so
 	// they reach the helper in order and a duplicate cannot race its original.
@@ -108,7 +111,7 @@ func (s *chatStore) upsert(hdr ipc.ChatShow) (closed bool) {
 		c = &chatConv{
 			id:        hdr.ConversationID,
 			delivered: make(map[string]struct{}),
-			nonces:    make(map[string]struct{}),
+			nonces:    make(map[string]string),
 		}
 		s.convs[c.id] = c
 	}
@@ -216,39 +219,94 @@ func (s *chatStore) count() int {
 	return len(s.convs)
 }
 
-// markClosed closes a known conversation and reports whether this call did it.
+// markClosed closes a conversation and reports whether this call closed a known
+// open one. An unknown conversation gets a closed tombstone (pruned like any
+// closed entry) so a chat_open that arrives after its chat_close cannot raise
+// a window.
 func (s *chatStore) markClosed(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c := s.get(id)
-	if c == nil || c.closed {
+	known := c != nil
+	if !known {
+		for len(s.convs) >= maxChatConversations {
+			s.evictLocked()
+		}
+		c = &chatConv{
+			id:        id,
+			delivered: make(map[string]struct{}),
+			nonces:    make(map[string]string),
+		}
+		s.convs[id] = c
+	}
+	if c.closed {
 		return false
 	}
 	c.closed = true
 	c.closedAt = s.now()
 	c.lastActive = c.closedAt
-	return true
+	return known
 }
 
-// claimNonce reserves a reply nonce; false when it is already in flight / sent
+// Reply nonce outcomes.
+const (
+	nonceInflight = "inflight"
+	nonceSent     = "sent"
+	nonceRejected = "rejected"
+	nonceClosed   = "closed"
+)
+
+// claimNonce reserves a reply nonce; false when it is already in flight / done
 // or the conversation is unknown.
 func (s *chatStore) claimNonce(convID, nonce string) bool {
+	ok, _ := s.claimNonceState(convID, nonce)
+	return ok
+}
+
+// claimNonceState reserves a reply nonce as in flight. When it is already
+// known it returns false and the nonce's current outcome.
+func (s *chatStore) claimNonceState(convID, nonce string) (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c := s.get(convID)
 	if c == nil {
-		return false
+		return false, ""
 	}
-	if _, dup := c.nonces[nonce]; dup {
-		return false
+	if prior, dup := c.nonces[nonce]; dup {
+		return false, prior
 	}
-	c.nonces[nonce] = struct{}{}
+	c.nonces[nonce] = nonceInflight
 	c.nonceOrder = append(c.nonceOrder, nonce)
 	if len(c.nonceOrder) > maxChatNonces {
 		delete(c.nonces, c.nonceOrder[0])
 		c.nonceOrder = c.nonceOrder[1:]
 	}
-	return true
+	return true, ""
+}
+
+// setNonceOutcome records how a claimed nonce ended (sent, rejected, closed).
+func (s *chatStore) setNonceOutcome(convID, nonce, outcome string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c := s.get(convID); c != nil {
+		if _, ok := c.nonces[nonce]; ok {
+			c.nonces[nonce] = outcome
+		}
+	}
+}
+
+// expireIdle closes every open conversation with no activity for d.
+func (s *chatStore) expireIdle(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked()
+	now := s.now()
+	for _, c := range s.convs {
+		if !c.closed && now.Sub(c.lastActive) > d {
+			c.closed = true
+			c.closedAt = now
+		}
+	}
 }
 
 // releaseNonce un-reserves a nonce whose post failed so the helper may retry it.

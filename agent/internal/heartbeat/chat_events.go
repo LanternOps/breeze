@@ -85,8 +85,19 @@ func (h *Heartbeat) handleChatReplyFromHelper(s *sessionbroker.Session, env *ipc
 		reject("replies disabled", ipc.ChatReplyRejected)
 		return
 	}
-	if !store.claimNonce(convID, nonce) {
-		log.Debug("duplicate chat reply nonce ignored", "conversationId", convID)
+	if s.Username == "" {
+		// The API requires session.username; never post an unattested reply.
+		reject("session has no username", ipc.ChatReplyRejected)
+		return
+	}
+	claimed, prior := store.claimNonceState(convID, nonce)
+	if !claimed {
+		// A retry of a nonce that already finished (typically after a helper
+		// reconnect) gets the recorded outcome again; an in-flight one gets its
+		// result when the post completes.
+		if status, ok := nonceOutcomeStatus(prior); ok {
+			sendChatReplyResult(s, convID, nonce, status)
+		}
 		return
 	}
 	ev := chatReplyEvent{
@@ -102,16 +113,46 @@ func (h *Heartbeat) handleChatReplyFromHelper(s *sessionbroker.Session, env *ipc
 			if r := recover(); r != nil {
 				log.Error("panic posting chat reply", "error", fmt.Sprint(r))
 				store.releaseNonce(convID, nonce)
-				sendChatReplyResult(s, convID, nonce, ipc.ChatReplyFailed)
+				h.sendCurrentChatResult(convID, nonce, ipc.ChatReplyFailed)
 			}
 		}()
-		h.finishChatReply(s, ev)
+		h.finishChatReply(ev)
 	}()
+}
+
+// nonceOutcomeStatus maps a terminal nonce outcome to its result status.
+func nonceOutcomeStatus(outcome string) (string, bool) {
+	switch outcome {
+	case nonceSent:
+		return ipc.ChatReplySent, true
+	case nonceRejected:
+		return ipc.ChatReplyRejected, true
+	case nonceClosed:
+		return ipc.ChatReplyClosed, true
+	}
+	return "", false
+}
+
+// sendCurrentChatResult delivers a result to the chat session that is current
+// NOW (the one that posted may be gone after a helper reconnect). With no
+// current session it is dropped; the helper's same-nonce retry is answered
+// from the recorded outcome.
+func (h *Heartbeat) sendCurrentChatResult(convID, nonce, status string) *sessionbroker.Session {
+	cur := h.chatAssistSession()
+	if cur == nil {
+		log.Debug("no chat session to receive a reply result", "conversationId", convID, "status", status)
+		return nil
+	}
+	sendChatReplyResult(cur, convID, nonce, status)
+	return cur
 }
 
 // finishChatReply posts the reply and maps the outcome onto the helper's
 // chat_reply_result and the local store.
-func (h *Heartbeat) finishChatReply(s *sessionbroker.Session, ev chatReplyEvent) {
+//
+//	200/201 -> sent; 409 -> closed; 400/403/404 -> rejected;
+//	anything else (401, 408, 425, 429, 5xx, network error) -> failed, nonce freed.
+func (h *Heartbeat) finishChatReply(ev chatReplyEvent) {
 	store := h.endpointChatStore()
 	post := h.postChatReply
 	if h.chatReplySink != nil {
@@ -126,29 +167,31 @@ func (h *Heartbeat) finishChatReply(s *sessionbroker.Session, ev chatReplyEvent)
 			Body:      ev.Body,
 			SentAt:    ev.At,
 		})
-		sendChatReplyResult(s, ev.ConversationID, ev.ClientNonce, ipc.ChatReplySent)
+		store.setNonceOutcome(ev.ConversationID, ev.ClientNonce, nonceSent)
+		h.sendCurrentChatResult(ev.ConversationID, ev.ClientNonce, ipc.ChatReplySent)
 	case err == nil && status == http.StatusConflict:
 		store.markClosed(ev.ConversationID)
-		sendChatReplyResult(s, ev.ConversationID, ev.ClientNonce, ipc.ChatReplyClosed)
-		closeID := fmt.Sprintf("chat-close-ended-%s-%d", ev.ConversationID, time.Now().UnixNano())
-		if cerr := s.SendNotify(closeID, ipc.TypeChatClose, ipc.ChatClose{ConversationID: ev.ConversationID, Reason: "ended"}); cerr != nil {
-			log.Warn("could not tell the assist helper the chat ended", "conversationId", ev.ConversationID, "error", cerr.Error())
+		store.setNonceOutcome(ev.ConversationID, ev.ClientNonce, nonceClosed)
+		if cur := h.sendCurrentChatResult(ev.ConversationID, ev.ClientNonce, ipc.ChatReplyClosed); cur != nil {
+			closeID := fmt.Sprintf("chat-close-ended-%s-%d", ev.ConversationID, time.Now().UnixNano())
+			if cerr := cur.SendNotify(closeID, ipc.TypeChatClose, ipc.ChatClose{ConversationID: ev.ConversationID, Reason: "ended"}); cerr != nil {
+				log.Warn("could not tell the assist helper the chat ended", "conversationId", ev.ConversationID, "error", cerr.Error())
+			}
 		}
-	case err == nil && status >= 400 && status < 500 && status != http.StatusTooManyRequests:
-		// 403 replies_disabled, 404 unknown_conversation, 400 validation: a
-		// retry with the same content cannot succeed. The nonce stays claimed.
+	case err == nil && (status == http.StatusBadRequest || status == http.StatusForbidden || status == http.StatusNotFound):
+		// replies_disabled, unknown_conversation, validation: a retry with the
+		// same content cannot succeed. The nonce stays claimed as rejected.
 		log.Warn("chat reply rejected by the API", "conversationId", ev.ConversationID, "status", status)
-		sendChatReplyResult(s, ev.ConversationID, ev.ClientNonce, ipc.ChatReplyRejected)
+		store.setNonceOutcome(ev.ConversationID, ev.ClientNonce, nonceRejected)
+		h.sendCurrentChatResult(ev.ConversationID, ev.ClientNonce, ipc.ChatReplyRejected)
 	default:
-		// Network error, 5xx or 429 after retries: retryable, so free the
-		// nonce for the helper's same-nonce retry.
 		if err != nil {
 			log.Warn("chat reply not delivered", "conversationId", ev.ConversationID, "error", err.Error())
 		} else {
 			log.Warn("chat reply not delivered", "conversationId", ev.ConversationID, "status", status)
 		}
 		store.releaseNonce(ev.ConversationID, ev.ClientNonce)
-		sendChatReplyResult(s, ev.ConversationID, ev.ClientNonce, ipc.ChatReplyFailed)
+		h.sendCurrentChatResult(ev.ConversationID, ev.ClientNonce, ipc.ChatReplyFailed)
 	}
 }
 
@@ -185,6 +228,8 @@ func (h *Heartbeat) replayChat(s *sessionbroker.Session) {
 		return
 	}
 	n := 0
+	// Never revive a stale chat: close what the API has already idled out.
+	h.endpointChatStore().expireIdle(chatIdleClose)
 	for _, c := range h.endpointChatStore().openSnapshots() {
 		if len(c.Messages) == 0 {
 			continue
