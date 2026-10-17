@@ -746,6 +746,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // rejects an entry for a module that registers no route. Each owner inserts its entry on the line directly
   // BELOW its own anchor, in the same commit that adds the module's first route (anchor inserts merge cleanly).
   // W02b anchor: 'trustPageDeclarations.ts': { exempt: 'human_only_trust_material', note: 'Declared controls are attestations made by a named MSP user; human-only.' },
+  'trustPageDeclarations.ts': { exempt: 'human_only_trust_material', note: 'Declared controls are attestations made by a named MSP user (MFA, audited); human-only.' },
   //
   // W02d anchor: 'trustPageAccess.ts': { exempt: 'human_only_approval', note: 'Approving release of gated documents to an outside party; human-only, MFA.' }, 'trustAccessPublic.ts': { exempt: 'portal', note: 'Anonymous gated-document request/verify/download for end customers.' },
   //
