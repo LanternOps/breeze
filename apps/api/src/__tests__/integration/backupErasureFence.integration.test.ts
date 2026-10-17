@@ -114,15 +114,21 @@ async function seedOrg(partnerId: string, rootPath: string): Promise<SeededOrg> 
   };
 }
 
-async function insertSnapshot(seed: SeededOrg, snapshotId: string, opts: { identity?: string | null } = {}): Promise<string> {
+async function insertSnapshot(
+  seed: SeededOrg,
+  snapshotId: string,
+  opts: { identity?: string | null; keyPrefix?: string } = {},
+): Promise<string> {
   const [job] = await exec<{ id: string }>(sql`
     INSERT INTO backup_jobs (org_id, config_id, device_id, status, snapshot_id)
     VALUES (${seed.orgId}, ${seed.configId}, ${seed.deviceId}, 'completed', ${snapshotId}) RETURNING id
   `);
   const identity = opts.identity === undefined ? seed.identity : opts.identity;
   const [snap] = await exec<{ id: string }>(sql`
-    INSERT INTO backup_snapshots (org_id, job_id, device_id, config_id, snapshot_id, storage_identity, size, file_count, backup_type)
-    VALUES (${seed.orgId}, ${job!.id}, ${seed.deviceId}, ${seed.configId}, ${snapshotId}, ${identity}, 4096, 2, 'file')
+    INSERT INTO backup_snapshots (org_id, job_id, device_id, config_id, snapshot_id, storage_identity, size, file_count, backup_type,
+                                  key_layout, key_prefix)
+    VALUES (${seed.orgId}, ${job!.id}, ${seed.deviceId}, ${seed.configId}, ${snapshotId}, ${identity}, 4096, 2, 'file',
+            ${opts.keyPrefix ? 'prefixed_flat' : 'legacy_flat'}, ${opts.keyPrefix ?? null})
     RETURNING id
   `);
   return snap!.id;
@@ -406,6 +412,41 @@ describe('erasure fence capture', () => {
     `);
     expect(audit?.org_id).toBeNull();
     expect(audit?.details).toEqual({ objectsRetained: true, snapshotPrefixes: 4, recoveryMediaKeys: 5, unresolvedIdentity: 0 });
+  });
+
+  runDb('the up-front capture records each fenced snapshot prefix\'s key root (#7081)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'breeze-fence-'));
+    const partnerId = await seedPartner();
+    const a = await seedOrg(partnerId, root);
+    await insertSnapshot(a, 'ROOT-LEGACY');
+    const prefixedDbId = await insertSnapshot(a, 'ROOT-PREFIXED', { keyPrefix: 'msp/acme' });
+    await exec(sql`
+      INSERT INTO backup_snapshot_retirements (org_id, config_id, device_id, snapshot_id, storage_identity, backup_type, reason, key_layout, key_prefix)
+      VALUES (${a.orgId}, ${a.configId}, ${a.deviceId}, 'ROOT-RET', ${a.identity}, 'file', 'expired', 'prefixed_flat', 'msp/acme')
+    `);
+    await exec(sql`
+      INSERT INTO backup_snapshot_id_reservations (snapshot_id, org_id, device_id, config_id, storage_identity, source, state, key_layout, key_prefix)
+      VALUES ('ROOT-RES', ${a.orgId}, ${a.deviceId}, ${a.configId}, ${a.identity}, 'server_minted', 'reserved', 'prefixed_flat', 'msp/acme')
+    `);
+    const tokenId = await insertRecoveryToken(a, prefixedDbId);
+    await exec(sql`
+      INSERT INTO recovery_media_artifacts (org_id, token_id, snapshot_id, platform, architecture, status, storage_key)
+      VALUES (${a.orgId}, ${tokenId}, ${prefixedDbId}, 'linux', 'amd64', 'ready', 'recovery-media/r/bundle.tar.gz')
+    `);
+
+    await captureBackupErasureFence(a.orgId);
+
+    const rows = await exec<{ kind: string; source: string; snapshot_id: string | null; key_layout: string | null; key_prefix: string | null }>(sql`
+      SELECT kind, source, snapshot_id, key_layout, key_prefix FROM backup_erasure_targets
+       WHERE subject_org_id = ${a.orgId} ORDER BY kind, snapshot_id, source
+    `);
+    expect(rows).toEqual([
+      { kind: 'recovery_media_key', source: 'recovery_media', snapshot_id: 'ROOT-PREFIXED', key_layout: null, key_prefix: null },
+      { kind: 'snapshot_prefix', source: 'snapshot', snapshot_id: 'ROOT-LEGACY', key_layout: 'legacy_flat', key_prefix: null },
+      { kind: 'snapshot_prefix', source: 'snapshot', snapshot_id: 'ROOT-PREFIXED', key_layout: 'prefixed_flat', key_prefix: 'msp/acme' },
+      { kind: 'snapshot_prefix', source: 'reservation', snapshot_id: 'ROOT-RES', key_layout: 'prefixed_flat', key_prefix: 'msp/acme' },
+      { kind: 'snapshot_prefix', source: 'retirement', snapshot_id: 'ROOT-RET', key_layout: 'prefixed_flat', key_prefix: 'msp/acme' },
+    ]);
   });
 
   runDb('rows created after the up-front capture and deleted by a PARENT step\'s ON DELETE CASCADE are fenced', async () => {

@@ -486,6 +486,50 @@ describe('org merge engine SQL against real Postgres', () => {
         expect(Number(kept[0]?.defaults)).toBe(1);
         asserted++;
 
+        // --- trust_pages (Trust Center W1) ----------------------------------
+        // Each org has a page, a current snapshot and a public document link.
+        // The loser's page must be RETIRED (children cascade) and the
+        // survivor's kept with its evaluation marker cleared — a loser/survivor
+        // swap would delete the survivor's public page instead.
+        const trustPageIds: Record<string, string> = {};
+        for (const org of [L, S]) {
+          const page = (await db.execute(sql`
+            INSERT INTO trust_pages (org_id, partner_id, last_evaluated_at)
+            VALUES (${org}::uuid, ${P}::uuid, now()) RETURNING id`)) as unknown as Array<{ id: string }>;
+          const pageId = page[0]!.id;
+          trustPageIds[org] = pageId;
+          await db.execute(sql`
+            INSERT INTO trust_page_snapshots (trust_page_id, org_id, payload, payload_sha256, catalog_version, publication_revision, is_current)
+            VALUES (${pageId}::uuid, ${org}::uuid, '{}'::jsonb, ${'a'.repeat(64)}, 'v1', 1, true)`);
+          const doc = (await db.execute(sql`
+            INSERT INTO org_documents (org_id, title, storage_backend, data, content_type, byte_size, sha256, original_filename)
+            VALUES (${org}::uuid, 'Policy', 'db', '\\x01'::bytea, 'application/pdf', 1, ${'b'.repeat(64)}, 'policy.pdf')
+            RETURNING id`)) as unknown as Array<{ id: string }>;
+          await db.execute(sql`
+            INSERT INTO trust_page_documents (trust_page_id, document_id, org_id, visibility, disclosure_confirmed_at)
+            VALUES (${pageId}::uuid, ${doc[0]!.id}::uuid, ${org}::uuid, 'public', now())`);
+        }
+        const trust = await CUSTOM_EXECUTORS.trust_pages!(L, S);
+        expect(trust.dropped).toBe(1);
+        expect(trust.moved).toBe(0);
+        expect(trust.notes.join()).toMatch(/retired the merged-away org's public trust page/);
+        const trustCounts = async (org: string) => (await db.execute(sql`
+          SELECT
+            (SELECT count(*)::int FROM trust_pages WHERE org_id = ${org}::uuid) AS pages,
+            (SELECT count(*)::int FROM trust_page_snapshots WHERE org_id = ${org}::uuid) AS snapshots,
+            (SELECT count(*)::int FROM trust_page_documents WHERE org_id = ${org}::uuid) AS links`)) as unknown as Array<{
+          pages: number; snapshots: number; links: number;
+        }>;
+        expect((await trustCounts(L))[0]).toEqual({ pages: 0, snapshots: 0, links: 0 });
+        expect((await trustCounts(S))[0]).toEqual({ pages: 1, snapshots: 1, links: 1 });
+        const survivorPage = (await db.execute(sql`
+          SELECT id, last_evaluated_at FROM trust_pages WHERE org_id = ${S}::uuid`)) as unknown as Array<{
+          id: string; last_evaluated_at: Date | null;
+        }>;
+        expect(survivorPage[0]?.id).toBe(trustPageIds[S]);
+        expect(survivorPage[0]?.last_evaluated_at).toBeNull();
+        asserted++;
+
         // --- audit_baselines ---------------------------------------------------
         const baselines = await CUSTOM_EXECUTORS.audit_baselines!(L, S);
         expect(baselines.moved).toBe(3);
@@ -656,7 +700,7 @@ describe('org merge engine SQL against real Postgres', () => {
         asserted++;
 
         // No loser rows left anywhere the custom executors touched.
-        for (const table of ['contacts', 'backup_configs', 'audit_baselines', 'fleet_findings', 'ai_agents', 'organization_users', 'pax8_orders', 'api_keys', 'enrollment_keys']) {
+        for (const table of ['contacts', 'backup_configs', 'audit_baselines', 'fleet_findings', 'ai_agents', 'organization_users', 'pax8_orders', 'api_keys', 'enrollment_keys', 'trust_pages', 'trust_page_snapshots', 'trust_page_documents']) {
           const left = (await db.execute(
             sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${L}::uuid`,
           )) as unknown as Array<{ n: number }>;
@@ -668,7 +712,7 @@ describe('org merge engine SQL against real Postgres', () => {
     } catch (err) {
       if (!(err instanceof Rollback)) throw err;
     }
-    expect(asserted).toBe(9);
+    expect(asserted).toBe(10);
   }, 120_000);
 
   /**

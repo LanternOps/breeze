@@ -255,6 +255,57 @@ export function requestDeviceGroupReevaluation(
   });
 }
 
+/** Per-device tail of the after-commit enqueue chain; removed once the tail settles. */
+const afterCommitEnqueueChains = new Map<string, Promise<unknown>>();
+
+/**
+ * Like `requestDeviceGroupReevaluation`, but enqueues only once the caller's
+ * OUTERMOST transaction has committed, and drops the request if that
+ * transaction rolls back. A savepoint that rolls back inside a transaction
+ * that still commits does NOT cancel it (see `runAfterDbContextCommit`) — the
+ * site-move conflict path and an importer row failing after its value write
+ * both hit this — so the job can run for a write that did not land. That is
+ * harmless: re-evaluation reads current state and is idempotent.
+ *
+ * For writers whose transaction can outlive `DEVICE_GROUP_REEVALUATION_DELAY_MS`
+ * — the custom-field CSV importer writes up to `MAX_IMPORT_ROWS` (1000)
+ * devices, each in its own savepoint, inside ONE request transaction — the
+ * delay alone does not close the commit race: the job would run against the
+ * pre-import snapshot, "succeed", and never retry. Deferring the enqueue to
+ * after commit makes the delay irrelevant. Producers: PATCH /devices/:id, the
+ * `manage_tags` AI tool, and `persistDeviceCustomFieldValues` (which covers
+ * every application-level custom-field value writer). With no DB context held
+ * the enqueue starts immediately.
+ *
+ * Enqueues for one device are SERIALIZED in-process. A single PATCH that
+ * edits tags and a custom field registers two of these, and both start on the
+ * same tick after commit. `scheduleDeviceGroupReevaluation` is a
+ * read-then-write (getJob, then add or updateData), so racing it, both calls
+ * see "no job", both `add` under the same jobId, and BullMQ keeps only the
+ * first — dropping the second request's changed fields. Chained, the second
+ * finds the first's job and merges into it. (Cross-process races were already
+ * possible for the heartbeat path and are unchanged.)
+ *
+ * `runAfterDbContextCommit` is looked up on the module object at call time for
+ * the same reason as `runWithSystemDbAccess`.
+ */
+export function requestDeviceGroupReevaluationAfterCommit(
+  request: DeviceGroupReevaluationRequest,
+): void {
+  dbModule.runAfterDbContextCommit(`deviceGroupReevaluation.${request.reason}`, () => {
+    const previous = afterCommitEnqueueChains.get(request.deviceId) ?? Promise.resolve();
+    // `requestDeviceGroupReevaluation` never rejects, so neither does the chain.
+    const current = previous.then(() => requestDeviceGroupReevaluation(request));
+    afterCommitEnqueueChains.set(request.deviceId, current);
+    void current.then(() => {
+      if (afterCommitEnqueueChains.get(request.deviceId) === current) {
+        afterCommitEnqueueChains.delete(request.deviceId);
+      }
+    });
+    return current;
+  });
+}
+
 /**
  * Run one re-evaluation. Assumes it is already inside a system DB access
  * context (the worker wraps it; the integration test wraps it explicitly).

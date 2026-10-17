@@ -261,6 +261,16 @@ describe('useSiteCrud', () => {
     });
   });
 
+  it('getSiteFormDefaults keeps numeric jsonb values and blanks other non-strings', () => {
+    const { result } = renderHook(() => useSiteCrud(ORG_ID, { onUnauthorized, t }));
+    const defaults = result.current.getSiteFormDefaults({
+      ...SITE,
+      address: { postalCode: 62701, line1: { nested: true } },
+      contact: { phone: 5551234 },
+    });
+    expect(defaults).toMatchObject({ postalCode: '62701', addressLine1: '', contactPhone: '5551234' });
+  });
+
   it('refresh() with no org (null, no override) resolves null without a request', async () => {
     const { result } = renderHook(() => useSiteCrud(null, { onUnauthorized, t }));
     let value: unknown;

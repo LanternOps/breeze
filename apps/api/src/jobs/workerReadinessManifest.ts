@@ -77,6 +77,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('cisJobs'),
   consumers('automationWorker'),
   consumers('securityPostureWorker'),
+  consumers('trustPageSnapshotWorker'),
   consumers('reliabilityWorker'),
   consumers('userRiskWorker'),
   consumers('abuseSignalsWorker', ['abuseSignalsWorker'], 'abuse_or_partner_trust_enabled'),
@@ -90,6 +91,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // One Worker, no flag gate; attaches under 'helperScreenshotRetention',
   // which differs from its registry key.
   consumers('helperScreenshotRetentionWorker', ['helperScreenshotRetention']),
+  consumers('endpointMessageRetention'),
   consumers('ipHistoryRetention'),
   consumers('reliabilityRetention'),
   consumers('processSampleRetention'),

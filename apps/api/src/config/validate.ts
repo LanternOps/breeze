@@ -1035,6 +1035,7 @@ const envObjectSchema = z
     // with the legacy payload, as an older API would. Strict enum so a typo
     // boot-refuses instead of silently staying on.
     HEARTBEAT_RETAIN_STATE_ENABLED: z.enum(['true', 'false']).default('true'),
+    AGENT_ECH_ENABLED: z.enum(['true', 'false']).default('true'),
 
     // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
     // routing (partner_ai_connections.catalog_entry_id). Off by default so a

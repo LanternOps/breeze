@@ -8,6 +8,10 @@ import { ERROR_CODES } from '@breeze/shared';
 // core.permissions.test.ts's larger gate suite so this wave's tests don't
 // collide with unrelated work on that file.
 
+// PATCH /devices/:id requests a dynamic-group re-evaluation after commit (#8832);
+// the db mock has no runAfterDbContextCommit, so stub the producer.
+vi.mock('../../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
+
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),

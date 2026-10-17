@@ -302,6 +302,9 @@ const STANDARD_REVIEWED: readonly string[] = [
   // Endpoint messages queue for an offline device; the send route caps each
   // one at min(expiresAt, standard TTL) via an explicit deliverBy (#8293).
   C.NOTIFY_USER,
+  // Its retraction lives as long as the message can: the retract route caps
+  // deliverBy at min(message expiresAt, standard TTL) (#8742).
+  C.RETRACT_MESSAGE,
   C.VAULT_SYNC,
   C.VAULT_CONFIGURE,
   C.COLLECT_EVIDENCE,

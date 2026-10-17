@@ -18,11 +18,13 @@ vi.mock('./brainDeviceContext', () => ({
 }));
 vi.mock('./aiTools', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./aiTools')>()),
-  verifyDeviceAccess: vi.fn(async () => ({ device: { id: 'dev-1' } })),
+  verifyDeviceAccess: vi.fn(async () => ({ device: { id: 'dev-1', orgId: 'org-1' } })),
 }));
+vi.mock('../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { db } from '../db';
+import { requestDeviceGroupReevaluationAfterCommit } from '../jobs/deviceGroupJobs';
 import { registerDeviceTools } from './aiToolsDevice';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -71,5 +73,37 @@ describe('manage_tags add binds the tag list as a Postgres array (#8297)', () =>
     expect(q.sql).not.toMatch(/\(\$\d+(, \$\d+)*\)::text\[\]/);
     expect(q.params.slice(0, tags.length)).toEqual(tags);
     expect(q.params[tags.length]).toBe('dev-1');
+  });
+});
+
+// #8832: dynamic groups store membership, so a tag rule goes stale unless the
+// tag write requests a re-evaluation — the same as PATCH /devices/:id does.
+describe('manage_tags add/remove requests a dynamic-group re-evaluation (#8832)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.execute.mockResolvedValue([]);
+    mockDb.select.mockReturnValue({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([{ tags: ['a'] }]) }) }),
+    });
+  });
+
+  it.each(['add', 'remove'] as const)('%s requests a re-evaluation on the tags field', async (action) => {
+    const result = JSON.parse(String(await handlerFor('manage_tags')({ action, deviceId: 'dev-1', tags: ['retired'] }, auth)));
+    expect(result.success).toBe(true);
+
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledTimes(1);
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith({
+      deviceId: 'dev-1',
+      orgId: 'org-1',
+      eventType: 'device.updated',
+      changedFields: ['tags'],
+      reason: 'ai_manage_tags',
+    });
+  });
+
+  it('list requests nothing', async () => {
+    mockDb.execute.mockResolvedValue([{ tag: 'a' }]);
+    await handlerFor('manage_tags')({ action: 'list' }, auth);
+    expect(requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
   });
 });

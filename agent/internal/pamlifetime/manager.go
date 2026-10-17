@@ -194,10 +194,7 @@ func (m *lifecycleManager) apply(ctx context.Context, cmd ApplyCommand, handoff 
 		return m.result(cmd.ActuationID, cmd.Generation, ResultReceived, evidenceFromEntry(entry))
 	}
 
-	credential, err := m.account.Promote(ctx)
-	if err != nil {
-		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "account_promotion_failed")
-	}
+	var credential elevaccount.Credential
 	deprovisionOnFailure := true
 	defer func() {
 		zeroString(&credential.Password)
@@ -208,13 +205,18 @@ func (m *lifecycleManager) apply(ctx context.Context, cmd ApplyCommand, handoff 
 		}
 	}()
 
+	credential, err = m.account.Promote(ctx)
+	if err != nil {
+		return m.failBeforeLaunch(cmd, bootID, "account_promotion_failed", err)
+	}
+
 	process, err := m.windows.CreateSuspended(ctx, suspendedLaunchSpec{
 		actuationID: cmd.ActuationID, username: credential.Username, password: credential.Password,
 		targetPath: canonicalPath, subjectUsername: cmd.SubjectUsername,
 		creationFlags: createSuspended,
 	})
 	if err != nil {
-		return m.failed(cmd.ActuationID, cmd.Generation, bootID, "create_process_failed")
+		return m.failBeforeLaunch(cmd, bootID, "create_process_failed", err)
 	}
 	process.Identity.TargetHash = targetHash
 	process.Identity.BootID = bootID
@@ -497,11 +499,16 @@ func (m *lifecycleManager) reconcileActiveLocked(ctx context.Context, entry Ledg
 	}
 	evidence := evidenceFromEntry(entry)
 	evidence.BootID = bootID
+
 	if entry.PID <= 0 || entry.JobName == "" || entry.ProcessCreationTime == nil || entry.BootID == "" {
+		if !hasAnyProcessIdentity(entry) {
+			return m.recoverUnlaunchedActiveEntry(ctx, entry)
+		}
 		result := m.result(entry.ActuationID, entry.Generation, ResultFailed, evidence)
 		result.FailureCode = "reconcile_identity_unavailable"
 		return result, false
 	}
+
 	process := ProcessIdentity{PID: entry.PID, ProcessCreationTime: *entry.ProcessCreationTime, JobName: entry.JobName, BootID: entry.BootID}
 	if entry.BootID == bootID {
 		job, members, reopenErr := m.windows.ReopenAndVerifyActive(ctx, entry.JobName, process)
@@ -847,6 +854,21 @@ func (m *lifecycleManager) failed(actuationID string, generation uint64, bootID,
 	result := m.result(actuationID, generation, ResultFailed, ResultEvidence{BootID: bootID})
 	result.FailureCode = code
 	return result
+}
+
+// failBeforeLaunch handles an apply that failed before any process existed.
+// It tombstones the entry so a replay cannot re-run it, and so the next
+// Reconcile resolves it from fresh job/token/account evidence instead of
+// failing closed on an entry with no process identity.
+func (m *lifecycleManager) failBeforeLaunch(cmd ApplyCommand, bootID, code string, cause error) Result {
+	log.Warn("PAM apply failed before launch",
+		"actuationId", cmd.ActuationID, "generation", cmd.Generation,
+		"failureCode", code, "error", cause.Error())
+	if err := m.store.MarkReconciledClean(cmd.ActuationID, cmd.Generation); err != nil {
+		log.Error("PAM could not mark unlaunched actuation for recovery; reconciliation will fail closed",
+			"actuationId", cmd.ActuationID, "generation", cmd.Generation, "error", err.Error())
+	}
+	return m.failed(cmd.ActuationID, cmd.Generation, bootID, code)
 }
 
 func JobName(actuationID string, generation uint64) string {

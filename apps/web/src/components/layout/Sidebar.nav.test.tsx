@@ -124,6 +124,7 @@ describe('navSections structure (#1321, #1324)', () => {
       '/monitoring',
       '/discovery',
       '/onedrive',
+      '/endpoint-messages',
     ]);
   });
 
@@ -228,6 +229,16 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(item?.name).toBe('Deliverable Templates');
     expect(item?.labelKey).toBe('nav.deliverableTemplates');
     expect(item?.partnerScopeOnly).toBe(true);
+  });
+});
+
+describe('endpoint messages nav entry', () => {
+  it('lives in Fleet Management, once, gated on endpoint_messages:read', () => {
+    const hits = [...topLevelNav, ...navSections.flatMap((s) => s.items)].filter((i) => i.href === '/endpoint-messages');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.labelKey).toBe('nav.endpointMessages');
+    expect(hits[0]!.requiredPermission).toEqual({ resource: 'endpoint_messages', action: 'read' });
+    expect(section('fleet-management').items).toContain(hits[0]);
   });
 });
 

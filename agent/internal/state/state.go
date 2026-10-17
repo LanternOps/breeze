@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/atomicrename"
 )
 
 const FileName = "agent.state"
@@ -46,7 +48,7 @@ type AgentState struct {
 	Timestamp      time.Time `json:"timestamp"`
 }
 
-// Rename retry bounds. On Windows 10 1607+ the renameReplace primitive uses
+// Rename retry bounds. On Windows 10 1607+ atomicrename.Replace uses
 // POSIX rename semantics so a concurrent reader (the watchdog polling
 // agent.state) never blocks the swap — that was the 2026-07-22 US prod
 // restart-storm root cause, where MoveFileEx(REPLACE_EXISTING) failed ~78%
@@ -61,8 +63,8 @@ const (
 )
 
 // renameStateFile is a seam for tests to inject rename failures. It defaults to
-// renameReplace: POSIX-semantics rename on Windows, os.Rename elsewhere.
-var renameStateFile = renameReplace
+// atomicrename.Replace: POSIX-semantics rename on Windows, os.Rename elsewhere.
+var renameStateFile = atomicrename.Replace
 
 // Write atomically writes the state file as JSON.
 func Write(path string, s *AgentState) error {

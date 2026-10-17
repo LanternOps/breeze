@@ -4389,7 +4389,8 @@
     "sessionInvalid": "Ihre Sitzung hat sich geändert, bevor die Verknüpfung abgeschlossen werden konnte. Bitte melden Sie sich erneut an und versuchen Sie es noch einmal.",
     "providerInactive": "Dieser Single-Sign-On-Anbieter ist nicht mehr aktiv. Wenden Sie sich an Ihren Administrator.",
     "configChanged": "Die Single-Sign-On-Konfiguration wurde geändert, während Sie sich verbunden haben. Bitte versuchen Sie es erneut.",
-    "emailUnverified": "Ihr Identitätsanbieter hat nicht bestätigt, dass Ihre E-Mail-Adresse verifiziert ist. Wenden Sie sich an Ihren Administrator."
+    "emailUnverified": "Ihr Identitätsanbieter hat nicht bestätigt, dass Ihre E-Mail-Adresse verifiziert ist. Wenden Sie sich an Ihren Administrator.",
+    "idpVerifyFailed": "Breeze konnte die von Ihrem Identitätsanbieter zurückgegebene Anmeldung nicht verifizieren. Bitte versuchen Sie es erneut."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Verbundene Apps werden geladen…",
@@ -4590,6 +4591,7 @@
     "ssoReauthProviderInactive": "Single Sign-on ist für dieses Konto nicht mehr verfügbar. Wenden Sie sich an Ihren Administrator und versuchen Sie es erneut.",
     "ssoReauthConfigChanged": "Ihre Single-Sign-on-Einstellungen haben sich während der Überprüfung geändert. Starten Sie die Überprüfung erneut.",
     "ssoReauthEmailUnverified": "Ihr Identitätsanbieter meldet, dass Ihre E-Mail-Adresse nicht bestätigt ist. Bestätigen Sie sie dort und versuchen Sie es erneut.",
+    "ssoReauthIdpVerifyFailed": "Breeze konnte die von Ihrem Identitätsanbieter zurückgegebene Anmeldung nicht verifizieren. Versuchen Sie es erneut. Wenn es weiterhin fehlschlägt, bitten Sie Ihren Administrator, die Serverprotokolle zu prüfen.",
     "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung der Multi-Faktor-Authentifizierung abzuschließen.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, bevor Sie einen Passkey hinzufügen.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Ihre Identität wurde bestätigt. Benennen Sie diesen Passkey und fahren Sie fort.",
@@ -5941,6 +5943,8 @@
     },
     "columns": {
       "timezone": "Zeitzone",
+      "address": "Adresse",
+      "contact": "Kontakt",
       "devices": "Geräte"
     },
     "empty": "Keine Standorte gefunden. Fügen Sie eine Standort hinzu, um loszulegen."

@@ -750,8 +750,11 @@ fn route_deep_link(app: &tauri::AppHandle, url: String) {
 }
 
 /// Emit a deep-link-received event to a window with retry delays.
-/// Spawns a background thread that emits at 500ms and 1500ms to cover
-/// slow webview startup. Stops early if the target window is destroyed.
+/// Spawns a background thread that emits at +500ms and +2000ms (cumulative)
+/// to cover slow webview startup. Stops early if the target window is
+/// destroyed, or once the window has applied the link — the frontend calls
+/// `clear_pending_deep_link` when it does, so a missing (or different)
+/// pending entry means there is nothing left to deliver (#8947).
 fn emit_with_retry(app: &tauri::AppHandle, label: &str, url: String) {
     let handle = app.clone();
     let label = label.to_string();
@@ -763,11 +766,27 @@ fn emit_with_retry(app: &tauri::AppHandle, label: &str, url: String) {
                 eprintln!("Window {} gone — stopping deep link emission", label);
                 return;
             }
+            if !deep_link_still_pending(&handle, &label, &url) {
+                return;
+            }
             if let Err(err) = handle.emit_to(&label, "deep-link-received", url.clone()) {
                 eprintln!("Failed to emit deep-link-received to {}: {}", label, err);
             }
         }
     });
+}
+
+/// True while `url` is still the pending deep link for `label`, i.e. the
+/// window has not yet applied it.
+fn deep_link_still_pending(app: &tauri::AppHandle, label: &str, url: &str) -> bool {
+    match app.try_state::<DeepLinkState>() {
+        Some(state) => {
+            let links = lock_or_recover(&state.0, "deep_link_state");
+            links.get(label).map(String::as_str) == Some(url)
+        }
+        // No state to consult: keep the previous behaviour and deliver.
+        None => true,
+    }
 }
 
 /// Create a new WebviewWindow for an independent remote desktop session.

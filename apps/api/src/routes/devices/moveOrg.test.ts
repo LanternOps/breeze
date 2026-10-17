@@ -1620,7 +1620,14 @@ describe('POST /devices/:id/move-org', () => {
       // expired post-commit in system scope (they are per-approver under RLS).
       expect(collapseStmt(statements[17]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
       expect(collapseStmt(statements[18]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
-      expect(statements[19]).toBe('UPDATE devices');
+      // #8742 W02 — endpoint message deliveries detach from their source-org
+      // message immediately before the flip: the flip's trigger restamps the
+      // delivery's org_id, and the (endpoint_message_id, org_id) FK is
+      // DEFERRABLE INITIALLY IMMEDIATE, so a still-attached row 23503s the move.
+      expect(collapseStmt(statements[19]!)).toContain(
+        'UPDATE endpoint_message_deliveries SET endpoint_message_id = NULL',
+      );
+      expect(statements[20]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

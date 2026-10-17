@@ -10,7 +10,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Prerequisites
 
-- Go 1.26.9 or later
+- Go 1.26.9 or later. With the default `GOTOOLCHAIN=auto`, `go build` fetches 1.26.9 on its own; with `GOTOOLCHAIN=local`, install Go 1.26.9 first.
 - Make
 - (Optional) `go-winres` for Windows resource embedding
 - (Optional) WiX Toolset + PowerShell for MSI packaging
@@ -84,6 +84,27 @@ Override at build time:
 ```bash
 make build VERSION=1.0.0
 ```
+
+## Display Branding
+
+Operators building their own agent can set the display text Windows and Linux show for the agent and watchdog services, so your own name appears where users and admins read it. This is set at build time and is optional: a build with no branding values is identical to the official one.
+
+Only display text can be branded. Service names (`BreezeAgent`, `BreezeWatchdog`), executable names, folders, the MSI's `ProductName` and `UpgradeCode` stay fixed, so updates, the installer and reliability scoring keep recognising the agent.
+
+**Binaries.** Build through `agent/scripts/build-edition.sh` with any of these environment variables set:
+
+| Variable | Sets |
+|---|---|
+| `BREEZE_BRAND_AGENT_DISPLAY_NAME` | Agent service display name |
+| `BREEZE_BRAND_AGENT_DESCRIPTION` | Agent service description |
+| `BREEZE_BRAND_WATCHDOG_DISPLAY_NAME` | Watchdog service display name |
+| `BREEZE_BRAND_WATCHDOG_DESCRIPTION` | Watchdog service description |
+| `BREEZE_BRAND_AGENT_CLI_SHORT` | One-line summary in the agent's command help |
+| `BREEZE_BRAND_WATCHDOG_CLI_SHORT` | One-line summary in the watchdog's command help |
+
+**Windows MSI.** `agent/installer/build-msi.ps1` accepts `-Manufacturer` (the publisher shown in Programs and Features), `-PackageDescription`, `-AgentServiceDisplayName`, `-AgentServiceDescription`, `-WatchdogServiceDisplayName` and `-WatchdogServiceDescription`. A service parameter left blank takes the matching `BREEZE_BRAND_*` value, and a parameter that differs from it is refused, so the MSI and the binaries always carry the same names.
+
+A value is refused if it is longer than 256 bytes or contains a control character, a single or double quote, a backslash or a percent sign. The MSI also refuses square brackets, braces, `$(` and `!(`. Existing Linux installs keep their old service description until a later agent version rewrites the unit.
 
 <Aside>
   The agent source code is in `agent/` at the repository root, **not** in `apps/agent/`. Both directories exist but serve different purposes.

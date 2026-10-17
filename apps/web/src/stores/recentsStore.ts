@@ -9,12 +9,12 @@ import { create } from 'zustand';
  * that user stays so their next sign-in on the same browser restores it.
  *
  * Writers no-op until `hydrate(userId)` has run — the `GlobalShortcuts` island
- * mounted by DashboardLayout does that from the auth store. Readers (sidebar,
- * command palette) call `useRecentsStore` like any other store.
+ * mounted by DashboardLayout does that from the auth store. Readers (sidebar
+ * Recent group, dashboard card, command palette) call `useRecentsStore` like any other store.
  */
 
-export const MAX_RECENT_DEVICES = 5;
-export const MAX_RECENT_PAGES = 8;
+export const MAX_RECENT_DEVICES = 10;
+export const MAX_RECENT_PAGES = 10;
 
 export interface RecentDevice {
   id: string;
@@ -34,7 +34,7 @@ export interface RecentPage {
   visitedAt: number;
 }
 
-interface RecentsState {
+export interface RecentsState {
   userId: string | null;
   devices: RecentDevice[];
   pages: RecentPage[];
@@ -160,3 +160,54 @@ export const useRecentsStore = create<RecentsState>()((set, get) => ({
     writePersisted(userId, { devices, pages: next });
   },
 }));
+
+export type RecentEntryKind = 'device' | 'org' | 'ticket' | 'alert' | 'site' | 'page';
+
+export interface RecentEntry {
+  kind: RecentEntryKind;
+  href: string;
+  label: string;
+  at: number;
+}
+
+export const DEFAULT_RECENT_ENTRY_LIMIT = 10;
+
+const RECORD_KIND_PATTERNS: Array<[RegExp, RecentEntryKind]> = [
+  [/^\/organizations\/[^/]+$/, 'org'],
+  [/^\/tickets\/[^/]+$/, 'ticket'],
+  [/^\/alerts\/[^/]+$/, 'alert'],
+  [/^\/settings\/sites\/[^/]+$/, 'site'],
+];
+
+function kindFromPath(path: string): RecentEntryKind {
+  const pathname = path.split('?')[0];
+  return RECORD_KIND_PATTERNS.find(([re]) => re.test(pathname))?.[1] ?? 'page';
+}
+
+/**
+ * One recency-ordered list of recently opened things: devices plus pages that
+ * carry an item name (hub/list pages have none and are never listed). The page
+ * currently open (matched by pathname) is excluded.
+ */
+export function selectRecentEntries(
+  state: Pick<RecentsState, 'devices' | 'pages'>,
+  currentPath: string,
+  limit: number = DEFAULT_RECENT_ENTRY_LIMIT,
+): RecentEntry[] {
+  const current = currentPath.split('?')[0];
+  const entries: RecentEntry[] = [];
+  for (const d of state.devices) {
+    entries.push({ kind: 'device', href: `/devices/${d.id}`, label: d.name, at: d.openedAt });
+  }
+  for (const p of state.pages) {
+    const label = p.name?.trim();
+    if (!label) continue;
+    entries.push({ kind: kindFromPath(p.path), href: p.path, label, at: p.visitedAt });
+  }
+  const seen = new Set<string>();
+  return entries
+    .filter((e) => e.href.split('?')[0] !== current)
+    .sort((a, b) => b.at - a.at)
+    .filter((e) => (seen.has(e.href) ? false : (seen.add(e.href), true)))
+    .slice(0, limit);
+}

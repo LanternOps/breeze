@@ -245,6 +245,33 @@ describe("EdrProvidersIntegration", () => {
     expect(body).not.toHaveProperty("credentials");
   });
 
+  it("blocks a sync interval below the database minimum (5) inline and never PATCHes (#8666)", async () => {
+    render(<EdrProvidersIntegration />);
+    const input = await screen.findByTestId("edr-connection-detection-interval");
+    fireEvent.change(input, { target: { value: "3" } });
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByTestId("edr-connection-interval-error")).toBeInTheDocument();
+    const save = screen.getByTestId("edr-connection-save") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(calls("PATCH")).toHaveLength(0);
+    fireEvent.change(input, { target: { value: "5" } });
+    expect(input).toHaveAttribute("aria-invalid", "false");
+    expect(screen.queryByTestId("edr-connection-interval-error")).toBeNull();
+    expect(save.disabled).toBe(false);
+  });
+
+  it("blocks a sync interval below the minimum in the add form (#8666)", async () => {
+    render(<EdrProvidersIntegration />);
+    fireEvent.click(await screen.findByTestId("edr-providers-add"));
+    const input = await screen.findByTestId("edr-add-inventory-interval");
+    fireEvent.change(input, { target: { value: "4" } });
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByTestId("edr-add-interval-error")).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "5" } });
+    expect(input).toHaveAttribute("aria-invalid", "false");
+  });
+
   it("a URL-only edit PATCHes { baseUrl } with no credentials", async () => {
     connections = [conn({ provider: "fakevendor" })];
     render(<EdrProvidersIntegration />);
