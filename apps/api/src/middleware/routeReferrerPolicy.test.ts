@@ -53,7 +53,7 @@ describe('routeReferrerPolicyWins (#8964)', () => {
   it('error responses fall back to the global default without throwing', async () => {
     const res = await build(true).request('/capability-throws');
     expect(res.status).toBe(500);
-    expect(res.headers.get('Referrer-Policy')).toBeTruthy();
+    expect(res.headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
   });
 });
 
