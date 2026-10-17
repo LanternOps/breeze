@@ -201,6 +201,34 @@
       "revoke": "Erişimi daha sonra iptal etmek için buradan bağlantıyı kesin veya Microsoft Entra'da Breeze kurumsal uygulamasını kaldırın.",
       "continue": "Microsoft'a devam et",
       "defaultTarget": "bu kuruluşun Microsoft 365 kiracısı"
+    },
+    "v2": {
+      "title": "Kimlik işlemleri için yeniden onay gerekiyor",
+      "intro": "Bu kiracı daha önceki bir izin kümesine onay verdi. Yeniden onay, bugün çalışan her şeyi korur ve aşağıdaki izinleri ekler. Bir yönetici yeni onayı vermeden müşteri için hiçbir şey değişmez.",
+      "keepsWorking": "Kullanıcıyı devre dışı bırakma ve parola sıfırlama mevcut onayla çalışmaya devam eder.",
+      "upgradeAction": "Yeni izinleri inceleyin ve onaylayın",
+      "upgradeFailed": "Yeni izinlerin onayı başlatılamadı.",
+      "revokedGrant": "Microsoft 365 bu bağlantının daha önce sahip olduğu bir izni artık göstermiyor: {{grants}}. Yeniden test edin; hâlâ eksikse yeniden onay verin.",
+      "purpose": {
+        "userReadWrite": "Kullanıcı hesaplarını okuma ve güncelleme — oturum açmayı engellemek, lisansları değiştirmek ve yeni kullanıcı oluşturmak için kullanılır.",
+        "userPasswordProfile": "Kullanıcı parolası belirleme — sıfırlamada veya yeni hesapta geçici parola vermek için kullanılır.",
+        "userRevokeSessions": "Bir kullanıcının tüm oturumlarını kapatma — bir hesap ele geçirildiğinde veya çalışan işten ayrıldığında oturum açma oturumlarını iptal etmek için kullanılır.",
+        "groupMember": "Grupları okuma ve üyelerini değiştirme — grup üyeliği eklemek ve kaldırmak için kullanılır. Grup oluşturamaz veya silemez.",
+        "intunePrivileged": "Intune ile yönetilen bir cihazı hizmetten çıkarma — şirket verilerini kaldırır ve kaydı siler. Breeze hiçbir zaman tam silme yapmaz.",
+        "mailboxSettings": "Posta kutusu ayarlarını okuma ve yazma — otomatik yanıtı açıp kapatmak ve etkisini doğrulamak için kullanılır.",
+        "organizationRead": "Kiracının abonelik envanterini okuma — lisans ataması öncesinde boş yer olduğunu doğrulamak için kullanılır.",
+        "unknown": "Breeze'deki bir Microsoft 365 işlemi tarafından kullanılır."
+      }
+    },
+    "staleManifest": {
+      "title": "Microsoft 365 için yeniden onay gereken kuruluşlar",
+      "description": "Bu müşteriler hâlâ daha önceki bir izin kümesini kullanıyor. Yeniden onayı başlatmak için kuruluşu açın.",
+      "empty": "Yeniden onay gerektiren kuruluş yok.",
+      "columnOrganization": "Kuruluş",
+      "columnTenant": "Kiracı",
+      "columnVersion": "İzin kümesi",
+      "columnLastVerified": "Son doğrulama",
+      "loadFailed": "Yeniden onay listesi yüklenemedi."
     }
   },
   "m365ConfirmTenant": {

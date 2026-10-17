@@ -8,9 +8,9 @@ import {
   type RetestRequest,
   type RetestResult,
 } from '@breeze/shared/m365';
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
+import { m365Connections, organizations, type M365ConnectionRow, type M365ConnectionStatus } from '../../db/schema';
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import type { M365ConsentBrowserBinding } from './browserBinding';
 import {
@@ -333,10 +333,31 @@ export interface ConsentFinalization {
   result: RetestResult;
 }
 
+/** One connection still on an older permission manifest (partner re-consent view). */
+export interface StaleManifestConnection {
+  id: string;
+  orgId: string;
+  orgName: string;
+  displayName: string | null;
+  tenantId: string | null;
+  manifestVersion: number;
+  currentManifestVersion: number;
+  status: M365ConnectionStatus;
+  lastVerifiedAt: string | null;
+}
+
 export interface ConnectionService<P extends M365ConsentSessionProfile, Client> {
   initiateConsent(input: InitiateConsentInput): Promise<InitiatedConsent<P>>;
   initiateUpgradeConsent(input: InitiateUpgradeConsentInput): Promise<InitiatedConsent<P>>;
   listConnections(orgId: string): Promise<Array<M365ConnectionSnapshot<P> & { grantHealth: GrantHealth }>>;
+  /**
+   * Connections of this profile whose stored manifest is older than the
+   * current one, across every org the caller can see. Runs under the CALLER's
+   * RLS context (never a system context): a partner-scoped caller passes
+   * breeze_has_org_access for each org under its partner, and RLS stays the
+   * boundary. Capped at 500 rows.
+   */
+  listStaleManifestConnections(): Promise<StaleManifestConnection[]>;
   /**
    * Identity verified → continue to tenant-pinned admin consent. Mints the
    * post-identity session under a rotated state. Writes nothing to the
@@ -525,6 +546,43 @@ export function createConnectionService<
         grantHealth: deriveGrantHealth(value, deps.manifest),
       }] : [];
     });
+  }
+
+  async function listStaleManifestConnections(): Promise<StaleManifestConnection[]> {
+    const rows = await db
+      .select({
+        id: m365Connections.id,
+        orgId: m365Connections.orgId,
+        orgName: organizations.name,
+        displayName: m365Connections.displayName,
+        tenantId: m365Connections.tenantId,
+        manifestVersion: m365Connections.permissionManifestVersion,
+        status: m365Connections.status,
+        lastVerifiedAt: m365Connections.lastVerifiedAt,
+      })
+      .from(m365Connections)
+      .innerJoin(organizations, eq(organizations.id, m365Connections.orgId))
+      .where(and(
+        eq(m365Connections.profile, profile),
+        lt(m365Connections.permissionManifestVersion, deps.manifest.version),
+        // Only rows upgrade consent can act on (initiateUpgradeConsent's own
+        // predicate). A never-consented row sits at version 0 in
+        // pending-consent and is not "on an earlier permission set".
+        inArray(m365Connections.status, [...EXECUTABLE_STATUSES]),
+      ))
+      .orderBy(organizations.name)
+      .limit(500);
+    return rows.map((row) => ({
+      id: row.id,
+      orgId: row.orgId as string,
+      orgName: row.orgName,
+      displayName: row.displayName,
+      tenantId: row.tenantId,
+      manifestVersion: row.manifestVersion,
+      currentManifestVersion: deps.manifest.version,
+      status: row.status,
+      lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
+    }));
   }
 
   async function initiateConsent(input: InitiateConsentInput): Promise<InitiatedConsent<P>> {
@@ -1347,6 +1405,7 @@ export function createConnectionService<
     initiateConsent,
     initiateUpgradeConsent,
     listConnections,
+    listStaleManifestConnections,
     transitionIdentityToConsent,
     readPendingTenantConfirmation,
     continueToConsent,

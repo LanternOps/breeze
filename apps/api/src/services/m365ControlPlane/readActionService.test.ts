@@ -487,7 +487,7 @@ describe('executeM365ReadActionByOrg (effect-probe entry, #6170)', () => {
   });
 
   it('refuses a whole-tenant sync action id with tools_disabled', async () => {
-    const result = await executeM365ReadActionByOrg(ORG_ID, { type: 'm365.sync.users' } as unknown as M365ReadAction);
+    const result = await executeM365ReadActionByOrg(ORG_ID, { type: 'm365.sync.users' } as unknown as Parameters<typeof executeM365ReadActionByOrg>[1]);
     expect(result).toMatchObject({ ok: false, code: 'tools_disabled' });
     expect(dbMocks.selectSpy).not.toHaveBeenCalled();
   });

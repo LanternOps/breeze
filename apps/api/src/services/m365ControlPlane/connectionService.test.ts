@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { M365_PERMISSION_PROFILES, type RetestRequest, type RetestResult } from '@breeze/shared/m365';
 
-const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
+const { dbMocks, contextMocks, consentMocks, columns, orgColumns, joinTrace } = vi.hoisted(() => ({
   dbMocks: {
     selectResults: [] as unknown[][],
     updateResults: [] as Array<unknown[] | ((set: Record<string, unknown>) => unknown[])>,
@@ -91,7 +91,10 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
     consentAttemptId: { name: 'consent_attempt_id' }, status: { name: 'status' },
     consentGeneration: { name: 'consent_generation' },
     permissionManifestVersion: { name: 'permission_manifest_version' },
+    displayName: { name: 'display_name' }, lastVerifiedAt: { name: 'last_verified_at' },
   },
+  orgColumns: { id: { name: 'id' }, name: { name: 'name' } },
+  joinTrace: { joins: [] as unknown[], orderBys: [] as unknown[], limits: [] as number[] },
 }));
 
 function selectable(rows: unknown[]) {
@@ -111,7 +114,7 @@ function selectable(rows: unknown[]) {
   };
 }
 
-vi.mock('../../db/schema', () => ({ m365Connections: columns }));
+vi.mock('../../db/schema', () => ({ m365Connections: columns, organizations: orgColumns }));
 
 vi.mock('drizzle-orm', async (importActual) => {
   const actual = await importActual<typeof import('drizzle-orm')>();
@@ -121,6 +124,7 @@ vi.mock('drizzle-orm', async (importActual) => {
     eq: vi.fn((column: unknown, value: unknown) => ({ op: 'eq', column, value })),
     inArray: vi.fn((column: unknown, value: unknown) => ({ op: 'inArray', column, value })),
     isNull: vi.fn((column: unknown) => ({ op: 'isNull', column })),
+    lt: vi.fn((column: unknown, value: unknown) => ({ op: 'lt', column, value })),
     or: vi.fn((...conditions: unknown[]) => ({ op: 'or', conditions })),
     sql: vi.fn((strings: TemplateStringsArray, ...params: unknown[]) => ({
       op: 'sql', strings: [...strings], params,
@@ -138,6 +142,25 @@ vi.mock('../../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => selectable(dbMocks.selectResults.shift() ?? [])),
+        innerJoin: vi.fn((table: unknown, on: unknown) => {
+          joinTrace.joins.push({ table, on });
+          return {
+            where: vi.fn((where: unknown) => {
+              joinTrace.joins.push({ where });
+              return {
+                orderBy: vi.fn((order: unknown) => {
+                  joinTrace.orderBys.push(order);
+                  return {
+                    limit: vi.fn(async (n: number) => {
+                      joinTrace.limits.push(n);
+                      return dbMocks.selectResults.shift() ?? [];
+                    }),
+                  };
+                }),
+              };
+            }),
+          };
+        }),
       })),
     })),
     update: vi.fn(() => ({
@@ -790,6 +813,65 @@ describe('createConnectionService factory (non-read profile)', () => {
     expect(connection!.profile).toBe('customer-graph-actions');
     expect(connection!.grantHealth.requiredGrants).toEqual(ACTIONS_REQUIRED);
     expect(connection!.grantHealth.state).toBe('active');
+  });
+
+  describe('listStaleManifestConnections', () => {
+    beforeEach(() => {
+      joinTrace.joins.length = 0;
+      joinTrace.orderBys.length = 0;
+      joinTrace.limits.length = 0;
+      contextMocks.withSystem.mockClear();
+      contextMocks.runOutside.mockClear();
+    });
+
+    it('filters by profile and manifest version below current, joined to organizations, capped at 500', async () => {
+      dbMocks.selectResults.push([{
+        id: CONNECTION_ID, orgId: ORG_ID, orgName: 'Acme', displayName: 'Contoso',
+        tenantId: TENANT_ID, manifestVersion: 2, status: 'active',
+        lastVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
+      }]);
+      const { service } = actionsService();
+
+      const listed = await service.listStaleManifestConnections();
+
+      expect(listed).toEqual([{
+        id: CONNECTION_ID, orgId: ORG_ID, orgName: 'Acme', displayName: 'Contoso',
+        tenantId: TENANT_ID, manifestVersion: 2, currentManifestVersion: actionsManifest.version,
+        status: 'active', lastVerifiedAt: '2026-07-14T16:00:00.000Z',
+      }]);
+      const where = joinTrace.joins.find((j) => (j as { where?: unknown }).where) as { where: { op: string; conditions: Array<Record<string, unknown>> } };
+      expect(where.where.op).toBe('and');
+      expect(where.where.conditions).toContainEqual({ op: 'eq', column: columns.profile, value: 'customer-graph-actions' });
+      expect(where.where.conditions).toContainEqual({
+        op: 'lt', column: columns.permissionManifestVersion, value: actionsManifest.version,
+      });
+      // Only rows upgrade consent can act on: a never-consented (version 0,
+      // pending-consent) or revoked row is not "on an earlier permission set".
+      expect(where.where.conditions).toContainEqual({
+        op: 'inArray', column: columns.status, value: ['active', 'degraded'],
+      });
+      expect(joinTrace.joins[0]).toMatchObject({ table: orgColumns });
+      expect(joinTrace.limits).toEqual([500]);
+    });
+
+    it('runs under the caller context only, never a system context', async () => {
+      dbMocks.selectResults.push([]);
+      const { service } = actionsService();
+
+      await service.listStaleManifestConnections();
+
+      expect(contextMocks.withSystem).not.toHaveBeenCalled();
+      expect(contextMocks.runOutside).not.toHaveBeenCalled();
+    });
+
+    it('serialises a null last-verified time as null', async () => {
+      dbMocks.selectResults.push([{
+        id: CONNECTION_ID, orgId: ORG_ID, orgName: 'Acme', displayName: null,
+        tenantId: null, manifestVersion: 2, status: 'pending-consent', lastVerifiedAt: null,
+      }]);
+      const { service } = actionsService();
+      expect((await service.listStaleManifestConnections())[0]!.lastVerifiedAt).toBeNull();
+    });
   });
 
   it('drops rows whose stored profile does not match the bound profile', async () => {
