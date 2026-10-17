@@ -32,6 +32,15 @@ describe('BillingDefaultsTab', () => {
     expect(screen.queryByTestId('partner-billing-ai-style')).not.toBeInTheDocument();
   });
 
+  // #7510: partner currency is not inherited by existing organizations (each org
+  // stores its own NOT NULL currency, stamped at creation). The label must say
+  // what it does — the default for NEW organizations — not "across customers".
+  it('labels the currency as the default for new organizations', () => {
+    renderTab();
+    expect(screen.getByLabelText(/default currency for new organizations/i)).toBe(screen.getByTestId('partner-billing-currency'));
+    expect(screen.getByTestId('partner-billing-currency-help')).toHaveTextContent(/existing organizations keep their own/i);
+  });
+
   it('calls the setter when the prefix input changes', () => {
     const props = renderTab();
     fireEvent.change(screen.getByTestId('partner-billing-prefix'), { target: { value: 'ACME' } });

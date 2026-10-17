@@ -232,7 +232,9 @@ export const organizations = pgTable('organizations', {
   // Multi-currency (spec §5): the org's billing currency, inherited from the
   // partner at creation. Deliberately NO .default() — every creation path must
   // stamp it explicitly, so a missed path is a loud insert failure, never a
-  // silent USD document. Editing is NOT exposed until wave 6.
+  // silent USD document. Not inherited afterwards: a later partner currency
+  // change never moves it (#7510); it is edited per org from the org Billing tab
+  // (wave 6, with a currency-change impact preview).
   currencyCode: char('currency_code', { length: 3 }).notNull(),
   // Settings consolidation W06 (#6229): org override of the partner's invoice
   // payment terms. NULL = inherit `partners.invoice_terms_days`; deliberately

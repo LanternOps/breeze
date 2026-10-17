@@ -62,6 +62,15 @@ describe('BillingDocumentsTab', () => {
     expect(screen.getByTestId('partner-billing-website')).toBeInTheDocument();
   });
 
+  // #7510: one footer per level — this is the PARTNER default, printed on quotes
+  // and invoices; an organization's own footer text overrides it.
+  it('labels the footer as the partner default document footer and names the org override', () => {
+    renderTab();
+    expect(screen.getByLabelText(/document footer/i)).toBe(screen.getByTestId('partner-billing-footer'));
+    expect(screen.getByTestId('partner-billing-footer-help')).toHaveTextContent(/every quote and invoice page/i);
+    expect(screen.getByTestId('partner-billing-footer-help')).toHaveTextContent(/organization's own footer text/i);
+  });
+
   it('names the document theme by its fonts — "Condensed" read as a layout change, not a font choice', () => {
     renderTab();
     expect(screen.getByLabelText('Document fonts')).toBe(screen.getByTestId('partner-billing-document-theme'));
