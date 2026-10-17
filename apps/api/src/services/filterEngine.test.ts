@@ -46,6 +46,7 @@ import {
   evaluateFilterWithPreview,
   deviceMatchesFilter,
   FilterQueryTimeoutError,
+  FilterValueError,
   isAgentReportedFilterField,
   getAgentReportedFieldsUsed,
   isExecutionRefusedFilterField,
@@ -431,38 +432,48 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
 
   // #8773 sweep: an enum-typed column rejects a value outside the enum with
   // 22P02 ("invalid input value for enum os_type"), failing the whole filter as
-  // a 500. Like the non-UUID group id above, an unknown enum value can match
-  // nothing, so it is dropped before it reaches Postgres.
-  describe('unknown enum values never reach a pg enum column', () => {
+  // an opaque 500. Unlike the non-UUID group id above, an unknown enum value is
+  // NOT dropped: dropping it would turn `osType notEquals "Windows"` (a case
+  // slip) into match-everything and silently widen a script/deployment target.
+  // It is refused instead — a clean 400 from validateFilter on the write and
+  // preview paths, and a typed FilterValueError (never a pg 22P02) on paths
+  // that evaluate without validating (group membership → engine_error).
+  describe('unknown enum values are refused, never dropped', () => {
     const params = (c: FilterCondition) => dialect.sqlToQuery(buildConditionSQL(c)).params;
 
-    it.each(['osType', 'status', 'watchdogStatus'])('%s equals/in with only unknown values match nothing', (field) => {
-      expect(render({ field, operator: 'equals', value: '2026' })).toMatch(/false/i);
-      expect(render({ field, operator: 'in', value: ['2026'] })).toMatch(/false/i);
-      expect(params({ field, operator: 'in', value: ['2026'] })).toEqual([]);
+    it.each([
+      ['osType', 'equals', '2026'],
+      ['osType', 'in', ['2026']],
+      ['status', 'notEquals', 'Online'],
+      ['watchdogStatus', 'notIn', ['gone']],
+      ['osType', 'notEquals', 'Windows'],
+    ] as const)('%s %s %j throws FilterValueError naming the value and the allowed set', (field, operator, value) => {
+      expect(() => buildConditionSQL({ field, operator, value } as FilterCondition)).toThrow(FilterValueError);
     });
 
-    it('in keeps the known values and drops the unknown ones', () => {
-      expect(params({ field: 'osType', operator: 'in', value: ['2026', 'linux'] })).toEqual(['linux']);
+    it('a mixed list is refused whole rather than narrowed to its known values', () => {
+      expect(() => buildConditionSQL({ field: 'osType', operator: 'notIn', value: ['Windows', 'linux'] } as FilterCondition))
+        .toThrow(/Unknown value "Windows" for osType.*windows, macos, linux/);
     });
 
-    it.each(['osType', 'status', 'watchdogStatus'])('%s notEquals/notIn with only unknown values match everything', (field) => {
-      expect(render({ field, operator: 'notEquals', value: '2026' })).toMatch(/true/i);
-      expect(render({ field, operator: 'notIn', value: ['2026'] })).toMatch(/true/i);
-      expect(params({ field, operator: 'notIn', value: ['2026'] })).toEqual([]);
-    });
-
-    it('notIn keeps the known values and drops the unknown ones', () => {
-      expect(params({ field: 'osType', operator: 'notIn', value: ['2026', 'linux'] })).toEqual(['linux']);
+    it('validateFilter reports the unknown value so routes answer 400', () => {
+      const res = validateFilter({ field: 'osType', operator: 'notEquals', value: 'Windows' } as FilterCondition);
+      expect(res.valid).toBe(false);
+      expect(res.errors.join(' ')).toMatch(/Unknown value "Windows" for osType/);
+      const nested = validateFilter({ operator: 'AND', conditions: [{ field: 'status', operator: 'in', value: ['online', 'Online'] }] } as FilterConditionGroup);
+      expect(nested.valid).toBe(false);
     });
 
     it('known enum values are untouched', () => {
       expect(params({ field: 'osType', operator: 'equals', value: 'linux' })).toEqual(['linux']);
+      expect(params({ field: 'osType', operator: 'notIn', value: ['linux', 'macos'] })).toEqual(['linux', 'macos']);
       expect(render({ field: 'osType', operator: 'notEquals', value: 'linux' })).toMatch(/!=/);
+      expect(validateFilter({ field: 'osType', operator: 'in', value: ['windows', 'linux'] } as FilterCondition).valid).toBe(true);
     });
 
     it('non-enum varchar columns still pass any value through', () => {
       expect(params({ field: 'deviceRole', operator: 'equals', value: 'whatever' })).toEqual(['whatever']);
+      expect(validateFilter({ field: 'deviceRole', operator: 'equals', value: 'whatever' } as FilterCondition).valid).toBe(true);
     });
   });
 
