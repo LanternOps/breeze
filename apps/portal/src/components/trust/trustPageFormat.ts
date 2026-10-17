@@ -1,9 +1,9 @@
 import {
   FRAMEWORK_CROSSWALK,
   FRAMEWORK_META,
-  TRUST_CONTROL_CATALOG,
+  SUPPORTED_LOCALES,
   TRUST_CONTROL_CATEGORY_ORDER,
-  trustStatusLabel,
+  trustCopyFor,
   type FrameworkRef,
   type TelemetryControlId,
   type TrustControlCategory,
@@ -11,71 +11,106 @@ import {
   type TrustNotAssessedReason,
   type TrustPagePublicControl,
 } from '@breeze/shared';
+import { pageCopy } from './copy/pageCopy';
+import { pickTrustCopy } from './trustCopy';
 
-const CATEGORY_LABELS: Record<TrustControlCategory, string> = {
-  endpoint_protection: 'Endpoint protection',
-  patching_hardening: 'Patching & hardening',
-  identity_access: 'Identity & access',
-  data_protection: 'Data protection',
-  monitoring: 'Monitoring',
-  governance: 'Governance and response',
-};
+// Every formatter takes the page's frozen locale (payload.locale) as its last argument; an unknown or missing
+// locale renders English (pickTrustCopy / trustCopyFor), so a W1 page and a bad value both stay readable.
 
 export function groupControlsByCategory(
   controls: TrustPagePublicControl[],
+  locale?: string | null,
 ): Array<{ category: TrustControlCategory; label: string; controls: TrustPagePublicControl[] }> {
+  const categories = trustCopyFor(locale).categories;
   return TRUST_CONTROL_CATEGORY_ORDER
-    .map((category) => ({ category, label: CATEGORY_LABELS[category], controls: controls.filter((c) => c.category === category) }))
+    .map((category) => ({ category, label: categories[category], controls: controls.filter((c) => c.category === category) }))
     .filter((g) => g.controls.length > 0);
 }
 
-export function controlCopy(id: TelemetryControlId): { title: string; description: string } {
-  const def = TRUST_CONTROL_CATALOG.find((c) => c.id === id);
-  return def ? { title: def.title, description: def.description } : { title: id, description: '' };
+export function controlCopy(id: TelemetryControlId, locale?: string | null): { title: string; description: string } {
+  return trustCopyFor(locale).controls[id] ?? { title: id, description: '' };
 }
 
-export function coverageNote(c: TrustPagePublicControl): string | null {
+function unitNoun(unit: TrustPagePublicControl['unit'], locale?: string | null): string {
+  const c = pickTrustCopy(pageCopy, locale);
+  return unit === 'devices' ? c.unitDevices : unit === 'users' ? c.unitUsers : c.unitSources;
+}
+
+export function coverageNote(c: TrustPagePublicControl, locale?: string | null): string | null {
   if (c.assessed == null || c.eligible == null) return null;
-  return `${c.assessed} of ${c.eligible} ${c.unit} assessed`;
+  return pickTrustCopy(pageCopy, locale).coverage(c.assessed, c.eligible, unitNoun(c.unit, locale));
 }
 
-export function frameworkChip(ref: FrameworkRef): string {
+export function frameworkChip(ref: FrameworkRef, locale?: string | null): string {
   const meta = FRAMEWORK_META[ref.framework];
-  const entry = FRAMEWORK_CROSSWALK[ref.framework]?.[ref.ref];
-  if (ref.framework === 'cis_v8') return `${meta.shortName} ${ref.ref}${entry?.ig ? ` · IG${entry.ig}` : ''}`;
-  return `${meta.shortName}: ${entry?.label ?? ref.ref}`;
+  if (ref.framework === 'cis_v8') {
+    // Implementation-group tiers are language-neutral: they come from the crosswalk, not the copy.
+    const ig = FRAMEWORK_CROSSWALK.cis_v8[ref.ref]?.ig;
+    return `${meta.shortName} ${ref.ref}${ig ? ` · IG${ig}` : ''}`;
+  }
+  return `${meta.shortName}: ${trustCopyFor(locale).crosswalk[ref.framework]?.[ref.ref] ?? ref.ref}`;
 }
 
-export function relativeTime(iso: string | null, now: Date = new Date()): string {
-  if (!iso) return 'never';
+const MINUTE = 60;
+const HOUR = 3600;
+const DAY = 86400;
+
+export function relativeTime(iso: string | null, now: Date = new Date(), locale?: string | null): string {
+  const c = pickTrustCopy(pageCopy, locale);
+  if (!iso) return c.never;
   const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return 'never';
+  if (Number.isNaN(t)) return c.never;
   const secs = Math.max(0, Math.round((now.getTime() - t) / 1000));
-  if (secs < 60) return 'just now';
-  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return plural(mins, 'minute');
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return plural(hours, 'hour');
-  return plural(Math.floor(hours / 24), 'day');
+  if (secs < MINUTE) return c.justNow;
+  const rtf = new Intl.RelativeTimeFormat(safeLocale(locale), { numeric: 'always', style: 'long' });
+  if (secs < HOUR) return rtf.format(-Math.floor(secs / MINUTE), 'minute');
+  if (secs < DAY) return rtf.format(-Math.floor(secs / HOUR), 'hour');
+  return rtf.format(-Math.floor(secs / DAY), 'day');
 }
 
-export function statusLabel(status: TrustControlStatus): string {
-  return trustStatusLabel(status);
+function safeLocale(locale?: string | null): string {
+  try { return Intl.getCanonicalLocales(locale ?? 'en')[0] ?? 'en'; } catch { return 'en'; }
 }
 
-const UNIT_NOUN: Record<TrustPagePublicControl['unit'], string> = { devices: 'devices', users: 'users', org: 'sources' };
+/** Date and time in the page's locale; '' when the value does not parse (callers fall back to copy). */
+export function formatTrustDateTime(iso: string, locale?: string | null): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat(safeLocale(locale), { dateStyle: 'medium', timeStyle: 'short' }).format(d);
+}
+
+/** <title>, description and <html lang> for the SSR shell, from the card (null = card fetch failed → English). */
+export function cardMeta(
+  card: { orgName: string; locale: string; controlsShown: number; catalogTotal: number; controlsMet: number } | null,
+): { lang: string; title: string; description: string; signedCopy: string; verificationKeys: string } {
+  const t = pickTrustCopy(pageCopy, card?.locale);
+  const lang = card ? safeLocale(isKnownLocale(card.locale) ? card.locale : 'en') : 'en';
+  return {
+    lang,
+    title: card ? `${card.orgName} · ${t.headerSuffix}` : t.pageTitle,
+    description: card ? t.cardDescription(card.controlsShown, card.catalogTotal, card.controlsMet) : t.genericDescription,
+    signedCopy: t.signedCopy,
+    verificationKeys: t.verificationKeys,
+  };
+}
+
+function isKnownLocale(l: string): boolean {
+  return (SUPPORTED_LOCALES as readonly string[]).includes(l);
+}
+
+export function statusLabel(status: TrustControlStatus, locale?: string | null): string {
+  return trustCopyFor(locale).statuses[status];
+}
 
 export function notAssessedReasonCopy(
   reason: TrustNotAssessedReason,
   ctx: { coverageFloorPct: number; unit: TrustPagePublicControl['unit'] },
+  locale?: string | null,
 ): string {
+  const c = pickTrustCopy(pageCopy, locale);
   switch (reason) {
-    case 'insufficient_telemetry':
-      return `Fewer than ${ctx.coverageFloorPct}% of eligible ${UNIT_NOUN[ctx.unit]} reported inside the evidence window`;
-    case 'no_data':
-      return 'No evidence has been collected for this control yet';
-    case 'not_applicable':
-      return 'This control does not apply to this environment';
+    case 'insufficient_telemetry': return c.reasonInsufficient(ctx.coverageFloorPct, unitNoun(ctx.unit, locale));
+    case 'no_data': return c.reasonNoData;
+    case 'not_applicable': return c.reasonNotApplicable;
   }
 }

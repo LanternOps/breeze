@@ -126,4 +126,23 @@ describe('TrustPageView', () => {
       expect(screen.queryByRole('link', { name: /Security policy/ })).toBeNull();
     });
   });
+
+  describe('locale (W02h)', () => {
+    const de = { ...payload, schemaVersion: 2, locale: 'de-DE', declaredControls: [], frameworks: [], subprocessors: [], faq: [], history: [], access: null,
+      documents: payload.documents.map((d) => ({ ...d })) };
+    it('a de-DE payload renders the German header summary, status pill and method block', () => {
+      render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={{ ...initial, payload: de } as never} />);
+      expect(screen.getByText(/3 von 15 mit Breeze überprüfbaren Kontrollen/)).toBeInTheDocument();
+      const enc = screen.getByTestId('trust-control-disk_encryption');
+      expect(within(enc).getByText('Festplattenverschlüsselung')).toBeInTheDocument();
+      expect(within(enc).getByText('Erfüllt')).toBeInTheDocument();
+      expect(screen.getByText('So wird diese Seite überprüft')).toBeInTheDocument();
+      expect(screen.queryByText(/Showing 3 of 15/)).toBeNull();
+    });
+    it('an unknown payload locale falls back to English', () => {
+      render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={{ ...initial, payload: { ...de, locale: 'xx-XX' } } as never} />);
+      expect(screen.getByText(/Showing 3 of 15 Breeze-verifiable controls/)).toBeInTheDocument();
+      expect(screen.getByText('Disk encryption')).toBeInTheDocument();
+    });
+  });
 });

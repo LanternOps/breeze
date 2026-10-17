@@ -1610,7 +1610,7 @@ export const portalApi = {
     publicApiPath(`/portal/documents/${documentId}/content`),
 };
 
-export interface TrustCard { title: string; orgName: string; logoUrl: string | null; primaryColor: string | null; managedByName: string | null; summaryLine: string; publishedAt: string; lastEvaluatedAt: string | null; stale: boolean; searchIndexable: boolean }
+export interface TrustCard { title: string; orgName: string; logoUrl: string | null; primaryColor: string | null; managedByName: string | null; summaryLine: string; publishedAt: string; lastEvaluatedAt: string | null; stale: boolean; searchIndexable: boolean; locale: string; controlsShown: number; catalogTotal: number; controlsMet: number }
 export interface TrustPageResponse { payload: TrustPagePublicPayloadAny; lastEvaluatedAt: string | null; stale: boolean; preview?: boolean }
 
 export const trustBadgePath = (p: string, o: string): PublicApiPath => publicApiPath(`/trust/public/${encodeURIComponent(p)}/${encodeURIComponent(o)}/badge.svg`);

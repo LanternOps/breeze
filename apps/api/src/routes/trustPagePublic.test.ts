@@ -64,6 +64,17 @@ describe('card', () => {
     expect(data).toMatchObject({ orgName: 'Acme', managedByName: 'NW', stale: false, summaryLine: expect.stringMatching(/9 met/) });
     expect(res.headers.get('X-Robots-Tag')).toBe('noindex');
   });
+  it('card carries the locale and the summary numbers; a v1 snapshot is English', async () => {
+    const res = await app.request('/trust/card/nw/acme');
+    const { data } = await res.json();
+    expect(data).toMatchObject({ locale: 'en', controlsShown: 15, catalogTotal: 15, controlsMet: 9 });
+  });
+  it('card of a de-DE snapshot reports de-DE and keeps the English title/summaryLine for compatibility', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, payload: { ...PAYLOAD, schemaVersion: 2, locale: 'de-DE', declaredControls: [], frameworks: [], subprocessors: [], faq: [], history: [], access: null } });
+    const res = await app.request('/trust/card/nw/acme');
+    const { data } = await res.json();
+    expect(data).toMatchObject({ locale: 'de-DE', title: 'Acme · Security posture', summaryLine: expect.stringMatching(/^Showing 15 of 15/), controlsMet: 9 });
+  });
   it('partner-home card resolves without an org slug', async () => {
     const res = await app.request('/trust/card/nw');
     expect(res.status).toBe(200);

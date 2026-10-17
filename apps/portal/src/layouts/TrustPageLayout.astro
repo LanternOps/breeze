@@ -1,8 +1,8 @@
 ---
 // Public shell for trust pages (spec trust-center §8). Unlike PublicDocumentLayout
 // the metadata is parameterized: title/description/OG for link previews, robots
-// from the page's search_indexable flag, canonical for the hosted URL. English
-// only in W1 (spec §19.4). Branding comes exclusively from the published subject.
+// from the page's search_indexable flag, canonical for the hosted URL. `lang` is
+// the page's frozen locale (W2 portal i18n, spec §19 item 31); English by default. Branding comes exclusively from the published subject.
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import { withBase } from '../lib/basePath';
@@ -17,15 +17,16 @@ interface Props {
   accent?: string | null;
   imageUrl?: string | null;       // https logo for og:image, optional
   alternateJwtHref?: string | null; // signed attestation of this page (Trust Center W3b), same-origin API path
+  lang?: string;                  // BCP 47 tag of the published locale
 }
-const { title, description, canonicalPath, indexable, accent, imageUrl, alternateJwtHref } = Astro.props;
+const { title, description, canonicalPath, indexable, accent, imageUrl, alternateJwtHref, lang = 'en' } = Astro.props;
 const accentCss = buildDocAccentCss(accent);
 const cspNonce = Astro.locals.cspNonce;
 const robots = indexable ? 'index,follow' : 'noindex,nofollow';
 const canonical = new URL(withBase(canonicalPath), publicOriginFor(Astro.request, Astro.url)).toString();
 ---
 <!DOCTYPE html>
-<html lang="en">
+<html lang={lang}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

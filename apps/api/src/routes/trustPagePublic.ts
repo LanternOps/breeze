@@ -82,6 +82,8 @@ async function card(c: Context, partnerSlug: string, orgSlug?: string) {
     summaryLine: `Showing ${s.controlsShown} of ${s.catalogTotal} Breeze-verifiable controls · ${s.controlsMet} met`,
     publishedAt: r.publishedAt.toISOString(), lastEvaluatedAt: r.lastEvaluatedAt?.toISOString() ?? null,
     stale: isStale(r.lastEvaluatedAt), searchIndexable: r.searchIndexable,
+    // W02h: the portal localizes <title>/description/<html lang> from these; title/summaryLine stay English.
+    locale: payload.locale, controlsShown: s.controlsShown, catalogTotal: s.catalogTotal, controlsMet: s.controlsMet,
   } });
 }
 trustPagePublicRoutes.get('/card/:partnerSlug', (c) => card(c, c.req.param('partnerSlug')));
