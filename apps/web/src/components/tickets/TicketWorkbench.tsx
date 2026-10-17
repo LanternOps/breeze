@@ -1151,7 +1151,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           {ticket.deviceHostname && (
             <>
               <span>·</span>
-              <a className="hover:text-foreground hover:underline" href={`/devices?device=${ticket.deviceId}`}>{ticket.deviceHostname}</a>
+              <EntityLink kind="device" id={ticket.deviceId ?? ''} name={ticket.deviceHostname} className="hover:text-foreground" />
             </>
           )}
           {ticket.requesterContactId && (
