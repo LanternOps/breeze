@@ -934,7 +934,7 @@ These enable partners to connect a Microsoft 365 shared support mailbox so custo
 
 ## Ticket import migration windows
 
-**v0.123.0+, groundwork for the coming ticket importers.** A migration window is the time box and write budget an admin gives one ticket import. Mapped in the root `docker-compose.yml` only; with `deploy/docker-compose.prod.yml`, add them to the `api` service's `environment:` block if you need to change them.
+**v0.123.0+, groundwork for the coming ticket importers.** A migration window is the time box and write budget an admin gives one ticket import. Mapped in the v0.123.0 root `docker-compose.yml`. `deploy/docker-compose.prod.yml` maps them from the next release; on v0.123.0 with that file, add them to the `api` service's `environment:` block if you need to change them.
 
 | Variable | Default | Description |
 |---|---|---|
