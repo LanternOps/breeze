@@ -477,7 +477,7 @@ describe('OrgSwitcher (unified control)', () => {
     });
 
     it('a destination for the current org is a plain navigation (no switch, no toast)', async () => {
-      stubLocation('/organizations/org-a');
+      stubLocation('/devices');
       render(<OrgSwitcher />);
       openDropdown();
       fireEvent.click(screen.getByTestId('org-switcher-dest-sites'));
@@ -485,6 +485,18 @@ describe('OrgSwitcher (unified control)', () => {
       expect(navigateToMock.mock.calls[0][0]).toBe('/organizations/org-a#sites');
       expect(selectOrganizationMock).not.toHaveBeenCalled();
       expect(recordRecentOrgMock).not.toHaveBeenCalled();
+      expect(showToastMock).not.toHaveBeenCalled();
+    });
+
+    it("a hash-only destination on the org's own record page sets the hash (the router does not fire hashchange)", async () => {
+      stubLocation('/organizations/org-a');
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.click(screen.getByTestId('org-switcher-dest-sites'));
+      // The stubbed location is a plain object, so the raw assigned value shows.
+      await waitFor(() => expect(window.location.hash).toBe('sites'));
+      expect(navigateToMock).not.toHaveBeenCalled();
+      expect(selectOrganizationMock).not.toHaveBeenCalled();
       expect(showToastMock).not.toHaveBeenCalled();
     });
 

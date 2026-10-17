@@ -224,7 +224,14 @@ export default function OrgSwitcher() {
     if (!changed) {
       // Already in that org: a destination is plain navigation — no switch, no
       // "Switched to" toast for a switch that did not happen.
-      if (destination) await navigateTo(destination);
+      if (destination) {
+        // A hash-only move on the page we are already on: Astro's router does
+        // not fire `hashchange` for it, and the org record's tab strip listens
+        // for exactly that — set the hash directly so the tab actually opens.
+        const [path, hash] = destination.split('#');
+        if (hash && path === window.location.pathname) window.location.hash = hash;
+        else await navigateTo(destination);
+      }
       return;
     }
     setSwitching(true);
