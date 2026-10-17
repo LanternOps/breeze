@@ -60,9 +60,9 @@ The same review points to the spec-first shape used by PR #7642.
 - A current `partial` topology source snapshot retains absence/lifecycle bookkeeping, but `current_baseline.section.rows` is the current snapshot's row subset. It is not a per-device latest-value cache suitable by itself for a rotating Wi-Fi UI.
 - There is already a pattern for side materialization from an accepted UniFi topology resource: accepted `device_details` can feed `ingestUnifiInterfaceTelemetry` without changing the structural topology receipt.
 
-### 2.3 Confirmed by real supported-version controller evidence
+### 2.3 Confirmed by real supported-version evidence
 
-`@bgatestmg` supplied sanitized, GET-only fixtures from Network **10.6.106** on UniFi OS **5.1.132** in discussion #7690 ([radio/statistics fixtures](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961621), [client/switch boundary observations](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961724)). These fixtures close the evidence gap identified in the maintainer review.
+`@bgatestmg` supplied sanitized, GET-only fixtures from Network **10.6.106** on UniFi OS **5.1.132** in discussion #7690 ([radio/statistics fixtures](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961621), [client/switch boundary observations](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961724)). These fixtures close the evidence gap identified in the maintainer review for response shape. Their transport, however, is the Site Manager cloud connector (`api.ui.com/v1/connector/...`), not the local controller `/proxy/network/integration/v1` path the agent calls. A capture from a local controller is therefore an acceptance item for W1.
 
 Observed on real APs:
 
@@ -339,7 +339,7 @@ This choice resolves two current realities:
 
 Follow the existing `ingestUnifiInterfaceTelemetry` pattern: after v2 resources are digest-validated, scope-resolved and accepted by the topology adapter, a separate savepoint materializes their current-state fields. A materialization failure is observable but must not change the structural topology receipt or legacy telemetry acceptance.
 
-The Wi-Fi materializer consumes only resources that received an accepted topology receipt. It may combine the accepted `device_list` + complete `client_list` to derive wireless counts, and independently upsert accepted detail/statistics rows. This report-level merge avoids making resource processing order part of the data contract.
+The Wi-Fi materializer consumes only resources that received an accepted topology receipt. It may combine the accepted `device_list` + complete `client_list` to derive wireless counts, and independently upsert accepted detail/statistics rows. Writes are one batched upsert per poll, not one per AP, because the materializer runs inside the agent synchronous request transaction. The proposed gate is `topologyFeatureFlags.interfaceHealth`, the flag the interface telemetry path is tested with; W1 confirms the exact check. This report-level merge avoids making resource processing order part of the data contract.
 
 Materialization is scoped by the already-resolved collector/controller-site mapping **after the existing UniFi topology authority accepts that scope**. It never trusts an org/site from the upload. This spec does not relax the current `controller_site_other_org` fence: cross-org mappings remain legacy-only for these new fields. If the current-state row does not exist yet (topology ingest is synchronous and precedes the legacy queue), the materializer may insert the minimum `(collector, org, site, unifiDeviceId)` row with an empty `raw` placeholder; the legacy reconcile path later fills its legacy-owned identity/raw fields.
 
@@ -411,7 +411,7 @@ The real fixture proves that an offline AP can return a positive uplink rate whi
 Therefore:
 
 - a positive rate must never be described as proof of current traffic;
-- if the current device inventory state is not `ONLINE`, rate values are rendered as **last reported/stale** together with their statistics observation/heartbeat time;
+- the online decision uses `isUnifiDeviceOnline()`, not a comparison with the string `ONLINE`; the raw `controller_state` is kept as reported. If the device is not online, rate values are rendered as **last reported/stale** together with their statistics observation/heartbeat time;
 - an omitted rate key materializes as `null` when that AP's statistics row was successfully read;
 - no causal statement ("uplink saturated", "Wi-Fi slow because...") is derived from the value.
 
@@ -545,7 +545,7 @@ Coverage/reason codes remain bounded lowercase topology reasons; implementation 
 - radio detail/statistics join only on an unambiguous frequency;
 - client count is labeled wireless clients, not all clients;
 - no new customer-portal surface appears;
-- translations and loading/empty/error states remain complete.
+- loading/empty/error states remain complete, and translations cover all 8 web locales, as enforced by `localeParity`.
 
 ## 15. Implementation sequence after spec approval
 
