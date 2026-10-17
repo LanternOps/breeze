@@ -226,6 +226,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/autopay/public/setup-return': 'public: Customer link token resolved by boundary(); no user session',
   'POST /api/v1/autopay/public/:token/setup-session': 'public: Customer link token resolved by boundary(); no user session',
   'POST /api/v1/autopay/public/:token/stop': 'public: Customer link token resolved by boundary(); no user session',
+  // routes/emailUnsubscribe.ts
+  'POST /api/v1/email/unsubscribe': 'public: RFC 8058 one-click unsubscribe; HMAC-signed link token, opts out its own user/topic only',
   'POST /api/v1/autopay/public/:token/skip': 'public: Customer link token resolved by boundary(); no user session',
   'POST /api/v1/autopay/public/:token/confirm': 'public: Customer link token resolved by boundary(); no user session',
   // routes/backup/bmr.ts
@@ -369,6 +371,7 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/vnc-viewer/downgrade-to-vnc': 'device credential: Viewer token (requireViewerToken) plus live session authority re-check',
   // routes/users.ts
   'PATCH /api/v1/users/me/ticket-push-preferences': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
+  'PATCH /api/v1/users/me/email-preferences': 'own account: Caller toggles own email opt-outs only (auth.user.id)',
   'PUT /api/v1/users/me/ticket-pushover': 'own account: Caller sets own Pushover key only (auth.user.id)',
   'DELETE /api/v1/users/me/ticket-pushover': 'own account: Caller clears own Pushover key only (auth.user.id)',
   'PATCH /api/v1/users/me': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',

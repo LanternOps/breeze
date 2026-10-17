@@ -33,6 +33,7 @@ const EXEMPT: Record<string, string> = {
   supportPublicRoutes: 'Public support-code check/download bootstraps unattended support.',
   callerVerifyPublicRoutes: 'Public caller-verification card authenticates via the SMS/email link token.',
   docsRoutes: 'Public API documentation and OpenAPI documents.',
+  emailUnsubscribeRoutes: 'RFC 8058 one-click unsubscribe authenticates via the HMAC-signed link token; GET never writes; per-IP rate limited (connection health W3, #8847).',
   emailWebhookRoutes: 'Inbound email webhook authenticates provider signatures.',
   stripeWebhookRoutes: 'Stripe webhook authenticates provider signatures.',
   quickbooksWebhookRoutes: 'QuickBooks webhook authenticates provider signatures.',
