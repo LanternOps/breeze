@@ -67,6 +67,19 @@ describe('TrustFrameworksSection', () => {
     expect(screen.getByTestId('trust-frameworks-source')).toHaveTextContent(/partner template/i);
   });
 
+  it('resyncs the checkboxes when the effective selection changes after a reload', () => {
+    const base = { page: { publicationRevision: 7, frameworkView: ['essential_eight'] }, frameworkOptions: options(false) };
+    const el = (view: string[], src: string) => (
+      <TrustFrameworksSection orgId="o1" orgFetch={orgFetch} canWrite onReload={vi.fn(async () => {})}
+        state={{ ...base, effective: { values: { frameworkView: view }, sources: { frameworkView: src } } } as never} />
+    );
+    const { rerender } = render(el(['essential_eight'], 'page'));
+    expect(screen.getByTestId('trust-frameworks-option-essential_eight')).toBeChecked();
+    rerender(el(['nist_csf_2'], 'default'));
+    expect(screen.getByTestId('trust-frameworks-option-nist_csf_2')).toBeChecked();
+    expect(screen.getByTestId('trust-frameworks-option-essential_eight')).not.toBeChecked();
+  });
+
   it('is read-only without write access', () => {
     mount({ canWrite: false });
     expect(screen.getByTestId('trust-frameworks-option-nist_csf_2')).toBeDisabled();

@@ -1,7 +1,7 @@
 // Owner: W02e (framework view picker). The publisher chooses which frameworks the public page maps its
 // controls to. CIS v8 is gated by the deployment (BREEZE_TRUST_CIS_FRAMEWORK_VIEW, surfaced here as
 // `available: false`); the partner's country can suggest one. null on the page = inherit.
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FRAMEWORK_META, TRUST_FRAMEWORKS, type TrustFramework } from '@breeze/shared';
 import { updateTrustPage, type TrustSectionProps } from '@/lib/api/trustPage';
@@ -15,6 +15,10 @@ export default function TrustFrameworksSection({ orgId, orgFetch, state, canWrit
   );
   const [selection, setSelection] = useState<TrustFramework[]>(state.effective.values.frameworkView);
   const [busy, setBusy] = useState(false);
+  // Resync only when the server's effective selection actually changes (e.g. after Save / Use default), so
+  // an unrelated reload does not clobber unsaved checkbox edits.
+  const effectiveKey = state.effective.values.frameworkView.join(',');
+  useEffect(() => { setSelection(state.effective.values.frameworkView); }, [effectiveKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const revision = state.page.publicationRevision;
   const inheriting = state.page.frameworkView === null;
   const source = state.effective.sources.frameworkView;
