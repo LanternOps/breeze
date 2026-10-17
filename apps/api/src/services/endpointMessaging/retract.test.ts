@@ -51,7 +51,15 @@ describe('retractEndpointMessage site scope (#9014)', () => {
     expect(h.updates).toBe(1);
   });
 
-  it('unrestricted caller never probes', async () => {
+  it('forbidden (nothing touched) when a live delivery is on a site outside the allowlist', async () => {
+    h.queue = [[message], [{ id: 'd1', deviceId: 'dev1', orgId: ORG, status: 'delivered', commandId: null, siteId: 'other-site', agentVersion: '1.0.0' }]];
+    h.reaches.mockResolvedValue(true);
+    const out = await retractEndpointMessage({ auth, permissions: { allowedSiteIds: [SITE_A] }, messageRowId: MSG });
+    expect(out).toEqual({ kind: 'forbidden' });
+    expect(h.updates).toBe(0);
+  });
+
+  it('unrestricted caller retracts normally', async () => {
     h.queue = [[message], []];
     h.reaches.mockResolvedValue(true);
     const out = await retractEndpointMessage({ auth, messageRowId: MSG });
