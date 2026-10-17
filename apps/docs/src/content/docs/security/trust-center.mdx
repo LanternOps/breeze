@@ -84,6 +84,16 @@ Access links are single-purpose and only ever appear after the `#` in the addres
 
 {/* W02g: partner template */}
 
+## Partner defaults
+
+Set defaults for every customer's page once, in **Settings → Partner → Trust Center**: which of the optional blocks show (percentages, device count, "Managed by", search indexing, the 90-day history), an introduction, the controls hidden by default and the framework view. A field you leave blank uses the Breeze default, and the form shows that default next to it.
+
+Each organization's Trust Center tab shows where each setting comes from: **Set for this organization**, **Partner template**, or **Breeze default**. A value an organization sets for itself always wins. **Reset to inherited** removes that value so the organization follows your defaults again. For the introduction, choose between the partner template's introduction, no introduction, or a custom one.
+
+Publishing freezes the values the page was published with. A later change to your defaults reaches a published page only when that page is published again.
+
+Changing the defaults needs the `organizations:write` permission, access to every organization in your partner account, and a session with multi-factor authentication. Partner users limited to selected organizations can view the defaults but not change them.
+
 ## Badge
 
 A published page offers a live status badge you can embed on your website. The badge links to the public page and goes dark when the page is unpublished.
