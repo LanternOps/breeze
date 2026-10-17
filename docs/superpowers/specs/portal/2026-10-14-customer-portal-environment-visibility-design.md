@@ -132,7 +132,7 @@ For each family, the implementation must include:
 2. a classification of **each new column** in `CORE_TENANT_EXPORT_POLICY` (`apps/api/src/services/tenantExportPolicyRegistry.ts`); any `json`/`jsonb`/`bytea` column is `excludedOpen`;
 3. a `.strict()` validator entry in `packages/shared/src/validators/portal.ts`;
 4. the column in the `/portal/branding` select (`apps/api/src/routes/portal/branding.ts`) and the matching type additions in the portal;
-5. the key in `PORTAL_VISIBILITY_FLAG_KEYS` (only if it is inside "Enable all") or in `PORTAL_SENSITIVE_FLAG_KEYS` (if it is outside), with the corresponding update to `portalFlags.test.ts` and `OrgPortalSettingsEditor.test.tsx` (see §5.1.1);
+5. the key in `PORTAL_VISIBILITY_FLAG_KEYS` (only if it is inside "Enable all") or in `PORTAL_SENSITIVE_FLAG_KEYS` (if it is outside), with the corresponding update to `portalFlags.test.ts` and `OrgPortalSettingsEditor.test.tsx` (see §5.1.1). A flag outside "Enable all" must also be omitted from the hardcoded update object in `enableAllVisibility()` (`apps/web/src/components/settings/OrgPortalSettingsEditor.tsx`), which is the source of truth for that action;
 6. the gate pattern chosen in §5.1.2;
 7. the reference to the field allow-list for the wave (§6).
 
