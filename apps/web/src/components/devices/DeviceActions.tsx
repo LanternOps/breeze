@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useMenuKeyboard } from "../billing/shared/menuKeyboard";
 import { usePermissions } from "../../lib/permissions";
 import {
   Play,
@@ -214,6 +215,80 @@ function getModalConfig(
   }
 }
 
+// Menu-button pattern shared by the "…" and Power menus (#9025), built on the
+// same useMenuKeyboard hook the other action menus use: aria-expanded/haspopup
+// live on the trigger (the first [aria-haspopup] inside the root), the popup is
+// role="menu", focus moves in on open, arrows/Home/End/Tab are handled, and
+// Escape or an outside mousedown closes (Escape also returns focus).
+const DropdownContext = createContext<{
+  open: boolean;
+  listRef: RefObject<HTMLDivElement | null>;
+  onKeyDown: (e: ReactKeyboardEvent) => void;
+}>({ open: false, listRef: { current: null }, onKeyDown: () => {} });
+
+function DropdownRoot({
+  open,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { listRef, onKeyDown: onMenuKeyDown } = useMenuKeyboard(open, onClose);
+
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [open, onClose]);
+
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (!open) return;
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      onClose();
+      rootRef.current?.querySelector<HTMLElement>("[aria-haspopup]")?.focus();
+      return;
+    }
+    onMenuKeyDown(e);
+  };
+
+  return (
+    <DropdownContext.Provider value={{ open, listRef, onKeyDown }}>
+      <div ref={rootRef} className="relative" onKeyDown={onKeyDown}>
+        {children}
+      </div>
+    </DropdownContext.Provider>
+  );
+}
+
+function DropdownPopup({ children }: { children: ReactNode }) {
+  const { open, listRef } = useContext(DropdownContext);
+  if (!open) return null;
+  return (
+    <div
+      ref={listRef}
+      role="menu"
+      // aria-disabled items stay focusable so their reason (title) is
+      // reachable by keyboard; their activation is swallowed here.
+      onClickCapture={(e) => {
+        if ((e.target as HTMLElement).closest('[aria-disabled="true"]')) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }}
+      className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function DeviceActions({
   device,
   onAction,
@@ -230,6 +305,8 @@ export default function DeviceActions({
   const canMoveOrg = useCanMoveDeviceOrg();
   const [menuOpen, setMenuOpen] = useState(false);
   const [powerMenuOpen, setPowerMenuOpen] = useState(false);
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
+  const powerTriggerRef = useRef<HTMLButtonElement>(null);
   const [modalType, setModalType] = useState<ModalType>("none");
   const [loading, setLoading] = useState(false);
 
@@ -246,6 +323,10 @@ export default function DeviceActions({
   };
 
   const handleAction = async (action: string) => {
+    // Return focus to the open menu's trigger before the item unmounts, so a
+    // dialog opened by the action restores focus there rather than to <body>.
+    if (menuOpen) moreTriggerRef.current?.focus();
+    else if (powerMenuOpen) powerTriggerRef.current?.focus();
     if (
       action === "reboot" ||
       action === "reboot_safe_mode" ||
@@ -308,6 +389,8 @@ export default function DeviceActions({
           type="button"
           data-testid="device-action-restore"
           onClick={() => handleAction("restore")}
+          role="menuitem"
+          tabIndex={-1}
           className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
         >
           <RotateCcw className="h-4 w-4" />
@@ -317,6 +400,8 @@ export default function DeviceActions({
           type="button"
           data-testid="device-action-permanent-delete"
           onClick={() => handleAction("permanent-delete")}
+          role="menuitem"
+          tabIndex={-1}
           className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
         >
           <Trash2 className="h-4 w-4" />
@@ -328,6 +413,8 @@ export default function DeviceActions({
         type="button"
         data-testid="device-action-remove"
         onClick={() => handleAction("decommission")}
+        role="menuitem"
+        tabIndex={-1}
         className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
       >
         <Trash2 className="h-4 w-4" />
@@ -338,22 +425,28 @@ export default function DeviceActions({
   if (compact) {
     return (
       <>
-        <div className="relative">
+        <DropdownRoot open={menuOpen} onClose={closeMenus}>
           <button
             type="button"
+            ref={moreTriggerRef}
             data-testid="device-actions-menu"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label={t("deviceActions.moreActions")}
+            title={t("deviceActions.moreActions")}
             onClick={() => setMenuOpen(!menuOpen)}
             className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted"
           >
-            <MoreHorizontal className="h-4 w-4" />
+            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>
-          {menuOpen && (
-            <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+          <DropdownPopup>
               <button
                 type="button"
                 onClick={() => handleAction("run-script")}
-                disabled={!online}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                aria-disabled={(!online) || undefined}
+                role="menuitem"
+                tabIndex={-1}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <Play className="h-4 w-4" />
                 {t("deviceActions.runScript")}{" "}
@@ -372,8 +465,10 @@ export default function DeviceActions({
                 <button
                   type="button"
                   onClick={() => handleAction("remote-tools")}
-                  disabled={
+                  aria-disabled={
                     !online || device.remoteAccessPolicy?.remoteTools === false
+                      ? true
+                      : undefined
                   }
                   title={
                     offlineTitle ??
@@ -381,7 +476,9 @@ export default function DeviceActions({
                       ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
                       : undefined)
                   }
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  role="menuitem"
+                  tabIndex={-1}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                 >
                   <Wrench className="h-4 w-4" />
                   {t("deviceActions.remoteTools")}{" "}
@@ -390,9 +487,11 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("refresh")}
-                disabled={!online}
+                aria-disabled={(!online) || undefined}
                 title={t("deviceActions.reRunAgentInventoryCollectorsSo")}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                role="menuitem"
+                tabIndex={-1}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <RefreshCw className="h-4 w-4" />
                 {t("deviceActions.refresh")}{" "}
@@ -400,8 +499,10 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("reboot")}
-                disabled={!online}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                aria-disabled={(!online) || undefined}
+                role="menuitem"
+                tabIndex={-1}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceActions.reboot")}{" "}
@@ -410,6 +511,8 @@ export default function DeviceActions({
                 <button
                   type="button"
                   onClick={() => handleAction("wake")}
+                  role="menuitem"
+                  tabIndex={-1}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <Zap className="h-4 w-4" />
@@ -420,8 +523,10 @@ export default function DeviceActions({
                 <button
                   type="button"
                   onClick={() => handleAction("reboot_safe_mode")}
-                  disabled={!online}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-disabled={(!online) || undefined}
+                  role="menuitem"
+                  tabIndex={-1}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                 >
                   <Shield className="h-4 w-4" />
                   {t("deviceActions.rebootToSafeMode")}{" "}
@@ -430,6 +535,8 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("deploy-software")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Package className="h-4 w-4" />
@@ -440,6 +547,8 @@ export default function DeviceActions({
                   type="button"
                   data-testid="device-install-homebrew"
                   onClick={() => handleAction("install-homebrew")}
+                  role="menuitem"
+                  tabIndex={-1}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <Beer className="h-4 w-4" />
@@ -449,6 +558,8 @@ export default function DeviceActions({
                             <button
                 type="button"
                 onClick={() => handleAction("clear-sessions")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <XCircle className="h-4 w-4" />
@@ -458,6 +569,8 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("change-site")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <MapPin className="h-4 w-4" />
@@ -466,6 +579,8 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("maintenance")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
@@ -475,9 +590,8 @@ export default function DeviceActions({
               </button>
               <hr className="my-1" />
               {removeOrRestoreMenuItems}
-            </div>
-          )}
-        </div>
+            </DropdownPopup>
+        </DropdownRoot>
 
         {modalType === "decommission" ? (
           <RemoveDeviceDialog
@@ -575,30 +689,34 @@ export default function DeviceActions({
             {t("deviceActions.remoteTools")}{" "}
           </button>
         )}
-        <div className="relative">
+        <DropdownRoot open={powerMenuOpen} onClose={closeMenus}>
           <button
             type="button"
             onClick={() => {
+              if (!online || loading) return;
               setPowerMenuOpen(!powerMenuOpen);
               setMenuOpen(false);
             }}
-            disabled={!online || loading}
+            aria-disabled={!online || loading ? true : undefined}
             title={offlineTitle}
-            aria-haspopup="true"
+            ref={powerTriggerRef}
+            data-testid="device-power-menu"
+            aria-haspopup="menu"
             aria-expanded={powerMenuOpen}
-            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
           >
             <Power className="h-4 w-4" />
             {t("deviceActions.power")}{" "}
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
           </button>
-          {powerMenuOpen && (
-            <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+          <DropdownPopup>
               <button
                 type="button"
                 onClick={() => handleAction("reboot")}
-                disabled={!online}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                aria-disabled={(!online) || undefined}
+                role="menuitem"
+                tabIndex={-1}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceActions.reboot")}{" "}
@@ -607,8 +725,10 @@ export default function DeviceActions({
                 <button
                   type="button"
                   onClick={() => handleAction("reboot_safe_mode")}
-                  disabled={!online}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-disabled={(!online) || undefined}
+                  role="menuitem"
+                  tabIndex={-1}
+                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                 >
                   <Shield className="h-4 w-4" />
                   {t("deviceActions.rebootToSafeMode")}{" "}
@@ -617,8 +737,10 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("shutdown")}
-                disabled={!online}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-disabled={(!online) || undefined}
+                role="menuitem"
+                tabIndex={-1}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <Power className="h-4 w-4" />
                 {t("deviceActions.shutdown")}{" "}
@@ -636,6 +758,8 @@ export default function DeviceActions({
                 type="button"
                 data-testid="device-power-action-maintenance"
                 onClick={() => handleAction("maintenance")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
@@ -643,13 +767,17 @@ export default function DeviceActions({
                   ? t("deviceActions.exitMaintenance")
                   : t("deviceActions.enterMaintenance")}
               </button>
-            </div>
-          )}
-        </div>
-        <div className="relative">
+            </DropdownPopup>
+        </DropdownRoot>
+        <DropdownRoot open={menuOpen} onClose={closeMenus}>
           <button
             type="button"
+            ref={moreTriggerRef}
             data-testid="device-actions-menu"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label={t("deviceActions.moreActions")}
+            title={t("deviceActions.moreActions")}
             onClick={() => {
               setMenuOpen(!menuOpen);
               setPowerMenuOpen(false);
@@ -657,16 +785,17 @@ export default function DeviceActions({
             disabled={loading}
             className="flex h-10 w-10 items-center justify-center rounded-md border bg-background transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <MoreHorizontal className="h-4 w-4" />
+            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>
-          {menuOpen && (
-            <div className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg">
+          <DropdownPopup>
               <button
                 type="button"
                 onClick={() => handleAction("refresh")}
-                disabled={!online || loading}
+                aria-disabled={(!online || loading) || undefined}
                 title={t("deviceActions.reRunAgentInventoryCollectorsSo")}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                role="menuitem"
+                tabIndex={-1}
+                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <RefreshCw className="h-4 w-4" />
                 {t("deviceActions.refresh")}{" "}
@@ -674,6 +803,8 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("maintenance")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
@@ -684,6 +815,8 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("deploy-software")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Package className="h-4 w-4" />
@@ -694,6 +827,8 @@ export default function DeviceActions({
                   type="button"
                   data-testid="device-install-homebrew"
                   onClick={() => handleAction("install-homebrew")}
+                  role="menuitem"
+                  tabIndex={-1}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <Beer className="h-4 w-4" />
@@ -703,6 +838,8 @@ export default function DeviceActions({
                             <button
                 type="button"
                 onClick={() => handleAction("clear-sessions")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <XCircle className="h-4 w-4" />
@@ -711,6 +848,8 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("change-site")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <MapPin className="h-4 w-4" />
@@ -723,6 +862,8 @@ export default function DeviceActions({
                   type="button"
                   data-testid="device-action-move-org"
                   onClick={() => handleAction("move-org")}
+                  role="menuitem"
+                  tabIndex={-1}
                   className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <ArrowRightLeft className="h-4 w-4" />
@@ -732,6 +873,8 @@ export default function DeviceActions({
               <button
                 type="button"
                 onClick={() => handleAction("settings")}
+                role="menuitem"
+                tabIndex={-1}
                 className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Settings className="h-4 w-4" />
@@ -739,9 +882,8 @@ export default function DeviceActions({
               </button>
               <hr className="my-1" />
               {removeOrRestoreMenuItems}
-            </div>
-          )}
-        </div>
+            </DropdownPopup>
+        </DropdownRoot>
       </div>
 
       {modalType === "decommission" ? (

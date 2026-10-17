@@ -384,6 +384,7 @@
     "hide": "masquer"
   },
   "deviceActions": {
+    "moreActions": "Plus d'actions",
     "unavailable": {
       "offline": "L’appareil est hors ligne",
       "maintenance": "L’appareil est en mode maintenance",

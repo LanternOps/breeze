@@ -39,6 +39,7 @@ import {
   History,
   Bot,
   MessageSquare,
+  ArrowLeft,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
@@ -797,6 +798,20 @@ export default function DeviceDetails({
 
   return (
     <div className="space-y-6">
+      {/* #9025: onBack was only rendered in the error state, so the happy path
+          had no Back control at all. Quiet by design — the breadcrumb above
+          remains the primary wayfinding. */}
+      {onBack && (
+        <button
+          type="button"
+          data-testid="device-detail-back"
+          onClick={onBack}
+          className="-mb-2 flex items-center gap-1.5 text-sm text-muted-foreground transition hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          {t("deviceDetailPage.backToDevices")}
+        </button>
+      )}
       <div className="rounded-lg border bg-card p-6 shadow-xs">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex items-start gap-4">

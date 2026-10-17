@@ -335,7 +335,14 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   }, [device?.id, device?.orgId, recentName, recentsUserId, recordRecentDevice]);
 
   const devicesHref = device ? deviceListCrumbHref(currentOrgId, device.orgId) : "/devices";
+  // Back returns to wherever the tech came from (list filters, scroll, org);
+  // a fresh tab / deep link has no history to pop, so fall to the org-aware
+  // Devices crumb instead.
   const handleBack = () => {
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      window.history.back();
+      return;
+    }
     void navigateTo(devicesHref);
   };
 

@@ -384,6 +384,7 @@
     "hide": "ocultar"
   },
   "deviceActions": {
+    "moreActions": "Mais ações",
     "unavailable": {
       "offline": "O dispositivo está offline",
       "maintenance": "O dispositivo está em modo de manutenção",
