@@ -17,6 +17,7 @@ import {
 } from './binarySource';
 import {
   fetchVerifiedGithubReleaseArtifact,
+  peekVerifiedGithubReleaseArtifact,
   probeSafeReleaseArtifact,
   verifyReleaseArtifactBuffer,
   verifyReleaseArtifactManifestAsset,
@@ -530,16 +531,70 @@ async function fetchVerifiedLocalArtifact(args: {
 }
 
 /**
- * Forces a fresh verified fetch of one arch's pkg and swaps it into the cache
- * only once it succeeds, so a failed background refresh never evicts a still-
- * good entry. Used by the background warmer (#8333), never by a request.
+ * Background refresh of one arch's verified pkg (#8333). On the GitHub source
+ * it first fetches only the signed manifest pair (a few KB) and, when the
+ * signed sha256/release match the entry already cached, just extends that
+ * entry's expiry instead of re-downloading the (up to 128 MiB) pkg. Only a
+ * changed digest, or no usable cached entry, pays for the body. A failed
+ * refresh never evicts a still-good entry. Never called by a request.
  */
 async function refreshVerifiedMacosPkg(arch: 'amd64' | 'arm64'): Promise<void> {
+  const cached = verifiedMacosPkgCache.get(arch);
+  if (cached && getBinarySource() === 'github') {
+    const current = await cached.value.catch(() => null);
+    if (current) {
+      const assetName = `breeze-agent-darwin-${arch}.pkg`;
+      const peeked = await peekVerifiedGithubReleaseArtifact({
+        assetName,
+        manifestUrl: getGithubReleaseArtifactManifestUrl(),
+        signatureUrl: getGithubReleaseArtifactManifestSignatureUrl(),
+        expectedRepository: getGithubReleaseRepository(),
+        expectedRelease: getGithubExpectedReleaseTag(),
+        expectedPlatformTrust: MACOS_PLATFORM_TRUST,
+        expectedEdition: 'self-host',
+        requireMacosPublisher: true,
+      });
+      if (
+        peeked.sha256 === current.artifact.sha256 &&
+        peeked.release === current.artifact.release
+      ) {
+        verifiedMacosPkgCache.set(arch, {
+          expiresAt: Date.now() + VERIFIED_MACOS_PKG_CACHE_MS,
+          value: cached.value,
+        });
+        return;
+      }
+    }
+  }
   const value = await fetchVerifiedMacosPkgUncached(arch);
   verifiedMacosPkgCache.set(arch, {
     expiresAt: Date.now() + VERIFIED_MACOS_PKG_CACHE_MS,
     value: Promise.resolve(value),
   });
+}
+
+// Lazy warmer: armed by the first macOS installer-link pre-flight on this
+// replica, so deployments with no Mac fleet never pay for it. The first
+// request still fetches on its own; every later one is a cache hit.
+const MACOS_PKG_WARM_SAFETY_MARGIN_MS = 30_000;
+let macosPkgWarmTimer: ReturnType<typeof setInterval> | null = null;
+
+function warmMacosPkgCache(): void {
+  for (const arch of ['amd64', 'arm64'] as const) {
+    refreshVerifiedMacosPkg(arch).catch((err) => {
+      console.warn(
+        `[installer-builder] background macOS ${arch} pkg cache warm failed (next request falls back to its own fetch):`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
+}
+
+function armMacosPkgWarmer(): void {
+  if (macosPkgWarmTimer) return;
+  const intervalMs = Math.max(1_000, VERIFIED_MACOS_PKG_CACHE_MS - MACOS_PKG_WARM_SAFETY_MARGIN_MS);
+  macosPkgWarmTimer = setInterval(warmMacosPkgCache, intervalMs);
+  macosPkgWarmTimer.unref?.();
 }
 
 export async function fetchVerifiedMacosPkg(
@@ -735,20 +790,6 @@ function warmRegularMsiCache(): void {
     );
   });
 
-  // #8333: POST /enrollment-keys/:id/installer-link (macOS) verifies both pkgs
-  // under the request's held transaction, and that route cannot go self-managed
-  // (same linearizability constraint as above). Keep the verified-pkg cache hot
-  // too so the pre-flight is a cache hit instead of a safeFetch in the tx.
-  for (const arch of ['amd64', 'arm64'] as const) {
-    refreshVerifiedMacosPkg(arch).catch((err) => {
-      // warn, not error: a deployment that never staged a macOS pkg fails this
-      // every tick and that is not an outage.
-      console.warn(
-        `[installer-builder] background macOS ${arch} pkg cache warm failed (next request falls back to its own fetch):`,
-        err instanceof Error ? err.message : err,
-      );
-    });
-  }
 }
 
 /**
@@ -768,6 +809,10 @@ export function startRegularMsiCacheWarmer(): void {
 }
 
 export function __stopRegularMsiCacheWarmer(): void {
+  if (macosPkgWarmTimer) {
+    clearInterval(macosPkgWarmTimer);
+    macosPkgWarmTimer = null;
+  }
   if (regularMsiWarmTimer) {
     clearInterval(regularMsiWarmTimer);
     regularMsiWarmTimer = null;
@@ -832,6 +877,7 @@ async function fetchRegularMsiUncached(): Promise<Buffer> {
  * — an amd64-only outage must not pass a probe that Intel customers then hit).
  */
 export async function assertMacosInstallerPkgsReachable(): Promise<void> {
+  armMacosPkgWarmer();
   const arches = ['amd64', 'arm64'] as const;
   for (const arch of arches) {
     try {
