@@ -518,11 +518,24 @@ describe('DeviceActions — menu placement and labels (#9030)', () => {
     const onAction = vi.fn();
     render(<DeviceActions device={onlineDevice} onAction={onAction} />);
     await userEvent.click(screen.getByTestId('device-actions-menu'));
+    const menuBefore = screen.getByRole('menu');
+    // A press inside the portalled popup is not an outside press.
+    fireEvent.mouseDown(screen.getByRole('menuitem', { name: /deploy software/i }));
+    expect(screen.getByRole('menu')).toBe(menuBefore);
     await userEvent.click(screen.getByRole('menuitem', { name: /deploy software/i }));
     expect(onAction).toHaveBeenCalledWith('deploy-software', onlineDevice);
     await userEvent.click(screen.getByTestId('device-actions-menu'));
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('Tab from a portalled menu item closes it and hands focus back to the trigger', async () => {
+    render(<DeviceActions device={onlineDevice} />);
+    const trigger = screen.getByTestId('device-actions-menu');
+    await userEvent.click(trigger);
+    fireEvent.keyDown(screen.getAllByRole('menuitem')[0]!, { key: 'Tab' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it('says Connect Desktop opens a new window', () => {

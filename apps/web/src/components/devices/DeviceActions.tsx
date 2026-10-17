@@ -269,6 +269,14 @@ function DropdownRoot({
       rootRef.current?.querySelector<HTMLElement>("[aria-haspopup]")?.focus();
       return;
     }
+    // The popup is portalled to the end of <body> (#9030), so a natural Tab
+    // from an item would leave the page. Hand focus to the trigger first (no
+    // preventDefault): the browser's Tab / Shift+Tab then moves on from there.
+    if (e.key === "Tab") {
+      rootRef.current?.querySelector<HTMLElement>("[aria-haspopup]")?.focus();
+      onClose();
+      return;
+    }
     onMenuKeyDown(e);
   };
 
