@@ -56,6 +56,7 @@ export * from './customFieldImport';
 export * from './alertRuleConditions';
 export * from './eventLogProviders';
 export * from './complianceInlineSettings';
+export * from './mcpDomains';
 
 // ============================================
 // Device Roles
