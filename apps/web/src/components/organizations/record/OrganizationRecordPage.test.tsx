@@ -268,6 +268,18 @@ describe('OrganizationRecordPage — happy path', () => {
     for (const url of requestedUrls) expect(url).not.toContain(OTHER_ORG);
   });
 
+  it('renders the active tab content in the tabpanel its tab points at (#9021)', async () => {
+    window.location.hash = '#activity';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    const content = await screen.findByTestId('org-activity-tab');
+    const panel = content.closest('[role="tabpanel"]');
+    expect(panel).not.toBeNull();
+    expect(panel!.id).toBe('tab-activity-panel');
+    expect(panel!.getAttribute('aria-labelledby')).toBe('tab-activity');
+    const tab = document.getElementById('tab-activity');
+    expect(tab?.getAttribute('aria-controls')).toBe('tab-activity-panel');
+  });
+
   it('switches the context and lands on the dashboard from Work in this org', async () => {
     const user = userEvent.setup();
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);

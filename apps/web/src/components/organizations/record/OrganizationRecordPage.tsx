@@ -14,7 +14,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { OverflowTabs, type OverflowTab } from '@/components/shared/OverflowTabs';
+import { OverflowTabs, overflowPanelId, overflowTabId, type OverflowTab } from '@/components/shared/OverflowTabs';
 import ArchiveOrgModal from '@/components/settings/ArchiveOrgModal';
 import MergeOrgModal from '@/components/settings/MergeOrgModal';
 import { statusLabelKeys } from '@/lib/orgStatus';
@@ -400,6 +400,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
       <OverflowTabs tabs={overflowTabs} activeTab={effectiveTab} onTabChange={switchTab} />
 
+      <div role="tabpanel" id={overflowPanelId(effectiveTab)} aria-labelledby={overflowTabId(effectiveTab)} tabIndex={-1}>
       {effectiveTab === 'overview' && (
         <OrgOverviewTab orgId={orgId} orgFetch={orgFetch} summary={summary} summaryFailed={summaryFailed} mode={mode} archived={archived} />
       )}
@@ -412,6 +413,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       {effectiveTab === 'service' && <OrgServiceTab orgId={orgId} orgFetch={orgFetch} />}
       {effectiveTab === 'documents' && <OrgDocumentsTab orgId={orgId} orgFetch={orgFetch} />}
       {effectiveTab === 'trust' && <TrustCenterTab orgId={orgId} orgFetch={orgFetch} />}
+      </div>
 
       {modal === 'archive' && (
         <ArchiveOrgModal

@@ -172,4 +172,50 @@ describe('OrgRecordHeader - Send message is gated on endpoint_messages:send', ()
       flags.ENABLE_ENDPOINT_MESSAGING = true;
     }
   });
+
+  describe('More menu keyboard handling (#9021)', () => {
+    it('ArrowDown on the trigger opens the menu and focuses the first item', async () => {
+      const user = userEvent.setup();
+      renderHeader();
+      screen.getByTestId('org-record-more').focus();
+      await user.keyboard('{ArrowDown}');
+      expect(screen.getByTestId('org-record-archive')).toHaveFocus();
+    });
+
+    it('click-open moves focus into the menu, arrows wrap, Home/End jump', async () => {
+      const user = userEvent.setup();
+      renderHeader();
+      await user.click(screen.getByTestId('org-record-more'));
+      expect(screen.getByTestId('org-record-archive')).toHaveFocus();
+      await user.keyboard('{ArrowDown}');
+      expect(screen.getByTestId('org-record-merge')).toHaveFocus();
+      await user.keyboard('{ArrowDown}');
+      expect(screen.getByTestId('org-record-archive')).toHaveFocus();
+      await user.keyboard('{ArrowUp}');
+      expect(screen.getByTestId('org-record-merge')).toHaveFocus();
+      await user.keyboard('{Home}');
+      expect(screen.getByTestId('org-record-archive')).toHaveFocus();
+      await user.keyboard('{End}');
+      expect(screen.getByTestId('org-record-merge')).toHaveFocus();
+    });
+
+    it('Escape closes the menu and returns focus to the trigger', async () => {
+      const user = userEvent.setup();
+      renderHeader();
+      await user.click(screen.getByTestId('org-record-more'));
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('menu')).toBeNull();
+      expect(screen.getByTestId('org-record-more')).toHaveFocus();
+    });
+
+    it('Escape with focus still on the trigger also closes', async () => {
+      const user = userEvent.setup();
+      renderHeader();
+      const more = screen.getByTestId('org-record-more');
+      await user.click(more);
+      more.focus();
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('menu')).toBeNull();
+    });
+  });
 });
