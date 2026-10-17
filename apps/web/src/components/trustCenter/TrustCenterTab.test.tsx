@@ -14,12 +14,34 @@ const state = (over: Record<string, unknown> = {}) => ({
   page: { id: 'pg', orgId: 'o1', isPartnerHome: false, publishedAt: null, publicationRevision: 3, searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true, securityContactEmail: null, websiteUrl: null, introHtml: null, hiddenControlIds: [], publicationAuthorizedBy: null, publicationAuthorizedAt: null, lastEvaluatedAt: null, ...over },
   publicPath: '/portal/trust/nw/acme', badgePath: '/api/v1/trust/public/nw/acme/badge.svg',
   slugs: { partnerSlug: 'nw', orgSlug: 'acme', valid: true, problems: [] }, canPublish: { allowed: true, reason: null }, documents: [],
+  effective: {
+    values: { introHtml: null, searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true, showHistory: false, hiddenControlIds: [], frameworkView: ['nist_csf_2'] },
+    sources: { introHtml: 'default', searchIndexable: 'page', showPercentages: 'page', showDeviceCount: 'page', showManagedBy: 'page', showHistory: 'default', hiddenControlIds: 'page', frameworkView: 'default' },
+  },
+  template: null,
+  frameworkOptions: [],
 });
 const controls = { assessments: [], catalog: [], evaluatedAt: new Date().toISOString(), deviceCount: 0 };
 const orgFetch = vi.fn() as never;
 
 describe('TrustCenterTab', () => {
   beforeEach(() => { vi.clearAllMocks(); perms.canWrite = true; api.getTrustControls.mockResolvedValue(controls); });
+  it('W2: renders every section in the plan order, the six new ones as titled seams', async () => {
+    api.getTrustPage.mockResolvedValue(state());
+    render(<TrustCenterTab orgId="o1" orgFetch={orgFetch} />);
+    await screen.findByTestId('trust-center-tab');
+    const order = [
+      'trust-controls-section', 'trust-declarations-section', 'trust-frameworks-section', 'trust-content-section',
+      'trust-faq-section', 'trust-subprocessors-section', 'trust-documents-section', 'trust-access-section', 'trust-history-section',
+    ];
+    const nodes = order.map((id) => screen.getByTestId(id));
+    for (let i = 1; i < nodes.length; i++) {
+      // DOCUMENT_POSITION_FOLLOWING (4): each section comes after the previous one.
+      expect(nodes[i - 1]!.compareDocumentPosition(nodes[i]!) & Node.DOCUMENT_POSITION_FOLLOWING, `${order[i - 1]} before ${order[i]}`).toBeTruthy();
+    }
+    expect(screen.getByTestId('trust-declarations-section')).toHaveTextContent('Declared controls');
+    expect(screen.getByTestId('trust-history-section')).toHaveTextContent('Controls met over time');
+  });
   it('shows Unpublished state and the public URL; first publish of a customer page demands the attestation', async () => {
     api.getTrustPage.mockResolvedValue(state());
     api.publishTrustPage.mockResolvedValue(new Response(JSON.stringify({ data: { page: { ...state().page, publishedAt: new Date().toISOString(), publicationRevision: 4 }, snapshotId: 's' } }), { status: 200 }));

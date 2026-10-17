@@ -158,6 +158,27 @@
       }
     },
     "trust": {
+      "declarations": {
+        "title": "Erklärte Kontrollen"
+      },
+      "frameworks": {
+        "title": "Framework-Ansicht"
+      },
+      "subprocessors": {
+        "title": "Unterauftragsverarbeiter"
+      },
+      "faq": {
+        "title": "Häufig gestellte Fragen"
+      },
+      "history": {
+        "title": "Erfüllte Kontrollen im Zeitverlauf"
+      },
+      "access": {
+        "title": "Anfragen für Dokumentzugriff"
+      },
+      "inheritance": {
+        "title": "Geerbte Einstellungen"
+      },
       "title": "Vertrauenszentrum",
       "subtitle": "Eine öffentliche Seite mit dem Sicherheitsstatus dieser Organisation, erstellt aus der Live-Telemetrie von Breeze.",
       "loading": "Vertrauenszentrum wird geladen…",

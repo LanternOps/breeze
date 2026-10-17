@@ -11,10 +11,23 @@ const page = (over: Record<string, unknown> = {}) => ({
   showPercentages: false, showDeviceCount: false, showManagedBy: true, securityContactEmail: null, websiteUrl: null,
   introHtml: null, hiddenControlIds: [], publicationAuthorizedBy: null, publicationAuthorizedAt: null, lastEvaluatedAt: null, ...over,
 });
-const state = (over: Record<string, unknown> = {}) => ({
-  page: page(over), publicPath: '/p', badgePath: '/b',
-  slugs: { partnerSlug: 'a', orgSlug: 'b', valid: true, problems: [] }, canPublish: { allowed: true, reason: null },
-});
+/** Mirror of the API's GET effective block: page value when set, else the built-in default. */
+const effectiveOf = (pg: Record<string, unknown>) => {
+  const d: Record<string, unknown> = { introHtml: null, searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true, showHistory: false, hiddenControlIds: [], frameworkView: ['nist_csf_2'] };
+  const values: Record<string, unknown> = {}; const sources: Record<string, string> = {};
+  for (const k of Object.keys(d)) { const v = pg[k]; values[k] = v ?? d[k]; sources[k] = v == null ? 'default' : 'page'; }
+  if (values.introHtml === '') values.introHtml = null;
+  return { values, sources };
+};
+const state = (over: Record<string, unknown> = {}, effectiveOver: Record<string, unknown> = {}) => {
+  const pg = page(over);
+  const effective = effectiveOf(pg);
+  return {
+    page: pg, publicPath: '/p', badgePath: '/b',
+    slugs: { partnerSlug: 'a', orgSlug: 'b', valid: true, problems: [] }, canPublish: { allowed: true, reason: null },
+    effective: { ...effective, values: { ...effective.values, ...effectiveOver } },
+  };
+};
 const def = (id: string, category: string, rank: number, title: string) => ({ id, category, title, description: `${title} d`, source: 'telemetry', metric: 'coverage_pct', unit: 'devices', insurerRank: rank, frameworkRefs: [{ framework: 'cis_v8', ref: '10.1' }] });
 const asm = (id: string, category: string, status: string, percent: number | null) => ({ id, category, source: 'telemetry', unit: 'devices', status, reason: null, percent, assessed: 9, eligible: 10, evidenceAsOf: null, frameworkRefs: [] });
 const controls = {
@@ -24,9 +37,9 @@ const controls = {
 };
 const ok = () => new Response(JSON.stringify({ data: {} }), { status: 200 });
 const orgFetch = vi.fn() as never;
-const mount = (over: { canWrite?: boolean; pageOver?: Record<string, unknown> } = {}) => {
+const mount = (over: { canWrite?: boolean; pageOver?: Record<string, unknown>; effectiveOver?: Record<string, unknown> } = {}) => {
   const onReload = vi.fn(async () => {});
-  render(<TrustControlsSection orgId="o1" orgFetch={orgFetch} state={state(over.pageOver) as never} controls={controls as never} canWrite={over.canWrite ?? true} onReload={onReload} />);
+  render(<TrustControlsSection orgId="o1" orgFetch={orgFetch} state={state(over.pageOver, over.effectiveOver) as never} controls={controls as never} canWrite={over.canWrite ?? true} onReload={onReload} />);
   return onReload;
 };
 
@@ -50,6 +63,16 @@ describe('TrustControlsSection', () => {
     mount({ pageOver: { hiddenControlIds: ['edr_coverage', 'disk_encryption'] } });
     fireEvent.click(screen.getByTestId('trust-control-switch-edr_coverage'));
     await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { hiddenControlIds: ['disk_encryption'] }));
+  });
+  it('W2: an inherited (null) page value displays the EFFECTIVE value', () => {
+    mount({ pageOver: { showPercentages: null, hiddenControlIds: null }, effectiveOver: { showPercentages: true, hiddenControlIds: ['disk_encryption'] } });
+    expect(screen.getByTestId('trust-toggle-showPercentages')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('trust-control-switch-disk_encryption')).toHaveAttribute('aria-checked', 'false');
+  });
+  it('W2: toggling an inherited value writes an explicit page value', async () => {
+    mount({ pageOver: { showPercentages: null }, effectiveOver: { showPercentages: true } });
+    fireEvent.click(screen.getByTestId('trust-toggle-showPercentages'));
+    await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { showPercentages: false }));
   });
   it('toggling percentages sends showPercentages: true', async () => {
     mount();

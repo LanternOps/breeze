@@ -158,6 +158,27 @@
       }
     },
     "trust": {
+      "declarations": {
+        "title": "Controles declarados"
+      },
+      "frameworks": {
+        "title": "Vista por marco"
+      },
+      "subprocessors": {
+        "title": "Subprocesadores"
+      },
+      "faq": {
+        "title": "Preguntas frecuentes"
+      },
+      "history": {
+        "title": "Controles cumplidos a lo largo del tiempo"
+      },
+      "access": {
+        "title": "Solicitudes de acceso a documentos"
+      },
+      "inheritance": {
+        "title": "Configuración heredada"
+      },
       "title": "Centro de confianza",
       "subtitle": "Una página pública con la postura de seguridad de esta organización, generada a partir de la telemetría en vivo de Breeze.",
       "loading": "Cargando el Centro de confianza…",
