@@ -30,6 +30,9 @@ export function historyToMessages(rows: ServerAiMessage[], lastTurnModel?: unkno
     if (row.role === 'system') continue;
 
     if (row.role === 'user') {
+      // A new turn: later tool results belong to it, never to an earlier
+      // plan the user walked away from (an unfinished plan stays unfinished).
+      planMessage = null;
       out.push({
         id: row.id,
         role: 'user',

@@ -368,6 +368,17 @@ function isDefinitiveNoMenu(failure: ChoicesLoadFailure): boolean {
 }
 
 /**
+ * A failed menu load worth a Sentry report: the user sees no picker either
+ * way, but a 5xx, a 2xx the app cannot read, or a throw that was not the
+ * network means the contract or the registry broke — not "no menu here"
+ * (4xx) or a blip (offline `status 0`, 503 `registry_unavailable`).
+ */
+export function shouldReportChoicesFailure(failure: ChoicesLoadFailure): boolean {
+  if (failure.code === 'malformed' || failure.code === 'threw') return true;
+  return failure.status >= 500 && failure.code !== 'registry_unavailable';
+}
+
+/**
  * The picker after a failed menu load. Only a definitive "no menu" clears
  * the menu and the pick; a transport failure, a 5xx or 503
  * `registry_unavailable` is transient and keeps both (`sameKey`: the menu on

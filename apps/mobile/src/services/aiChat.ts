@@ -228,8 +228,13 @@ export async function getChatModelChoices(key: { sessionId?: string | null }): P
     const res = await authedFetch(`/ai/models/choices/chat${qs}`);
     const body = await res.json().catch(() => null);
     return parseChoicesResponse(res.status, body);
-  } catch {
-    return { ok: false, status: 0, code: null };
+  } catch (err) {
+    // Offline / timeout is `code: null` (transient). Anything else thrown
+    // here is a bug, flagged so the picker can report it once per menu.
+    const network =
+      err instanceof TypeError ||
+      (err instanceof Error && (err.name === 'AbortError' || /network|timed? ?out|abort/i.test(err.message)));
+    return { ok: false, status: 0, code: network ? null : 'threw' };
   }
 }
 

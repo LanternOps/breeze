@@ -79,7 +79,7 @@ import {
   withinCap,
   type ModelChoice,
 } from './modelPicker';
-import { isPlanTool, planDecisionFailure } from './planState';
+import { isPlanTool, parsePlanSteps, planDecisionFailure } from './planState';
 import { isStreamLostError, isTurnComplete, isTurnSettlingError, transcriptSignature } from './turnState';
 import { useChatModelPicker } from './useChatModelPicker';
 
@@ -339,6 +339,14 @@ export function HomeScreen() {
             case 'message_end':
               break;
             case 'plan_approval_required':
+              // Steps the app cannot read would leave the server waiting on
+              // a card with no buttons; the card falls back to Reject-only
+              // (planState.unreadable) and the contract drift is reported.
+              if (parsePlanSteps(ev.steps).length === 0) {
+                reportInternalError(new Error('plan_approval_required with unreadable steps'), 'ai-plan-steps');
+              }
+              dispatch(planStreamEvent({ messageId: assistantId, event: ev }));
+              break;
             case 'plan_step_start':
             case 'plan_step_complete':
             case 'plan_complete':
@@ -375,13 +383,9 @@ export function HomeScreen() {
               dispatch(failAssistantMessage({ id: assistantId, error: ev.message }));
               break;
             case 'done':
-              // The turn may have resolved/acknowledged alerts (#8890).
-              refreshAlerts('turn_done');
-              commitPick();
-              dispatch(finishAssistantMessage({
-                id: assistantId,
-                failIfEmpty: { error: 'No reply. Tap to retry.' },
-              }));
+              // streamChat calls onDone right after this event (and on a
+              // socket close without one), so the turn-done work lives there
+              // once — not here too (double alerts fetch per turn).
               break;
             case 'unknown':
               // warning, title_updated, tool_use_input, … — ignored.
@@ -407,11 +411,14 @@ export function HomeScreen() {
               dispatch(discardTurn({ ids: optimisticIds }));
               dispatch(setError(failure.message));
               setDraft(content);
-              // Drop the stored pref too: for a partner-scope technician the
-              // pref is applied on each new chat's FIRST message rather than
-              // on create, so a refusal here would otherwise repeat on every
-              // new chat (same reasoning as the create path below).
-              void picker.forgetPref().then(() => picker.load({ sessionId: sid }));
+              // When this turn carried the pick, drop the stored pref too:
+              // for a partner-scope technician the pref is applied on each
+              // new chat's FIRST message rather than on create, so a refusal
+              // here would otherwise repeat on every new chat (same reasoning
+              // as the create path below). A refusal of the chat's own
+              // stamped model (no pick sent) says nothing about the pref.
+              if (turn.model) void picker.forgetPref().then(() => picker.load({ sessionId: sid }));
+              else void picker.load({ sessionId: sid });
               return;
             }
           }
@@ -437,8 +444,9 @@ export function HomeScreen() {
           dispatch(failAssistantMessage({ id: assistantId, error: err.message }));
         },
         onDone: () => {
-          // `done` SSE event already finishes the message. This fires on
-          // socket close without a `done` event — finish defensively.
+          // Fires exactly once per stream: after the `done` event, or on a
+          // socket close without one. The turn may have resolved or
+          // acknowledged alerts (#8890).
           refreshAlerts('turn_done');
           commitPick();
           dispatch(finishAssistantMessage({
@@ -482,6 +490,9 @@ export function HomeScreen() {
           dispatch(sessionCreated({ sessionId: sid, orgId: session.orgId }));
           track('chat_session_created');
         } catch (err) {
+          // The user moved on (new chat, opened history) while the create was
+          // in flight: nothing here is theirs any more, including the menu.
+          if (gen !== turnGenRef.current) return;
           dispatch(setStatus('error'));
           // Same classification as a refused message: a model code (the
           // stored pick is not on this plan / region / role) shows the

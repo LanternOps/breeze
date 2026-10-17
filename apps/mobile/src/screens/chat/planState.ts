@@ -52,6 +52,12 @@ export interface ChatPlan {
   title: string | null;
   steps: PlanStep[];
   status: PlanStatus;
+  /**
+   * `plan_approval_required` arrived but its steps did not parse: the server
+   * is holding the plan open (10-minute timeout) and the app cannot show it.
+   * The card then offers Reject only, so the user can unblock the chat.
+   */
+  unreadable?: true;
 }
 
 export type PlanStreamEvent =
@@ -155,10 +161,12 @@ export function applyPlanEvent(plan: ChatPlan | undefined, event: PlanStreamEven
     const base = plan ?? proposedPlan(null, undefined);
     if (base.status !== 'awaiting') return base;
     const steps = parsePlanSteps(event.steps);
+    const merged = steps.length > 0 ? steps : base.steps;
     return {
       ...base,
       planId: event.planId,
-      steps: steps.length > 0 ? steps : base.steps,
+      steps: merged,
+      ...(merged.length === 0 ? { unreadable: true as const } : {}),
     };
   }
   if (!plan || plan.planId !== event.planId) return plan;
@@ -224,7 +232,7 @@ export function applyPlanToolResult(plan: ChatPlan, output: unknown): ChatPlan {
   return { ...plan, status: 'expired' };
 }
 
-export type PlanCardAction = 'decide' | 'stop' | 'none';
+export type PlanCardAction = 'decide' | 'reject' | 'stop' | 'none';
 
 /**
  * Which controls the plan card shows. `live` is whether the message is still
@@ -234,7 +242,10 @@ export type PlanCardAction = 'decide' | 'stop' | 'none';
  */
 export function planCardAction(plan: ChatPlan, live: boolean): PlanCardAction {
   if (!live) return 'none';
-  if (plan.status === 'awaiting') return plan.steps.length > 0 ? 'decide' : 'none';
+  if (plan.status === 'awaiting') {
+    if (plan.steps.length > 0) return 'decide';
+    return plan.unreadable ? 'reject' : 'none';
+  }
   if (plan.status === 'executing') return 'stop';
   return 'none';
 }
@@ -243,7 +254,8 @@ export function planStatusCaption(plan: ChatPlan, live: boolean): string {
   switch (plan.status) {
     case 'awaiting':
       if (!live) return 'No decision recorded';
-      return plan.steps.length > 0 ? 'Waiting for your approval' : 'Preparing plan';
+      if (plan.steps.length > 0) return 'Waiting for your approval';
+      return plan.unreadable ? 'Could not read this plan. Reject it to continue.' : 'Preparing plan';
     case 'approved':
       return 'Approved';
     case 'executing':

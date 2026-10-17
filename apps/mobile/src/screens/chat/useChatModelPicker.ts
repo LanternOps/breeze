@@ -1,3 +1,4 @@
+import { reportInternalError } from '../../lib/errorReporting';
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { getChatModelChoices } from '../../services/aiChat';
@@ -15,6 +16,7 @@ import {
   type ModelChoice,
   type OfferingOptions,
   type PickerState,
+  shouldReportChoicesFailure,
 } from './modelPicker';
 
 const INITIAL: PickerState = { choices: null, loading: false, selection: null };
@@ -42,6 +44,7 @@ export function useChatModelPicker() {
   /** The load key the menu on screen (`state.choices`) belongs to. */
   const choicesKeyRef = useRef<string | null>(null);
   /** Why the last finished load produced no menu, or null when it did. */
+  const reportedFailureRef = useRef<string | null>(null);
   const lastFailureRef = useRef<ChoicesLoadFailure | null>(null);
   /** The key the current selection was made under; a pick never crosses chats. */
   const selectionKeyRef = useRef<string | null>(null);
@@ -82,6 +85,11 @@ export function useChatModelPicker() {
       // default. Offline, 5xx or registry_unavailable is transient: keep the
       // menu and the pick rather than wipe them on a blip.
       lastFailureRef.current = { status: result.status, code: result.code };
+      const reportKey = `${loadKey}:${result.status}:${result.code ?? ''}`;
+      if (shouldReportChoicesFailure(result) && reportedFailureRef.current !== reportKey) {
+        reportedFailureRef.current = reportKey;
+        reportInternalError(new Error(`chat model choices load failed: ${result.status} ${result.code ?? ''}`.trim()), 'ai-model-choices');
+      }
       const next = stateAfterFailedLoad(stateRef.current, result, choicesKeyRef.current === loadKey);
       if (!next.choices) choicesKeyRef.current = null;
       if (!next.selection) selectionKeyRef.current = null;

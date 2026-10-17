@@ -1,12 +1,17 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { reportInternalError } from '../lib/errorReporting';
 
 import { AI_MODEL_PREF_KEY, clearAiModelPref, loadAiModelPref, saveAiModelPref } from './aiModelPrefs';
+
+vi.mock('../lib/errorReporting', () => ({ reportInternalError: vi.fn() }));
 
 const OPUS = '22222222-2222-4222-8222-222222222222';
 
 beforeEach(async () => {
   await AsyncStorage.clear();
+  vi.mocked(reportInternalError).mockClear();
 });
 
 describe('aiModelPrefs', () => {
@@ -35,5 +40,17 @@ describe('aiModelPrefs', () => {
     } finally {
       AsyncStorage.getItem = original;
     }
+    // …but not silently: the first failure in the process reaches Sentry (#8885 review).
+    expect(reportInternalError).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(reportInternalError).mock.calls[0]).toEqual([expect.objectContaining({ message: 'disk' }), 'ai-model-pref']);
+  });
+
+  it('later storage failures in the same process are not reported again (#8885 review)', async () => {
+    // The load-failure test above already spent the once-per-process report.
+    const spy = vi.spyOn(AsyncStorage, 'setItem').mockRejectedValue(new Error('disk full'));
+    await saveAiModelPref({ offeringId: OPUS });
+    await saveAiModelPref({ offeringId: OPUS });
+    spy.mockRestore();
+    expect(reportInternalError).not.toHaveBeenCalled();
   });
 });

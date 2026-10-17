@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { reportInternalError } from '../lib/errorReporting';
 import { parseModelPref, type ModelChoice } from '../screens/chat/modelPicker';
 
 /**
@@ -12,10 +13,20 @@ import { parseModelPref, type ModelChoice } from '../screens/chat/modelPicker';
  */
 export const AI_MODEL_PREF_KEY = 'breeze.aiModelPref.v1';
 
+// The UX degrades quietly (default model next chat), but a device whose
+// storage keeps failing should show up once in Sentry, not never.
+let reportedStorageFailure = false;
+function reportStorageFailure(err: unknown): void {
+  if (reportedStorageFailure) return;
+  reportedStorageFailure = true;
+  reportInternalError(err, 'ai-model-pref');
+}
+
 export async function loadAiModelPref(): Promise<ModelChoice | null> {
   try {
     return parseModelPref(await AsyncStorage.getItem(AI_MODEL_PREF_KEY));
-  } catch {
+  } catch (err) {
+    reportStorageFailure(err);
     return null;
   }
 }
@@ -24,8 +35,8 @@ export async function loadAiModelPref(): Promise<ModelChoice | null> {
 export async function saveAiModelPref(choice: ModelChoice): Promise<void> {
   try {
     await AsyncStorage.setItem(AI_MODEL_PREF_KEY, JSON.stringify(choice));
-  } catch {
-    // keep going on the in-memory selection
+  } catch (err) {
+    reportStorageFailure(err); // keep going on the in-memory selection
   }
 }
 

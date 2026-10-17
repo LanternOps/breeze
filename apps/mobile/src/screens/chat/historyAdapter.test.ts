@@ -185,6 +185,23 @@ describe('historyToMessages action plans', () => {
     ],
   };
 
+  it('a later turn\'s tool results never tick an earlier approved plan (#8885 review)', () => {
+    const msgs = historyToMessages([
+      row({ id: 'a1', role: 'assistant', content: 'Plan.' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolInput: input }),
+      row({ id: 'r1', role: 'tool_result', toolUseId: 'tu-plan', toolOutput: { result: 'approved' } }),
+      row({ id: 't2', role: 'tool_use', toolName: 'manage_services', toolUseId: 'tu-s1' }),
+      row({ id: 'r2', role: 'tool_result', toolUseId: 'tu-s1', toolName: 'manage_services', toolOutput: {} }),
+      row({ id: 'u2', role: 'user', content: 'Actually, run a different script.' }),
+      row({ id: 'a2', role: 'assistant', content: 'Sure.' }),
+      row({ id: 't3', role: 'tool_use', toolName: 'run_script', toolUseId: 'tu-s2' }),
+      row({ id: 'r3', role: 'tool_result', toolUseId: 'tu-s2', toolName: 'run_script', toolOutput: {} }),
+    ]);
+    const a1 = msgs.find((m) => m.id === 'a1');
+    expect(a1?.role === 'assistant' && a1.plan?.status).not.toBe('completed');
+    expect(a1?.role === 'assistant' && a1.plan?.steps.map((st) => st.status)).toEqual(['completed', 'pending']);
+  });
+
   it('rebuilds the plan from the propose_action_plan tool_use input', () => {
     const out = historyToMessages([
       row({ id: 'u1', role: 'user', content: 'fix printing' }),

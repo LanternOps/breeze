@@ -123,6 +123,18 @@ export function PlanCard({ plan, live, onDecide, onStop }: Props) {
         </View>
       ) : null}
 
+      {action === 'reject' ? (
+        <View style={{ flexDirection: 'row', marginTop: spacing[3] }}>
+          <PlanButton
+            label="Reject"
+            busy={busy === 'reject'}
+            disabled={busy !== null}
+            onPress={() => void run('reject')}
+            testID="chat-plan-reject"
+          />
+        </View>
+      ) : null}
+
       {action === 'stop' ? (
         <View style={{ flexDirection: 'row', marginTop: spacing[3] }}>
           <PlanButton

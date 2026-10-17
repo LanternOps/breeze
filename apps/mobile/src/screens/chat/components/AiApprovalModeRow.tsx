@@ -5,6 +5,7 @@ import { useAppSelector } from '../../../store';
 import { spacing, type, useApprovalTheme } from '../../../theme';
 import { getAiApprovalMode } from '../../../services/aiChat';
 import { approvalModeCopy, type AiApprovalMode } from '../../../services/aiApprovalMode';
+import { reportInternalError } from '../../../lib/errorReporting';
 
 type LoadState =
   | { kind: 'loading' }
@@ -33,7 +34,8 @@ export function AiApprovalModeRow() {
       .then((mode) => {
         if (!cancelled) setState({ kind: 'loaded', mode });
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        reportInternalError(err, 'ai-approval-mode');
         if (!cancelled) setState({ kind: 'failed' });
       });
     return () => {

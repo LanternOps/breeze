@@ -21,7 +21,17 @@ let inFlight = 0;
 const listeners = new Set<Listener>();
 
 function notify(active: boolean): void {
-  for (const listener of [...listeners]) listener(active);
+  for (const listener of [...listeners]) {
+    try {
+      listener(active);
+    } catch (err) {
+      // A throwing listener must not skip the others or leave `inFlight`
+      // stranded (the increment above the try would never be undone). This
+      // module stays free of the Sentry import on purpose; the only listener
+      // is the app-lock reducer, so log and keep the registry consistent.
+      console.error('[biometricPromptState] listener threw', err);
+    }
+  }
 }
 
 /** Whether at least one of our biometric prompts is currently in flight. */

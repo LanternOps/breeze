@@ -22,6 +22,7 @@ import {
   sessionCreateFailure,
   showPicker,
   stateAfterFailedLoad,
+  shouldReportChoicesFailure,
   survivingSelection,
   withinCap,
   withOption,
@@ -421,5 +422,17 @@ describe('turn model (mirrors AiTurnModelBadge.tsx)', () => {
     expect(describeTurnModel({ ...tm, appliedOptions: { effort: 'xhigh', speed: 'fast', budgetThinking: 'on' } })).toBe('Answered by Opus · Extra high · Fast · Thinking');
     expect(describeTurnModel({ ...tm, servedDisplayName: 'Sonnet', fallbackUsed: true })).toBe('Answered by Sonnet · Opus declined; another model answered');
     expect(describeTurnModel({ ...tm, fastDowngraded: true })).toBe('Answered by Opus · Fast was unavailable; ran at standard speed');
+  });
+});
+
+describe('shouldReportChoicesFailure', () => {
+  it('reports a 5xx, a malformed 2xx and a non-network throw; not 4xx or offline', () => {
+    expect(shouldReportChoicesFailure({ status: 500, code: null })).toBe(true);
+    expect(shouldReportChoicesFailure({ status: 200, code: 'malformed' })).toBe(true);
+    expect(shouldReportChoicesFailure({ status: 0, code: 'threw' })).toBe(true);
+    expect(shouldReportChoicesFailure({ status: 0, code: null })).toBe(false);
+    expect(shouldReportChoicesFailure({ status: 400, code: null })).toBe(false);
+    expect(shouldReportChoicesFailure({ status: 404, code: null })).toBe(false);
+    expect(shouldReportChoicesFailure({ status: 503, code: 'registry_unavailable' })).toBe(false);
   });
 });

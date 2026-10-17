@@ -142,6 +142,17 @@ describe('applyPlanEvent', () => {
     expect(plan?.status).toBe('aborted');
   });
 
+  it('plan_approval_required whose steps cannot be read marks the plan unreadable (#8885 review)', () => {
+    const next = applyPlanEvent(proposedPlan('tu-1', undefined), {
+      type: 'plan_approval_required',
+      planId: 'plan-1',
+      steps: { not: 'an array' },
+    });
+    expect(next).toMatchObject({ planId: 'plan-1', status: 'awaiting', steps: [], unreadable: true });
+    // Readable steps never carry the flag.
+    expect(applyPlanEvent(undefined, { type: 'plan_approval_required', planId: 'plan-1', steps: STEPS })).not.toHaveProperty('unreadable');
+  });
+
   it('a repeated plan_approval_required does not regress a decided plan', () => {
     const executing = planDecided(awaiting(), 'approved');
     expect(
@@ -210,6 +221,9 @@ describe('planCardAction', () => {
     expect(planCardAction(awaiting(), true)).toBe('decide');
     expect(planCardAction(awaiting(), false)).toBe('none');
     expect(planCardAction(awaiting({ steps: [] }), true)).toBe('none');
+    // An announced plan the app could not read still lets the user unblock the server.
+    expect(planCardAction(awaiting({ steps: [], unreadable: true }), true)).toBe('reject');
+    expect(planCardAction(awaiting({ steps: [], unreadable: true }), false)).toBe('none');
   });
 
   it('offers stop only on a live executing plan', () => {
@@ -228,6 +242,7 @@ describe('planCardAction', () => {
 describe('planStatusCaption', () => {
   it('describes each state', () => {
     expect(planStatusCaption(awaiting({ steps: [] }), true)).toBe('Preparing plan');
+    expect(planStatusCaption(awaiting({ steps: [], unreadable: true }), true)).toBe('Could not read this plan. Reject it to continue.');
     expect(planStatusCaption(awaiting(), true)).toBe('Waiting for your approval');
     expect(planStatusCaption(awaiting(), false)).toBe('No decision recorded');
     expect(planStatusCaption(awaiting({ status: 'approved' }), false)).toBe('Approved');

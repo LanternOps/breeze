@@ -52,6 +52,15 @@ describe('biometric prompt registry', () => {
     expect(seen).toEqual([true, false]);
   });
 
+  it('a throwing listener never strands the registry active (#8885 review)', async () => {
+    unsubs.push(subscribeBiometricPrompt(() => { throw new Error('listener boom'); }));
+    const seen: boolean[] = [];
+    unsubs.push(subscribeBiometricPrompt((active) => seen.push(active)));
+    await expect(withBiometricPrompt(async () => 'ok')).resolves.toBe('ok');
+    expect(isBiometricPromptActive()).toBe(false);
+    expect(seen).toEqual([true, false]);
+  });
+
   it('stops notifying after unsubscribe', async () => {
     const listener = vi.fn();
     const unsub = subscribeBiometricPrompt(listener);
