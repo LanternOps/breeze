@@ -6,12 +6,16 @@
  * in each kind's transaction (a run that cannot get it skips that kind). The
  * work itself lives in services/connectionHealth/reconcile.ts.
  */
-import { Queue, Worker } from 'bullmq';
+import { Queue, Worker, type Job } from 'bullmq';
 import { getBullMQConnection } from '../services/redis';
+import { CONNECTION_HEALTH_QUEUE, NUDGE_JOB_NAME } from '../services/connectionHealth/nudge';
 import { runReconcile } from '../services/connectionHealth/reconcile';
+import { HEALTH_SOURCES } from '../services/connectionHealth/sources';
 import { attachWorkerObservability } from './workerObservability';
 
-export const CONNECTION_HEALTH_QUEUE = 'connection-health-reconcile';
+// The queue name lives with the nudge producer (services/connectionHealth/nudge.ts),
+// which hot paths import without this worker's graph.
+export { CONNECTION_HEALTH_QUEUE };
 const REPEAT_JOB_ID = 'connection-health-reconcile';
 const REPEAT_PATTERN = '2,17,32,47 * * * *';
 
@@ -25,7 +29,17 @@ export function getConnectionHealthQueue(): Queue {
 
 export async function initializeConnectionHealthReconcileWorker(): Promise<void> {
   if (worker) return;
-  worker = new Worker(CONNECTION_HEALTH_QUEUE, async () => {
+  worker = new Worker(CONNECTION_HEALTH_QUEUE, async (job: Pick<Job, 'name' | 'data'>) => {
+    // W4 nudge (services/connectionHealth/nudge.ts): one kind, cadence ignored.
+    // Concurrency 1 serializes it with the scheduled run; the per-kind
+    // advisory lock still guards against other processes.
+    if (job.name === NUDGE_JOB_NAME) {
+      const kind = (job.data as { kind?: unknown } | null)?.kind;
+      const source = HEALTH_SOURCES.find((s) => s.kind === kind);
+      if (!source) return { skipped: 'unknown_kind' };
+      const { kinds, notices } = await runReconcile({ sources: [source], mode: 'nudge' });
+      return { kinds: kinds.map((k) => [k.kind, k.status]), notices };
+    }
     const { kinds, notices, retained } = await runReconcile();
     return { kinds: kinds.map((k) => [k.kind, k.status]), notices, retained };
   }, { connection: getBullMQConnection(), concurrency: 1 });

@@ -6,8 +6,9 @@
  * services/connectionHealth/digest.ts.
  */
 import { Queue, Worker } from 'bullmq';
-import { getBullMQConnection } from '../services/redis';
+import { getBullMQConnection, getRedis } from '../services/redis';
 import { runDigest } from '../services/connectionHealth/digest';
+import { writeDigestHeartbeat } from '../services/connectionHealth/heartbeat';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -24,7 +25,13 @@ export function getConnectionHealthDigestQueue(): Queue {
 
 export async function initializeConnectionHealthDigestWorker(): Promise<void> {
   if (worker) return;
-  worker = new Worker(CONNECTION_HEALTH_DIGEST_QUEUE, async () => runDigest(), {
+  worker = new Worker(CONNECTION_HEALTH_DIGEST_QUEUE, async () => {
+    const result = await runDigest();
+    // Dead-man for /admin/system (W4): written only after a completed run;
+    // never fails the job.
+    await writeDigestHeartbeat(getRedis(), new Date());
+    return result;
+  }, {
     connection: getBullMQConnection(),
     concurrency: 1,
   });

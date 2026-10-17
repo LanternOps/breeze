@@ -86,6 +86,24 @@ describe('runReconcile', () => {
     expect(runKind).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'a' }), plusMin(T0, 15), false);
   });
 
+  it('nudge mode runs the kind even when not due, delivers notices, and skips retention and the heartbeat (W4)', async () => {
+    const redis = fakeRedis();
+    const runKind = vi.fn().mockResolvedValue(okCounts);
+    const retention = vi.fn(async () => 0);
+    const deliver = vi.fn(async () => ({ delivered: 1, failed: 0, zeroRecipients: 0 }));
+    await runReconcile({ sources: [src('a', 60)], redis, runKind, now: () => T0, ...noops });
+    redis.store.delete('connection-health:reconcile:heartbeat');
+    const r = await runReconcile({
+      sources: [src('a', 60)], redis, runKind, now: () => plusMin(T0, 2), mode: 'nudge', deliver, retention, alert: async () => true,
+    });
+    expect(r.kinds[0]!.status).toBe('ok');
+    expect(runKind).toHaveBeenCalledTimes(2);
+    expect(runKind).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'a' }), plusMin(T0, 2), false);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(retention).not.toHaveBeenCalled();
+    expect(redis.store.has('connection-health:reconcile:heartbeat')).toBe(false);
+  });
+
   it('skips a kind whose interval has not elapsed', async () => {
     const redis = fakeRedis();
     const runKind = vi.fn().mockResolvedValue(okCounts);

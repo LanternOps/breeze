@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
 import { sendOpsAlert } from '../opsAlerts';
 import { getRedis } from '../redis';
+import { kindStateKey, RECONCILE_HEARTBEAT_KEY, RECONCILE_HEARTBEAT_TTL_S } from './heartbeat';
 import { deliverPendingNotices, type DeliveryCounts } from './notifier';
 import { HEALTH_SOURCES } from './sources';
 import { applyActions, deleteExpiredResolved, hasIncidentsForKind, loadTracked } from './store';
@@ -28,9 +29,7 @@ const RUN_BUDGET_MS = 60_000;
 const FAILURE_ALERT_AT = 3;
 // A 15-minute kind must stay due on every 15-minute tick despite job jitter.
 const DUE_SLACK_MS = 30_000;
-const HEARTBEAT_KEY = 'connection-health:reconcile:heartbeat';
-const HEARTBEAT_TTL_S = 3600;
-const key = (kind: string, k: 'last-ok' | 'seeded' | 'failures') => `connection-health:kind:${kind}:${k}`;
+const key = kindStateKey;
 
 type KindCounts = { opened: number; resolved: number; pending: number; observations: number; seeded?: boolean };
 /** runKind's result when another run holds the kind's advisory lock. */
@@ -58,6 +57,13 @@ export type ReconcileDeps = {
   deliver: (now: Date) => Promise<DeliveryCounts>;
   retention: (now: Date) => Promise<number>;
   alert: (msg: { title: string; body: string }) => Promise<boolean>;
+  /**
+   * 'scheduled' (the 15-minute repeatable): due kinds, then notices, retention
+   * and the heartbeat. 'nudge' (W4, a reconcile-kind job): every given source
+   * runs whatever its cadence, then notices; no retention, and no heartbeat, so
+   * nudges can never make a dead schedule look alive.
+   */
+  mode: 'scheduled' | 'nudge';
 };
 
 export type KindResult = {
@@ -121,6 +127,7 @@ function resolveDeps(overrides: Partial<ReconcileDeps>): ReconcileDeps {
       'connectionHealth.retention',
     ))),
     alert: overrides.alert ?? sendOpsAlert,
+    mode: overrides.mode ?? 'scheduled',
   };
 }
 
@@ -201,10 +208,11 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
     source,
     state: await readKindState(d.redis, source, started),
   })));
-  const due = states.filter((k) => k.state.due);
+  // A nudge asked for these kinds now: their cadence does not apply.
+  const due = states.filter((k) => d.mode === 'nudge' || k.state.due);
   due.sort((a, b) => a.state.lastOk - b.state.lastOk);
   for (const k of states) {
-    if (!k.state.due) kinds.push({ kind: k.source.kind, status: 'skipped_not_due', durationMs: 0 });
+    if (!due.includes(k)) kinds.push({ kind: k.source.kind, status: 'skipped_not_due', durationMs: 0 });
   }
 
   for (const { source, state } of due) {
@@ -245,10 +253,12 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
   } catch (err) {
     failures.push({ step: 'deliver', err });
   }
-  try {
-    retained = await d.retention(d.now());
-  } catch (err) {
-    failures.push({ step: 'retention', err });
+  if (d.mode === 'scheduled') {
+    try {
+      retained = await d.retention(d.now());
+    } catch (err) {
+      failures.push({ step: 'retention', err });
+    }
   }
 
   const finished = d.now();
@@ -256,6 +266,7 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
   const skippedLocked = kinds.filter((k) => k.status === 'skipped_locked').length;
   const summary = {
     event: 'connection_health_reconcile',
+    mode: d.mode,
     durationMs: finished.getTime() - started.getTime(),
     kinds,
     notices,
@@ -270,9 +281,9 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
 
   if (failures.length) throw failures[0]!.err;
 
-  if (d.redis) {
+  if (d.redis && d.mode === 'scheduled') {
     const redis = d.redis;
-    await tryRedis('heartbeat', () => redis.set(HEARTBEAT_KEY, finished.toISOString(), 'EX', HEARTBEAT_TTL_S), null);
+    await tryRedis('heartbeat', () => redis.set(RECONCILE_HEARTBEAT_KEY, finished.toISOString(), 'EX', RECONCILE_HEARTBEAT_TTL_S), null);
   }
   return { kinds, notices, retained };
 }
