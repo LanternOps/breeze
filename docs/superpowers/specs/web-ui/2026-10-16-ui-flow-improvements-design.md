@@ -187,8 +187,9 @@ option B). The status badge leaves the rows; the panel becomes two columns at
     expected to switch the working org"). Each one calls
     `applyOrgSwitch(org.id, toast, target)`; the `destination` argument
     bypasses the redirect table, so an org-record target is not bounced to
-    `/organizations`. A destination that matches the current org and page is
-    a plain navigation (no toast). Destination visibility mirrors the org
+    `/organizations`. A destination for the org already selected is a plain
+    navigation with no toast (plan amendment, W02: a "Switched to X" toast
+    when nothing switched would be false). Destination visibility mirrors the org
     record's `visibleTabs` gating exactly: permission **and**
     `serviceManagementMode` (Tickets hidden when the module is `off`, Billing
     hidden when `off` or `external`), so the pane never offers a door the
@@ -346,7 +347,10 @@ Uses `stores/recentsStore.ts` as is, except `MAX_RECENT_DEVICES` and
 5. Sidebar Recent becomes a top-level group under Dashboard, replacing the
    nested recent-devices list.
 6. Search grammar and trigger hover card are deferred.
-7. `EntityLink` always stops propagation.
+7. `EntityLink` always stops propagation. Plan amendment (W04): because
+   React's `stopPropagation` also hides the click from Astro's `<ClientRouter>`,
+   the link soft-navigates itself on a plain primary click and leaves
+   modified clicks (cmd/ctrl/shift/alt, middle) to the browser.
 8. Pane destinations are gated like the org record's tabs (permission and
    service-management mode), not permission alone.
 9. Recent shows only items with a name (records) plus devices; hub pages are
