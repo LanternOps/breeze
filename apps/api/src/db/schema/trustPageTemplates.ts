@@ -9,7 +9,7 @@ import { users } from './users';
  * the built-in default); `introHtml: ''` = explicitly no intro. Resolution is page → template → built-in default
  * (`resolveEffectiveTrustSettings` in @breeze/shared), frozen into `trust_pages.published_config` at publish.
  *
- * RLS shape 3 (partner-axis), created in apps/api/migrations/2026-12-30-120500-trust-page-templates.sql, which is
+ * RLS shape 3 (partner-axis), created in apps/api/migrations/2026-12-30-120900-trust-page-templates.sql, which is
  * the authority for the CHECK constraints (intro ≤ 40000 chars, revision ≥ 0) and the RLS policy. No org_id: the
  * only registration is PARTNER_TENANT_TABLES; partner erasure reaches it through the partner_id sweep.
  */

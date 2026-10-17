@@ -1,4 +1,4 @@
--- apps/api/migrations/2026-12-30-120500-trust-page-templates.sql
+-- apps/api/migrations/2026-12-30-120900-trust-page-templates.sql
 -- Trust Center W2, sub-wave W02g (#8770, spec trust-center/2026-10-12 §18.8, §19 item 33):
 -- the partner-wide trust page template. One row per partner holds the partner's default for every
 -- inheritable trust page setting; NULL in a column means "not set here" and the setting falls through
