@@ -18,7 +18,9 @@ describe('app shell 11px floor (#9031)', () => {
     expect(src).not.toMatch(/text-\[10px\]/);
     // text-muted-foreground on bg-muted measured 4.2:1 (light theme).
     // text-foreground/70 on bg-muted is ~8:1 light, ~8.5:1 dark.
-    expect(src).not.toMatch(/bg-muted[^'"`]*text-muted-foreground/);
-    expect(src).not.toMatch(/text-muted-foreground[^'"`]*bg-muted/);
+    // (bg-muted must be the plain surface class — not hover:bg-muted/40.)
+    const plainBgMuted = String.raw`(?<![:\w/-])bg-muted(?![\w/-])`;
+    expect(src).not.toMatch(new RegExp(`${plainBgMuted}[^'"\`]*text-muted-foreground`));
+    expect(src).not.toMatch(new RegExp(`text-muted-foreground[^'"\`]*${plainBgMuted}`));
   });
 });

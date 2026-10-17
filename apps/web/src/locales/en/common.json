@@ -2656,7 +2656,8 @@
     "dismiss": "Dismiss two-factor authentication reminder"
   },
   "mfaPolicyOffBanner": {
-    "message": "Multi-factor authentication is not required for your team. Password-only sessions can run scripts, move devices and change policies.",
+    "label": "MFA reminder",
+    "message": "MFA isn't required for your team. Password-only sessions can run scripts.",
     "cta": "Require MFA",
     "dismiss": "Dismiss the MFA policy reminder for today"
   },

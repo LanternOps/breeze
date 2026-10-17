@@ -2656,7 +2656,8 @@
     "dismiss": "Dispensar lembrete de autenticação de dois fatores"
   },
   "mfaPolicyOffBanner": {
-    "message": "A autenticação multifator não é obrigatória para a sua equipe. Sessões apenas com senha podem executar scripts, mover dispositivos e alterar políticas.",
+    "label": "Lembrete de MFA",
+    "message": "A MFA não é obrigatória para sua equipe. Sessões só com senha podem executar scripts.",
     "cta": "Exigir MFA",
     "dismiss": "Dispensar o lembrete da política de MFA por hoje"
   },
