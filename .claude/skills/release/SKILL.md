@@ -177,6 +177,31 @@ git -C ~/breeze log --format="%B" -1 <SHA>   # expand a squash-merge body
 
 Skip from user-facing notes: `chore(deps):`, `chore:`, `ci:`/`fix(ci):`, internal `refactor:`, internal `docs:`/`test:`. Keep anything a self-hoster or operator would notice.
 
+### Feature-coverage check (do this before writing a single bullet)
+
+Big features are the ones most likely to fall out of the headline bullets, because
+they land as five or ten wave PRs with titles like `feat(x): W02 — …` and no single
+commit says "feature X shipped". v0.123.0 shipped Trust Center (three wave PRs) and
+the body listed it under Added only; the Summary, the marketing notes and the Discord
+post all missed it until the owner noticed. So enumerate features first, commits second:
+
+```bash
+# Every wave PR in the range, grouped by its feature parent (the issue in parentheses)
+git -C ~/breeze log --format='%s' $PREV..$NEW | grep -E '^feat' | grep -E ' W[0-9]+[ A-Za-z0-9-]* — | wave ' \
+  | sed -E 's/.*\(#([0-9]+)\) \(#([0-9]+)\)$/\1 \2 &/' | sort -n
+# Feature parents whose waves closed in the range (GitHub is the source of truth, not the plan doc)
+gh issue list -R lanternops/breeze --label feature --state all --search "closed:>=<PREV release date>" --json number,title,state
+```
+
+For every feature parent with at least one wave merged in the range, decide
+explicitly: **Summary bullet** (a buyer or technician would notice it, even if only
+the first wave shipped: say "first release" and what is still to come), **Added /
+Improved only** (plumbing a technician sees but would not buy), or **omit** (internal).
+Write the decision down in the release scratchpad; the same list drives the What's New
+entry (Step 0.4), the marketing notes (Step 3) and the Discord post (Step 5), so a
+feature cannot appear in one and vanish from the others. A feature that is in the
+Summary is in all four.
+
 ## Step 2 — Write the GitHub Release body
 
 The GitHub Release is the **operator/self-hoster source of truth**. Model the body on the most recent release for structure and tone:
