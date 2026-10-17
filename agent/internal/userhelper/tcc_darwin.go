@@ -9,37 +9,6 @@ package userhelper
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdbool.h>
 
-// checkScreenRecording returns true if screen capture access is granted.
-// First tries CGPreflightScreenCaptureAccess() (available since macOS 10.15).
-// On macOS 26 (Tahoe) this API may return false even when permission is granted,
-// so we fall back to a real capture probe via CGWindowListCreateImage (resolved
-// at runtime via dlsym since the SDK marks it unavailable in macOS 15+).
-#include <dlfcn.h>
-typedef CGImageRef (*CGWindowListCreateImageFunc)(CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption);
-static bool checkScreenRecording(void) {
-	if (CGPreflightScreenCaptureAccess()) {
-		return true;
-	}
-	// Preflight returned false — probe with a real capture to handle macOS 26+.
-	// Resolve CGWindowListCreateImage at runtime (marked unavailable in SDK 15+).
-	static CGWindowListCreateImageFunc fn = NULL;
-	static bool resolved = false;
-	if (!resolved) {
-		fn = (CGWindowListCreateImageFunc)dlsym(RTLD_DEFAULT, "CGWindowListCreateImage");
-		resolved = true;
-	}
-	if (fn == NULL) {
-		return false;
-	}
-	CGRect onePixel = CGRectMake(0, 0, 1, 1);
-	CGImageRef img = fn(onePixel, kCGWindowListOptionOnScreenOnly, kCGNullWindowID, kCGWindowImageDefault);
-	if (img != NULL) {
-		CGImageRelease(img);
-		return true;
-	}
-	return false;
-}
-
 // requestScreenRecording triggers the macOS system prompt asking the user
 // to grant Screen Recording permission if not already granted. Returns true
 // if permission was already granted. This calls CGRequestScreenCaptureAccess()
@@ -124,17 +93,29 @@ const screenRecordingRequestInterval = 24 * time.Hour
 // CheckTCCPermissions probes macOS TCC permissions. On the first call,
 // triggers the accessibility system prompt; subsequent calls check silently.
 func CheckTCCPermissions(desktopContext string) *ipc.TCCStatus {
-	return checkTCCPermissions(desktopContext, true, true, nil)
+	return checkTCCPermissions(desktopContext, true, true)
 }
 
 // ProbeTCCPermissions returns the current macOS TCC state for the selected
 // desktop context. When allowPrompt is false the check is read-only and will
-// not trigger the Accessibility consent flow.
-func ProbeTCCPermissions(desktopContext string, allowPrompt bool, allowCaptureProbe bool) *ipc.TCCStatus {
-	return checkTCCPermissions(desktopContext, allowPrompt, allowCaptureProbe, nil)
+// not trigger the Accessibility consent flow. reportRemoteDesktop fills
+// TCCStatus.RemoteDesktop from the same non-capturing check; the CLI probe
+// passes false and fills it from its own, explicit capture.
+func ProbeTCCPermissions(desktopContext string, allowPrompt bool, reportRemoteDesktop bool) *ipc.TCCStatus {
+	return checkTCCPermissions(desktopContext, allowPrompt, reportRemoteDesktop)
 }
 
-func checkTCCPermissions(desktopContext string, allowPrompt bool, allowCaptureProbe bool, lastRemoteDesktop *bool) *ipc.TCCStatus {
+// captureAccessFn is the non-capturing Screen Recording check (#8390), a
+// seam so the loop and the consent gate can be tested without TCC state.
+var captureAccessFn = func(desktopContext string) desktop.CaptureAccessReport {
+	return desktop.CheckCaptureAccess(desktop.CaptureConfig{DesktopContext: normalizedDesktopContext(desktopContext)})
+}
+
+// checkTCCPermissions never captures the screen (#8390): on macOS 15 any
+// capture, even a one-pixel CoreGraphics probe, can put the monthly
+// screen-capture acknowledgement alert in front of the user, and this runs
+// on every helper start and every loop tick.
+func checkTCCPermissions(desktopContext string, allowPrompt bool, reportRemoteDesktop bool) *ipc.TCCStatus {
 	accessibilityPromptedMu.Lock()
 	var accessibility bool
 	if allowPrompt && !accessibilityPrompted {
@@ -145,17 +126,19 @@ func checkTCCPermissions(desktopContext string, allowPrompt bool, allowCapturePr
 	}
 	accessibilityPromptedMu.Unlock()
 
-	remoteDesktop := cloneBoolPtr(lastRemoteDesktop)
-	if allowCaptureProbe {
-		remoteDesktop = probeRemoteDesktopPermission(desktopContext)
+	access := captureAccessFn(desktopContext)
+	var remoteDesktop *bool
+	if reportRemoteDesktop {
+		remoteDesktop = boolPtr(access.CanCapture())
 	}
 
 	return &ipc.TCCStatus{
-		ScreenRecording: bool(C.checkScreenRecording()),
-		Accessibility:   accessibility,
-		FullDiskAccess:  probeFullDiskAccess(),
-		RemoteDesktop:   remoteDesktop,
-		CheckedAt:       time.Now().UTC(),
+		ScreenRecording:      access.CanCapture(),
+		ScreenRecordingState: access.State.String(),
+		Accessibility:        accessibility,
+		FullDiskAccess:       probeFullDiskAccess(),
+		RemoteDesktop:        remoteDesktop,
+		CheckedAt:            time.Now().UTC(),
 	}
 }
 
@@ -167,12 +150,8 @@ func RequestScreenRecording() bool {
 	return bool(C.requestScreenRecording())
 }
 
-// Indirection seams for the two CoreGraphics entry points the consent policy
-// depends on, so the policy can be exercised in tests without real TCC state.
-var (
-	screenRecordingGrantedFn = func() bool { return bool(C.checkScreenRecording()) }
-	requestScreenRecordingFn = RequestScreenRecording
-)
+// requestScreenRecordingFn is a seam over the prompting API.
+var requestScreenRecordingFn = RequestScreenRecording
 
 // maybeRequestScreenRecording raises the macOS Screen Recording consent dialog
 // only when it can actually help. CGRequestScreenCaptureAccess() shows the
@@ -181,17 +160,26 @@ var (
 // (re)start — every kickstart, and once per respawn in the exit-1 loop from
 // #4194 (#4327). Two gates:
 //
-//  1. If the non-prompting probe (CGPreflightScreenCaptureAccess, with the
-//     macOS 26 capture fallback) already reports access, never ask.
+//  1. Only a known denial asks. A grant never does. An unknown state (macOS
+//     26+, where preflight can report false while the grant is present and
+//     nothing else could decide, #8390) does not either: asking there would
+//     put the dialog up daily on a host that may already be granted, and a
+//     session's ScreenCaptureKit open raises the system prompt itself when
+//     the grant really is missing.
 //  2. Otherwise ask at most once per screenRecordingRequestInterval per user,
 //     recorded in a marker file, so a fresh install still gets its consent
 //     dialog but a respawning helper cannot storm the user with them.
 //
 // A marker we cannot read or write fails open (we prompt), matching the FDA
 // guidance marker: gate 1 already stops the reported re-prompt on its own.
-func maybeRequestScreenRecording(markerPath string, now time.Time) {
-	if screenRecordingGrantedFn() {
+func maybeRequestScreenRecording(desktopContext, markerPath string, now time.Time) {
+	access := captureAccessFn(desktopContext)
+	if access.Granted() {
 		log.Debug("Screen Recording already granted — not raising the consent dialog")
+		return
+	}
+	if !access.Denied() {
+		log.Debug("Screen Recording access unverified — not raising the consent dialog", "reason", access.Reason)
 		return
 	}
 	if !screenRecordingRequestDue(markerPath, now) {
@@ -252,9 +240,9 @@ func probeFullDiskAccess() bool {
 // then re-checks at a fast interval while permissions are missing, switching to
 // the slower interval once all are granted.
 //
-// Only the desktop helper prompts or runs the capture probe (tccLoopPolicyFor),
-// and that probe never calls ScreenCaptureKit (#8058).
-func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string, canProbe func() bool) {
+// Only the desktop helper prompts (tccLoopPolicyFor), and no check captures
+// the screen (#8058, #8390).
+func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, binaryKind string) {
 	policy := tccLoopPolicyFor(binaryKind)
 	startedAt := time.Now()
 	var seq uint64
@@ -262,12 +250,10 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 	allGranted := false
 	wasAllGranted := false
 	firstCheck := true
-	var lastRemoteDesktop *bool
 	promptFile := tccPromptFilePath()
 
 	check := func() {
-		status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.allowCaptureProbe(canProbe), lastRemoteDesktop)
-		lastRemoteDesktop = cloneBoolPtr(status.RemoteDesktop)
+		status := checkTCCPermissions(desktopContext, policy.promptAccessibility, policy.reportRemoteDesktop)
 		allGranted = len(missingPermissions(status)) == 0
 		if err := sendTCCStatus(conn, status, &seq); err != nil {
 			consecutiveFailures++
@@ -297,7 +283,7 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 		firstCheck = false
 	}
 
-	requestScreenRecordingAtLoopStart(policy, screenRecordingMarkerPath(), time.Now())
+	requestScreenRecordingAtLoopStart(policy, desktopContext, screenRecordingMarkerPath(), time.Now())
 
 	// Immediate first check (sends full TCC status to the service)
 	check()
@@ -340,9 +326,9 @@ func RunTCCCheckLoop(conn *ipc.Conn, stopChan chan struct{}, desktopContext, bin
 
 // requestScreenRecordingAtLoopStart raises the Screen Recording consent
 // dialog at loop start, only for a helper whose policy allows it.
-func requestScreenRecordingAtLoopStart(policy tccLoopPolicy, markerPath string, now time.Time) {
+func requestScreenRecordingAtLoopStart(policy tccLoopPolicy, desktopContext, markerPath string, now time.Time) {
 	if policy.requestScreenRecording {
-		maybeRequestScreenRecording(markerPath, now)
+		maybeRequestScreenRecording(desktopContext, markerPath, now)
 	}
 }
 
@@ -413,36 +399,8 @@ func normalizedDesktopContext(desktopContext string) string {
 	return ipc.DesktopContextUserSession
 }
 
-// probeRemoteDesktopPermission runs the permission-check capture probe. It
-// never calls ScreenCaptureKit: desktop.ProbeCaptureAccess keeps permission
-// checks on CoreGraphics (#8058).
-func probeRemoteDesktopPermission(desktopContext string) *bool {
-	granted, err := desktop.ProbeCaptureAccess(desktop.CaptureConfig{
-		DesktopContext: normalizedDesktopContext(desktopContext),
-	})
-	if err == nil {
-		return boolPtr(granted)
-	}
-	if errors.Is(err, desktop.ErrPermissionDenied) {
-		return boolPtr(false)
-	}
-
-	log.Debug("desktop capture probe inconclusive",
-		"context", normalizedDesktopContext(desktopContext),
-		"error", err.Error())
-	return nil
-}
-
 func boolPtr(v bool) *bool {
 	return &v
-}
-
-func cloneBoolPtr(v *bool) *bool {
-	if v == nil {
-		return nil
-	}
-	copied := *v
-	return &copied
 }
 
 // tccPromptFilePath returns the path to the marker file that tracks whether

@@ -148,16 +148,18 @@ func runDesktopHelper() {
 	// written.
 	logging.EmitLogFileOutcome(log, logPath, openErr, mkdirErr, homeErr)
 
-	// A permission check like any other: one CoreGraphics capture, never
-	// ScreenCaptureKit (#8058). It used to run ScreenCaptureKit twice on
-	// every helper start.
-	startupProbe := collectProbeOutput(probeOptions{capture: true})
+	// A permission check like any other: it never captures (#8390) and never
+	// calls ScreenCaptureKit (#8058). It used to take a real frame on every
+	// helper start, which on macOS 15 raised the monthly acknowledgement alert.
+	startupProbe := collectProbeOutput(startupProbeOptions())
 	attrs := []any{
 		"context", startupProbe.Context,
 		"processUser", startupProbe.ProcessUser,
-		"captureGranted", startupProbe.CaptureGranted,
 		"pid", os.Getpid(),
 		"version", version,
+	}
+	if a := startupProbe.CaptureAccess; a != nil {
+		attrs = append(attrs, "captureAccess", a.State, "captureAccessReason", a.Reason, "canCapture", a.CanCapture)
 	}
 	if startupProbe.CaptureError != "" {
 		attrs = append(attrs, "captureError", startupProbe.CaptureError)
@@ -208,9 +210,8 @@ func runDesktopHelper() {
 	// session. Until that happened the device reported
 	// desktopAccess.reason = "helper_not_connected" while showing as online.
 	//
-	// Keeping the process alive also means the startup capture probe above
-	// runs once per login session rather than once per IPC blip, which stops
-	// reconnects from re-firing the macOS Screen Recording prompt.
+	// Keeping the process alive also means the startup probe above runs once
+	// per login session rather than once per IPC blip.
 	sup := &userhelper.Supervisor{
 		Name:   "desktop helper",
 		Policy: desktopHelperReconnectPolicy(),
