@@ -57,7 +57,7 @@ export function ToolIndicator({ toolName, state, isError, output, handoff, input
   // An approval handoff is the user's own decision landing, so it gets the
   // brand colour — the same one the approval takeover uses — not deny-red.
   const color =
-    status === 'approved' ? theme.brand : status === 'completed' ? theme.textLo : theme.deny;
+    status === 'approved' ? theme.brand : status === 'completed' || status === 'expired' ? theme.textLo : theme.deny;
 
   const caption = (
     <Text style={[type.metaCaps, { color }]} numberOfLines={1}>

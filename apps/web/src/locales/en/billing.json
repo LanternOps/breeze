@@ -2050,7 +2050,10 @@
       "syncingToProvider": "Syncing…",
       "providerSyncFailed": "{{provider}} sync failed",
       "reverseInProviderToo": "Reverse this in {{provider}} too",
-      "overpayment": "Amount is more than the balance due ({{balance}})."
+      "overpayment": "Amount is more than the balance due ({{balance}}).",
+      "fillLabel": "Fill amount",
+      "fillDeposit": "Deposit ({{amount}})",
+      "fillBalance": "Full balance ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Invoice sent",
@@ -2065,7 +2068,8 @@
       "paid": "Paid",
       "subtotal": "Subtotal",
       "tax": "Tax",
-      "total": "Total"
+      "total": "Total",
+      "depositDueNow": "Deposit due now"
     },
     "terms": "Terms & Conditions",
     "void": {

@@ -7,6 +7,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+const trustServing = vi.hoisted(() => ({ scheduleServingRefreshForPartner: vi.fn() }));
+vi.mock('../services/trustPage/servingSet', () => trustServing);
 
 const { orgRows } = vi.hoisted(() => ({
   orgRows: {
@@ -528,6 +530,24 @@ describe('org archive routes', () => {
   // by re-reading partner_users.org_ids). Archive/restore did not — so a tech
   // whose selection excludes customer C could drain C's fleet and schedule its
   // permanent erasure, or undo an archive their admin started.
+  // Ruling 26 (I11): archive/restore change the org's status, so its partner's trust serving set is refreshed.
+  describe('trust page serving-set refresh', () => {
+    it('archive schedules a refresh for the target org\'s partner', async () => {
+      expect((await postJson(`/orgs/organizations/${ORG_ID}/archive`, { retentionDays: 30 })).status).toBe(202);
+      expect(trustServing.scheduleServingRefreshForPartner).toHaveBeenCalledWith(PARTNER_ID, 'organization.archive');
+    });
+    it('restore schedules a refresh for the target org\'s partner', async () => {
+      orgRows.current[0]!.status = 'archived';
+      expect((await postJson(`/orgs/organizations/${ORG_ID}/restore`, {})).status).toBe(200);
+      expect(trustServing.scheduleServingRefreshForPartner).toHaveBeenCalledWith(PARTNER_ID, 'organization.restore');
+    });
+    it('a refused archive schedules nothing', async () => {
+      beginOrgArchiveMock.mockRejectedValueOnce(new RangeError('bad retention'));
+      expect((await postJson(`/orgs/organizations/${ORG_ID}/archive`, { retentionDays: 30 })).status).toBe(400);
+      expect(trustServing.scheduleServingRefreshForPartner).not.toHaveBeenCalled();
+    });
+  });
+
   describe('org_access=selected boundary', () => {
     it.each(['archive', 'restore'])(
       '404s %s for a same-partner org outside the selection',

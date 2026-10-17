@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "PortalURL"
+        "portalUrl": "PortalURL",
+        "endpointMessaging": "Endpunkt-Nachrichten",
+        "endpointMessagingHelp": "Ermöglicht Technikern, Nachrichten an die Person am Gerät zu senden.",
+        "allowUserReply": "Antworten des Benutzers zulassen",
+        "allowUserReplyHelp": "Erlaubt der Person am Gerät, in einem von einem Techniker gestarteten Chat zu antworten. Ist die Option aus, sind Chats einseitig."
       },
       "inlineEntityPicker": {
         "search": "Suchen...",
@@ -1121,6 +1125,22 @@
         "aboutTitle": "Über die Systemwiederherstellung",
         "aboutBody": "Gilt nur für Windows-Geräte. Die Systemwiederherstellung umfasst Systemdateien, die Registrierung, installierte Programme und Einstellungen. Sie ist keine Sicherung und umfasst keine persönlichen Dateien. Windows erlaubt standardmäßig höchstens einen Wiederherstellungspunkt pro 24 Stunden, und ein erstellter Punkt kann später von Windows entfernt werden oder unbrauchbar werden."
       },
+      "securityAgentsTab": {
+        "title": "Sicherheitsagenten",
+        "description": "Verwaltete Sicherheitsagenten auf Geräten bereitstellen und installiert halten",
+        "deployVendor": "{{vendor}} bereitstellen",
+        "comingSoon": "Demnächst verfügbar",
+        "platformWindows": "Windows: wird automatisch installiert.",
+        "platformMacos": "macOS: erfordert MDM-Genehmigung, daher installiert Breeze den Agenten nicht automatisch. Diese Geräte werden als nicht zutreffend angezeigt.",
+        "platformLinux": "Linux: nicht unterstützt.",
+        "keysNotice": "Installationen verwenden die kundenspezifischen Schlüssel aus der Huntress-Integration. Organisationen, die in dieser Integration nicht zugeordnet sind, werden übersprungen und als nicht zutreffend angezeigt, ohne fehlgeschlagene Bereitstellungen. Das Deaktivieren eines Anbieters beendet die Durchsetzung, deinstalliert den Agenten aber nie.",
+        "closerWarning": "Eine näher am Gerät zugewiesene Konfigurationsrichtlinie (Standort, Gruppe oder Gerät bzw. eine erbende untergeordnete Richtlinie) mit eigenen Einstellungen für Sicherheitsagenten ersetzt diese Einstellungen für diese Geräte vollständig. Ein dort ausgelassener Anbieter wird nicht durchgesetzt.",
+        "partnerWideBadge": "Gilt für alle Organisationen",
+        "noneEnabledNote": "Kein Anbieter aktiviert: Geräte, die diese Richtlinie erreicht, sind von allen Sicherheitsagenten ausgenommen.",
+        "catalogMissing": "Huntress ist für diesen Partner noch nicht eingerichtet. Verbinden Sie zuerst die Huntress-Integration und speichern Sie dann erneut.",
+        "catalogMissingLink": "Huntress verbinden",
+        "executeRequired": "Zum Aktivieren von Installationen ist die Berechtigung zum Ausführen von Befehlen auf Geräten (mit MFA) erforderlich. Bitten Sie einen Administrator mit dieser Berechtigung, diese Einstellung zu speichern."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Bei Garantiebenachrichtigungen handelt es sich um eine Opt-In-Funktion: Geräte, denen keine Garantierichtlinie zugewiesen ist, erhalten keine Warnung. Die unten aufgeführten Schwellenwerte gelten nur für den befristeten Versicherungsschutz – aktive AppleCare-Abonnements verlängern sich und laufen nicht ab, daher werden Ablaufwarnungen immer unterdrückt.",
         "enableWarrantyExpiryAlerts": "Aktivieren Sie Garantieablaufwarnungen",
@@ -1339,7 +1359,9 @@
       "installSkippedNoCatalog": "Eine erforderliche Regel hat keinen verknüpften Katalogeintrag, daher gibt es nichts zu installieren. Fügen Sie im Richtlinien-Editor eine Katalogverknüpfung hinzu, um dies zu beheben.",
       "installSkippedCapOrPlatform": "Kein Fehler — entweder wurde die Installationsobergrenze pro Durchlauf erreicht, oder für die Plattform dieses Geräts gibt es keine Installationsmethode für die Software. Wird eventuell im nächsten Durchlauf erneut versucht.",
       "installAttempts": "{{count}} Versuch(e)",
-      "installLastAttempt": "Letzter Installationsversuch: "
+      "installLastAttempt": "Letzter Installationsversuch: ",
+      "managedByConfigPolicy": "Von Konfigurationsrichtlinie verwaltet",
+      "managedByConfigPolicyHint": "Diese Richtlinie wird aus einer Konfigurationsrichtlinie erzeugt und ist hier schreibgeschützt. Ändern Sie sie unter Konfigurationsrichtlinien."
     },
     "deploymentList": {
       "running": "Wird ausgeführt",

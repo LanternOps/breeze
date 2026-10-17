@@ -216,6 +216,24 @@ curl "/api/v1/devices/:deviceId/diagnostic-logs?level=warn,error&component=patch
 
 ---
 
+## Log-Shipping Health
+
+From v0.123.0 the agent reports in each heartbeat whether its log uploads are working, so a device that has quietly stopped shipping logs is visible without opening its logs. Agents older than v0.123.0 report nothing, and no health line is shown for them.
+
+**Device detail.** The device **Info** tab shows a **Log shipping** line:
+
+| State | Meaning |
+|---|---|
+| **Healthy** | The agent is uploading its logs normally. |
+| **Quiet** | The agent has no recent upload attempt to report (an attempt's result is reported for 15 minutes). This is not a fault. |
+| **Failing** | The last upload failed, logs were dropped since the last good report, or the agent's upload queue is nearly full. The tooltip gives the time it started and the reason, for example *The server returned HTTP 503*, *The request timed out*, *The secure connection failed* or *The server rejected the agent credentials*. |
+
+**After raising the log level.** If you raised a device's log level to `debug` or `info` more than five minutes ago and no logs have arrived since, the Info tab adds *No logs received since the log level was raised (…)*. It is shown only while the device is online and the raised level is still in effect.
+
+**Fleet view.** On the Devices page, the **Log Shipping Failing** quick-filter chip (or the `logShippingFailing` filter field) lists online devices whose uploads have been failing for at least 30 minutes. The same count is returned as `logShippingFailingCount` by `GET /devices/stats`. Because the field comes from the agent's own report, it cannot be used to target scripts, automations, policies or dynamic groups. See [Filters and Search](/reference/filters-and-search/).
+
+---
+
 ## Dropped Log Monitoring
 
 When the agent's buffer is full (500 entries), new log entries are dropped. The agent tracks dropped entries and reports the count in each heartbeat. After a successful heartbeat, the counter resets to zero.

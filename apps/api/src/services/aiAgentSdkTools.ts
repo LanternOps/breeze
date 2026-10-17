@@ -22,6 +22,7 @@ import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
@@ -39,6 +40,7 @@ import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTI
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
+import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
@@ -46,6 +48,9 @@ import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelatio
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler,
+  m365RevokeSessionsHandler, m365RemoveLicenseHandler, m365AssignLicenseHandler,
+  m365RemoveFromGroupHandler, m365AddToGroupHandler, m365RetireIntuneDeviceHandler,
+  m365CreateUserHandler, m365SetAutoReplyHandler,
 } from './aiToolsM365';
 import {
   googleLookupUserHandler, googleResetPasswordHandler, googleSuspendUserHandler,
@@ -182,6 +187,8 @@ export type PostToolUseCallback = (
 // ============================================
 
 export const TOOL_TIERS = {
+  // #8742. Base tier 3: `send` is always human-approved; list/get downgrade to 1 in aiGuardrails.
+  send_endpoint_message: 3,
   list_time_entries: 1,
   get_running_timer: 1,
   get_timesheet: 1,
@@ -211,6 +218,7 @@ export const TOOL_TIERS = {
   list_edr_detections: 1,
   s1_isolate_device: 3,
   edr_endpoint_action: 3,
+  sync_edr_data: 2,
   s1_threat_action: 3,
   sync_huntress_data: 2,
   execute_command: 3,
@@ -298,6 +306,8 @@ export const TOOL_TIERS = {
   export_dataset: 1,
   // A-W05 (D13a): reads only the caller's own already-captured artifacts.
   read_artifact: 1,
+  // Trust Center W2 (Ruling 15): read-only page status; publish/edit stay human-attested.
+  get_trust_page_status: 1,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -461,6 +471,15 @@ export const TOOL_TIERS = {
   m365_list_group_memberships: 1,
   m365_disable_user: 3,
   m365_reset_password: 3,
+  // M365 control-plane identity writes (Operator Recipe Library M1) — session-only
+  m365_revoke_sessions: 3,
+  m365_remove_license: 3,
+  m365_assign_license: 3,
+  m365_remove_from_group: 3,
+  m365_add_to_group: 3,
+  m365_retire_intune_device: 3,
+  m365_create_user: 3,
+  m365_set_auto_reply: 3,
   // M365 typed Graph read-query tools (Task 9) — registered in the shared
   // `aiTools` map (see aiToolsM365.ts's registerM365Tools) and executed via
   // makeHandler/executeTool like list_organizations, not session-aware.
@@ -610,6 +629,14 @@ export const SESSION_TOOL_DESCRIPTIONS = {
   m365_list_group_memberships: 'List the groups in the customer tenant selected for this session.',
   m365_disable_user: 'Disable (block sign-in for) a Microsoft 365 user on the customer tenant selected for this session. Requires approval.',
   m365_reset_password: 'Reset the password for a Microsoft 365 user on the customer tenant selected for this session. Returns a temporary password the user must change at next sign-in. Requires approval.',
+  m365_revoke_sessions: 'Revoke all sign-in sessions and refresh tokens for a Microsoft 365 user. Requires approval.',
+  m365_remove_license: 'Remove one or more Microsoft 365 licenses (SKU ids) from a user. Requires approval.',
+  m365_assign_license: 'Assign one or more Microsoft 365 licenses (SKU ids) to a user. Refuses when no seat is available. Requires approval.',
+  m365_remove_from_group: 'Remove a Microsoft 365 user from a group. Does not work on dynamic-membership or role-assignable groups, which Microsoft manages. Requires approval.',
+  m365_add_to_group: 'Add a Microsoft 365 user to a group. Does not work on dynamic-membership or role-assignable groups, which Microsoft manages. Requires approval.',
+  m365_retire_intune_device: 'Retires the device (removes company data and unenrols it). This is not a full wipe and Breeze cannot perform one. Requires approval.',
+  m365_create_user: 'Create a Microsoft 365 user. Returns a temporary password the user must change at first sign-in. Requires approval.',
+  m365_set_auto_reply: 'Set, schedule or disable the automatic reply (out of office) on a Microsoft 365 mailbox. Requires approval.',
   google_lookup_user: "Look up a Google Workspace user (profile, suspended/admin status, 2-step enrollment, last login, OU, aliases) for this organization's connected Workspace domain.",
   google_reset_password: 'Reset a Google Workspace user\'s password (forces change at next sign-in). Returns a temporary password. Requires approval.',
   google_suspend_user: 'Suspend (block sign-in for) a Google Workspace user. Requires approval.',
@@ -664,6 +691,43 @@ function inputShape(toolName: string): z.ZodRawShape {
     throw new Error(`toolInputSchemas.${toolName} is not a plain z.object — hand-mirror its shape instead`);
   }
   return shape;
+}
+
+
+/**
+ * Text blocks that ride alongside a vision tool's image. Built from the RAW
+ * handler result (the image branch skips compactToolResultForChat), so the
+ * device-reported strings in them — the agent's screenshot error, device
+ * fields, the action echo — are fenced here (#8852 W04).
+ */
+export function visionMetadataTextBlocks(
+  toolName: string,
+  parsed: Record<string, unknown>,
+): Array<{ type: 'text'; text: string }> {
+  const blocks: Array<{ type: 'text'; text: string }> = [];
+  // For analyze_screen, include device context as text
+  if (toolName === 'analyze_screen' && parsed.device) {
+    blocks.push({
+      type: 'text',
+      text: JSON.stringify(sanitizeUntrustedToolValue({
+        analysisContext: parsed.analysisContext,
+        device: parsed.device,
+        capturedAt: parsed.capturedAt,
+        resolution: `${parsed.width}x${parsed.height}`,
+      })),
+    });
+  }
+  // For computer_control, include action metadata as text
+  if (toolName === 'computer_control') {
+    const meta: Record<string, unknown> = {
+      actionExecuted: parsed.actionExecuted,
+      capturedAt: parsed.capturedAt,
+      resolution: `${parsed.width}x${parsed.height}`,
+    };
+    if (parsed.screenshotError) meta.screenshotError = parsed.screenshotError;
+    blocks.push({ type: 'text', text: JSON.stringify(sanitizeUntrustedToolValue(meta)) });
+  }
+  return blocks;
 }
 
 function makeToolHandler(
@@ -829,28 +893,7 @@ function makeToolHandler(
                 mimeType: `image/${parsed.format || 'jpeg'}`,
               },
             ];
-            // For analyze_screen, include device context as text
-            if (toolName === 'analyze_screen' && parsed.device) {
-              contentBlocks.push({
-                type: 'text',
-                text: JSON.stringify({
-                  analysisContext: parsed.analysisContext,
-                  device: parsed.device,
-                  capturedAt: parsed.capturedAt,
-                  resolution: `${parsed.width}x${parsed.height}`,
-                }),
-              });
-            }
-            // For computer_control, include action metadata as text
-            if (toolName === 'computer_control') {
-              const meta: Record<string, unknown> = {
-                actionExecuted: parsed.actionExecuted,
-                capturedAt: parsed.capturedAt,
-                resolution: `${parsed.width}x${parsed.height}`,
-              };
-              if (parsed.screenshotError) meta.screenshotError = parsed.screenshotError;
-              contentBlocks.push({ type: 'text', text: JSON.stringify(meta) });
-            }
+            contentBlocks.push(...visionMetadataTextBlocks(toolName, parsed));
             return { content: contentBlocks };
           }
         } catch (err) {
@@ -1164,6 +1207,12 @@ export function m365ToolDefinitions(
   const m365Enabled = ['1', 'true', 'yes', 'on'].includes(m365Flag);
   const delegantConfigured = !!(process.env.DELEGANT_BASE_URL ?? '').trim();
   if (!m365Enabled && !delegantConfigured) return [];
+  // Bounds mirror packages/shared/src/m365/writeActions.ts (the handler's
+  // strict schema is the authority; these keep the advertised shape honest).
+  const guidShape = z.string().guid();
+  const userIdentifierShape = z.string().min(3).max(320);
+  const reasonShape = z.string().min(1).max(500);
+  const orgIdShape = z.string().guid().optional();
   return [
     tool(
       'm365_lookup_user',
@@ -1194,6 +1243,80 @@ export function m365ToolDefinitions(
       SESSION_TOOL_DESCRIPTIONS.m365_reset_password,
       { userIdentifier: z.string(), reason: z.string() },
       makeSessionAwareHandler('m365_reset_password', getAuth, getActiveSession, m365ResetPasswordHandler, onPreToolUse, onPostToolUse)
+    ),
+    // Control-plane identity writes (Operator Recipe Library M1). Declared
+    // shapes mirror the strict shared write-action schema bounds; the handler
+    // re-validates against m365WriteActionSchema, so these are advisory.
+    tool(
+      'm365_revoke_sessions',
+      SESSION_TOOL_DESCRIPTIONS.m365_revoke_sessions,
+      { userIdentifier: userIdentifierShape, reason: reasonShape, orgId: orgIdShape },
+      makeSessionAwareHandler('m365_revoke_sessions', getAuth, getActiveSession, m365RevokeSessionsHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_remove_license',
+      SESSION_TOOL_DESCRIPTIONS.m365_remove_license,
+      { userIdentifier: userIdentifierShape, skuIds: z.array(guidShape).min(1).max(20), reason: reasonShape, orgId: orgIdShape },
+      makeSessionAwareHandler('m365_remove_license', getAuth, getActiveSession, m365RemoveLicenseHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_assign_license',
+      SESSION_TOOL_DESCRIPTIONS.m365_assign_license,
+      {
+        userIdentifier: userIdentifierShape,
+        skuIds: z.array(guidShape).min(1).max(20),
+        disabledPlanIds: z.array(guidShape).max(50).optional(),
+        reason: reasonShape,
+        orgId: orgIdShape,
+      },
+      makeSessionAwareHandler('m365_assign_license', getAuth, getActiveSession, m365AssignLicenseHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_remove_from_group',
+      SESSION_TOOL_DESCRIPTIONS.m365_remove_from_group,
+      { groupId: guidShape, userIdentifier: userIdentifierShape, reason: reasonShape, orgId: orgIdShape },
+      makeSessionAwareHandler('m365_remove_from_group', getAuth, getActiveSession, m365RemoveFromGroupHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_add_to_group',
+      SESSION_TOOL_DESCRIPTIONS.m365_add_to_group,
+      { groupId: guidShape, userIdentifier: userIdentifierShape, reason: reasonShape, orgId: orgIdShape },
+      makeSessionAwareHandler('m365_add_to_group', getAuth, getActiveSession, m365AddToGroupHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_retire_intune_device',
+      SESSION_TOOL_DESCRIPTIONS.m365_retire_intune_device,
+      { managedDeviceId: guidShape, reason: reasonShape, orgId: orgIdShape },
+      makeSessionAwareHandler('m365_retire_intune_device', getAuth, getActiveSession, m365RetireIntuneDeviceHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_create_user',
+      SESSION_TOOL_DESCRIPTIONS.m365_create_user,
+      {
+        userPrincipalName: userIdentifierShape,
+        displayName: z.string().min(1).max(256),
+        mailNickname: z.string().min(1).max(64).regex(/^[A-Za-z0-9._-]+$/),
+        usageLocation: z.string().regex(/^[A-Z]{2}$/),
+        reason: reasonShape,
+        orgId: orgIdShape,
+      },
+      makeSessionAwareHandler('m365_create_user', getAuth, getActiveSession, m365CreateUserHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'm365_set_auto_reply',
+      SESSION_TOOL_DESCRIPTIONS.m365_set_auto_reply,
+      {
+        userIdentifier: userIdentifierShape,
+        status: z.enum(['disabled', 'alwaysEnabled', 'scheduled']),
+        internalReplyMessage: z.string().min(1).max(4000).optional(),
+        externalReplyMessage: z.string().min(1).max(4000).optional(),
+        externalAudience: z.enum(['none', 'contactsOnly', 'all']).optional(),
+        scheduledStartDateTime: z.string().datetime().optional(),
+        scheduledEndDateTime: z.string().datetime().optional(),
+        reason: reasonShape,
+        orgId: orgIdShape,
+      },
+      makeSessionAwareHandler('m365_set_auto_reply', getAuth, getActiveSession, m365SetAutoReplyHandler, onPreToolUse, onPostToolUse)
     ),
   ];
 }
@@ -1831,6 +1954,16 @@ export function buildBreezeSdkTools(
     ),
 
     tool(
+      'sync_edr_data',
+      registryDescription('sync_edr_data'),
+      {
+        connectionId: uuid.optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('sync_edr_data', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       's1_isolate_device',
       registryDescription('s1_isolate_device'),
       {
@@ -2274,6 +2407,13 @@ export function buildBreezeSdkTools(
         captureDelayMs: z.number().int().min(0).max(3000).optional(),
       },
       makeHandler('computer_control', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'send_endpoint_message',
+      registryDescription('send_endpoint_message'),
+      sendEndpointMessageShape,
+      makeHandler('send_endpoint_message', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Fleet orchestration tools
@@ -4063,6 +4203,16 @@ export function buildBreezeSdkTools(
           }) }],
         };
       }
+    ),
+
+    // Trust Center W2 (Ruling 15): read-only; never creates the draft page.
+    tool(
+      'get_trust_page_status',
+      registryDescription('get_trust_page_status'),
+      {
+        orgId: uuid.describe('Organization UUID'),
+      },
+      makeHandler('get_trust_page_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound

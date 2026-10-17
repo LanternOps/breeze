@@ -392,7 +392,8 @@ type ImportedTicket = {
 `importTicket(windowId, ticket)` works like this:
 
 - **Header transaction** (cost ≤ 3): create, write the external ref, assign.
-- **Comment transactions:** in `createdAt` order, in chunks of up to 100 per transaction.
+- **Comment transactions:** in `createdAt` order, in chunks of up to 100 comments and 1 MiB of
+  comment content (UTF-8) per transaction. A comment over 1 MiB goes in a chunk of its own.
 - **Final status:** set in the last transaction (cost ≤ 2).
 - **Throughput:** every transaction is charged separately (§4.7). Its cost is one unit per service
   write, the unit #8313's estimate used.
@@ -406,7 +407,12 @@ recreated, but only when two conditions hold:
 - its **current** org is in the window (it may have been moved since).
 
 Otherwise the writer returns `409 MIGRATION_SOURCE_ID_IN_USE`. A resumed ticket gets only the
-comments whose `import_source_id` is missing, and then its final status.
+comments whose `import_source_id` is missing, and then its final status. The final status applies
+only while the import set the status last: the ticket's latest `status_change` row is this
+principal's, or it has none (an earlier pass stopped before its status). A status change made in
+Breeze since (a technician, an AI agent, automation, a requester's reopen, another integration) is
+kept, and the result reports `statusSkipped`. Assigning a `new` ticket opens it without a
+`status_change` row, so that implicit open does not keep the status.
 
 A window that closes mid-ticket leaves a ticket that is complete up to its last committed chunk. The
 next window resumes it.

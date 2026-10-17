@@ -137,23 +137,50 @@ describe('connection health store', () => {
     expect(rows.every((r) => r.resolvedAt?.getTime() === NOW.getTime())).toBe(true);
   });
 
-  it('reopen clears resolution, bumps flap_count, writes observed columns, zeroes streak, opens now', async () => {
+  it('reopen inside the window keeps opened_at and queues no notice (same episode)', async () => {
     await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs(), notify: false }], EARLIER));
     const [t] = await asSystem(() => loadTracked('oauth_grant', NOW));
     await asSystem(() => applyActions([{ type: 'resolve', incidentId: t!.id, resolution: 'recovered' }], EARLIER));
-    await asSystem(() => db.update(connectionHealthIncidents).set({ healthyStreak: 2 }));
-    await asSystem(() => applyActions([{ type: 'reopen', incidentId: t!.id, obs: obs({ severity: 'permanent', detail: 'again' }) }], NOW));
+    await asSystem(() => db.update(connectionHealthIncidents).set({ healthyStreak: 2, notifiedUserIds: [USER_A], pendingNotice: null }));
+    await asSystem(() => applyActions([{ type: 'reopen', incidentId: t!.id, obs: obs({ detail: 'again' }), escalated: false }], NOW));
     const [row] = await allRows();
     expect(row).toMatchObject({
-      resolvedAt: null, resolution: null, flapCount: 1, openedAt: NOW, pendingNotice: 'opened',
-      healthyStreak: 0, severity: 'permanent', detail: 'again', lastObservedAt: NOW,
+      resolvedAt: null, resolution: null, flapCount: 1, openedAt: EARLIER, pendingNotice: null,
+      healthyStreak: 0, detail: 'again', lastObservedAt: NOW,
     });
+  });
+
+  it('reopen of an episode that reached nobody queues its opened notice (same opened_at)', async () => {
+    await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs(), notify: false }], EARLIER));
+    const [t] = await asSystem(() => loadTracked('oauth_grant', NOW));
+    await asSystem(() => applyActions([{ type: 'resolve', incidentId: t!.id, resolution: 'recovered' }], EARLIER));
+    await asSystem(() => applyActions([{ type: 'reopen', incidentId: t!.id, obs: obs(), escalated: false }], NOW));
+    expect((await allRows())[0]).toMatchObject({ openedAt: EARLIER, pendingNotice: 'opened' });
+  });
+
+  it('an escalating reopen queues escalated; a reopen cancels an undelivered resolved', async () => {
+    await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs(), notify: false }], EARLIER));
+    const [t] = await asSystem(() => loadTracked('oauth_grant', NOW));
+    await asSystem(() => db.update(connectionHealthIncidents).set({ notifiedUserIds: [USER_A] }));
+    await asSystem(() => applyActions([{ type: 'resolve', incidentId: t!.id, resolution: 'recovered' }], EARLIER));
+    expect((await allRows())[0]!.pendingNotice).toBe('resolved');
+    await asSystem(() => applyActions([{ type: 'reopen', incidentId: t!.id, obs: obs(), escalated: false }], NOW));
+    expect((await allRows())[0]).toMatchObject({ pendingNotice: null, notifiedUserIds: [USER_A] });
+    await asSystem(() => applyActions([{ type: 'resolve', incidentId: t!.id, resolution: 'recovered' }], NOW));
+    await asSystem(() => applyActions([{ type: 'reopen', incidentId: t!.id, obs: obs({ severity: 'permanent' }), escalated: true }], NOW));
+    expect((await allRows())[0]).toMatchObject({ pendingNotice: 'escalated', severity: 'permanent', flapCount: 2 });
+  });
+
+  it('loadTracked honours a wider reopen window', async () => {
+    await asSystem(() => insertRow({ sourceId: 'r90', openedAt: EARLIER, resolvedAt: minutesBefore(NOW, 90), resolution: 'recovered' }));
+    expect(await asSystem(() => loadTracked('oauth_grant', NOW))).toEqual([]);
+    expect((await asSystem(() => loadTracked('oauth_grant', NOW, 125 * 60_000))).map((r) => r.sourceId)).toEqual(['r90']);
   });
 
   it('reopen on a row that is still open is a no-op', async () => {
     await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs(), notify: false }], EARLIER));
     const [before] = await allRows();
-    await asSystem(() => applyActions([{ type: 'reopen', incidentId: before!.id, obs: obs({ detail: 'again' }) }], NOW));
+    await asSystem(() => applyActions([{ type: 'reopen', incidentId: before!.id, obs: obs({ detail: 'again' }), escalated: false }], NOW));
     const [after] = await allRows();
     expect(after).toEqual(before);
   });
@@ -209,5 +236,16 @@ describe('connection health store', () => {
     expect(await asSystem(() => deleteExpiredResolved(NOW, 2))).toBe(1);
     const left = (await allRows()).map((r) => r.sourceId).sort();
     expect(left).toEqual(['keep', 'openold']);
+  });
+
+  it("deleteExpiredResolved keeps each kind's newest resolved row, however old (no silent reseed)", async () => {
+    await asSystem(async () => {
+      await insertRow({ sourceId: 'old1', openedAt: daysBefore(NOW, 300), resolvedAt: daysBefore(NOW, 200), resolution: 'recovered' });
+      await insertRow({ sourceId: 'old2', openedAt: daysBefore(NOW, 300), resolvedAt: daysBefore(NOW, 150), resolution: 'retired' });
+      await insertRow({ sourceId: 'other', sourceKind: 'huntress', openedAt: daysBefore(NOW, 300), resolvedAt: daysBefore(NOW, 120), resolution: 'recovered' });
+    });
+    expect(await asSystem(() => deleteExpiredResolved(NOW))).toBe(1);
+    expect((await allRows()).map((r) => r.sourceId).sort()).toEqual(['old2', 'other']);
+    expect(await asSystem(() => deleteExpiredResolved(NOW))).toBe(0);
   });
 });

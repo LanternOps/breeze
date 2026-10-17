@@ -109,8 +109,9 @@ const LIST_LIMIT = 100;
 function selectWithTicket(db: Tx) {
   return db.select({
     request: ticketApprovalRequests,
-    ticketNumber: tickets.internalNumber,
-    ticketFallbackNumber: tickets.ticketNumber,
+    // Customer-facing number: the same one the portal Support pages show (routes/portal/tickets.ts).
+    ticketNumber: tickets.ticketNumber,
+    ticketFallbackNumber: tickets.internalNumber,
     ticketSubject: tickets.subject,
   })
     .from(ticketApprovalRequests)

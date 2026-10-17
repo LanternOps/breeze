@@ -1,8 +1,8 @@
 /**
  * Seal/reveal handling for secrets inside action_intents.result.
  *
- * Registry of secret-bearing action results (today: only the M365 reset
- * password). The temporary password is encrypted at rest (AES-256-GCM via
+ * Registry of secret-bearing action results (today: the M365 reset and create
+ * temporary passwords). The temporary password is encrypted at rest (AES-256-GCM via
  * secretCrypto, AAD-bound to action_intents.result, v3 ciphertext only),
  * revealed AT MOST ONCE via POST /action-intents/:id/reveal-secret, and
  * burned out of the jsonb by a CAS update the moment it is revealed — or
@@ -29,13 +29,18 @@ export const REVEAL_WINDOW_DAYS = 7;
 
 const ENC_V3_PREFIX = 'enc:v3:';
 
-const SECRET_BEARING_ACTION = 'm365.user.reset_password';
+const SECRET_BEARING_ACTIONS: ReadonlySet<string> = new Set([
+  'm365.user.reset_password',
+  // M1: POST /users carries a passwordProfile, so a created user's temporary
+  // credential is sealed on exactly the same path as a reset.
+  'm365.user.create',
+]);
 
 /** Encrypt secret fields in an executor result before it is stored. */
 export function sealActionResultSecrets(
   result: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (result.action !== SECRET_BEARING_ACTION) return result;
+  if (typeof result.action !== 'string' || !SECRET_BEARING_ACTIONS.has(result.action)) return result;
   const pw = result[TEMP_PASSWORD_LEGACY_KEY];
   if (typeof pw !== 'string' || pw.length === 0) return result;
   const sealed = encryptSecret(pw, { aad: ACTION_INTENT_RESULT_AAD });

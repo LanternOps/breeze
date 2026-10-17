@@ -4,6 +4,8 @@ import { describe, it, expect, vi } from 'vitest';
 import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
 import AlertList, { type Alert } from './AlertList';
 
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+
 const baseAlert: Alert = {
   id: 'a-1',
   title: 'CPU high',
@@ -64,6 +66,23 @@ describe('AlertList — Organization column follows fleet view', () => {
     const { container } = render(<AlertList alerts={[]} showOrgColumn />);
     const emptyCell = container.querySelector('td[colspan]');
     expect(emptyCell?.getAttribute('colspan')).toBe('9');
+  });
+});
+
+describe('AlertList — org link (ui-flow W03)', () => {
+  it('links the org cell to the org record and keeps row selection separate', () => {
+    const onSelect = vi.fn();
+    render(<AlertList alerts={[baseAlert]} showOrgColumn onSelect={onSelect} />);
+    const link = screen.getByTestId('org-record-link');
+    expect(link).toHaveAttribute('href', '/organizations/org-1');
+    fireEvent.click(link);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('prints the org as text when the alert has no orgId', () => {
+    render(<AlertList alerts={[{ ...baseAlert, orgId: null }]} showOrgColumn />);
+    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    expect(screen.getByText('Acme Corp')).toBeInTheDocument();
   });
 });
 

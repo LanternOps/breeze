@@ -6,6 +6,7 @@ import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { useAuditActionFormatter } from '@/lib/auditFormat';
 import type { AlertRow, AuditLogEntry } from '@/components/dashboard/types';
+import { EntityLink } from '@/components/shared/EntityLink';
 import OrgKeyDatesCard from './OrgKeyDatesCard';
 import { useLatest, type OrgFetch, type OrgSummary } from './orgRecordFetch';
 import type { ServiceManagementMode } from './orgRecordTabs';
@@ -294,9 +295,13 @@ export default function OrgOverviewTab({
                     {resolveAlertTitle(alert.title ?? alert.message, alert.deviceHostname, alert.id)}
                   </a>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    {[alert.deviceHostname, formatDateTime(alert.triggeredAt ?? alert.createdAt)]
-                      .filter(Boolean)
-                      .join(' · ')}
+                    {alert.deviceHostname && (
+                      <>
+                        <EntityLink kind="device" id={alert.deviceId ?? ''} name={alert.deviceHostname} />
+                        {' · '}
+                      </>
+                    )}
+                    {formatDateTime(alert.triggeredAt ?? alert.createdAt)}
                   </p>
                 </li>
               ))}

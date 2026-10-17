@@ -17,7 +17,13 @@ const fetchMock = vi.mocked(fetchWithAuth);
 
 const RECORD_ORG = 'org-record-1';
 const OTHER_ORG = 'org-other-2';
-const SITE = { id: 'site-1', name: 'Downtown Office', timezone: 'UTC', deviceCount: 5 };
+const SITE = {
+  id: 'site-1',
+  name: 'Downtown Office',
+  timezone: 'UTC',
+  deviceCount: 5,
+  address: { line1: '1 Pier', city: 'Halifax', state: 'NS' },
+};
 
 const jsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
   ({ ok, status, statusText: ok ? 'OK' : 'ERROR', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -36,6 +42,8 @@ describe('OrgSitesTab', () => {
 
     // SiteList renders the name in both its desktop and mobile layouts.
     await waitFor(() => expect(screen.getAllByText('Downtown Office').length).toBeGreaterThan(0));
+    // The row passes through the tab untouched, so SiteList's Address cell fills in.
+    expect(screen.getAllByText('1 Pier · Halifax, NS').length).toBeGreaterThan(0);
 
     const [url, init] = fetchMock.mock.calls[0];
     // `fetchAllSites` (#6412) pages to exhaustion, so the request carries

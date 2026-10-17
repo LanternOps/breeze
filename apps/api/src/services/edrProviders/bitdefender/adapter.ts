@@ -17,6 +17,7 @@ import {
 } from '../types';
 import { GravityZoneClient, GZ_HOST_ALLOWLIST, type GzIncident, type GzQuarantineItem } from './client';
 import { toEndpointDetail, toIncidentDetection, toQuarantineDetection, toVendorEndpoint } from './normalize';
+import { verifyGravityZoneWebhook } from './push';
 
 const credentialsSchema = z.object({ apiKey: z.string().trim().min(16).max(512) }).strict();
 
@@ -88,7 +89,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
   capabilities: {
     tenantModel: 'partner',
     perTenantHost: false,
-    detectionDelivery: 'poll', // push arrives in W03
+    // Push events are hints that schedule the normal poll (W03 PR-B); polling stays authoritative.
+    detectionDelivery: 'poll_and_push',
     detectionStatusModel: 'delta_with_updates',
     actions: ['isolate', 'unisolate', 'scan'],
     endpointIdentifiers: ['hostname', 'fqdn', 'mac', 'ip'],
@@ -98,6 +100,8 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     operationBudgets: { inventory: { perSecond: 5 }, companies: { perSecond: 5 }, incidents: { perMinute: 2 },
       // Vendor scan/quarantine task cap: 30 / min.
       actions: { perMinute: 30 },
+      // Vendor push-settings API: 5 requests / min.
+      push: { perMinute: 5 },
     },
     defaultIntervals: { detectionsMinutes: 10, inventoryMinutes: 60 },
     maxActionTargets: 1000,
@@ -302,6 +306,36 @@ export const bitdefenderAdapter: EdrProviderAdapter = {
     const isolated = (await clientFor(ctx).getEndpointDetails(req.target.vendorEndpointId)).isIsolated;
     if (typeof isolated !== 'boolean') return 'unknown';
     return isolated === (req.action === 'isolate') ? 'applied' : 'not_applied';
+  },
+
+  verifyWebhook: verifyGravityZoneWebhook,
+
+  async registerPush(ctx, o): Promise<void> {
+    const client = clientFor(ctx);
+    // The console has one push destination; setPushEventSettings replaces it.
+    // Never silently take over a feed an MSP already sends elsewhere.
+    const current = await client.getPushEventSettings();
+    if (!o.replaceExisting && current.enabled && current.url && current.url !== o.url) {
+      throw new EdrProviderRequestError('GravityZone push events already go to another destination', {
+        code: 'push_conflict', reauth: false, scope: 'connection',
+      });
+    }
+    await client.setPushEventSettings({
+      enabled: true, url: o.url, authorization: o.secret, companyIds: o.vendorTenantIds,
+    });
+  },
+
+  async unregisterPush(ctx, o): Promise<{ changed: boolean }> {
+    const client = clientFor(ctx);
+    const current = await client.getPushEventSettings();
+    // Only switch off a destination that is still ours; an unreadable URL is not proof.
+    if (!current.enabled || !o.url || current.url !== o.url) return { changed: false };
+    await client.setPushEventSettings({ enabled: false });
+    return { changed: true };
+  },
+
+  async sendTestPush(ctx): Promise<void> {
+    await clientFor(ctx).sendTestPushEvent();
   },
 
   async listDetections(ctx, tenant, cursorRaw, now): Promise<EdrDetectionPage> {

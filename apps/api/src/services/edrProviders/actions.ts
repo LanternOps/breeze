@@ -163,7 +163,7 @@ export function describeEndpointActions(
   endpoint: EndpointFacts & Pick<EdrEndpointRow, 'breezeDeviceId'>,
   tenant: TenantFacts,
   connection: ConnectionFacts,
-  o: { restriction?: EdrSiteRestriction; now?: Date } = {},
+  o: { caller: EdrActionCaller; restriction?: EdrSiteRestriction; now?: Date },
 ): EdrEndpointActionAvailability[] {
   const now = o.now ?? new Date();
   const adapter = adapterOrNull(connection.provider);
@@ -171,13 +171,23 @@ export function describeEndpointActions(
   const killed = !edrActionsEnabled();
   const siteDenied = o.restriction && isSiteRestricted(o.restriction)
     && !(endpoint.breezeDeviceId && (o.restriction.allowedDeviceIds ?? []).includes(endpoint.breezeDeviceId));
-  return EDR_ENDPOINT_ACTIONS.map((action) => {
+  return EDR_ENDPOINT_ACTIONS.map((action): EdrEndpointActionAvailability => {
     if (killed) return { action, available: false, reason: EDR_ACTIONS_DISABLED_REASON };
+    // The same gates `POST /edr/actions` applies (devices.execute + MFA), so the
+    // list never offers what dispatch would refuse.
+    if (!o.caller.canExecute) return { action, available: false, reason: EDR_ACTIONS_NO_PERMISSION_REASON };
     if (siteDenied) return { action, available: false, reason: 'This endpoint is not linked to a device in your sites' };
     const gate = gateReason(adapter, facts, connection, action);
-    return { action, available: gate === null, reason: gate?.reason ?? null };
+    if (gate) return { action, available: false, reason: gate.reason };
+    if (!o.caller.mfaSatisfied) return { action, available: false, reason: EDR_ACTIONS_MFA_REASON, mfaRequired: true };
+    return { action, available: true, reason: null };
   });
 }
+
+/** What the caller's own session allows, resolved by the route (never from the target). */
+export interface EdrActionCaller { canExecute: boolean; mfaSatisfied: boolean }
+export const EDR_ACTIONS_NO_PERMISSION_REASON = 'Response actions need the Execute permission on devices';
+export const EDR_ACTIONS_MFA_REASON = 'Verify your sign-in with MFA to run response actions';
 
 function toVendorRequest(t: ResolvedEdrActionTarget, action: EdrActionKey, pid: number | undefined): EdrActionRequest | null {
   switch (action) {

@@ -50,6 +50,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_INVOCATIONS_RETENTION_DAYS: 'data retention window',
   AI_INVOCATIONS_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   AI_TOOL_EVAL_KEY: 'dev script (services/llm/__scripts__)',
+  AI_TOOL_OUTPUT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  AI_TOOL_OUTPUT_RETENTION_CRON: 'job schedule override',
+  AI_TOOL_OUTPUT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',
@@ -122,6 +125,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_ROLE: 'process role (api/worker)',
   BREEZE_SEED_E2E_FORCE: 'E2E seed toggle',
   BREEZE_TEST_DB_URL: 'test harness (testUtils)',
+  BREEZE_TRUST_CIS_FRAMEWORK_VIEW: 'Trust Center CIS v8 framework view rollout gate; set only after CIS licensing confirmation (spec §18.13)',
   BREEZE_UPGRADE_PREFLIGHT_STRICT: 'upgrade CLI flag',
   // CALLER_*
   CALLER_VERIFICATION_ENABLED: 'feature flag',
@@ -230,6 +234,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   FRANKFURTER_BASE_URL: 'FX API base override',
   // HEARTBEAT_*
   HEARTBEAT_RETAIN_STATE_ENABLED: 'heartbeat retain-state rollout kill switch',
+  AGENT_ECH_ENABLED: 'agent ECH (encrypted client hello) kill switch',
   // HELPER_*
   HELPER_BINARY_DIR: 'filesystem path',
   HELPER_SCREENSHOT_RATE_LIMIT: 'rate limit knob',

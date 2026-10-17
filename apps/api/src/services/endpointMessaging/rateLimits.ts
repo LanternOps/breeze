@@ -84,3 +84,26 @@ export async function releaseCriticalSlot(deviceId: string): Promise<void> {
     console.warn('[endpoint-messages] critical slot release failed:', err);
   }
 }
+
+/**
+ * Endpoint live chat limits (#8743, plan Task 3.3). Same fail-closed Redis
+ * limiter; a rejected attempt does not consume capacity.
+ */
+async function chatLimit(key: string, limit: number): Promise<LimitDecision> {
+  return toDecision(await rateLimiter(getRedis(), key, limit, HOUR_SECONDS, 1, { refundOnReject: true }));
+}
+
+/** Conversations one actor may open per hour. */
+export function checkChatOpenLimit(actorId: string, limit: number): Promise<LimitDecision> {
+  return chatLimit(`endpoint-chat:open:${actorId}`, limit);
+}
+
+/** Technician messages per conversation per hour (the opening message included). */
+export function checkChatMessageLimit(conversationId: string, limit: number): Promise<LimitDecision> {
+  return chatLimit(`endpoint-chat:msg:${conversationId}`, limit);
+}
+
+/** End-user replies per conversation per hour. */
+export function checkChatReplyLimit(conversationId: string, limit: number): Promise<LimitDecision> {
+  return chatLimit(`endpoint-chat:reply:${conversationId}`, limit);
+}

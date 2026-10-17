@@ -24,7 +24,7 @@ vi.mock('../db', () => ({
   withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
-import { brokerWorkerBackupPayload, deliverBackupWriteCommand } from './backupStorageWriteDelivery';
+import { backupWriteRefusalMessage, brokerWorkerBackupPayload, deliverBackupWriteCommand } from './backupStorageWriteDelivery';
 import { CommandDeliveryDeferredError, CommandDeliveryRefusedError } from './commandDeliveryRefusal';
 import { BACKUP_WRITE_HELPER_UPDATE_REQUIRED_MESSAGE } from './backupWriteHelperGate';
 
@@ -282,5 +282,13 @@ describe('brokerWorkerBackupPayload (scheduled backups)', () => {
     });
     expect(out.mode).toBe('local');
     expect(m.mint).not.toHaveBeenCalled();
+  });
+});
+
+describe('backupWriteRefusalMessage', () => {
+  it('explains a dispatch base under another key root (#7081)', () => {
+    expect(backupWriteRefusalMessage('base_key_root_mismatch')).toBe(
+      "The destination's key prefix changed after this backup was scheduled. The next scheduled run will take a full backup under the new prefix.",
+    );
   });
 });

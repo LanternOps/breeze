@@ -356,6 +356,13 @@ export const SENTRY_EVENT_CODES = [
    * job can prune it — raise the job's batch-size / max-batches knobs.
    */
   'retention_backlog_remaining',
+  /**
+   * #8855: a nightly AI tool output retention run finished with orgs that
+   * failed or were skipped, or transcript deletes that failed, so expired tool
+   * outputs (or SDK transcripts) remain. Per-org errors are in the worker log
+   * (`[AiToolOutputRetention]`).
+   */
+  'ai_tool_output_retention_incomplete',
 
   // --- server-side i18n (#3860) -----------------------------------------
   /** `tApi` was asked for a key no bundle defines — the raw key string is

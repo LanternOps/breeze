@@ -29,6 +29,8 @@ export interface AlertRow {
   status: string;
   deviceId?: string | null;
   deviceHostname?: string | null;
+  /** Mirrored from the list row (apps/api/src/routes/alerts/alerts.ts); absent on older payloads. */
+  orgId?: string | null;
   orgName?: string | null;
   createdAt: string;
   triggeredAt?: string | null;

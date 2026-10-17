@@ -1,0 +1,62 @@
+---
+title: Customer editing of the trust page
+description: Let a customer's admin contacts edit part of their trust page draft from the customer portal, preview it and withdraw it. You still publish.
+sidebar:
+  order: 11
+  label: Trust page portal editing
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A customer often knows details of its own trust page better than you do: who handles security questions, which website to link, which controls to leave off. Portal editing lets the customer's admin contacts change those details from the customer portal. **You keep publishing.** A customer edit changes the draft, and the public page shows it only after your next publish.
+
+Editing is off for every organization until you turn it on.
+
+## Turn it on
+
+1. Open **Organizations**, select the organization, and open **Settings → Customer Portal**.
+2. Under **Portal features**, turn on **Customer trust page editing** and save. Saving requires MFA, like every portal setting.
+
+"Enable all visibility" never turns this on. It grants a write permission, so you turn it on for one organization at a time.
+
+## Who can edit
+
+A portal user can edit when all of these are true:
+
+- The organization has **Customer trust page editing** turned on.
+- The portal user's account is active and is linked to a contact.
+- That contact holds the **admin** responsibility for the **whole organization**. An admin role limited to a site or a device group does not qualify.
+
+Assign the admin responsibility in the organization's **Contacts**. Granting it here also means "this person may edit the trust page draft". A portal login without a contact (for example, one created by Microsoft Entra sign-in) never qualifies.
+
+Breeze checks these conditions on every request, so removing the role or turning the setting off takes effect at once, even for a customer who is signed in.
+
+For a qualifying user, the portal shows **Trust page** in its navigation. The page is at `/security/trust-page` in the customer portal.
+
+## What a customer admin can change
+
+- The security contact email.
+- The website link.
+- Which controls are hidden on the public page.
+- Whether the page shows coverage percentages.
+- Whether the page shows the number of devices.
+
+They can also open a **preview** of the draft. The preview link expires after 15 minutes.
+
+## What stays with you
+
+- **Publishing.** The portal has no Publish button. Publishing still needs your MFA, your partner trust status and the customer's authorization.
+- The introduction text, shared documents, the embed allowlist and the partner home page.
+- Settings the draft inherits from your partner template. A customer edit sets an explicit value on the page for the field it changed. Fields the customer did not touch keep inheriting.
+
+<Aside type="note">
+Each customer save increases the page's revision number. If you loaded the editor before the customer saved, your publish is refused with "This page changed since you loaded it". Reload, review the customer's change, then publish. A customer whose save collides with yours sees the same kind of message and reloads.
+</Aside>
+
+## Withdrawal
+
+A customer admin can **unpublish** the page, for example to withdraw consent. They confirm by typing the organization's name. The public page stops serving on the next request. The page keeps its draft, and only you can publish it again.
+
+## Audit
+
+Every customer action is recorded in the audit log with the portal user as the actor: `portal.trust_page.update` (with the changed field names and the new revision) and `portal.trust_page.unpublish`.

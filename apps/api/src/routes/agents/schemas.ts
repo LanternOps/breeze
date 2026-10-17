@@ -228,6 +228,10 @@ export const heartbeatSchema = z.object({
     callerVerify: z.boolean(),
     usernames: z.array(z.string().min(1).max(255)).max(32),
   }).optional().catch(undefined),
+  // #8869 — Encrypted Client Hello telemetry. Both are informational counters
+  // only (no DB column): a malformed value drops to absent, never a 400.
+  echActive: z.boolean().optional().catch(undefined),
+  filterSignatureSeenAt: z.string().datetime({ offset: true }).optional().catch(undefined),
   // #6925 — Breeze Assist install problem the agent is stuck on (e.g.
   // 'awaiting_server_offer'). Omitted when there is none, and the route reads
   // absence as "healthy, clear it". A present but malformed value therefore

@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState, useEffect, useRef } from "react";
 import { usePermissions } from "../../lib/permissions";
+import { ENABLE_ENDPOINT_MESSAGING } from "../../lib/featureFlags";
 import { createPortal } from "react-dom";
 import {
   ChevronLeft,
@@ -58,6 +59,7 @@ import {
 import { widthPercentClass, formatUptime } from "@/lib/utils";
 import { formatLastSeen } from "@/lib/formatTime";
 import { formatNumber } from "@/lib/i18n/format";
+import { toPercent } from "@/lib/deviceUtils";
 import {
   getDeviceRoleLabel,
   getDeviceRoleIcon,
@@ -79,12 +81,14 @@ import {
 import {
   COLUMN_IDS,
   COLUMN_LABELS,
+  DEVICES_PAGE_COLUMN_PRESET,
   readColumnOrder,
   readColumnVisibility,
   resetColumns,
   writeColumnOrder,
   writeColumnVisibility,
   type ColumnId,
+  type ColumnPreset,
 } from "./columnVisibility";
 import {
   readVisibleCustomFieldKeys,
@@ -114,6 +118,7 @@ import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
 import { getAgentVersionRelation } from "./agentVersionRelation";
+import { EntityLink } from "@/components/shared/EntityLink";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -546,6 +551,10 @@ type DeviceListProps = {
   // could be viewing this org's record while the switcher points at "All
   // organizations" or a different org entirely.
   forceSingleOrg?: boolean;
+  // Which persisted column list this instance reads/writes. Read once at mount
+  // (like `pageSize`); the org record's Devices tab passes its own so its
+  // customisation never leaks into the fleet page.
+  columnPreset?: ColumnPreset;
   // Issue #5285: each visible org's effective agent-version target (its
   // agentVersionPins.agent pin, or the globally promoted version when
   // unpinned), resolved ONCE per page load by the caller (DevicesPage) — not
@@ -836,11 +845,12 @@ export default function DeviceList({
   listFilters,
   onListFiltersChange,
   forceSingleOrg = false,
+  columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
-  const canSendMessage = can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send
+  const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send; #8968: hidden until the build enables messaging
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
@@ -878,10 +888,10 @@ export default function DeviceList({
   // Checkbox + Actions are always-on first/last; the rest live in
   // COLUMN_IDS and the order in columnOrder controls render sequence.
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
-    () => new Set(readColumnVisibility()),
+    () => new Set(readColumnVisibility(columnPreset)),
   );
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
-    readColumnOrder(),
+    readColumnOrder(columnPreset),
   );
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const columnsMenuRef = useRef<HTMLDivElement>(null);
@@ -1005,7 +1015,7 @@ export default function DeviceList({
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      writeColumnVisibility(next);
+      writeColumnVisibility(next, columnPreset);
       return next;
     });
   };
@@ -1026,14 +1036,14 @@ export default function DeviceList({
       const next = [...prev];
       next[a] = swapWith;
       next[b] = id;
-      writeColumnOrder(next);
+      writeColumnOrder(next, columnPreset);
       return next;
     });
   };
 
   // Restores both visibility and order to the catalog defaults.
   const resetColumnsToDefault = () => {
-    const cols = resetColumns();
+    const cols = resetColumns(columnPreset);
     setColumnOrder(cols.map((c) => c.id));
     setVisibleColumns(new Set(cols.filter((c) => c.visible).map((c) => c.id)));
   };
@@ -1468,8 +1478,10 @@ export default function DeviceList({
   // We still escalate amber → red at genuine pressure (≥75% / ≥90%) because a
   // pegged box is exactly what a tech must catch at a glance; the bar width
   // and the trailing number carry the exact value at every level.
-  const metricBar = (percent: number, online: boolean) =>
-    online ? (
+  const metricBar = (rawPercent: number, online: boolean) => {
+    // Round defensively: rows from any source may carry a raw float.
+    const percent = toPercent(rawPercent);
+    return online ? (
       <div className="flex items-center gap-2">
         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
           <div
@@ -1481,6 +1493,7 @@ export default function DeviceList({
     ) : (
       <span className="text-muted-foreground">{t("deviceList.text")}</span>
     );
+  };
 
   // Format helpers for hardware columns. RAM is reported in MB; convert
   // to GB rounded to one decimal. Disk is already reported in GB.
@@ -1597,7 +1610,11 @@ export default function DeviceList({
           <td key="hostname" className="max-w-[220px] px-3 py-3 text-sm">
             <div className="min-w-0">
               <span className="block truncate font-medium" title={primaryName}>
-                {primaryName}
+                {(device.deviceClass ?? "agent") === "agent" ? (
+                  <EntityLink kind="device" id={device.id} name={primaryName} />
+                ) : (
+                  primaryName
+                )}
               </span>
               {hasDisplayName && (
                 <span
@@ -1723,7 +1740,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.orgName}>
-            {device.orgName}
+            <EntityLink kind="org" id={device.orgId} name={device.orgName} />
           </span>
         </td>
       ),
@@ -1736,7 +1753,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.siteName}>
-            {device.siteName}
+            <EntityLink kind="site" id={device.siteId} name={device.siteName} />
           </span>
         </td>
       ),

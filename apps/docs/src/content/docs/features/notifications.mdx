@@ -202,6 +202,20 @@ The Pushover sender delivers alert notifications to a user's phone via the [Push
 
 **Security:** The `token` and `user` values are encrypted at rest, the same as PagerDuty credentials.
 
+#### Ticket assignments over Pushover
+
+Technicians can also get a Pushover push when a ticket is **assigned to them** (v0.122.1). This uses the partner's Pushover application token from **Pushover Defaults**, so that token must be set first.
+
+<Steps>
+
+1. Each technician opens their profile page and finds the **Pushover for ticket assignments** card.
+
+2. They paste their own 30-character Pushover user key and click **Save key**. Only they receive these pushes; the key is stored encrypted and is never shown again (the card only says whether a key is saved). **Remove key** clears it.
+
+</Steps>
+
+By default, a technician without a personal key gets no Pushover push for assignments. To send those assignments to the partner's default user or group key instead, turn on **Send ticket assignments to the default key when the assignee has no Pushover key** under **Pushover Defaults**. It is off by default. A Pushover failure never blocks or fails the assignment email.
+
 ### In-App
 
 In-app notifications are created directly in the `user_notifications` database table and appear in each user's notification center within the Breeze dashboard.
@@ -326,6 +340,80 @@ Removes all notifications for the current user.
 <Aside>
   All notification mutation operations (mark read, delete) are audit-logged with the action, resource type, and details.
 </Aside>
+
+---
+
+## Connection Health Checks
+
+Breeze checks every 15 minutes whether its connections still work, and opens a
+connection health incident when one breaks. Incidents appear in the
+**Connection Health** panel on **Integrations**, as in-app notices, and in the
+daily digest below. They clear on their own once the connection works again.
+
+Most integrations record their own failures (a failed sync, a revoked
+authorization). Breeze also watches for connections that fail without saying so:
+
+- **Outbound webhooks.** A webhook opens an incident when a delivery uses up all
+  its retries and no later delivery has succeeded. Deliveries that were dropped
+  because the webhook was edited or disabled do not count. The incident clears
+  after the next successful delivery, or when the webhook is disabled.
+- **Stalled syncs.** Huntress, SentinelOne, Pax8, UniFi and backup provider
+  connections open a **Sync stalled** incident when there has been no
+  successful sync for three sync intervals (at least an hour). This catches a
+  sync that is stuck or no longer scheduled.
+- **Google Workspace.** Breeze verifies each Google Workspace connection about
+  every six hours, with the same Directory call it makes when the connection is
+  saved. If Google rejects the service account (for example, domain-wide
+  delegation was revoked or the admin account was removed), a **Verification
+  failed** incident opens. Saving the connection again clears it. A rate limit
+  or an outage at Google does not open an incident.
+- **OAuth apps that keep retrying.** When an MCP or OAuth app's grant was
+  revoked and the app keeps presenting its old token, the incident says how many
+  failed refreshes it made today.
+
+Failures recorded by the backup, Huntress, EDR and Microsoft 365 syncs, and OAuth
+grant revocations, are checked within about a minute rather than at the next
+15-minute check.
+
+Platform administrators can see whether the checks themselves are running under
+**Admin → System → Connections**: the last run of the incident reconciler, the
+last run of the daily digest, and each check's last success.
+
+---
+
+## Connection Health Digest Email
+
+When an integration, sync or OAuth grant breaks, the people who can fix it get an
+in-app notice. They also get a **daily digest email** at 08:00 in the partner's
+timezone. The digest lists the connections that are still broken, grouped by
+organization with partner-wide connections first. It also lists the ones that
+recovered since that person's last digest.
+
+- **One email a day at most**, however many organizations are affected. If there
+  is nothing to report, no email is sent.
+- **Long-running problems fade.** A connection appears every day for its first
+  seven days broken, and after that only in the Monday digest.
+- **Recipients are checked when the email is sent.** Someone who has lost the
+  permission to view or fix a connection, or access to its organization, drops
+  out of the digest straight away.
+- **Unsubscribing takes one click.** Every digest carries `List-Unsubscribe` and
+  `List-Unsubscribe-Post` headers (RFC 8058), so mail clients show their own
+  unsubscribe button. The link in the footer opens a confirmation page first.
+  People can turn the digest back on, or off, under **My Account → Email
+  notifications**. In-app notices are not affected by either choice.
+
+<Aside type="caution" title="SMTP relays: sign the unsubscribe headers">
+  Gmail and Yahoo only honour one-click unsubscribe when DKIM signs both
+  `List-Unsubscribe` and `List-Unsubscribe-Post`. Resend and Mailgun sign every
+  header by default. On an SMTP relay, check that the relay's DKIM signer
+  includes those two headers.
+</Aside>
+
+The unsubscribe link is built from `PUBLIC_API_URL`, falling back to
+`DASHBOARD_URL`, so set one of them to the public address of your server. The
+link is signed with a key derived from `APP_ENCRYPTION_KEY`. Rotating that key
+invalidates the links in emails already sent. People can still unsubscribe from
+My Account, and the next digest carries a fresh link.
 
 ---
 

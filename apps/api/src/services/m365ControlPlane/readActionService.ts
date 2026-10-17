@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import type { M365ReadAction, ReadActionFailureCode, ReadActionResult } from '@breeze/shared/m365';
+import type {
+  M365InteractiveReadAction,
+  M365ReadAction,
+  ReadActionFailureCode,
+  ReadActionResult,
+} from '@breeze/shared/m365';
 import {
   isM365SyncActionId,
   m365ReadActionSchema,
@@ -413,6 +418,59 @@ export async function executeM365ReadAction(
     correlationId: randomUUID(),
     actorId: auth.user.id,
     auditRequest,
+  }) as Promise<M365ReadActionServiceResult>;
+}
+
+/**
+ * Org-keyed read entry, for callers that already hold a db access context and
+ * have no live auth — the Operator's effect probes (effectProbes.ts) and any
+ * background verification. Mirrors writeActionService.executeM365WriteActionByOrg
+ * exactly: the connection load runs under the AMBIENT context, never a system
+ * context, because a contextless read is a denial rather than a bypass and a
+ * system context would bypass RLS outright.
+ */
+export async function executeM365ReadActionByOrg(
+  orgId: string,
+  action: M365InteractiveReadAction,
+  opts?: { actorId?: string },
+): Promise<M365ReadActionServiceResult> {
+  if (!isM365GraphReadToolsEnabledForOrg(orgId)) {
+    return {
+      ok: false,
+      code: 'tools_disabled',
+      message: 'Microsoft 365 Graph read tools are not enabled for this organization.',
+    };
+  }
+  // Belt over the type: a sync action is a whole-tenant crawl, never a probe.
+  if (isM365SyncActionId(action.type)) {
+    return {
+      ok: false,
+      code: 'tools_disabled',
+      message: 'Whole-tenant sync actions are not available to interactive Graph read tools.',
+    };
+  }
+
+  const rows = await db.select().from(m365Connections).where(and(
+    eq(m365Connections.orgId, orgId),
+    eq(m365Connections.profile, PROFILE),
+  )).limit(1);
+  const connection = rows[0];
+  // Defense-in-depth over RLS + the eq(orgId) filter: a mismatch means one of
+  // them is broken, so fail closed rather than read another org's tenant.
+  const notReady = connection && connection.orgId !== orgId ? 'missing' : connectionNotReadyState(connection);
+  const snapshot = notReady ? null : connectionExecutionSnapshot(connection as M365ConnectionRow);
+  if (!snapshot) {
+    return {
+      ok: false,
+      code: 'connection_not_ready',
+      message: connectionNotReadyMessage(notReady ?? 'missing'),
+    };
+  }
+
+  return callGraphReadExecutor(snapshot, action, {
+    route: 'read',
+    correlationId: randomUUID(),
+    ...(opts?.actorId ? { actorId: opts.actorId } : {}),
   }) as Promise<M365ReadActionServiceResult>;
 }
 

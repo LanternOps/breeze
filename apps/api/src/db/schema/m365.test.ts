@@ -36,6 +36,8 @@ describe('m365Connections schema', () => {
       // NULL column is not enforced at all under MATCH SIMPLE.
       'm365_connections_id_user_profile_attempt_uniq',
       'm365_connections_org_profile_uniq',
+      // Connection health broken set (W2, migration 2026-12-29-190000).
+      'm365_connections_unhealthy_idx',
       'm365_connections_user_profile_uniq',
       'm365_connections_verified_tenant_profile_uniq',
     ]);

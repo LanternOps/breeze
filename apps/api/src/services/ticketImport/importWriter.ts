@@ -30,7 +30,8 @@ import { lockOpenWindowForWrite, readWindowDescriptor, windowWriteContext, type 
  * throughput bucket first (§4.7) at one unit per service write, and each
  * holding the window FOR SHARE (§4.4):
  *   - header: create, external ref, assign (cost <= 3);
- *   - comments, in source order, in chunks of up to 100;
+ *   - comments, in source order, in chunks of up to 100 comments and
+ *     IMPORT_COMMENT_CHUNK_BYTES of content;
  *   - the final status, in the last transaction (cost <= 2).
  * A window that closes mid-ticket leaves a ticket complete up to its last
  * committed transaction; the next window resumes it.
@@ -39,15 +40,29 @@ import { lockOpenWindowForWrite, readWindowDescriptor, windowWriteContext, type 
  * only when its ticket was imported (carries a migration_window_id), is not
  * deleted, and its CURRENT org is in the window; otherwise 409
  * MIGRATION_SOURCE_ID_IN_USE. A resumed ticket gets the comments whose source
- * id is missing, then its final status, and — a deviation from §4.6 for the
- * delta pass of a cutover — the header fields that changed in the source,
- * unless a Breeze user set them since (see `headerChanges`).
+ * id is missing, then its final status unless a Breeze change owns the status
+ * (see `statusSteps`), and — a deviation from §4.6 for the delta pass of a
+ * cutover — the header fields that changed in the source, unless a Breeze
+ * user set them since (see `headerChanges`).
  *
  * Must be called with no ambient DB context: it opens its own transactions,
  * and the throughput charge is a Redis round trip that must not hold one.
  */
 
 export const IMPORT_COMMENT_CHUNK_SIZE = 100;
+
+/**
+ * Comment content per transaction, in UTF-8 bytes. A comment may hold 200,000
+ * characters, up to 600,000 bytes in UTF-8, so a count-only chunk of 100 could
+ * write up to 60 MB in one transaction: one long transaction holding the
+ * window FOR SHARE and the ticket row locked, and one large WAL burst. 1 MiB
+ * leaves a chunk of ordinary mail (a few KB a comment) at the full 100 and
+ * still fits the largest comment the schema allows. A comment over the bound,
+ * should the schema's limit ever pass it, goes in a chunk of its own. Smaller
+ * chunks cost more transactions, not more throughput units: each comment is
+ * one unit.
+ */
+export const IMPORT_COMMENT_CHUNK_BYTES = 1024 * 1024;
 
 export type ImportTicketResult = {
   ticketId: string;
@@ -56,16 +71,23 @@ export type ImportTicketResult = {
   commentsSkipped: number;
   /** Header fields a resume re-applied from the source (0 on a first import). */
   fieldsUpdated: number;
+  /**
+   * The source's final status differed from the ticket's and was not applied,
+   * because a Breeze change owns the status (see `statusSteps`): on a resume,
+   * or on a first import whose ticket was changed in Breeze between two of its
+   * transactions.
+   */
+  statusSkipped: boolean;
 };
 
 export type ImportTicketOptions = {
   /** Comments per transaction, 1..100 (tests use a smaller one). */
   chunkSize?: number;
   /**
-   * The partner the caller acts for. A window of any other partner is
-   * refused as not found, so a job can only write through its own partner's
-   * window. Required: the window is read by id in system scope, and this is
-   * what binds that read to the caller.
+   * The partner the caller acts for. Required: the window is read in system
+   * scope by its id AND this partner, so a job can only write through its own
+   * partner's window, and another partner's window is not found whatever its
+   * state.
    */
   partnerId: string;
 };
@@ -180,15 +202,25 @@ async function readStoredTicket(ticketId: string): Promise<StoredTicket | null> 
   return (row as StoredTicket | undefined) ?? null;
 }
 
-/** Who wrote the ticket's latest assignment feed row, or null when it was never assigned. */
-async function lastAssignmentBy(ticketId: string): Promise<{ kind: string; principalId: string | null } | null> {
+/** The author of a feed row: its origin principal kind and id. */
+type FeedAuthor = { kind: string; principalId: string | null };
+
+/**
+ * Who wrote the ticket's latest feed row of `type`, or null when it has none
+ * (never assigned; status never changed through changeTicketStatus).
+ */
+async function lastFeedRowBy(ticketId: string, type: 'assignment' | 'status_change'): Promise<FeedAuthor | null> {
   const [row] = await db
     .select({ kind: ticketComments.originPrincipalKind, principalId: ticketComments.originPrincipalId })
     .from(ticketComments)
-    .where(and(eq(ticketComments.ticketId, ticketId), eq(ticketComments.commentType, 'assignment')))
+    .where(and(eq(ticketComments.ticketId, ticketId), eq(ticketComments.commentType, type)))
     .orderBy(desc(ticketComments.createdAt), desc(ticketComments.id))
     .limit(1);
   return row ?? null;
+}
+
+function writtenByImport(row: FeedAuthor, principalId: string): boolean {
+  return row.kind === 'service_principal' && row.principalId === principalId;
 }
 
 /**
@@ -225,7 +257,7 @@ async function presentCommentSourceIds(principalId: string, sourceIds: readonly 
 export function headerChanges(
   stored: StoredTicket,
   ref: StoredRef | null,
-  lastAssignment: { kind: string; principalId: string | null } | null,
+  lastAssignment: FeedAuthor | null,
   t: ImportedTicket,
   principalId: string,
 ): HeaderChanges {
@@ -250,7 +282,7 @@ export function headerChanges(
   if (t.assigneeUserId !== undefined && (stored.assignedTo ?? null) !== t.assigneeUserId) {
     const ours = lastAssignment === null
       ? stored.assignedTo === null
-      : lastAssignment.kind === 'service_principal' && lastAssignment.principalId === principalId;
+      : writtenByImport(lastAssignment, principalId);
     if (ours) assign = { to: t.assigneeUserId };
   }
 
@@ -304,6 +336,40 @@ export function finalStatusSteps(current: TicketStatus, t: ImportedTicket): Stat
 }
 
 /**
+ * The status steps a write applies: the source's final status
+ * (`finalStatusSteps`), unless a Breeze change owns the status — the header
+ * rule (a Breeze user's edit wins), applied to the status on resume.
+ *
+ * The status has no field provenance, so its latest status_change feed row
+ * stands in for it, as the assignment row does for the assignee. The source
+ * status applies only when this import principal wrote that row, or the
+ * ticket has none: a first import, or one whose earlier pass stopped before
+ * its final status. Anyone else's row (a technician, an AI agent, automation,
+ * the inbound pipeline's requester reopen, another integration) keeps the
+ * Breeze status, and `skipped` reports it. All or nothing: a resolve-then-
+ * close or reopen-then-resolve pair is applied whole or not at all.
+ *
+ * Ordering by created_at is sound although import rows carry source times: a
+ * source time is never later than the pass that writes it, so a Breeze change
+ * made after a pass sorts after that pass's rows, and a later pass then writes
+ * nothing. Like the assignee rule, this assumes the API's clock and the
+ * database's agree. Assigning a `new` ticket opens it without a status_change
+ * row, so that implicit open does not own the status.
+ */
+export function statusSteps(
+  current: TicketStatus,
+  lastStatusChange: FeedAuthor | null,
+  t: ImportedTicket,
+  principalId: string,
+): { steps: StatusStep[]; skipped: boolean } {
+  const steps = finalStatusSteps(current, t);
+  if (steps.length === 0 || lastStatusChange === null || writtenByImport(lastStatusChange, principalId)) {
+    return { steps, skipped: false };
+  }
+  return { steps: [], skipped: true };
+}
+
+/**
  * Under the lock, the resume conditions the plan checked still hold: the
  * ticket is visible to the window, still imported, and not deleted.
  */
@@ -318,11 +384,20 @@ async function assertStillImportable(ticketId: string, sourceId: string): Promis
   if (row.deletedAt) throw inUse(sourceId, { reason: 'deleted', ticketId });
 }
 
-async function applyFinalStatus(scope: WriteScope, ticketId: string, t: ImportedTicket): Promise<void> {
-  // Re-read inside the transaction: the plan's status may be stale.
-  const [row] = await db.select({ status: tickets.status }).from(tickets).where(eq(tickets.id, ticketId)).limit(1);
+/**
+ * Applies `statusSteps` under the lock; returns whether a Breeze change kept
+ * the status. The plan's status may be stale, so the ticket is re-read FOR NO
+ * KEY UPDATE: a concurrent status change either committed first, and its feed
+ * row is seen below, or waits for this transaction. Not FOR UPDATE: that
+ * would conflict with the KEY SHARE lock a concurrent comment insert's
+ * foreign-key check takes, and deadlock with its parent-touch trigger.
+ */
+async function applyFinalStatus(scope: WriteScope, ticketId: string, t: ImportedTicket): Promise<boolean> {
+  const [row] = await db.select({ status: tickets.status }).from(tickets).where(eq(tickets.id, ticketId)).limit(1).for('no key update');
   if (!row) throw new Error(`imported ticket ${ticketId} is not visible to its window`);
-  for (const step of finalStatusSteps(row.status as TicketStatus, t)) {
+  const lastStatusChange = await lastFeedRowBy(ticketId, 'status_change');
+  const { steps, skipped } = statusSteps(row.status as TicketStatus, lastStatusChange, t, scope.window.principalId);
+  for (const step of steps) {
     await changeTicketStatus(
       ticketId,
       { status: step.status },
@@ -331,6 +406,7 @@ async function applyFinalStatus(scope: WriteScope, ticketId: string, t: Imported
       scope.at(step.at),
     );
   }
+  return skipped;
 }
 
 /** Charge the bucket, open the narrowed context, lock the window FOR SHARE, run `fn`. */
@@ -377,7 +453,10 @@ async function writeComments(
       written += 1;
     } catch (err) {
       // Held by a ticket outside the window (RLS hides it from the check
-      // above): the comment is already imported, under another ticket.
+      // above), or written by a concurrent run since: the comment is already
+      // imported. addTicketComment's own transaction is a savepoint inside
+      // this one, so the conflict undoes only that insert and the chunk goes
+      // on (pinned by ticketImport.integration.test.ts).
       if (!isImportSourceConflict(err)) throw err;
       skipped += 1;
     }
@@ -385,9 +464,30 @@ async function writeComments(
   return { written, skipped };
 }
 
-function chunked<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+/**
+ * Splits comments, in order, into chunks of at most `maxCount` comments and
+ * `maxBytes` of content (UTF-8). A comment larger than `maxBytes` goes in a
+ * chunk of its own.
+ */
+export function chunkComments(
+  comments: readonly ImportedComment[],
+  maxCount: number,
+  maxBytes: number,
+): ImportedComment[][] {
+  const out: ImportedComment[][] = [];
+  let current: ImportedComment[] = [];
+  let bytes = 0;
+  for (const comment of comments) {
+    const size = Buffer.byteLength(comment.content, 'utf8');
+    if (current.length > 0 && (current.length >= maxCount || bytes + size > maxBytes)) {
+      out.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(comment);
+    bytes += size;
+  }
+  if (current.length > 0) out.push(current);
   return out;
 }
 
@@ -414,10 +514,7 @@ export async function importTicket(
   }
   const chunkSize = Math.min(IMPORT_COMMENT_CHUNK_SIZE, Math.max(1, Math.floor(options.chunkSize ?? IMPORT_COMMENT_CHUNK_SIZE)));
   const t = parseImportedTicket(input);
-  const descriptor = await readWindowDescriptor(windowId);
-  if (options.partnerId !== descriptor.partnerId) {
-    throw new MigrationWindowError('MIGRATION_WINDOW_NOT_OPEN', 'The migration window is not open', 409, { reason: 'not_found' });
-  }
+  const descriptor = await readWindowDescriptor(windowId, options.partnerId);
   const context = windowWriteContext(descriptor);
   const principalId = descriptor.principalId;
 
@@ -433,15 +530,17 @@ export async function importTicket(
     if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
     const presentIds = await presentCommentSourceIds(principalId, t.comments.map((c) => c.sourceId));
     const missing = inSourceOrder(t.comments.filter((c) => !presentIds.has(c.sourceId)));
-    const changes = headerChanges(stored, ref, await lastAssignmentBy(stored.id), t, principalId);
+    const changes = headerChanges(stored, ref, await lastFeedRowBy(stored.id, 'assignment'), t, principalId);
     const statusAfterHeader: TicketStatus = changes.assign?.to && stored.status === 'new' ? 'open' : stored.status;
+    const status = statusSteps(statusAfterHeader, await lastFeedRowBy(stored.id, 'status_change'), t, principalId);
     return {
       kind: 'resume' as const,
       stored,
       missing,
       present: t.comments.length - missing.length,
       headerCost: headerCost(changes),
-      statusCost: finalStatusSteps(statusAfterHeader, t).length,
+      statusCost: status.steps.length,
+      statusSkipped: status.skipped,
     };
   });
 
@@ -455,7 +554,7 @@ export async function importTicket(
   }
 
   const orgId = plan.kind === 'create' ? t.orgId : plan.stored.orgId;
-  const chunks = chunked(plan.missing, chunkSize);
+  const chunks = chunkComments(plan.missing, chunkSize, IMPORT_COMMENT_CHUNK_BYTES);
   const statusCost = plan.kind === 'create'
     ? finalStatusSteps(t.assigneeUserId ? 'open' : 'new', t).length
     : plan.statusCost;
@@ -463,6 +562,13 @@ export async function importTicket(
   let fieldsUpdated = 0;
   let commentsWritten = 0;
   let commentsSkipped = plan.present;
+  // The last transaction decides the status again under the lock; its answer
+  // is the one reported. A transaction that fails throws, so a rolled-back
+  // answer is never returned.
+  let statusSkipped = plan.kind === 'resume' && plan.statusSkipped;
+  const finalStatus = async (scope: WriteScope, id: string) => {
+    statusSkipped = await applyFinalStatus(scope, id, t);
+  };
 
   // The header: a create (create + ref + assign), or a resume's re-applied
   // fields. The final status rides on the last transaction.
@@ -488,7 +594,7 @@ export async function importTicket(
         throw err;
       }
       if (t.assigneeUserId) await assignTicket(created.id, t.assigneeUserId, scope.actor, scope.at(t.createdAt));
-      if (lastIsHeader) await applyFinalStatus(scope, created.id, t);
+      if (lastIsHeader) await finalStatus(scope, created.id);
       return created.id;
     });
   } else if (headerRuns) {
@@ -499,7 +605,7 @@ export async function importTicket(
       const stored = await readStoredTicket(ticketId);
       const ref = await readRef(principalId, t.sourceId);
       if (!stored || ref?.ticketId !== ticketId) throw inUse(t.sourceId, { reason: 'changed', ticketId });
-      const changes = headerChanges(stored, ref, await lastAssignmentBy(ticketId), t, principalId);
+      const changes = headerChanges(stored, ref, await lastFeedRowBy(ticketId, 'assignment'), t, principalId);
       const at = scope.at(t.updatedAt);
       if (changes.fieldNames.length > 0) await updateTicketFields(ticketId, changes.fields, scope.actor, at);
       if (changes.assign) await assignTicket(ticketId, changes.assign.to, scope.actor, at);
@@ -513,7 +619,7 @@ export async function importTicket(
           externalNumber: t.sourceNumber ?? ref.externalNumber,
         });
       }
-      if (lastIsHeader) await applyFinalStatus(scope, ticketId, t);
+      if (lastIsHeader) await finalStatus(scope, ticketId);
       return changes.fieldNames.length + (changes.assign ? 1 : 0);
     });
   }
@@ -524,7 +630,7 @@ export async function importTicket(
     const result = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
       await assertStillImportable(ticketId, t.sourceId);
       const counts = await writeComments(scope, ticketId, chunk);
-      if (last) await applyFinalStatus(scope, ticketId, t);
+      if (last) await finalStatus(scope, ticketId);
       return counts;
     });
     commentsWritten += result.written;
@@ -535,7 +641,7 @@ export async function importTicket(
   if (!headerRuns && chunks.length === 0 && statusCost > 0) {
     await inImportTransaction(descriptor, context, orgId, statusCost, async (scope) => {
       await assertStillImportable(ticketId, t.sourceId);
-      await applyFinalStatus(scope, ticketId, t);
+      await finalStatus(scope, ticketId);
     });
   }
 
@@ -545,5 +651,6 @@ export async function importTicket(
     commentsWritten,
     commentsSkipped,
     fieldsUpdated,
+    statusSkipped,
   };
 }

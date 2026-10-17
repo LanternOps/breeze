@@ -162,9 +162,17 @@ type SnapshotRow = {
   immutable_until: Date | string | null;
   immutability_enforcement: string | null;
   metadata: unknown;
+  key_layout: string | null;
+  key_prefix: string | null;
 };
 
-type IdRow = { snapshot_id: string; storage_identity: string | null; config_id: string | null };
+type IdRow = {
+  snapshot_id: string;
+  storage_identity: string | null;
+  config_id: string | null;
+  key_layout: string | null;
+  key_prefix: string | null;
+};
 
 type ArtifactRow = {
   snapshot_db_id: string | null;
@@ -175,11 +183,15 @@ type ArtifactRow = {
 
 // Built on use, not at import: importing this module (pulled in by the GC job)
 // must not evaluate drizzle helpers, so suites that mock drizzle-orm still load.
+// key_layout / key_prefix: the root the prefix's objects were written under
+// (#7081). Recorded verbatim on every snapshot_prefix target, so storage GC
+// reads a fenced manifest under that root only.
 const snapshotColumns = () => sql.raw(
   'id, snapshot_id, config_id, job_id, storage_identity, size, file_count, "timestamp", '
-  + 'is_immutable, immutable_until, immutability_enforcement::text AS immutability_enforcement, metadata',
+  + 'is_immutable, immutable_until, immutability_enforcement::text AS immutability_enforcement, metadata, '
+  + 'key_layout, key_prefix',
 );
-const idColumns = () => sql.raw('snapshot_id, storage_identity, config_id');
+const idColumns = () => sql.raw('snapshot_id, storage_identity, config_id, key_layout, key_prefix');
 const artifactColumns = () => sql.raw('snapshot_id AS snapshot_db_id, storage_key, checksum_storage_key, signature_storage_key');
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -240,6 +252,8 @@ async function buildTargets(input: {
       storageIdentity: dest.storageIdentity,
       provider: dest.provider,
       snapshotId: s.snapshot_id,
+      keyLayout: s.key_layout,
+      keyPrefix: s.key_prefix,
       sizeBytes: toNumber(s.size),
       fileCount: s.file_count,
       snapshotAt: toDate(s.timestamp),
@@ -262,6 +276,8 @@ async function buildTargets(input: {
         storageIdentity: dest.storageIdentity,
         provider: dest.provider,
         snapshotId: r.snapshot_id,
+        keyLayout: r.key_layout,
+        keyPrefix: r.key_prefix,
       });
     }
   }
@@ -392,6 +408,12 @@ export async function captureBackupErasureFence(
 export interface BackupErasureFenceSet {
   /** Fenced snapshot ids among those asked about (prefix snapshots/<id>/) → the org(s) whose erasure fenced them. */
   snapshotSubjects: Map<string, Set<string>>;
+  /**
+   * The key root each fenced snapshot id's targets record (#7081), verbatim,
+   * one entry per target; NULL on a target captured before roots were
+   * recorded (all legacy then). GC reads a fenced manifest only under it.
+   */
+  snapshotRoots: Map<string, Array<{ keyLayout: string | null; keyPrefix: string | null }>>;
   /** Fenced recovery-media object keys among those asked about (or all, when none were passed). */
   objectKeys: Set<string>;
 }
@@ -411,9 +433,15 @@ export async function loadBackupErasureFences(
 ): Promise<BackupErasureFenceSet> {
   const ids = [...new Set(snapshotIds)];
   const snapshotSubjects = new Map<string, Set<string>>();
+  const snapshotRoots = new Map<string, Array<{ keyLayout: string | null; keyPrefix: string | null }>>();
   for (let i = 0; i < ids.length; i += 1000) {
     const rows = await dbModule.db
-      .select({ snapshotId: backupErasureTargets.snapshotId, subjectOrgId: backupErasureTargets.subjectOrgId })
+      .select({
+        snapshotId: backupErasureTargets.snapshotId,
+        subjectOrgId: backupErasureTargets.subjectOrgId,
+        keyLayout: backupErasureTargets.keyLayout,
+        keyPrefix: backupErasureTargets.keyPrefix,
+      })
       .from(backupErasureTargets)
       .where(sql`${backupErasureTargets.kind} = 'snapshot_prefix' AND ${inArray(backupErasureTargets.snapshotId, ids.slice(i, i + 1000))}`);
     for (const row of rows) {
@@ -424,6 +452,12 @@ export async function loadBackupErasureFences(
         snapshotSubjects.set(row.snapshotId, subjects);
       }
       subjects.add(row.subjectOrgId);
+      let roots = snapshotRoots.get(row.snapshotId);
+      if (!roots) {
+        roots = [];
+        snapshotRoots.set(row.snapshotId, roots);
+      }
+      roots.push({ keyLayout: row.keyLayout, keyPrefix: row.keyPrefix });
     }
   }
   const fencedKeys = new Set<string>();
@@ -443,7 +477,7 @@ export async function loadBackupErasureFences(
       for (const row of rows) if (row.objectKey) fencedKeys.add(row.objectKey);
     }
   }
-  return { snapshotSubjects, objectKeys: fencedKeys };
+  return { snapshotSubjects, snapshotRoots, objectKeys: fencedKeys };
 }
 
 /**

@@ -734,6 +734,17 @@ describe('DeviceInfoTab — watchdog install banner (#8620)', () => {
     expect(notice.textContent).not.toContain('install_cmd');
   });
 
+  it('renders the retry command as inline code, not literal backticks (#8667)', async () => {
+    load({ watchdogInstall: { state: 'gave_up', errorClass: 'signature', since: SINCE } });
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    const notice = await screen.findByTestId('watchdog-install-issue');
+    expect(notice.textContent).not.toContain('`');
+    const code = notice.querySelector('code');
+    expect(code).not.toBeNull();
+    expect(code?.textContent).toBe('breeze-agent service install --watchdog');
+    expect(notice.textContent).toMatch(/on the host to retry\.$/);
+  });
+
   it('maps an error class through the fixed phrase table, never the raw token', async () => {
     load({ watchdogInstall: { state: 'gave_up', errorClass: 'install_cmd', since: SINCE } });
     render(<DeviceInfoTab deviceId={deviceId} />);

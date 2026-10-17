@@ -20,7 +20,7 @@ import { requestPathLogger } from './middleware/requestPathLogger';
 import { agentAdmission } from './middleware/agentAdmission';
 import { startAdmissionControl, stopAdmissionControl } from './services/admission/admissionRuntime';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
-import { globalRateLimit } from './middleware/globalRateLimit';
+import { globalRateLimit, registerGlobalRateLimitSkipPrefix } from './middleware/globalRateLimit';
 import { exceptTunnelSurface, isTunnelSurface, tunnelHostClassifier, tunnelHostDispatch } from './middleware/tunnelHostDispatch';
 import { tunnelHostRoutes } from './routes/tunnelHost';
 import { authRoutes } from './routes/auth';
@@ -52,6 +52,7 @@ import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
 import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
+import { edrWebhookRoutes } from './routes/webhooks/edr';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
@@ -78,6 +79,16 @@ import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
 import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
 import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates';
 import { orgDocumentRoutes } from './routes/orgDocuments';
+import { trustPageRoutes } from './routes/trustPage';
+import { trustPagePublicRoutes } from './routes/trustPagePublic';
+import { trustPageAttestationRoutes } from './routes/trustPageAttestation';
+import { byTrustCrossOriginPath } from './middleware/trustCrossOrigin';
+// Trust Center W2 (#8770) — W02a stub routers, filled by W02b/d/f/g.
+import { trustPageDeclarationRoutes } from './routes/trustPageDeclarations';
+import { trustPageContentRoutes } from './routes/trustPageContent';
+import { trustPageAccessRoutes } from './routes/trustPageAccess';
+import { trustAccessPublicRoutes } from './routes/trustAccessPublic';
+import { trustPageTemplateRoutes } from './routes/trustPageTemplate';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -90,6 +101,7 @@ import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { edrRoutes } from './routes/edr';
 import { connectionHealthRoutes } from './routes/connectionHealth';
+import { emailUnsubscribeRoutes } from './routes/emailUnsubscribe';
 import { reportRoutes } from './routes/reports';
 import { incidentRoutes } from './routes/incidents';
 import { searchRoutes } from './routes/search';
@@ -176,6 +188,8 @@ import { aiRoutes } from './routes/ai';
 import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
 import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
 import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
+import { aiDataPolicyRoutes } from './routes/ai/dataPolicy';
+import { partnerAiDataPolicyRoutes } from './routes/partnerAiDataPolicy';
 import { aiModelsRoutes } from './routes/aiModels';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
@@ -496,18 +510,27 @@ app.use('*', tunnelHostClassifier());
 const TUNNEL_HTTP_PATH_PREFIX = '/api/v1/tunnel-http/';
 const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, exceptTunnelSurface(mw));
 
+const SECURE_HEADERS_OPTIONS = {
+  // Override defaults to match Breeze security policy:
+  // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
+  strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
+  // - X-Frame-Options: DENY (default is SAMEORIGIN)
+  xFrameOptions: 'DENY',
+  // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
+  referrerPolicy: 'strict-origin-when-cross-origin',
+} as const;
+
+// Trust Center W3b: the public badge and the attestation/JWKS paths get the same headers except
+// `Cross-Origin-Resource-Policy: cross-origin` (middleware/trustCrossOrigin.ts), so other origins can load them.
+// It must be chosen here, not in the handlers: secureHeaders writes its headers after next() and would
+// overwrite a handler's CORP.
 app.use(
   '*',
   exceptTunnelHttp(
-    secureHeaders({
-      // Override defaults to match Breeze security policy:
-      // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
-      strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
-      // - X-Frame-Options: DENY (default is SAMEORIGIN)
-      xFrameOptions: 'DENY',
-      // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
-      referrerPolicy: 'strict-origin-when-cross-origin',
-    })
+    byTrustCrossOriginPath(
+      secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
+      secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+    )
   )
 );
 app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface }));
@@ -768,6 +791,18 @@ api.use('*', async (c, next) => {
 
 api.route('/auth', authRoutes);
 api.route('/config', configRoutes);
+// Public trust pages (Trust Center W1, no auth). Mounted before every root-mounted
+// router so no `.use('*')` auth middleware can run ahead of these unauthenticated
+// GETs. /trust/card/* is skip-listed from the global limiter (portal SSR shares one
+// IP) and is DB-free on a serving-set miss; /trust/public/* has its own isolated
+// 'trustpublic' bucket. Unrelated to /partner/trust (partnerTrustRoutes).
+registerGlobalRateLimitSkipPrefix('/api/v1/trust/card/');
+// Signed attestation + JWKS (Trust Center W3b): public like the W1 block above and mounted ahead of it for the same
+// reason; its own 'trustattest' bucket; CORP cross-origin comes from byTrustCrossOriginPath above.
+api.route('/trust/attestation', trustPageAttestationRoutes);
+// Gated-document access flow (Trust Center W2, no auth): before /trust so its paths are never read as slugs.
+api.route('/trust/access', trustAccessPublicRoutes);
+api.route('/trust', trustPagePublicRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
@@ -851,6 +886,11 @@ api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5
 api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
 api.route('/ticket-checklist-templates', ticketChecklistTemplateRoutes); // (#5783 W02)
 api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
+api.route('/orgs', trustPageRoutes); // /orgs/:orgId/trust-page/* (Trust Center W1)
+api.route('/orgs', trustPageDeclarationRoutes); // /orgs/:orgId/trust-page/declarations/* (Trust Center W2, W02b)
+api.route('/orgs', trustPageContentRoutes); // /orgs/:orgId/trust-page/{faq,subprocessors}/* (Trust Center W2, W02f)
+api.route('/orgs', trustPageAccessRoutes); // /orgs/:orgId/trust-page/access/* (Trust Center W2, W02d)
+api.route('/trust-page-template', trustPageTemplateRoutes); // partner-wide template (Trust Center W2, W02g)
 api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
@@ -859,6 +899,8 @@ api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/edr', edrRoutes); // EDR provider framework (#8164 W01b)
 api.route('/connection-health', connectionHealthRoutes);
+// Unauthenticated RFC 8058 one-click unsubscribe (signed token; per-IP rate limited in the router).
+api.route('/email', emailUnsubscribeRoutes);
 api.route('/reports', reportRoutes);
 api.route('/incidents', incidentRoutes);
 api.route('/search', searchRoutes);
@@ -929,6 +971,13 @@ api.route('/webhooks', xeroWebhookRoutes);
 // sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: there is no ambient
 // auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', resendWebhookRoutes);
+// EDR vendor push hints (W03 PR-B, #8167) — no session auth; the per-connection
+// secret the vendor echoes in Authorization is verified in the handler.
+// partnerGuard skips the exact /webhooks/edr/<uuid> path so that secret is never
+// parsed as a JWT; the global body gate caps it at 256 KB and it has its own
+// isolated per-IP bucket. NOT under /edr (whose authMiddleware covers `*`) and
+// NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient auth transaction exists here.
+api.route('/webhooks', edrWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -1014,6 +1063,7 @@ api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
 // W04 (#5612): the partner CEILING for the unattended script lane.
 api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
+api.route('/partner/ai/data-policy', partnerAiDataPolicyRoutes);
 // W03 (partner sending domains). MUST stay above the catch-all `/partner`
 // mount below, the same ordering `/partner/trust` relies on — Hono matches in
 // registration order, so a later specific mount is never reached.
@@ -1059,6 +1109,7 @@ api.route('/ai/script-proposals', aiScriptProposalRoutes);
 // registered ahead of '/ai' so the literal paths never fall into a sibling
 // param route.
 api.route('/ai', aiScriptPolicyRoutes);
+api.route('/ai', aiDataPolicyRoutes);
 // BEFORE /ai: aiRoutes owns broad paths. There is no /ai/agents mount here —
 // the per-run artifact LIST lives inside aiAgentsRoutes itself (see
 // routes/aiAgents.ts, above its /runs/:runId), so no second router shares

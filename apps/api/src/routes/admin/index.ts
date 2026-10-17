@@ -16,6 +16,7 @@ import { adminMonitorConversionRoutes } from './monitorConversion';
 import { adminSendingDomainsRoutes } from './sendingDomains';
 import { deprecationsAdminRoutes } from './deprecations';
 import { systemConnectionsAdminRoutes } from './systemConnections';
+import { systemConnectionHealthAdminRoutes } from './systemConnectionHealth';
 import { adminAutopayRolloutRoutes } from './autopayRollout';
 
 export const adminRoutes = new Hono();
@@ -67,6 +68,8 @@ adminRoutes.route('/deprecations', deprecationsAdminRoutes);
 // gate above; GET only. Never mount this as api.route('/admin/...') in
 // src/index.ts — that would sit outside platformAdminMiddleware.
 adminRoutes.route('/system', systemConnectionsAdminRoutes);
+// Connection health W4: reconciler / digest liveness (Redis only, GET only).
+adminRoutes.route('/system', systemConnectionHealthAdminRoutes);
 
 // Hosted conversion sweep: platform-admin gate here, MFA on POSTs in the router.
 adminRoutes.route('/monitor-conversion', adminMonitorConversionRoutes);

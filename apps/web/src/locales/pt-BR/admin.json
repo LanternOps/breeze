@@ -617,6 +617,37 @@
           "security-abuse": "Segurança e abuso",
           "integrations": "Integrações"
         }
+      },
+      "connectionHealthJobs": {
+        "title": "Tarefas em segundo plano da integridade das conexões",
+        "description": "Mostra se as tarefas que monitoram a integridade das conexões estão em execução. Verificado por heartbeats no Redis.",
+        "jobs": {
+          "reconcile": {
+            "label": "Reconciliador de incidentes",
+            "description": "Abre e resolve incidentes de conexão a cada 15 minutos."
+          },
+          "digest": {
+            "label": "E-mail de resumo diário",
+            "description": "Envia o resumo da integridade das conexões; executa a cada hora."
+          }
+        },
+        "state": {
+          "ok": "Normal",
+          "stale": "Desatualizado",
+          "missing": "Sem heartbeat",
+          "failing": "Com falhas"
+        },
+        "lastRun": "Última execução {{relative}}",
+        "neverRun": "Nenhum heartbeat registrado",
+        "kindsHeading": "Fontes monitoradas",
+        "lastOk": "Último OK {{relative}}",
+        "neverOk": "Nunca teve sucesso",
+        "failureStreak": "Falhas consecutivas: {{count}}",
+        "redisUnavailable": "Não é possível ler o status das tarefas porque o Redis está indisponível. Isso não significa que as tarefas pararam.",
+        "errors": {
+          "load": "Não foi possível carregar o status das tarefas."
+        },
+        "retry": "Tentar novamente"
       }
     },
     "aiModels": {

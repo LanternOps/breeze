@@ -40,6 +40,7 @@ const SETTINGS = {
   enableSoftwareInventory: false,
   enableNetworkVisibility: false,
   enableEdrVisibility: false,
+  enableTrustPageEditing: false,
   enableHourBlock: false,
   enablePatchDetail: false,
   enableVulnerabilityDetail: false,
@@ -255,6 +256,26 @@ describe('OrgPortalSettingsEditor', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
     expect(JSON.parse(String(patchCall![1]!.body)).enableEdrVisibility).toBe(true);
+  });
+
+  it('shows the trust-page editing permission with its help text, keeps it out of "Enable all", and saves it (Trust Center W3d)', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    const toggle = (await screen.findByTestId('org-portal-toggle-enableTrustPageEditing')) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    const row = toggle.closest('label')!;
+    expect(within(row).getByText('Customer trust page editing')).toBeTruthy();
+    expect(within(row).getByText(/admin contact/i)).toBeTruthy();
+    expect(within(row).getByText(/you still publish/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('org-portal-enable-all-visibility'));
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enableTrustPageEditing).toBe(true);
   });
 
   it('"Enable all" turns EDR visibility on (not a sensitive flag)', async () => {

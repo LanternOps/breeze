@@ -2,6 +2,7 @@ import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
 import { assertSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
+import { syncManagedSoftwarePolicy } from './securityAgents/managedPolicyGenerator';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -1942,6 +1943,17 @@ export async function addFeatureLink(
       );
     }
 
+    // #6960: generate the software policy this link enforces, in the same
+    // transaction, so an enable returns with its rule in place and a missing
+    // catalog package refuses the whole write.
+    if (featureType === 'security_agents') {
+      await syncManagedSoftwarePolicy(
+        tx,
+        { id: link.id, configPolicyId, inlineSettings: effectiveInlineSettings ?? null },
+        { actorUserId: consentActor?.userId ?? null, onMissingCatalog: 'refuse' },
+      );
+    }
+
     return featureType === 'monitors' ? reloadMonitorsInterval(link, tx) : link;
   });
   // A policy that gains compliance can take precedence over the policy whose
@@ -2223,6 +2235,14 @@ export async function updateFeatureLink(
     }
 
     if (!updated) return null;
+    // #6960: re-derive the generated software policy from the new settings.
+    if (existing.featureType === 'security_agents' && updates.inlineSettings !== undefined) {
+      await syncManagedSoftwarePolicy(
+        tx,
+        { id: updated.id, configPolicyId: updated.configPolicyId, inlineSettings: updated.inlineSettings },
+        { actorUserId: consentActor?.userId ?? null, onMissingCatalog: 'refuse' },
+      );
+    }
     if (existing.featureType === 'compliance') updatedComplianceOf = existing.configPolicyId;
     return existing.featureType === 'monitors' ? reloadMonitorsInterval(updated, tx) : updated;
   });
@@ -3353,10 +3373,14 @@ export async function validateFeaturePolicyExists(
       return { valid: false, error: `${dualAxis.label} "${featurePolicyId}" not found — no owning organization or partner` };
     }
 
+    // #6960: a software policy GENERATED from a security_agents link belongs to
+    // that link and resolves through its own dimension; linking it as an
+    // ordinary software_policy would let a customer link arm or shadow it.
+    const managedExclusion = featureType === 'software_policy' ? [isNull(softwarePolicies.managedByLinkId)] : [];
     const [row] = await db
       .select({ id: dualAxis.table.id })
       .from(dualAxis.table)
-      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions)))
+      .where(and(eq(dualAxis.table.id, featurePolicyId), or(...ownershipConditions), ...managedExclusion))
       .limit(1);
 
     if (!row) {

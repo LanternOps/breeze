@@ -1,0 +1,33 @@
+---
+// PUBLIC. SSR fetches only the small card (DB-free on a miss; exempt from the IP limiter because
+// the portal container's requests share one IP) for <title>/OG/header. The body loads client-side
+// from the visitor's own IP (spec trust-center §8 "SSR vs client rendering").
+import TrustPageLayout from '../../../layouts/TrustPageLayout.astro';
+import TrustPageView from '../../../components/trust/TrustPageView';
+import { portalApi } from '../../../lib/api';
+import { cardMeta } from '../../../components/trust/trustPageFormat';
+import { publicServerApiConfig } from '../../../lib/server';
+import { trustAttestationJwksPath, trustAttestationPath } from '../../../lib/trustAttestation';
+
+const { partnerSlug } = Astro.params;
+const res = await portalApi.getTrustCard(partnerSlug!, null, { ...publicServerApiConfig(Astro.request), timeoutMs: 3000 });
+const card = res.data?.data ?? null;
+if (!card && res.statusCode === 404) return new Response('Not Found', { status: 404 });
+// 503 (Redis blip) or network error: render the generic shell; the island still loads the page.
+if (card) Astro.locals.trustCacheable = true;
+// Title, description and <html lang> follow the page's frozen locale (card.locale); card.title/summaryLine
+// stay English for API compatibility.
+const meta = cardMeta(card);
+// Signed, machine-readable copy (Trust Center W3b). Linked only while the page is fresh: a stale page has no
+// attestation (the API answers 503 ATTESTATION_STALE).
+const attestationHref = card && !card.stale ? trustAttestationPath(partnerSlug!, null) : null;
+const jwksHref = trustAttestationJwksPath();
+---
+<TrustPageLayout title={meta.title} description={meta.description} lang={meta.lang} canonicalPath={`/trust/${partnerSlug}`} indexable={card?.searchIndexable ?? false} accent={card?.primaryColor} imageUrl={card?.logoUrl} alternateJwtHref={attestationHref}>
+  <TrustPageView partnerSlug={partnerSlug!} orgSlug={null} card={card} client:load />
+  {attestationHref && (
+    <p class="mt-8 text-center text-xs text-muted-foreground">
+      {meta.signedCopy} <a class="underline underline-offset-2" href={attestationHref}>{attestationHref}</a>{' · '}{meta.verificationKeys} <a class="underline underline-offset-2" href={jwksHref}>jwks.json</a>
+    </p>
+  )}
+</TrustPageLayout>

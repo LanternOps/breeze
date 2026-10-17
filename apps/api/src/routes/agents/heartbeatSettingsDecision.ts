@@ -60,6 +60,11 @@ export function retainStateKillSwitchEnabled(env: NodeJS.ProcessEnv = process.en
   return env.HEARTBEAT_RETAIN_STATE_ENABLED !== 'false';
 }
 
+/** #8869 — kill switch for agent-side ECH dialing. Anything but the literal 'false' is on. */
+export function agentEchEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AGENT_ECH_ENABLED !== 'false';
+}
+
 export function buildSettingsDecisionFields(i: SettingsDecisionInput): SettingsDecisionFields {
   if (i.retainProtocol !== 1 || !i.enabled) {
     return {

@@ -38,6 +38,7 @@ import {
 import {
   resolveDeviceIdsForSoftwarePolicy,
   resolveSecurityAgentsLinkForDevice,
+  resolveSecurityAgentsLinksForDevices,
 } from '../../services/featureConfigResolver';
 import { resolveEffectiveConfig } from '../../services/configurationPolicy';
 import type { AuthContext } from '../../middleware/auth';
@@ -166,6 +167,17 @@ describe('security_agents resolution — live Postgres (#6960)', () => {
       // d3 is reached only through CP_CHILD, which inherits L1 from CP_SA.
       const r3 = await resolveSecurityAgentsLinkForDevice(f.d.d3);
       expect(r3).toMatchObject({ linkId: f.l1Id, configPolicyId: f.cpSaId });
+    });
+  });
+
+  it('the batched resolver (W02) picks the same winner as the per-device walk: site, closer device opt-out, inherited child', async () => {
+    const f = await seed();
+    await withSystemDbAccessContext(async () => {
+      const batched = await resolveSecurityAgentsLinksForDevices([f.d.d1, f.d.d2, f.d.d3]);
+      expect(Object.fromEntries(batched)).toEqual({ [f.d.d1]: f.l1Id, [f.d.d2]: f.l2Id, [f.d.d3]: f.l1Id });
+      for (const deviceId of [f.d.d1, f.d.d2, f.d.d3]) {
+        expect(batched.get(deviceId)).toBe((await resolveSecurityAgentsLinkForDevice(deviceId))?.linkId ?? null);
+      }
     });
   });
 
