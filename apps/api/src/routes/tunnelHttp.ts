@@ -10,6 +10,7 @@ import { createCorsOriginResolver } from '../services/corsOrigins';
 import { isSameOriginRequest } from '../services/requestTransport';
 import { UUID_REGEX } from '../utils/uuid';
 import { getRedis } from '../services/redis';
+import { recordTunnelHttpOutcome } from '../services/tunnelHttpMetrics';
 import {
   CONNECTABLE_TUNNEL_STATUSES, HOP_BY_HOP, activateTunnelSessionOnExchange, HTTP_TUNNEL_COOKIE_TTL_SECONDS,
   authorizeTunnelContinuation, bumpTunnelActivity, collectForwardableHeaders, decodeUpstreamBody,
@@ -354,6 +355,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // the other).
   const crossSiteDenial = tunnelHttpCrossSiteDenialReason(c);
   if (crossSiteDenial) {
+    recordTunnelHttpOutcome('path', 'admission_refused');
     return c.text(crossSiteDenial, 403);
   }
 
@@ -378,6 +380,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   }
   if (!userId) {
     if (!ticket) {
+      recordTunnelHttpOutcome('path', 'auth_failed');
       return c.text('Unauthorized', 401);
     }
     const consumed = await consumeWsTicket(ticket, {
@@ -389,11 +392,13 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       consumed.sessionId !== tunnelId ||
       consumed.sessionType !== 'tunnel-http'
     ) {
+      recordTunnelHttpOutcome('path', 'auth_failed');
       return c.text('Unauthorized', 401);
     }
 
     const liveAuthority = await authorizeTunnelContinuation(tunnelId, consumed.userId);
     if (!liveAuthority.ok) {
+      recordTunnelHttpOutcome('path', 'gate_denied');
       return c.text('Access denied', liveAuthority.status);
     }
 
@@ -448,6 +453,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // 2. Authz — shared core (identical gates/order/responses in both modes).
   const gate = await runTunnelRequestGates(tunnelId, userId);
   if (!gate.ok) {
+    recordTunnelHttpOutcome('path', 'gate_denied');
     return c.text(gate.message, gate.status);
   }
   const { session } = gate;
@@ -508,6 +514,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
 
   const outcome = await dispatchTunnelHttpRequest(tunnelId, session, { method, path, headers, bodyB64 });
   if (!outcome.ok) {
+    recordTunnelHttpOutcome('path', 'dispatch_failed');
     return c.text(outcome.message, outcome.status);
   }
 
@@ -585,5 +592,6 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // Buffer isn't a DOM `BodyInit`; hand the runtime a Uint8Array for binary
   // responses and the string as-is for rewritten HTML.
   const responseBody: BodyInit = typeof body === 'string' ? body : new Uint8Array(body);
+  recordTunnelHttpOutcome('path', 'proxied');
   return new Response(responseBody, { status: upstream.status, headers: respHeaders });
 });

@@ -120,6 +120,9 @@ vi.mock('../services/agentCommandAwait', async (importActual) => ({
   sendCommandToAgentAwaitResult: sendCommandMock,
 }));
 
+const { pathMetricMock } = vi.hoisted(() => ({ pathMetricMock: vi.fn() }));
+vi.mock('../services/tunnelHttpMetrics', () => ({ recordTunnelHttpOutcome: pathMetricMock }));
+
 const { checkRemoteAccessMock } = vi.hoisted(() => ({
   checkRemoteAccessMock: vi.fn(async () => ({ allowed: true })),
 }));
@@ -1229,5 +1232,21 @@ describe('ticket exchange vs Close (spec §4 revocation)', () => {
     const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
     expect(res.status).toBe(502);
     expect(await res.text()).toBe('Tunnel closed');
+  });
+});
+
+describe('path-mode outcome metrics (#8158)', () => {
+  it('counts auth failures, dispatch failures and successes under mode=path', async () => {
+    pathMetricMock.mockClear();
+    const app = makeApp();
+    expect((await app.request(`${BASE}/`)).status).toBe(401);
+    expect(pathMetricMock).toHaveBeenCalledWith('path', 'auth_failed');
+    const cookie = await mintCookie(app);
+    sendCommandMock.mockResolvedValueOnce({ status: 'failed', error: 'boom' });
+    expect((await app.request(`${TOKEN_BASE}/`, { headers: { cookie } })).status).toBe(502);
+    expect(pathMetricMock).toHaveBeenCalledWith('path', 'dispatch_failed');
+    expect((await app.request(`${TOKEN_BASE}/`, { headers: { cookie } })).status).toBe(200);
+    expect(pathMetricMock).toHaveBeenCalledWith('path', 'proxied');
+    expect(pathMetricMock.mock.calls.every((call) => call[0] === 'path')).toBe(true);
   });
 });
