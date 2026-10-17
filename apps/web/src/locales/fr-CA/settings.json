@@ -5991,6 +5991,8 @@
     },
     "columns": {
       "timezone": "Fuse horaire",
+      "address": "Adresse",
+      "contact": "Personne-ressource",
       "devices": "Appareils"
     },
     "empty": "Aucun site trouvé. Ajoutez un site pour commencer."

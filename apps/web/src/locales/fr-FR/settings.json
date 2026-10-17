@@ -5943,6 +5943,8 @@
     },
     "columns": {
       "timezone": "Fuse horaire",
+      "address": "Adresse",
+      "contact": "Interlocuteur",
       "devices": "Dispositifs"
     },
     "empty": "Aucun site trouvé. Ajoutez un site pour commencer."

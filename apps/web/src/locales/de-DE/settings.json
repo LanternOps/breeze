@@ -5943,6 +5943,8 @@
     },
     "columns": {
       "timezone": "Zeitzone",
+      "address": "Adresse",
+      "contact": "Kontakt",
       "devices": "Geräte"
     },
     "empty": "Keine Standorte gefunden. Fügen Sie eine Standort hinzu, um loszulegen."
