@@ -1067,6 +1067,13 @@
         "business": "Geschäftlich",
         "general": "Allgemein",
         "businessDescription": "Interne MSP-Kennzahlen — SLA-Erfüllung, Techniker-Abrechenbarkeit und offene Forderungen — nur für Mitarbeitende."
+      },
+      "delivery": {
+        "contactsLoading": "Kontakte der Organisation werden geladen…",
+        "contactsFailed": "Die Kontakte dieser Organisation konnten nicht geladen werden. Sie können weiterhin E-Mail-Adressen hinzufügen.",
+        "noContacts": "Diese Organisation hat keine Kontakte mit E-Mail-Adresse.",
+        "removeEmail": "{{email}} entfernen",
+        "recipientsFailed": "Der Bericht „{{name}}“ wurde erstellt, aber nicht alle Empfänger konnten hinzugefügt werden. Fügen Sie sie im Bericht hinzu."
       }
     },
     "threatDetectionOptions": {

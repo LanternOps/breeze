@@ -700,7 +700,23 @@
       "noSelection": "Kuruluşu seçin",
       "searchOrganizations": "Arama kuruluşları…",
       "noMatches": "Hiçbir kuruluş eşleşmiyor",
-      "legacyFilterNotice": "Organizasyon filtreleme artık başlık seçiciyi takip ediyor."
+      "legacyFilterNotice": "Organizasyon filtreleme artık başlık seçiciyi takip ediyor.",
+      "recent": "Son kullanılanlar",
+      "pane": {
+        "destinations": {
+          "overview": "Genel bakış",
+          "devices": "Cihazlar",
+          "tickets": "Biletler",
+          "alerts": "Uyarılar",
+          "sites": "Siteler",
+          "billing": "Faturalama"
+        },
+        "offlineCount": "{{count}} çevrimdışı",
+        "openCount": "{{count}} açık",
+        "criticalCount": "{{count}} kritik",
+        "noCritical": "yok",
+        "hint": "Geçiş yapmak için bir ada tıklayın · geçiş yapıp gitmek için bir sayfaya tıklayın"
+      }
     },
     "header": {
       "menu": "Menü",

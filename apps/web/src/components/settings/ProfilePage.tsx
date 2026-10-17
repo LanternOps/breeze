@@ -10,6 +10,7 @@ import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import RemoteToolSettings from './RemoteToolSettings';
 import TicketPushoverSettings from './TicketPushoverSettings';
+import EmailNotificationSettings from './EmailNotificationSettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
 import { pickReauthTier, type ReauthTier } from './StepUpPrompt';
@@ -1867,6 +1868,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
       />
       <TicketPushoverSettings />
+      <EmailNotificationSettings />
 
       {/* Onboarding */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">

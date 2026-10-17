@@ -4160,6 +4160,42 @@
       "false_positive": "Falso positivo",
       "dismissed": "Ignorato",
       "unknown": "Sconosciuto"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Isola dispositivo",
+        "unisolate": "Rimuovi isolamento",
+        "scan": "Avvia scansione",
+        "update_agent": "Aggiorna agente"
+      },
+      "unavailable": "Non disponibile",
+      "mfaRequired": "Verifica con MFA per eseguire azioni di risposta",
+      "error": "Impossibile richiedere l’azione di risposta.",
+      "requested": "{{action}} richiesto per {{device}}",
+      "inProgress": "Un’altra azione di risposta è già in corso per questo dispositivo.",
+      "confirming": "Richiesto — conferma in corso con {{vendor}}",
+      "reasonLabel": "Motivo (facoltativo)",
+      "confirm": {
+        "isolate": {
+          "title": "Isolare {{device}}?",
+          "message": "{{vendor}} isolerà {{device}}: il dispositivo perde l’accesso alla rete tranne verso {{vendor}}. Potrai rimuovere l’isolamento in seguito."
+        },
+        "unisolate": {
+          "title": "Rimuovere l’isolamento da {{device}}?",
+          "message": "{{vendor}} ripristinerà il normale accesso alla rete per {{device}}."
+        }
+      }
+    },
+    "history": {
+      "heading": "Azioni di risposta recenti",
+      "checking": "Verifica in corso",
+      "aiBadge": "IA",
+      "status": {
+        "queued": "In coda",
+        "submitted": "In corso",
+        "succeeded": "Riuscita",
+        "failed": "Non riuscita"
+      }
     }
   },
   "endpointMessages": {
@@ -4322,5 +4358,65 @@
         "nothing_to_resend": "Nessun dispositivo non riuscito o scaduto a cui reinviare."
       }
     }
+  },
+  "endpointChat": {
+    "tabLabel": "Chat dal vivo",
+    "tabTitle": "Chat dal vivo con la persona che usa questo dispositivo",
+    "unsupported": "Nessuna chat su questo dispositivo. La chat richiede Breeze Assist in una sessione console di Windows.",
+    "footer": "L'utente la vede come una finestra di chat. Una chat non concede mai l'accesso remoto.",
+    "startHeading": "Avvia una chat",
+    "firstMessageLabel": "Primo messaggio",
+    "startChat": "Avvia chat",
+    "starting": "Avvio in corso...",
+    "recentHeading": "Chat recenti",
+    "empty": "Ancora nessuna chat con questo dispositivo.",
+    "loadFailed": "Impossibile caricare le chat.",
+    "loading": "Caricamento...",
+    "back": "Torna alle chat",
+    "endChat": "Termina chat",
+    "ending": "Chiusura in corso...",
+    "messageLabel": "Messaggio",
+    "send": "Invia",
+    "sending": "Invio in corso...",
+    "openExisting": "Apri la chat esistente",
+    "user": "Utente",
+    "technician": "Tecnico",
+    "fromUser": "{{name}} (utente)",
+    "undelivered": "Non consegnato",
+    "status": {
+      "opening": "In attesa che l'utente veda la finestra di chat...",
+      "open": "Chat aperta",
+      "closed": "Questa chat è terminata.",
+      "expired": "Questa chat è terminata dopo 30 minuti di inattività.",
+      "failed": "Impossibile avviare la chat."
+    },
+    "statusShort": {
+      "opening": "Apertura",
+      "open": "Aperta",
+      "closed": "Terminata",
+      "expired": "Scaduta",
+      "failed": "Non riuscita"
+    },
+    "errors": {
+      "chat_requires_assist": "La chat richiede Breeze Assist in una sessione console di Windows.",
+      "agent_unsupported": "L'agente su questo dispositivo non supporta ancora la chat.",
+      "device_offline": "Il dispositivo è offline. Riprova quando sarà online.",
+      "platform_unsupported": "La chat è disponibile solo sui dispositivi Windows.",
+      "conversation_active": "Con questo dispositivo è già in corso una chat.",
+      "rate_limited": "Troppe chat o messaggi inviati di recente. Riprova più tardi.",
+      "open_timeout": "Il dispositivo non ha risposto in tempo, quindi la chat non è stata avviata.",
+      "chat_window_failed": "Il dispositivo non è riuscito a mostrare la finestra di chat.",
+      "conversation_not_open": "Questa chat non è più aperta.",
+      "feature_disabled": "La chat non è abilitata per questa organizzazione.",
+      "no_permission": "Non hai l'autorizzazione a chattare con questo dispositivo.",
+      "device_not_found": "Questo dispositivo non è stato trovato.",
+      "generic": "Si è verificato un problema con la chat. Riprova.",
+      "open_failed": "Impossibile avviare la chat. Riprova.",
+      "send_failed": "Impossibile inviare il messaggio. Riprova.",
+      "close_failed": "Impossibile terminare la chat. Riprova."
+    },
+    "updatesPaused": "Aggiornamenti in tempo reale in pausa — nuovo tentativo in corso",
+    "closeNotAnnounced": "La chat è chiusa qui. La finestra di chat dell'utente potrebbe restare aperta finché il suo dispositivo non si riconnette o finché non risponde.",
+    "unavailable": "Questa chat non è più disponibile"
   }
 }

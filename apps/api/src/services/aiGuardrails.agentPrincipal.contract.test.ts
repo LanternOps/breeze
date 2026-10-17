@@ -272,6 +272,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_topology', // M4 Task 1 (#6000) bounded topology graph, Tier 1 read
   'get_topology_impact', // M3 Task 10 topology read
   'get_topology_monitoring_status', // M3-D12 (#5999) one-site monitoring status, Tier 1 read
+  'get_trust_page_status', // Trust Center W2 (Ruling 15): Tier 1 read of the org's trust page status
   'get_user_experience_metrics',
   // W01 (#6755)
   'get_vault_status',

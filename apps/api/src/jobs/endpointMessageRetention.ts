@@ -1,6 +1,9 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { sql } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
+import { ENDPOINT_CHAT_LIMITS } from '@breeze/shared';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { queueCommandForExecutionWithSystemPrecheck } from '../services/commandQueue';
+import { CommandTypes } from '../services/commandTypes';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
@@ -17,12 +20,25 @@ import { jobSchedule } from './scheduleRegistry';
  *     receipts cascade), and so are detached deliveries (a device that moved
  *     orgs) older than 13 months.
  *
+ * Endpoint live chat (#8743 W03), same job (runEndpointChatRetentionOnce):
+ *  4. Idle: an open chat with no activity for 30 minutes is `expired`
+ *     (close_reason 'idle'); an `opening` chat the agent never confirmed in
+ *     2 minutes is `failed` (open_timeout). The agent is told (chat_close,
+ *     best effort, after the DB pass) so the helper window stops taking input.
+ *  5. History: conversations older than 13 months are deleted (messages
+ *     cascade), then message bodies older than 90 days are nulled.
+ *
  * Every pass is batched and reports its row count. Runs in system scope:
  * retention is cross-tenant by design and runs outside any request.
  */
 
 export const ENDPOINT_MESSAGE_RETENTION_QUEUE = 'endpoint-message-retention';
 const JOB_NAME = 'endpoint-message-retention';
+// Live chat (#8743): the 30-minute idle close needs a fine tick, so it is its
+// own repeatable job on the same queue (sub-hourly, so `every:` by design; see
+// scheduleRegistry.ts "HONEST SCOPE").
+export const CHAT_JOB_NAME = 'endpoint-chat-retention';
+export const CHAT_RETENTION_EVERY_MS = 5 * 60_000;
 
 export const ENDPOINT_MESSAGE_BODY_RETENTION_DAYS = 90;
 export const ENDPOINT_MESSAGE_HISTORY_RETENTION_MONTHS = 13;
@@ -111,6 +127,117 @@ export async function runEndpointMessageRetentionOnce(now: Date = new Date()): P
   });
 }
 
+export interface EndpointChatRetentionResult {
+  idleExpired: number;
+  opensTimedOut: number;
+  bodiesPurged: number;
+  conversationsDeleted: number;
+}
+
+/** Tells the agent a chat ended. Best effort: an offline device learns at its next reply (409). */
+export type ChatCloseNotifier = (deviceId: string, payload: Record<string, unknown>, expectedOrgId: string) => Promise<void>;
+
+const notifyChatClosed: ChatCloseNotifier = async (deviceId, payload, expectedOrgId) => {
+  const res = await queueCommandForExecutionWithSystemPrecheck(deviceId, CommandTypes.CHAT_CLOSE, payload, {
+    expectedOrgId,
+    offlinePolicy: { kind: 'reject' },
+  });
+  if (res.error) {
+    console.warn('[endpointMessageRetention] chat_close not delivered', { deviceId, error: res.error });
+  }
+};
+
+interface ClosedRow { id: string; device_id: string; org_id: string }
+
+function rowsOf(res: unknown): ClosedRow[] {
+  return (Array.isArray(res) ? res : ((res as { rows?: unknown[] }).rows ?? [])) as ClosedRow[];
+}
+
+/** One chat retention run. Exported for tests; `now` and the notifier are injectable. */
+export async function runEndpointChatRetentionOnce(
+  now: Date = new Date(),
+  notify: ChatCloseNotifier = notifyChatClosed,
+): Promise<EndpointChatRetentionResult> {
+  const nowIso = now.toISOString();
+  const closed: Array<ClosedRow & { reason: 'idle' }> = [];
+  const result = await withSystemDbAccessContext(async () => {
+    const idleExpired = await batched('chat idle close', async () => {
+      const rows = rowsOf(await db.execute(sql`
+        UPDATE endpoint_conversations
+           SET status = 'expired', close_reason = 'idle', closed_at = ${nowIso}::timestamptz, updated_at = ${nowIso}::timestamptz
+         WHERE id IN (
+           SELECT id FROM endpoint_conversations
+            WHERE status = 'open'
+              AND last_activity_at < ${nowIso}::timestamptz - make_interval(mins => ${ENDPOINT_CHAT_LIMITS.idleCloseMinutes})
+            LIMIT ${BATCH}
+         )
+           AND status = 'open'
+           -- Re-checked on the row itself: a reply that committed after the
+           -- subquery's snapshot keeps the chat alive.
+           AND last_activity_at < ${nowIso}::timestamptz - make_interval(mins => ${ENDPOINT_CHAT_LIMITS.idleCloseMinutes})
+        RETURNING id, device_id, org_id`));
+      for (const r of rows) closed.push({ ...r, reason: 'idle' });
+      return rows.length;
+    });
+
+    const opensTimedOut = await batched('chat open timeout', async () => {
+      const rows = rowsOf(await db.execute(sql`
+        UPDATE endpoint_conversations
+           SET status = 'failed', error_code = 'open_timeout', updated_at = ${nowIso}::timestamptz
+         WHERE id IN (
+           SELECT id FROM endpoint_conversations
+            WHERE status = 'opening'
+              AND created_at < ${nowIso}::timestamptz - make_interval(mins => ${ENDPOINT_CHAT_LIMITS.openTimeoutMinutes})
+            LIMIT ${BATCH}
+         )
+           AND status = 'opening'
+           AND created_at < ${nowIso}::timestamptz - make_interval(mins => ${ENDPOINT_CHAT_LIMITS.openTimeoutMinutes})
+        RETURNING id, device_id, org_id`));
+      // The window may have come up after all (a lost result): take it down.
+      for (const r of rows) closed.push({ ...r, reason: 'idle' });
+      return rows.length;
+    });
+
+    // Delete before purging, so a row about to go is not rewritten first.
+    const conversationsDeleted = await batched('chat history delete', async () => rowCount(await db.execute(sql`
+      DELETE FROM endpoint_conversations
+       WHERE id IN (
+         SELECT id FROM endpoint_conversations
+          WHERE created_at < ${nowIso}::timestamptz - make_interval(months => ${ENDPOINT_MESSAGE_HISTORY_RETENTION_MONTHS})
+          ORDER BY created_at
+          LIMIT ${BATCH}
+       )
+      RETURNING id`)));
+
+    const bodiesPurged = await batched('chat body purge', async () => rowCount(await db.execute(sql`
+      UPDATE endpoint_conversation_messages
+         SET body = NULL, body_purged_at = ${nowIso}::timestamptz, updated_at = ${nowIso}::timestamptz
+       WHERE id IN (
+         SELECT id FROM endpoint_conversation_messages
+          WHERE body_purged_at IS NULL
+            AND created_at < ${nowIso}::timestamptz - make_interval(days => ${ENDPOINT_MESSAGE_BODY_RETENTION_DAYS})
+          ORDER BY created_at
+          LIMIT ${BATCH}
+       )
+      RETURNING id`)));
+
+    return { idleExpired, opensTimedOut, bodiesPurged, conversationsDeleted };
+  });
+
+  // Command dispatch never runs inside the retention transaction.
+  for (const c of closed) {
+    try {
+      await runOutsideDbContext(() => notify(c.device_id, { conversationId: c.id, reason: c.reason }, c.org_id));
+    } catch (err) {
+      console.warn('[endpointMessageRetention] chat_close notify threw', { conversationId: c.id, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  if (result.idleExpired + result.opensTimedOut + result.bodiesPurged + result.conversationsDeleted > 0) {
+    console.log('[endpointMessageRetention] chat run complete', result);
+  }
+  return result;
+}
+
 let queue: Queue | null = null;
 let worker: Worker | null = null;
 
@@ -119,14 +246,17 @@ function getQueue(): Queue {
   return queue;
 }
 
-async function processJob(_job: Job): Promise<unknown> {
+export async function processEndpointMessageRetentionJob(job: Pick<Job, 'name'>): Promise<unknown> {
+  if (job.name === CHAT_JOB_NAME) return runEndpointChatRetentionOnce();
   return runEndpointMessageRetentionOnce();
 }
+
+const processJob = (job: Job) => processEndpointMessageRetentionJob(job);
 
 async function scheduleRepeatableJob(): Promise<void> {
   const q = getQueue();
   for (const job of await q.getRepeatableJobs()) {
-    if (job.name === JOB_NAME) await q.removeRepeatableByKey(job.key);
+    if (job.name === JOB_NAME || job.name === CHAT_JOB_NAME) await q.removeRepeatableByKey(job.key);
   }
   await q.add(
     JOB_NAME,
@@ -135,6 +265,16 @@ async function scheduleRepeatableJob(): Promise<void> {
       jobId: ENDPOINT_MESSAGE_RETENTION_QUEUE,
       // String literal: the schedule contract test resolves `jobSchedule('<literal>')` statically.
       repeat: { pattern: jobSchedule('endpoint-message-retention') },
+      removeOnComplete: { count: 20 },
+      removeOnFail: { count: 200 },
+    },
+  );
+  await q.add(
+    CHAT_JOB_NAME,
+    { type: CHAT_JOB_NAME, queuedAt: new Date().toISOString() },
+    {
+      jobId: `${ENDPOINT_MESSAGE_RETENTION_QUEUE}-chat`,
+      repeat: { every: CHAT_RETENTION_EVERY_MS },
       removeOnComplete: { count: 20 },
       removeOnFail: { count: 200 },
     },

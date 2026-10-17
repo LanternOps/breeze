@@ -22,6 +22,7 @@ import HuntressIntegration from "./HuntressIntegration";
 import MonitoringIntegration from "./MonitoringIntegration";
 import GoogleWorkspaceIntegration from "./GoogleWorkspaceIntegration";
 import M365TenantSection from "./M365TenantSection";
+import M365ActionsStaleManifestTable from "./M365ActionsStaleManifestTable";
 import {
   M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS,
   type M365CustomerGraphReadCallbackResult,
@@ -191,6 +192,10 @@ function parseHash(fallbackTab: TabId): {
       consumeCustomerGraphActionsResult: true,
     };
   }
+  // The partner re-consent table writes `#m365-reconsent-<orgId>` for its
+  // selected row; it lives inside the Microsoft 365 tenant section.
+  if (hash.startsWith("m365-reconsent-"))
+    return { tab: "cloud-tenants", cloudTenantsSub: "m365" };
   if (tabs.some((t) => t.id === hash)) return { tab: hash as TabId };
   // Legacy alias: this tab was "Identity" (#identity) before it was renamed to
   // Cloud tenants. Bookmarks and docs links still carry the old hash.
@@ -675,12 +680,17 @@ export default function IntegrationsPage({
         <GoogleWorkspaceIntegration />
       )}
       {activeTab === "cloud-tenants" && cloudTenantsSubTab === "m365" && (
-        <M365TenantSection
-          readCallbackResult={visibleCustomerGraphReadResult}
-          readCallbackRefreshKey={customerGraphReadCallback.refreshKey}
-          actionsCallbackResult={visibleCustomerGraphActionsResult}
-          actionsCallbackRefreshKey={customerGraphActionsCallback.refreshKey}
-        />
+        <>
+          <M365TenantSection
+            readCallbackResult={visibleCustomerGraphReadResult}
+            readCallbackRefreshKey={customerGraphReadCallback.refreshKey}
+            actionsCallbackResult={visibleCustomerGraphActionsResult}
+            actionsCallbackRefreshKey={customerGraphActionsCallback.refreshKey}
+          />
+          {/* Partner-scoped view of connections still on an older permission
+              manifest. Gated on the JWT scope (never useOrgStore partners). */}
+          {claims.scope === "partner" && <M365ActionsStaleManifestTable />}
+        </>
       )}
       {activeTab === "distributors" && isOrgScoped && (
         <p

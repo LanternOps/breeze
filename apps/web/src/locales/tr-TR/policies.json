@@ -703,7 +703,9 @@
         "showRequestSupport": "showRequestSupport",
         "portalUrl": "portalUrl'si",
         "endpointMessaging": "Uç nokta mesajları",
-        "endpointMessagingHelp": "Teknisyenlerin cihazdaki kişiye mesaj göndermesini sağlar."
+        "endpointMessagingHelp": "Teknisyenlerin cihazdaki kişiye mesaj göndermesini sağlar.",
+        "allowUserReply": "Kullanıcının yanıtlarına izin ver",
+        "allowUserReplyHelp": "Cihazdaki kişinin, teknisyenin başlattığı bir sohbette yanıt vermesine izin verir. Kapalıyken sohbetler tek yönlüdür."
       },
       "inlineEntityPicker": {
         "search": "Ara...",
@@ -887,7 +889,8 @@
         "ringInvalidTitle": "Bağlantılı Güncelleme Halkası artık kullanılamıyor.",
         "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir.",
         "ringInvalidLegacyRules": "Bu ilke, kurallar halkalara taşınmadan önceki uygulama kurallarını hâlâ taşıyor ({{rules}}). Seçtiğiniz halkada bu kuralların tam olarak aynısı zaten bulunmalı — önce onları halkaya ekleyin.",
-        "approvalRulesMovedToRing": "Otomatik onay ve uygulama kuralları artık Güncelleme Halkasında ayarlanıyor. Bunları bağlantılı halkada düzenleyin. Bu sayfa güncellemeden önce açıksa yeniden yükleyip tekrar kaydedin."
+        "approvalRulesMovedToRing": "Otomatik onay ve uygulama kuralları artık Güncelleme Halkasında ayarlanıyor. Bunları bağlantılı halkada düzenleyin. Bu sayfa güncellemeden önce açıksa yeniden yükleyip tekrar kaydedin.",
+        "ringLacksPolicyAppRules": "Seçtiğiniz Güncelleme Halkası bu ilkenin uygulama kurallarına sahip değil. Önce bu kuralların tam olarak aynısını o halkaya ekleyin veya bunlara zaten sahip bir halka seçin."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Bağlantı Çevre Birimi Politikası",
@@ -1123,6 +1126,22 @@
         "aboutTitle": "Sistem Geri Yükleme hakkında",
         "aboutBody": "Yalnızca Windows cihazlar için geçerlidir. Sistem Geri Yükleme sistem dosyalarını, kayıt defterini, yüklü programları ve ayarları kapsar. Bir yedekleme değildir ve kişisel dosyaları kapsamaz. Windows varsayılan olarak 24 saatte en fazla bir geri yükleme noktası oluşturulmasına izin verir; oluşturulan bir nokta daha sonra Windows tarafından kaldırılabilir veya kullanılamaz hale gelebilir."
       },
+      "securityAgentsTab": {
+        "title": "Güvenlik Aracıları",
+        "description": "Yönetilen güvenlik aracılarını cihazlara dağıtın ve yüklü tutun",
+        "deployVendor": "{{vendor}} dağıt",
+        "comingSoon": "Yakında",
+        "platformWindows": "Windows: otomatik olarak yüklenir.",
+        "platformMacos": "macOS: MDM onayı gerektirir, bu nedenle Breeze otomatik olarak yüklemez. Bu cihazlar uygulanamaz olarak gösterilir.",
+        "platformLinux": "Linux: desteklenmiyor.",
+        "keysNotice": "Yüklemeler, Huntress entegrasyonundaki müşteriye özel anahtarları kullanır. Bu entegrasyonda eşlenmemiş kuruluşlar atlanır ve başarısız dağıtım olmadan uygulanamaz olarak gösterilir. Bir sağlayıcıyı kapatmak uygulamayı durdurur ancak aracıyı asla kaldırmaz.",
+        "closerWarning": "Cihaza daha yakın atanmış (site, grup veya cihaz ya da miras alan alt politika) ve kendi Güvenlik Aracıları ayarlarına sahip bir yapılandırma politikası, bu cihazlar için bu ayarların yerine tamamen geçer. Orada atlanan bir sağlayıcı uygulanmaz.",
+        "partnerWideBadge": "Tüm kuruluşlara uygulanır",
+        "noneEnabledNote": "Hiçbir sağlayıcı etkin değil: bu politikanın eriştiği cihazlar tüm güvenlik aracılarının dışında tutulur.",
+        "catalogMissing": "Huntress bu iş ortağı için henüz kurulmadı. Önce Huntress entegrasyonunu bağlayın, ardından tekrar kaydedin.",
+        "catalogMissingLink": "Huntress’i bağla",
+        "executeRequired": "Yüklemeleri açmak için cihazlarda komut çalıştırma izni (MFA ile) gerekir. Bu izne sahip bir yöneticiden bu ayarı kaydetmesini isteyin."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Garanti uyarısı isteğe bağlıdır: herhangi bir garanti politikası atanmamış cihazlar asla uyarı vermez. Aşağıdaki eşikler yalnızca sabit vadeli kapsam için geçerlidir; aktif AppleCare abonelikler sona ermek yerine yenilenir, dolayısıyla sona erme uyarıları her zaman bastırılır.",
         "enableWarrantyExpiryAlerts": "Garanti sona erme uyarılarını etkinleştir",
@@ -1341,7 +1360,9 @@
       "installSkippedNoCatalog": "Gerekli bir kuralın bağlı bir katalog öğesi yok, bu yüzden yüklenecek bir şey yok. Bunu düzeltmek için politika düzenleyicisinde bir katalog bağlantısı ekleyin.",
       "installSkippedCapOrPlatform": "Bu bir hata değil — geçiş başına yükleme sınırına ulaşıldı ya da bu cihazın platformunda yazılım için bir yükleme yöntemi yok. Bir sonraki geçişte tekrar denenebilir.",
       "installAttempts": "{{count}} deneme",
-      "installLastAttempt": "Son yükleme denemesi: "
+      "installLastAttempt": "Son yükleme denemesi: ",
+      "managedByConfigPolicy": "Yapılandırma politikası tarafından yönetilir",
+      "managedByConfigPolicyHint": "Bu politika bir yapılandırma politikasından oluşturulmuştur ve burada salt okunurdur. Yapılandırma Politikaları bölümünden değiştirin."
     },
     "deploymentList": {
       "running": "Koşuyor",

@@ -24,6 +24,7 @@ import { formatLastSeen } from "@/lib/formatTime";
 import { asRecord, toPercent, toPercentNullable } from "@/lib/deviceUtils";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { EntityLink } from "@/components/shared/EntityLink";
 
 type DeviceCardProps = {
   device: Device;
@@ -651,7 +652,7 @@ export default function DeviceCard({
       )}
 
       <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-        <span>{device.siteName}</span>
+        <EntityLink kind="site" id={device.siteId} name={device.siteName} />
         <span>
           {t("deviceCard.lastSeen")}{" "}
           {formatLastSeen(device.lastSeen, effectiveTimezone)}

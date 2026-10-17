@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "KI-Daten & Datenschutz",
+    "orgDescription": "Was Breeze AI auf den Geräten dieser Organisation lesen darf und wie lange KI-Tool-Ausgaben aufbewahrt werden. Leer übernimmt den Partner-Standard; eine Organisation kann ihn nur verschärfen.",
+    "partnerDescription": "Standardwerte für jede Organisation. Eine Organisation kann diese im eigenen KI-Tab verschärfen, aber nie lockern.",
+    "levelLabel": "KI-Lesezugriff auf Gerätedateien",
+    "levels": {
+      "off": {
+        "label": "Aus",
+        "help": "Die KI kann keine Dateiinhalte lesen und keine Ordner auf Geräten durchsuchen; Anfragen für Diagnosezugriff werden abgelehnt. Übersichten zur Speichernutzung und Ihre eigenen Bibliotheksskripte bleiben verfügbar."
+      },
+      "no_user_profiles": {
+        "label": "Ohne Benutzerprofilordner",
+        "help": "System- und Anwendungspfade mit Genehmigung; Dokumente, Desktop und Home-Ordner werden abgelehnt, sofern ein Administrator keine zeitlich begrenzte Diagnosefreigabe erteilt."
+      },
+      "any_with_approval": {
+        "label": "Beliebiger Pfad, mit Genehmigung",
+        "help": "Jeder Lesezugriff erfordert weiterhin die Genehmigung eines Technikers und wird protokolliert; Anmeldedaten-Speicher bleiben gesperrt."
+      }
+    },
+    "inherit": "Übernehmen: {{value}} ({{source}})",
+    "retentionLabel": "KI-Tool-Ausgaben aufbewahren für (Tage)",
+    "retentionInherit": "Übernehmen: {{value}} ({{source}})",
+    "retentionHelp": "Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt. Leer übernimmt; ein Partner kann Ausgaben unbegrenzt aufbewahren.",
+    "keepForever": "unbegrenzt",
+    "sourceOrg": "diese Organisation",
+    "sourcePartner": "Partner-Standard",
+    "sourceDefault": "Breeze-Standard",
+    "abovePartnerCeiling": "Nicht verfügbar: Der Partner-Standard ist strenger.",
+    "aboveCeilingLevel": "Nicht verfügbar: Der Partner-Standard ist strenger.",
+    "retentionAboveCeiling": "Ihr Partner bewahrt Ausgaben höchstens {{days}} Tage auf.",
+    "saved": "KI-Datenrichtlinie gespeichert",
+    "failedToSave": "KI-Datenrichtlinie konnte nicht gespeichert werden",
+    "partnerInheritDefault": "Breeze-Standard: {{value}}",
+    "readOnly": "Sie haben keine Berechtigung, diese Standardwerte zu ändern.",
+    "retentionKeepDays": "Aufbewahren für (Tage)",
+    "retentionKeepForever": "Unbegrenzt aufbewahren",
+    "retentionBreezeDefault": "Breeze-Standard: {{days}} Tage",
+    "partnerRetentionHelp": "Legen Sie fest, wie lange KI-Tool-Ausgaben aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt."
+  },
   "partnerServicePrincipals": {
     "title": "Dienstprinzipale",
     "description": "Partnerweite Maschinenidentitäten und ihre Zugriffsschlüssel verwalten.",
@@ -1011,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Vertrauenszentrum",
+        "description": "Standardwerte für die Vertrauensseiten Ihrer Kunden"
+      },
       "company": {
         "label": "Unternehmen",
         "description": "Name, Adresse, Kontakte"
@@ -1915,6 +1958,10 @@
       "title": "Portalfunktionen",
       "description": "Steuern Sie, was dieser Kunde in seinem Portal tun kann. Jede Organisation ist unabhängig.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Bearbeitung der Trust-Seite durch den Kunden",
+          "description": "Admin-Kontakte des Kunden mit Portalzugang können den Entwurf der Trust-Seite bearbeiten: Sicherheitskontakt, Website, ausgeblendete Kontrollen und was die Seite anzeigt. Die Veröffentlichung bleibt bei Ihnen. Sie können die veröffentlichte Seite auch zurückziehen."
+        },
         "enableTickets": {
           "label": "Ticketeinreichung",
           "description": "Kunden können Support-Tickets über das Portal öffnen und verfolgen."
@@ -2036,7 +2083,9 @@
       "email": "Support-E-Mail",
       "phone": "Support-Telefon",
       "welcomeMessage": "Willkommensnachricht",
-      "footerText": "Fußzeilentext"
+      "footerText": "Fußzeilentext",
+      "footerTextHelp": "Wird unten im Kundenportal angezeigt und auf die Angebote und Rechnungen dieser Organisation gedruckt – anstelle der Partner-Dokumentfußzeile. Leer lassen, um die Partner-Fußzeile zu drucken.",
+      "footerTextInheritedSource": "Partner-Dokumentfußzeile"
     }
   },
   "orgPortalUsersEditor": {
@@ -3429,6 +3478,7 @@
         "delete_tenant": "Organisation löschen",
         "detect_log_correlations": "Protokollkorrelationen erkennen",
         "disk_cleanup": "Datenträgerbereinigung",
+        "edr_endpoint_action": "EDR: Gerät isolieren, freigeben oder scannen",
         "execute_command": "Systembefehl ausführen",
         "execute_playbook": "Playbook ausführen",
         "file_operations": "Dateivorgänge",
@@ -3516,6 +3566,7 @@
         "security_scan": "Sicherheitsscan",
         "set_agent_log_level": "Agent-Protokollstufe festlegen",
         "set_device_context": "Gerätekontext festlegen",
+        "sync_edr_data": "EDR-Daten synchronisieren",
         "sync_huntress_data": "Huntress-Daten synchronisieren",
         "system_cleanup": "Systembereinigung",
         "take_screenshot": "Screenshot aufnehmen"
@@ -4624,6 +4675,11 @@
     "systemRoles": "Systemrollen",
     "customRoles": "Benutzerdefinierte Rollen",
     "createRole": "Rolle erstellen",
+    "ownerScope": "Geltungsbereich",
+    "ownerScopePartner": "Partnerebene",
+    "ownerScopePartnerHelp": "Für Ihre eigenen Mitarbeitenden. Zuweisung auf der Seite „Benutzer“.",
+    "ownerScopeOrganization": "Organisation",
+    "ownerScopeOrganizationHelp": "Für die Benutzer einer Organisation und deren SSO-Standardrolle.",
     "name": "Name",
     "type": "Typ",
     "inheritsFrom": "Erbt von",
@@ -5628,6 +5684,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Diese Organisation hat eine veröffentlichte Seite im Vertrauenszentrum. Wenn Sie das URL-Kürzel ändern, ändert sich die öffentliche URL, und der alte Link funktioniert nicht mehr.",
     "actions": {
       "save": "Organisation retten"
     },
@@ -6777,5 +6834,16 @@
     "invalidKey": "Ein Pushover-Benutzerschlüssel besteht aus 30 Buchstaben oder Ziffern.",
     "loadFailed": "Ihre Pushover-Einstellung konnte nicht geladen werden.",
     "saveFailed": "Ihre Pushover-Einstellung konnte nicht gespeichert werden."
+  },
+  "emailNotificationSettings": {
+    "title": "E-Mail-Benachrichtigungen",
+    "description": "Legen Sie fest, welche E-Mails Breeze Ihnen sendet. Hinweise in der App bleiben immer aktiv.",
+    "digestLabel": "Tägliche Zusammenfassung zum Verbindungsstatus",
+    "digestHelp": "Eine morgendliche Übersicht über defekte Integrationen und Anmeldungen, die Sie beheben können, sowie über bereits wiederhergestellte. Höchstens einmal täglich.",
+    "enabledToast": "Zusammenfassung zum Verbindungsstatus aktiviert",
+    "disabledToast": "Zusammenfassung zum Verbindungsstatus deaktiviert",
+    "loadFailed": "E-Mail-Einstellungen konnten nicht geladen werden.",
+    "saveFailed": "E-Mail-Einstellungen konnten nicht gespeichert werden.",
+    "retry": "Erneut versuchen"
   }
 }

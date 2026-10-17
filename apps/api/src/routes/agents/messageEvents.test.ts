@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   audit: vi.fn(async () => {}),
   redisAvailable: true,
   record: vi.fn(),
+  chatReply: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -48,6 +49,10 @@ vi.mock('../../services/auditEvents', () => ({
 
 vi.mock('../../services/endpointMessaging/receipts', () => ({
   recordDeliveryEvent: h.record,
+}));
+
+vi.mock('../../services/endpointMessaging/chatReplies', () => ({
+  recordChatReply: h.chatReply,
 }));
 
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.7' }));
@@ -237,5 +242,78 @@ describe('POST /agents/:id/message-events (#8741)', () => {
       await post(buildApp(agentA), 'agent-a', body());
       expect(h.record).toHaveBeenCalledWith(expect.objectContaining({ batchId: stored, commandId: 'cmd-9' }));
     });
+  });
+});
+
+describe('POST /agents/:id/message-events chat_reply (#8743)', () => {
+  const CONV = '55555555-5555-4555-8555-555555555555';
+  const NONCE = '66666666-6666-4666-8666-666666666666';
+  const reply = (over: Record<string, unknown> = {}) => ({
+    eventType: 'chat_reply',
+    conversationId: CONV,
+    clientNonce: NONCE,
+    body: '  Sure, go ahead.  ',
+    session: { username: 'alice', sid: 'S-1-5-21-1', winSessionId: 1 },
+    at: '2026-12-30T10:00:00.000Z',
+    ...over,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.chatReply.mockResolvedValue({ kind: 'accepted', duplicate: false });
+  });
+
+  it('records the reply against the AUTHENTICATED device, never one named in the body', async () => {
+    const res = await post(buildApp(agentA), 'agent-a', reply({ deviceId: DEVICE_B }));
+    // Unknown keys are refused outright (strict), so a forged deviceId never reaches the service.
+    expect(res.status).toBe(400);
+    expect(h.chatReply).not.toHaveBeenCalled();
+
+    const ok = await post(buildApp(agentA), 'agent-a', reply());
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true, duplicate: false });
+    expect(h.chatReply).toHaveBeenCalledWith({
+      deviceId: DEVICE_A,
+      conversationId: CONV,
+      clientNonce: NONCE,
+      body: 'Sure, go ahead.',
+      session: { username: 'alice', sid: 'S-1-5-21-1', winSessionId: 1 },
+    });
+    // The W1/W2 message-event sinks are untouched by a chat reply.
+    expect(h.record).not.toHaveBeenCalled();
+    expect(h.audit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ kind: 'accepted', duplicate: true }, 200, { ok: true, duplicate: true }],
+    [{ kind: 'unknown_conversation' }, 404, { error: 'unknown_conversation' }],
+    [{ kind: 'conversation_closed' }, 409, { error: 'conversation_closed' }],
+    [{ kind: 'replies_disabled' }, 403, { error: 'replies_disabled' }],
+    [{ kind: 'rate_limited', retryAfterSeconds: 9 }, 429, { error: 'rate_limited', retryAfterSeconds: 9 }],
+  ])('maps %o to %s (the agent contract)', async (outcome, status, json) => {
+    h.chatReply.mockResolvedValue(outcome);
+    const res = await post(buildApp(agentA), 'agent-a', reply());
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual(json);
+  });
+
+  it('rejects an empty, oversize or malformed reply before the service', async () => {
+    for (const bad of [
+      reply({ body: '   ' }),
+      reply({ body: 'x'.repeat(2001) }),
+      reply({ clientNonce: 'not-a-uuid' }),
+      reply({ conversationId: undefined }),
+      reply({ session: { username: '' } }),
+    ]) {
+      expect((await post(buildApp(agentA), 'agent-a', bad)).status).toBe(400);
+    }
+    expect(h.chatReply).not.toHaveBeenCalled();
+  });
+
+  it('counts reply length in characters, as the agent and helper do (2000 emoji is full length, not 4000)', async () => {
+    // The agent counts runes and the helper Unicode scalars; counting UTF-16
+    // units here would 400 an emoji-heavy reply both of them accepted.
+    expect((await post(buildApp(agentA), 'agent-a', reply({ body: '\u{1F600}'.repeat(2000) }))).status).toBe(200);
+    expect((await post(buildApp(agentA), 'agent-a', reply({ body: '\u{1F600}'.repeat(2001) }))).status).toBe(400);
   });
 });

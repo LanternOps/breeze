@@ -1166,11 +1166,21 @@ describe('issueInvoice document_locale stamp', () => {
     expect(issueSet().terms).toBe('Powered by Acme Portal');
   });
 
-  it('prefers the partner footer over portal branding when both are set', async () => {
+  it('prefers the org (portal-branding) footer over the partner default when both are set (#7510)', async () => {
     queueIssuePath(
       draft(),
       { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: 'Partner footer' },
       [{ footerText: 'Portal footer' }],
+    );
+    await svc.issueInvoice('inv1', actor);
+    expect(issueSet().terms).toBe('Portal footer');
+  });
+
+  it('stamps the partner footer when the org sets none', async () => {
+    queueIssuePath(
+      draft(),
+      { id: 'p1', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30, settings: {}, invoiceFooter: 'Partner footer' },
+      [{ footerText: null }],
     );
     await svc.issueInvoice('inv1', actor);
     expect(issueSet().terms).toBe('Partner footer');

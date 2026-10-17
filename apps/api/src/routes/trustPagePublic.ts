@@ -22,7 +22,7 @@ import { isServing, readCachedSnapshotPayload, cacheSnapshotPayload, trustServin
 import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage } from '../services/trustPage/resolve';
 import { verifyTrustPreviewToken } from '../services/trustPage/previewToken';
 import { buildSnapshotForPage } from '../services/trustPage/publication';
-import type { TrustPagePublicPayload } from '@breeze/shared';
+import { normalizeTrustPagePayload, type TrustPagePublicPayload } from '@breeze/shared';
 
 export const trustPagePublicRoutes = new Hono();
 const STALE_AFTER_MS = 24 * 3600_000;
@@ -58,11 +58,12 @@ async function admit(c: Context, partnerSlug: string, orgSlug: string | undefine
   const resolved = await sys(() => resolvePublishedTrustPage(slugs.partnerSlug, slugs.orgSlug));
   return resolved ?? notFound(c);
 }
+/** The current snapshot's payload, normalized to v2 (a W1 snapshot stays renderable until its next refresh). */
 async function payloadFor(r: ResolvedTrustPage): Promise<TrustPagePublicPayload | null> {
   if (!r.snapshotId) return null;
   const cached = await readCachedSnapshotPayload(r.snapshotId);
-  if (cached) return cached;
-  if (r.payload) { await cacheSnapshotPayload(r.snapshotId, r.payload); return r.payload; }
+  if (cached) return normalizeTrustPagePayload(cached);
+  if (r.payload) { await cacheSnapshotPayload(r.snapshotId, r.payload); return normalizeTrustPagePayload(r.payload); }
   return null;
 }
 
@@ -81,6 +82,8 @@ async function card(c: Context, partnerSlug: string, orgSlug?: string) {
     summaryLine: `Showing ${s.controlsShown} of ${s.catalogTotal} Breeze-verifiable controls · ${s.controlsMet} met`,
     publishedAt: r.publishedAt.toISOString(), lastEvaluatedAt: r.lastEvaluatedAt?.toISOString() ?? null,
     stale: isStale(r.lastEvaluatedAt), searchIndexable: r.searchIndexable,
+    // W02h: the portal localizes <title>/description/<html lang> from these; title/summaryLine stay English.
+    locale: payload.locale, controlsShown: s.controlsShown, catalogTotal: s.catalogTotal, controlsMet: s.controlsMet,
   } });
 }
 trustPagePublicRoutes.get('/card/:partnerSlug', (c) => card(c, c.req.param('partnerSlug')));
@@ -144,7 +147,9 @@ async function documentRoute(c: Context, partnerSlug: string, orgSlug: string | 
   const r = await admit(c, partnerSlug, orgSlug, false);
   if (r instanceof Response) return r;
   const payload = await payloadFor(r);
-  if (!payload || !payload.documents.some((d) => d.id === documentId)) return notFound(c);
+  // Anonymous download needs frozen-public ∩ live-public (amendment 35): the snapshot entry must be public AND
+  // the live link (SQL below) must still be public. A gated entry is reachable only through the access flow.
+  if (!payload || !payload.documents.some((d) => d.id === documentId && d.visibility === 'public')) return notFound(c);
   const successor = alias(orgDocuments, 'successor');
   const row = await sys(async () => (await db.select({
       storageBackend: orgDocuments.storageBackend, storageKey: orgDocuments.storageKey, data: orgDocuments.data,

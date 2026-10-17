@@ -2129,6 +2129,23 @@ jobs:
           $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
           if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - the test was renamed or removed" }
 
+      # #7765: the heartbeat DHCP check reads adapter flags in-process
+      # (GetAdaptersAddresses) instead of spawning powershell Get-NetIPInterface
+      # per adapter IP. This compares the two sources on a real Windows host;
+      # heartbeat is not in the Windows package list above, so only this runs.
+      - name: Run Windows DHCP state test (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/heartbeat -run '^TestReadDHCPEnabledAliasesIPHelperMatchesGetNetIPInterface$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 1) { throw "expected exactly 1 top-level PASS line, got $passes - the test was renamed or removed" }
+
       # #7629: the agent re-secures its config folder if another account
       # created it, before reading anything from it. The tests plant
       # C:\ProgramData\Breeze-shaped folders as a simulated standard user

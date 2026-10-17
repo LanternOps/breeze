@@ -29,6 +29,26 @@ function siteFilterRaw(permissions: SitePerms): SQL {
   return sql`dv.site_id IN (${sql.join(allowed.map((s) => sql`${s}::uuid`), sql`, `)})`;
 }
 
+/**
+ * Visibility rule shared with the list: a site-restricted caller may resolve a
+ * message by id only if at least one of its deliveries is on a device in their
+ * allowed sites. Unrestricted (`allowedSiteIds === undefined`) is always true;
+ * an empty or non-array allowlist is always false. Used by detail, retract and
+ * resend so a message outside the caller's sites reads as not found.
+ */
+export async function messageReachesAllowedSites(messageRowId: string, permissions: SitePerms): Promise<boolean> {
+  const allowed = permissions?.allowedSiteIds;
+  if (allowed === undefined) return true;
+  if (!Array.isArray(allowed) || allowed.length === 0) return false;
+  const rows = await db
+    .select({ id: endpointMessageDeliveries.id })
+    .from(endpointMessageDeliveries)
+    .innerJoin(devices, eq(devices.id, endpointMessageDeliveries.deviceId))
+    .where(and(eq(endpointMessageDeliveries.endpointMessageId, messageRowId), inArray(devices.siteId, allowed)))
+    .limit(1);
+  return rows.length > 0;
+}
+
 export interface MessageListItem {
   id: string;
   orgId: string;
@@ -194,6 +214,9 @@ export async function getEndpointMessageDetail(args: {
     .where(and(eq(endpointMessages.id, messageRowId), auth.orgCondition(endpointMessages.orgId)))
     .limit(1);
   if (!m || !auth.canAccessOrg(m.orgId)) return null;
+  // Same visibility rule as the list: no in-scope delivery => not found, so the
+  // title/body never reach a site-clamped caller the message did not touch.
+  if (!(await messageReachesAllowedSites(m.id, args.permissions))) return null;
 
   const rows = await db
     .select({

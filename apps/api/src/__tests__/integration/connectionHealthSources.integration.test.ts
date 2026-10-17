@@ -51,7 +51,8 @@ describe('partner sync sources (Huntress, SentinelOne, Pax8)', () => {
     const healthy = randomUUID();
     await asSystem(() => db.insert(huntressIntegrations).values([
       { id: broken, partnerId: p1, name: 'H', apiKeyEncrypted: 'x', lastSyncStatus: 'error', lastSyncError: 'boom', createdAt: OLD },
-      { id: healthy, partnerId: p2, name: 'H', apiKeyEncrypted: 'x', lastSyncStatus: 'success', createdAt: OLD },
+      // W4: a healthy row has a recent success, or it would read as stale.
+      { id: healthy, partnerId: p2, name: 'H', apiKeyEncrypted: 'x', lastSyncStatus: 'success', lastSyncAt: NOW, createdAt: OLD },
     ]));
     const untracked = await observe(huntressSource);
     expect(untracked.filter((o) => o.sourceId === broken)).toEqual([
@@ -72,7 +73,7 @@ describe('partner sync sources (Huntress, SentinelOne, Pax8)', () => {
       await db.insert(s1Integrations).values({ id: s1, partnerId: await partner(), name: 'S', apiTokenEncrypted: 'x', managementUrl: 'https://s1.example.test', lastSyncStatus: 'error', createdAt: OLD });
       await db.insert(pax8Integrations).values([
         { id: px, partnerId: await partner(), name: 'P', clientIdEncrypted: 'x', clientSecretEncrypted: 'x', tokenUrl: 'https://px.example.test', lastSyncStatus: 'failed', createdAt: OLD },
-        { id: pxWrongVocab, partnerId: await partner(), name: 'P', clientIdEncrypted: 'x', clientSecretEncrypted: 'x', tokenUrl: 'https://px.example.test', lastSyncStatus: 'error', createdAt: OLD },
+        { id: pxWrongVocab, partnerId: await partner(), name: 'P', clientIdEncrypted: 'x', clientSecretEncrypted: 'x', tokenUrl: 'https://px.example.test', lastSyncStatus: 'error', lastSyncAt: NOW, createdAt: OLD },
       ]);
     });
     expect(ids(await observe(sentinelOneSource))).toContain(s1);
@@ -104,7 +105,7 @@ describe('vendor sources', () => {
 
   it('backup: a retry in progress (running, error cleared) reports unknown for a tracked incident', async () => {
     const b = randomUUID();
-    await asSystem(async () => db.insert(backupProviderConnections).values({ id: b, partnerId: await partner(), provider: 'cove', name: 'Main', credentialsEncrypted: 'x', lastSyncStatus: 'running', createdAt: OLD }));
+    await asSystem(async () => db.insert(backupProviderConnections).values({ id: b, partnerId: await partner(), provider: 'cove', name: 'Main', credentialsEncrypted: 'x', lastSyncStatus: 'running', lastSyncAt: NOW, createdAt: OLD }));
     expect(ids(await observe(backupProviderSource))).not.toContain(b);
     expect((await observe(backupProviderSource, [b])).find((o) => o.sourceId === b)).toMatchObject({ state: 'unknown' });
   });

@@ -86,6 +86,24 @@ describe('runReconcile', () => {
     expect(runKind).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'a' }), plusMin(T0, 15), false);
   });
 
+  it('nudge mode runs the kind even when not due, delivers notices, and skips retention and the heartbeat (W4)', async () => {
+    const redis = fakeRedis();
+    const runKind = vi.fn().mockResolvedValue(okCounts);
+    const retention = vi.fn(async () => 0);
+    const deliver = vi.fn(async () => ({ delivered: 1, failed: 0, zeroRecipients: 0 }));
+    await runReconcile({ sources: [src('a', 60)], redis, runKind, now: () => T0, ...noops });
+    redis.store.delete('connection-health:reconcile:heartbeat');
+    const r = await runReconcile({
+      sources: [src('a', 60)], redis, runKind, now: () => plusMin(T0, 2), mode: 'nudge', deliver, retention, alert: async () => true,
+    });
+    expect(r.kinds[0]!.status).toBe('ok');
+    expect(runKind).toHaveBeenCalledTimes(2);
+    expect(runKind).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'a' }), plusMin(T0, 2), false);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(retention).not.toHaveBeenCalled();
+    expect(redis.store.has('connection-health:reconcile:heartbeat')).toBe(false);
+  });
+
   it('skips a kind whose interval has not elapsed', async () => {
     const redis = fakeRedis();
     const runKind = vi.fn().mockResolvedValue(okCounts);
@@ -284,6 +302,38 @@ describe('runKindInSystemScope', () => {
     expect(source.observe).toHaveBeenCalledWith(T0, ['s1']);
     expect(planMock).toHaveBeenCalledWith({ observations: [observation], tracked, now: T0, seed: true, reopenWindowMs: 60 * 60 * 1000 });
     expect(applyActionsMock).toHaveBeenCalledWith([{ type: 'deletePending', incidentId: 'i1' }], T0);
+  });
+
+  it('runs prepare() first, outside any DB context, before the kind transaction opens (W4)', async () => {
+    const source: HealthSource = {
+      kind: 'google_workspace',
+      intervalMinutes: 30,
+      ...CONTRACT_STUB,
+      prepare: vi.fn(async () => { calls.push('prepare'); }),
+      observe: vi.fn(async () => { calls.push('observe'); return []; }),
+    };
+    loadTrackedMock.mockResolvedValue([]);
+    planMock.mockReturnValue([]);
+    applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
+
+    await runKindInSystemScope(source, T0, false);
+
+    expect(calls.slice(0, 3)).toEqual(['outside', 'prepare', 'outside']);
+    expect(calls[3]).toBe('system:connectionHealth.reconcile.google_workspace');
+    expect(source.prepare).toHaveBeenCalledWith(T0);
+  });
+
+  it('a prepare() failure fails the kind before its transaction opens', async () => {
+    const source: HealthSource = {
+      kind: 'google_workspace',
+      intervalMinutes: 30,
+      ...CONTRACT_STUB,
+      prepare: vi.fn(async () => { throw new Error('claim failed'); }),
+      observe: vi.fn(async () => []),
+    };
+    await expect(runKindInSystemScope(source, T0, false)).rejects.toThrow('claim failed');
+    expect(calls.some((c) => c.startsWith('system:'))).toBe(false);
+    expect(source.observe).not.toHaveBeenCalled();
   });
 
   it('a seed candidate does not seed when the kind already has incident rows (lost Redis key)', async () => {

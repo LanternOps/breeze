@@ -338,13 +338,21 @@ const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
 // see the doc comments at their declaration site.
 
 /**
- * Human-readable verbs for the two M365 mutation tools that hit per-step
+ * Human-readable verbs for the ten M365 mutation tools that hit per-step
  * approval. The three read tools are tier 1 and never create an approval card,
  * so they are intentionally absent.
  */
 const M365_VERB: Record<string, string> = {
   m365_reset_password: 'Reset M365 password for',
   m365_disable_user: 'Disable M365 sign-in for',
+  m365_revoke_sessions: 'Revoke all M365 sessions for',
+  m365_remove_license: 'Remove M365 licences from',
+  m365_assign_license: 'Assign M365 licences to',
+  m365_remove_from_group: 'Remove from M365 group',
+  m365_add_to_group: 'Add to M365 group',
+  m365_retire_intune_device: 'Retire Intune device for',
+  m365_create_user: 'Create M365 user',
+  m365_set_auto_reply: 'Set M365 auto-reply for',
 };
 
 /**

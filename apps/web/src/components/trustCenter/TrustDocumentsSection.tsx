@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { TRUST_DOCUMENTS_MAX } from '@breeze/shared';
+import { TRUST_DOCUMENTS_MAX, type TrustDocumentVisibility } from '@breeze/shared';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 import { listOrgDocuments, type OrgDocument } from '@/lib/api/orgDocuments';
@@ -11,10 +11,19 @@ export interface LinkedTrustDocument {
   documentId: string;
   /** Remembered so a superseded/missing link can still be named. */
   title: string;
+  /** Public: anyone with the page link downloads it. Gated: only requesters the MSP approves (W02d). */
+  visibility: TrustDocumentVisibility;
   disclosureConfirmed: boolean;
+  /** The visibility the server holds a confirmation for (absent for a link added in this session). */
+  savedVisibility?: TrustDocumentVisibility;
   /** Server says the row is superseded or deleted. */
   unavailable?: boolean;
 }
+
+/** What the open disclosure dialog confirms: a new link, or a linked document whose visibility changed. */
+type PendingDisclosure =
+  | { kind: 'add'; doc: OrgDocument; visibility: TrustDocumentVisibility }
+  | { kind: 'reconfirm'; documentId: string; title: string; visibility: TrustDocumentVisibility };
 
 const PRIORITY: Record<string, number> = { policy: 0, report: 1, evidence: 2 };
 
@@ -25,9 +34,11 @@ interface Props {
   /** Server-saved links; the local list re-seeds whenever these change. */
   documents: TrustLinkedDocument[];
   onReload: () => Promise<void>;
+  /** The page revision the editor loaded; when given it is sent, so a concurrent edit is a 409, not an overwrite. */
+  expectedRevision?: number;
 }
 
-export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, documents, onReload }: Props) {
+export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, documents, onReload, expectedRevision }: Props) {
   const { t } = useTranslation('organizations');
   const tr = useCallback(
     (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.trust.${key}`, vars ?? {}),
@@ -39,6 +50,8 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
     () => [...documents].sort((a, b) => a.sortOrder - b.sortOrder).map((d) => ({
       documentId: d.documentId,
       title: d.title,
+      visibility: d.visibility ?? 'public',
+      savedVisibility: d.visibility ?? 'public',
       disclosureConfirmed: d.disclosureConfirmedAt !== null,
       unavailable: d.supersededByDocumentId !== null || d.deleted,
     })),
@@ -54,7 +67,7 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
     seeded.current = signature;
     setLinks(serverLinks);
   }, [signature, serverLinks]);
-  const [pending, setPending] = useState<OrgDocument | null>(null);
+  const [pending, setPending] = useState<PendingDisclosure | null>(null);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,17 +92,38 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
     [library, linkedIds],
   );
   const atMax = links.length >= TRUST_DOCUMENTS_MAX;
+  const unconfirmed = links.some((l) => !l.disclosureConfirmed);
 
   const openAdd = (doc: OrgDocument) => {
     if (!canWrite) return;
     setChecked(false);
-    setPending(doc);
+    setPending({ kind: 'add', doc, visibility: 'public' });
   };
-  const confirmAdd = () => {
+  const openReconfirm = (l: LinkedTrustDocument) => {
+    if (!canWrite) return;
+    setChecked(false);
+    setPending({ kind: 'reconfirm', documentId: l.documentId, title: libraryById.get(l.documentId)?.title ?? l.title, visibility: l.visibility });
+  };
+  const confirmPending = () => {
     if (!pending || !checked) return;
-    setLinks((prev) => [...prev, { documentId: pending.id, title: pending.title, disclosureConfirmed: true }]);
+    if (pending.kind === 'add') {
+      const { doc, visibility } = pending;
+      setLinks((prev) => [...prev, { documentId: doc.id, title: doc.title, visibility, disclosureConfirmed: true }]);
+    } else {
+      const id = pending.documentId;
+      setLinks((prev) => prev.map((l) => (l.documentId === id ? { ...l, disclosureConfirmed: true } : l)));
+    }
     setPending(null);
   };
+  /**
+   * A visibility change is a new disclosure decision (public reaches anyone; gated reaches approved requesters),
+   * so it needs a fresh confirmation — unless it returns to the visibility the server already holds one for.
+   */
+  const setVisibility = (id: string, visibility: TrustDocumentVisibility) => setLinks((prev) => prev.map((l) => {
+    if (l.documentId !== id) return l;
+    const confirmedOnServer = documents.some((d) => d.documentId === id && d.disclosureConfirmedAt !== null);
+    return { ...l, visibility, disclosureConfirmed: l.savedVisibility === visibility && confirmedOnServer };
+  }));
   const move = (index: number, delta: -1 | 1) => setLinks((prev) => {
     const to = index + delta;
     if (to < 0 || to >= prev.length) return prev;
@@ -100,18 +134,26 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
   const remove = (id: string) => setLinks((prev) => prev.filter((l) => l.documentId !== id));
 
   const save = async () => {
-    if (!canWrite) return;
+    if (!canWrite || unconfirmed) return;
     setBusy(true);
     setError(null);
     try {
       await runAction({
-        request: () => updateTrustDocuments(orgFetch, orgId, links.map((l) => ({
-          documentId: l.documentId, visibility: 'public' as const, disclosureConfirmed: l.disclosureConfirmed,
-        }))),
+        request: () => {
+          const body = links.map((l) => ({ documentId: l.documentId, visibility: l.visibility, disclosureConfirmed: l.disclosureConfirmed }));
+          return expectedRevision === undefined
+            ? updateTrustDocuments(orgFetch, orgId, body)
+            : updateTrustDocuments(orgFetch, orgId, body, expectedRevision);
+        },
         successMessage: tr('documents.saved'),
         errorFallback: tr('documents.saveFailed'),
-        suppressErrorToast: (_status, code) => code === 'DOCUMENT_UNAVAILABLE',
+        suppressErrorToast: (_status, code) => code === 'DOCUMENT_UNAVAILABLE' || code === 'REVISION_MISMATCH',
         friendly: (code, _message, body) => {
+          if (code === 'REVISION_MISMATCH') {
+            const msg = tr('errors.revisionMismatch');
+            setError(msg);
+            return msg;
+          }
           if (code !== 'DOCUMENT_UNAVAILABLE') return undefined;
           const ids = (body as { details?: { documentIds?: string[] } } | undefined)?.details?.documentIds ?? [];
           const names = ids.map((id) => links.find((l) => l.documentId === id)?.title ?? libraryById.get(id)?.title ?? id);
@@ -127,6 +169,9 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
       setBusy(false);
     }
   };
+
+  const gatedPending = pending?.visibility === 'gated';
+  const pendingTitle = pending ? (pending.kind === 'add' ? pending.doc.title : pending.title) : '';
 
   return (
     <section className="space-y-4 rounded-lg border bg-card p-4" data-testid="trust-documents-section">
@@ -192,6 +237,30 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
                           {tr('documents.superseded')}
                         </div>
                       )}
+                      <div className="mt-1 flex items-center gap-2">
+                        <select
+                          value={l.visibility}
+                          disabled={!canWrite}
+                          onChange={(e) => setVisibility(l.documentId, e.target.value as TrustDocumentVisibility)}
+                          aria-label={tr('documents.visibilityLabel')}
+                          className="rounded-md border bg-background px-1.5 py-0.5 text-xs disabled:opacity-50"
+                          data-testid={`trust-doc-visibility-${l.documentId}`}
+                        >
+                          <option value="public">{tr('documents.visibilityPublic')}</option>
+                          <option value="gated">{tr('documents.visibilityGated')}</option>
+                        </select>
+                        {!l.disclosureConfirmed && (
+                          <button
+                            type="button"
+                            disabled={!canWrite}
+                            onClick={() => openReconfirm(l)}
+                            className="rounded-md border border-warning px-2 py-0.5 text-xs hover:bg-muted disabled:opacity-50"
+                            data-testid={`trust-doc-reconfirm-${l.documentId}`}
+                          >
+                            {tr('documents.reconfirm')}
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex shrink-0 gap-1">
                       <button type="button" disabled={!canWrite || i === 0} onClick={() => move(i, -1)} aria-label={tr('documents.moveUp')}
@@ -211,9 +280,12 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
         </div>
       </div>
 
+      {unconfirmed && (
+        <p className="text-sm text-warning" data-testid="trust-docs-reconfirm-needed">{tr('documents.reconfirmNeeded')}</p>
+      )}
       <button
         type="button"
-        disabled={!canWrite || busy}
+        disabled={!canWrite || busy || unconfirmed}
         onClick={() => void save()}
         className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
         data-testid="trust-docs-save"
@@ -224,17 +296,31 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
-        onConfirm={confirmAdd}
-        title={tr('documents.disclosureTitle')}
-        message={tr('documents.disclosureMessage', { title: pending?.title ?? '' })}
-        confirmLabel={tr('documents.disclosureConfirm')}
+        onConfirm={confirmPending}
+        title={tr(gatedPending ? 'documents.disclosureTitleGated' : 'documents.disclosureTitle')}
+        message={tr(gatedPending ? 'documents.disclosureMessageGated' : 'documents.disclosureMessage', { title: pendingTitle })}
+        confirmLabel={tr(pending?.kind === 'reconfirm' ? 'documents.disclosureConfirmChange' : 'documents.disclosureConfirm')}
         variant="warning"
         confirmDisabled={!checked}
         confirmTestId="trust-doc-disclosure-confirm"
       >
+        {pending?.kind === 'add' && (
+          <label className="mt-3 flex items-center gap-2 text-sm">
+            <span>{tr('documents.visibilityLabel')}</span>
+            <select
+              value={pending.visibility}
+              onChange={(e) => { setChecked(false); setPending({ ...pending, visibility: e.target.value as TrustDocumentVisibility }); }}
+              className="rounded-md border bg-background px-1.5 py-0.5 text-sm"
+              data-testid="trust-doc-add-visibility"
+            >
+              <option value="public">{tr('documents.visibilityPublic')}</option>
+              <option value="gated">{tr('documents.visibilityGated')}</option>
+            </select>
+          </label>
+        )}
         <label className="mt-3 flex items-start gap-2 text-sm">
           <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} data-testid="trust-doc-disclosure-checkbox" />
-          <span>{tr('documents.disclosureCheckbox')}</span>
+          <span>{tr(gatedPending ? 'documents.disclosureCheckboxGated' : 'documents.disclosureCheckbox')}</span>
         </label>
       </ConfirmDialog>
     </section>

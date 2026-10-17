@@ -116,6 +116,14 @@ export function createGrantErrorLogger(opts: {
   now?: () => number;
   windowMs?: number;
   maxKeys?: number;
+  /**
+   * Called for every `invalid_grant: refresh token not found` from an
+   * AUTHENTICATED client, before throttling (so suppressed repeats count too).
+   * Feeds the connection-health "still retrying" counter (W4). Unresolved
+   * client ids come from the request body and are never reported. Must not
+   * block; a throw is swallowed.
+   */
+  onRefreshTokenNotFound?: (clientId: string) => void;
 } = {}) {
   const now = opts.now ?? Date.now;
   const windowMs = opts.windowMs ?? GRANT_ERROR_LOG_WINDOW_MS;
@@ -130,6 +138,21 @@ export function createGrantErrorLogger(opts: {
       detail: capped(e.error_detail),
       ...grantErrorContext(ctx),
     };
+
+    if (
+      opts.onRefreshTokenNotFound
+      && context.client_resolved
+      && context.client_id
+      && context.grant_type === 'refresh_token'
+      && context.error === 'invalid_grant'
+      && context.detail === 'refresh token not found'
+    ) {
+      try {
+        opts.onRefreshTokenNotFound(context.client_id);
+      } catch {
+        // Decoration only; never let it break the provider's error handling.
+      }
+    }
 
     if (context.detail && TOKEN_MISUSE_DETAILS.has(context.detail)) {
       logOauthError({

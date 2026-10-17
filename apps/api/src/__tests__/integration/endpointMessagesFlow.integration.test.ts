@@ -258,14 +258,14 @@ describe('endpoint messaging W02 flow (real Postgres)', () => {
     expect((await delivery(d1)).status).toBe('retracted');
   });
 
-  it('review fixes: a site-restricted caller cannot retract a message reaching devices outside their sites', async () => {
+  it('review fixes: a site-restricted caller cannot retract (not found) a message that reached none of their sites', async () => {
     const input = sendInput(f);
     await persistSend(input);
     const [msg] = await sys(() => db.select().from(endpointMessages).where(eq(endpointMessages.batchId, input.batchId)));
     const out = await asOrg(f.orgA, f.partnerId, () => retractEndpointMessage({
       auth: fakeAuth(f.userId, f.orgA), permissions: { allowedSiteIds: [randomUUID()] }, messageRowId: msg!.id,
     }));
-    expect(out).toEqual({ kind: 'forbidden' });
+    expect(out).toEqual({ kind: 'not_found' });
     const [after] = await sys(() => db.select().from(endpointMessages).where(eq(endpointMessages.id, msg!.id)));
     expect(after!.retractedAt).toBeNull();
   });
@@ -316,11 +316,15 @@ describe('endpoint messaging W02 flow (real Postgres)', () => {
     expect(detail?.deliveries.map((d) => d.deviceId).sort()).toEqual([f.devA1, f.devA2].sort());
     expect(detail?.body).toBe('Please save your work.');
 
-    // A site-restricted caller with no matching site sees no deliveries.
+    // #9014: a site-restricted caller whose sites the message never reached gets not-found, not an empty shell.
     const restricted = await asOrg(f.orgA, f.partnerId, () => getEndpointMessageDetail({
       auth, permissions: { allowedSiteIds: [randomUUID()] }, messageRowId: page.items[0]!.id,
     }));
-    expect(restricted?.deliveries).toEqual([]);
+    expect(restricted).toBeNull();
+    const inScope = await asOrg(f.orgA, f.partnerId, () => getEndpointMessageDetail({
+      auth, permissions: { allowedSiteIds: [f.siteA] }, messageRowId: page.items[0]!.id,
+    }));
+    expect(inScope?.deliveries.map((d) => d.deviceId).sort()).toEqual([f.devA1, f.devA2].sort());
   });
 
   it('a queued (non-terminal) notify_user keeps its body through claim-for-delivery; terminal erasure strips it', async () => {

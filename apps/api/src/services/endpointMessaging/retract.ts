@@ -34,6 +34,7 @@ import { deliveryTtlMs } from '../commandOfflinePolicy';
 import { agentSupportsRetract } from '../commandMinVersion';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import { canAccessSite, type UserPermissions } from '../permissions';
+import { messageReachesAllowedSites } from './history';
 import { transitionTimestamps, transitionWhere } from './deliveryState';
 
 export type WithdrawFailureCode = 'agent_unsupported' | 'no_permission' | 'queue_failed' | 'offline_rejected';
@@ -137,6 +138,10 @@ export async function retractEndpointMessage(args: {
     .where(and(eq(endpointMessages.id, messageRowId), auth.orgCondition(endpointMessages.orgId)))
     .limit(1);
   if (!message || !auth.canAccessOrg(message.orgId)) return { kind: 'not_found' };
+  // A message with no delivery in the caller's sites is invisible to them (same
+  // rule as the list/detail). Without this, a message whose deliveries are all
+  // out of scope and terminal passes the live-device check below vacuously.
+  if (!(await messageReachesAllowedSites(message.id, permissions))) return { kind: 'not_found' };
 
   const live = await db
     .select({

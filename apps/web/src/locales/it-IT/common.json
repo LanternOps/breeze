@@ -700,7 +700,23 @@
       "noSelection": "Seleziona organizzazione",
       "searchOrganizations": "Cerca organizzazioni…",
       "noMatches": "Nessuna organizzazione corrisponde",
-      "legacyFilterNotice": "Il filtro dell'organizzazione ora segue il selettore dell'intestazione."
+      "legacyFilterNotice": "Il filtro dell'organizzazione ora segue il selettore dell'intestazione.",
+      "recent": "Recenti",
+      "pane": {
+        "destinations": {
+          "overview": "Panoramica",
+          "devices": "Dispositivi",
+          "tickets": "Ticket",
+          "alerts": "Avvisi",
+          "sites": "Sedi",
+          "billing": "Fatturazione"
+        },
+        "offlineCount": "{{count}} offline",
+        "openCount": "{{count}} aperti",
+        "criticalCount": "{{count}} critici",
+        "noCritical": "nessuno",
+        "hint": "Clicca un nome per cambiare · clicca una pagina per cambiare e aprirla"
+      }
     },
     "header": {
       "menu": "Menù",

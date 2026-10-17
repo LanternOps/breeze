@@ -201,6 +201,34 @@
       "revoke": "Para revogar o acesso depois, desconecte aqui ou remova o aplicativo empresarial do Breeze no Microsoft Entra.",
       "continue": "Continuar para a Microsoft",
       "defaultTarget": "o locatário do Microsoft 365 desta organização"
+    },
+    "v2": {
+      "title": "É necessário consentir novamente para as ações de identidade",
+      "intro": "Este locatário consentiu com um conjunto de permissões anterior. Consentir novamente mantém tudo o que funciona hoje e acrescenta as permissões abaixo. Nada muda para o cliente até que um administrador aprove o novo consentimento.",
+      "keepsWorking": "Desativar um usuário e redefinir uma senha continuam funcionando com o consentimento atual.",
+      "upgradeAction": "Revisar e aprovar as novas permissões",
+      "upgradeFailed": "Não foi possível iniciar a aprovação das novas permissões.",
+      "revokedGrant": "O Microsoft 365 não mostra mais uma permissão que esta conexão já tinha: {{grants}}. Teste novamente e, se ela continuar ausente, consinta de novo.",
+      "purpose": {
+        "userReadWrite": "Ler e atualizar contas de usuário — usado para bloquear o login, alterar licenças e criar um usuário.",
+        "userPasswordProfile": "Definir a senha de um usuário — usado para emitir uma senha temporária numa redefinição ou numa conta nova.",
+        "userRevokeSessions": "Desconectar um usuário de todas as sessões — usado para revogar sessões de login quando uma conta é comprometida ou o colaborador é desligado.",
+        "groupMember": "Ler grupos e alterar quem pertence a eles — usado para adicionar e remover associações. Não permite criar nem excluir um grupo.",
+        "intunePrivileged": "Desativar um dispositivo gerenciado pelo Intune — remove os dados da empresa e cancela o registro. O Breeze nunca faz uma limpeza completa.",
+        "mailboxSettings": "Ler e definir as configurações da caixa de correio — usado para ligar ou desligar uma resposta automática e confirmar o efeito.",
+        "organizationRead": "Ler o inventário de assinaturas do locatário — usado para verificar se há uma licença livre antes de atribuí-la.",
+        "unknown": "Usado por uma ação do Microsoft 365 no Breeze."
+      }
+    },
+    "staleManifest": {
+      "title": "Organizações que precisam de novo consentimento do Microsoft 365",
+      "description": "Estes clientes ainda estão em um conjunto de permissões anterior. Abra a organização para iniciar o novo consentimento.",
+      "empty": "Nenhuma organização precisa de novo consentimento.",
+      "columnOrganization": "Organização",
+      "columnTenant": "Locatário",
+      "columnVersion": "Conjunto de permissões",
+      "columnLastVerified": "Última verificação",
+      "loadFailed": "Não foi possível carregar a lista de novos consentimentos."
     }
   },
   "m365ConfirmTenant": {
@@ -326,6 +354,9 @@
       "grant_reconciliation_unavailable": "Verificação da concessão indisponível",
       "grant_revoked_reuse": "Concessão revogada (reutilização de token)",
       "grant_revoked": "Concessão revogada",
+      "delivery_failed": "Falha nas entregas",
+      "sync_stale": "Sincronização parada",
+      "verification_failed": "Falha na verificação",
       "unknown": "Requer atenção"
     }
   },
@@ -1409,6 +1440,34 @@
       "degraded": "Degradado",
       "unhealthy": "Com problemas",
       "unknown": "Desconhecido"
-    }
+    },
+    "actionsLabel": "Permitir ações de resposta",
+    "actionsHelp": "Permite que os técnicos isolem dispositivos e executem varreduras por esta conexão.",
+    "actionsConfirmTitle": "Permitir ações de resposta?",
+    "actionsConfirmMessage": "Técnicos com permissão de execução em dispositivos poderão isolar e liberar dispositivos e executar varreduras nos endpoints gerenciados por “{{name}}”.",
+    "actionsConfirmLabel": "Permitir",
+    "actionsOnToast": "Ações de resposta permitidas",
+    "actionsOffToast": "Ações de resposta desativadas",
+    "actionsError": "Não foi possível atualizar as ações de resposta.",
+    "pushLabel": "Eventos push",
+    "pushHelp": "O {{provider}} avisa o Breeze sobre novos eventos, o que dispara uma sincronização antes do cronograma normal. As sincronizações agendadas continuam.",
+    "pushOnToast": "Eventos push ativados",
+    "pushOffToast": "Eventos push desativados",
+    "pushReplaceTitle": "Substituir o destino de push existente?",
+    "pushReplaceMessage": "{{provider}} já envia eventos push para outro destino (por exemplo, um SIEM). Substituí-lo pelo Breeze interrompe esse fluxo.",
+    "pushReplaceConfirm": "Substituir e ativar",
+    "pushError": "Não foi possível alterar os eventos push.",
+    "pushErrors": {
+      "public_url_unset": "Defina a URL pública do servidor antes de ativar os eventos push.",
+      "public_url_not_https": "Os eventos push exigem uma URL pública HTTPS.",
+      "connection_inactive": "Ative a conexão antes de ativar os eventos push.",
+      "push_state_changed": "As configurações de push mudaram durante a ativação. Atualize e tente novamente."
+    },
+    "pushTest": "Enviar evento de teste",
+    "pushTestQueuedToast": "Evento de teste solicitado",
+    "pushTestError": "Não foi possível enviar o evento de teste.",
+    "pushTestNote": "O evento de teste pode levar alguns minutos para chegar.",
+    "pushLast": "Último evento push: {{relative}}",
+    "pushNone": "Nenhum evento push recebido ainda"
   }
 }

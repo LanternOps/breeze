@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -45,6 +46,39 @@ type CallerVerifyRequest struct {
 	ReverseCode    string   `json:"reverseCode"`
 	Choices        []string `json:"choices"`
 	TimeoutMs      int      `json:"timeoutMs"`
+	// DeadlineAt (#8668, optional, RFC 3339) is the verification's absolute
+	// expiry. Forwarded verbatim to the helper; an older API omits it and an
+	// older helper ignores it. See Countdown.
+	DeadlineAt string `json:"deadlineAt,omitempty"`
+}
+
+// CallerVerifyDeadlineSkew is the clock-skew allowance on DeadlineAt: the
+// deadline is advisory, so a device clock slightly ahead of the API's does
+// not refuse a card the server would still accept. Shared with the helper.
+const CallerVerifyDeadlineSkew = 5 * time.Second
+
+// Countdown is how long the card may stay up at now: TimeoutMs, clamped to
+// DeadlineAt (plus the skew allowance) when one was sent, so a late-delivered
+// command does not restart a full countdown. It never exceeds TimeoutMs.
+// show is false once the deadline has passed by the allowance or more: the
+// card must not be rendered at all. A missing DeadlineAt leaves TimeoutMs
+// unchanged; an unparseable one (Validate already refuses it) is not shown.
+func (r CallerVerifyRequest) Countdown(now time.Time) (d time.Duration, show bool) {
+	d = time.Duration(r.TimeoutMs) * time.Millisecond
+	if r.DeadlineAt == "" {
+		return d, true
+	}
+	deadline, err := time.Parse(time.RFC3339, r.DeadlineAt)
+	if err != nil {
+		return 0, false
+	}
+	if left := deadline.Sub(now) + CallerVerifyDeadlineSkew; left < d {
+		d = left
+	}
+	if d <= 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 // CallerVerifyResponse is the helper's answer.
@@ -79,6 +113,11 @@ func (r CallerVerifyRequest) Validate() error {
 	}
 	if r.TimeoutMs < CallerVerifyMinTimeoutMs || r.TimeoutMs > CallerVerifyMaxTimeoutMs {
 		return fmt.Errorf("invalid timeoutMs")
+	}
+	if r.DeadlineAt != "" {
+		if _, err := time.Parse(time.RFC3339, r.DeadlineAt); err != nil {
+			return fmt.Errorf("invalid deadlineAt")
+		}
 	}
 	if len(r.Choices) != 3 {
 		return fmt.Errorf("exactly three choices required")

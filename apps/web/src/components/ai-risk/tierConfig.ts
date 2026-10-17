@@ -94,6 +94,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_dns_security', description: 'DNS security analysis', category: 'Network & DNS' },
       // Security & Compliance
       { name: 'get_security_posture', description: 'Security posture scores', category: 'Security & Compliance' },
+      { name: 'get_trust_page_status', description: 'Public trust page status', category: 'Security & Compliance' },
       { name: 'security_scan (vulnerabilities)', description: 'Query vulnerability data', category: 'Security & Compliance' },
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
@@ -225,6 +226,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
     badgeBg: 'bg-blue-500/15',
     badgeText: 'text-blue-700',
     tools: [
+      // Security & Compliance — EDR provider framework (#8167 W03)
+      { name: 'edr_endpoint_action (scan)', description: 'EDR scan of a device through its linked vendor', category: 'Security & Compliance' },
+      { name: 'sync_edr_data', description: 'Queue an immediate EDR vendor sync', category: 'Security & Compliance' },
       // Alerts & Notifications
       { name: 'manage_alerts (acknowledge)', description: 'Acknowledge alerts', category: 'Alerts & Notifications' },
       { name: 'manage_alerts (resolve)', description: 'Resolve alerts', category: 'Alerts & Notifications' },
@@ -311,6 +315,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'analyze_screen', description: 'Analyze captured screenshot', category: 'Remote Access & Control' },
       // Security & Compliance
       { name: 'security_scan (quarantine/remove/restore)', description: 'Threat management actions', category: 'Security & Compliance' },
+      { name: 'edr_endpoint_action (isolate/unisolate)', description: 'EDR network isolation or release through the linked vendor (release needs a second approver)', category: 'Security & Compliance' },
       { name: 'manage_software_policy', description: 'Software policy management', category: 'Security & Compliance' },
       { name: 'remediate_software_violation', description: 'Remediate software violations', category: 'Security & Compliance' },
       // Files, Disk & Registry
@@ -336,6 +341,15 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'test_webhook', description: 'Test webhook delivery — sends a real outbound POST; route requires MFA', category: 'Integrations' },
       { name: 'trigger_agent_upgrade', description: 'Queue agent upgrade', category: 'Integrations' },
       { name: 'trigger_agent_restart', description: 'Restart a wedged/silent agent via the watchdog', category: 'Integrations' },
+      // Microsoft 365 identity writes (Operator Recipe Library M1) — Tier 3, four-eyes
+      { name: 'm365_revoke_sessions', description: 'Revoke all Microsoft 365 sessions for a user', category: 'Integrations' },
+      { name: 'm365_remove_license', description: 'Remove Microsoft 365 licenses from a user', category: 'Integrations' },
+      { name: 'm365_assign_license', description: 'Assign Microsoft 365 licenses to a user', category: 'Integrations' },
+      { name: 'm365_remove_from_group', description: 'Remove a user from a Microsoft 365 group', category: 'Integrations' },
+      { name: 'm365_add_to_group', description: 'Add a user to a Microsoft 365 group', category: 'Integrations' },
+      { name: 'm365_retire_intune_device', description: 'Retire an Intune device (removes company data; not a full wipe)', category: 'Integrations' },
+      { name: 'm365_create_user', description: 'Create a Microsoft 365 user with a one-time temporary password', category: 'Integrations' },
+      { name: 'm365_set_auto_reply', description: 'Set or clear a Microsoft 365 mailbox automatic reply', category: 'Integrations' },
       // Configuration Policies
       { name: 'manage_configuration_policy (create/update/delete)', description: 'Create, update, or delete config policies', category: 'Configuration Policies' },
       // Fleet Operations
@@ -460,12 +474,15 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'apply_cis_remediation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'get_cis_compliance', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
   { toolName: 'get_cis_device_report', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
+  { toolName: 'get_trust_page_status', tier: 1, permission: 'organizations.read', category: 'Security & Compliance' },
   { toolName: 'assign_security_training', tier: 2, permission: 'users.write', category: 'Security & Compliance' },
   { toolName: 'collect_evidence', tier: 2, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'execute_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_isolate_device', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 's1_threat_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'sync_huntress_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
+  { toolName: 'edr_endpoint_action', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
+  { toolName: 'sync_edr_data', tier: 2, permission: 'organizations.write', category: 'Security & Compliance' },
   { toolName: 'remediate_software_violation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   // Backup & Recovery
   { toolName: 'configure_backup_sla', tier: 2, permission: 'organizations.write', category: 'Backup & Recovery' },
@@ -562,6 +579,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
   get_security_posture: 'devices.read',
+  get_trust_page_status: 'organizations.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
   system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },

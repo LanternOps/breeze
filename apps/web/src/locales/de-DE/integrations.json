@@ -201,6 +201,34 @@
       "revoke": "Um den Zugriff später zu widerrufen, trennen Sie die Verbindung hier oder entfernen Sie die Breeze-Unternehmensanwendung in Microsoft Entra.",
       "continue": "Weiter zu Microsoft",
       "defaultTarget": "den Microsoft 365-Mandanten dieser Organisation"
+    },
+    "v2": {
+      "title": "Erneute Zustimmung für die Identitätsaktionen erforderlich",
+      "intro": "Dieser Mandant hat einem älteren Berechtigungssatz zugestimmt. Eine erneute Zustimmung behält alles bei, was heute funktioniert, und ergänzt die unten aufgeführten Berechtigungen. Für den Kunden ändert sich nichts, bis ein Administrator die neue Zustimmung erteilt.",
+      "keepsWorking": "Benutzer deaktivieren und Kennwort zurücksetzen funktionieren weiterhin mit der aktuellen Zustimmung.",
+      "upgradeAction": "Neue Berechtigungen prüfen und genehmigen",
+      "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden.",
+      "revokedGrant": "Microsoft 365 zeigt eine Berechtigung nicht mehr an, die diese Verbindung bereits hatte: {{grants}}. Testen Sie erneut und stimmen Sie erneut zu, falls sie weiterhin fehlt.",
+      "purpose": {
+        "userReadWrite": "Benutzerkonten lesen und ändern – zum Sperren der Anmeldung, Ändern von Lizenzen und Anlegen neuer Benutzer.",
+        "userPasswordProfile": "Kennwort eines Benutzers setzen – zum Ausstellen eines temporären Kennworts bei einer Zurücksetzung oder einem neuen Konto.",
+        "userRevokeSessions": "Einen Benutzer von allen Sitzungen abmelden – zum Widerrufen von Anmeldesitzungen, wenn ein Konto kompromittiert ist oder ein Mitarbeiter ausscheidet.",
+        "groupMember": "Gruppen lesen und deren Mitglieder ändern – zum Hinzufügen und Entfernen von Gruppenmitgliedschaften. Gruppen können damit weder erstellt noch gelöscht werden.",
+        "intunePrivileged": "Ein Intune-verwaltetes Gerät außer Betrieb nehmen – entfernt Firmendaten und hebt die Registrierung auf. Breeze führt niemals eine vollständige Löschung durch.",
+        "mailboxSettings": "Postfacheinstellungen lesen und setzen – zum Ein- und Ausschalten der automatischen Antwort und zur Bestätigung der Wirkung.",
+        "organizationRead": "Das Abonnementinventar des Mandanten lesen – zur Prüfung freier Lizenzplätze vor der Zuweisung.",
+        "unknown": "Wird von einer Aktion für Microsoft 365 in Breeze verwendet."
+      }
+    },
+    "staleManifest": {
+      "title": "Organisationen, die eine erneute Zustimmung für Microsoft 365 brauchen",
+      "description": "Diese Kunden verwenden noch einen älteren Berechtigungssatz. Öffnen Sie die Organisation, um die erneute Zustimmung zu starten.",
+      "empty": "Keine Organisation braucht eine erneute Zustimmung.",
+      "columnOrganization": "Organisation",
+      "columnTenant": "Mandant",
+      "columnVersion": "Berechtigungssatz",
+      "columnLastVerified": "Zuletzt geprüft",
+      "loadFailed": "Die Liste für die erneute Zustimmung konnte nicht geladen werden."
     }
   },
   "m365ConfirmTenant": {
@@ -326,6 +354,9 @@
       "grant_reconciliation_unavailable": "Berechtigungsprüfung nicht verfügbar",
       "grant_revoked_reuse": "Berechtigung widerrufen (Token-Wiederverwendung)",
       "grant_revoked": "Berechtigung widerrufen",
+      "delivery_failed": "Zustellungen schlagen fehl",
+      "sync_stale": "Synchronisierung steht still",
+      "verification_failed": "Überprüfung fehlgeschlagen",
       "unknown": "Erfordert Aufmerksamkeit"
     }
   },
@@ -1409,6 +1440,34 @@
       "degraded": "Eingeschränkt",
       "unhealthy": "Fehlerhaft",
       "unknown": "Unbekannt"
-    }
+    },
+    "actionsLabel": "Reaktionsaktionen zulassen",
+    "actionsHelp": "Erlaubt Technikern, Geräte zu isolieren und Scans über diese Verbindung auszuführen.",
+    "actionsConfirmTitle": "Reaktionsaktionen zulassen?",
+    "actionsConfirmMessage": "Techniker mit der Berechtigung zum Ausführen auf Geräten können über „{{name}}“ verwaltete Endpunkte isolieren, die Isolierung aufheben und Scans starten.",
+    "actionsConfirmLabel": "Zulassen",
+    "actionsOnToast": "Reaktionsaktionen zugelassen",
+    "actionsOffToast": "Reaktionsaktionen deaktiviert",
+    "actionsError": "Reaktionsaktionen konnten nicht aktualisiert werden.",
+    "pushLabel": "Push-Ereignisse",
+    "pushHelp": "{{provider}} benachrichtigt Breeze über neue Ereignisse und löst damit früher als im regulären Zeitplan eine Synchronisierung aus. Geplante Synchronisierungen laufen weiter.",
+    "pushOnToast": "Push-Ereignisse aktiviert",
+    "pushOffToast": "Push-Ereignisse deaktiviert",
+    "pushReplaceTitle": "Bestehendes Push-Ziel ersetzen?",
+    "pushReplaceMessage": "{{provider}} sendet Push-Ereignisse bereits an ein anderes Ziel (zum Beispiel ein SIEM). Wenn Breeze es ersetzt, endet dieser Datenstrom.",
+    "pushReplaceConfirm": "Ersetzen und aktivieren",
+    "pushError": "Push-Ereignisse konnten nicht geändert werden.",
+    "pushErrors": {
+      "public_url_unset": "Legen Sie die öffentliche Server-URL fest, bevor Sie Push-Ereignisse aktivieren.",
+      "public_url_not_https": "Push-Ereignisse erfordern eine öffentliche HTTPS-URL.",
+      "connection_inactive": "Aktivieren Sie die Verbindung, bevor Sie Push-Ereignisse aktivieren.",
+      "push_state_changed": "Die Push-Einstellungen haben sich beim Aktivieren geändert. Aktualisieren Sie die Seite und versuchen Sie es erneut."
+    },
+    "pushTest": "Testereignis senden",
+    "pushTestQueuedToast": "Testereignis angefordert",
+    "pushTestError": "Das Testereignis konnte nicht gesendet werden.",
+    "pushTestNote": "Das Testereignis kann einige Minuten brauchen, bis es eintrifft.",
+    "pushLast": "Letztes Push-Ereignis: {{relative}}",
+    "pushNone": "Noch keine Push-Ereignisse empfangen"
   }
 }

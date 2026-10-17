@@ -11,9 +11,9 @@ import type { SecurityAgentPlatform, SecurityAgentVendorKey } from '@breeze/shar
  * vendors) and are substituted at dispatch.
  *
  * `enableable` gates the link-write path: a link may list a vendor with
- * `enabled: true` only when the vendor's install path is wired end to end. In
- * the first wave no vendor is, so every vendor is listed but none can be
- * switched on (`vendor_not_enableable`).
+ * `enabled: true` only when the vendor's install path is wired end to end.
+ * Huntress is; the others are listed but cannot be switched on yet
+ * (`vendor_not_enableable`).
  */
 
 export type VendorKey = SecurityAgentVendorKey;
@@ -26,6 +26,21 @@ export interface SecurityAgentVendor {
   catalogRef: string;
   /** Where the per-org install keys come from. */
   orgSource: 'edr_mapping' | 'tenant_var';
+  /**
+   * `software_catalog.integration_provider` of the built-in package (EDR
+   * vendors), or null. This is how a generated rule's `catalogId` is mapped
+   * back to its vendor: rule JSON cannot carry the vendor (the normalizer drops
+   * unknown keys).
+   */
+  integrationProvider: 'huntress' | 'sentinelone' | null;
+  /**
+   * Software-policy rule name the generated policy matches against inventory
+   * (a case-insensitive glob over the Add/Remove Programs display name). Its
+   * miss is what makes the device a `missing` install candidate.
+   */
+  detectionRuleName: string;
+  /** Web path where the vendor's integration is connected (deep link when its catalog row is missing). */
+  setupPath: string;
   /** Tenant variables that must be set on the device's org (tenant_var vendors only). */
   requiredVars?: readonly string[];
   platforms: Readonly<Record<SecurityAgentPlatform, PlatformSupport>>;
@@ -51,15 +66,23 @@ const VENDORS: Readonly<Record<VendorKey, SecurityAgentVendor>> = Object.freeze(
     label: 'Huntress',
     catalogRef: 'builtin:huntress',
     orgSource: 'edr_mapping',
+    integrationProvider: 'huntress',
+    detectionRuleName: 'Huntress Agent*',
+    setupPath: '/integrations#huntress',
     platforms: { windows: 'supported', macos: 'requires_mdm', linux: 'unsupported' },
     presence: {},
-    enableable: false,
+    // W02: generator, readiness preflight, compliance/dispatch checks and the
+    // authoring tab are wired.
+    enableable: true,
   }),
   sentinelone: freezeVendor({
     key: 'sentinelone',
     label: 'SentinelOne',
     catalogRef: 'builtin:sentinelone',
     orgSource: 'edr_mapping',
+    integrationProvider: 'sentinelone',
+    detectionRuleName: 'Sentinel Agent*',
+    setupPath: '/integrations#sentinelone',
     platforms: { windows: 'supported', macos: 'unsupported', linux: 'unsupported' },
     presence: {},
     enableable: false,
@@ -69,6 +92,9 @@ const VENDORS: Readonly<Record<VendorKey, SecurityAgentVendor>> = Object.freeze(
     label: 'Control D',
     catalogRef: 'catalog:controld',
     orgSource: 'tenant_var',
+    integrationProvider: null,
+    detectionRuleName: 'Control D*',
+    setupPath: '/software',
     requiredVars: ['controld_provisioning_code'],
     platforms: { windows: 'supported', macos: 'unsupported', linux: 'unsupported' },
     presence: {},
@@ -79,6 +105,9 @@ const VENDORS: Readonly<Record<VendorKey, SecurityAgentVendor>> = Object.freeze(
     label: 'NextDNS',
     catalogRef: 'catalog:nextdns',
     orgSource: 'tenant_var',
+    integrationProvider: null,
+    detectionRuleName: 'NextDNS*',
+    setupPath: '/software',
     requiredVars: ['nextdns_profile_id'],
     platforms: { windows: 'supported', macos: 'unsupported', linux: 'unsupported' },
     presence: {},
@@ -96,4 +125,10 @@ export function getVendor(key: VendorKey): SecurityAgentVendor {
 
 export function listVendors(): readonly SecurityAgentVendor[] {
   return VENDOR_LIST;
+}
+
+/** The vendor whose built-in catalog package carries this integration provider, or null. */
+export function vendorForIntegrationProvider(provider: string | null | undefined): VendorKey | null {
+  if (!provider) return null;
+  return VENDOR_LIST.find((vendor) => vendor.integrationProvider === provider)?.key ?? null;
 }

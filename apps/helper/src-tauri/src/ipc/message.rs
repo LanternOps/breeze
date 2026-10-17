@@ -83,10 +83,13 @@ pub fn label_matches(label: &str, message_id: &str) -> bool {
 /// text -- could call `helper_fetch`, read the agent config, answer a consent
 /// prompt or open a workspace path. Card windows may call only their own
 /// label-checked commands (`get_message_view`, `message_ack`, `message_close`).
+/// `chat-*` windows (endpoint live chat, #8743) are refused by the same guard.
 pub fn deny_message_window(label: &str) -> Result<(), String> {
     if label.starts_with(WINDOW_LABEL_PREFIX) {
         return Err("command not available to message windows".into());
     }
+    // Endpoint live chat windows (#8743) render technician text too.
+    super::chat::deny_chat_window(label)?;
     Ok(())
 }
 

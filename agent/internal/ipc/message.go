@@ -265,6 +265,10 @@ type AuthRequest struct {
 	// message cards. Drives the messaging scope grant. Additive: absent/false
 	// on older helpers, which therefore get the native fallback.
 	SupportsMessaging bool `json:"supportsMessaging,omitempty"`
+
+	// SupportsChat advertises that this Assist helper renders endpoint live
+	// chat windows (#8743). Drives the chat scope grant. Additive.
+	SupportsChat bool `json:"supportsChat,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.

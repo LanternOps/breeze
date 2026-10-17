@@ -44,7 +44,7 @@ import { describeZodIssues } from '../lib/zodIssues';
 import { redactSecretsFromOutput, redactOptionalSecretText } from './secretRedaction';
 import { updateRestoreJobByCommandId } from './restoreResultPersistence';
 import { applyRebuildCommandResult } from './bareMetalRecoveryService';
-import { captureException } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { applyScriptCustomFieldWrites } from './customFields/scriptWriteBack';
 import type { ScriptCustomFieldWriteSummary } from '../db/schema/scripts';
 import { PG_UUID_REGEX, UUID_REGEX } from '../utils/uuid';
@@ -73,6 +73,7 @@ import { handleInstallPatchesResult } from './patchJobFinalizer';
 // this one leaf handler; it decides nothing itself (W01 applyDecision does).
 import { handleCallerVerifyResult } from './callerVerification/workstationResult';
 import { handleNotifyUserResult, handleRetractMessageResult } from './endpointMessaging/commandResults';
+import { handleChatMessageResult, handleChatOpenResult } from './endpointMessaging/chatResults';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -1043,11 +1044,16 @@ async function handleFilesystemAnalysisResult({
     .where(eq(devices.id, resolvedDeviceId))
     .limit(1);
   if (!device) {
-    const message = `[commandResultHandlers] filesystem_analysis result for unknown device ${resolvedDeviceId}`;
-    console.warn(message);
+    console.warn(
+      `[commandResultHandlers] filesystem_analysis result ${commandId} for unknown device ${resolvedDeviceId}; dropped`
+    );
     // A dropped scan result is silent data loss otherwise: nothing but this
-    // console line (which most deployments don't ship) ever showed it.
-    captureException(new Error(message), undefined, { commandId, resolvedDeviceId });
+    // console line (which most deployments don't ship) ever showed it. An event
+    // code, not captureException: scrubEvent redacts an exception's value and
+    // drops the unallowlisted id tags, so that report arrived contentless (#8024).
+    captureMessage('filesystem_analysis result dropped: unknown device', {
+      eventCode: 'filesystem_analysis_result_unknown_device',
+    });
     return;
   }
   await handleFilesystemAnalysisCommandResult(command, result, device.orgId);
@@ -1255,4 +1261,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   // #8742 W02: endpoint-message deliveries follow their notify_user result.
   notify_user: handleNotifyUserResult,
   retract_message: handleRetractMessageResult,
+  // #8743 W03: endpoint live chat. chat_close carries no state to record.
+  chat_open: handleChatOpenResult,
+  chat_message: handleChatMessageResult,
 };

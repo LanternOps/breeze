@@ -118,6 +118,7 @@ import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
 import { getAgentVersionRelation } from "./agentVersionRelation";
+import { EntityLink } from "@/components/shared/EntityLink";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -1609,7 +1610,11 @@ export default function DeviceList({
           <td key="hostname" className="max-w-[220px] px-3 py-3 text-sm">
             <div className="min-w-0">
               <span className="block truncate font-medium" title={primaryName}>
-                {primaryName}
+                {(device.deviceClass ?? "agent") === "agent" ? (
+                  <EntityLink kind="device" id={device.id} name={primaryName} />
+                ) : (
+                  primaryName
+                )}
               </span>
               {hasDisplayName && (
                 <span
@@ -1735,7 +1740,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.orgName}>
-            {device.orgName}
+            <EntityLink kind="org" id={device.orgId} name={device.orgName} />
           </span>
         </td>
       ),
@@ -1748,7 +1753,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.siteName}>
-            {device.siteName}
+            <EntityLink kind="site" id={device.siteId} name={device.siteName} />
           </span>
         </td>
       ),

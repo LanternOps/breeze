@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { DIGEST_CONDITION_LABELS } from '../digestEmail';
 
 // Every fixed condition code a source can emit must have a label in the web
 // panel (KNOWN_CONDITIONS), or the panel silently shows the generic fallback.
@@ -39,5 +40,14 @@ describe('connection health condition labels', () => {
     const known = new Set(knownConditions());
     const missing = emittedConditions().filter((c) => !known.has(c));
     expect(missing, `add to KNOWN_CONDITIONS and the locales: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('every fixed condition a source emits has a digest email label (W3)', () => {
+    const missing = emittedConditions().filter((c) => !(c in DIGEST_CONDITION_LABELS));
+    expect(missing, `add to DIGEST_CONDITION_LABELS in digestEmail.ts: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('the digest labels and the panel labels name the same conditions', () => {
+    expect(Object.keys(DIGEST_CONDITION_LABELS).sort()).toEqual([...knownConditions()].sort());
   });
 });

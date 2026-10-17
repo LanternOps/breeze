@@ -57,6 +57,7 @@ import { onTimerChanged, onBillingChanged } from '../../lib/timerActions';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import { EntityLink } from '@/components/shared/EntityLink';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
 
@@ -1146,13 +1147,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           )}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <a href={`/organizations/${encodeURIComponent(ticket.orgId)}`} data-testid="org-record-link" className="hover:text-foreground hover:underline">
-            {ticket.orgName}
-          </a>
+          <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName ?? ''} className="hover:text-foreground" />
           {ticket.deviceHostname && (
             <>
               <span>·</span>
-              <a className="hover:text-foreground hover:underline" href={`/devices?device=${ticket.deviceId}`}>{ticket.deviceHostname}</a>
+              <EntityLink kind="device" id={ticket.deviceId ?? ''} name={ticket.deviceHostname} className="hover:text-foreground" />
             </>
           )}
           {ticket.requesterContactId && (

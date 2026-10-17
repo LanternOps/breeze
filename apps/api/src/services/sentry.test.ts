@@ -517,6 +517,7 @@ describe('scrubEvent', () => {
         release_sync_failure_reason: 'ssrf-blocked',
         release_sync_context: 'stale-volume-fallback',
         backup_dispatch_issue: 'redelivery-refused',
+        command_dispatch_refusal: 'trust_denied',
         worker: 'patchScheduler',
         worker_failure_reason: 'desktop_stop_pending',
         command_result_phase: 'cis_result',
@@ -603,6 +604,10 @@ describe('scrubEvent', () => {
       // contentless and an operator cannot tell a deliberate at-most-once drop
       // from an ordinary backup-worker crash.
       backup_dispatch_issue: 'redelivery-refused',
+      // #8022/BREEZE-45: the maintenance-reboot sweep's refused-dispatch
+      // warning. Dropped here, every refusal arrives as the same contentless
+      // event and the reason a device is never rebooted is unrecoverable.
+      command_dispatch_refusal: 'trust_denied',
       // #1379/BREEZE-9: attachWorkerObservability sets this on every worker,
       // and the allowlist introduced two days later (a50769487) has discarded
       // it ever since, which is why ~12k held-context events carry an empty

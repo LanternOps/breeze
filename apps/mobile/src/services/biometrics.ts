@@ -1,6 +1,8 @@
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 
+import { withBiometricPrompt } from './biometricPromptState';
+
 const BIOMETRIC_ENABLED_KEY = 'breeze_biometric_enabled';
 
 /**
@@ -65,12 +67,16 @@ export async function authenticateWithBiometrics(
   try {
     const biometricName = await getBiometricTypeName();
 
-    const result = await LocalAuthentication.authenticateAsync({
-      promptMessage: promptMessage || `Authenticate with ${biometricName}`,
-      cancelLabel: 'Cancel',
-      fallbackLabel: 'Use Passcode',
-      disableDeviceFallback: false,
-    });
+    // Marked as our own prompt so the app lock does not raise its privacy
+    // cover for the `inactive` the sheet causes (services/biometricPromptState).
+    const result = await withBiometricPrompt(() =>
+      LocalAuthentication.authenticateAsync({
+        promptMessage: promptMessage || `Authenticate with ${biometricName}`,
+        cancelLabel: 'Cancel',
+        fallbackLabel: 'Use Passcode',
+        disableDeviceFallback: false,
+      })
+    );
 
     if (result.success) {
       return true;

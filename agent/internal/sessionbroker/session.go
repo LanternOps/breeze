@@ -589,6 +589,8 @@ func expectedResponseType(cmdType string) string {
 		return ipc.TypeCallerVerifyResponse
 	case ipc.TypeMessageShow:
 		return ipc.TypeMessagePresented
+	case ipc.TypeChatOpen, ipc.TypeChatMessage:
+		return ipc.TypeChatPresented
 	default:
 		return ""
 	}

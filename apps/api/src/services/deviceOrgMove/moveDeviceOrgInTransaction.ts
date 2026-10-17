@@ -478,6 +478,19 @@ export async function moveDeviceOrgInTransaction(
         WHERE device_id = ${deviceId}::uuid AND endpoint_message_id IS NOT NULL`,
   );
 
+  // Endpoint live chat (#8743 W03): chat history follows the device (both
+  // tables are restamped by breeze_cascade_device_org_id()), but a LIVE chat
+  // must not: a destination-org technician would otherwise inherit, and could
+  // post into, a conversation the source org opened. End it here, in the
+  // source org, before the flip. The agent is not told (post-commit side
+  // effects are the caller's); its next reply gets 409 conversation_closed
+  // and the helper closes the window's input.
+  await tx.execute(
+    sql`UPDATE endpoint_conversations
+           SET status = 'closed', close_reason = 'device_moved', closed_at = now(), updated_at = now()
+         WHERE device_id = ${deviceId}::uuid AND status IN ('opening', 'open')`,
+  );
+
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
   const [row] = await tx

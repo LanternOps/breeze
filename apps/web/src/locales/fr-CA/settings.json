@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Données et confidentialité de l'IA",
+    "orgDescription": "Ce que Breeze AI peut lire sur les appareils de cette organisation et la durée de conservation des sorties des outils d'IA. Vide hérite de la valeur par défaut du partenaire; une organisation peut seulement la resserrer.",
+    "partnerDescription": "Valeurs par défaut pour chaque organisation. Une organisation peut les resserrer dans son propre onglet IA, mais jamais les assouplir.",
+    "levelLabel": "Lecture de fichiers d'appareils par l'IA",
+    "levels": {
+      "off": {
+        "label": "Désactivé",
+        "help": "L'IA ne peut ni lire le contenu des fichiers ni parcourir les dossiers des appareils, et les demandes d'accès de diagnostic sont refusées. Les sommaires d'utilisation du disque et vos propres scripts de bibliothèque restent disponibles."
+      },
+      "no_user_profiles": {
+        "label": "Exclut les dossiers de profils utilisateur",
+        "help": "Chemins système et d'applications avec approbation; Documents, Bureau et dossiers personnels sont refusés à moins qu'un administrateur approuve un accès de diagnostic limité dans le temps."
+      },
+      "any_with_approval": {
+        "label": "N'importe quel chemin, avec approbation",
+        "help": "Chaque lecture exige toujours l'approbation d'un technicien et est auditée; les magasins d'identifiants restent bloqués."
+      }
+    },
+    "inherit": "Hériter : {{value}} ({{source}})",
+    "retentionLabel": "Conserver les sorties des outils d'IA pendant (jours)",
+    "retentionInherit": "Hériter : {{value}} ({{source}})",
+    "retentionHelp": "Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit. Vide hérite; un partenaire peut choisir de les conserver indéfiniment.",
+    "keepForever": "indéfiniment",
+    "sourceOrg": "cette organisation",
+    "sourcePartner": "valeur par défaut du partenaire",
+    "sourceDefault": "valeur par défaut de Breeze",
+    "abovePartnerCeiling": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "aboveCeilingLevel": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "retentionAboveCeiling": "Votre partenaire conserve les sorties au plus {{days}} jours.",
+    "saved": "Politique de données d'IA enregistrée",
+    "failedToSave": "Échec de l'enregistrement de la politique de données d'IA",
+    "partnerInheritDefault": "Valeur par défaut de Breeze : {{value}}",
+    "readOnly": "Vous n'avez pas la permission de modifier ces valeurs par défaut.",
+    "retentionKeepDays": "Conserver pendant (jours)",
+    "retentionKeepForever": "Conserver indéfiniment",
+    "retentionBreezeDefault": "Valeur par défaut de Breeze : {{days}} jours",
+    "partnerRetentionHelp": "Choisissez la durée de conservation des sorties des outils d'IA, ou conservez-les indéfiniment. Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit."
+  },
   "partnerServicePrincipals": {
     "title": "Principaux de service",
     "description": "Gérez les identités machines au niveau du partenaire et leurs clés d'accès.",
@@ -1011,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Centre de confiance",
+        "description": "Valeurs par défaut des pages de confiance de vos clients"
+      },
       "company": {
         "label": "Entreprise",
         "description": "Nom, adresse, contacts"
@@ -1915,6 +1958,10 @@
       "title": "Fonctionnalités du portail",
       "description": "Contrôlez ce que ce client peut faire sur son portail. Chaque organisation est indépendante.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Modification de la page de confiance par le client",
+          "description": "Les contacts administrateurs du client ayant un accès au portail peuvent modifier le brouillon de la page de confiance : contact de sécurité, site Web, contrôles masqués et ce que la page affiche. Vous publiez toujours leurs modifications. Ils peuvent aussi retirer la page publiée."
+        },
         "enableTickets": {
           "label": "Soumission de billets",
           "description": "Les clients peuvent ouvrir et suivre les billets de support depuis le portail."
@@ -2036,7 +2083,9 @@
       "email": "Courriel de soutien",
       "phone": "Téléphone d’assistance",
       "welcomeMessage": "Message de bienvenue",
-      "footerText": "Texte du bas de page"
+      "footerText": "Texte du bas de page",
+      "footerTextHelp": "Affiché au bas du portail client et imprimé sur les devis et factures de cette organisation, à la place du pied de page des documents du partenaire. Laissez vide pour imprimer le pied de page du partenaire.",
+      "footerTextInheritedSource": "Pied de page des documents du partenaire"
     }
   },
   "orgPortalUsersEditor": {
@@ -3429,6 +3478,7 @@
         "delete_tenant": "Supprimer une organisation",
         "detect_log_correlations": "Détecter des corrélations de journaux",
         "disk_cleanup": "Nettoyage de disque",
+        "edr_endpoint_action": "EDR : isoler, libérer ou analyser un appareil",
         "execute_command": "Exécuter une commande système",
         "execute_playbook": "Exécuter un playbook",
         "file_operations": "Opérations sur les fichiers",
@@ -3516,6 +3566,7 @@
         "security_scan": "Analyse de sécurité",
         "set_agent_log_level": "Définir le niveau de journalisation de l'agent",
         "set_device_context": "Définir le contexte de l'appareil",
+        "sync_edr_data": "Synchroniser les données EDR",
         "sync_huntress_data": "Synchroniser les données Huntress",
         "system_cleanup": "Nettoyage du système",
         "take_screenshot": "Prendre une capture d'écran"
@@ -4619,6 +4670,11 @@
     "systemRoles": "Rôles du système",
     "customRoles": "Rôles personnalisés",
     "createRole": "Créer un rôle",
+    "ownerScope": "Portée",
+    "ownerScopePartner": "Partenaire",
+    "ownerScopePartnerHelp": "Pour votre propre personnel. Attribuez-le dans la page Utilisateurs.",
+    "ownerScopeOrganization": "Organisation",
+    "ownerScopeOrganizationHelp": "Pour les utilisateurs d’une organisation et son rôle SSO par défaut.",
     "name": "Nom",
     "type": "Type",
     "inheritsFrom": "hérite de",
@@ -5676,6 +5732,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Cette organisation possède une page publique du Centre de confiance. Changer l’identifiant d’URL modifie son adresse publique, et l’ancien lien cessera de fonctionner.",
     "actions": {
       "save": "Enregistrer l’organisation"
     },
@@ -6777,5 +6834,16 @@
     "invalidKey": "Une clé d’utilisateur Pushover compte 30 lettres ou chiffres.",
     "loadFailed": "Impossible de charger votre réglage Pushover.",
     "saveFailed": "Impossible d’enregistrer votre réglage Pushover."
+  },
+  "emailNotificationSettings": {
+    "title": "Notifications par courriel",
+    "description": "Choisissez les courriels que Breeze vous envoie. Les avis dans l'application restent toujours activés.",
+    "digestLabel": "Résumé quotidien de l'état des connexions",
+    "digestHelp": "Un résumé matinal des intégrations et des connexions que vous pouvez réparer, ainsi que de celles qui ont été rétablies. Envoyé au plus une fois par jour.",
+    "enabledToast": "Résumé de l'état des connexions activé",
+    "disabledToast": "Résumé de l'état des connexions désactivé",
+    "loadFailed": "Impossible de charger les préférences de courriel.",
+    "saveFailed": "Impossible d'enregistrer les préférences de courriel.",
+    "retry": "Réessayer"
   }
 }

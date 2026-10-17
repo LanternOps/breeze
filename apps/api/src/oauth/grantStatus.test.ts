@@ -6,6 +6,8 @@ import {
   isOAuthGrantActiveInCurrentDbContext,
   revokeGrantsDurablyInCurrentDbContext,
 } from './grantStatus';
+// Globally mocked in src/__tests__/setup.ts.
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 
 vi.mock('../db', () => ({
   db: { select: vi.fn(), update: vi.fn() },
@@ -111,6 +113,31 @@ describe('revokeGrantsDurablyInCurrentDbContext', () => {
     await revokeGrantsDurablyInCurrentDbContext({ grantIds: [], reason: 'noop' });
 
     expect(updates).toHaveLength(0);
+  });
+
+  it('nudges the oauth_grant health kind after the durable writes, and not for an empty list (W4)', async () => {
+    const nudge = vi.mocked(nudgeConnectionHealth);
+    nudge.mockClear();
+    const updates = captureUpdates();
+    await revokeGrantsDurablyInCurrentDbContext({ grantIds: [], reason: 'noop' });
+    expect(nudge).not.toHaveBeenCalled();
+
+    // Production wraps the nudge in try/catch, so an assertion thrown inside the
+    // mock would be swallowed: capture the count and assert after the call.
+    let updatesAtNudge = -1;
+    nudge.mockImplementation(() => { updatesAtNudge = updates.length; });
+    await revokeGrantsDurablyInCurrentDbContext({ grantIds: ['g1'], reason: 'refresh-token-reuse' });
+    expect(nudge).toHaveBeenCalledTimes(1);
+    expect(nudge).toHaveBeenCalledWith('oauth_grant');
+    // code-consume and grant-stamp updates both happened before the nudge
+    expect(updatesAtNudge).toBeGreaterThanOrEqual(2);
+    nudge.mockReset();
+  });
+
+  it('a nudge that throws never fails the revocation', async () => {
+    captureUpdates();
+    vi.mocked(nudgeConnectionHealth).mockImplementationOnce(() => { throw new Error('should not escape'); });
+    await expect(revokeGrantsDurablyInCurrentDbContext({ grantIds: ['g1'], reason: 'x' })).resolves.toBeUndefined();
   });
 
   it('consumes live authorization codes BEFORE stamping revoked_at', async () => {

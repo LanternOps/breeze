@@ -84,6 +84,12 @@ const C = CommandTypes;
  * synchronous answer, so an offline device is a hard `device_offline`.
  */
 const LIVE: readonly string[] = [
+  // Endpoint live chat (#8743): a chat line delivered hours later, to whoever
+  // is signed in by then, is worse than a refused send. The route refuses an
+  // offline device instead (`device_offline`).
+  C.CHAT_OPEN,
+  C.CHAT_MESSAGE,
+  C.CHAT_CLOSE,
   // Caller verification (#6354 W02): a challenge with its own short deadline;
   // delivering it after the caller hung up would prompt a user out of context.
   C.CALLER_VERIFY,

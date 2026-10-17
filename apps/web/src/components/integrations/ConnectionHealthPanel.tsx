@@ -23,6 +23,9 @@ export const KNOWN_CONDITIONS = [
   "grant_reconciliation_unavailable",
   "grant_revoked_reuse",
   "grant_revoked",
+  "delivery_failed",
+  "sync_stale",
+  "verification_failed",
 ] as const;
 
 type Incident = {

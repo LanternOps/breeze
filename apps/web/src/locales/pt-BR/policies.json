@@ -703,7 +703,9 @@
         "showRequestSupport": "showRequestSupport",
         "portalUrl": "portalUrl",
         "endpointMessaging": "Mensagens para dispositivos",
-        "endpointMessagingHelp": "Permite que técnicos enviem mensagens para a pessoa que usa o dispositivo."
+        "endpointMessagingHelp": "Permite que técnicos enviem mensagens para a pessoa que usa o dispositivo.",
+        "allowUserReply": "Permitir respostas do usuário",
+        "allowUserReplyHelp": "Permite que a pessoa no dispositivo responda em um chat iniciado por um técnico. Desativado, os chats são unidirecionais."
       },
       "inlineEntityPicker": {
         "search": "Pesquisar...",
@@ -887,7 +889,8 @@
         "ringInvalidTitle": "O anel de atualização vinculado não está mais disponível.",
         "ringInvalidBody": "Os patches desta política ficam retidos até você escolher um anel e salvar.",
         "ringInvalidLegacyRules": "Esta política ainda tem regras de aplicativo de antes de elas passarem para os anéis ({{rules}}). O anel escolhido já deve ter exatamente essas regras — adicione-as a ele primeiro.",
-        "approvalRulesMovedToRing": "A aprovação automática e as regras de aplicativo agora são definidas no anel de atualização. Edite-as no anel vinculado. Se esta página estava aberta antes da atualização, recarregue-a e salve novamente."
+        "approvalRulesMovedToRing": "A aprovação automática e as regras de aplicativo agora são definidas no anel de atualização. Edite-as no anel vinculado. Se esta página estava aberta antes da atualização, recarregue-a e salve novamente.",
+        "ringLacksPolicyAppRules": "O anel de atualização escolhido não tem as regras de aplicativo desta política. Adicione primeiro exatamente essas regras a esse anel ou escolha um anel que já as tenha."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Vincular política de periféricos",
@@ -1123,6 +1126,22 @@
         "aboutTitle": "Sobre a Restauração do Sistema",
         "aboutBody": "Aplica-se apenas a dispositivos Windows. A Restauração do Sistema abrange arquivos do sistema, o registro, programas instalados e configurações. Não é um backup e não abrange arquivos pessoais. Por padrão, o Windows limita a criação de pontos de restauração a um a cada 24 horas, e um ponto criado pode ser removido depois pelo Windows ou se tornar inutilizável."
       },
+      "securityAgentsTab": {
+        "title": "Agentes de segurança",
+        "description": "Implante e mantenha instalados agentes de segurança gerenciados nos dispositivos",
+        "deployVendor": "Implantar {{vendor}}",
+        "comingSoon": "Em breve",
+        "platformWindows": "Windows: instalado automaticamente.",
+        "platformMacos": "macOS: exige aprovação de MDM, portanto o Breeze não o instala automaticamente. Esses dispositivos aparecem como não aplicáveis.",
+        "platformLinux": "Linux: sem suporte.",
+        "keysNotice": "As instalações usam as chaves por cliente da integração com a Huntress. Organizações que não estão mapeadas nessa integração são ignoradas e aparecem como não aplicáveis, sem implantações com falha. Desativar um fornecedor interrompe a aplicação, mas nunca desinstala o agente.",
+        "closerWarning": "Uma política de configuração atribuída mais perto do dispositivo (site, grupo ou dispositivo, ou uma política filha que herda) com configurações próprias de agentes de segurança substitui totalmente estas configurações para esses dispositivos. Um fornecedor omitido ali não é aplicado.",
+        "partnerWideBadge": "Aplica-se a todas as organizações",
+        "noneEnabledNote": "Nenhum fornecedor está ativado: os dispositivos alcançados por esta política ficam fora de todos os agentes de segurança.",
+        "catalogMissing": "A Huntress ainda não está configurada para este parceiro. Conecte primeiro a integração com a Huntress e salve novamente.",
+        "catalogMissingLink": "Conectar Huntress",
+        "executeRequired": "Ativar as instalações exige permissão para executar comandos nos dispositivos, com MFA. Peça a um administrador com essa permissão para salvar esta configuração."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Os alertas de garantia são opcionais: dispositivos sem uma política de garantia atribuída nunca geram alertas. Os limites abaixo se aplicam somente à cobertura por prazo determinado — assinaturas ativas do AppleCare são renovadas em vez de expirar, portanto seus alertas de vencimento são sempre suprimidos.",
         "enableWarrantyExpiryAlerts": "Ativar alertas de vencimento da garantia",
@@ -1341,7 +1360,9 @@
       "installSkippedNoCatalog": "Uma regra obrigatória não tem um item de catálogo vinculado, então não há nada para instalar. Adicione um vínculo de catálogo no editor de políticas para corrigir isso.",
       "installSkippedCapOrPlatform": "Não é uma falha — o limite de instalações por passagem foi atingido ou a plataforma deste dispositivo não tem um método de instalação para o software. Pode ser tentado novamente na próxima passagem.",
       "installAttempts": "{{count}} tentativa(s)",
-      "installLastAttempt": "Última tentativa de instalação: "
+      "installLastAttempt": "Última tentativa de instalação: ",
+      "managedByConfigPolicy": "Gerenciada por política de configuração",
+      "managedByConfigPolicyHint": "Esta política é gerada a partir de uma política de configuração e é somente leitura aqui. Altere-a em Políticas de configuração."
     },
     "deploymentList": {
       "running": "Em execução",

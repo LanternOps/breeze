@@ -13,7 +13,7 @@ import { zValidator } from '../../lib/validation';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
-import { resendTargets } from '../../services/endpointMessaging/history';
+import { messageReachesAllowedSites, resendTargets } from '../../services/endpointMessaging/history';
 import { executeEndpointMessageSend } from './send';
 
 // Resend an endpoint message (#8742 W02) to the devices it never reached
@@ -50,6 +50,10 @@ resendRoutes.post(
       // targets after them and finds nothing left to resend.
       .for('update');
     if (!m || !auth.canAccessOrg(m.orgId)) return c.json({ error: 'not_found' }, 404);
+    // Site-clamped caller: a message with no delivery in their sites is not theirs to see.
+    if (!(await messageReachesAllowedSites(m.id, c.get('permissions') as UserPermissions | undefined))) {
+      return c.json({ error: 'not_found' }, 404);
+    }
     if (m.retractedAt) return c.json({ error: 'retracted' }, 409);
     if (m.bodyPurgedAt || m.title === null || m.body === null) return c.json({ error: 'body_purged' }, 409);
 

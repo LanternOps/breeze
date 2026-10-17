@@ -10,6 +10,8 @@ const huntress = partnerSyncSource({
   tableName: 'huntress_integrations',
   intervalMinutes: 15,
   failedValue: 'error',
+  syncIntervalMinutes: 15,
+  withTimezone: false,
   displayName: 'Huntress',
   fixHref: '/integrations#huntress',
   verdict: huntressHealth,

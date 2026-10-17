@@ -9,7 +9,7 @@ import { navigateTo } from './navigation';
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
 import { lineWorkedVsBilled } from '@breeze/shared';
-import type { TrustPagePublicPayload } from '@breeze/shared';
+import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -854,6 +854,10 @@ export interface BrandingConfig {
   enablePatchDetail?: boolean;
   /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
   enableVulnerabilityDetail?: boolean;
+  /** Trust Center W3d: per-USER capability, not an org flag — true only when the org
+   *  turned trust-page editing on AND this portal user is an org-scoped admin
+   *  contact. The API re-checks it on every trust-page request. */
+  canEditTrustPage?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
   chromeAccent?: string | null;
@@ -1610,8 +1614,8 @@ export const portalApi = {
     publicApiPath(`/portal/documents/${documentId}/content`),
 };
 
-export interface TrustCard { title: string; orgName: string; logoUrl: string | null; primaryColor: string | null; managedByName: string | null; summaryLine: string; publishedAt: string; lastEvaluatedAt: string | null; stale: boolean; searchIndexable: boolean }
-export interface TrustPageResponse { payload: TrustPagePublicPayload; lastEvaluatedAt: string | null; stale: boolean; preview?: boolean }
+export interface TrustCard { title: string; orgName: string; logoUrl: string | null; primaryColor: string | null; managedByName: string | null; summaryLine: string; publishedAt: string; lastEvaluatedAt: string | null; stale: boolean; searchIndexable: boolean; locale: string; controlsShown: number; catalogTotal: number; controlsMet: number }
+export interface TrustPageResponse { payload: TrustPagePublicPayloadAny; lastEvaluatedAt: string | null; stale: boolean; preview?: boolean }
 
 export const trustBadgePath = (p: string, o: string): PublicApiPath => publicApiPath(`/trust/public/${encodeURIComponent(p)}/${encodeURIComponent(o)}/badge.svg`);
 /** `o` null = the partner-home page, which has its own document route (/trust/public/:partnerSlug/documents/:id). */

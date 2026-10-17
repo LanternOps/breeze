@@ -14,6 +14,7 @@ type TranslatedLocale = (typeof translatedLocales)[number];
 // same `Français (Canada)` value in every catalog.
 const namespaceDuplicateBaselines = {
   'pt-BR': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in pt-BR.
     'contactResponsibilities.json': 1,
     // +6: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Status" are
@@ -191,6 +192,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 14,
   },
   'es-419': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in es-419.
     'contactResponsibilities.json': 1,
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
@@ -357,6 +359,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'fr-FR': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.admin — "Administration" is the same French word.
     'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
@@ -560,6 +563,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'fr-CA': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.admin — "Administration" is the same French word.
     'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
@@ -758,6 +762,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'de-DE': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in de-DE.
     'contactResponsibilities.json': 1,
     // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
@@ -952,6 +957,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 21,
   },
   'it-IT': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.escalation — "Escalation" is the standard Italian term.
     'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
@@ -1104,6 +1110,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 18,
   },
   'tr-TR': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in tr-TR.
     'contactResponsibilities.json': 1,
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the

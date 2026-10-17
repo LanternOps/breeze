@@ -401,7 +401,7 @@ quoteCrudRoutes.patch('/:id/orders/:orderId/lines/:lineId', scopes, fulfillPerm,
 // the bare `db` is correct here — same pattern the service uses to read its
 // tables). Branding resolves like invoicePdf: partner name + portal logo/color +
 // partner invoice footer/currency. Footer precedence is
-// quote.terms ?? partner invoice footer ?? portal footer text.
+// quote.terms ?? org portal footer text ?? partner invoice footer (#7510).
 quoteCrudRoutes.get('/:id/pdf', scopes, readPerm, zValidator('param', idParam), async (c) => {
   const id = c.req.valid('param').id;
   try {

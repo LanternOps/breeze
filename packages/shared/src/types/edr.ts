@@ -69,6 +69,11 @@ export interface EdrEndpointActionAvailability {
   action: EdrActionKey;
   available: boolean;
   reason: string | null;
+  /**
+   * Set (true) only when the action would be allowed but the session has not
+   * passed MFA, so the UI can prompt for verification instead of a dead button.
+   */
+  mfaRequired?: boolean;
 }
 
 /**

@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   send: vi.fn(),
   requirePermission: vi.fn(),
   requireMfa: vi.fn(),
+  reaches: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -32,7 +33,7 @@ vi.mock('../../middleware/auth', () => ({
     return async (_c: unknown, next: () => Promise<void>) => next();
   },
 }));
-vi.mock('../../services/endpointMessaging/history', () => ({ resendTargets: h.targets }));
+vi.mock('../../services/endpointMessaging/history', () => ({ resendTargets: h.targets, messageReachesAllowedSites: h.reaches }));
 vi.mock('./send', () => ({ executeEndpointMessageSend: h.send }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => undefined }));
 
@@ -41,6 +42,7 @@ import { resendRoutes } from './resend';
 const gateCalls = h.requirePermission.mock.calls.map((c) => [...c]);
 const mfaCalls = h.requireMfa.mock.calls.length;
 
+let perms: unknown;
 const auth = {
   user: { id: 'u1', email: 'tech@example.test' },
   orgCondition: () => undefined,
@@ -51,6 +53,7 @@ function app() {
   const a = new Hono();
   a.use('*', async (c, next) => {
     c.set('auth' as never, auth as never);
+    c.set('permissions' as never, perms as never);
     await next();
   });
   a.route('/endpoint-messages', resendRoutes);
@@ -82,6 +85,7 @@ describe('POST /endpoint-messages/:id/resend (#8742)', () => {
     vi.clearAllMocks();
     h.rows = [stored()];
     h.targets.mockResolvedValue([DEV]);
+    h.reaches.mockResolvedValue(true);
     h.send.mockResolvedValue({ status: 200, body: { batchId: 'b', deviceCount: 1, results: [] } });
   });
 
@@ -131,6 +135,19 @@ describe('POST /endpoint-messages/:id/resend (#8742)', () => {
     h.rows = [];
     expect((await post()).status).toBe(404);
     expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('site scope (#9014): 404s, with no target lookup and no send, when no delivery is in the caller sites', async () => {
+    perms = { allowedSiteIds: ['5a000000-0000-4000-8000-00000000000a'] };
+    h.reaches.mockResolvedValue(false);
+    const res = await post();
+    expect(res.status).toBe(404);
+    expect(h.reaches).toHaveBeenCalledWith(ROW, perms);
+    expect(h.targets).not.toHaveBeenCalled();
+    expect(h.send).not.toHaveBeenCalled();
+    h.reaches.mockResolvedValue(true);
+    expect((await post()).status).toBe(200);
+    perms = undefined;
   });
 
   it('rejects a body that tries to supply content', async () => {

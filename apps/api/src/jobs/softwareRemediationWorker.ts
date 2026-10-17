@@ -8,9 +8,16 @@ import { isReusableState } from '../services/bullmqUtils';
 import { CommandTypes, queueCommand } from '../services/commandQueue';
 import {
   evaluateSoftwarePolicyArming,
+  normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
   SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
 } from '../services/softwarePolicyService';
+import { resolveSecurityAgentsLinkForDevice } from '../services/featureConfigResolver';
+import {
+  loadManagedRuleApplicability,
+  type ManagedRuleApplicability,
+} from '../services/securityAgents/managedRuleApplicability';
+import type { ReadinessReason } from '../services/securityAgents/installerReadiness';
 import {
   createPolicyOwnedInstallDeployment,
   hasUnfinishedPolicyOwnedInstall,
@@ -775,6 +782,8 @@ async function admitRemediateDeviceInstall(
       enforceMode: softwarePolicies.enforceMode,
       remediationOptions: softwarePolicies.remediationOptions,
       approvalGeneration: softwarePolicies.approvalGeneration,
+      rules: softwarePolicies.rules,
+      managedByLinkId: softwarePolicies.managedByLinkId,
     })
     .from(softwarePolicies)
     .where(eq(softwarePolicies.id, data.policyId))
@@ -950,6 +959,49 @@ async function admitRemediateDeviceInstall(
 
   const now = new Date();
 
+  // #6960: a policy generated from a security_agents link is re-resolved
+  // immediately before dispatch. Its device set is "the link's assignments,
+  // where that link wins the security_agents walk"; an assignment removed, or a
+  // closer link (an opt-out with no agents, or another vendor set) added since
+  // the job was queued, means this device is no longer the policy's to install
+  // on. Vendor removal within the same link is caught earlier, by the
+  // generation gate (the generator bumps approval_generation).
+  let managedApplicability: ManagedRuleApplicability | null = null;
+  if (policy.managedByLinkId) {
+    const winner = await resolveSecurityAgentsLinkForDevice(data.deviceId);
+    if (winner?.linkId !== policy.managedByLinkId) {
+      console.warn('[SoftwareRemediationWorker] Device no longer resolves to the managed policy link, skipping install', {
+        policyId: policy.id, deviceId: data.deviceId, winningLinkId: winner?.linkId ?? null,
+      });
+      recordSoftwareRemediationDecision('install_no_longer_targeted');
+      await db
+        .update(softwareComplianceStatus)
+        .set({ installRemediationStatus: 'skipped', lastInstallRemediationAttempt: now })
+        .where(eq(softwareComplianceStatus.id, compliance.id));
+      fireAudit({
+        orgId: auditOrgId,
+        partnerId: policy.partnerId,
+        policyId: policy.id,
+        deviceId: data.deviceId,
+        action: SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.skipped,
+        actor: 'system',
+        details: {
+          policyName: policy.name,
+          reason: 'no_longer_targeted',
+          managedByLinkId: policy.managedByLinkId,
+          winningLinkId: winner?.linkId ?? null,
+        },
+      });
+      return nothing;
+    }
+    // Second line of the installer-readiness preflight (the compliance pass is
+    // the first): readiness can change between enqueue and now.
+    managedApplicability = await loadManagedRuleApplicability(
+      { id: policy.id, managedByLinkId: policy.managedByLinkId, rules: normalizeSoftwarePolicyRules(policy.rules) },
+      [{ deviceId: data.deviceId, orgId: deviceRow.orgId, osType: deviceRow.osType }],
+    );
+  }
+
   // Dedup gate, evaluated ONCE per job: unfinished policy-owned work for this
   // (policy, device) means queue nothing at all this pass. Checked before the
   // in_progress write so a deduped pass does not churn the status column, and
@@ -1027,7 +1079,7 @@ async function admitRemediateDeviceInstall(
       return nothing;
     }
 
-    const skips: Array<{ rule: string; catalogId?: string; reason: PolicyInstallSkipReason }> = [];
+    const skips: Array<{ rule: string; catalogId?: string; reason: PolicyInstallSkipReason; readiness?: ReadinessReason }> = [];
     const targets: Array<{ rule: string; target: PolicyInstallTarget }> = [];
 
     // A missing rule that names nothing to install can never produce a
@@ -1040,6 +1092,23 @@ async function admitRemediateDeviceInstall(
     }
 
     for (const entry of requested) {
+      if (managedApplicability) {
+        const { notApplicable } = managedApplicability.filterViolations(data.deviceId, [{
+          type: 'missing',
+          rule: { name: entry.ruleName, catalogId: entry.catalogId },
+          severity: 'high',
+          detectedAt: now.toISOString(),
+        }]);
+        if (notApplicable.length > 0) {
+          skips.push({
+            rule: entry.ruleName,
+            catalogId: entry.catalogId,
+            reason: 'installer_not_ready',
+            readiness: notApplicable[0]!.reason,
+          });
+          continue;
+        }
+      }
       const resolution = await resolvePolicyInstallTarget({
         catalogId: entry.catalogId,
         deviceOrgId: deviceRow.orgId,

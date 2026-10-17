@@ -155,8 +155,11 @@ option B). The status badge leaves the rows; the panel becomes two columns at
 
 ### Layout
 
-- Panel: `w-80` below `md` (single column, today's behaviour minus the badge),
-  `w-[36rem]` at `md+` with a 250px left column and a right pane.
+- Panel: `w-80` below `lg` (single column, today's behaviour minus the badge),
+  `w-[36rem]` at `lg+` (1024px) with a 250px left column and a right pane.
+  Plan amendment (W02 review): the spec said `md`; at 768–855px the 36rem
+  panel clips beside the expanded sidebar, so the two-column layout starts at
+  `lg`.
 - **Above the columns, unchanged:** the "All organizations" fleet row and
   separator.
 - **Left column, top to bottom:** search (same ≥6-orgs threshold), a **Recent**

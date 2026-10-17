@@ -141,13 +141,13 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // #8167 W03: `edr_endpoint_action (isolate/unisolate/scan)` on the
     // Integrations line adds 46 bytes (6677 vs the 6656 limit). Paid for by
     // dropping the patching note's "Approve patches before install." (names no
-    // tool), not by raising the ceiling.
+    // tool), not by raising the ceiling. W03 PR-B's `sync_edr_data` (+15 bytes)
+    // was absorbed by further tightening the scripts note.
     // #8742 W02: `send_endpoint_message (send/list/get)` on the Tickets line
     // took it to 6684. Paid for by tightening the scripts note's wording (same
     // guidance), not by raising the ceiling.
-    // #8584: `list_device_restore_point_attempts` on the Automations line took
-    // it to 6690. Paid for by dropping the scripts note's "(editor Test Run,
-    // history)" aside and three shorter phrasings (same tools, same sentences).
+    // Trust Center W02i (`get_trust_page_status`) and #8584 (`list_device_restore_point_attempts`, Automations line)
+    // are paid for by tightening the patching/scripts notes' wording (same guidance, same tools), not by raising the ceiling.
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.5 * 1024);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });

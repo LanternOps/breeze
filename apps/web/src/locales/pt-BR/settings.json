@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Dados e privacidade da IA",
+    "orgDescription": "O que o Breeze AI pode ler nos dispositivos desta organização e por quanto tempo as saídas das ferramentas de IA são mantidas. Em branco herda o padrão do parceiro; uma organização só pode restringi-lo.",
+    "partnerDescription": "Padrões para todas as organizações. Uma organização pode restringi-los na própria aba de IA, mas nunca afrouxá-los.",
+    "levelLabel": "Leitura de arquivos de dispositivos pela IA",
+    "levels": {
+      "off": {
+        "label": "Desativado",
+        "help": "A IA não pode ler o conteúdo de arquivos nem navegar por pastas nos dispositivos, e solicitações de acesso de diagnóstico são recusadas. Resumos de uso de disco e seus próprios scripts da biblioteca continuam disponíveis."
+      },
+      "no_user_profiles": {
+        "label": "Exclui pastas de perfis de usuário",
+        "help": "Caminhos de sistema e de aplicativos com aprovação; Documentos, Área de Trabalho e pastas pessoais são recusados, a menos que um administrador aprove uma concessão de diagnóstico com prazo."
+      },
+      "any_with_approval": {
+        "label": "Qualquer caminho, com aprovação",
+        "help": "Toda leitura ainda exige a aprovação de um técnico e é auditada; os repositórios de credenciais continuam bloqueados."
+      }
+    },
+    "inherit": "Herdar: {{value}} ({{source}})",
+    "retentionLabel": "Manter saídas de ferramentas de IA por (dias)",
+    "retentionInherit": "Herdar: {{value}} ({{source}})",
+    "retentionHelp": "Saídas mais antigas são substituídas por um marcador na execução noturna. Em branco herda; um parceiro pode optar por mantê-las para sempre.",
+    "keepForever": "para sempre",
+    "sourceOrg": "esta organização",
+    "sourcePartner": "padrão do parceiro",
+    "sourceDefault": "padrão do Breeze",
+    "abovePartnerCeiling": "Indisponível: o padrão do parceiro é mais restritivo.",
+    "aboveCeilingLevel": "Indisponível: o padrão do parceiro é mais restritivo.",
+    "retentionAboveCeiling": "Seu parceiro mantém as saídas por no máximo {{days}} dias.",
+    "saved": "Política de dados de IA salva",
+    "failedToSave": "Falha ao salvar a política de dados de IA",
+    "partnerInheritDefault": "Padrão do Breeze: {{value}}",
+    "readOnly": "Você não tem permissão para alterar estes padrões.",
+    "retentionKeepDays": "Manter por (dias)",
+    "retentionKeepForever": "Manter para sempre",
+    "retentionBreezeDefault": "Padrão do Breeze: {{days}} dias",
+    "partnerRetentionHelp": "Escolha por quanto tempo manter as saídas das ferramentas de IA, ou mantenha-as para sempre. Saídas mais antigas são substituídas por um marcador na execução noturna."
+  },
   "partnerServicePrincipals": {
     "title": "Entidades de serviço",
     "description": "Gerencie identidades de máquina no nível do parceiro e suas chaves de acesso.",
@@ -1011,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Central de Confiança",
+        "description": "Padrões para as páginas de confiança dos seus clientes"
+      },
       "company": {
         "label": "Empresa",
         "description": "Nome, endereço, contatos"
@@ -1915,6 +1958,10 @@
       "title": "Recursos do portal",
       "description": "Controle o que este cliente pode fazer no portal. Cada organização é independente.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Edição da página de confiança pelo cliente",
+          "description": "Os contatos administradores do cliente com acesso ao portal podem editar o rascunho da página de confiança: contato de segurança, site, controles ocultos e o que a página exibe. Você continua publicando as alterações. Eles também podem retirar a página publicada."
+        },
         "enableTickets": {
           "label": "Envio de chamados",
           "description": "Os clientes podem abrir e acompanhar chamados de suporte pelo portal."
@@ -2036,7 +2083,9 @@
       "email": "E-mail de suporte",
       "phone": "Telefone de suporte",
       "welcomeMessage": "Mensagem de boas-vindas",
-      "footerText": "Texto do rodapé"
+      "footerText": "Texto do rodapé",
+      "footerTextHelp": "Exibido no fim do portal do cliente e impresso nas cotações e faturas desta organização, no lugar do rodapé dos documentos do parceiro. Deixe em branco para imprimir o rodapé do parceiro.",
+      "footerTextInheritedSource": "Rodapé dos documentos do parceiro"
     }
   },
   "orgPortalUsersEditor": {
@@ -3429,6 +3478,7 @@
         "delete_tenant": "Excluir uma organização",
         "detect_log_correlations": "Detectar correlações de logs",
         "disk_cleanup": "Limpeza de disco",
+        "edr_endpoint_action": "EDR: isolar, liberar ou verificar um dispositivo",
         "execute_command": "Executar um comando do sistema",
         "execute_playbook": "Executar um playbook",
         "file_operations": "Operações com arquivos",
@@ -3516,6 +3566,7 @@
         "security_scan": "Verificação de segurança",
         "set_agent_log_level": "Definir o nível de log do agente",
         "set_device_context": "Definir o contexto do dispositivo",
+        "sync_edr_data": "Sincronizar dados de EDR",
         "sync_huntress_data": "Sincronizar dados do Huntress",
         "system_cleanup": "Limpeza do sistema",
         "take_screenshot": "Tirar uma captura de tela"
@@ -4624,6 +4675,11 @@
     "systemRoles": "Funções do sistema",
     "customRoles": "Funções personalizadas",
     "createRole": "Criar função",
+    "ownerScope": "Escopo",
+    "ownerScopePartner": "Parceiro",
+    "ownerScopePartnerHelp": "Para sua própria equipe. Atribua na página Usuários.",
+    "ownerScopeOrganization": "Organização",
+    "ownerScopeOrganizationHelp": "Para os usuários de uma organização e sua função padrão de SSO.",
     "name": "Nome",
     "type": "Tipo",
     "inheritsFrom": "Herda de",
@@ -5681,6 +5737,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Esta organização tem uma página pública da Central de Confiança. Alterar o slug muda o URL público, e o link antigo deixará de funcionar.",
     "actions": {
       "save": "Salvar organização"
     },
@@ -6777,5 +6834,16 @@
     "invalidKey": "Uma chave de usuário do Pushover tem 30 letras ou dígitos.",
     "loadFailed": "Não foi possível carregar sua configuração do Pushover.",
     "saveFailed": "Não foi possível salvar sua configuração do Pushover."
+  },
+  "emailNotificationSettings": {
+    "title": "Notificações por e-mail",
+    "description": "Escolha quais e-mails o Breeze envia para você. Os avisos no aplicativo permanecem sempre ativos.",
+    "digestLabel": "Resumo diário da integridade das conexões",
+    "digestHelp": "Um resumo matinal das integrações e dos logins que você pode corrigir, e dos que foram recuperados. Enviado no máximo uma vez por dia.",
+    "enabledToast": "Resumo da integridade das conexões ativado",
+    "disabledToast": "Resumo da integridade das conexões desativado",
+    "loadFailed": "Não foi possível carregar as preferências de e-mail.",
+    "saveFailed": "Não foi possível salvar as preferências de e-mail.",
+    "retry": "Tentar novamente"
   }
 }
