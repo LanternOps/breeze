@@ -1,6 +1,6 @@
 /**
  * Endpoint live chat tables (#8743, W03 of #8740): RLS + tenant-consistency
- * contract. Migration: 2026-12-29-235000-endpoint-conversations.sql.
+ * contract. Migration: 2026-12-30-120000-endpoint-conversations.sql.
  *
  * Both tables are shape 5 (device-scoped, denormalized org_id, direct
  * breeze_has_org_access(org_id) policy). Runs through the real postgres.js

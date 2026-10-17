@@ -19,7 +19,7 @@ import { users } from './users';
 
 /**
  * Endpoint live chat (#8743, W03 of #8740). Migration:
- * 2026-12-29-235000-endpoint-conversations.sql.
+ * 2026-12-30-120000-endpoint-conversations.sql.
  *
  * Tenancy (docs/agents/tenancy-rls.md): both tables are shape 5 — device-scoped
  * with a denormalized org_id and a direct breeze_has_org_access(org_id) policy.
