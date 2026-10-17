@@ -130,7 +130,7 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
     .where(sql`${table.status} = 'failed'`),
   failedWebhookIdx: index('webhook_deliveries_failed_webhook_idx')
     .on(table.webhookId, table.createdAt)
-    .where(sql`${table.status} = 'failed'`)
+    .where(sql`${table.status} = 'failed' AND ${table.attempts} > 0`)
 }));
 
 // Dual ownership (epic #2135): a connection is owned by EITHER an org

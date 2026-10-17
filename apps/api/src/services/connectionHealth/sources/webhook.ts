@@ -23,7 +23,13 @@ import { observeRows, toHealthObservation, validUuids } from './observeRows';
 //
 // Both tables grow with orgs, so both reads are index-backed (2026-12-29-250000):
 //   broken:  webhook_deliveries_failed_recent_idx (created_at) WHERE status = 'failed'
-//   tracked: webhook_deliveries_failed_webhook_idx (webhook_id, created_at) WHERE status = 'failed'
+//   tracked: webhook_deliveries_failed_webhook_idx (webhook_id, created_at)
+//            WHERE status = 'failed' AND attempts > 0
+// The tracked index's extra `attempts > 0` is deliberate: only the tracked
+// lookup states it literally, so the broken query cannot be planned onto the
+// per-webhook index (whose webhook_id order would turn the one-hour window
+// into a scan of every failed row).
+const ATTEMPTED = sql.raw(`d.attempts > 0`);
 
 const FIX_HREF = '/integrations#webhooks';
 /** Spec §3: terminal failures inside this window open an incident. */
@@ -82,15 +88,20 @@ const windowStart = (now: Date) => new Date(now.getTime() - TERMINAL_FAILURE_WIN
  * are bound as ISO strings (the columns are `timestamp`, written in UTC).
  */
 function brokenWebhooksQuery(now: Date): SQL {
+  // A semi-join, not SELECT DISTINCT: nothing asks for webhook_id order.
   return sql`
-    SELECT DISTINCT d.webhook_id AS id
-    FROM webhook_deliveries d
-    JOIN webhooks w ON w.id = d.webhook_id
-    WHERE d.status = ${FAILED}
-      AND d.created_at >= ${windowStart(now)}::timestamp
-      AND d.attempts >= ${TERMINAL_ATTEMPTS}
-      AND ${NOT_SUPERSEDED}
-      AND w.status = 'active'`;
+    SELECT wh.id
+    FROM webhooks wh
+    WHERE wh.status = 'active'
+      AND wh.id IN (
+        SELECT d.webhook_id
+        FROM webhook_deliveries d
+        JOIN webhooks w ON w.id = d.webhook_id
+        WHERE d.status = ${FAILED}
+          AND d.created_at >= ${windowStart(now)}::timestamp
+          AND d.attempts >= ${TERMINAL_ATTEMPTS}
+          AND ${NOT_SUPERSEDED}
+      )`;
 }
 
 type DbRow = {
@@ -111,7 +122,7 @@ async function loadWebhooks(ids: string[]): Promise<WebhookRow[]> {
     LEFT JOIN LATERAL (
       SELECT d.created_at, d.error_message, d.response_status
       FROM webhook_deliveries d
-      WHERE d.webhook_id = w.id AND d.status = ${FAILED}
+      WHERE d.webhook_id = w.id AND d.status = ${FAILED} AND ${ATTEMPTED}
         AND d.attempts >= ${TERMINAL_ATTEMPTS}
         AND ${NOT_SUPERSEDED}
       ORDER BY d.created_at DESC

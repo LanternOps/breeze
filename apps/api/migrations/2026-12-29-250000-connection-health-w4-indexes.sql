@@ -6,9 +6,11 @@
 -- 1. webhook_deliveries — append-only, no retention job, takes live writes.
 --    a. (created_at) WHERE status = 'failed': the webhook source's broken
 --       query, a range scan over the last hour of failed deliveries.
---    b. (webhook_id, created_at) WHERE status = 'failed': the latest terminal
---       failure of each tracked webhook (LATERAL … ORDER BY created_at DESC
---       LIMIT 1).
+--    b. (webhook_id, created_at) WHERE status = 'failed' AND attempts > 0: the
+--       latest terminal failure of each tracked webhook (LATERAL … ORDER BY
+--       created_at DESC LIMIT 1). `attempts > 0` keeps the broken query (which
+--       does not state it) off this index, whose webhook_id order would turn
+--       the one-hour window into a scan of every failed row.
 --    Both cover failed rows only, so they grow with failures, not traffic.
 -- 2. google_workspace_connections (one row per org).
 --    a. (id) WHERE last_probe_status = 'failed': the google_workspace source's
@@ -31,7 +33,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS webhook_deliveries_failed_recent_idx
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS webhook_deliveries_failed_webhook_idx
   ON public.webhook_deliveries (webhook_id, created_at)
-  WHERE status = 'failed';
+  WHERE status = 'failed' AND attempts > 0;
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS google_workspace_connections_probe_failed_idx
   ON public.google_workspace_connections (id)

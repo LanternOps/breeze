@@ -16,7 +16,11 @@ import { HEALTH_SOURCES } from '../../services/connectionHealth/sources';
 const NOW = new Date();
 
 /** Tables whose rows grow with orgs or users: never sequentially scanned. */
-const PER_ORG_TABLES = new Set(['oauth_grants', 'dns_filter_integrations', 'm365_connections', 'm365_sync_state']);
+const PER_ORG_TABLES = new Set([
+  'oauth_grants', 'dns_filter_integrations', 'm365_connections', 'm365_sync_state',
+  // W4
+  'webhooks', 'webhook_deliveries', 'google_workspace_connections',
+]);
 /** Tables whose rows grow with partners (one or a few per partner): a scan is acceptable. */
 const PARTNER_AXIS_TABLES = new Set([
   'huntress_integrations',
@@ -60,8 +64,15 @@ describe('connection health source index contract (spec §1.3)', () => {
     ['m365_connection', 'm365_connections_unhealthy_idx'],
     ['m365_sync', 'm365_sync_state_unhealthy_idx'],
     ['oauth_grant', 'oauth_grants_auto_revoked_idx'],
+    ['webhook', 'webhook_deliveries_failed_recent_idx'],
+    ['google_workspace', 'google_workspace_connections_probe_failed_idx'],
   ])('%s uses %s', async (kind, index) => {
     const source = HEALTH_SOURCES.find((s) => s.kind === kind)!;
     expect(await planFor(source)).toContain(index);
+  });
+
+  it('webhook: the windowed broken query never walks the per-webhook failed index (W4)', async () => {
+    const plan = await planFor(HEALTH_SOURCES.find((s) => s.kind === 'webhook')!);
+    expect(plan).not.toContain('webhook_deliveries_failed_webhook_idx');
   });
 });
