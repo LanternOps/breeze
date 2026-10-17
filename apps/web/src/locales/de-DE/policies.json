@@ -703,7 +703,9 @@
         "showRequestSupport": "showRequestSupport",
         "portalUrl": "PortalURL",
         "endpointMessaging": "Endpunkt-Nachrichten",
-        "endpointMessagingHelp": "Ermöglicht Technikern, Nachrichten an die Person am Gerät zu senden."
+        "endpointMessagingHelp": "Ermöglicht Technikern, Nachrichten an die Person am Gerät zu senden.",
+        "allowUserReply": "Antworten des Benutzers zulassen",
+        "allowUserReplyHelp": "Erlaubt der Person am Gerät, in einem von einem Techniker gestarteten Chat zu antworten. Ist die Option aus, sind Chats einseitig."
       },
       "inlineEntityPicker": {
         "search": "Suchen...",
