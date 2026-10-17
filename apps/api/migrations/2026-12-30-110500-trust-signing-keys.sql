@@ -42,6 +42,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS trust_signing_keys_one_active_uq
   ON trust_signing_keys(status)
   WHERE status = 'active';
 
+-- One pending key at a time: two operators running `prepare` concurrently
+-- cannot leave two published-but-unannounced keys in the JWKS.
+CREATE UNIQUE INDEX IF NOT EXISTS trust_signing_keys_one_pending_uq
+  ON trust_signing_keys(status)
+  WHERE status = 'pending';
+
 -- Forced RLS with a single system-only policy: the breeze_app role can read
 -- or write only under the system DB context (withSystemDbAccessContext).
 ALTER TABLE trust_signing_keys ENABLE ROW LEVEL SECURITY;

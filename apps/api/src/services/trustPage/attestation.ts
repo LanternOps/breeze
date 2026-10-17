@@ -18,7 +18,14 @@ import { SignJWT } from 'jose';
 import type { TrustPagePublicPayload } from '@breeze/shared';
 import { getRedis } from '../redis';
 import type { ResolvedTrustPage } from './resolve';
-import { ensureActiveTrustSigningKey, loadTrustSigningKey, TrustAttestationUnavailable, TRUST_SIGNING_ALG } from './attestationKeys';
+import {
+  ensureActiveTrustSigningKey,
+  invalidateTrustKeysetCache,
+  loadTrustSigningKey,
+  trustAttestationCachePrefix,
+  TrustAttestationUnavailable,
+  TRUST_SIGNING_ALG,
+} from './attestationKeys';
 
 export const TRUST_ATTESTATION_TYP = 'trust-attestation+jwt';
 export const TRUST_ATTESTATION_VERSION = 1;
@@ -73,7 +80,7 @@ export function trustAttestationExpiry(iat: number, lastEvaluatedAt: Date | null
 }
 
 const cacheKey = (kid: string, sub: string, snapshotId: string, lastEvaluatedAt: Date) =>
-  `trust:attest:${kid}:${createHash('sha256').update(sub).digest('hex')}:${snapshotId}:${lastEvaluatedAt.getTime()}`;
+  `${trustAttestationCachePrefix(kid)}${createHash('sha256').update(sub).digest('hex')}:${snapshotId}:${lastEvaluatedAt.getTime()}`;
 
 async function readCached(key: string): Promise<string | null> {
   const redis = getRedis();
@@ -97,6 +104,29 @@ async function writeCached(key: string, token: string, ttlSeconds: number): Prom
 }
 
 /**
+ * The active kid and, on a token-cache miss, its private key. The kid comes from the instance's keyset cache; if
+ * the DB says it is no longer active (an `activate`/`revoke` whose cluster invalidation this instance missed), drop
+ * the local keyset and try once more, so a lost message costs one extra read instead of 503s for a full TTL.
+ */
+type Signer =
+  | { kind: 'cached'; token: string }
+  | { kind: 'sign'; kid: string; cacheKey: string; privateKey: CryptoKey };
+
+async function signerFor(sub: string, snapshotId: string, lastEvaluatedAt: Date, retried = false): Promise<Signer> {
+  const { kid } = await ensureActiveTrustSigningKey();
+  const key = cacheKey(kid, sub, snapshotId, lastEvaluatedAt);
+  const cached = await readCached(key);
+  if (cached) return { kind: 'cached', token: cached };
+  try {
+    return { kind: 'sign', kid, cacheKey: key, privateKey: await loadTrustSigningKey(kid) };
+  } catch (err) {
+    if (retried || !(err instanceof TrustAttestationUnavailable)) throw err;
+    invalidateTrustKeysetCache();
+    return signerFor(sub, snapshotId, lastEvaluatedAt, true);
+  }
+}
+
+/**
  * Sign `payload` (the exact current snapshot payload of `resolved`) for the page at `canonicalUrl`.
  * Throws TrustAttestationStale for a stale page and TrustAttestationUnavailable when there is no issuer or
  * no active key. Call outside any DB context (the key service opens its own; Redis runs after it closes).
@@ -113,24 +143,20 @@ export async function signTrustAttestation(input: {
   const exp = trustAttestationExpiry(nowSeconds, resolved.lastEvaluatedAt);
   if (exp === null || !resolved.lastEvaluatedAt) throw new TrustAttestationStale();
 
-  const { kid } = await ensureActiveTrustSigningKey();
-  const key = cacheKey(kid, canonicalUrl, resolved.snapshotId, resolved.lastEvaluatedAt);
-  const cached = await readCached(key);
-  if (cached) return cached;
-
-  const privateKey = await loadTrustSigningKey(kid);
+  const signer = await signerFor(canonicalUrl, resolved.snapshotId, resolved.lastEvaluatedAt);
+  if (signer.kind === 'cached') return signer.token;
   const token = await new SignJWT({
     trust: { v: TRUST_ATTESTATION_VERSION, payload, lastEvaluatedAt: resolved.lastEvaluatedAt.toISOString() },
   })
-    .setProtectedHeader({ alg: TRUST_SIGNING_ALG, kid, typ: TRUST_ATTESTATION_TYP })
+    .setProtectedHeader({ alg: TRUST_SIGNING_ALG, kid: signer.kid, typ: TRUST_ATTESTATION_TYP })
     .setIssuer(issuer)
     .setSubject(canonicalUrl)
     .setIssuedAt(nowSeconds)
     .setExpirationTime(exp)
     .setJti(randomUUID())
-    .sign(privateKey);
+    .sign(signer.privateKey);
 
   const ttl = Math.min(SERVER_CACHE_MAX_SECONDS, exp - nowSeconds - SERVER_CACHE_EXP_MARGIN_SECONDS);
-  if (ttl > 0) await writeCached(key, token, ttl);
+  if (ttl > 0) await writeCached(signer.cacheKey, token, ttl);
   return token;
 }

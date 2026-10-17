@@ -28,6 +28,7 @@ import { trustSigningKeys } from '../../db/schema/trustSigningKeys';
 import { decryptForColumn, encryptSecret } from '../secretCrypto';
 import { HotPathTtlCache } from '../hotPathCache';
 import { getClusterCacheBus, type PublishOutcome } from '../clusterCacheBus';
+import { getRedis } from '../redis';
 
 export type TrustKeyStatus = 'pending' | 'active' | 'verify_only' | 'revoked';
 
@@ -173,6 +174,40 @@ function keysetChanged(): void {
 }
 
 /**
+ * Drop this instance's keyset now (no cluster announcement). For a signer that found its cached active kid is no
+ * longer active in the DB — a lost cluster invalidation — so it re-reads instead of answering 503 for a full TTL.
+ */
+export function invalidateTrustKeysetCache(): void {
+  keysetCache.invalidate();
+}
+
+/** Redis prefix of the signed-token cache entries for `kid` (services/trustPage/attestation.ts). */
+export const trustAttestationCachePrefix = (kid: string): string => `trust:attest:${kid}:`;
+
+/**
+ * Delete every cached token signed by `kid`, so a revoked key's tokens stop being served at once rather than when
+ * their cache TTL (≤ 300 s) runs out. Best effort: Redis down or failing is logged, never fatal — the TTL still
+ * bounds the window. Returns how many entries were deleted (null when Redis was unavailable).
+ */
+async function purgeCachedAttestations(kid: string): Promise<number | null> {
+  const redis = getRedis();
+  if (!redis) return null;
+  try {
+    let cursor = '0';
+    let deleted = 0;
+    do {
+      const [next, keys] = await redis.scan(cursor, 'MATCH', `${trustAttestationCachePrefix(kid)}*`, 'COUNT', 200);
+      cursor = next;
+      if (keys.length > 0) deleted += await redis.del(...keys);
+    } while (cursor !== '0');
+    return deleted;
+  } catch (err) {
+    console.warn(`[trustAttestation] could not purge cached tokens for revoked key ${kid}`, err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+/**
  * For the out-of-process rotation CLI: announce the change to every API
  * instance and wait for the publish. Never throws.
  */
@@ -268,9 +303,29 @@ export async function listTrustSigningKeys(): Promise<TrustKeyInfo[]> {
 // Operator commands (scripts/trust-signing-key.ts)
 // ---------------------------------------------------------------------------
 
+const isUniqueViolation = (err: unknown): boolean => {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
+};
+
+/**
+ * One operator transaction. Two operators racing (two `prepare`s, two `activate`s) collide on the one-pending /
+ * one-active partial unique indexes; the loser rolls back and gets a readable refusal instead of a raw SQL error.
+ */
+async function operatorRun<T>(fn: (tx: TrustKeyTx) => Promise<T>): Promise<T> {
+  try {
+    return await store.run(fn);
+  } catch (err) {
+    if (isUniqueViolation(err)) {
+      throw new TrustSigningKeyError('another trust signing key change ran at the same time and won; run `list` and retry');
+    }
+    throw err;
+  }
+}
+
 /** Create a pending key: published in the JWKS, not yet signing. One pending key at a time. */
 export async function prepareTrustSigningKey(): Promise<TrustKeyInfo> {
-  const info = await store.run(async (tx) => {
+  const info = await operatorRun(async (tx) => {
     const rows = await tx.list();
     const pending = rows.find((r) => r.status === 'pending');
     if (pending) throw new TrustSigningKeyError(`key ${pending.kid} is already pending; activate or revoke it first`);
@@ -291,7 +346,7 @@ export async function prepareTrustSigningKey(): Promise<TrustKeyInfo> {
  * that cache the JWKS already hold it when the first token it signs arrives.
  */
 export async function activateTrustSigningKey(kid: string, opts: { force?: boolean } = {}): Promise<TrustKeyInfo[]> {
-  const result = await store.run(async (tx) => {
+  const result = await operatorRun(async (tx) => {
     const rows = await tx.list();
     const target = rows.find((r) => r.kid === kid);
     if (!target) throw new TrustSigningKeyError(`no trust signing key ${kid}`);
@@ -316,10 +371,10 @@ export async function activateTrustSigningKey(kid: string, opts: { force?: boole
 /**
  * Remove a key from the JWKS and destroy its private key. Revoking the active
  * key leaves NO signer (attestation answers 503) unless `replace`, which mints
- * and activates a successor in the same transaction.
+ * and activates a successor in the same transaction. Cached tokens the key signed are purged after the commit.
  */
 export async function revokeTrustSigningKey(kid: string, opts: { replace?: boolean } = {}): Promise<TrustKeyInfo[]> {
-  const result = await store.run(async (tx) => {
+  const result = await operatorRun(async (tx) => {
     const rows = await tx.list();
     const target = rows.find((r) => r.kid === kid);
     if (!target) throw new TrustSigningKeyError(`no trust signing key ${kid}`);
@@ -332,10 +387,12 @@ export async function revokeTrustSigningKey(kid: string, opts: { replace?: boole
     if (opts.replace) {
       const generated = await generateTrustKey();
       const inserted = await tx.insert({ ...generated, status: 'active', activatedAt: now });
-      if (!inserted) throw new Error('replacement key could not be activated (another key became active concurrently)');
+      if (!inserted) throw new TrustSigningKeyError('the replacement key could not be activated: another key became active concurrently; run `list`');
     }
     return (await tx.list()).map(toInfo);
   });
   keysetChanged();
+  const purged = await purgeCachedAttestations(kid);
+  if (purged !== null) console.log(`[trustAttestation] Revoked ${kid}; purged ${purged} cached token(s) it signed`);
   return result;
 }

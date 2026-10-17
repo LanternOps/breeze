@@ -8,9 +8,9 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-Every published [Trust Center](/security/trust-center/) page has a signed, machine-readable copy: a compact JSON Web Token (JWT) that carries the exact public payload the page renders. Insurer, auditor and procurement tooling can fetch it, verify the signature against the deployment's public keys, and read the same controls a person sees on the page.
+Every published [Trust Center](/security/trust-center/) page that is current (evaluated in the last 24 hours) has a signed, machine-readable copy: a compact JSON Web Token (JWT) that carries the exact public payload the page renders. Insurer, auditor and procurement tooling can fetch it, verify the signature against the deployment's public keys, and read the same controls a person sees on the page.
 
-The page links to it in its footer ("Machine-readable, signed copy") and in its HTML head as `<link rel="alternate" type="application/jwt">`.
+While the page is current, it links to the copy in its footer ("Machine-readable, signed copy") and in its HTML head as `<link rel="alternate" type="application/jwt">`. A stale page shows no link, and its attestation URL answers `503` (see below).
 
 ## What it proves, and what it does not
 
@@ -37,7 +37,7 @@ All three are public, need no authentication and allow cross-origin reads (`Acce
 | `200` | The page is published and was evaluated in the last 24 hours. `Cache-Control: public, max-age=60` or less (never past the token's `exp`). |
 | `404 {"error":"Not found","code":"NOT_FOUND"}` | The page does not exist, is not published, or cannot be served. The response is the same for every cause. |
 | `503 {"code":"ATTESTATION_STALE"}` with `Retry-After: 3600` | The page has not been evaluated in the last 24 hours. No token is issued for a stale page. |
-| `503 {"code":"SERVICE_UNAVAILABLE"}` | The installation has no active signing key, or no public URL configured (see [Self-hosting](#self-hosting)). |
+| `503 {"code":"SERVICE_UNAVAILABLE"}` | Attestation URLs: the installation has no active signing key, or no public URL configured (see [Self-hosting](#self-hosting)). JWKS: every key has been revoked, so there is nothing to publish. While there is no active key, the JWKS still answers `200` with the verify-only keys, so archived tokens keep verifying. |
 
 Every response other than `200` is `Cache-Control: no-store`. The JWKS is `Cache-Control: public, max-age=600`.
 
@@ -149,6 +149,8 @@ if (!result.IsValid || (string)result.Claims["sub"] != page)
 A token stays verifiable after it expires, as long as its key is still in the JWKS: keys that are rotated out remain published as verify-only. An expired token is a **historical** statement ("on this date, this installation computed this payload"), not a statement about now. To check an archived token, verify the signature, `typ`, `iss` and `sub` as above, and evaluate the dates as of the time it was issued instead of now. With `jose`:
 
 ```js
+import { decodeJwt, jwtVerify } from 'jose'; // plus `jwks`, `origin` and `page` from the Node example above
+
 const { payload } = await jwtVerify(token, jwks, {
   algorithms: ['ES256'], typ: 'trust-attestation+jwt', issuer: origin, subject: page,
   currentDate: new Date(decodeJwt(token).iat * 1000), // dates checked as of issuance
@@ -166,7 +168,7 @@ There is nothing to set up. The installation creates its signing key the first t
 
 ## Rotating the signing key
 
-Rotation is an operator task, run from the API container or a checkout with the production environment:
+Rotation is an operator task. The command runs from a Breeze source checkout (the API container image ships the compiled server only, not `scripts/`), with `DATABASE_URL`, `REDIS_URL`, `APP_ENCRYPTION_KEY` and `APP_ENCRYPTION_KEY_ID` set to the production values:
 
 ```bash
 pnpm --filter @breeze/api trust:signing-key list
@@ -185,4 +187,4 @@ pnpm --filter @breeze/api trust:signing-key revoke <kid> --replace
 
 The revoked key leaves the JWKS at once. Verifiers that cache the JWKS stop trusting it within 10 minutes. Without `--replace`, revoking the active key leaves the installation with no signing key, and attestation answers `503` until you `prepare` and `activate` a new one: Breeze never creates a replacement on its own after a revoke.
 
-Every command prints the keyset (key ids, statuses and dates, never key material) and writes an audit log entry `trust_signing_key.<command>`.
+Every command prints the keyset (key ids, statuses and dates, never key material) and writes an audit log entry `trust_signing_key.<command>`. After a change it tells the running API instances to reload the keyset; if it cannot (for example, Redis is unreachable), it says so, and each instance picks up the change within 60 seconds. A revoke also deletes the cached tokens the revoked key signed. The command exits non-zero if a committed change could not be audited or a revoke could not be announced, and says which.

@@ -5,9 +5,14 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { trustSigningKeys } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import {
+  activateTrustSigningKey,
   ensureActiveTrustSigningKey,
   loadTrustJwks,
   loadTrustSigningKey,
+  prepareTrustSigningKey,
+  revokeTrustSigningKey,
+  TrustAttestationUnavailable,
+  TrustSigningKeyError,
 } from '../../services/trustPage/attestationKeys';
 import { __resetHotPathCachesForTests } from '../../services/hotPathCache';
 
@@ -91,5 +96,61 @@ describe('trust_signing_keys forced system-only RLS', () => {
     const jwks = await loadTrustJwks();
     expect(jwks.keys).toEqual([{ ...active.publicJwk, kid: active.kid, alg: 'ES256', use: 'sig' }]);
     expect(jwks.keys[0]).not.toHaveProperty('d');
+  });
+
+  const rows = () => withSystemDbAccessContext(() => db.select({
+    kid: trustSigningKeys.kid, status: trustSigningKeys.status, hasPrivate: sql<boolean>`${trustSigningKeys.privateKeyEnc} IS NOT NULL`,
+  }).from(trustSigningKeys));
+
+  runDb('prepare → activate on Postgres: old key verify_only with its private key destroyed, new key signs', async () => {
+    const old = await ensureActiveTrustSigningKey();
+    const prepared = await prepareTrustSigningKey();
+    expect((await loadTrustJwks()).keys.map((k) => k.kid).sort()).toEqual([old.kid, prepared.kid].sort());
+    await activateTrustSigningKey(prepared.kid, { force: true });
+
+    const after = await rows();
+    expect(after).toEqual(expect.arrayContaining([
+      { kid: old.kid, status: 'verify_only', hasPrivate: false },
+      { kid: prepared.kid, status: 'active', hasPrivate: true },
+    ]));
+    expect((await ensureActiveTrustSigningKey()).kid).toBe(prepared.kid);
+    await expect(loadTrustSigningKey(old.kid)).rejects.toBeInstanceOf(TrustAttestationUnavailable);
+    expect((await loadTrustSigningKey(prepared.kid)).type).toBe('private');
+    expect((await loadTrustJwks()).keys.map((k) => k.kid).sort()).toEqual([old.kid, prepared.kid].sort());
+  });
+
+  runDb('revoke --replace on Postgres: one transaction, exactly one active successor, the revoked key leaves the JWKS', async () => {
+    const old = await ensureActiveTrustSigningKey();
+    await revokeTrustSigningKey(old.kid, { replace: true });
+    const after = await rows();
+    expect(after.find((r) => r.kid === old.kid)).toEqual({ kid: old.kid, status: 'revoked', hasPrivate: false });
+    const active = after.filter((r) => r.status === 'active');
+    expect(active).toHaveLength(1);
+    expect(active[0]!.hasPrivate).toBe(true);
+    expect((await loadTrustJwks()).keys.map((k) => k.kid)).toEqual([active[0]!.kid]);
+  });
+
+  runDb('revoke without --replace leaves no signer and never re-provisions', async () => {
+    const old = await ensureActiveTrustSigningKey();
+    await revokeTrustSigningKey(old.kid);
+    await expect(ensureActiveTrustSigningKey()).rejects.toBeInstanceOf(TrustAttestationUnavailable);
+    expect(await rows()).toEqual([{ kid: old.kid, status: 'revoked', hasPrivate: false }]);
+  });
+
+  runDb('two concurrent prepares leave exactly one pending key; the loser gets a TrustSigningKeyError', async () => {
+    await ensureActiveTrustSigningKey();
+    const results = await Promise.allSettled([prepareTrustSigningKey(), prepareTrustSigningKey()]);
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(TrustSigningKeyError);
+    expect((await rows()).filter((r) => r.status === 'pending')).toHaveLength(1);
+  });
+
+  runDb('the one-pending index refuses a second pending row at the storage layer', async () => {
+    await prepareTrustSigningKey();
+    await expect(withSystemDbAccessContext(() => db.insert(trustSigningKeys).values({
+      kid: 'trust-secondpending000', publicJwk: { kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }, privateKeyEnc: 'not-a-real-key', status: 'pending',
+    }))).rejects.toMatchObject({ cause: { code: '23505' } });
   });
 });

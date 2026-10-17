@@ -28,6 +28,12 @@ const redis = vi.hoisted(() => {
       if (mode !== 'EX') throw new Error(`unexpected SET mode ${mode}`);
       store.set(k, v); ttls.set(k, ttl); return 'OK';
     },
+    scan: async (_cursor: string, _match: string, pattern: string) => {
+      if (state.fail) throw new Error('redis down');
+      const prefix = pattern.replace(/\*$/, '');
+      return ['0', [...store.keys()].filter((k) => k.startsWith(prefix))];
+    },
+    del: async (...keys: string[]) => keys.reduce((n, k) => n + (store.delete(k) ? 1 : 0), 0),
   };
   return { store, ttls, state, client };
 });
@@ -210,6 +216,30 @@ describe('signTrustAttestation', () => {
     const jwks = await loadTrustJwks();
     expect(jwks.keys.map((k) => k.kid)).not.toContain(kidA);
     await expect(jwtVerify(tokenA, createLocalJWKSet(jwks), verifyOpts)).rejects.toThrow();
+  });
+
+  it("a revoked key's cached token is never served after revoke --replace", async () => {
+    const tokenA = await sign();
+    const kidA = decodeProtectedHeader(tokenA).kid!;
+    expect(redis.store.size).toBe(1);
+    await revokeTrustSigningKey(kidA, { replace: true });
+    const after = await sign();
+    expect(after).not.toBe(tokenA);
+    expect(decodeProtectedHeader(after).kid).not.toBe(kidA);
+    await expect(jwtVerify(after, createLocalJWKSet(await loadTrustJwks()), verifyOpts)).resolves.toBeDefined();
+  });
+
+  it('a lost keyset invalidation (another process activated a new key) costs one retry, not a 503', async () => {
+    const kidA = decodeProtectedHeader(await sign()).kid!;
+    // Another process rotates without this instance hearing about it: the local keyset still says kidA is active.
+    const prepared = await prepareTrustSigningKey();
+    __resetHotPathCachesForTests();
+    await sign(); // re-warm the keyset with kidA still active
+    store.rows = store.rows.map((r) =>
+      r.kid === kidA ? { ...r, status: 'verify_only', privateKeyEnc: null } : r.kid === prepared.kid ? { ...r, status: 'active' } : r);
+    redis.store.clear(); // force a token-cache miss so the signer must load the private key
+    const token = await sign();
+    expect(decodeProtectedHeader(token).kid).toBe(prepared.kid);
   });
 
   it('revoked without --replace: signing is unavailable, never a silent new key', async () => {

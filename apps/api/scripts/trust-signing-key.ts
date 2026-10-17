@@ -29,7 +29,8 @@
  *
  * Prints kids, statuses and dates only — never key material. Each command
  * writes an audit_logs system entry `trust_signing_key.<command>`.
- * Exit codes: 0 success, 1 refusal or failure.
+ * Exit codes: 0 success, 1 refusal or failure — including a committed key change whose audit entry could not be
+ * written, or a revoke that could not be announced to running API instances (both say so on stderr).
  */
 import { closeDb } from '../src/db';
 import { closeRedis } from '../src/services/redis';
@@ -137,10 +138,28 @@ async function main(): Promise<void> {
       break;
   }
   console.log(formatKeyset(keyset));
-  await audit(cmd, kid, keyset);
+
+  // The key change has COMMITTED by now. Announce it before anything else can fail, so a compromise response
+  // reaches every API instance even if the audit write below does not land.
   if (cmd.command !== 'list') {
     const outcome = await notifyTrustKeysetChanged();
-    console.log(`[trust-signing-key] Running API instances notified: ${JSON.stringify(outcome)}`);
+    if (outcome === 'published') {
+      console.log('[trust-signing-key] Running API instances notified.');
+    } else {
+      console.error(
+        `[trust-signing-key] WARNING: running API instances were NOT notified (${outcome}); they keep the previous keyset for up to 60 s each.`,
+      );
+      if (cmd.command === 'revoke') process.exitCode = 1;
+    }
+  }
+
+  try {
+    await audit(cmd, kid, keyset);
+  } catch (err) {
+    console.error(
+      `[trust-signing-key] The key change above COMMITTED, but its audit_logs entry trust_signing_key.${cmd.command} could not be written: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exitCode = 1;
   }
 }
 

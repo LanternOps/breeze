@@ -28,6 +28,23 @@ vi.mock('../../db', () => ({
   runAfterDbContextCommit: (_label: string, work: () => unknown) => { work(); },
 }));
 
+/** Fake Redis for the revoke purge: SCAN MATCH prefix* + DEL. */
+const redis = vi.hoisted(() => {
+  const store = new Map<string, string>();
+  return {
+    store,
+    enabled: true,
+    client: {
+      scan: async (_cursor: string, _match: string, pattern: string) => {
+        const prefix = pattern.replace(/\*$/, '');
+        return ['0', [...store.keys()].filter((k) => k.startsWith(prefix))];
+      },
+      del: async (...keys: string[]) => keys.reduce((n, k) => n + (store.delete(k) ? 1 : 0), 0),
+    },
+  };
+});
+vi.mock('../redis', () => ({ getRedis: () => (redis.enabled ? redis.client : null) }));
+
 import {
   ensureActiveTrustSigningKey,
   loadTrustJwks,
@@ -40,6 +57,7 @@ import {
   TrustSigningKeyError,
   TRUST_KEYSET_CACHE_TTL_MS,
   TRUST_JWKS_MAX_AGE_SECONDS,
+  trustAttestationCachePrefix,
   __setTrustKeyStoreForTests,
   type TrustKeyRow,
   type TrustKeyStore,
@@ -110,6 +128,8 @@ beforeEach(() => {
   __resetHotPathCachesForTests();
   cryptoCalls.encrypt = [];
   cryptoCalls.decrypt = [];
+  redis.store.clear();
+  redis.enabled = true;
 });
 afterEach(() => {
   __setTrustKeyStoreForTests(null);
@@ -266,6 +286,22 @@ describe('revokeTrustSigningKey', () => {
     await expect(revokeTrustSigningKey('trust-unknown000000001')).rejects.toBeInstanceOf(TrustSigningKeyError);
   });
 
+  it("purges the revoked key's cached tokens and leaves other keys' tokens alone", async () => {
+    store.rows = [await makeRow('active', 'trust-active0000000001'), await makeRow('verify_only', 'trust-verifyonly000001')];
+    redis.store.set(`${trustAttestationCachePrefix('trust-active0000000001')}aaa:snap:1`, 'tokA1');
+    redis.store.set(`${trustAttestationCachePrefix('trust-active0000000001')}bbb:snap:2`, 'tokA2');
+    redis.store.set(`${trustAttestationCachePrefix('trust-verifyonly000001')}aaa:snap:1`, 'tokV');
+    await revokeTrustSigningKey('trust-active0000000001', { replace: true });
+    expect([...redis.store.values()]).toEqual(['tokV']);
+  });
+
+  it('a revoke still commits when Redis is unavailable for the purge', async () => {
+    redis.enabled = false;
+    store.rows = [await makeRow('active', 'trust-active0000000001')];
+    await revokeTrustSigningKey('trust-active0000000001', { replace: true });
+    expect(store.rows.find((r) => r.kid === 'trust-active0000000001')!.status).toBe('revoked');
+  });
+
   it('refuses --replace for a key that is not the active one', async () => {
     store.rows = [await makeRow('active', 'trust-active0000000001'), await makeRow('verify_only', 'trust-verifyonly000001')];
     await expect(revokeTrustSigningKey('trust-verifyonly000001', { replace: true })).rejects.toBeInstanceOf(TrustSigningKeyError);
@@ -280,6 +316,16 @@ describe('prepareTrustSigningKey', () => {
     expect(store.rows.find((r) => r.kid === prepared.kid)).toMatchObject({ status: 'pending' });
     expect((await ensureActiveTrustSigningKey()).kid).toBe('trust-active0000000001');
     expect((await loadTrustJwks()).keys.map((k) => k.kid)).toContain(prepared.kid);
+  });
+
+  it('a concurrent prepare that loses on the one-pending index gets a TrustSigningKeyError, not a raw SQL error', async () => {
+    store.rows = [await makeRow('active', 'trust-active0000000001')];
+    const raced: TrustKeyStore = {
+      run: async () => { throw Object.assign(new Error('insert failed'), { cause: { code: '23505' } }); },
+    };
+    __setTrustKeyStoreForTests(raced);
+    await expect(prepareTrustSigningKey()).rejects.toBeInstanceOf(TrustSigningKeyError);
+    await expect(activateTrustSigningKey('trust-x')).rejects.toBeInstanceOf(TrustSigningKeyError);
   });
 
   it('refuses while another key is already pending', async () => {

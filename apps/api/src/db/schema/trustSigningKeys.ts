@@ -42,5 +42,8 @@ export const trustSigningKeys = pgTable(
     oneActive: uniqueIndex('trust_signing_keys_one_active_uq')
       .on(t.status)
       .where(sql`${t.status} = 'active'`),
+    onePending: uniqueIndex('trust_signing_keys_one_pending_uq')
+      .on(t.status)
+      .where(sql`${t.status} = 'pending'`),
   }),
 );

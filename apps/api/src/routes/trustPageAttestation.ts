@@ -62,9 +62,13 @@ trustPageAttestationRoutes.get('/jwks.json', async (c) => {
   } catch (err) {
     // No signer (revoked without --replace): still publish the verify-only keys for archival verification.
     if (!(err instanceof TrustAttestationUnavailable)) throw err;
+    console.warn(`[trustAttestation] jwks: no active signer, serving the published keys only: ${err.message}`);
   }
   const jwks = await loadTrustJwks();
-  if (jwks.keys.length === 0) return unavailable(c);
+  if (jwks.keys.length === 0) {
+    console.warn('[trustAttestation] jwks: no publishable keys (every key revoked); answering 503');
+    return unavailable(c);
+  }
   c.header('Content-Type', 'application/jwk-set+json');
   c.header('Cache-Control', `public, max-age=${TRUST_JWKS_MAX_AGE_SECONDS}`);
   c.header('X-Content-Type-Options', 'nosniff');

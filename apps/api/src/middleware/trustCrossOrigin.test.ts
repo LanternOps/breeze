@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Hono, type Context } from 'hono';
 import { secureHeaders } from 'hono/secure-headers';
 import { byTrustCrossOriginPath, isTrustCrossOriginPath } from './trustCrossOrigin';
@@ -21,6 +23,18 @@ describe('isTrustCrossOriginPath', () => {
     ['/api/v1/devices', false],
   ])('%s → %s', (path, expected) => {
     expect(isTrustCrossOriginPath(path)).toBe(expected);
+  });
+});
+
+describe('index.ts registration', () => {
+  const indexSource = readFileSync(fileURLToPath(new URL('../index.ts', import.meta.url)), 'utf8');
+  it('registers secureHeaders through byTrustCrossOriginPath with a cross-origin twin of the same options', () => {
+    // The app-wide registration is the only place the exception can live (secureHeaders writes after next()).
+    expect(indexSource).toMatch(
+      /exceptTunnelHttp\(\s*byTrustCrossOriginPath\(\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS \}\),\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' \}\),\s*\)\s*\)/,
+    );
+    // No second, unconditional secureHeaders registration that would overwrite the exception.
+    expect(indexSource.match(/secureHeaders\(\{/g)).toHaveLength(2);
   });
 });
 
