@@ -2,7 +2,9 @@
 // showHistory is true; the guard is repeated here so the module is safe on its own.
 //
 // History lives inside the snapshot but outside payloadSha256 (Open Decision 1): it grows on its own, and the
-// portal appends the current point at lastEvaluatedAt. It records change-points only.
+// portal appends the current point at lastEvaluatedAt. It records change-points only: snapshots are stored when
+// the payload hash changes, and consecutive equal (met, shown) pairs are collapsed here at read time. It is built
+// from ALL earlier snapshots of the page, so enabling history can surface changes from before it was enabled.
 import { and, asc, desc, eq, gte, lt, sql } from 'drizzle-orm';
 import { TRUST_HISTORY_MAX_POINTS, type TrustPagePublicPayload } from '@breeze/shared';
 import { db } from '../../../db';

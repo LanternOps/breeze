@@ -66,4 +66,23 @@ describe('TrustFaqSection', () => {
     expect(await screen.findByTestId('trust-faq-question-0')).toBeDisabled();
     expect(screen.getByTestId('trust-faq-save')).toBeDisabled();
   });
+
+  it('a failed load never lets Add or Save run (a replace-all Save would wipe the saved FAQ)', async () => {
+    api.getTrustFaq.mockRejectedValue(new Error('boom'));
+    mount();
+    await screen.findByTestId('trust-faq-load-error');
+    expect(screen.getByTestId('trust-faq-add')).toBeDisabled();
+    expect(screen.getByTestId('trust-faq-save')).toBeDisabled();
+  });
+
+  it('Save sends the revision the list was loaded at', async () => {
+    const onReload = vi.fn(async () => {});
+    const view = (rev: number) => <TrustFaqSection orgId="o1" orgFetch={orgFetch} state={{ page: { publicationRevision: rev } } as never} canWrite onReload={onReload} />;
+    const utils = render(view(4));
+    await screen.findByTestId('trust-faq-question-0');
+    fireEvent.change(screen.getByTestId('trust-faq-question-0'), { target: { value: 'Edited question' } });
+    utils.rerender(view(6));
+    fireEvent.click(screen.getByTestId('trust-faq-save'));
+    await waitFor(() => expect(api.putTrustFaq).toHaveBeenCalledWith(orgFetch, 'o1', 4, expect.any(Array)));
+  });
 });

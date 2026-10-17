@@ -217,6 +217,7 @@
         "saved": "Unterauftragsverarbeiter gespeichert",
         "saveFailed": "Unterauftragsverarbeiter konnten nicht gespeichert werden",
         "loadFailed": "Unterauftragsverarbeiter konnten nicht geladen werden.",
+        "suggestionsFailed": "Erkannte Tools konnten nicht geladen werden. Zum erneuten Versuch schließen und wieder öffnen.",
         "duplicate": "Dasselbe erkannte Tool kommt mehrfach vor.",
         "limit": "Höchstzahl von {{max}} Unterauftragsverarbeitern erreicht.",
         "title": "Unterauftragsverarbeiter"

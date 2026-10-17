@@ -11,6 +11,11 @@ import { handleActionError, runAction } from '@/lib/runAction';
 
 type Row = TrustSubprocessorRow & { key: number };
 
+/** The server rows carry ids and timestamps; the strict PUT schema accepts only the input fields. */
+const toInput = (r: TrustSubprocessorRow): TrustSubprocessorRow => ({
+  name: r.name, purpose: r.purpose, location: r.location, websiteUrl: r.websiteUrl, source: r.source, sourceKey: r.sourceKey,
+});
+
 const isHttps = (v: string): boolean => {
   try { return new URL(v).protocol === 'https:'; } catch { return false; }
 };
@@ -24,9 +29,12 @@ export default function TrustSubprocessorsSection({ orgId, orgFetch, state, canW
   const revision = state.page.publicationRevision;
   const nextKey = useRef(0);
   const dirty = useRef(false);
+  // The revision the visible list was loaded at: Save sends THIS, so a change made elsewhere meanwhile is a 409.
+  const loadedRevision = useRef(revision);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [suggestions, setSuggestions] = useState<TrustSubprocessorRow[] | null>(null);
+  const [suggestionsFailed, setSuggestionsFailed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -37,7 +45,7 @@ export default function TrustSubprocessorsSection({ orgId, orgFetch, state, canW
     if (dirty.current) return;
     let cancelled = false;
     getTrustSubprocessors(orgFetch, orgId)
-      .then((d) => { if (!cancelled && !dirty.current) { setRows(d.subprocessors.map(withKey)); setLoadFailed(false); } })
+      .then((d) => { if (!cancelled && !dirty.current) { setRows(d.subprocessors.map((r) => withKey(toInput(r)))); loadedRevision.current = d.publicationRevision; setLoadFailed(false); } })
       .catch((err: unknown) => { console.error('[TrustSubprocessorsSection] load failed', err); if (!cancelled) setLoadFailed(true); });
     return () => { cancelled = true; };
   }, [orgFetch, orgId, revision, withKey]);
@@ -53,16 +61,20 @@ export default function TrustSubprocessorsSection({ orgId, orgFetch, state, canW
   });
 
   const list = rows ?? [];
-  const atLimit = list.length >= TRUST_SUBPROCESSORS_MAX;
+  // Until the saved list has loaded, editing is blocked: a replace-all Save of a partial list would delete the saved one.
+  const atLimit = rows === null || list.length >= TRUST_SUBPROCESSORS_MAX;
   const websiteInvalid = (r: Row) => r.websiteUrl !== null && r.websiteUrl.trim() !== '' && !isHttps(r.websiteUrl.trim());
   const invalid = list.some((r) => r.name.trim() === '' || r.purpose.trim() === '' || websiteInvalid(r));
 
   const openMenu = async () => {
-    setMenuOpen((o) => !o);
-    if (suggestions !== null) return;
-    try { setSuggestions(await getTrustSubprocessorSuggestions(orgFetch, orgId)); } catch (err) {
+    const opening = !menuOpen;
+    setMenuOpen(opening);
+    if (!opening) return;
+    if (suggestions !== null && !suggestionsFailed) return;
+    try { setSuggestions(await getTrustSubprocessorSuggestions(orgFetch, orgId)); setSuggestionsFailed(false); } catch (err) {
+      // Leave `suggestions` null so the next open retries: a failure must not read as "nothing detected".
       console.error('[TrustSubprocessorsSection] suggestions failed', err);
-      setSuggestions([]);
+      setSuggestionsFailed(true);
     }
   };
   const taken = new Set(list.map((r) => r.sourceKey).filter((k): k is string => !!k));
@@ -73,8 +85,8 @@ export default function TrustSubprocessorsSection({ orgId, orgFetch, state, canW
     setBusy(true);
     try {
       await runAction({
-        request: () => putTrustSubprocessors(orgFetch, orgId, revision, list.map(({ key: _k, ...r }) => ({
-          ...r, name: r.name.trim(), purpose: r.purpose.trim(),
+        request: () => putTrustSubprocessors(orgFetch, orgId, loadedRevision.current, list.map(({ key: _k, ...r }) => ({
+          ...toInput(r), name: r.name.trim(), purpose: r.purpose.trim(),
           location: r.location && r.location.trim() ? r.location.trim() : null,
           websiteUrl: r.websiteUrl && r.websiteUrl.trim() ? r.websiteUrl.trim() : null,
         }))),
@@ -133,7 +145,8 @@ export default function TrustSubprocessorsSection({ orgId, orgFetch, state, canW
           </button>
           {menuOpen && (
             <ul className="absolute z-10 mt-1 min-w-64 rounded-md border bg-popover p-1 shadow" data-testid="trust-subprocessors-suggestions">
-              {suggestions !== null && offered.length === 0 && <li className="px-2 py-1.5 text-xs text-muted-foreground" data-testid="trust-subprocessors-no-suggestions">{tr('noSuggestions')}</li>}
+              {suggestionsFailed && <li className="px-2 py-1.5 text-xs text-destructive" data-testid="trust-subprocessors-suggestions-error">{tr('suggestionsFailed')}</li>}
+              {suggestions !== null && !suggestionsFailed && offered.length === 0 && <li className="px-2 py-1.5 text-xs text-muted-foreground" data-testid="trust-subprocessors-no-suggestions">{tr('noSuggestions')}</li>}
               {offered.map((s, i) => (
                 <li key={s.sourceKey ?? s.name}>
                   <button
@@ -152,7 +165,7 @@ export default function TrustSubprocessorsSection({ orgId, orgFetch, state, canW
         <button type="button" disabled={!canWrite || atLimit} onClick={() => edit((prev) => [...prev, withKey({ name: '', purpose: '', location: null, websiteUrl: null, source: 'manual', sourceKey: null })])} className="rounded-md border px-3 py-1.5 text-sm disabled:opacity-50" data-testid="trust-subprocessors-add-manual">
           {tr('addManual')}
         </button>
-        {atLimit && <span className="self-center text-xs text-muted-foreground">{tr('limit', { max: TRUST_SUBPROCESSORS_MAX })}</span>}
+        {rows !== null && atLimit && <span className="self-center text-xs text-muted-foreground">{tr('limit', { max: TRUST_SUBPROCESSORS_MAX })}</span>}
       </div>
 
       <button type="button" disabled={!canWrite || invalid || busy || rows === null} onClick={() => void save()} className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" data-testid="trust-subprocessors-save">

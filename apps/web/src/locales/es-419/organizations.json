@@ -217,6 +217,7 @@
         "saved": "Subencargados guardados",
         "saveFailed": "No se pudieron guardar los subencargados",
         "loadFailed": "No se pudieron cargar los subencargados.",
+        "suggestionsFailed": "No se pudieron cargar las herramientas detectadas. Cierre y vuelva a abrir para reintentar.",
         "duplicate": "La misma herramienta detectada aparece más de una vez.",
         "limit": "Se alcanzó el máximo de {{max}} subencargados.",
         "title": "Subprocesadores"

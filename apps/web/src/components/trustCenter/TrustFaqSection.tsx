@@ -21,6 +21,8 @@ export default function TrustFaqSection({ orgId, orgFetch, state, canWrite, onRe
   const revision = state.page.publicationRevision;
   const nextKey = useRef(0);
   const dirty = useRef(false);
+  // The revision the visible list was loaded at: Save sends THIS, so a change made elsewhere meanwhile is a 409.
+  const loadedRevision = useRef(revision);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -31,7 +33,7 @@ export default function TrustFaqSection({ orgId, orgFetch, state, canWrite, onRe
     if (dirty.current) return;
     let cancelled = false;
     getTrustFaq(orgFetch, orgId)
-      .then((d) => { if (!cancelled && !dirty.current) { setRows(d.items.map(withKey)); setLoadFailed(false); } })
+      .then((d) => { if (!cancelled && !dirty.current) { setRows(d.items.map((i) => withKey({ question: i.question, answerHtml: i.answerHtml }))); loadedRevision.current = d.publicationRevision; setLoadFailed(false); } })
       .catch((err: unknown) => { console.error('[TrustFaqSection] load failed', err); if (!cancelled) setLoadFailed(true); });
     return () => { cancelled = true; };
   }, [orgFetch, orgId, revision, withKey]);
@@ -56,7 +58,7 @@ export default function TrustFaqSection({ orgId, orgFetch, state, canWrite, onRe
     setBusy(true);
     try {
       await runAction({
-        request: () => putTrustFaq(orgFetch, orgId, revision, list.map((r) => ({ question: r.question.trim(), answerHtml: r.answerHtml }))),
+        request: () => putTrustFaq(orgFetch, orgId, loadedRevision.current, list.map((r) => ({ question: r.question.trim(), answerHtml: r.answerHtml }))),
         successMessage: tr('saved'),
         errorFallback: tr('saveFailed'),
         friendly: (code) => ({ ANSWER_TOO_LONG: tr('answerTooLong') } as Record<string, string>)[code],
@@ -106,7 +108,7 @@ export default function TrustFaqSection({ orgId, orgFetch, state, canWrite, onRe
       </ul>
 
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" disabled={!canWrite || list.length >= TRUST_FAQ_MAX} onClick={() => edit((prev) => [...prev, withKey({ question: '', answerHtml: '' })])} className="rounded-md border px-3 py-1.5 text-sm disabled:opacity-50" data-testid="trust-faq-add">
+        <button type="button" disabled={!canWrite || rows === null || list.length >= TRUST_FAQ_MAX} onClick={() => edit((prev) => [...prev, withKey({ question: '', answerHtml: '' })])} className="rounded-md border px-3 py-1.5 text-sm disabled:opacity-50" data-testid="trust-faq-add">
           {tr('add')}
         </button>
         {list.length >= TRUST_FAQ_MAX && <span className="text-xs text-muted-foreground">{tr('limit', { max: TRUST_FAQ_MAX })}</span>}

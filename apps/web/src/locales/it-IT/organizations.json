@@ -217,6 +217,7 @@
         "saved": "Sub-responsabili salvati",
         "saveFailed": "Impossibile salvare i sub-responsabili",
         "loadFailed": "Impossibile caricare i sub-responsabili.",
+        "suggestionsFailed": "Impossibile caricare gli strumenti rilevati. Chiudete e riaprite per riprovare.",
         "duplicate": "Lo stesso strumento rilevato compare più volte.",
         "limit": "Raggiunto il massimo di {{max}} sub-responsabili.",
         "title": "Sub-responsabili del trattamento"

@@ -1,4 +1,4 @@
-// Owner: W02f (FAQ). Answers are sanitized server-side twice (on save and again when the snapshot is built), so
+// Owner: W02f (FAQ). Answers are sanitized server-side on save and again on every build, so
 // rendering them as HTML carries the same contract as `introHtml`. Copy via defineTrustCopy; no inline style=.
 import { CONTENT_COPY } from './contentCopy';
 import { pickTrustCopy, useTrustLocale, type TrustSectionViewProps } from './trustCopy';

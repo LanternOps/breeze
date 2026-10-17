@@ -6,7 +6,11 @@ import { trustPageFaqItems } from '../../../db/schema';
 import { sanitizeFlowRichTextHtml } from '../../richTextSanitize';
 import type { SectionBuildContext, SectionDraftContext } from './types';
 
-/** Re-sanitize (the builder never trusts stored HTML, W1 Ruling 10) and bound it; null = drop the item, never throw. */
+/**
+ * Re-sanitize (the builder never trusts stored HTML, W1 Ruling 10) and bound it. Returns null, dropping the item
+ * (never throwing), for an answer over the stored cap or a blank question; questions are cut to 300 characters.
+ * The PUT route already rejects over-long answers, so the drop is a defensive path.
+ */
 function cleanItem(question: string, answerHtml: string): { question: string; answerHtml: string } | null {
   const answer = sanitizeFlowRichTextHtml(answerHtml).trim();
   if (answer.length > TRUST_FAQ_ANSWER_MAX_CHARS) {

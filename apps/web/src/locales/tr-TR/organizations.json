@@ -217,6 +217,7 @@
         "saved": "Alt veri işleyenler kaydedildi",
         "saveFailed": "Alt veri işleyenler kaydedilemedi",
         "loadFailed": "Alt veri işleyenler yüklenemedi.",
+        "suggestionsFailed": "Algılanan araçlar yüklenemedi. Yeniden denemek için kapatıp tekrar açın.",
         "duplicate": "Aynı algılanan araç birden fazla kez yer alıyor.",
         "limit": "En fazla {{max}} alt veri işleyen sınırına ulaşıldı.",
         "title": "Alt işleyiciler"

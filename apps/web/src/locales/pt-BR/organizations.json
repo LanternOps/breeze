@@ -217,6 +217,7 @@
         "saved": "Subprocessadores salvos",
         "saveFailed": "Não foi possível salvar os subprocessadores",
         "loadFailed": "Não foi possível carregar os subprocessadores.",
+        "suggestionsFailed": "Não foi possível carregar as ferramentas detectadas. Feche e abra novamente para tentar de novo.",
         "duplicate": "A mesma ferramenta detectada aparece mais de uma vez.",
         "limit": "Limite de {{max}} subprocessadores atingido.",
         "title": "Subprocessadores"

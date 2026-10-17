@@ -217,6 +217,7 @@
         "saved": "Subprocessors saved",
         "saveFailed": "Could not save subprocessors",
         "loadFailed": "Could not load subprocessors.",
+        "suggestionsFailed": "Could not load detected tools. Close and reopen to retry.",
         "duplicate": "The same detected tool appears more than once.",
         "limit": "Maximum of {{max}} subprocessors reached.",
         "title": "Subprocessors"

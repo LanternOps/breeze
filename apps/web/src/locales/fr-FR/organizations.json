@@ -217,6 +217,7 @@
         "saved": "Sous-traitants enregistrés",
         "saveFailed": "Impossible d’enregistrer les sous-traitants",
         "loadFailed": "Impossible de charger les sous-traitants.",
+        "suggestionsFailed": "Impossible de charger les outils détectés. Fermez puis rouvrez pour réessayer.",
         "duplicate": "Le même outil détecté apparaît plusieurs fois.",
         "limit": "Maximum de {{max}} sous-traitants atteint.",
         "title": "Sous-traitants"
