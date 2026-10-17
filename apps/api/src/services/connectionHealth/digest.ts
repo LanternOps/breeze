@@ -3,7 +3,8 @@ import { getEmailService } from '../email';
 import type { EmailOptoutTopic } from '../emailOptouts';
 import { buildUnsubscribeUrl, signUnsubscribeToken } from '../emailUnsubscribeToken';
 import { captureException } from '../sentry';
-import { resolvePartnerUsersWithPermission } from '../usersWithPermission';
+import { resolvePartnerUsersWithPermission, resolveUsersWithPermissionForOrg } from '../usersWithPermission';
+import { loadCustomerAdminsNotified } from './customerDelivery';
 import { buildDigestEmail } from './digestEmail';
 import { isDigestHour, localClock, planUserDigest, type DigestIncident, type LocalClock } from './digestPlan';
 import {
@@ -86,18 +87,26 @@ type Audience = Map<string, AudienceItem[]>;
 /**
  * Adds, per user, the incidents they may see right now. Admins: partner-scope
  * users holding the repair permission AND the view permission for the
- * incident's org (partner-wide: orgAccess = all only). Owner: always, with the
- * owner link (plan D6); their active status and partner membership are checked
- * with the user rows.
+ * incident's org (partner-wide: orgAccess = all only). When an org incident's
+ * org resolves `customerAdminsNotified` on (W5), org members holding both
+ * permissions for that org are admins too; the setting is read on every run,
+ * never snapshotted. Owner: always, with the owner link (plan D6); their
+ * active status and partner membership are checked with the user rows.
  */
 async function addPartnerAudience(audience: Audience, partnerId: string, rows: readonly DigestIncidentRow[]): Promise<void> {
+  const orgIds = [...new Set(rows.flatMap((r) => (r.orgId ? [r.orgId] : [])))];
+  const customerAdmins = await loadCustomerAdminsNotified(orgIds);
   const memo = new Map<string, Promise<Set<string>>>();
   const holders = (permission: string, orgId: string | null) => {
-    const key = `${permission}|${orgId ?? ''}`;
+    const widened = orgId !== null && customerAdmins.get(orgId) === true;
+    const key = `${permission}|${orgId ?? ''}|${widened ? 'org' : 'partner'}`;
     let p = memo.get(key);
     if (!p) {
-      p = resolvePartnerUsersWithPermission(partnerId, permissionFromText(permission), orgId ? { orgId } : {})
-        .then((ids) => new Set(ids));
+      const perm = permissionFromText(permission);
+      p = (widened && orgId
+        ? resolveUsersWithPermissionForOrg(orgId, perm)
+        : resolvePartnerUsersWithPermission(partnerId, perm, orgId ? { orgId } : {})
+      ).then((ids) => new Set(ids));
       memo.set(key, p);
     }
     return p;
@@ -182,7 +191,10 @@ async function deliverDigests(
       // Built before the claim: a failure here must not burn the user's one claim for the day.
       stage = 'render';
       const unsubscribeUrl = buildUnsubscribeUrl(user.id, DIGEST_TOPIC);
-      const message = buildDigestEmail({ plan, now, timeZone, appBaseUrl, unsubscribeUrl });
+      // Customer org users (users.org_id set) get the customer copy on the
+      // partner's lane (W5 plan D6); partner staff keep the staff mail.
+      const customer = user.orgId !== null;
+      const message = buildDigestEmail({ plan, now, timeZone, appBaseUrl, unsubscribeUrl, audience: customer ? 'customer' : 'staff' });
       const incidentIds = [...plan.open, ...plan.restored].map((i) => i.id);
 
       stage = 'claim';
@@ -191,7 +203,7 @@ async function deliverDigests(
       if (!claimId) { result.claimConflicts += 1; continue; }
 
       try {
-        await sendEmail({
+        const envelope = {
           to: user.email,
           subject: message.subject,
           html: message.html,
@@ -200,8 +212,10 @@ async function deliverDigests(
             'List-Unsubscribe': `<${unsubscribeUrl}>`,
             'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
           },
-          purpose: 'staff.connection_health_digest',
-        });
+        };
+        await sendEmail(customer
+          ? { ...envelope, purpose: 'customer.connection_health_digest', partnerId: user.partnerId, partnerName: user.partnerName }
+          : { ...envelope, purpose: 'staff.connection_health_digest' });
       } catch (err) {
         result.failed += 1;
         console.error(JSON.stringify({ event: 'connection_health_digest_send_failed', userId: user.id, error: errorText(err) }));

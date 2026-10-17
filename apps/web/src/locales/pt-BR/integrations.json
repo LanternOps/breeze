@@ -332,6 +332,27 @@
       "unknown": "Requer atenção"
     }
   },
+  "connectionHealthSettings": {
+    "title": "Notificações de integridade",
+    "description": "A equipe do MSP que pode reparar uma conexão com falha sempre recebe o aviso no aplicativo e o resumo diário. Escolha se os administradores das organizações clientes também são avisados sobre as conexões da própria organização.",
+    "partnerLabel": "Notificar administradores do cliente por padrão",
+    "partnerDescription": "Aplica-se a toda organização que não tem uma configuração própria. Conexões de todo o parceiro nunca chegam aos administradores do cliente.",
+    "partnerReadOnly": "Somente administradores do parceiro com acesso a todas as organizações podem alterar o padrão.",
+    "orgLabel": "Esta organização",
+    "orgDescription": "Substitui o padrão para a organização selecionada acima.",
+    "selectOrg": "Selecione uma organização para substituir o padrão para ela.",
+    "inherit": "Herdar",
+    "inheritOn": "Herdar (ativado, {{from}})",
+    "inheritOff": "Herdar (desativado, {{from}})",
+    "fromPartner": "da configuração do parceiro",
+    "fromDefault": "do padrão integrado",
+    "on": "Ativado",
+    "off": "Desativado",
+    "loadFailed": "Não foi possível carregar as configurações de notificação de integridade.",
+    "retry": "Tentar novamente",
+    "saved": "Configuração de notificação de integridade salva",
+    "saveFailed": "Não foi possível salvar a configuração de notificação de integridade"
+  },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Conexão verificada e salva.",
     "googleWorkspace": "Google Workspace",

@@ -332,6 +332,27 @@
       "unknown": "İlgilenilmesi gerekiyor"
     }
   },
+  "connectionHealthSettings": {
+    "title": "Sağlık bildirimleri",
+    "description": "Bozuk bir bağlantıyı onarabilen MSP personeli, uygulama içi bildirimi ve günlük özeti her zaman alır. Müşteri kuruluşu yöneticilerinin de kendi kuruluşlarının bağlantılarından haberdar olup olmayacağını seçin.",
+    "partnerLabel": "Müşteri yöneticilerini varsayılan olarak bilgilendir",
+    "partnerDescription": "Kendi ayarı olmayan her kuruluş için geçerlidir. İş ortağı genelindeki bağlantılar müşteri yöneticilerine asla ulaşmaz.",
+    "partnerReadOnly": "Varsayılanı yalnızca tüm kuruluşlara erişimi olan iş ortağı yöneticileri değiştirebilir.",
+    "orgLabel": "Bu kuruluş",
+    "orgDescription": "Yukarıda seçilen kuruluş için varsayılanı geçersiz kılar.",
+    "selectOrg": "Varsayılanı geçersiz kılmak için bir kuruluş seçin.",
+    "inherit": "Devral",
+    "inheritOn": "Devral (açık, {{from}})",
+    "inheritOff": "Devral (kapalı, {{from}})",
+    "fromPartner": "iş ortağı ayarından",
+    "fromDefault": "yerleşik varsayılandan",
+    "on": "Açık",
+    "off": "Kapalı",
+    "loadFailed": "Sağlık bildirimi ayarları yüklenemedi.",
+    "retry": "Yeniden dene",
+    "saved": "Sağlık bildirimi ayarı kaydedildi",
+    "saveFailed": "Sağlık bildirimi ayarı kaydedilemedi"
+  },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Bağlantı doğrulandı ve kaydedildi.",
     "googleWorkspace": "Google Workspace",

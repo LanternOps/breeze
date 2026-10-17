@@ -1363,6 +1363,14 @@
           "migrationWindowClosed": {
             "description": "Wird einmal pro Organisation ausgelöst, wenn ein Ticket-Migrationsfenster geschlossen wird, mit den importierten Zählungen.",
             "label": "Migrationsfenster geschlossen"
+          },
+          "integrationHealthOpened": {
+            "description": "Wird ausgelöst, wenn für die Verbindung einer Organisation ein Integritätsvorfall eröffnet wird.",
+            "label": "Integritätsvorfall bei Verbindung eröffnet"
+          },
+          "integrationHealthResolved": {
+            "description": "Wird ausgelöst, wenn ein Integritätsvorfall einer Verbindung behoben wird.",
+            "label": "Integritätsvorfall bei Verbindung behoben"
           }
         },
         "fields": {

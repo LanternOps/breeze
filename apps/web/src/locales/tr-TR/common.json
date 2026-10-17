@@ -1363,6 +1363,14 @@
           "migrationWindowClosed": {
             "description": "Bir bilet taşıma penceresi kapandığında, içe aktarılan sayılarla birlikte kuruluş başına bir kez tetiklenir.",
             "label": "Taşıma penceresi kapandı"
+          },
+          "integrationHealthOpened": {
+            "description": "Bir kuruluşun bağlantısı için sağlık olayı açıldığında tetiklenir.",
+            "label": "Bağlantı sağlık olayı açıldı"
+          },
+          "integrationHealthResolved": {
+            "description": "Bir bağlantının sağlık olayı çözüldüğünde tetiklenir.",
+            "label": "Bağlantı sağlık olayı çözüldü"
           }
         },
         "fields": {

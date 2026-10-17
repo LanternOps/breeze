@@ -1363,6 +1363,14 @@
           "migrationWindowClosed": {
             "description": "Déclenché une fois par organisation à la fermeture d'une fenêtre de migration de billets, avec les nombres importés.",
             "label": "Fenêtre de migration fermée"
+          },
+          "integrationHealthOpened": {
+            "description": "Se déclenche lorsqu'un incident d'état est ouvert sur la connexion d'une organisation.",
+            "label": "Incident d'état de connexion ouvert"
+          },
+          "integrationHealthResolved": {
+            "description": "Se déclenche lorsqu'un incident d'état de connexion est résolu.",
+            "label": "Incident d'état de connexion résolu"
           }
         },
         "fields": {
