@@ -615,6 +615,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/approvals.ts': { exempt: 'portal', note: 'Customer work approval (#4617 spec §6.2): the customer\'s own approve/deny in the portal session. Human-only by design (spec §6.5): no AI tool may decide a request.' },
   'portal/reports.ts': { exempt: 'portal' },
   'portal/security.ts': { exempt: 'portal' },
+  'portal/trustPageLink.ts': { exempt: 'portal', note: 'Customer dashboard link to the org\'s public trust page; read-only, no MCP surface.' },
   'portal/service.ts': { exempt: 'portal' },
   'portal/tickets.ts': { exempt: 'portal' },
   'portal/trustPage.ts': { exempt: 'portal', note: 'Customer org-admin edits of their own trust page draft (Trust Center W3d); human-only, publishing stays with the MSP.' },

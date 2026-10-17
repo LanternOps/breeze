@@ -29,6 +29,7 @@ import { portalTrustPageRoutes } from './trustPage';
 import { portalNetworkRoutes } from './network';
 import { portalHourBlockRoutes } from './hourBlock';
 import { portalApprovalRoutes } from './approvals';
+import { portalTrustPageLinkRoutes } from './trustPageLink';
 
 export const portalRoutes = new Hono();
 
@@ -152,6 +153,7 @@ portalRoutes.route('/', profileRoutes);
 portalRoutes.route('/', portalInvoiceRoutes);
 portalRoutes.route('/', portalQuoteRoutes);
 portalRoutes.route('/', portalDashboardRoutes);
+portalRoutes.route('/dashboard', portalTrustPageLinkRoutes); // under the /dashboard/* auth + enableDashboard gate
 portalRoutes.route('/', portalSecurityRoutes);
 portalRoutes.route('/', portalHardwareHealthRoutes);
 portalRoutes.route('/', portalHardwareInventoryRoutes);
