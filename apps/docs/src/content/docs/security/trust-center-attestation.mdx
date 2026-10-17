@@ -1,0 +1,188 @@
+---
+title: Trust Center attestation
+description: Verify a published Trust Center page as a signed, machine-readable JWT, and rotate the keys that sign it.
+sidebar:
+  order: 9
+  label: Trust Center attestation
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every published [Trust Center](/security/trust-center/) page has a signed, machine-readable copy: a compact JSON Web Token (JWT) that carries the exact public payload the page renders. Insurer, auditor and procurement tooling can fetch it, verify the signature against the deployment's public keys, and read the same controls a person sees on the page.
+
+The page links to it in its footer ("Machine-readable, signed copy") and in its HTML head as `<link rel="alternate" type="application/jwt">`.
+
+## What it proves, and what it does not
+
+An attestation proves that **this Breeze installation computed this payload, for this page, at this time**. The signature binds the payload to the page URL and to the time of the last evaluation, so the token cannot be edited or replayed against another page without detection.
+
+It does **not** prove that the organization is secure, compliant or certified. The payload is an evidence summary from Breeze telemetry, with the same limits as the page itself.
+
+<Aside type="caution" title="Self-hosted installations">
+On a self-hosted installation, the operator controls both the telemetry and the signing key. The attestation is then a statement by that installation, not independent assurance. Treat it as evidence from the operator, not as a third-party audit.
+</Aside>
+
+## Endpoints
+
+| URL | Returns |
+|---|---|
+| `GET /api/v1/trust/attestation/<partner>/<org>` | The attestation for an organization page, as `application/jwt` |
+| `GET /api/v1/trust/attestation/<partner>` | The attestation for a partner home page |
+| `GET /api/v1/trust/attestation/jwks.json` | The public verification keys, as `application/jwk-set+json` |
+
+All three are public, need no authentication and allow cross-origin reads (`Access-Control-Allow-Origin: *`, never with credentials). They are rate limited to 60 requests per minute per IP address.
+
+| Response | When |
+|---|---|
+| `200` | The page is published and was evaluated in the last 24 hours. `Cache-Control: public, max-age=60` or less (never past the token's `exp`). |
+| `404 {"error":"Not found","code":"NOT_FOUND"}` | The page does not exist, is not published, or cannot be served. The response is the same for every cause. |
+| `503 {"code":"ATTESTATION_STALE"}` with `Retry-After: 3600` | The page has not been evaluated in the last 24 hours. No token is issued for a stale page. |
+| `503 {"code":"SERVICE_UNAVAILABLE"}` | The installation has no active signing key, or no public URL configured (see [Self-hosting](#self-hosting)). |
+
+Every response other than `200` is `Cache-Control: no-store`. The JWKS is `Cache-Control: public, max-age=600`.
+
+## The token
+
+The JOSE header:
+
+```json
+{ "alg": "ES256", "kid": "trust-AbCdEf0123456789", "typ": "trust-attestation+jwt" }
+```
+
+The claims:
+
+| Claim | Value |
+|---|---|
+| `iss` | The installation's origin, for example `https://breeze.example.com` |
+| `sub` | The public page URL, for example `https://breeze.example.com/portal/trust/northwind/acme` |
+| `iat` | When the token was signed (seconds since the epoch) |
+| `exp` | The earlier of `iat + 1 hour` and `lastEvaluatedAt + 24 hours` |
+| `jti` | A random UUID, unique per token |
+| `trust.v` | `1` |
+| `trust.payload` | The exact public payload the page renders, including its snapshot id |
+| `trust.lastEvaluatedAt` | When Breeze last evaluated the page's controls (ISO 8601) |
+
+There is no `aud` claim. The signature algorithm is always ES256 (ECDSA P-256 with SHA-256).
+
+## Verify a token
+
+A correct verifier checks **all** of the following, not only the signature:
+
+1. The signature, against a key from the installation's `jwks.json`, with the algorithm pinned to `ES256`.
+2. `typ` is `trust-attestation+jwt`.
+3. `iss` is the installation's origin that you expect.
+4. `sub` is the page URL you expect.
+5. `exp` has not passed.
+
+The examples below use `https://breeze.example.com` and the page `northwind/acme`.
+
+### Node.js (`jose`)
+
+```js
+import { createRemoteJWKSet, jwtVerify } from 'jose';
+
+const origin = 'https://breeze.example.com';
+const page = `${origin}/portal/trust/northwind/acme`;
+const jwks = createRemoteJWKSet(new URL(`${origin}/api/v1/trust/attestation/jwks.json`));
+
+const token = await (await fetch(`${origin}/api/v1/trust/attestation/northwind/acme`)).text();
+const { payload } = await jwtVerify(token, jwks, {
+  algorithms: ['ES256'],
+  typ: 'trust-attestation+jwt',
+  issuer: origin,
+  subject: page,
+});
+console.log(payload.trust.lastEvaluatedAt, payload.trust.payload.summary);
+```
+
+### Python (`PyJWT`)
+
+```python
+import jwt
+import requests
+
+origin = "https://breeze.example.com"
+page = f"{origin}/portal/trust/northwind/acme"
+jwks = jwt.PyJWKClient(f"{origin}/api/v1/trust/attestation/jwks.json")
+
+token = requests.get(f"{origin}/api/v1/trust/attestation/northwind/acme", timeout=10).text
+if jwt.get_unverified_header(token).get("typ") != "trust-attestation+jwt":
+    raise ValueError("not a trust attestation")
+claims = jwt.decode(
+    token,
+    jwks.get_signing_key_from_jwt(token).key,
+    algorithms=["ES256"],
+    issuer=origin,
+    options={"require": ["iss", "sub", "iat", "exp"]},
+)
+if claims["sub"] != page:
+    raise ValueError("attestation is for a different page")
+```
+
+### .NET (`Microsoft.IdentityModel.JsonWebTokens`)
+
+```csharp
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
+
+var origin = "https://breeze.example.com";
+var page = $"{origin}/portal/trust/northwind/acme";
+using var http = new HttpClient();
+var jwks = new JsonWebKeySet(await http.GetStringAsync($"{origin}/api/v1/trust/attestation/jwks.json"));
+var token = await http.GetStringAsync($"{origin}/api/v1/trust/attestation/northwind/acme");
+
+var result = await new JsonWebTokenHandler().ValidateTokenAsync(token, new TokenValidationParameters
+{
+    IssuerSigningKeys = jwks.GetSigningKeys(),
+    ValidAlgorithms = new[] { SecurityAlgorithms.EcdsaSha256 },
+    ValidTypes = new[] { "trust-attestation+jwt" },
+    ValidIssuer = origin,
+    ValidateAudience = false, // the token has no aud claim
+    ValidateLifetime = true,
+});
+if (!result.IsValid || (string)result.Claims["sub"] != page)
+    throw new SecurityTokenException("attestation did not verify");
+```
+
+## Archived tokens
+
+A token stays verifiable after it expires, as long as its key is still in the JWKS: keys that are rotated out remain published as verify-only. An expired token is a **historical** statement ("on this date, this installation computed this payload"), not a statement about now. To check an archived token, verify the signature, `typ`, `iss` and `sub` as above, and evaluate the dates as of the time it was issued instead of now. With `jose`:
+
+```js
+const { payload } = await jwtVerify(token, jwks, {
+  algorithms: ['ES256'], typ: 'trust-attestation+jwt', issuer: origin, subject: page,
+  currentDate: new Date(decodeJwt(token).iat * 1000), // dates checked as of issuance
+});
+```
+
+For a current statement, fetch a new token. A key that was revoked after a compromise is removed from the JWKS, and tokens it signed no longer verify.
+
+## Self-hosting
+
+There is nothing to set up. The installation creates its signing key the first time an attestation or the JWKS is requested, and stores the private key encrypted with `APP_ENCRYPTION_KEY`.
+
+- Set `APP_ENCRYPTION_KEY_ID` so the encrypted key is bound to its database column (the same setting protects every other encrypted column).
+- Set `DASHBOARD_URL` (or `PUBLIC_APP_URL`) to the public URL of your installation. The `iss` and `sub` claims come from it. In production, attestation answers `503` until one of them is set.
+
+## Rotating the signing key
+
+Rotation is an operator task, run from the API container or a checkout with the production environment:
+
+```bash
+pnpm --filter @breeze/api trust:signing-key list
+pnpm --filter @breeze/api trust:signing-key prepare            # new key, published in the JWKS, not signing yet
+# wait at least 10 minutes (the JWKS max-age) so caching verifiers have the new key
+pnpm --filter @breeze/api trust:signing-key activate <kid>     # new key signs; the old key becomes verify-only
+```
+
+`activate` refuses a key prepared less than 10 minutes ago unless you pass `--force`. The previous key stays in the JWKS so tokens it signed keep verifying; its private key is destroyed.
+
+**If a key is compromised**, revoke it and mint a replacement in one step:
+
+```bash
+pnpm --filter @breeze/api trust:signing-key revoke <kid> --replace
+```
+
+The revoked key leaves the JWKS at once. Verifiers that cache the JWKS stop trusting it within 10 minutes. Without `--replace`, revoking the active key leaves the installation with no signing key, and attestation answers `503` until you `prepare` and `activate` a new one: Breeze never creates a replacement on its own after a revoke.
+
+Every command prints the keyset (key ids, statuses and dates, never key material) and writes an audit log entry `trust_signing_key.<command>`.

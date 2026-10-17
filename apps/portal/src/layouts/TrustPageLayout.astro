@@ -16,8 +16,9 @@ interface Props {
   indexable: boolean;
   accent?: string | null;
   imageUrl?: string | null;       // https logo for og:image, optional
+  alternateJwtHref?: string | null; // signed attestation of this page (Trust Center W3b), same-origin API path
 }
-const { title, description, canonicalPath, indexable, accent, imageUrl } = Astro.props;
+const { title, description, canonicalPath, indexable, accent, imageUrl, alternateJwtHref } = Astro.props;
 const accentCss = buildDocAccentCss(accent);
 const cspNonce = Astro.locals.cspNonce;
 const robots = indexable ? 'index,follow' : 'noindex,nofollow';
@@ -31,6 +32,7 @@ const canonical = new URL(withBase(canonicalPath), publicOriginFor(Astro.request
     <meta name="robots" content={robots} />
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
+    {alternateJwtHref && <link rel="alternate" type="application/jwt" href={alternateJwtHref} />}
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />

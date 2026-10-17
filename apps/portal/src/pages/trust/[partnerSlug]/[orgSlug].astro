@@ -6,6 +6,7 @@ import TrustPageLayout from '../../../layouts/TrustPageLayout.astro';
 import TrustPageView from '../../../components/trust/TrustPageView';
 import { portalApi } from '../../../lib/api';
 import { publicServerApiConfig } from '../../../lib/server';
+import { trustAttestationJwksPath, trustAttestationPath } from '../../../lib/trustAttestation';
 
 const { partnerSlug, orgSlug } = Astro.params;
 const res = await portalApi.getTrustCard(partnerSlug!, orgSlug!, { ...publicServerApiConfig(Astro.request), timeoutMs: 3000 });
@@ -15,7 +16,16 @@ if (!card && res.statusCode === 404) return new Response('Not Found', { status: 
 if (card) Astro.locals.trustCacheable = true;
 const title = card?.title ?? 'Security posture';
 const description = card ? `${card.summaryLine.replace(/\.$/, '')}. Continuously verified by Breeze RMM telemetry; not a certification.` : 'Security posture page.';
+// Signed, machine-readable copy (Trust Center W3b). Linked only while the page is fresh: a stale page has no
+// attestation (the API answers 503 ATTESTATION_STALE).
+const attestationHref = card && !card.stale ? trustAttestationPath(partnerSlug!, orgSlug!) : null;
+const jwksHref = trustAttestationJwksPath();
 ---
-<TrustPageLayout title={title} description={description} canonicalPath={`/trust/${partnerSlug}/${orgSlug}`} indexable={card?.searchIndexable ?? false} accent={card?.primaryColor} imageUrl={card?.logoUrl}>
+<TrustPageLayout title={title} description={description} canonicalPath={`/trust/${partnerSlug}/${orgSlug}`} indexable={card?.searchIndexable ?? false} accent={card?.primaryColor} imageUrl={card?.logoUrl} alternateJwtHref={attestationHref}>
   <TrustPageView partnerSlug={partnerSlug!} orgSlug={orgSlug!} card={card} client:load />
+  {attestationHref && (
+    <p class="mt-8 text-center text-xs text-muted-foreground">
+      Machine-readable, signed copy: <a class="underline underline-offset-2" href={attestationHref}>{attestationHref}</a>{' · '}Verification keys: <a class="underline underline-offset-2" href={jwksHref}>jwks.json</a>
+    </p>
+  )}
 </TrustPageLayout>
