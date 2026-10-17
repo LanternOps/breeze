@@ -61,6 +61,14 @@ export async function publishCallerVerificationEffects(): Promise<void> {
 
 type Row = typeof v.$inferSelect;
 
+/** Thrown after all in-app notifications succeeded but an email send failed. */
+class RejectionEmailError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'RejectionEmailError';
+  }
+}
+
 async function handleRowFailure(row: Row, err: unknown): Promise<void> {
   const error = err instanceof Error ? err : new Error(String(err));
   console.error('[CallerVerificationPublisher] Row failed:', { verificationId: row.id, error: error.message });
@@ -69,6 +77,7 @@ async function handleRowFailure(row: Row, err: unknown): Promise<void> {
   failures.set(row.id, count);
   if (count < MAX_DELIVERY_FAILURES) return;
   if (row.status === 'rejected_by_user') {
+    if (!(err instanceof RejectionEmailError)) return; // notification phase: keep retrying
     // Give up on a rejected row too (#8998): the in-app notification is
     // deduplicated and the email is best-effort, so stop the 5 s retry loop.
     failures.delete(row.id);
@@ -107,6 +116,11 @@ async function publishRow(row: Row): Promise<void> {
     const email = getEmailService();
     // Email is best-effort: with no transport the in-app notification is the
     // delivery and the row is still marked notified (#8998).
+    if (recipients.length === 0) {
+      console.warn('[CallerVerificationPublisher] No security recipients for rejection:', { verificationId: row.id });
+    }
+    // Phase 1: every in-app notification (deduplicated). A failure here is
+    // never given up on: it is the notice itself.
     for (const person of recipients) {
       await scoped(() => createNotification({
         userId: person.id, orgId: row.orgId, type: 'security', priority: 'high',
@@ -116,15 +130,26 @@ async function publishRow(row: Row): Promise<void> {
         dedupeKey: `caller-rejection-${row.id}`,
         metadata: { verificationId: row.id },
       }));
-      if (email) await email.sendEmail({
-        to: person.email,
-        subject: 'Caller verification security incident',
-        html: '<p>A caller rejected an identity-change request. Open Breeze security incidents to review the subject fence and related actions.</p>',
-        text: 'A caller rejected an identity-change request. Open Breeze security incidents to review.',
-        headers: { 'Message-ID': `<caller-${row.id}-${person.id}@notifications.invalid>` },
-        purpose: 'security.caller_rejection',
-      });
     }
+    // Phase 2: best-effort email. Failures are retried, then given up on.
+    let emailError: unknown = null;
+    if (email) {
+      for (const person of recipients) {
+        try {
+          await email.sendEmail({
+            to: person.email,
+            subject: 'Caller verification security incident',
+            html: '<p>A caller rejected an identity-change request. Open Breeze security incidents to review the subject fence and related actions.</p>',
+            text: 'A caller rejected an identity-change request. Open Breeze security incidents to review.',
+            headers: { 'Message-ID': `<caller-${row.id}-${person.id}@notifications.invalid>` },
+            purpose: 'security.caller_rejection',
+          });
+        } catch (err) {
+          emailError ??= err;
+        }
+      }
+    }
+    if (emailError) throw new RejectionEmailError(emailError);
     await scoped(() => db.update(v).set({ rejectionNotifiedAt: new Date() }).where(eq(v.id, row.id)));
   }
 }

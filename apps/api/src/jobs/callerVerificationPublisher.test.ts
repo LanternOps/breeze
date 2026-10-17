@@ -126,6 +126,23 @@ it('gives up on a rejected row after 3 consecutive failures by marking it notifi
   spy.mockRestore();
 });
 
+it('a failing email to the first recipient still notifies every recipient in-app before retrying', async () => {
+  m.rows = [row({ id: 'multi', status: 'rejected_by_user' })];
+  m.sendEmail.mockRejectedValueOnce(new Error('smtp'));
+  await publishCallerVerificationEffects();
+  expect(m.notify).toHaveBeenCalledTimes(2);
+  expect(m.sendEmail).toHaveBeenCalledTimes(2);
+  expect(m.updates).toEqual([]);
+});
+
+it('never gives up on a rejected row whose in-app notification keeps failing', async () => {
+  m.rows = [row({ id: 'notif-fail', status: 'rejected_by_user' })];
+  m.notify.mockRejectedValue(new Error('db'));
+  for (let i = 0; i < 5; i++) await publishCallerVerificationEffects();
+  expect(m.updates).toEqual([]);
+  m.notify.mockReset();
+});
+
 it('leaves the rejection unmarked when one email send fails (at-least-once)', async () => {
   m.rows = [row({ status: 'rejected_by_user' })];
   m.sendEmail.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('smtp'));
