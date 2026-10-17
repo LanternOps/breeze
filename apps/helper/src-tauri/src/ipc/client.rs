@@ -17,6 +17,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use super::consent::{
     ConsentRequest, ConsentTracker, Outbound, RequestAction, UiEvent, CONSENT_PROTOCOL_VERSION,
 };
+use super::chat::{
+    ChatAction, ChatBridge, ChatClose, ChatEvent, ChatReplyResult, ChatShow, ChatTracker, PRESENTED_FAILED as CHAT_PRESENTED_FAILED,
+};
 use super::desktop::{self, ConsentBridge};
 use super::message::{
     MessageRetract, MessageShow, MessageTracker, MsgEvent, ShowAction, PRESENTED_FAILED,
@@ -108,6 +111,10 @@ struct AuthRequest {
     /// `messaging` scope only to an assist helper that says so.
     #[serde(rename = "supportsMessaging")]
     supports_messaging: bool,
+    /// This helper renders the endpoint live chat window (#8743). The agent
+    /// grants the `chat` scope only to an assist helper that says so.
+    #[serde(rename = "supportsChat")]
+    supports_chat: bool,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -162,6 +169,7 @@ fn build_auth_request(id: &PeerIdentity) -> AuthRequest {
         desktop_context: String::new(),
         consent_protocol_version: CONSENT_PROTOCOL_VERSION,
         supports_messaging: true,
+        supports_chat: true,
     }
 }
 
@@ -200,6 +208,7 @@ pub struct DesktopCtx {
     pub bridge: std::sync::Arc<ConsentBridge>,
     pub caller_verify: std::sync::Arc<super::caller_verify::CallerVerifyBridge>,
     pub messages: std::sync::Arc<super::message::MessageBridge>,
+    pub chat: std::sync::Arc<ChatBridge>,
 }
 
 /// Run a single IPC session over an already-connected `stream` with an explicit
@@ -300,11 +309,17 @@ where
         caller: desktop_ctx.map(|c| c.caller_verify.clone()),
         app: desktop_ctx.map(|c| c.app.clone()),
         messages: desktop_ctx.map(|c| c.messages.clone()),
+        chat: desktop_ctx.map(|c| c.chat.clone()),
     };
     // Endpoint messages (#8293): card events (ack / closed) arrive here.
     let (msg_tx, mut msg_rx) = tokio::sync::mpsc::unbounded_channel::<MsgEvent>();
     if let Some(ctx) = desktop_ctx {
         ctx.messages.set_sender(msg_tx);
+    }
+    // Endpoint live chat (#8743): reply frames from the chat window arrive here.
+    let (chat_tx, mut chat_rx) = tokio::sync::mpsc::unbounded_channel::<ChatEvent>();
+    if let Some(ctx) = desktop_ctx {
+        ctx.chat.set_sender(chat_tx);
     }
     let mut caller_tick = tokio::time::interval(Duration::from_millis(250));
     if desktop_ctx.is_some() {
@@ -339,6 +354,15 @@ where
                         MsgEvent::Closed(id) => ctx.messages.tracker().on_closed(&id),
                     };
                     if let Some(frame) = frame {
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
+                }
+                continue;
+            }
+            // A reply typed in the chat window, already validated and recorded.
+            Some(event) = chat_rx.recv() => {
+                match event {
+                    ChatEvent::Send(frame) => {
                         write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
                     }
                 }
@@ -510,6 +534,67 @@ where
                     }
                 }
             }
+            // Endpoint live chat (#8743). ONLY this arm may build a chat window
+            // (a live chat_open for a conversation with no window: the "incoming
+            // call"); replays are restored silently and every later message,
+            // close and reply result below can badge/flash but never raise.
+            "chat_open" => match parse_payload::<ChatShow>(&env.payload) {
+                Ok(show) => {
+                    let mut frames: Vec<Outbound> = Vec::new();
+                    if let Some(ctx) = desktop_ctx {
+                        let win = desktop::chat_win_state(&ctx.app, &show.conversation_id);
+                        let action = ctx.chat.tracker().on_open(&show, win);
+                        match action {
+                            ChatAction::ShowWindow { conversation_id, created } => {
+                                match desktop::show_chat_window(&ctx.app, &conversation_id, false) {
+                                    Ok(()) => {
+                                        publish_chat_view(ctx, &conversation_id);
+                                        frames.push(chat_presented(&env.id, &show, ""));
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[helper] chat window could not be shown: {}", e);
+                                        ctx.chat.tracker().on_show_failed(&conversation_id, created);
+                                        frames.push(chat_presented(&env.id, &show, CHAT_PRESENTED_FAILED));
+                                    }
+                                }
+                            }
+                            other => frames.extend(apply_chat_action(ctx, &env.id, &show, other)),
+                        }
+                    }
+                    for frame in frames {
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
+                }
+                Err(e) => eprintln!("[helper] bad chat_open payload: {}", e),
+            },
+            "chat_message" => match parse_payload::<ChatShow>(&env.payload) {
+                Ok(show) => {
+                    let mut frames: Vec<Outbound> = Vec::new();
+                    if let Some(ctx) = desktop_ctx {
+                        let win = desktop::chat_win_state(&ctx.app, &show.conversation_id);
+                        let action = ctx.chat.tracker().on_message(&show, win);
+                        frames.extend(apply_chat_action(ctx, &env.id, &show, action));
+                    }
+                    for frame in frames {
+                        write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                    }
+                }
+                Err(e) => eprintln!("[helper] bad chat_message payload: {}", e),
+            },
+            "chat_close" => {
+                if let (Ok(c), Some(ctx)) = (parse_payload::<ChatClose>(&env.payload), desktop_ctx) {
+                    if ctx.chat.tracker().on_close(&c.conversation_id) {
+                        publish_chat_view(ctx, &c.conversation_id);
+                    }
+                }
+            }
+            "chat_reply_result" => {
+                if let (Ok(r), Some(ctx)) = (parse_payload::<ChatReplyResult>(&env.payload), desktop_ctx) {
+                    if ctx.chat.tracker().on_reply_result(&r) {
+                        publish_chat_view(ctx, &r.conversation_id);
+                    }
+                }
+            }
             "banner_show" => {
                 match parse_payload::<desktop::BannerShowRequest>(&env.payload) {
                     Ok(req) => {
@@ -584,6 +669,56 @@ struct BridgeClearGuard {
     caller: Option<std::sync::Arc<super::caller_verify::CallerVerifyBridge>>,
     app: Option<AppHandle>,
     messages: Option<std::sync::Arc<super::message::MessageBridge>>,
+    chat: Option<std::sync::Arc<ChatBridge>>,
+}
+
+/// `chat_presented` for a live `chat_open` / `chat_message`: the SAME envelope
+/// id as the request. Ids are echoed only when canonical, never raw input.
+fn chat_presented(env_id: &str, show: &ChatShow, status: &str) -> Outbound {
+    let message_id = show
+        .messages
+        .first()
+        .map(|m| m.message_id.as_str())
+        .filter(|m| m.len() == 36 && m.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'));
+    let conversation_id = if show.conversation_id.len() == 36 { show.conversation_id.as_str() } else { "" };
+    ChatTracker::presented(env_id, conversation_id, message_id, status)
+}
+
+/// Push the conversation's current state to its window (if open) and refresh
+/// the tray badge. Never shows or focuses anything.
+fn publish_chat_view(ctx: &DesktopCtx, conversation_id: &str) {
+    if let Some(view) = ctx.chat.view(conversation_id) {
+        desktop::emit_chat_update(&ctx.app, &view);
+    }
+    crate::refresh_chat_tray(&ctx.app);
+}
+
+/// Carry out every action except `ShowWindow` (the `chat_open` arm owns
+/// that) and return the `chat_presented` reply. Nothing here can show,
+/// un-minimise or focus a window: the strongest effect is a taskbar flash on
+/// a window that is already on screen.
+fn apply_chat_action(ctx: &DesktopCtx, env_id: &str, show: &ChatShow, action: ChatAction) -> Vec<Outbound> {
+    match action {
+        ChatAction::UpdateAndFlash { conversation_id } => {
+            publish_chat_view(ctx, &conversation_id);
+            desktop::flash_chat_window(&ctx.app, &conversation_id);
+            vec![chat_presented(env_id, show, "")]
+        }
+        ChatAction::BadgeOnly { conversation_id } | ChatAction::RestoreSilently { conversation_id } => {
+            publish_chat_view(ctx, &conversation_id);
+            // A replay is fire-and-forget; the agent ignores a stray reply.
+            if show.replay { Vec::new() } else { vec![chat_presented(env_id, show, "")] }
+        }
+        ChatAction::Duplicate { .. } => {
+            if show.replay { Vec::new() } else { vec![chat_presented(env_id, show, "")] }
+        }
+        ChatAction::Reject(why) => {
+            eprintln!("[helper] chat frame rejected: {}", why);
+            if show.replay { Vec::new() } else { vec![chat_presented(env_id, show, CHAT_PRESENTED_FAILED)] }
+        }
+        // Only the chat_open arm can build a window.
+        ChatAction::ShowWindow { .. } => Vec::new(),
+    }
 }
 
 /// Wall-clock milliseconds since the Unix epoch.
@@ -604,6 +739,20 @@ impl Drop for BridgeClearGuard {
             if let Some(app) = &self.app {
                 for id in ids {
                     desktop::close_message_window(app, &id);
+                }
+            }
+        }
+        // Chat (#8743): the windows and transcripts survive a reconnect (the
+        // agent replays silently), but a reply in flight will never get its
+        // result on this dead session: mark it failed so the user can resend.
+        if let Some(chat) = &self.chat {
+            chat.clear_sender();
+            let changed = chat.tracker().fail_pending_replies();
+            if let Some(app) = &self.app {
+                for id in changed {
+                    if let Some(view) = chat.view(&id) {
+                        desktop::emit_chat_update(app, &view);
+                    }
                 }
             }
         }
@@ -834,6 +983,7 @@ mod tests {
         // Endpoint messaging (#8293): the agent grants the `messaging` scope only
         // to an assist helper that advertises this.
         assert_eq!(v["supportsMessaging"], true);
+        assert_eq!(v["supportsChat"], true);
 
         // 2. Reply auth_response (still ZERO key) with a fixed session key.
         let session_key = [7u8; 32];
