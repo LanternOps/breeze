@@ -480,7 +480,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // and the device user (same class as ticket_comments.content): included.
   // sender_session (the agent-attested OS session of a reply) is jsonb, so
   // excludedOpen. client_nonce is a per-message idempotency key, not a secret.
-  "endpoint_conversation_messages": tablePolicy("org_id", {"included":["id","conversation_id","org_id","device_id","direction","body","body_length","body_purged_at","client_nonce","sender_user_id","command_id","error_code","delivered_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["sender_session"]}),
+  "endpoint_conversation_messages": tablePolicy("org_id", {"included":["id","conversation_id","org_id","device_id","direction","body","body_length","body_purged_at","client_nonce","sender_user_id","command_id","error_code","delivered_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["sender_session"]}),
   "endpoint_conversations": tablePolicy("org_id", {"included":["id","org_id","device_id","channel","status","allow_user_reply","opened_by","open_command_id","target_username","win_session_id","error_code","close_reason","closed_by","last_activity_at","closed_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // Endpoint messaging (#8742 W02). title/body are customer-authored message
   // text (same class as ticket_comments.content): included. target_spec (the

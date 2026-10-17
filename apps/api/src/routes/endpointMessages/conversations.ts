@@ -157,6 +157,8 @@ conversationRoutes.post(
         ipAddress: getTrustedClientIpOrUndefined(c),
       });
     }
-    return c.json({ conversation: outcome.conversation, alreadyClosed: outcome.alreadyClosed });
+    // agentNotified=false: the device was unreachable, so the user's window may
+    // stay open until it reconnects or they reply (which then gets 409).
+    return c.json({ conversation: outcome.conversation, alreadyClosed: outcome.alreadyClosed, agentNotified: outcome.agentNotified });
   },
 );

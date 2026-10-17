@@ -155,6 +155,7 @@ describe('endpoint chat routes (#8743)', () => {
     h.close.mockResolvedValueOnce({ ok: true, alreadyClosed: false, conversation: { ...conversation, status: 'closed' }, counts: { toUser: 3, fromUser: 2 }, agentNotified: true });
     const res = await post(`/${CONV}/close`);
     expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ alreadyClosed: false, agentNotified: true });
     expect(h.audit.mock.calls[0]![1]).toMatchObject({
       action: 'endpoint_chat.close',
       details: { messagesToUser: 3, messagesFromUser: 2, reason: 'technician', agentNotified: true },

@@ -172,6 +172,9 @@ export async function runEndpointChatRetentionOnce(
             LIMIT ${BATCH}
          )
            AND status = 'open'
+           -- Re-checked on the row itself: a reply that committed after the
+           -- subquery's snapshot keeps the chat alive.
+           AND last_activity_at < ${nowIso}::timestamptz - make_interval(mins => ${ENDPOINT_CHAT_LIMITS.idleCloseMinutes})
         RETURNING id, device_id, org_id`));
       for (const r of rows) closed.push({ ...r, reason: 'idle' });
       return rows.length;
@@ -188,6 +191,7 @@ export async function runEndpointChatRetentionOnce(
             LIMIT ${BATCH}
          )
            AND status = 'opening'
+           AND created_at < ${nowIso}::timestamptz - make_interval(mins => ${ENDPOINT_CHAT_LIMITS.openTimeoutMinutes})
         RETURNING id, device_id, org_id`));
       // The window may have come up after all (a lost result): take it down.
       for (const r of rows) closed.push({ ...r, reason: 'idle' });
@@ -207,7 +211,7 @@ export async function runEndpointChatRetentionOnce(
 
     const bodiesPurged = await batched('chat body purge', async () => rowCount(await db.execute(sql`
       UPDATE endpoint_conversation_messages
-         SET body = NULL, body_purged_at = ${nowIso}::timestamptz
+         SET body = NULL, body_purged_at = ${nowIso}::timestamptz, updated_at = ${nowIso}::timestamptz
        WHERE id IN (
          SELECT id FROM endpoint_conversation_messages
           WHERE body_purged_at IS NULL

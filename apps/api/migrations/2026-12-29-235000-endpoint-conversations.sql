@@ -110,7 +110,10 @@ CREATE TABLE IF NOT EXISTS public.endpoint_conversation_messages (
   command_id uuid,
   error_code text,
   delivered_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  -- Bumped on every change after insert (delivery, failure, purge): the
+  -- console poll cursor, so a later delivery failure is never missed.
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE public.endpoint_conversation_messages DROP CONSTRAINT IF EXISTS endpoint_conversation_messages_direction_chk;

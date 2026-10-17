@@ -28,6 +28,7 @@ import {
   attachOpenCommand,
   closeLiveConversation,
   conversationMessageCounts,
+  findTechMessage,
   insertOpeningConversation,
   insertTechMessage,
   markOpenFailed,
@@ -44,7 +45,7 @@ import {
   type ChatSitePerms,
   type ConversationView,
 } from './chatReads';
-import type { EndpointConversationCloseReason } from '../../db/schema/endpointConversations';
+import type { EndpointConversationCloseReason, EndpointConversationMessageRow } from '../../db/schema/endpointConversations';
 
 export type ChatErrorCode =
   | 'device_not_found'
@@ -221,7 +222,23 @@ export async function openEndpointChat(caller: ChatCaller, input: EndpointChatOp
   if (inserted.kind === 'active') {
     return fail(409, { error: 'conversation_active', ...(inserted.conversationId ? { conversationId: inserted.conversationId } : {}) });
   }
-  if (inserted.kind === 'id_taken') return fail(409, { error: 'idempotency_conflict' });
+  if (inserted.kind === 'id_taken') {
+    // A concurrent retry of this same open (double click) won the insert:
+    // replay it. Any other owner of the id is a conflict.
+    const raced = await findConversationForCaller({ auth, permissions: caller.permissions, conversationId: input.conversationId });
+    if (raced && raced.conversation.deviceId === device.id && raced.conversation.openedBy === auth.user.id) {
+      return {
+        ok: true,
+        status: 200,
+        replay: true,
+        conversation: conversationView(raced.conversation, raced.openedByName),
+        messages: await readConversationMessages(raced.conversation.id),
+        deviceOrgId: device.orgId,
+        bodySha256: bodySha256(input.body),
+      };
+    }
+    return fail(409, { error: 'idempotency_conflict' });
+  }
 
   const { conversation, message } = inserted;
   const res = await deps.dispatch(
@@ -291,26 +308,43 @@ export async function sendEndpointChatMessage(
   // The rollout flag is enforced per message: switching messaging off stops a chat mid-flight.
   if (!settings.enabled) return fail(403, { error: 'feature_disabled' });
 
+  // A retry of a message already accepted costs no budget and never shows a
+  // second line. One whose dispatch was refused (or never happened) is sent
+  // again: the operator retried precisely because it did not arrive.
+  const prior = await findTechMessage(conv.id, input.messageId);
+  if (prior && (prior.deliveredAt || (prior.commandId && !prior.errorCode))) {
+    return { ok: true, status: 200, message: messageView(prior, auth.user.name ?? null) };
+  }
+
   const limit = await deps.messageLimit(conv.id);
   if (!limit.allowed) return fail(429, { error: 'rate_limited', retryAfterSeconds: limit.retryAfterSeconds });
 
   const brand = await deps.branding(conv.orgId);
   if (!brand) return fail(503, { error: 'unavailable' });
 
-  const inserted = await insertTechMessage({
-    conversationId: conv.id,
-    orgId: conv.orgId,
-    deviceId: conv.deviceId,
-    clientNonce: input.messageId,
-    senderUserId: auth.user.id,
-    body: input.body,
-  });
-  if (inserted.kind === 'duplicate') {
-    // A retry of a message already accepted: never a second line on screen.
-    return { ok: true, status: 200, message: messageView(inserted.message, auth.user.name ?? null) };
+  let message: EndpointConversationMessageRow;
+  let created = false;
+  if (prior) {
+    message = prior;
+  } else {
+    const inserted = await insertTechMessage({
+      conversationId: conv.id,
+      orgId: conv.orgId,
+      deviceId: conv.deviceId,
+      clientNonce: input.messageId,
+      senderUserId: auth.user.id,
+      body: input.body,
+    });
+    if (inserted.kind === 'not_open') {
+      return fail(409, { error: 'conversation_not_open' });
+    }
+    if (inserted.kind === 'duplicate') {
+      // Lost a race with a concurrent retry of the same message.
+      return { ok: true, status: 200, message: messageView(inserted.message, auth.user.name ?? null) };
+    }
+    message = inserted.message;
+    created = true;
   }
-
-  const message = inserted.message;
   const res = await deps.dispatch(
     conv.deviceId,
     CommandTypes.CHAT_MESSAGE,
@@ -319,7 +353,8 @@ export async function sendEndpointChatMessage(
       allowUserReply: conv.allowUserReply,
       branding: brand.branding,
       messageId: message.id,
-      body: input.body,
+      // The stored text: a retry re-sends what was accepted, never a new body.
+      body: message.body ?? input.body,
       senderName: senderNameOf(auth.user),
       sentAt: message.createdAt,
     }),
@@ -336,7 +371,11 @@ export async function sendEndpointChatMessage(
   } catch (err) {
     console.error('[endpoint-chat] message command bookkeeping failed', { messageId: message.id, error: err instanceof Error ? err.message : String(err) });
   }
-  return { ok: true, status: 201, message: messageView({ ...message, commandId: res.command.id }, auth.user.name ?? null) };
+  return {
+    ok: true,
+    status: created ? 201 : 200,
+    message: messageView({ ...message, commandId: res.command.id, errorCode: null, updatedAt: new Date() }, auth.user.name ?? null),
+  };
 }
 
 export type CloseChatOutcome =

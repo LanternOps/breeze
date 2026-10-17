@@ -56,6 +56,7 @@ export interface ChatMessageView {
   senderName: string | null;
   senderUsername: string | null;
   createdAt: string;
+  updatedAt: string;
   deliveredAt: string | null;
   errorCode: string | null;
 }
@@ -89,6 +90,7 @@ export function messageView(row: EndpointConversationMessageRow, senderName: str
     senderName: row.direction === 'to_user' ? senderName : null,
     senderUsername: row.direction === 'from_user' ? (session?.username ?? null) : null,
     createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
     deliveredAt: iso(row.deliveredAt),
     errorCode: row.errorCode,
   };
@@ -130,10 +132,13 @@ export async function readConversationMessages(conversationId: string, since?: D
     .leftJoin(sender, eq(sender.id, endpointConversationMessages.senderUserId))
     .where(and(
       eq(endpointConversationMessages.conversationId, conversationId),
-      // created_at is microsecond precision and the cursor a millisecond ISO
-      // string from this API: compare at the cursor's precision, or the last
-      // message seen would come back on every poll.
-      since ? sql`date_trunc('milliseconds', ${endpointConversationMessages.createdAt}) > ${since.toISOString()}::timestamptz` : undefined,
+      // The cursor is the newest updatedAt the console holds. Changed rows come
+      // back (a delivery failure after send), and a fixed lookback covers a row
+      // whose transaction committed after a newer one was already polled
+      // (now() is transaction start). The overlap is deduped by id client-side.
+      since
+        ? sql`${endpointConversationMessages.updatedAt} > ${since.toISOString()}::timestamptz - make_interval(secs => ${CHAT_POLL_LOOKBACK_SECONDS})`
+        : undefined,
     ))
     .orderBy(asc(endpointConversationMessages.createdAt), asc(endpointConversationMessages.id))
     .limit(ENDPOINT_CHAT_LIMITS.maxMessagesPerRead);
@@ -141,6 +146,8 @@ export async function readConversationMessages(conversationId: string, since?: D
 }
 
 export const DEVICE_CONVERSATION_LIST_LIMIT = 20;
+/** Poll overlap for late-committing rows (see readConversationMessages). */
+export const CHAT_POLL_LOOKBACK_SECONDS = 5;
 
 /** The newest conversations on one device, for the device chat panel. */
 export async function listDeviceConversations(args: {

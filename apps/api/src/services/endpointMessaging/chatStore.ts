@@ -97,14 +97,26 @@ export async function markOpenFailed(conversationId: string, messageId: string, 
       .set({ status: 'failed', errorCode, updatedAt: new Date() })
       .where(and(eq(endpointConversations.id, conversationId), eq(endpointConversations.status, 'opening')));
     await tx.update(endpointConversationMessages)
-      .set({ errorCode })
+      .set({ errorCode, updatedAt: new Date() })
       .where(eq(endpointConversationMessages.id, messageId));
   }));
 }
 
 export type InsertTechMessageOutcome =
   | { kind: 'created'; message: EndpointConversationMessageRow }
-  | { kind: 'duplicate'; message: EndpointConversationMessageRow };
+  | { kind: 'duplicate'; message: EndpointConversationMessageRow }
+  | { kind: 'not_open' };
+
+/** A technician message already accepted under this client id, if any. */
+export async function findTechMessage(conversationId: string, clientNonce: string): Promise<EndpointConversationMessageRow | undefined> {
+  const [row] = await inSystem(() => db.select().from(endpointConversationMessages)
+    .where(and(
+      eq(endpointConversationMessages.conversationId, conversationId),
+      eq(endpointConversationMessages.clientNonce, clientNonce),
+    ))
+    .limit(1));
+  return row;
+}
 
 export async function insertTechMessage(input: {
   conversationId: string;
@@ -115,6 +127,15 @@ export async function insertTechMessage(input: {
   body: string;
 }): Promise<InsertTechMessageOutcome> {
   return inSystem(() => db.transaction(async (tx) => {
+    // Lock the conversation and re-check it is still open in the same
+    // transaction: an idle sweep, a close from another tab or a device move
+    // between the caller's read and this insert must win.
+    const [live] = await tx.select({ id: endpointConversations.id })
+      .from(endpointConversations)
+      .where(and(eq(endpointConversations.id, input.conversationId), eq(endpointConversations.status, 'open')))
+      .for('update')
+      .limit(1);
+    if (!live) return { kind: 'not_open' as const };
     const [created] = await tx.insert(endpointConversationMessages).values({
       conversationId: input.conversationId,
       orgId: input.orgId,
@@ -142,14 +163,15 @@ export async function insertTechMessage(input: {
 }
 
 export async function setMessageCommand(messageId: string, commandId: string): Promise<void> {
+  // The latest dispatch wins: a re-dispatched retry replaces a refused one.
   await inSystem(() => db.update(endpointConversationMessages)
-    .set({ commandId: sql`COALESCE(${endpointConversationMessages.commandId}, ${commandId}::uuid)` })
+    .set({ commandId, errorCode: null, updatedAt: new Date() })
     .where(eq(endpointConversationMessages.id, messageId)));
 }
 
 export async function setMessageError(messageId: string, errorCode: string): Promise<EndpointConversationMessageRow | undefined> {
   const [row] = await inSystem(() => db.update(endpointConversationMessages)
-    .set({ errorCode })
+    .set({ errorCode, updatedAt: new Date() })
     .where(eq(endpointConversationMessages.id, messageId))
     .returning());
   return row;

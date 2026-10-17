@@ -102,6 +102,8 @@ export const endpointConversationMessages = pgTable('endpoint_conversation_messa
   errorCode: text('error_code'),
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Bumped on every change after insert; the console poll cursor. */
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   foreignKey({
     columns: [table.conversationId, table.orgId],

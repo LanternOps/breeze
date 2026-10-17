@@ -60,11 +60,11 @@ async function markMessage(conversationId: string, messageId: string, deviceId: 
   );
   const rows = 'delivered' in outcome
     ? await db.update(endpointConversationMessages)
-      .set({ deliveredAt: sql`COALESCE(${endpointConversationMessages.deliveredAt}, now())`, errorCode: null })
+      .set({ deliveredAt: sql`COALESCE(${endpointConversationMessages.deliveredAt}, now())`, errorCode: null, updatedAt: new Date() })
       .where(where)
       .returning({ id: endpointConversationMessages.id })
     : await db.update(endpointConversationMessages)
-      .set({ errorCode: outcome.errorCode })
+      .set({ errorCode: outcome.errorCode, updatedAt: new Date() })
       .where(and(where, isNull(endpointConversationMessages.deliveredAt)))
       .returning({ id: endpointConversationMessages.id });
   return rows.length;

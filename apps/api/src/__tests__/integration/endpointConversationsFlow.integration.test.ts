@@ -302,7 +302,7 @@ describe('endpoint chat flow (real Postgres)', () => {
     const nonce = randomUUID();
     const reply = (over: Partial<Parameters<typeof recordChatReply>[0]> = {}) => asOrg(f.orgA, f.partnerId, () => recordChatReply({
       deviceId: f.devA, conversationId: id, clientNonce: nonce, body: 'Sure, go ahead.', session, ...over,
-    }, async () => ({ allowed: true, retryAfterSeconds: 0 })));
+    }, async () => ({ allowed: true, retryAfterSeconds: 0 }), async () => true));
 
     expect(await reply()).toEqual({ kind: 'accepted', duplicate: false });
     expect(await reply()).toEqual({ kind: 'accepted', duplicate: true });
@@ -315,6 +315,7 @@ describe('endpoint chat flow (real Postgres)', () => {
     expect(await asOrg(f.orgA, f.partnerId, () => recordChatReply(
       { deviceId: f.devA, conversationId: id, clientNonce: randomUUID(), body: 'x', session },
       async () => ({ allowed: false, retryAfterSeconds: 30 }),
+      async () => true,
     ))).toEqual({ kind: 'rate_limited', retryAfterSeconds: 30 });
     expect((await msgs(id)).filter((m) => m.direction === 'from_user')).toHaveLength(2);
 
@@ -337,7 +338,8 @@ describe('endpoint chat flow (real Postgres)', () => {
 
     const all = await asOrg(f.orgA, f.partnerId, () => readConversationMessages(id));
     expect(all).toHaveLength(1);
-    const after = await asOrg(f.orgA, f.partnerId, () => readConversationMessages(id, new Date(all[0]!.createdAt)));
+    // Beyond the poll overlap, nothing unchanged comes back.
+    const after = await asOrg(f.orgA, f.partnerId, () => readConversationMessages(id, new Date(new Date(all[0]!.updatedAt).getTime() + 10_000)));
     expect(after).toEqual([]);
   });
 
@@ -384,5 +386,131 @@ describe('endpoint chat flow (real Postgres)', () => {
 
     const again = await runEndpointChatRetentionOnce(now, async () => {});
     expect(again).toEqual({ idleExpired: 0, opensTimedOut: 0, bodiesPurged: 0, conversationsDeleted: 0 });
+  });
+
+  // ── Review round (#9041) ────────────────────────────────────────────────
+
+  it('a poll since the newest message still returns a message whose delivery failed afterwards', async () => {
+    const id = await openAndConfirm(f, auth);
+    const { deps, dispatched } = fakeDeps();
+    const sent = await asOrg(f.orgA, f.partnerId, () => sendEndpointChatMessage({ auth, deps }, id, { messageId: randomUUID(), body: 'Can you see this?' }));
+    if (!sent.ok) throw new Error('send failed');
+    // The console cursor is the newest change it has seen.
+    const cursor = new Date(sent.message.updatedAt);
+    await new Promise((r) => setTimeout(r, 20));
+    await asOrg(f.orgA, f.partnerId, () => handleChatMessageResult({
+      command: { payload: dispatched[0]!.payload } as never, commandId: randomUUID(), resolvedDeviceId: f.devA,
+      result: { status: 'failed', error: 'chat_requires_assist' },
+    } as never));
+    const polled = await asOrg(f.orgA, f.partnerId, () => readConversationMessages(id, cursor));
+    expect(polled.find((m) => m.id === sent.message.id)).toMatchObject({ errorCode: 'chat_requires_assist', deliveredAt: null });
+  });
+
+  it('a poll overlaps the cursor, so a row that committed late is not skipped', async () => {
+    const id = await openAndConfirm(f, auth);
+    const all = await asOrg(f.orgA, f.partnerId, () => readConversationMessages(id));
+    const last = all[all.length - 1]!;
+    // A cursor up to the lookback past a row still returns it (merge dedupes by id).
+    const ahead = new Date(new Date(last.updatedAt).getTime() + 2_000);
+    expect((await asOrg(f.orgA, f.partnerId, () => readConversationMessages(id, ahead))).map((m) => m.id)).toContain(last.id);
+  });
+
+  it('retrying a refused send with the same client id re-dispatches it instead of replaying the failure', async () => {
+    const id = await openAndConfirm(f, auth);
+    const clientId = randomUUID();
+    const refused = fakeDeps({ dispatch: async () => ({ error: 'Device is offline' }) });
+    expect(await asOrg(f.orgA, f.partnerId, () => sendEndpointChatMessage({ auth, deps: refused.deps }, id, { messageId: clientId, body: 'hello?' })))
+      .toMatchObject({ ok: false, body: { error: 'device_offline', message: { errorCode: 'device_offline' } } });
+    const { deps, dispatched } = fakeDeps();
+    const retry = await asOrg(f.orgA, f.partnerId, () => sendEndpointChatMessage({ auth, deps }, id, { messageId: clientId, body: 'hello?' }));
+    expect(retry).toMatchObject({ ok: true, message: { errorCode: null } });
+    expect(dispatched.map((d) => d.type)).toEqual(['chat_message']);
+    expect((await msgs(id)).filter((m) => m.clientNonce === clientId)).toHaveLength(1);
+    // A retry of a DELIVERED message never re-sends it.
+    await asOrg(f.orgA, f.partnerId, () => handleChatMessageResult({
+      command: { payload: dispatched[0]!.payload } as never, commandId: randomUUID(), resolvedDeviceId: f.devA, result: { status: 'completed' },
+    } as never));
+    const again = fakeDeps();
+    await asOrg(f.orgA, f.partnerId, () => sendEndpointChatMessage({ auth, deps: again.deps }, id, { messageId: clientId, body: 'hello?' }));
+    expect(again.dispatched).toHaveLength(0);
+  });
+
+  it('an idempotent retry of an accepted message consumes no rate-limit budget', async () => {
+    const id = await openAndConfirm(f, auth);
+    const clientId = randomUUID();
+    let calls = 0;
+    const { deps } = fakeDeps({ messageLimit: async () => { calls += 1; return { allowed: true, retryAfterSeconds: 0 }; } });
+    await asOrg(f.orgA, f.partnerId, () => sendEndpointChatMessage({ auth, deps }, id, { messageId: clientId, body: 'x' }));
+    await asOrg(f.orgA, f.partnerId, () => sendEndpointChatMessage({ auth, deps }, id, { messageId: clientId, body: 'x' }));
+    expect(calls).toBe(1);
+  });
+
+  it('a technician message never lands in a chat that closed after the status read', async () => {
+    const { insertTechMessage } = await import('../../services/endpointMessaging/chatStore');
+    const id = await openAndConfirm(f, auth);
+    await sys(() => db.update(endpointConversations).set({ status: 'expired' }).where(eq(endpointConversations.id, id)));
+    const out = await insertTechMessage({ conversationId: id, orgId: f.orgA, deviceId: f.devA, clientNonce: randomUUID(), senderUserId: f.userId, body: 'late' });
+    expect(out).toEqual({ kind: 'not_open' });
+    expect(await msgs(id)).toHaveLength(1);
+  });
+
+  it('a chat_message result from another device changes nothing', async () => {
+    const id = await openAndConfirm(f, auth);
+    const { deps, dispatched } = fakeDeps();
+    const sent = await asOrg(f.orgA, f.partnerId, () => sendEndpointChatMessage({ auth, deps }, id, { messageId: randomUUID(), body: 'mine' }));
+    if (!sent.ok) throw new Error('send failed');
+    for (const result of [{ status: 'failed', error: 'chat_window_failed' }, { status: 'completed' }]) {
+      await asOrg(f.orgA, f.partnerId, () => handleChatMessageResult({
+        command: { payload: dispatched[0]!.payload } as never, commandId: randomUUID(), resolvedDeviceId: f.devA2, result,
+      } as never));
+    }
+    expect((await msgs(id)).find((m) => m.id === sent.message.id)).toMatchObject({ errorCode: null, deliveredAt: null });
+  });
+
+  it('a late chat_open success after the open timeout leaves the conversation failed', async () => {
+    const { deps, dispatched } = fakeDeps();
+    const input = opened(f);
+    await asOrg(f.orgA, f.partnerId, () => openEndpointChat({ auth, deps }, input));
+    await runEndpointChatRetentionOnce(new Date(Date.now() + 3 * 60_000), async () => {});
+    expect(await conv(input.conversationId)).toMatchObject({ status: 'failed', errorCode: 'open_timeout' });
+    await asOrg(f.orgA, f.partnerId, () => handleChatOpenResult({
+      command: { payload: dispatched[0]!.payload } as never, commandId: randomUUID(), resolvedDeviceId: f.devA,
+      result: { status: 'completed' }, stdout: '{}',
+    } as never));
+    expect(await conv(input.conversationId)).toMatchObject({ status: 'failed', errorCode: 'open_timeout' });
+  });
+
+  it('a user reply resets the idle timer, so an active chat is never expired', async () => {
+    const id = await openAndConfirm(f, auth);
+    await sys(() => db.update(endpointConversations).set({ lastActivityAt: new Date(Date.now() - 31 * 60_000) }).where(eq(endpointConversations.id, id)));
+    expect(await asOrg(f.orgA, f.partnerId, () => recordChatReply(
+      { deviceId: f.devA, conversationId: id, clientNonce: randomUUID(), body: 'still here', session: { username: 'alice' } },
+      async () => ({ allowed: true, retryAfterSeconds: 0 }),
+      async () => true,
+    ))).toEqual({ kind: 'accepted', duplicate: false });
+    const swept = await runEndpointChatRetentionOnce(new Date(), async () => {});
+    expect(swept.idleExpired).toBe(0);
+    expect(await conv(id)).toMatchObject({ status: 'open' });
+  });
+
+  it('user replies stop when the rollout flag is switched off, and a duplicate reply costs no budget', async () => {
+    const id = await openAndConfirm(f, auth);
+    const nonce = randomUUID();
+    let limitCalls = 0;
+    const limit = async () => { limitCalls += 1; return { allowed: true, retryAfterSeconds: 0 }; };
+    const reply = (enabled: boolean, clientNonce = nonce) => asOrg(f.orgA, f.partnerId, () => recordChatReply(
+      { deviceId: f.devA, conversationId: id, clientNonce, body: 'hi', session: { username: 'alice' } }, limit, async () => enabled,
+    ));
+    expect(await reply(true)).toEqual({ kind: 'accepted', duplicate: false });
+    expect(await reply(true)).toEqual({ kind: 'accepted', duplicate: true });
+    expect(limitCalls).toBe(1);
+    expect(await reply(false, randomUUID())).toEqual({ kind: 'replies_disabled' });
+  });
+
+  it('close reports whether the agent was told', async () => {
+    const id = await openAndConfirm(f, auth);
+    const offline = fakeDeps({ dispatch: async () => ({ error: 'Device is offline' }) });
+    expect(await asOrg(f.orgA, f.partnerId, () => closeEndpointChat({ auth, deps: offline.deps }, id)))
+      .toMatchObject({ ok: true, alreadyClosed: false, agentNotified: false });
   });
 });
