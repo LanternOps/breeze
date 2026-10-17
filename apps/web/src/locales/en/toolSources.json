@@ -1,9 +1,9 @@
 {
   "title": "Tool Sources",
-  "subtitle": "Connect an MCP server so its tools become available to AI chat, with per-tool risk tiers and approvals.",
+  "subtitle": "Connect an MCP server or an OpenAPI (REST) API so its tools become available to AI chat, with per-tool risk tiers and approvals.",
   "empty": {
     "title": "No tool sources yet",
-    "body": "Add an MCP server to give the assistant read and write access to the systems your team already uses."
+    "body": "Add an MCP server or an OpenAPI API to give the assistant read and write access to the systems your team already uses."
   },
   "list": {
     "add": "Add source",
@@ -24,9 +24,14 @@
     "slugHelp": "Prefixes every tool from this source, for example hudu__get_asset. Lowercase letters and digits only.",
     "kind": "Kind",
     "kindMcp": "MCP server",
-    "kindOpenapiSoon": "OpenAPI (coming in a later release)",
+    "kindOpenapi": "OpenAPI (REST)",
     "endpoint": "Endpoint URL",
+    "endpointMcp": "MCP server URL",
+    "endpointOpenapi": "API base URL",
     "endpointHelp": "Use HTTPS, or HTTP when private egress is enabled on a self-hosted server. Credentials are sent only to this origin.",
+    "endpointHelpOpenapi": "Every operation is called against this URL, and credentials are sent only to its origin. Server URLs listed inside the document are ignored.",
+    "specUrl": "OpenAPI document URL",
+    "specUrlHelp": "Where Breeze reads the API description. The credential is sent with this request only when the document is served from the same origin as the API base URL.",
     "authKind": "Authentication",
     "rateLimit": "Calls per minute",
     "scope": "Availability",
@@ -62,9 +67,24 @@
     "deleteTitle": "Delete this tool source?",
     "deleteConfirm": "Its discovered tools stop being offered to AI chat immediately, and its stored credential is destroyed. This cannot be undone.",
     "endpoint": "Endpoint",
+    "specUrl": "OpenAPI document",
     "lastDiscovered": "Last discovered",
     "discovering": "Discovering tools…",
     "loadFailed": "Could not load this tool source.",
+    "skippedHeading": "Skipped operations",
+    "skippedBody": "These operations were not turned into tools. Breeze skips what it cannot call safely rather than guessing.",
+    "skippedShowing": "Showing {{shown}} of {{total}}",
+    "serverOriginWarning": "The document lists server URLs on other origins. They were ignored — operations are only sent to the API base URL.",
+    "skipReasons": {
+      "unsupported_method": "Unsupported HTTP method (OPTIONS/TRACE)",
+      "unsupported_path": "Path cannot be called safely",
+      "unsupported_param_style": "Unsupported parameter style or location (cookie, deepObject, …)",
+      "unsupported_request_body": "Request body is not JSON",
+      "unsupported_security_location": "Needs a credential in the query string, a cookie, OpenID Connect or mutual TLS",
+      "schema_too_large": "Generated input schema is larger than 64 KB",
+      "too_many_parameters": "More than 100 parameters",
+      "name_not_addressable": "Name does not fit the 64-character tool-name limit"
+    },
     "status": {
       "active": "Active",
       "error": "Error",
@@ -75,6 +95,8 @@
     "heading": "Discovered tools",
     "empty": "No tools discovered yet. Run a discovery to fetch this server's tool list.",
     "name": "Tool",
+    "method": "Method",
+    "path": "Path",
     "description": "Description",
     "proposedTier": "Proposed",
     "tier": "Risk tier",

@@ -1,9 +1,9 @@
 {
   "title": "Fontes de ferramentas",
-  "subtitle": "Conecte um servidor MCP para que suas ferramentas fiquem disponíveis no chat de IA, com níveis de risco e aprovações por ferramenta.",
+  "subtitle": "Conecte um servidor MCP ou uma API OpenAPI (REST) para que suas ferramentas fiquem disponíveis no chat de IA, com níveis de risco e aprovações por ferramenta.",
   "empty": {
     "title": "Ainda não há fontes de ferramentas",
-    "body": "Adicione um servidor MCP para dar ao assistente acesso de leitura e gravação aos sistemas que sua equipe já usa."
+    "body": "Adicione um servidor MCP ou uma API OpenAPI para dar ao assistente acesso de leitura e gravação aos sistemas que sua equipe já usa."
   },
   "list": {
     "add": "Adicionar fonte",
@@ -24,9 +24,14 @@
     "slugHelp": "É adicionado como prefixo a cada ferramenta desta fonte, por exemplo hudu__get_asset. Somente letras minúsculas e dígitos.",
     "kind": "Tipo",
     "kindMcp": "Servidor MCP",
-    "kindOpenapiSoon": "OpenAPI (disponível em uma versão futura)",
+    "kindOpenapi": "OpenAPI (API REST)",
     "endpoint": "URL do endpoint",
+    "endpointMcp": "URL do servidor MCP",
+    "endpointOpenapi": "URL base da API",
     "endpointHelp": "Use HTTPS ou HTTP quando o acesso de saída a redes privadas estiver habilitado em um servidor auto-hospedado. As credenciais são enviadas apenas para esta origem.",
+    "endpointHelpOpenapi": "Cada operação é chamada nesta URL, e as credenciais são enviadas apenas para a origem dela. As URLs de servidor listadas dentro do documento são ignoradas.",
+    "specUrl": "URL do documento OpenAPI",
+    "specUrlHelp": "Onde o Breeze lê a descrição da API. A credencial é enviada com esta requisição somente quando o documento é servido da mesma origem que a URL base da API.",
     "authKind": "Autenticação",
     "rateLimit": "Chamadas por minuto",
     "scope": "Disponibilidade",
@@ -62,9 +67,24 @@
     "deleteTitle": "Excluir esta fonte de ferramentas?",
     "deleteConfirm": "Suas ferramentas descobertas deixam de ser oferecidas ao chat de IA imediatamente, e sua credencial armazenada é destruída. Isso não pode ser desfeito.",
     "endpoint": "Ponto de conexão",
+    "specUrl": "Documento OpenAPI",
     "lastDiscovered": "Última descoberta",
     "discovering": "Descobrindo ferramentas…",
     "loadFailed": "Não foi possível carregar esta fonte de ferramentas.",
+    "skippedHeading": "Operações ignoradas",
+    "skippedBody": "Estas operações não foram transformadas em ferramentas. O Breeze ignora o que não consegue chamar com segurança em vez de adivinhar.",
+    "skippedShowing": "Mostrando {{shown}} de {{total}}",
+    "serverOriginWarning": "O documento lista URLs de servidor em outras origens. Elas foram ignoradas: as operações são enviadas apenas para a URL base da API.",
+    "skipReasons": {
+      "unsupported_method": "Método HTTP não suportado (OPTIONS/TRACE)",
+      "unsupported_path": "O caminho não pode ser chamado com segurança",
+      "unsupported_param_style": "Estilo ou local de parâmetro não suportado (cookie, deepObject, …)",
+      "unsupported_request_body": "O corpo da requisição não é JSON",
+      "unsupported_security_location": "Exige uma credencial na query string, em um cookie, OpenID Connect ou TLS mútuo",
+      "schema_too_large": "O esquema de entrada gerado é maior que 64 KB",
+      "too_many_parameters": "Mais de 100 parâmetros",
+      "name_not_addressable": "O nome não cabe no limite de 64 caracteres para nomes de ferramenta"
+    },
     "status": {
       "active": "Ativa",
       "error": "Erro",
@@ -75,6 +95,8 @@
     "heading": "Ferramentas descobertas",
     "empty": "Nenhuma ferramenta descoberta ainda. Execute uma descoberta para buscar a lista de ferramentas deste servidor.",
     "name": "Ferramenta",
+    "method": "Método",
+    "path": "Caminho",
     "description": "Descrição",
     "proposedTier": "Proposto",
     "tier": "Nível de risco",

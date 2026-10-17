@@ -1,9 +1,9 @@
 {
   "title": "Araç Kaynakları",
-  "subtitle": "Araçlarının Yapay Zeka sohbetinde, araç başına risk seviyeleri ve onaylarla kullanılabilir hale gelmesi için bir MCP sunucusu bağlayın.",
+  "subtitle": "Araçlarının Yapay Zeka sohbetinde, araç başına risk seviyeleri ve onaylarla kullanılabilir hale gelmesi için bir MCP sunucusu veya OpenAPI (REST) API’si bağlayın.",
   "empty": {
     "title": "Henüz araç kaynağı yok",
-    "body": "Asistana ekibinizin zaten kullandığı sistemlere okuma ve yazma erişimi vermek için bir MCP sunucusu ekleyin."
+    "body": "Asistana ekibinizin zaten kullandığı sistemlere okuma ve yazma erişimi vermek için bir MCP sunucusu veya OpenAPI API’si ekleyin."
   },
   "list": {
     "add": "Kaynak ekle",
@@ -24,9 +24,14 @@
     "slugHelp": "Bu kaynaktaki her aracın önüne eklenir, örneğin hudu__get_asset. Yalnızca küçük harf ve rakam.",
     "kind": "Tür",
     "kindMcp": "MCP sunucusu",
-    "kindOpenapiSoon": "OpenAPI (sonraki bir sürümde gelecek)",
+    "kindOpenapi": "OpenAPI (REST API)",
     "endpoint": "Uç nokta URL’si",
+    "endpointMcp": "MCP sunucusu URL’si",
+    "endpointOpenapi": "API temel URL’si",
     "endpointHelp": "HTTPS kullanın veya kendi sunucunuzda özel ağlara giden bağlantılara izin veriliyorsa HTTP kullanın. Kimlik bilgileri yalnızca bu kaynağa gönderilir.",
+    "endpointHelpOpenapi": "Her işlem bu URL’ye karşı çağrılır ve kimlik bilgileri yalnızca bu URL’nin kaynağına gönderilir. Belgenin içinde listelenen sunucu URL’leri yok sayılır.",
+    "specUrl": "OpenAPI belgesi URL’si",
+    "specUrlHelp": "Breeze’in API açıklamasını okuduğu yer. Kimlik bilgisi bu istekle yalnızca belge, API temel URL’siyle aynı kaynaktan sunuluyorsa gönderilir.",
     "authKind": "Kimlik doğrulama",
     "rateLimit": "Dakikadaki çağrı sayısı",
     "scope": "Kullanılabilirlik",
@@ -62,9 +67,24 @@
     "deleteTitle": "Bu araç kaynağı silinsin mi?",
     "deleteConfirm": "Keşfedilen araçları hemen Yapay Zeka sohbetine sunulmaktan çıkar ve kayıtlı kimlik bilgisi yok edilir. Bu işlem geri alınamaz.",
     "endpoint": "Uç nokta",
+    "specUrl": "OpenAPI belgesi",
     "lastDiscovered": "Son keşif",
     "discovering": "Araçlar keşfediliyor…",
     "loadFailed": "Bu araç kaynağı yüklenemedi.",
+    "skippedHeading": "Atlanan işlemler",
+    "skippedBody": "Bu işlemler araca dönüştürülmedi. Breeze, güvenli biçimde çağıramadığı şeyleri tahmin yürütmek yerine atlar.",
+    "skippedShowing": "{{total}} içinden {{shown}} gösteriliyor",
+    "serverOriginWarning": "Belge, başka kaynaklardaki sunucu URL’lerini listeliyor. Bunlar yok sayıldı; işlemler yalnızca API temel URL’sine gönderilir.",
+    "skipReasons": {
+      "unsupported_method": "Desteklenmeyen HTTP yöntemi (OPTIONS/TRACE)",
+      "unsupported_path": "Yol güvenli biçimde çağrılamıyor",
+      "unsupported_param_style": "Desteklenmeyen parametre stili veya konumu (çerez, deepObject, …)",
+      "unsupported_request_body": "İstek gövdesi JSON değil",
+      "unsupported_security_location": "Sorgu dizesinde, çerezde, OpenID Connect veya karşılıklı TLS ile kimlik bilgisi gerektiriyor",
+      "schema_too_large": "Oluşturulan girdi şeması 64 KB’tan büyük",
+      "too_many_parameters": "100’den fazla parametre",
+      "name_not_addressable": "Ad, 64 karakterlik araç adı sınırına sığmıyor"
+    },
     "status": {
       "active": "Etkin",
       "error": "Hata",
@@ -75,6 +95,8 @@
     "heading": "Keşfedilen araçlar",
     "empty": "Henüz araç keşfedilmedi. Bu sunucunun araç listesini almak için bir keşif çalıştırın.",
     "name": "Araç",
+    "method": "Yöntem",
+    "path": "Yol",
     "description": "Açıklama",
     "proposedTier": "Önerilen",
     "tier": "Risk seviyesi",
