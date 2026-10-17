@@ -35,6 +35,8 @@ The #8277 design remains the product source of truth. These are implementation-s
 
 ## Decision record: do not reopen
 
+The record of OD1 to OD5 is the owner decision comment in LanternOps/breeze#7567 (2026-10-15). Spec §13 of #8277 is not filled in by this file.
+
 ### Confirmed by the maintainer
 
 - #8277 remains the approved Phase 2 spec; this file is an implementation plan, not a second spec.
@@ -191,7 +193,7 @@ Implementation choice for this plan:
 - centralize contrast math and thresholds in one module and cover it with shared fixture vectors on API and device sides;
 - reject invalid/unreadable values on write; if a persisted value is invalid on-device, drop only that field and use the Breeze default.
 
-The exact contrast threshold is an implementation detail to be reviewed in the plan/implementation PR; changing it must not change storage hierarchy, tenancy, or wire semantics.
+Default threshold: WCAG AA, 4.5:1 for body text. The shared fixture vectors above test this value on the API and device sides. Changing it must not change storage hierarchy, tenancy, or wire semantics.
 
 ## Helper localization and runtime rendering
 
@@ -318,7 +320,7 @@ If the current editor lacks enough read metadata to show inheritance source, min
 ### Web / docs
 
 - Modify `apps/web/src/components/configurationPolicies/featureTabs/HelperTab.tsx` + tests.
-- Add editor localization strings to the existing web catalogs.
+- Add editor localization strings to the web catalogs under `apps/web/src/locales/`: `en`, `de-DE`, `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR` and `tr-TR`. `localeParity` must pass for every directory.
 - Update Helper/runtime-branding docs after implementation; do not document deferred native assets as available.
 
 ## Wave plan
