@@ -13,6 +13,8 @@ const ingestRollbackObservationMock = vi.hoisted(() => vi.fn());
 // manifest-trust-keyset fetch happens AFTER the org DB context closes
 // (the #1105 pool-poison fix). Reset per test.
 const callOrder: string[] = [];
+// #8997 — how many mocked savepoints (withDbTransaction) are currently open.
+const savepointState = { depth: 0 };
 // #4673 W02 — org contexts opened by the heartbeat's self-managed wrap.
 const orgDbContexts: Array<Record<string, unknown>> = [];
 
@@ -90,7 +92,12 @@ vi.mock('../../db', () => ({
   // in savepoints; a savepoint is a pass-through here.
   withDbTransaction: async (fn: () => Promise<unknown>) => {
     callOrder.push('savepoint');
-    return fn();
+    savepointState.depth += 1;
+    try {
+      return await fn();
+    } finally {
+      savepointState.depth -= 1;
+    }
   },
 }));
 
@@ -5058,6 +5065,19 @@ describe('POST /agents/:id/heartbeat — retainState emission (#8616)', () => {
     expect('retainState' in body).toBe(false);
   });
 
+  it('#8997: the remote-access resolver runs inside its own savepoint so a SQL failure cannot poison the org transaction', async () => {
+    const { resolveRemoteAccessForDevice } = await import('../../services/remoteAccessPolicy');
+    let depthAtCall = -1;
+    vi.mocked(resolveRemoteAccessForDevice).mockImplementationOnce((async () => {
+      depthAtCall = savepointState.depth;
+      throw new Error('permission denied for table device_group_memberships');
+    }) as never);
+
+    const v1 = await beat(V1);
+    expect(depthAtCall).toBeGreaterThan(0);
+    expect(v1.retainState).toContain('remoteManagement');
+  });
+
   it('remote-access resolver throws: v1 retains remoteManagement, legacy keeps the absent key, Sentry is told', async () => {
     const { resolveRemoteAccessForDevice } = await import('../../services/remoteAccessPolicy');
     const helpers = await import('./helpers');
@@ -5288,8 +5308,9 @@ describe('POST /agents/:id/heartbeat — shared post-commit policy context (#805
     // No onedrive link in the set → no OneDrive DB phase at all.
     expect(helpers.loadOnedriveHelperConfigPlan).not.toHaveBeenCalled();
     // hierarchy/set savepoint + the policy probe's and the UniFi collector
-    // probe's (#7970) cache-miss savepoints; the helper resolves in memory.
-    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(3);
+    // probe's (#7970) cache-miss savepoints, plus the remote-access policy read's
+    // own savepoint (#8997); the helper resolves in memory.
+    expect(callOrder.filter((e) => e === 'savepoint')).toHaveLength(4);
   });
 
   it('with a policy set holding a OneDrive settings link, the OneDrive DB phase runs with the set, in a savepoint, before monitoring (#8142)', async () => {
