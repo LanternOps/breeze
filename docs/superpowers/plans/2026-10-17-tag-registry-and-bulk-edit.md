@@ -56,7 +56,8 @@ Executors read the relevant spec sections before each wave.
 - Advisory lock class for tag slugs: `pg_advisory_xact_lock(1000258, hashtext(<partner_id>::text || ':' || <slug>))`
   (custom fields use 1000257; partner-export 1000200–1000202; 1000301–1000302 taken).
 - Web mutations go through `runAction`; bulk calls **without** `successMessage` (B§4.5).
-- New UI strings in every locale under `apps/web/src/lib/i18n/` (localeParity).
+- New UI strings in all eight locales: `apps/web/src/locales/<locale>/<namespace>.json` (`de-DE`, `en`,
+  `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR`, `tr-TR`; `lib/i18n/localeParity.test.ts`).
 - No customer names, hostnames or IPs in code, tests, docs or PR text.
 - Audit actions: `device_tag.created|updated|merged|deleted|promoted`, `device.tags.update`
   (bulk, `details: { added, removed, bulk: true, bulkId }`), `device.custom_field.update`
@@ -108,7 +109,7 @@ contract tests the wave must turn (or keep) green; integration suites run **only
 | 6 | **8833 W1** bulk routes on a shared helper | `feat(devices): bulk edit tags and custom fields API (#8833 W1)` | 2 (#8832 shipped) | none | per-org tx, ascending org UUID | selfManagedDbContextRoutes, mount-order, integration bulk suite |
 | 7 | **8833 W2** web: bulk menu + dialogs + shared custom-field editor | `feat(web): bulk edit tags and custom fields (#8833 W2)` | 6 (W03a for colored suggestions, optional) | none | — | no-silent-mutations, bulk gating contract (`DeviceList.test.tsx`), localeParity |
 | 8 | **8833 W3** `manage_tags` `deviceIds[]`, Tier 3 | `feat(ai): bulk manage_tags through the shared writer (#8833 W3)` | 6 | none | MCP single-org | aiToolsDeviceScope, aiToolsSiteScope, aiToolIndex cap, guardrail tier contracts |
-| 9 | **8837 W04** UI: `/settings/tags`, `TagPicker`, colored chips | `feat(web): tag settings page and picker (W04)` | 3, 4, 7 | none | — | settingsPageRegistry, no-silent-mutations, localeParity, routeScope |
+| 9 | **8837 W04** UI: `/settings/tags`, `TagPicker`, colored chips | `feat(web): tag settings page and picker (W04)` | 3, 4, 7 | none | — | settingsPageRegistry, no-silent-mutations, localeParity (routeScope: covered by the `/settings` catch-all, `lib/routeScope.ts:165`) |
 | 10 | **8833 W4** manual-asset bulk tags | `feat(devices): bulk tags on manual assets (#8833 W4)` | 6, 9 | none | manual-asset authz | integration bulk suite |
 | 11 | **8837 W05a** restricted tags: column, permission, write protection, consumer hardening | `feat(tags): restricted tags (W05a)` | 4, 5 | `2026-12-30-190200-device-tags-restricted.sql` | column on dual-axis table | tenant-export-policy (new column), rls-coverage, permission catalog parity |
 | 12 | **8837 W05b** lift execution gates for restricted-tag rules | `feat(tags): restricted tags as execution targets (W05b)` | 11 | none | execution gating | executionTargetGating suites, filterEngine contracts |
@@ -122,12 +123,22 @@ they still **merge** in the order above. Waves 7, 9 and 10 each touch `DeviceLis
 
 1. Tag advisory locks, class `1000258`, keys sorted ascending by `(partner_id, slug)`. **Always before
    any partner-export lock in the same transaction.**
-2. Partner-export partner locks, ascending. `devices` is **configuration-family** material
-   (`migrationPartnerExportLocks.test.ts:191-213`), so a transaction that writes `devices` takes the
-   configuration-family helper (partners **exclusive**, then orgs under them); `discovered_assets`
-   and other material-family tables take partners **shared**. Use the exact helpers the
-   `devices` / `discovered_assets` UPDATE triggers call — the W02b Explore sweep names them in the PR.
-3. Partner-export org locks, ascending, over the **union** of every org any later statement touches.
+2–3. Partner-export locks, ascending, over the **union** of every org any later statement touches.
+   **Request path:** call `public.breeze_partner_export_lock_orgs_exclusive(ARRAY[...])`
+   (`2026-07-22-partner-export-lock-upgrade-hardening.sql:71-123`), which takes partners shared and then
+   the org locks (class 1000201) ascending. That is exactly what the tags-only UPDATE triggers request:
+   `breeze_partner_export_devices_update()` (`2026-07-18-partner-export-org-locks.sql:310,339`) and
+   `breeze_partner_export_site_child_update()` for `discovered_assets`. The configuration-family trigger
+   on `devices` (`breeze_partner_export_z_custom_values_update`) fires only when `custom_fields` or
+   `org_id` changes, never on a tags-only update. `manual_assets` has no partner-export trigger.
+   **Migrations:** `migrationPartnerExportLocks.test.ts:191-260` classifies `devices` as
+   configuration-family, so a migration writing `devices` must prelock partners **exclusive** then orgs
+   under exclusive partners (the configuration helpers in
+   `2026-07-24-partner-export-configuration-material-state.sql:44-100`); `discovered_assets` takes the
+   material shape (partners shared, orgs exclusive). The W02b backfill integration test proves the
+   tags-only trigger accepts the exclusive prelock (an already-held exclusive partner lock satisfies a
+   later shared request in the same transaction); if the hierarchy guard rejects it, use the reviewed
+   `-- @partner-export-locks: pre-acquired <reason>` line and record why in the PR.
 4. Row locks (`SELECT … FOR UPDATE`), then writes.
 
 Every tag writer takes steps 1–3 explicitly before its first row lock — including single-org writers
@@ -277,8 +288,10 @@ TypeScript under the row lock (PD-7).
   export or row locks before tags. Fixed by the no-shadow trigger skip, `prepareTagReplace` first in
   `PATCH`, and early slug locks in the move (§2.1). Every tag writer now prelocks export locks before
   row locks.
-- `devices` is configuration-family export material: migrations and request-path prelocks use the
-  configuration-family helpers (§2.1, Task 2.5).
+- `devices` is configuration-family export material for **migrations** (the lint rejects shared-only
+  prelocks); on the request path the tags-only triggers take partners shared + orgs exclusive, so
+  request-path prelocks use `breeze_partner_export_lock_orgs_exclusive` (§2.1, Task 2.5; refined by the
+  Explore verification).
 - Normalise before **composition** (AI policy intersection), canonicalise stored values when finding
   references, and fail closed when a configured value normalises to nothing (Task 2.4, Review Focus 5).
 - Whole-array request bodies must not reject a legacy 60→59 save (`tagReplaceListSchema`).
@@ -292,6 +305,11 @@ TypeScript under the row lock (PD-7).
 - W05: drop `contains` from execution-safe operators, recheck at every downstream dispatch, fix the
   alert reconcile, cover direct partitioner and inline-filter gates; W05b stays closed until all are done.
 - Backfill reports truncations at 50 characters (Task 1.3).
+
+**Path and symbol verification:** an independent read-only sweep checked every cited path, symbol
+and line on `838db35c67`; its corrections are applied (locale path, move callers, lock helpers per
+trigger, permission seeding, merge executor file, two extra `tags: []` write sites, extra reader and
+config-writer sites, line numbers).
 
 **Codex recommendation not adopted as-is:** "document the ownership deviation in the approved spec".
 The spec was approved by the owner; this plan records the deviation (PD-3, OPEN-1) instead of editing
@@ -396,9 +414,12 @@ it('breeze_legacy_tag_slug matches the shared fixture table')   // PD-6 parity, 
 
 **Interfaces:**
 - orgMergeRegistry: `device_tags: { kind: 'custom', note: … }` with a custom executor registered the
-  way `custom_field_definitions` is (`orgMergeRegistry.ts:680`): for each loser org row whose slug the
-  survivor org also owns, record `{ slug, name, color, description }` in the merge report / audit
-  details, delete it, then repoint the rest. Survivor rows win (R§4.4 "explicit survivor
+  way `custom_field_definitions` is — registry note `orgMergeRegistry.ts:680`, executor
+  `mergeCustomFieldDefinitions` in `orgMergeCustomExecutors.ts:798`, registered in `CUSTOM_EXECUTORS`
+  (`:1826`) with a preview entry in `CUSTOM_WOULD_DROP_COUNTS` (`:1949`). The executor returns
+  `{ moved, dropped, notes: string[] }` (`orgMerge.ts:770`): for each loser org row whose slug the
+  survivor org also owns, append one note `device_tags: dropped <slug> (name, color, description)` to
+  `notes`, delete it, then repoint the rest. Survivor rows win (R§4.4 "explicit survivor
   precedence"). A plain `repoint-dedupe` would delete the loser metadata **without** reporting it
   (`orgMergeExecutors.ts:64`, Codex). Partner-wide rows have `org_id NULL` and are never touched; org
   merge is same-partner only, so no cross-partner shadowing. The preview's would-drop count uses the
@@ -470,6 +491,8 @@ tenancy shape, every registration, and the PD-3 deviation called out at the top.
 **Files:**
 - Create: `packages/shared/src/utils/tags.ts`, `packages/shared/src/utils/tags.test.ts`
 - Create: `packages/shared/src/utils/__fixtures__/tagSlugFixtures.ts` (shared with the SQL parity test)
+- Modify: `packages/shared/src/utils/index.ts` (`export * from './tags'`; consumers import from
+  `@breeze/shared` — the package exports map has no `./utils` subpath)
 - Create: `packages/shared/src/validators/tags.ts`; Modify: `packages/shared/src/validators/index.ts`
   (re-export; `updateDeviceSchema.tags` (`:173`, 20 today) → `tagReplaceListSchema`; the 50 cap is
   server-side on the final array, R-OD-8)
@@ -588,7 +611,8 @@ it('registration and the array write roll back together when the UPDATE fails')
 - [ ] **Step 3: Run both — expect FAIL.**
 - [ ] **Step 4: Implement.** `applyTagDelta`, in this order (§2.1): normalise `add` strictly and
   `remove` with `legacyTagSlug` (empties → 400 at the caller); `lockTagSlugs(partnerId, add slugs)`;
-  explicit partner-export prelock for this org (the helpers the table's UPDATE trigger uses);
+  explicit `breeze_partner_export_lock_orgs_exclusive(ARRAY[orgId])` for `devices` and
+  `discovered_assets` (none for `manual_assets`, which has no partner-export trigger);
   locked read via
   `WHERE (id, site_id) IN (SELECT * FROM unnest(${sqlUuidArray(ids)}, ${sqlUuidArray(siteIds)}))` (a
   `null` siteId — manual assets without a site — compares with `IS NOT DISTINCT FROM`);
@@ -625,6 +649,8 @@ it('registration and the array write roll back together when the UPDATE fails')
   `devices`, `manualAssets` or `discoveredAssets` (or the raw table names) **and** matches a tag-column
   write (`/\bSET\s+tags\s*=/i`, `/\.\s*tags\s*=(?!=)/`, or `tags:` inside an `.insert(...).values(`/`.update(...).set(`
   object) must import from `services/deviceTags` or be in `TAG_WRITE_ALLOWLIST` with a reason.
+  Allowlist from the start: `routes/agents/enrollment.ts:~901` and `routes/devices/provision.ts:~215`
+  (insert `tags: []` for a new device — nothing to normalise).
   Fixture files prove each pattern fires.
 
 - [ ] **Step 1: Write failing route tests** — for each path: `['Finance', 'finance ']` stores
@@ -644,13 +670,22 @@ it('registration and the array write roll back together when the UPDATE fails')
 - Modify (each reader that compares a configured tag value with the arrays — the Explore sweep in
   this wave confirms the list): `services/filterEngine.ts` (tag conditions), `routes/tags.ts`
   (`GET /tags/devices?tag=`), `services/policyEvaluationService.ts` (`targets.tags`, ~1374-1385),
-  `services/aiAgents/runService.ts` (trigger tags, ~643), `services/aiAgents/effectivePolicy.ts`,
-  `services/aiAgents/runResourceScope.ts`, `services/aiAgents/alertVerdictSubscriber.ts`,
-  `services/aiAgents/metricAnomalySubscriber.ts`, `services/aiGuardrails.ts` (protected `deviceTags`,
-  ~2358-2363), `routes/backup/criticality.ts` (`BACKUP_CRITICAL_DEVICE_TAGS`), `services/automationRuntime.ts`
+  `routes/tags.ts:~212` (manual assets), `services/aiAgents/runService.ts` (trigger tags, ~643 and
+  ~736), `services/aiAgents/effectivePolicy.ts` (union ~238, intersection ~252),
+  `services/aiAgents/runResourceScope.ts` (~49), `services/aiGuardrails.ts` (protected `deviceTags`,
+  ~2401-2407; lowercases today but does not map spaces), `routes/backup/criticality.ts` (~46, ~59,
+  `BACKUP_CRITICAL_DEVICE_TAGS`), `services/automationRuntime.ts`
   (~1044-1050, `automations.conditions` `{ type: 'tag', value }`; keeps substring semantics until
-  W05a), deployment target filters that embed tag conditions, `services/scriptProposals/policy.ts`,
-  playbook trigger evaluation (`playbook_definitions.trigger_conditions.deviceTags`)
+  W05a), deployment target filters (`services/deploymentTargetResolver.ts:92-118` — reaches
+  `filterEngine`, so covered by it; add one test), `services/scriptProposals/policy.ts:~96` (union only:
+  normalise before the union), and the web matcher `apps/web/src/components/devices/deviceGroupMatching.ts:87-88`
+  (switch its private `normalize` to the shared `legacyTagSlug`). Not readers (verified): the AI-agent
+  alert/metric subscribers only load tags into context; `delivery/railContracts.ts` rejects the key;
+  `playbook_definitions.trigger_conditions.deviceTags` has no evaluator today (W03b still rewrites it).
+- Modify (configured-value writers, so stored values converge): `routes/policyManagement/helpers.ts:128-167`
+  (`normalizeTargets`, `targets.tags`), `routes/ai/scriptPolicy.ts:~48,~93`,
+  `routes/partnerAiScriptPolicy.ts:~44` — store `tagMatchValues(values).slugs`; reject (400) a non-empty
+  list that normalises to nothing
 
 **Interfaces — Produces:**
 `export function tagMatchValues(values: readonly unknown[]): { slugs: string[]; matchNothing: boolean }` —
@@ -770,7 +805,7 @@ assets are counted for the first time.
   body with `slug` → 400; promote of a slug owned by three orgs → one partner-wide row, three
   deleted, audit lists the three labels.
 - [ ] **Step 2–4:** FAIL → implement → PASS (+ `partner-wide-write-coverage.test.ts`).
-- [ ] **Step 5: Docs** — `apps/docs/src/content/docs/features/tags.mdx`: replace line 14 ("There is no
+- [ ] **Step 5: Docs** — `apps/docs/src/content/docs/features/tags.mdx`: replace line 14 and line ~236 ("There is no
   separate tag definition table …") with the registry model (slugs, definitions, partner-wide vs
   org, normalisation, rename vs merge) and add the new endpoints to the API table.
 - [ ] **Step 6: Commit.**
@@ -849,7 +884,8 @@ export class TagScopeNarrowingError extends Error {}                            
 
 Routes: `POST /tags/:tagId/merge { intoTagId }`, `DELETE /tags/:tagId?removeFromAssets=true|false`, both
 `devices:write` + `canMutateOrgWideGovernance` + the capability for any partner-wide row involved + MFA
-step-up (the step-up grant middleware `routes/devices/moveOrg.ts` uses) for merge and for delete with
+step-up (`requireMfa()` plus a `validateStepUpGrant` grant from `services/mfaStepUpGrant.ts` bound to a
+resource digest, the pattern `routes/devices/moveOrg.ts:13,220` uses) for merge and for delete with
 `removeFromAssets=true`. Order inside one transaction is R§6.2 steps 1–6 with §2.1's lock order;
 after commit: `device.updated` events with `changedFields: ['tags']` and
 `requestDeviceGroupReevaluationAfterCommit` per affected device. Audit `device_tag.merged|deleted`
@@ -881,9 +917,10 @@ with counts.
   `tagReconcile: { registered: number; remapped: number; removed: number }`; call next to the custom-field
   re-home at ~277)
 - Modify: `apps/api/src/routes/devices/moveOrg.ts` (body `tagMap`, 409 mapping, audit counts)
-- Modify: every other caller of `moveDeviceOrgInTransaction` (`unassignedPool/assignParkedDevice*.ts`,
-  `routes/devices/core.ts`) — pass no map; same-partner behaviour applies; a cross-partner call without
-  a map fails closed
+- Callers (verified): `routes/devices/moveOrg.ts:232` (the only path that can cross partners, system
+  scope, `:161`) and `services/unassignedPool/assignParkedDevice.ts:285` (same partner enforced at
+  `:224`) — the latter passes no map; same-partner behaviour applies; a cross-partner call without a
+  map fails closed
 - Tests: `moveReconcile.test.ts`, extend `routes/devices/moveOrg*.test.ts`, integration
   `deviceTagsMove.integration.test.ts`
 
@@ -951,7 +988,9 @@ export async function runPerOrgWrites(input: {
 ```
 
 `authorizeBulkDevices`: dedupe; `getDevicesWithOrgAndSiteCheck` (`routes/devices/helpers.ts:261`);
-`null` → `NOT_FOUND`, `SITE_ACCESS_DENIED` → that code; holding-org (unassigned pool) and ephemeral
+`null` → `NOT_FOUND`, `SITE_ACCESS_DENIED` → that code; holding-org (org `type` `unassigned_pool`,
+`isUnassignedPoolOrgType()` in `services/unassignedPool/orgType.ts:22`; also `quick_support` orgs) and
+ephemeral (`devices.isEphemeral`, `db/schema/devices.ts:110`)
 Quick Support devices → `NOT_FOUND` (B§2, the helper does not exclude them). `runPerOrgWrites`: group
 by `orgId`, sort ascending, one `withDbAccessContext` per org with the caller's context; a thrown
 error marks every device of that org `ERROR` (logged with the org id) and continues; `afterCommit`
@@ -993,7 +1032,7 @@ it requests `custom.<fieldKey>` re-evaluation after commit for changed devices, 
 
 **Files:**
 - Create: `apps/api/src/routes/devices/bulkAttributes.ts` (exports `bulkAttributeRoutes`)
-- Modify: `apps/api/src/routes/devices/index.ts` (mount after `customFieldImportRoutes` (~72) and before `coreRoutes`)
+- Modify: `apps/api/src/routes/devices/index.ts` (mount next to `bulkLifecycleRoutes` (`:138`), after `customFieldImportRoutes` (`:72`) and before `coreRoutes` (`:143`))
 - Modify: `apps/api/src/middleware/selfManagedDbContextRoutes.ts` (both paths)
 - Tests: `routes/devices/bulkAttributes.test.ts`, `routes/devices/bulkAttributes.mountorder.test.ts`,
   `middleware/selfManagedDbContextRoutes.test.ts`,
@@ -1040,7 +1079,7 @@ it requests `custom.<fieldKey>` re-evaluation after commit for changed devices, 
 
 **Files:**
 - Create: `apps/web/src/components/devices/CustomFieldValueEditor.tsx` (+ test)
-- Modify: `apps/web/src/components/devices/DeviceInfoTab.tsx` (`renderFieldEditor` ~734 → component; display fix ~1485)
+- Modify: `apps/web/src/components/devices/DeviceInfoTab.tsx` (`renderFieldEditor` ~741 → component, call site ~1512; null-shows-default display fix in the custom-fields block ~1482-1520)
 
 **Interfaces — Produces:** `export function CustomFieldValueEditor(props: { definition: CustomFieldDefinitionView; value: string | number | boolean | null; onChange(v: string | number | boolean | null): void; disabled?: boolean }): JSX.Element`.
 
@@ -1079,8 +1118,8 @@ loaded rows with counts. Client rejects > 500 ids with a message.
 **Files:**
 - Modify: `apps/web/src/components/devices/DeviceList.tsx` (new block above the destructive section, and in the removed-selection block ~3068-3088)
 - Modify: `apps/web/src/components/devices/bulkActionGating.ts` (`INTENTIONALLY_UNGATED_BULK_ACTIONS` += `'bulk-edit-tags'`, `'bulk-set-custom-field'`)
-- Modify: `apps/web/src/components/devices/DevicesPage.tsx` (`handleBulkAction` ~1602 opens the dialogs)
-- Modify: every locale under `apps/web/src/lib/i18n/`
+- Modify: `apps/web/src/components/devices/DevicesPage.tsx` (`handleBulkAction` ~1473 opens the dialogs; wired at ~2326)
+- Modify: every locale under `apps/web/src/locales/`
 - Tests: `DeviceList.test.tsx`, `DevicesPage` tests
 
 - [ ] **Step 1: Failing tests:** entries render for active, mixed and removed selections with
@@ -1143,7 +1182,8 @@ color, neutral when unregistered.
 ### Task 9.2: `TagPicker`
 
 **Files:** Create `apps/web/src/components/devices/TagPicker.tsx` (+ test); Modify `DeviceSettingsModal.tsx`,
-`ManualAssetModal.tsx`, the network-asset edit form, `BulkEditTagsDialog.tsx` (Add input → `TagPicker`).
+`ManualAssetModal.tsx`, `networkDevice/settings/IdentitySection.tsx` (edit) and `AddNetworkAssetModal.tsx`
+(create), `BulkEditTagsDialog.tsx` (Add input → `TagPicker`).
 
 **Interfaces — Produces:** `TagPicker(props: { value: string[]; onChange(slugs: string[]): void; allowCreate?: boolean; 'data-testid'?: string })` —
 typeahead over `GET /tags?search=`, color chips, a "Create `<label>`" row that shows the slug it will
@@ -1154,8 +1194,8 @@ save, inline rejection text from `normalizeTagList`.
 **Files:** Create `apps/web/src/pages/settings/tags.astro`, `components/settings/TagsSettings.tsx`,
 `components/settings/TagDrawer.tsx`, `components/settings/MergeTagDialog.tsx`,
 `components/settings/DeleteTagDialog.tsx` (+ tests); Modify `apps/web/src/lib/settingsCatalog.ts`
-(`{ id: 'tags', group: 'data', href: '/settings/tags', requiredPermission: { resource: 'devices', action: 'read' } }`
-next to `custom-fields`), all locales, `lib/routeScope.ts` if the page needs a scope classification.
+(`{ id: 'tags', name: 'Tags', labelKey: 'nav.tags', href: '/settings/tags', icon: Tags, group: 'data', requiredPermission: { resource: 'devices', action: 'read' } }`
+next to `custom-fields` at `:92`), all locales. No `routeScope.ts` entry: the `/settings` catch-all at `:165` classifies it.
 
 Behaviour per R§9: owner badge ("All organizations" for partner-wide), per-class counts, unregistered
 rows with **Register**, slugs owned by ≥ 2 orgs flagged with **Promote to all organizations** (PD-3),
@@ -1206,11 +1246,16 @@ Export policy: add `restricted` to `included`. Read R-OD-4 in full first.
 
 ### Task 11.1: Column, permission, write rules
 
-**Files:** migration; `db/schema/deviceTags.ts`; `tenantExportPolicyRegistry.ts`; the shared permission
-grants (`PERMISSION_GRANTS` in `@breeze/shared`, re-exported by `apps/api/src/services/permissions.ts:407`)
-gain `devices:tags:restricted` (session users only — the API-key scope catalog and the device-script
-surface must not be able to hold it); `services/deviceTags/restricted.ts`; `applyTags.ts`,
-`mergeDelete.ts`, `moveReconcile.ts`, `routes/tags/registry.ts`.
+**Files:** migration (also inserts the permission row, as the header of
+`packages/shared/src/constants/permissions.ts:8-10` requires); `db/schema/deviceTags.ts`;
+`tenantExportPolicyRegistry.ts`; `packages/shared/src/constants/permissions.ts` (new
+`DEVICES_TAGS_RESTRICTED = { resource: 'devices', action: 'tags_restricted' }` — the exact action
+spelling follows the file's convention); `apps/api/src/db/seed.ts:~122` (`DEFAULT_PERMISSIONS`);
+`services/deviceTags/restricted.ts`; `applyTags.ts`, `mergeDelete.ts`, `moveReconcile.ts`,
+`routes/tags/registry.ts`. API keys: do **not** add it to `API_KEY_SCOPE_POLICIES`
+(`apiKeyScopes.ts:3-33`, a closed map), and prove with a test that the `ai:execute_admin` →
+`ADMIN_ALL` wildcard does not satisfy it for an API key (the restricted check requires a session
+user, not just the permission).
 
 **Interfaces — Produces:** `export async function assertRestrictedTagChange(input: { actor: TagWriteActor & { isApiKey: boolean }; orgId: string; partnerId: string; before: readonly string[]; after: readonly string[] }): Promise<void>`
 (throws `TagValidationError` code `RESTRICTED_TAG`). Called by `prepareTagReplace` and `applyTagDelta`
@@ -1249,7 +1294,8 @@ owner (org group: that org's or its partner's partner-wide restricted tags). `is
 `contains` (it reaches a scalar `ILIKE` today, `filterEngine.ts:~689`, not array membership — Codex;
 stricter than R-OD-4(b)'s list) and any unrestricted value stay refused. Re-checked at dispatch, not
 only at save. Cover every gate, not only the shared group resolver: direct partitioner callers and
-inline-filter gates (the Explore sweep in this wave lists them in the PR).
+inline-filter gates — including `inlineFilterHasExecutionRefusedFields` in
+`services/deploymentTargetResolver.ts:92-118` (the Explore sweep in this wave lists the rest in the PR).
 
 ### Task 12.2: Compliance targets regain execution for restricted-only tags (PD-1)
 
