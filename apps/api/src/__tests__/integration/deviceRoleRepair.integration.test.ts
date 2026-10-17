@@ -18,7 +18,7 @@ import { auditLogs, devices } from '../../db/schema';
 
 const MIGRATION_FILE = join(
   __dirname,
-  '../../../migrations/2026-12-26-100000-repair-discovery-demoted-server-roles.sql',
+  '../../../migrations/2026-12-30-140000-repair-discovery-demoted-server-roles.sql',
 );
 
 const WINDOWS_SERVER = 'Microsoft Windows Server 2019 Standard';
