@@ -36,6 +36,10 @@ func TestReadOnlyTransportRefusesBeforeAnyIO(t *testing.T) {
 		{"GET", "http://engine/containers/json?all=0"},
 		{"GET", "http://engine/containers/json"},
 		{"GET", "http://engine/images/json?all=1"},
+		{"GET", "http://engine/images/json?manifests=1"},
+		{"GET", "http://engine/images/json?identity=1"},
+		{"GET", "http://engine/images/json?identity=1&manifests=1"},
+		{"GET", "http://engine/images/json?manifests=1&identity=1&all=1"},
 		{"GET", "http://engine/v1.43/containers/json?all=1"},
 		{"GET", "http://engine/system/df"},
 	}
@@ -70,6 +74,7 @@ func TestReadOnlyTransportAllowsTheAllowlist(t *testing.T) {
 		"http://engine/version",
 		"http://engine/containers/json?all=1",
 		"http://engine/images/json",
+		"http://engine/images/json?manifests=1&identity=1",
 	} {
 		inner := &countingRoundTripper{}
 		req, _ := http.NewRequest("GET", u, nil)

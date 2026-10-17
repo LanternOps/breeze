@@ -208,8 +208,22 @@ func TestEngineStructsAreTheAllowlist(t *testing.T) {
 	if got, want := fields(apiContainer{}), []string{"Created", "ID", "Image", "ImageID", "Labels", "Names", "State"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("apiContainer fields = %v, want %v", got, want)
 	}
-	if got, want := fields(apiImage{}), []string{"ID", "RepoDigests", "RepoTags"}; !reflect.DeepEqual(got, want) {
+	if got, want := fields(apiImage{}), []string{"ID", "Manifests", "RepoDigests", "RepoTags"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("apiImage fields = %v, want %v", got, want)
+	}
+	// Image provenance (#8993): only the pulled-from repositories are decoded,
+	// never build refs, signatures, platforms or sizes.
+	if got, want := fields(apiManifest{}), []string{"ImageData", "Kind"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("apiManifest fields = %v, want %v", got, want)
+	}
+	if got, want := fields(apiImageData{}), []string{"Identity"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("apiImageData fields = %v, want %v", got, want)
+	}
+	if got, want := fields(apiIdentity{}), []string{"Pull"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("apiIdentity fields = %v, want %v", got, want)
+	}
+	if got, want := fields(apiPullIdentity{}), []string{"Repository"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("apiPullIdentity fields = %v, want %v", got, want)
 	}
 	if got, want := fields(composeLabels{}), []string{"Project", "Service", "WorkingDir"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("composeLabels fields = %v, want %v", got, want)

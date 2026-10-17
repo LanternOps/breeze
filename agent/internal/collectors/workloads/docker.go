@@ -108,6 +108,7 @@ func (d *engineDriver) Runtime() Runtime { return d.runtime }
 // engineVersion is the subset of GET /version the driver reads.
 type engineVersion struct {
 	Version    string `json:"Version"`
+	APIVersion string `json:"ApiVersion"`
 	Components []struct {
 		Name string `json:"Name"`
 	} `json:"Components"`
@@ -162,7 +163,7 @@ func (d *engineDriver) Detect(ctx context.Context) Detection {
 	if v.known() && v.isPodman() != (d.runtime == RuntimePodman) {
 		return Detection{State: DetectionAbsent}
 	}
-	return Detection{State: DetectionPresent, Version: clip(v.Version, 64)}
+	return Detection{State: DetectionPresent, Version: clip(v.Version, 64), apiVersion: clip(v.APIVersion, 16)}
 }
 
 func detectionFromError(err error) Detection {
@@ -224,9 +225,72 @@ func (l *composeLabels) UnmarshalJSON(b []byte) error {
 
 // apiImage is the allowlist for GET /images/json.
 type apiImage struct {
-	ID          string   `json:"Id"`
-	RepoTags    []string `json:"RepoTags"`
-	RepoDigests []string `json:"RepoDigests"`
+	ID          string        `json:"Id"`
+	RepoTags    []string      `json:"RepoTags"`
+	RepoDigests []string      `json:"RepoDigests"`
+	Manifests   []apiManifest `json:"Manifests"`
+}
+
+// imageIdentityQuery asks Docker (Engine API 1.54+, Docker 29.3+) for each
+// image's provenance. The engine computes it locally from the containerd
+// content labels it set on pull and push; no registry is contacted.
+const imageIdentityQuery = "manifests=1&identity=1"
+
+// apiManifest keeps only the provenance part of a manifest summary.
+type apiManifest struct {
+	Kind      string        `json:"Kind"`
+	ImageData *apiImageData `json:"ImageData"`
+}
+
+type apiImageData struct {
+	Identity *apiIdentity `json:"Identity"`
+}
+
+// apiIdentity keeps the repositories the image was pulled from or pushed to.
+// Build refs and signature details are not decoded.
+type apiIdentity struct {
+	Pull []apiPullIdentity `json:"Pull"`
+}
+
+type apiPullIdentity struct {
+	Repository string `json:"Repository"`
+}
+
+// pulledFrom reports whether the engine recorded repository (normalized) as a
+// place this image was pulled from or pushed to.
+func (img apiImage) pulledFrom(repository string) bool {
+	if repository == "" {
+		return false
+	}
+	for _, m := range img.Manifests {
+		if m.Kind != "image" || m.ImageData == nil || m.ImageData.Identity == nil {
+			continue
+		}
+		for _, p := range m.ImageData.Identity.Pull {
+			if NormalizeImage(p.Repository).Repository == repository {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// apiVersionAtLeast compares an engine API version ("1.54") numerically. An
+// empty or malformed version is never "at least" anything.
+func apiVersionAtLeast(v string, major, minor int) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	gotMajor, err1 := strconv.Atoi(parts[0])
+	gotMinor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || gotMajor < 0 || gotMinor < 0 {
+		return false
+	}
+	if gotMajor != major {
+		return gotMajor > major
+	}
+	return gotMinor >= minor
 }
 
 // Collect lists containers and images with two GET requests. It never calls
@@ -259,7 +323,14 @@ func (d *engineDriver) Collect(ctx context.Context, det Detection) Result {
 	// recovery, so the snapshot is marked incomplete rather than failed.
 	complete, code := true, ""
 	images := map[string]apiImage{}
-	istatus, ibody, ierr := d.get(ctx, "/images/json", maxListBytes)
+	// Only Docker answers the identity query; Podman's compat API has no such
+	// option. Older Docker engines would ignore it, so ask only where it works.
+	identity := d.runtime == RuntimeDocker && apiVersionAtLeast(det.apiVersion, 1, 54)
+	imagesPath := "/images/json"
+	if identity {
+		imagesPath += "?" + imageIdentityQuery
+	}
+	istatus, ibody, ierr := d.get(ctx, imagesPath, maxListBytes)
 	var list []apiImage
 	if ierr == nil && istatus == http.StatusOK {
 		ierr = json.Unmarshal(ibody, &list)
@@ -272,7 +343,7 @@ func (d *engineDriver) Collect(ctx context.Context, det Detection) Result {
 		images[normalizeImageID(img.ID)] = img
 	}
 
-	ws := buildContainerWorkloads(containers, images)
+	ws := buildContainerWorkloads(containers, images, identity)
 	observed := len(ws)
 	ws, truncated := orderAndCap(ws)
 	if truncated {
@@ -338,7 +409,8 @@ func normalizeImageID(id string) string {
 	return id
 }
 
-func buildContainerWorkloads(containers []apiContainer, images map[string]apiImage) []Workload {
+// identity is true when the image list carries each image's provenance.
+func buildContainerWorkloads(containers []apiContainer, images map[string]apiImage, identity bool) []Workload {
 	seen := make(map[string]bool, len(containers))
 	out := make([]Workload, 0, len(containers))
 	for _, c := range containers {
@@ -346,12 +418,12 @@ func buildContainerWorkloads(containers []apiContainer, images map[string]apiIma
 			continue
 		}
 		seen[c.ID] = true
-		out = append(out, mapContainer(c, images))
+		out = append(out, mapContainer(c, images, identity))
 	}
 	return out
 }
 
-func mapContainer(c apiContainer, images map[string]apiImage) Workload {
+func mapContainer(c apiContainer, images map[string]apiImage, identity bool) Workload {
 	imageID := normalizeImageID(c.ImageID)
 	img := images[imageID]
 	ref := strings.TrimSpace(c.Image)
@@ -367,6 +439,18 @@ func mapContainer(c apiContainer, images map[string]apiImage) Workload {
 	}
 	parsed := NormalizeImage(ref)
 	digest := PickRepoDigest(parsed.Repository, img.RepoDigests)
+	// Docker's containerd image store lists "name@<image id>" in RepoDigests
+	// for every named image, local builds and loaded images included (#8993).
+	// The classic store never does: there a repo digest is a manifest digest
+	// and the image id is the config digest. So a repo digest equal to the
+	// image id says nothing about a registry; where the engine reports
+	// provenance, keep the digest only if the image was pulled from (or pushed
+	// to) this repository, else report none and the server calls it local
+	// without asking any registry. Engines without provenance (Docker < 29.3)
+	// keep the old behavior.
+	if identity && digest != "" && digest == imageID && !img.pulledFrom(parsed.Repository) {
+		digest = ""
+	}
 	if digest == "" && parsed.Pinned && digestPattern.MatchString(parsed.Digest) {
 		digest = parsed.Digest
 	}
