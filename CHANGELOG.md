@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- PAM requests can be denied without a reason from the dashboard, API, or mobile approval flow. Missing, empty, and whitespace-only denial reasons now store "Denied without reason"; supplied reasons are trimmed. The database constraint is unchanged.
+
 ### Added
 - PAM enabled through organization policy provisions the dormant elevation account after reconciliation and before admitting requests, even when `pam_enabled` is false locally. A later verified missing-account recovery clears the provisioning latch so policy can provision the account again. Recovery requires independent account, job, process, and token absence proof while retaining replay protection; unreadable ledgers and unknown tokens remain fail-closed.
 - Supported Windows PAM reconciliation retry endpoint requiring current tenant/site access, `pam:approve`, `devices:execute`, applicable MFA assurance, and partner trust. Unsupported and holding-organization devices return 409; trust denials return 403. Deploy the additive reset-capability migration and updated agent; a queued retry never deletes ledger or outbox evidence.
@@ -20,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Both third-party extension delivery paths. Source-directory ("build-time") loading — including the `extensions/` drop directory, the `BREEZE_LEGACY_SOURCE_EXTENSIONS` compatibility gate, and the `extensions/*` pnpm workspace glob — and the signed runtime bundle pipeline (`extensions.yaml`, the artifact store and verifier, the `breeze-ext` packer/signer in `@breeze/extension-cli`, the `@breeze/extension-api` legacy manifest adapter, the `BREEZE_EXTENSIONS_DIR` mount point, and per-organization install activation via `PUT`/`DELETE`/`GET /api/v1/extensions/:name/orgs[/:orgId]`) are gone. Neither path had any consumer. Extensions are now exclusively **first-party built-ins compiled into the API image**, each off by default and enabled per deployment by its own flag (today: Workspace via `BREEZE_WORKSPACE_ENABLED`). The public v1 SDK (`@breeze/extension-sdk`, `@breeze/extension-web-sdk`, `@breeze/extension-testkit`), the v1 manifest schema, the route gateway, and the SDK v1 compatibility CI gate are unaffected — see `docs/extensions/sdk-compatibility.md`.
 
 ### Changed
+
+- Approving a UAC interception request now requires `devices:execute` in addition to `pam:approve`. The approvals inbox/mobile path newly enforces the dashboard's MFA session gate: when two-factor authentication is enabled, a session without the qualifying MFA claim receives 403. Both paths verify the device's current organization and site; denial permissions are unchanged.
 
 - Network checks are authored under **Alerts → Monitors**, with asset binding; **Network** keeps Assets, SNMP Templates and Results. Interactive conversion adopts supported legacy probes, preserves results and open alerts, and supports ledger retirement/Undo while the network runtime remains. Startup sweeps exclude network sources.
 - Legacy network check create/update and alert-rule writes return `410 Gone`; unmanaged deletion uses ledger retirement. Device **Disable SNMP monitoring** is SNMP-only; the old monitoring asset DELETE refuses active checks with 409. Retained bound checks block asset deletion.

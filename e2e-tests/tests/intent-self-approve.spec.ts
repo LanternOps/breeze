@@ -176,13 +176,20 @@ test.describe('inline sole-operator self-approve', () => {
     // The HTTP 200 alone only proves "not rejected". The gate's own threshold
     // lives in the DB — serialize() does not expose it — so assert there that
     // the server genuinely recorded L3 via the platform authenticator, and that
-    // the linked intent was released. Without this, a future regression that
+    // the linked intent was authorized and its release was queued durably.
+    // The worker can advance the intent beyond approved before this query;
+    // its execution result is outside this browser assurance test. Without this,
+    // a future regression that
     // downgraded the recorded assurance (or accepted a proofless approve) would
     // still return 200 and this test would still pass.
-    const [level, via, deviceBound, intentStatus, selfDecided] = psql(
+    const [level, via, deviceBound, intentLevel, intentVia, intentDecided, selfDecided, releaseCount] = psql(
       `SELECT ar.decided_assurance_level, ar.decided_via,
               (ar.authenticator_device_id IS NOT NULL)::text,
-              ai.status, (ai.decided_by_user_id = ar.user_id)::text
+              ai.decided_assurance_level, ai.decided_via,
+              (ai.decided_at IS NOT NULL)::text,
+              (ai.decided_by_user_id = ar.user_id)::text,
+              (SELECT count(*) FROM intent_outbox io
+                WHERE io.intent_id = ai.id AND io.event_type = 'intent_approved')
          FROM approval_requests ar
          JOIN action_intents ai ON ai.id = ar.intent_id
         WHERE ar.id = '${approvalId}'`,
@@ -191,7 +198,10 @@ test.describe('inline sole-operator self-approve', () => {
     expect(Number(level), 'server must record assurance level >= 3').toBeGreaterThanOrEqual(3);
     expect(via).toBe('webauthn_platform');
     expect(deviceBound, 'decision must be bound to the registered authenticator').toBe('true');
-    expect(intentStatus, 'the linked intent must be released').toBe('approved');
+    expect(Number(intentLevel), 'the linked intent must retain assurance level >= 3').toBeGreaterThanOrEqual(3);
+    expect(intentVia).toBe('webauthn_platform');
+    expect(intentDecided, 'the linked intent must record the authorization').toBe('true');
+    expect(Number(releaseCount), 'the linked intent must have exactly one durable release event').toBe(1);
     expect(selfDecided, 'this must be the sole-operator self-approve path').toBe('true');
 
     await removeVirtualAuthenticator(authenticator);

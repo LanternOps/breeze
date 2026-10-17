@@ -78,7 +78,8 @@ async function seedScenario(): Promise<Scenario> {
   const org = await createOrganization({ partnerId: partner.id });
   const site = await createSite({ orgId: org.id });
   const role = await createRole({ scope: 'organization', orgId: org.id });
-  await grantRolePermissions(role.id, [PERMISSIONS.PAM_APPROVE]);
+  // UAC approvals must satisfy both PAM decision and device execution grants.
+  await grantRolePermissions(role.id, [PERMISSIONS.PAM_APPROVE, PERMISSIONS.DEVICES_EXECUTE]);
   const approver = async (label: string): Promise<Approver> => {
     const user = await createUser({
       partnerId: partner.id,
