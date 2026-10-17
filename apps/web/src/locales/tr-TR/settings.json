@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Yapay zeka verileri ve gizlilik",
+    "orgDescription": "Breeze AI'nın bu kuruluşun cihazlarında neleri okuyabileceği ve yapay zeka araç çıktılarının ne kadar süre saklanacağı. Boş bırakmak iş ortağı varsayılanını devralır; kuruluş yalnızca daha sıkı hale getirebilir.",
+    "partnerDescription": "Her kuruluş için varsayılanlar. Kuruluş bunları kendi yapay zeka sekmesinde sıkılaştırabilir ancak asla gevşetemez.",
+    "levelLabel": "Yapay zekanın cihaz dosyalarını okuması",
+    "levels": {
+      "off": {
+        "label": "Kapalı",
+        "help": "Yapay zeka cihazlardaki dosya içeriklerini okuyamaz veya klasörlere göz atamaz; tanılama erişim istekleri reddedilir. Disk kullanım özetleri ve kendi kütüphane betikleriniz kullanılabilir kalır."
+      },
+      "no_user_profiles": {
+        "label": "Kullanıcı profili klasörleri hariç",
+        "help": "Sistem ve uygulama yolları onayla; Belgeler, Masaüstü ve ana klasörler, bir yönetici süre sınırlı bir tanılama izni onaylamadıkça reddedilir."
+      },
+      "any_with_approval": {
+        "label": "Herhangi bir yol, onayla",
+        "help": "Her okuma yine de bir teknisyenin onayını gerektirir ve denetlenir; kimlik bilgisi depoları engelli kalır."
+      }
+    },
+    "inherit": "Devral: {{value}} ({{source}})",
+    "retentionLabel": "Yapay zeka araç çıktılarını şu kadar sakla (gün)",
+    "retentionInherit": "Devral: {{value}} ({{source}})",
+    "retentionHelp": "Bundan eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir. Boş bırakmak devralır; iş ortağı çıktıları süresiz saklamayı seçebilir.",
+    "keepForever": "süresiz",
+    "sourceOrg": "bu kuruluş",
+    "sourcePartner": "iş ortağı varsayılanı",
+    "sourceDefault": "Breeze varsayılanı",
+    "abovePartnerCeiling": "Kullanılamaz: iş ortağı varsayılanı daha sıkı.",
+    "aboveCeilingLevel": "Kullanılamaz: iş ortağı varsayılanı daha sıkı.",
+    "retentionAboveCeiling": "İş ortağınız çıktıları en fazla {{days}} gün saklar.",
+    "saved": "Yapay zeka veri ilkesi kaydedildi",
+    "failedToSave": "Yapay zeka veri ilkesi kaydedilemedi",
+    "partnerInheritDefault": "Breeze varsayılanı: {{value}}",
+    "readOnly": "Bu varsayılanları değiştirme izniniz yok.",
+    "retentionKeepDays": "Şu kadar sakla (gün)",
+    "retentionKeepForever": "Süresiz sakla",
+    "retentionBreezeDefault": "Breeze varsayılanı: {{days}} gün",
+    "partnerRetentionHelp": "Yapay zeka araç çıktılarının ne kadar saklanacağını seçin veya süresiz saklayın. Daha eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir."
+  },
   "partnerServicePrincipals": {
     "title": "Hizmet sorumluları",
     "description": "İş ortağı kapsamındaki makine kimliklerini ve bunların erişim anahtarlarını yönetin.",
@@ -3429,6 +3468,7 @@
         "delete_tenant": "Bir organizasyonu sil",
         "detect_log_correlations": "Günlük korelasyonlarını tespit et",
         "disk_cleanup": "Disk temizliği",
+        "edr_endpoint_action": "EDR: cihazı yalıt, serbest bırak veya tara",
         "execute_command": "Bir sistem komutu çalıştır",
         "execute_playbook": "Bir playbook çalıştır",
         "file_operations": "Dosya işlemleri",
@@ -3516,6 +3556,7 @@
         "security_scan": "Güvenlik taraması",
         "set_agent_log_level": "Aracı günlük düzeyini ayarla",
         "set_device_context": "Cihaz bağlamını ayarla",
+        "sync_edr_data": "EDR verilerini eşitle",
         "sync_huntress_data": "Huntress verilerini eşitle",
         "system_cleanup": "Sistem temizliği",
         "take_screenshot": "Ekran görüntüsü al"

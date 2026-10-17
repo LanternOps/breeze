@@ -52,6 +52,7 @@ import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
 import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
+import { edrWebhookRoutes } from './routes/webhooks/edr';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
@@ -179,6 +180,8 @@ import { aiRoutes } from './routes/ai';
 import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
 import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
 import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
+import { aiDataPolicyRoutes } from './routes/ai/dataPolicy';
+import { partnerAiDataPolicyRoutes } from './routes/partnerAiDataPolicy';
 import { aiModelsRoutes } from './routes/aiModels';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
@@ -942,6 +945,13 @@ api.route('/webhooks', xeroWebhookRoutes);
 // sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: there is no ambient
 // auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', resendWebhookRoutes);
+// EDR vendor push hints (W03 PR-B, #8167) — no session auth; the per-connection
+// secret the vendor echoes in Authorization is verified in the handler.
+// partnerGuard skips the exact /webhooks/edr/<uuid> path so that secret is never
+// parsed as a JWT; the global body gate caps it at 256 KB and it has its own
+// isolated per-IP bucket. NOT under /edr (whose authMiddleware covers `*`) and
+// NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient auth transaction exists here.
+api.route('/webhooks', edrWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -1027,6 +1037,7 @@ api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
 // W04 (#5612): the partner CEILING for the unattended script lane.
 api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
+api.route('/partner/ai/data-policy', partnerAiDataPolicyRoutes);
 // W03 (partner sending domains). MUST stay above the catch-all `/partner`
 // mount below, the same ordering `/partner/trust` relies on — Hono matches in
 // registration order, so a later specific mount is never reached.
@@ -1072,6 +1083,7 @@ api.route('/ai/script-proposals', aiScriptProposalRoutes);
 // registered ahead of '/ai' so the literal paths never fall into a sibling
 // param route.
 api.route('/ai', aiScriptPolicyRoutes);
+api.route('/ai', aiDataPolicyRoutes);
 // BEFORE /ai: aiRoutes owns broad paths. There is no /ai/agents mount here —
 // the per-run artifact LIST lives inside aiAgentsRoutes itself (see
 // routes/aiAgents.ts, above its /runs/:runId), so no second router shares

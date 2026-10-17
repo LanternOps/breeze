@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "AI data & privacy",
+    "orgDescription": "What Breeze AI may read from this organization's devices, and how long AI tool outputs are kept. Blank inherits the partner default; an organization can only tighten it.",
+    "partnerDescription": "Defaults for every organization. An organization can tighten these on its own AI tab but never loosen them.",
+    "levelLabel": "AI device file reads",
+    "levels": {
+      "off": {
+        "label": "Off",
+        "help": "The AI cannot read file contents or browse folders on devices, and diagnostic access requests are refused. Disk-usage summaries and your own library scripts stay available."
+      },
+      "no_user_profiles": {
+        "label": "Excludes user profile folders",
+        "help": "System and application paths with approval; Documents, Desktop and home folders are refused unless an administrator approves a time-boxed diagnostic grant."
+      },
+      "any_with_approval": {
+        "label": "Any path, with approval",
+        "help": "Every read still needs a technician's approval and is audited; credential stores stay blocked."
+      }
+    },
+    "inherit": "Inherit: {{value}} ({{source}})",
+    "retentionLabel": "Keep AI tool outputs for (days)",
+    "retentionInherit": "Inherit: {{value}} ({{source}})",
+    "retentionHelp": "Outputs older than this are replaced with a marker during the nightly run. Blank inherits; a partner can choose to keep outputs forever.",
+    "keepForever": "forever",
+    "sourceOrg": "this organization",
+    "sourcePartner": "partner default",
+    "sourceDefault": "Breeze default",
+    "abovePartnerCeiling": "Not available: the partner default is stricter.",
+    "aboveCeilingLevel": "Not available: the partner default is stricter.",
+    "retentionAboveCeiling": "Your partner keeps outputs for at most {{days}} days.",
+    "saved": "AI data policy saved",
+    "failedToSave": "Failed to save AI data policy",
+    "partnerInheritDefault": "Breeze default: {{value}}",
+    "readOnly": "You do not have permission to change these defaults.",
+    "retentionKeepDays": "Keep for (days)",
+    "retentionKeepForever": "Keep forever",
+    "retentionBreezeDefault": "Breeze default: {{days}} days",
+    "partnerRetentionHelp": "Choose how long AI tool outputs are kept, or keep them forever. Older outputs are replaced with a marker during the nightly run."
+  },
   "partnerServicePrincipals": {
     "title": "Service principals",
     "description": "Manage partner-scoped machine identities and their access keys.",
@@ -3429,6 +3468,7 @@
         "delete_tenant": "Delete an organization",
         "detect_log_correlations": "Detect log correlations",
         "disk_cleanup": "Disk cleanup",
+        "edr_endpoint_action": "EDR: isolate, release or scan a device",
         "execute_command": "Run a system command",
         "execute_playbook": "Run a playbook",
         "file_operations": "File operations",
@@ -3516,6 +3556,7 @@
         "security_scan": "Security scan",
         "set_agent_log_level": "Set agent log level",
         "set_device_context": "Set device context",
+        "sync_edr_data": "Sync EDR data",
         "sync_huntress_data": "Sync Huntress data",
         "system_cleanup": "System cleanup",
         "take_screenshot": "Take a screenshot"

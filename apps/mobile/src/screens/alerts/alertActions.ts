@@ -34,6 +34,8 @@ export function canRebootFromAlert(alert: Alert): boolean {
  */
 export function needsAlertLookup(alert: Alert): boolean {
   if (!alert.id) return false;
+  // A missing createdAt (chat cards omit it) must be read from the server.
+  if (!alert.createdAt) return true;
   return alert.source === undefined || alert.source === REBOOT_PENDING_SOURCE;
 }
 
@@ -51,4 +53,14 @@ export function rebootPlan(fetched: Alert | null): { deviceId: string; message: 
 export function rebootConfirmMessage(alert: Alert): string {
   const name = alert.deviceName || 'this device';
   return `Restart ${name} now? Anyone signed in to it will be logged off and unsaved work may be lost.`;
+}
+
+/**
+ * The createdAt the detail screen shows: the fetched record for the same alert
+ * wins over route params; params are only a stand-in until the read lands.
+ * Null when neither has one. It never falls back to the current time.
+ */
+export function resolveCreatedAt(param: Alert, fetched: Alert | null): string | null {
+  if (fetched && fetched.id === param.id && fetched.createdAt) return fetched.createdAt;
+  return param.createdAt || null;
 }

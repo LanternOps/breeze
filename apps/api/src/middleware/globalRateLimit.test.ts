@@ -223,6 +223,13 @@ describe('globalRateLimit — isolated bmr recovery download bucket', () => {
 });
 
 describe('ISOLATED_BUCKETS pins', () => {
+  it('meters EDR vendor push deliveries in their own per-IP bucket (W03 PR-B)', async () => {
+    const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
+    expect(ISOLATED_BUCKETS).toContainEqual({ prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 });
+    // The org webhook CRUD router keeps the shared budget.
+    expect(ISOLATED_BUCKETS.some((b) => '/api/v1/webhooks/abc'.startsWith(b.prefix))).toBe(false);
+  });
+
   it('meters bare-metal recovery object downloads separately from the shared 300/min budget (D13)', async () => {
     const { ISOLATED_BUCKETS } = await import('./globalRateLimit');
     const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/backup/bmr/recover/download');

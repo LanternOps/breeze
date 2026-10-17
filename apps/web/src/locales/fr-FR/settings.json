@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Données et confidentialité de l'IA",
+    "orgDescription": "Ce que Breeze AI peut lire sur les appareils de cette organisation et la durée de conservation des sorties des outils d'IA. Vide hérite de la valeur par défaut du partenaire ; une organisation peut seulement la durcir.",
+    "partnerDescription": "Valeurs par défaut pour chaque organisation. Une organisation peut les durcir dans son propre onglet IA, mais jamais les assouplir.",
+    "levelLabel": "Lecture de fichiers d'appareils par l'IA",
+    "levels": {
+      "off": {
+        "label": "Désactivé",
+        "help": "L'IA ne peut ni lire le contenu des fichiers ni parcourir les dossiers des appareils, et les demandes d'accès de diagnostic sont refusées. Les résumés d'utilisation du disque et vos propres scripts de bibliothèque restent disponibles."
+      },
+      "no_user_profiles": {
+        "label": "Exclut les dossiers de profils utilisateur",
+        "help": "Chemins système et d'applications avec approbation ; Documents, Bureau et dossiers personnels sont refusés sauf si un administrateur approuve un accès de diagnostic limité dans le temps."
+      },
+      "any_with_approval": {
+        "label": "N'importe quel chemin, avec approbation",
+        "help": "Chaque lecture exige toujours l'approbation d'un technicien et est auditée ; les magasins d'identifiants restent bloqués."
+      }
+    },
+    "inherit": "Hériter : {{value}} ({{source}})",
+    "retentionLabel": "Conserver les sorties des outils d'IA pendant (jours)",
+    "retentionInherit": "Hériter : {{value}} ({{source}})",
+    "retentionHelp": "Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit. Vide hérite ; un partenaire peut choisir de les conserver indéfiniment.",
+    "keepForever": "indéfiniment",
+    "sourceOrg": "cette organisation",
+    "sourcePartner": "valeur par défaut du partenaire",
+    "sourceDefault": "valeur par défaut de Breeze",
+    "abovePartnerCeiling": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "aboveCeilingLevel": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "retentionAboveCeiling": "Votre partenaire conserve les sorties au plus {{days}} jours.",
+    "saved": "Politique de données d'IA enregistrée",
+    "failedToSave": "Échec de l'enregistrement de la politique de données d'IA",
+    "partnerInheritDefault": "Valeur par défaut de Breeze : {{value}}",
+    "readOnly": "Vous n'avez pas l'autorisation de modifier ces valeurs par défaut.",
+    "retentionKeepDays": "Conserver pendant (jours)",
+    "retentionKeepForever": "Conserver indéfiniment",
+    "retentionBreezeDefault": "Valeur par défaut de Breeze : {{days}} jours",
+    "partnerRetentionHelp": "Choisissez la durée de conservation des sorties des outils d'IA, ou conservez-les indéfiniment. Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit."
+  },
   "partnerServicePrincipals": {
     "title": "Principaux de service",
     "description": "Gérez les identités machines au niveau du partenaire et leurs clés d'accès.",
@@ -3429,6 +3468,7 @@
         "delete_tenant": "Supprimer une organisation",
         "detect_log_correlations": "Détecter des corrélations de journaux",
         "disk_cleanup": "Nettoyage de disque",
+        "edr_endpoint_action": "EDR : isoler, libérer ou analyser un appareil",
         "execute_command": "Exécuter une commande système",
         "execute_playbook": "Exécuter un playbook",
         "file_operations": "Opérations sur les fichiers",
@@ -3516,6 +3556,7 @@
         "security_scan": "Analyse de sécurité",
         "set_agent_log_level": "Définir le niveau de journalisation de l'agent",
         "set_device_context": "Définir le contexte du poste",
+        "sync_edr_data": "Synchroniser les données EDR",
         "sync_huntress_data": "Synchroniser les données Huntress",
         "system_cleanup": "Nettoyage du système",
         "take_screenshot": "Prendre une capture d'écran"

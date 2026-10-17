@@ -1409,6 +1409,34 @@
       "degraded": "Degradato",
       "unhealthy": "Non integro",
       "unknown": "Sconosciuto"
-    }
+    },
+    "actionsLabel": "Consenti azioni di risposta",
+    "actionsHelp": "Consente ai tecnici di isolare i dispositivi e avviare scansioni tramite questa connessione.",
+    "actionsConfirmTitle": "Consentire le azioni di risposta?",
+    "actionsConfirmMessage": "I tecnici con il permesso di esecuzione sui dispositivi potranno isolare e rilasciare i dispositivi e avviare scansioni sugli endpoint gestiti tramite “{{name}}”.",
+    "actionsConfirmLabel": "Consenti",
+    "actionsOnToast": "Azioni di risposta consentite",
+    "actionsOffToast": "Azioni di risposta disattivate",
+    "actionsError": "Impossibile aggiornare le azioni di risposta.",
+    "pushLabel": "Eventi push",
+    "pushHelp": "{{provider}} avvisa Breeze dei nuovi eventi, il che avvia una sincronizzazione prima della pianificazione regolare. Le sincronizzazioni pianificate continuano.",
+    "pushOnToast": "Eventi push attivati",
+    "pushOffToast": "Eventi push disattivati",
+    "pushReplaceTitle": "Sostituire la destinazione push esistente?",
+    "pushReplaceMessage": "{{provider}} invia già gli eventi push a un’altra destinazione (ad esempio un SIEM). Sostituirla con Breeze interrompe quel flusso.",
+    "pushReplaceConfirm": "Sostituisci e attiva",
+    "pushError": "Impossibile modificare gli eventi push.",
+    "pushErrors": {
+      "public_url_unset": "Imposta l’URL pubblico del server prima di attivare gli eventi push.",
+      "public_url_not_https": "Gli eventi push richiedono un URL pubblico HTTPS.",
+      "connection_inactive": "Attiva la connessione prima di attivare gli eventi push.",
+      "push_state_changed": "Le impostazioni push sono cambiate durante l’attivazione. Aggiorna e riprova."
+    },
+    "pushTest": "Invia evento di prova",
+    "pushTestQueuedToast": "Evento di prova richiesto",
+    "pushTestError": "Impossibile inviare l’evento di prova.",
+    "pushTestNote": "L’evento di prova può impiegare alcuni minuti per arrivare.",
+    "pushLast": "Ultimo evento push: {{relative}}",
+    "pushNone": "Nessun evento push ricevuto finora"
   }
 }

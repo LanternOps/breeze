@@ -2,11 +2,15 @@ import { useState } from "react";
 import { Activity, AlertTriangle, CheckCircle2, Loader2, RefreshCw, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { showToast } from "../shared/Toast";
 import {
   deleteEdrConnection,
+  disableEdrPush,
+  enableEdrPush,
   edrProviderLabel,
   patchEdrConnection,
+  sendEdrPushTest,
   syncEdrConnection,
   testEdrConnection,
   type EdrConnection,
@@ -131,7 +135,10 @@ export default function EdrProviderConnectionCard({
   const [editingCredentials, setEditingCredentials] = useState(false);
   const [creds, setCreds] = useState<Record<string, string>>({});
   const [baseUrl, setBaseUrl] = useState("");
-  const [busy, setBusy] = useState<null | "test" | "sync" | "save" | "delete">(null);
+  const [busy, setBusy] = useState<null | "test" | "sync" | "save" | "delete" | "actions" | "push" | "pushTest">(null);
+  const [confirmActions, setConfirmActions] = useState(false);
+  const [confirmReplacePush, setConfirmReplacePush] = useState(false);
+  const [testSent, setTestSent] = useState(false);
 
   const providerLabel = edrProviderLabel(connection.provider) ?? provider?.label ?? connection.provider;
   const fields = provider?.credentialFields ?? [];
@@ -214,6 +221,77 @@ export default function EdrProviderConnectionCard({
       onChanged();
     } catch (err) {
       handleActionError(err, t("edrProviders.errorSave"));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setActionsEnabled = async (next: boolean) => {
+    setBusy("actions");
+    try {
+      await patchEdrConnection(connection.id, { actionsEnabled: next }, {
+        errorFallback: t("edrProviders.actionsError"),
+        successMessage: next ? t("edrProviders.actionsOnToast") : t("edrProviders.actionsOffToast"),
+      });
+      onChanged();
+    } catch (err) {
+      handleActionError(err, t("edrProviders.actionsError"));
+    } finally {
+      setBusy(null);
+      setConfirmActions(false);
+    }
+  };
+
+  const setPush = async (next: boolean, replaceExisting = false) => {
+    setBusy("push");
+    const errorFallback = t("edrProviders.pushError");
+    try {
+      if (next) {
+        try {
+          await enableEdrPush(connection.id, {
+            errorFallback,
+            successMessage: t("edrProviders.pushOnToast"),
+            // The console already pushes elsewhere: the dialog explains it instead of a toast.
+            suppressErrorToast: (status, code) => status === 409 && code === "push_conflict",
+            friendly: (code) =>
+              ["public_url_unset", "public_url_not_https", "connection_inactive", "push_state_changed"].includes(code)
+                ? t(/* i18n-dynamic */ `edrProviders.pushErrors.${code}`)
+                : undefined,
+          }, { replaceExisting });
+        } catch (err) {
+          if (err instanceof ActionError && err.status === 409 && err.code === "push_conflict") {
+            setConfirmReplacePush(true);
+            return;
+          }
+          throw err;
+        }
+      } else {
+        const result = await disableEdrPush(connection.id, {
+          errorFallback,
+          successMessage: (r) => (r.warnings?.length ? "" : t("edrProviders.pushOffToast")),
+        });
+        if (result.warnings?.length) showToast({ type: "warning", message: result.warnings.join(" ") });
+      }
+      setTestSent(false);
+      onChanged();
+    } catch (err) {
+      handleActionError(err, errorFallback);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handlePushTest = async () => {
+    setBusy("pushTest");
+    try {
+      await sendEdrPushTest(connection.id, {
+        errorFallback: t("edrProviders.pushTestError"),
+        successMessage: t("edrProviders.pushTestQueuedToast"),
+      });
+      setTestSent(true);
+      onChanged();
+    } catch (err) {
+      handleActionError(err, t("edrProviders.pushTestError"));
     } finally {
       setBusy(null);
     }
@@ -389,6 +467,93 @@ export default function EdrProviderConnectionCard({
               {t("edrProviders.intervalInvalid")}
             </p>
           )}
+
+          <div data-testid="edr-connection-switches" className="mt-4 space-y-3 rounded-md border bg-muted/10 p-3">
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                data-testid="edr-connection-actions-enabled"
+                type="checkbox"
+                role="switch"
+                className="mt-1"
+                checked={connection.actionsEnabled === true}
+                disabled={busy !== null}
+                onChange={(e) => (e.target.checked ? setConfirmActions(true) : void setActionsEnabled(false))}
+              />
+              <span>
+                <span className="font-medium">{t("edrProviders.actionsLabel")}</span>
+                <span className="block text-xs text-muted-foreground">{t("edrProviders.actionsHelp")}</span>
+              </span>
+            </label>
+            {connection.pushSupported === true && (
+              <div>
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    data-testid="edr-connection-push-enabled"
+                    type="checkbox"
+                    role="switch"
+                    className="mt-1"
+                    checked={connection.pushEnabled === true}
+                    disabled={busy !== null}
+                    onChange={(e) => void setPush(e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-medium">{t("edrProviders.pushLabel")}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {t("edrProviders.pushHelp", { provider: providerLabel })}
+                    </span>
+                  </span>
+                </label>
+                {connection.pushEnabled === true && (
+                  <div className="mt-2 flex flex-wrap items-center gap-3 pl-6">
+                    <span data-testid="edr-connection-push-last" className="text-xs text-muted-foreground">
+                      {connection.lastHintAt
+                        ? t("edrProviders.pushLast", { relative: formatRelativeTime(connection.lastHintAt) })
+                        : t("edrProviders.pushNone")}
+                    </span>
+                    <button
+                      type="button"
+                      data-testid="edr-connection-push-test"
+                      disabled={busy !== null}
+                      onClick={() => void handlePushTest()}
+                      className="rounded-md border bg-card px-3 py-1 text-xs font-medium disabled:opacity-50"
+                    >
+                      {t("edrProviders.pushTest")}
+                    </button>
+                    {testSent && (
+                      <span data-testid="edr-connection-push-test-note" className="text-xs text-muted-foreground">
+                        {t("edrProviders.pushTestNote")}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <ConfirmDialog
+            open={confirmActions}
+            onClose={() => busy === null && setConfirmActions(false)}
+            onConfirm={() => void setActionsEnabled(true)}
+            title={t("edrProviders.actionsConfirmTitle")}
+            message={t("edrProviders.actionsConfirmMessage", { name: connection.name })}
+            confirmLabel={t("edrProviders.actionsConfirmLabel")}
+            variant="warning"
+            isLoading={busy === "actions"}
+            confirmTestId="edr-connection-actions-confirm"
+          />
+          <ConfirmDialog
+            open={confirmReplacePush}
+            onClose={() => busy === null && setConfirmReplacePush(false)}
+            onConfirm={() => {
+              setConfirmReplacePush(false);
+              void setPush(true, true);
+            }}
+            title={t("edrProviders.pushReplaceTitle")}
+            message={t("edrProviders.pushReplaceMessage", { provider: providerLabel })}
+            confirmLabel={t("edrProviders.pushReplaceConfirm")}
+            variant="warning"
+            isLoading={busy === "push"}
+            confirmTestId="edr-connection-push-replace-confirm"
+          />
 
           {!editingCredentials && fields.length > 0 && (
             <button

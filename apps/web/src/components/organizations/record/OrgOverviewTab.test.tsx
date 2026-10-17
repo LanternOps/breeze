@@ -6,6 +6,8 @@ import OrgOverviewTab from './OrgOverviewTab';
 import type { OrgFetch, OrgSummary } from './orgRecordFetch';
 import type { ServiceManagementMode } from './orgRecordTabs';
 
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+
 const ORG_ID = 'org-record-1';
 
 const BASE_SUMMARY: OrgSummary = {
@@ -146,6 +148,32 @@ describe('OrgOverviewTab — Service Management mode gate (#5075 W04)', () => {
     expect(screen.queryByTestId('org-overview-tile-tickets')).toBeNull();
     expect(screen.queryByTestId('org-overview-tile-contracts')).toBeNull();
     expect(screen.queryByTestId('org-overview-tile-invoices')).toBeNull();
+  });
+});
+
+describe('OrgOverviewTab — critical alert device link (ui-flow W03)', () => {
+  const criticalAlert = {
+    id: 'al-1',
+    title: 'Disk full',
+    severity: 'critical',
+    status: 'active',
+    deviceId: 'dev-1',
+    deviceHostname: 'edge-01',
+    createdAt: '2026-09-05T10:00:00.000Z',
+  };
+
+  it('links a critical alert hostname to the device', async () => {
+    renderTab(BASE_SUMMARY, fetchFor({ alerts: () => json({ data: [criticalAlert] }) }));
+    const link = await screen.findByTestId('device-record-link');
+    expect(link).toHaveAttribute('href', '/devices/dev-1');
+    expect(link).toHaveTextContent('edge-01');
+  });
+
+  it('prints the hostname as text when the alert has no deviceId', async () => {
+    const { deviceId: _omit, ...detached } = criticalAlert;
+    renderTab(BASE_SUMMARY, fetchFor({ alerts: () => json({ data: [detached] }) }));
+    await waitFor(() => expect(screen.getByText(/edge-01/)).toBeTruthy());
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
   });
 });
 

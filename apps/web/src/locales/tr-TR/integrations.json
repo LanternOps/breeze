@@ -1409,6 +1409,34 @@
       "degraded": "Düşük performanslı",
       "unhealthy": "Sağlıksız",
       "unknown": "Bilinmiyor"
-    }
+    },
+    "actionsLabel": "Müdahale eylemlerine izin ver",
+    "actionsHelp": "Teknisyenlerin bu bağlantı üzerinden cihazları izole etmesine ve tarama çalıştırmasına izin verir.",
+    "actionsConfirmTitle": "Müdahale eylemlerine izin verilsin mi?",
+    "actionsConfirmMessage": "Cihazlarda çalıştırma izni olan teknisyenler, “{{name}}” üzerinden yönetilen uç noktaları izole edebilecek, izolasyonu kaldırabilecek ve tarama çalıştırabilecek.",
+    "actionsConfirmLabel": "İzin ver",
+    "actionsOnToast": "Müdahale eylemlerine izin verildi",
+    "actionsOffToast": "Müdahale eylemleri kapatıldı",
+    "actionsError": "Müdahale eylemleri güncellenemedi.",
+    "pushLabel": "Push olayları",
+    "pushHelp": "{{provider}}, yeni olaylar hakkında Breeze’i bilgilendirir; bu, normal zamanlamadan daha erken bir eşitleme başlatır. Zamanlanmış eşitlemeler sürer.",
+    "pushOnToast": "Push olayları etkinleştirildi",
+    "pushOffToast": "Push olayları devre dışı bırakıldı",
+    "pushReplaceTitle": "Mevcut push hedefi değiştirilsin mi?",
+    "pushReplaceMessage": "{{provider}} push olaylarını zaten başka bir hedefe gönderiyor (örneğin bir SIEM). Breeze ile değiştirmek bu akışı durdurur.",
+    "pushReplaceConfirm": "Değiştir ve etkinleştir",
+    "pushError": "Push olayları değiştirilemedi.",
+    "pushErrors": {
+      "public_url_unset": "Push olaylarını etkinleştirmeden önce sunucunun genel URL’sini ayarlayın.",
+      "public_url_not_https": "Push olayları HTTPS bir genel URL gerektirir.",
+      "connection_inactive": "Push olaylarını etkinleştirmeden önce bağlantıyı etkinleştirin.",
+      "push_state_changed": "Push ayarları etkinleştirme sırasında değişti. Yenileyip tekrar deneyin."
+    },
+    "pushTest": "Test olayı gönder",
+    "pushTestQueuedToast": "Test olayı istendi",
+    "pushTestError": "Test olayı gönderilemedi.",
+    "pushTestNote": "Test olayının ulaşması birkaç dakika sürebilir.",
+    "pushLast": "Son push olayı: {{relative}}",
+    "pushNone": "Henüz push olayı alınmadı"
   }
 }

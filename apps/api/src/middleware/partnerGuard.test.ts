@@ -303,6 +303,16 @@ describe('isPartnerGuardExemptPath — exempt list (table-driven)', () => {
     ['/api/v1/webhooks', false],          // the CRUD webhook router stays guarded
     ['/api/v1/webhooks/stripe', false],   // unchanged
     ['/api/v1/webhooks/tickets', false],  // unchanged
+    // EDR push webhook (W03 PR-B): exact /webhooks/edr/<uuid> only
+    ['/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e', true],
+    ['/api/v1/webhooks/edr/7D2B1C4E-0A3F-4B5C-9D6E-1F2A3B4C5D6E', true],
+    ['/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e/', false],
+    ['/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e/extra', false],
+    ['/api/v1/webhooks/edr/not-a-uuid', false],
+    ['/api/v1/webhooks/edr/------------------------------------', false],
+    ['/api/v1/webhooks/edr', false],
+    ['/api/v1/webhooks/edr/', false],
+    ['/api/v1/edr/connections', false],
     // pre-existing exemptions, unchanged
     ['/api/v1/auth/login', true],
     ['/api/v1/config', true],
@@ -350,6 +360,22 @@ describe('isPartnerGuardExemptPath — exempt list (table-driven)', () => {
     expect(other.status).toBe(200);
     expect(verifyToken).toHaveBeenCalledTimes(1);
     expect(limitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a bearer-shaped Authorization on the EDR push webhook never reaches verifyToken or the partners read', async () => {
+    vi.clearAllMocks();
+    const app = new Hono();
+    app.use('*', partnerGuardWithExemptions);
+    app.post('/api/v1/webhooks/edr/:id', (c) => c.json({ ok: true }));
+    vi.mocked(verifyToken).mockResolvedValue({ partnerId: 'p-1' } as never);
+    limitMock.mockResolvedValue([{ status: 'active', settings: {} }]);
+    const res = await app.request('/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e', {
+      method: 'POST', headers: { Authorization: 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig' },
+    });
+    expect(res.status).toBe(200);
+    expect(verifyToken).not.toHaveBeenCalled();
+    expect(limitMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 });
 it.each([

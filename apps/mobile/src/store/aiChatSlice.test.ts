@@ -7,10 +7,17 @@ import reducer, {
   addUserMessage,
   appendDelta,
   appendToolEvent,
+  discardTurn,
   failAssistantMessage,
   finishAssistantMessage,
   loadHistory,
   resetChat,
+  sessionCreated,
+  planDecision,
+  planNoLongerPending,
+  planProposed,
+  planStreamEvent,
+  setTurnModel,
   type AiChatState,
   type ChatMessage,
 } from './aiChatSlice';
@@ -22,6 +29,7 @@ const INITIAL: AiChatState = {
   inFlightTool: null,
   status: 'idle',
   error: null,
+  sessionOrgId: null,
 };
 
 describe('aiChatSlice', () => {
@@ -206,6 +214,7 @@ describe('aiChatSlice', () => {
       inFlightTool: { toolUseId: 'tu', toolName: 'x' },
       status: 'streaming',
       error: 'previous',
+      sessionOrgId: 'org-old',
     };
     const fresh: ChatMessage[] = [
       { id: 'u1', role: 'user', content: 'hi', sentAt: 't' },
@@ -225,6 +234,19 @@ describe('aiChatSlice', () => {
     expect(next.inFlightTool).toBeNull();
     expect(next.status).toBe('idle');
     expect(next.error).toBeNull();
+    // No org on the payload: the old chat's org must not linger.
+    expect(next.sessionOrgId).toBeNull();
+  });
+
+  it("tracks the open chat's org from create, history load and catch-up", () => {
+    let s = reducer(INITIAL, sessionCreated({ sessionId: 's1', orgId: 'org-a' }));
+    expect(s.sessionOrgId).toBe('org-a');
+    s = reducer(s, loadHistory({ sessionId: 's2', messages: [], orgId: 'org-b' }));
+    expect(s.sessionOrgId).toBe('org-b');
+    s = reducer(s, reconcileHistory({ sessionId: 's2', messages: [], complete: true, orgId: 'org-c' }));
+    expect(s.sessionOrgId).toBe('org-c');
+    s = reducer(s, resetChat());
+    expect(s.sessionOrgId).toBeNull();
   });
 
   it('resetChat returns to initial state', () => {
@@ -278,6 +300,98 @@ describe('reconcileHistory', () => {
     expect(s.status).toBe('idle');
     expect(s.streamingMessageId).toBeNull();
     expect(s.inFlightTool).toBeNull();
+    expect(s.error).toBeNull();
+  });
+});
+
+describe('aiChatSlice action plans', () => {
+  const STEPS = [
+    { toolName: 'manage_services', input: {}, reasoning: 'Restart', status: 'pending' },
+    { toolName: 'run_script', input: {}, reasoning: 'Clear', status: 'pending' },
+  ];
+
+  function streaming(): AiChatState {
+    return reducer(INITIAL, addPendingAssistantMessage({ id: 'a1', sentAt: 'now' }));
+  }
+
+  function planOf(s: AiChatState) {
+    const msg = s.messages.find((m) => m.id === 'a1');
+    return msg && msg.role === 'assistant' ? msg.plan : undefined;
+  }
+
+  it('planProposed + plan_approval_required build an awaiting plan on the streaming message', () => {
+    let s = reducer(streaming(), planProposed({ messageId: 'a1', toolUseId: 'tu-plan' }));
+    expect(planOf(s)).toMatchObject({ toolUseId: 'tu-plan', status: 'awaiting', steps: [] });
+    s = reducer(s, planStreamEvent({
+      messageId: 'a1',
+      event: { type: 'plan_approval_required', planId: 'plan-1', steps: STEPS },
+    }));
+    expect(planOf(s)).toMatchObject({ toolUseId: 'tu-plan', planId: 'plan-1', status: 'awaiting' });
+    expect(planOf(s)?.steps).toHaveLength(2);
+  });
+
+  it('step events find the plan by planId even when the messageId is stale', () => {
+    let s = reducer(streaming(), planStreamEvent({
+      messageId: 'a1',
+      event: { type: 'plan_approval_required', planId: 'plan-1', steps: STEPS },
+    }));
+    s = reducer(s, planDecision({ messageId: 'a1', decision: 'approved' }));
+    s = reducer(s, planStreamEvent({
+      messageId: 'other',
+      event: { type: 'plan_step_complete', planId: 'plan-1', stepIndex: 0, isError: false },
+    }));
+    expect(planOf(s)?.status).toBe('executing');
+    expect(planOf(s)?.steps[0]?.status).toBe('completed');
+  });
+
+  it('planDecision rejected and planNoLongerPending settle the plan', () => {
+    const base = reducer(streaming(), planStreamEvent({
+      messageId: 'a1',
+      event: { type: 'plan_approval_required', planId: 'plan-1', steps: STEPS },
+    }));
+    expect(planOf(reducer(base, planDecision({ messageId: 'a1', decision: 'rejected' })))?.status).toBe('rejected');
+    expect(planOf(reducer(base, planNoLongerPending({ messageId: 'a1' })))?.status).toBe('expired');
+  });
+
+  it('the plan tool_result settles the plan through appendToolEvent', () => {
+    let s = reducer(streaming(), appendToolEvent({
+      messageId: 'a1',
+      event: { toolUseId: 'tu-plan', toolName: 'propose_action_plan', state: 'started' },
+    }));
+    s = reducer(s, planProposed({ messageId: 'a1', toolUseId: 'tu-plan' }));
+    s = reducer(s, appendToolEvent({
+      messageId: 'a1',
+      event: { toolUseId: 'tu-plan', toolName: 'tool', state: 'completed', output: { result: 'rejected' } },
+    }));
+    expect(planOf(s)?.status).toBe('rejected');
+  });
+});
+
+describe('aiChatSlice model provenance (W05)', () => {
+  const turnModel = {
+    requestedModel: 'm', requestedDisplayName: 'Opus', servedModel: 'm', servedDisplayName: 'Opus',
+    fallbackUsed: false, appliedOptions: { effort: 'high' as const }, fastDowngraded: false,
+  };
+
+  it('setTurnModel stamps what ran on that assistant message only', () => {
+    let s = reducer(INITIAL, addPendingAssistantMessage({ id: 'a1', sentAt: 't' }));
+    s = reducer(s, addPendingAssistantMessage({ id: 'a2', sentAt: 't' }));
+    s = reducer(s, setTurnModel({ messageId: 'a2', turnModel }));
+    const [a1, a2] = s.messages;
+    expect(a1.role === 'assistant' && a1.turnModel).toBeFalsy();
+    expect(a2.role === 'assistant' && a2.turnModel).toEqual(turnModel);
+  });
+
+  it('discardTurn drops the optimistic rows of a refused turn and returns to idle', () => {
+    let s = reducer(INITIAL, addUserMessage({ id: 'u0', content: 'keep', sentAt: 't' }));
+    s = reducer(s, addUserMessage({ id: 'u1', content: 'switch', sentAt: 't' }));
+    s = reducer(s, addPendingAssistantMessage({ id: 'a1', sentAt: 't' }));
+    s = reducer(s, setInFlightTool({ toolUseId: 't', toolName: 'x' }));
+    s = reducer(s, discardTurn({ ids: ['u1', 'a1'] }));
+    expect(s.messages.map((m) => m.id)).toEqual(['u0']);
+    expect(s.streamingMessageId).toBeNull();
+    expect(s.inFlightTool).toBeNull();
+    expect(s.status).toBe('idle');
     expect(s.error).toBeNull();
   });
 });

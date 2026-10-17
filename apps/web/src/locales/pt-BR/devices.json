@@ -4160,6 +4160,42 @@
       "false_positive": "Falso positivo",
       "dismissed": "Descartada",
       "unknown": "Desconhecido"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Isolar dispositivo",
+        "unisolate": "Liberar isolamento",
+        "scan": "Executar varredura",
+        "update_agent": "Atualizar agente"
+      },
+      "unavailable": "Indisponível",
+      "mfaRequired": "Verifique com MFA para executar ações de resposta",
+      "error": "Não foi possível solicitar a ação de resposta.",
+      "requested": "{{action}} solicitado para {{device}}",
+      "inProgress": "Já existe outra ação de resposta em andamento para este dispositivo.",
+      "confirming": "Solicitado — confirmando com {{vendor}}",
+      "reasonLabel": "Motivo (opcional)",
+      "confirm": {
+        "isolate": {
+          "title": "Isolar {{device}}?",
+          "message": "O {{vendor}} vai isolar {{device}}: o dispositivo perde o acesso à rede, exceto ao {{vendor}}. Você pode liberar o isolamento depois."
+        },
+        "unisolate": {
+          "title": "Liberar o isolamento de {{device}}?",
+          "message": "O {{vendor}} vai restaurar o acesso normal à rede de {{device}}."
+        }
+      }
+    },
+    "history": {
+      "heading": "Ações de resposta recentes",
+      "checking": "Verificando",
+      "aiBadge": "IA",
+      "status": {
+        "queued": "Na fila",
+        "submitted": "Em andamento",
+        "succeeded": "Concluída",
+        "failed": "Falhou"
+      }
     }
   },
   "endpointMessages": {

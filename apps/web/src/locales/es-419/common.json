@@ -700,7 +700,23 @@
       "noSelection": "Seleccionar organización",
       "searchOrganizations": "Buscar organizaciones…",
       "noMatches": "Ninguna organización coincide",
-      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado."
+      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado.",
+      "recent": "Recientes",
+      "pane": {
+        "destinations": {
+          "overview": "Resumen",
+          "devices": "Dispositivos",
+          "tickets": "Tickets",
+          "alerts": "Alertas",
+          "sites": "Sitios",
+          "billing": "Facturación"
+        },
+        "offlineCount": "{{count}} sin conexión",
+        "openCount": "{{count}} abiertos",
+        "criticalCount": "{{count}} críticas",
+        "noCritical": "ninguna",
+        "hint": "Haz clic en un nombre para cambiar · haz clic en una página para cambiar e ir"
+      }
     },
     "header": {
       "menu": "Menú",

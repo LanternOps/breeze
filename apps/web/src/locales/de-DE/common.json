@@ -700,7 +700,23 @@
       "noSelection": "Organisation auswählen",
       "searchOrganizations": "Organisationen durchsuchen…",
       "noMatches": "Keine passenden Organisationen",
-      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl."
+      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl.",
+      "recent": "Zuletzt",
+      "pane": {
+        "destinations": {
+          "overview": "Übersicht",
+          "devices": "Geräte",
+          "tickets": "Support-Tickets",
+          "alerts": "Warnungen",
+          "sites": "Standorte",
+          "billing": "Abrechnung"
+        },
+        "offlineCount": "{{count}} nicht erreichbar",
+        "openCount": "{{count}} offen",
+        "criticalCount": "{{count}} kritisch",
+        "noCritical": "keine",
+        "hint": "Namen anklicken zum Wechseln · Seite anklicken zum Wechseln und Öffnen"
+      }
     },
     "header": {
       "menu": "Menü",

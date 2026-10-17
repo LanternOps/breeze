@@ -314,6 +314,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
+  // AI device file read policy: only the org override row cascades; the
+  // partner default has org_id NULL and never participates.
+  'ai_data_policies',
   // ai_invocations (AI model registry W02, #7600): shape 1, APPEND-ONLY
   // (REVOKE UPDATE/DELETE from breeze_app + ai_invocations_append_only), so it
   // is ALSO in AUDIT_ADMIN_REQUIRED_TABLES. Leaf: FK out to organizations only,

@@ -96,6 +96,18 @@ export const edrConnections = pgTable('edr_connections', {
   capabilitiesSnapshot: text('capabilities_snapshot').array().notNull().default(sql`'{}'::text[]`),
   /** W03: response actions allowed through this console. Opt-in (partner admin + MFA); default OFF. */
   actionsEnabled: boolean('actions_enabled').notNull().default(false),
+  /**
+   * W03 PR-B: vendor push events registered and accepted for this console. Flipped
+   * true only after the vendor registration call succeeds (routes/edr/connections.ts).
+   */
+  pushEnabled: boolean('push_enabled').notNull().default(false),
+  pushRegisteredAt: timestamp('push_registered_at', { withTimezone: true }),
+  /**
+   * W03 PR-B: durable "this connection has news" marker set by the push webhook.
+   * A hint only schedules a read sync; the detections run CAS-clears it after it
+   * commits (services/edrProviders/hints.ts).
+   */
+  pendingHintAt: timestamp('pending_hint_at', { withTimezone: true }),
   createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

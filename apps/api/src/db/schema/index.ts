@@ -77,6 +77,7 @@ export * from './aiAgentImpactDaily';
 export * from './aiAgentCircuitState';
 export * from './aiUnattendedExposure';
 export * from './aiScriptPolicies';
+export * from './aiDataPolicies';
 export * from './aiScriptLaneState';
 export * from './aiAlertVerdicts';
 export * from './aiAgentSchedules';

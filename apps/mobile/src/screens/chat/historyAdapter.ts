@@ -1,5 +1,8 @@
 import type { ChatMessage, ToolEvent } from '../../store/aiChatSlice';
 import type { ServerAiMessage } from '../../services/aiChat';
+import { parseTurnModel } from './modelPicker';
+import { applyHistoryStepResult, applyPlanToolResult, isPlanTool, proposedPlan } from './planState';
+import { isTurnComplete } from './turnState';
 
 // `toolInput` is `unknown` on the wire (JSON column) — narrow it the same
 // way `HomeScreen`'s live SSE handler does before it lands on a `ToolEvent`.
@@ -12,13 +15,24 @@ function toolInputRecord(value: unknown): Record<string, unknown> | undefined {
 // system / tool_use / tool_result); the slice models user + assistant
 // (with toolEvents folded into the assistant turn). System messages skip
 // the UI; tool rows attach to the most recent assistant message.
-export function historyToMessages(rows: ServerAiMessage[]): ChatMessage[] {
+//
+// `lastTurnModel` (session GET, W05) is what answered the most recent turn;
+// the server keeps no per-message record, so only the final assistant turn
+// can show it after a reload — and only when that turn has been answered
+// (not a catch-up fetch of a reply still in progress).
+export function historyToMessages(rows: ServerAiMessage[], lastTurnModel?: unknown): ChatMessage[] {
   const out: ChatMessage[] = [];
+  // The message holding the latest approved plan; later step results tick it.
+  let planMessage: ChatMessage | null = null;
+  const toolNames = new Map<string, string>();
 
   for (const row of rows) {
     if (row.role === 'system') continue;
 
     if (row.role === 'user') {
+      // A new turn: later tool results belong to it, never to an earlier
+      // plan the user walked away from (an unfinished plan stays unfinished).
+      planMessage = null;
       out.push({
         id: row.id,
         role: 'user',
@@ -64,8 +78,19 @@ export function historyToMessages(rows: ServerAiMessage[]): ChatMessage[] {
         input: toolInputRecord(row.toolInput),
       };
       target.toolEvents.push(evt);
+      toolNames.set(evt.toolUseId, evt.toolName);
+      // A plan-first turn: the proposal is the tool input, so the plan card
+      // can be rebuilt from history; its decision comes from the tool_result.
+      if (isPlanTool(row.toolName)) target.plan = proposedPlan(evt.toolUseId, row.toolInput);
     } else if (row.role === 'tool_result') {
       const matchId = row.toolUseId ?? '';
+      if (target.plan && target.plan.toolUseId === matchId) {
+        target.plan = applyPlanToolResult(target.plan, row.toolOutput);
+        planMessage = target.plan.status === 'approved' ? target : null;
+      } else if (planMessage && planMessage.role === 'assistant' && planMessage.plan) {
+        const name = row.toolName ?? toolNames.get(matchId);
+        if (name) planMessage.plan = applyHistoryStepResult(planMessage.plan, name);
+      }
       const existing = target.toolEvents.find((t) => t.toolUseId === matchId);
       if (existing) {
         existing.state = 'completed';
@@ -88,6 +113,10 @@ export function historyToMessages(rows: ServerAiMessage[]): ChatMessage[] {
       }
     }
   }
+
+  const turnModel = parseTurnModel(lastTurnModel);
+  const last = out[out.length - 1];
+  if (turnModel && last && last.role === 'assistant' && isTurnComplete(out)) last.turnModel = turnModel;
 
   return out;
 }

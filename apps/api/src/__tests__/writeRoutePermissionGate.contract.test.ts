@@ -377,6 +377,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PATCH /api/v1/users/me': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'POST /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
   'DELETE /api/v1/users/me/avatar': 'own account: Caller edits own profile/preferences/avatar only (auth.user.id)',
+  // routes/webhooks/edr.ts
+  'POST /api/v1/webhooks/edr/:connectionId': 'webhook: EDR push hint; connection lookup + adapter secret verification in handler',
   // routes/webhooks/emailProvider.ts
   'POST /api/v1/webhooks/email-provider/resend': 'webhook: Svix signature verified with configured webhook secret',
   // routes/webhooks/quickbooks.ts

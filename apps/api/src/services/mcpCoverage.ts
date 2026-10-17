@@ -259,6 +259,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
   'agents/workloads.ts': { exempt: 'agent_transport' },
   'ai.ts': { exempt: 'ai_transport', note: 'Chat session transport (sessions, messages, interrupt, approve-plan); usage/budget/admin sub-routes are AI governance.' },
+  'ai/dataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Org override of the AI data policy (device file read level, tool-output retention) -- the AI must not loosen the limits on what it may read or how long its outputs persist.' },
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },
   'ai/scriptProposals.ts': { tools: ['propose_script', 'get_script_proposal'] },
   'aiAgentSchedules.ts': { gap: '#6780' },
@@ -334,7 +335,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // no adapter implements a detection action (GravityZone quarantine
   // restore/delete waits on the lab gate), so only the endpoint tool covers it.
   'edr/actions.ts': { tools: ['edr_endpoint_action'] },
-  'edr/connections.ts': { exempt: 'vendor_console_admin', note: 'stores and rotates the EDR console API key' },
+  'edr/connectionPush.ts': { exempt: 'vendor_console_admin', note: 'registers the vendor push webhook and its shared secret' },
+  'edr/connections.ts': { exempt: 'vendor_console_admin', note: 'stores and rotates the EDR console API key; its /sync route is also reachable as sync_edr_data' },
   'edr/detections.ts': { tools: ['get_edr_status', 'list_edr_detections'] },
   'edr/endpoints.ts': { exempt: 'vendor_console_admin', note: 'lists EDR endpoint rows and links one to a Breeze device' },
   'edr/providers.ts': { exempt: 'vendor_console_admin', note: 'static adapter catalog for the connect-a-provider form' },
@@ -552,6 +554,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'pam.ts': { tools: ['request_elevation', 'revoke_elevation', 'get_elevation_history'] },
   'pamAuditExport.ts': { exempt: 'human_only_audit_export' },
   'partner.ts': { exempt: 'internal_plumbing', note: "/me + dashboard reads; get_executive_summary already overlaps most of the value. From #6801." },
+  'partnerAiDataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner default/ceiling of the AI data policy (device file read level, tool-output retention) -- the AI must not set its own data-handling policy.' },
   'partnerAiScriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Partner-wide ceiling on the unattended AI lane -- the AI must not widen its own authority.' },
   'partnerApi/alerts.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API for service principals (#3243); duplicates in-product reads that already have tools.' },
   'partnerApi/tickets.ts': { exempt: 'partner_api_surface', note: 'Machine-to-machine Partner API tickets feed for service principals; in-product ticket reads already have tools (manage_tickets).' },
@@ -744,6 +747,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'viewers/download.ts': { exempt: 'internal_plumbing' },
   'vulnerabilities.ts': { tools: ['get_vulnerability_report', 'get_device_vulnerabilities', 'remediate_vulnerability'] },
   'webhooks.ts': { tools: ['query_webhooks', 'test_webhook'] },
+  'webhooks/edr.ts': { exempt: 'inbound_integration' },
   'webhooks/emailProvider.ts': { exempt: 'inbound_integration' },
   'webhooks/quickbooks.ts': { exempt: 'inbound_integration' },
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },
