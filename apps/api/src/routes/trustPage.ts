@@ -217,9 +217,18 @@ trustPageRoutes.post('/:orgId/trust-page/partner-home', scopes, orgWrite, requir
       return c.json({ error: 'This page is live without a recorded customer authorization. Unpublish it before removing the partner-home flag.', code: 'PARTNER_HOME_UNPUBLISH_FIRST' }, 422);
     }
     const previous = await db.transaction(async (tx) => {
-      // Locked so a concurrent publish/unpublish of the current home cannot change the answer under us.
+      // Serialize partner-home changes per partner: without it two concurrent moves both read the same (or no)
+      // current home and the second dies on trust_pages_partner_home_uq as a 500. Taken before the select, so the
+      // select below runs on a fresh READ COMMITTED snapshot that includes the other move's commit.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`trust-page-partner-home:${ctx.partnerId}`}, 0))`);
+      // Row-locked so a concurrent publish/unpublish of the current home cannot change the answer under us.
       const [prev] = await tx.select({ id: trustPages.id, orgId: trustPages.orgId, publishedAt: trustPages.publishedAt, publicationAuthorizedBy: trustPages.publicationAuthorizedBy })
         .from(trustPages).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true))).limit(1).for('update');
+      if (!isPartnerHome && prev && prev.id === page.id && prev.publishedAt && !prev.publicationAuthorizedBy) {
+        // The pre-check above read an unlocked row; a publish that committed since (home pages record no
+        // authorization) must still block the clear.
+        throw new TrustPageError('This page is live without a recorded customer authorization. Unpublish it before removing the partner-home flag.', 422, 'PARTNER_HOME_UNPUBLISH_FIRST');
+      }
       if (isPartnerHome && prev && prev.id !== page.id) {
         // Ruling 28: losing the flag turns the previous home into a customer-shaped page. If it is live without a
         // recorded authorization, that page would be serving unattested — refuse (the throw rolls everything back).

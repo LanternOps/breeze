@@ -5,7 +5,10 @@ import './setup';
  * counts (raw `count(*) filter` SQL), the portal dashboard link (org-scoped page read + system-scoped partner
  * read), and neither creating a trust page row.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// Pinned: the trust-state gates are asserted under enforcement, not whatever the test env defaults to.
+vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode: () => 'enforce' }));
 import { Hono } from 'hono';
 import { eq, sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
@@ -116,18 +119,19 @@ describe('trust page W02i read paths (real DB, RLS)', () => {
     expect(out.exists).toBe(false);
   });
 
-  it('portal dashboard link: null before publish, the portal-relative path after, null for a restricted partner', async () => {
+  it('portal dashboard link: null before publish, the portal-relative path after, null once the partner may not publish', async () => {
     const s = await seed();
     expect(await portalLink(s.orgId)).toBeNull();
     expect(await pageRows(s.orgId)).toHaveLength(0);
     await publish(s);
     expect(await portalLink(s.orgId)).toBe(`/trust/${s.partnerSlug}/${s.orgSlug}`);
+    expect((await status(s.orgId)).publicPath).toBe(`/portal/trust/${s.partnerSlug}/${s.orgSlug}`);
 
-    await getTestDb().execute(sql`UPDATE partners SET trust_state = 'restricted' WHERE id = ${s.partnerId}`);
-    // Restricted partners never publish under any mode but 'off'; the test env's mode decides — assert consistency
-    // with the publish rule rather than a fixed value.
-    const { trustPublishDecision } = await import('../../services/trustPage/publication');
-    const expected = trustPublishDecision('restricted').allowed ? `/trust/${s.partnerSlug}/${s.orgSlug}` : null;
-    expect(await portalLink(s.orgId)).toBe(expected);
+    for (const state of ['restricted', 'probation'] as const) {
+      await getTestDb().execute(sql`UPDATE partners SET trust_state = ${state} WHERE id = ${s.partnerId}`);
+      expect(await portalLink(s.orgId)).toBeNull();
+      // The AI tool applies the same serving gate: still published, but no URL that would 404.
+      expect(await status(s.orgId)).toMatchObject({ published: true, publicPath: null });
+    }
   });
 });

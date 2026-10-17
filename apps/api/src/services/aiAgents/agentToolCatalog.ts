@@ -203,6 +203,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_cis_device_report: 'security_response',
   remediate_sensitive_data: 'security_response',
   get_security_posture: 'security_response',
+  get_trust_page_status: 'security_response', // read-only public trust page status (trust center W2)
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',

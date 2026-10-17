@@ -33,11 +33,19 @@ async function trustPathForOrg(orgId: string): Promise<string | null> {
   // state read under system scope, as portal invoices/quotes read the partner name.
   const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
     db.select({ slug: partners.slug, trustState: partners.trustState }).from(partners).where(eq(partners.id, page.partnerId)).limit(1)));
-  if (!partner) return null;
+  if (!partner) {
+    // A published page whose partner row is gone should be impossible; say so rather than vanish silently.
+    console.warn('[portal/trustPageLink] published trust page has no partner row', { orgId, partnerId: page.partnerId });
+    return null;
+  }
   // The public page 404s for a partner that may not publish (restricted, or probation under enforcement).
   if (!trustPublishDecision(partner.trustState).allowed) return null;
   const slugs = parseTrustSlugs(partner.slug, page.orgSlug);
-  if (!slugs) return null;
+  if (!slugs) {
+    // The public page cannot be addressed either (it 404s); the editor's slug report is where this gets fixed.
+    console.warn('[portal/trustPageLink] published trust page has slugs the public route rejects', { orgId });
+    return null;
+  }
   return page.isPartnerHome ? `/trust/${slugs.partnerSlug}` : `/trust/${slugs.partnerSlug}/${slugs.orgSlug}`;
 }
 

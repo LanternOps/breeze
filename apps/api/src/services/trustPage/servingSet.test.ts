@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 const redisMock = vi.hoisted(() => ({ client: null as null | Record<string, ReturnType<typeof vi.fn> | Set<string>> }));
 vi.mock('../redis', () => ({ getRedis: () => redisMock.client }));
+const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../sentry', () => sentry);
 const afterCommit = vi.hoisted(() => [] as Array<() => unknown>);
 const dbRows = vi.hoisted(() => ({ rows: [] as unknown[], slugRows: [] as unknown[] }));
 vi.mock('../../db', () => {
@@ -177,7 +179,17 @@ describe('serving set', () => {
       expect(await isServing('nw/beta')).toBeNull();
       await servingSetRebuildSettled();
       expect(rebuilds()).toBe(1);
+      // Single-flight in process: the second null never even tries the cluster lock.
+      const lockAttempts = () => r().set.mock.calls.filter((c) => c[0] === TRUST_SERVING_REBUILD_LOCK_KEY).length;
+      expect(lockAttempts()).toBe(1);
       expect(r().set).toHaveBeenCalledWith(TRUST_SERVING_REBUILD_LOCK_KEY, '1', 'EX', 60, 'NX');
+      // The lock is held after success (it is the per-minute rate limit): a later null in the same minute
+      // tries the lock again but runs no second rebuild query.
+      r().exists.mockResolvedValueOnce(0);
+      expect(await isServing('nw/acme')).toBeNull();
+      await servingSetRebuildSettled();
+      expect(lockAttempts()).toBe(2);
+      expect(rebuilds()).toBe(1);
       // The rebuild is the full one: sentinel + every live member, then the built marker.
       expect(r()._ops[0]).toEqual(['sadd', expect.stringContaining('trust:serving:rebuild:'), TRUST_SERVING_SENTINEL, 'nw/acme']);
       expect(r()._ops.at(-1)).toEqual(['set', TRUST_SERVING_BUILT_KEY, '1']);
@@ -210,17 +222,36 @@ describe('serving set', () => {
       await servingSetRebuildSettled();
       expect(r().set).toHaveBeenCalledTimes(1); // markBuilt only
     });
-    it('a rebuild failure is logged and swallowed, and a later null can try again', async () => {
+    it('a lock-acquisition failure is logged, reported and swallowed; a later null can try again', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      r().multi.mockImplementationOnce(() => { throw new Error('boom'); });
+      sentry.captureException.mockClear();
       r().set.mockRejectedValueOnce(new Error('lock boom'));
       scheduleServingSetRebuild('test');
       await expect(servingSetRebuildSettled()).resolves.toBeUndefined();
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('self-heal'), expect.objectContaining({ reason: 'test' }), expect.any(Error));
+      expect(sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(r().multi).not.toHaveBeenCalled();
       scheduleServingSetRebuild('test-again');
       await servingSetRebuildSettled();
       expect(r().multi).toHaveBeenCalledTimes(1);
       warn.mockRestore();
+    });
+    it('a DB failure after the lock is held is swallowed and reported, and the lock stays held', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      sentry.captureException.mockClear();
+      dbRows.rows = Promise.reject(new Error('db down')) as never;
+      (dbRows.rows as unknown as Promise<unknown>).catch(() => {});
+      scheduleServingSetRebuild('db-fails');
+      await expect(servingSetRebuildSettled()).resolves.toBeUndefined();
+      expect(sentry.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }), undefined, { component: 'trustPage.servingSetSelfHeal' });
+      expect(await r().exists(TRUST_SERVING_REBUILD_LOCK_KEY)).toBe(1);
+      expect(r().multi).not.toHaveBeenCalled();
+      warn.mockRestore();
+    });
+    it('no Redis client: the self-heal is a no-op', async () => {
+      redisMock.client = null;
+      scheduleServingSetRebuild('no-redis');
+      await expect(servingSetRebuildSettled()).resolves.toBeUndefined();
     });
   });
   it('caches a payload for an hour and reads it back', async () => {

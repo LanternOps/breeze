@@ -16,6 +16,9 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, partners, trustPageAccessRequests, trustPageDeclarations, trustPages, trustPageSnapshots } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { partnerTrustMode } from '../config/partnerTrustMode';
+import { captureException } from './sentry';
+import { parseTrustSlugs } from './trustPage/resolve';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Declarations within this many days of expiry are "expiring" (the §18.2 reminder window). */
@@ -29,6 +32,7 @@ export interface TrustPageStatus {
   exists: boolean;
   published: boolean;
   publishedAt: string | null;
+  /** Null unless the public page actually serves: published, partner allowed to publish, valid slugs. */
   publicPath: string | null;
   lastEvaluatedAt: string | null;
   stale: boolean;
@@ -75,8 +79,11 @@ async function loadTrustPageStatus(orgId: string): Promise<TrustPageStatus> {
   let publicPath: string | null = null;
   if (published) {
     const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      db.select({ slug: partners.slug }).from(partners).where(eq(partners.id, page.partnerId)).limit(1)));
-    if (partner) publicPath = page.isPartnerHome ? `/portal/trust/${partner.slug}` : `/portal/trust/${partner.slug}/${page.orgSlug}`;
+      db.select({ slug: partners.slug, trustState: partners.trustState }).from(partners).where(eq(partners.id, page.partnerId)).limit(1)));
+    // Same gate as the public resolve (livePublicationPredicate + parseTrustSlugs): never hand out a URL that 404s.
+    const servable = partner && (partnerTrustMode() === 'off' || partner.trustState === 'trusted');
+    const slugs = partner ? parseTrustSlugs(partner.slug, page.orgSlug) : null;
+    if (servable && slugs) publicPath = page.isPartnerHome ? `/portal/trust/${slugs.partnerSlug}` : `/portal/trust/${slugs.partnerSlug}/${slugs.orgSlug}`;
   }
   return {
     exists: true,
@@ -96,7 +103,7 @@ export function registerTrustPageTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('get_trust_page_status', {
     tier: 1,
     domain: 'security',
-    searchHint: 'public trust page status: published, public URL, controls met, declarations expiring, access requests',
+    searchHint: 'public trust page status and URL',
     deviceArgs: [],
     definition: {
       name: 'get_trust_page_status',
@@ -117,6 +124,7 @@ export function registerTrustPageTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify(await loadTrustPageStatus(orgId));
       } catch (err) {
         console.error('[get_trust_page_status]', err);
+        captureException(err, undefined, { tool: 'get_trust_page_status' });
         return jsonError('Operation failed. Check server logs for details.');
       }
     },

@@ -5,6 +5,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partners, trustPages } from '../../db/schema';
 import { getRedis } from '../redis';
+import { captureException } from '../sentry';
 import { livePublicationPredicate } from './predicate';
 import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 
@@ -71,7 +72,10 @@ export function scheduleServingSetRebuild(reason: string): void {
           const members = await rebuildServingSetFromDb();
           console.info('[trustPage] serving set self-healed', { reason, members });
         } catch (err) {
-          console.warn('[trustPage] serving-set self-heal failed; the hourly rebuild will repair it', { reason }, err);
+          // To Sentry, not only a log: the hourly rebuild runs the same query, so a persistent failure here means
+          // public trust pages keep falling through to the live resolve (or 404) with nothing else alerting.
+          console.warn('[trustPage] serving-set self-heal failed; the hourly rebuild will retry', { reason }, err);
+          captureException(err, undefined, { component: 'trustPage.servingSetSelfHeal' });
         }
       }).finally(() => { rebuildInFlight = null; resolve(); });
     });

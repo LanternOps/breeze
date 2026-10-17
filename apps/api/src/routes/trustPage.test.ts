@@ -28,7 +28,7 @@ const trustMode = vi.hoisted(() => ({ value: 'off' as 'off' | 'shadow' | 'enforc
 vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: () => trustMode.value }));
 const auditMock = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../services/auditService', () => ({ createAuditLogAsync: auditMock }));
-const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], values: [] as unknown[], tx: 0, sets: [] as Array<Record<string, unknown>> }));
+const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], values: [] as unknown[], tx: 0, sets: [] as Array<Record<string, unknown>>, locks: [] as unknown[] }));
 const servingMock = vi.hoisted(() => ({ scheduleServingRefreshForPartner: vi.fn() }));
 vi.mock('../services/trustPage/servingSet', () => servingMock);
 // withTrustPageRevision is unit-tested in revision.test.ts; here a faithful stand-in: the "locked" revision is
@@ -46,7 +46,7 @@ vi.mock('../services/trustPage/revision', async () => {
   };
 });
 vi.mock('../db', () => {
-  const chain = () => { const c: any = {}; for (const m of ['select', 'from', 'where', 'innerJoin', 'leftJoin', 'limit', 'orderBy', 'for', 'update', 'set', 'insert', 'values', 'returning', 'delete', 'onConflictDoNothing']) c[m] = vi.fn(() => c); c.set = vi.fn((v: Record<string, unknown>) => { dbm.sets.push(v); return c; }); c.values = vi.fn((v: unknown) => { dbm.values.push(v); return c; }); c.then = (r: any) => Promise.resolve(dbm.rows.shift() ?? []).then(r); return c; };
+  const chain = () => { const c: any = {}; for (const m of ['select', 'from', 'where', 'innerJoin', 'leftJoin', 'limit', 'orderBy', 'for', 'update', 'set', 'insert', 'values', 'returning', 'delete', 'onConflictDoNothing']) c[m] = vi.fn(() => c); c.set = vi.fn((v: Record<string, unknown>) => { dbm.sets.push(v); return c; }); c.execute = vi.fn(async (q: unknown) => { dbm.locks.push(q); return []; }); c.values = vi.fn((v: unknown) => { dbm.values.push(v); return c; }); c.then = (r: any) => Promise.resolve(dbm.rows.shift() ?? []).then(r); return c; };
   return { db: Object.assign(chain(), { transaction: async (fn: any) => { dbm.tx++; return fn(chain()); } }), runOutsideDbContext: (fn: any) => fn(), withSystemDbAccessContext: (fn: any) => fn() };
 });
 import { authMiddleware } from '../middleware/auth';
@@ -59,11 +59,12 @@ const OTHER = '22222222-2222-4222-8222-222222222222';
 const PAGE = { id: 'pg1', orgId: ORG, partnerId: 'p1', isPartnerHome: false, publishedAt: null, publicationRevision: 0, hiddenControlIds: [], showPercentages: false, showDeviceCount: false, showManagedBy: true, searchIndexable: false, introHtml: null, securityContactEmail: null, websiteUrl: null, publicationAuthorizedBy: null };
 /** A page created after W02a: every inheritable setting NULL. */
 const FRESH_PAGE = { ...PAGE, hiddenControlIds: null, showPercentages: null, showDeviceCount: null, showManagedBy: null, searchIndexable: null, showHistory: null, frameworkView: null, ndaText: null, accessRequestCreatesTicket: false };
+const isSqlExpr = (v: unknown) => typeof v === 'object' && v !== null && 'queryChunks' in v;
 const app = new Hono(); app.use('*', authMiddleware); app.route('/orgs', trustPageRoutes);
 const H = (extra: Record<string, string> = {}) => ({ authorization: 'Bearer t', 'x-allow': 'organizations:read,organizations:write', 'content-type': 'application/json', ...extra });
 
 describe('trust page routes', () => {
-  beforeEach(() => { intro.override = null; trustMode.value = 'off'; dbm.rows = []; dbm.values = []; dbm.tx = 0; dbm.sets = []; rev.locked = 0; rev.next = 1; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
+  beforeEach(() => { intro.override = null; trustMode.value = 'off'; dbm.rows = []; dbm.values = []; dbm.tx = 0; dbm.sets = []; dbm.locks = []; rev.locked = 0; rev.next = 1; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
 
   describe('W2 effective settings, explicit-empty intro, revision discipline', () => {
     const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', partnerId: 'p1', trustState: 'trusted', partnerCountry: 'AU', deletedAt: null };
@@ -274,10 +275,32 @@ describe('trust page routes', () => {
       expect(dbm.sets).toHaveLength(2);
       const [cleared, flagged] = dbm.sets;
       expect(cleared).toMatchObject({ isPartnerHome: false });
-      // The bump is a SQL expression (publication_revision + 1): an in-flight publish of the previous page 409s.
-      expect(cleared!.publicationRevision).toBeDefined();
+      // Both bumps are SQL expressions (publication_revision + 1), never a literal: an in-flight publish of either
+      // page 409s.
+      expect(isSqlExpr(cleared!.publicationRevision)).toBe(true);
       expect(flagged).toMatchObject({ isPartnerHome: true });
+      expect(isSqlExpr(flagged!.publicationRevision)).toBe(true);
+      // Moves for one partner are serialized before the current home is read.
+      expect(dbm.locks).toHaveLength(1);
       expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: 'trust_page.partner_home', details: expect.objectContaining({ previousPageId: 'prev' }) }));
+    });
+    it('the first-ever home (no current holder) flags the page without clearing anything', async () => {
+      dbm.rows = [[internalCtx], [], [], [{ ...PAGE, isPartnerHome: true }]];
+      const res = await move();
+      expect(res.status).toBe(200);
+      expect(dbm.sets).toHaveLength(1);
+      expect(dbm.sets[0]).toMatchObject({ isPartnerHome: true });
+      expect(isSqlExpr(dbm.sets[0]!.publicationRevision)).toBe(true);
+    });
+    it('clearing re-checks the LOCKED row: a publish that committed after the unlocked pre-check still blocks it', async () => {
+      // Pre-check sees an unpublished home; by the time the row lock is held, it is live and unattested.
+      svc.ensureTrustPage.mockResolvedValueOnce({ ...PAGE, isPartnerHome: true, publishedAt: null, publicationAuthorizedBy: null });
+      dbm.rows = [[internalCtx], [{ id: PAGE.id, orgId: ORG, publishedAt: new Date(), publicationAuthorizedBy: null }]];
+      const res = await app.request(`/orgs/${ORG}/trust-page/partner-home`, { method: 'POST', headers: H({ 'x-mfa': '1', 'x-org-access': 'all' }), body: JSON.stringify({ isPartnerHome: false }) });
+      expect(res.status).toBe(422);
+      expect((await res.json()).code).toBe('PARTNER_HOME_UNPUBLISH_FIRST');
+      expect(dbm.sets).toEqual([]);
+      expect(auditMock).not.toHaveBeenCalled();
     });
     it('re-flagging the page that already holds the flag does not treat it as a move', async () => {
       dbm.rows = [[internalCtx], [{ id: PAGE.id, orgId: ORG, publishedAt: new Date(), publicationAuthorizedBy: null }], [], [{ ...PAGE, isPartnerHome: true }]];

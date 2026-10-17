@@ -1,12 +1,13 @@
 // apps/api/src/services/aiToolsTrustPage.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], insert: vi.fn(), update: vi.fn(), delete: vi.fn(), systemReads: 0 }));
+const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], insert: vi.fn(), update: vi.fn(), delete: vi.fn(), systemReads: 0, fail: null as Error | null }));
 vi.mock('../db', () => {
   const chain = () => {
     const c: Record<string, unknown> = {};
     for (const m of ['from', 'where', 'innerJoin', 'leftJoin', 'limit', 'orderBy']) c[m] = vi.fn(() => c);
-    c.then = (r: (v: unknown) => unknown) => Promise.resolve(dbm.rows.shift() ?? []).then(r);
+    c.then = (r: (v: unknown) => unknown, j?: (e: unknown) => unknown) =>
+      (dbm.fail ? Promise.reject(dbm.fail) : Promise.resolve(dbm.rows.shift() ?? [])).then(r, j);
     return c;
   };
   return {
@@ -15,6 +16,11 @@ vi.mock('../db', () => {
     withSystemDbAccessContext: <T,>(fn: () => T): T => { dbm.systemReads++; return fn(); },
   };
 });
+
+const trustMode = vi.hoisted(() => ({ value: 'enforce' as 'off' | 'shadow' | 'enforce' }));
+vi.mock('../config/partnerTrustMode', () => ({ partnerTrustMode: () => trustMode.value }));
+const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('./sentry', () => sentry);
 
 import { registerTrustPageTools } from './aiToolsTrustPage';
 import type { AiTool } from './aiTools';
@@ -35,7 +41,7 @@ const payload = {
 };
 
 describe('get_trust_page_status', () => {
-  beforeEach(() => { dbm.rows = []; dbm.systemReads = 0; vi.clearAllMocks(); });
+  beforeEach(() => { dbm.rows = []; dbm.systemReads = 0; dbm.fail = null; trustMode.value = 'enforce'; vi.clearAllMocks(); });
 
   it('is a tier-1 read-only tool with a bounded description and an orgId-only input', () => {
     expect(tool.tier).toBe(1);
@@ -76,7 +82,7 @@ describe('get_trust_page_status', () => {
       [{ payload }],
       [{ current: 3, expiringWithin30Days: 1 }],
       [{ pendingApproval: 2 }],
-      [{ slug: 'nw' }],
+      [{ slug: 'nw', trustState: 'trusted' }],
     ];
     const out = await run({ orgId: ORG });
     expect(out).toEqual({
@@ -93,7 +99,7 @@ describe('get_trust_page_status', () => {
   it('a partner-home page reports the partner path; an evaluation older than 24 h is stale', async () => {
     dbm.rows = [
       [{ id: 'pg1', publishedAt: new Date(NOW - 86_400_000 * 5), lastEvaluatedAt: new Date(NOW - 25 * 3600_000), isPartnerHome: true, orgSlug: 'acme', partnerId: 'p1' }],
-      [{ payload }], [{ current: 0, expiringWithin30Days: 0 }], [{ pendingApproval: 0 }], [{ slug: 'nw' }],
+      [{ payload }], [{ current: 0, expiringWithin30Days: 0 }], [{ pendingApproval: 0 }], [{ slug: 'nw', trustState: 'trusted' }],
     ];
     const out = await run({ orgId: ORG });
     expect(out.publicPath).toBe('/portal/trust/nw');
@@ -108,6 +114,28 @@ describe('get_trust_page_status', () => {
     const out = await run({ orgId: ORG });
     expect(out).toMatchObject({ exists: true, published: false, publicPath: null, stale: false, controls: null });
     expect(dbm.systemReads).toBe(0);
+  });
+
+  it.each([
+    ['a restricted partner', { slug: 'nw', trustState: 'restricted' }],
+    ['a probation partner under enforcement', { slug: 'nw', trustState: 'probation' }],
+    ['a reserved partner slug', { slug: 'preview', trustState: 'trusted' }],
+  ])('published but not served (%s) → published:true, publicPath:null', async (_label, partner) => {
+    dbm.rows = [
+      [{ id: 'pg1', publishedAt: new Date(NOW - 86_400_000), lastEvaluatedAt: new Date(NOW), isPartnerHome: false, orgSlug: 'acme', partnerId: 'p1' }],
+      [{ payload }], [{ current: 0, expiringWithin30Days: 0 }], [{ pendingApproval: 0 }], [partner],
+    ];
+    const out = await run({ orgId: ORG });
+    expect(out).toMatchObject({ published: true, publicPath: null });
+  });
+
+  it('a DB failure is a generic tool error, logged and sent to Sentry', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    dbm.fail = new Error('relation missing');
+    const out = await run({ orgId: ORG });
+    expect(out.error).toMatch(/Operation failed/);
+    expect(sentry.captureException).toHaveBeenCalledWith(expect.objectContaining({ message: 'relation missing' }), undefined, { tool: 'get_trust_page_status' });
+    err.mockRestore();
   });
 
   it('system scope may read any org', async () => {
