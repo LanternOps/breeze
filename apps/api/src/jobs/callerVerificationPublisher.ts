@@ -63,11 +63,23 @@ type Row = typeof v.$inferSelect;
 
 async function handleRowFailure(row: Row, err: unknown): Promise<void> {
   const error = err instanceof Error ? err : new Error(String(err));
-  console.error('[CallerVerificationPublisher] Row failed:', { verificationId: row.id, error: error.name });
+  console.error('[CallerVerificationPublisher] Row failed:', { verificationId: row.id, error: error.message });
   captureException(error, undefined, { verificationId: row.id });
   const count = (failures.get(row.id) ?? 0) + 1;
   failures.set(row.id, count);
-  if (count < MAX_DELIVERY_FAILURES || row.status !== 'pending' || row.method === 'callback_attestation') return;
+  if (count < MAX_DELIVERY_FAILURES) return;
+  if (row.status === 'rejected_by_user') {
+    // Give up on a rejected row too (#8998): the in-app notification is
+    // deduplicated and the email is best-effort, so stop the 5 s retry loop.
+    failures.delete(row.id);
+    try {
+      await scoped(() => db.update(v).set({ rejectionNotifiedAt: new Date() }).where(eq(v.id, row.id)));
+    } catch (inner) {
+      captureException(inner instanceof Error ? inner : new Error(String(inner)), undefined, { verificationId: row.id });
+    }
+    return;
+  }
+  if (row.status !== 'pending' || row.method === 'callback_attestation') return;
   failures.delete(row.id);
   try {
     // Workstation give-ups use helper_outdated: it is the only workstation
@@ -93,7 +105,8 @@ async function publishRow(row: Row): Promise<void> {
     }
     const recipients = await scoped(() => securityRecipients(row.orgId));
     const email = getEmailService();
-    if (!email) throw new Error('Caller rejection email transport unavailable');
+    // Email is best-effort: with no transport the in-app notification is the
+    // delivery and the row is still marked notified (#8998).
     for (const person of recipients) {
       await scoped(() => createNotification({
         userId: person.id, orgId: row.orgId, type: 'security', priority: 'high',
@@ -103,7 +116,7 @@ async function publishRow(row: Row): Promise<void> {
         dedupeKey: `caller-rejection-${row.id}`,
         metadata: { verificationId: row.id },
       }));
-      await email.sendEmail({
+      if (email) await email.sendEmail({
         to: person.email,
         subject: 'Caller verification security incident',
         html: '<p>A caller rejected an identity-change request. Open Breeze security incidents to review the subject fence and related actions.</p>',
