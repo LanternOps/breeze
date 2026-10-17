@@ -10,7 +10,7 @@
     "site": "Site",
     "policy": "Policy",
     "states": {
-      "not_reported": "No time data yet — this needs an agent update that includes time sync",
+      "not_reported": "No time data yet — agent update required for time sync",
       "unsupported_os": "Not supported on this OS yet"
     },
     "health": {
@@ -899,7 +899,7 @@
     "scriptExecutionHistory": "Script execution history",
     "management": "Management",
     "agentSettingsAndDeviceManagement": "Agent settings and device management",
-    "config": "Config",
+    "config": "Configuration",
     "resolvedConfigurationFromAllAssignedPolicies": "Resolved configuration from all assigned policies",
     "security": "Security",
     "playbooks": "Playbooks",
@@ -914,7 +914,7 @@
     "changeHistoryTitle": "Tracked configuration and inventory changes for this device",
     "diskCleanup": "Disk Cleanup",
     "diskUsageAnalysisAndCleanup": "Disk usage analysis and cleanup",
-    "bootPerf": "Boot Perf",
+    "bootPerf": "Boot performance",
     "systemRestore": "System Restore",
     "startupTimeAndBootProcessAnalysis": "Startup time and boot process analysis",
     "backup": "Backup",
@@ -951,7 +951,9 @@
       "extensions": "Extensions"
     },
     "workloads": "Workloads",
-    "workloadsTitle": "Containers and virtual machines on this host"
+    "workloadsTitle": "Containers and virtual machines on this host",
+    "offlineLastSeen": "Offline · last seen {{ago}}",
+    "locatedIn": "in <org/> › <site/>"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -2020,10 +2022,10 @@
     },
     "loading": "Loading performance graphs...",
     "metrics": {
-      "cpu": "Cpu",
+      "cpu": "CPU",
       "disk": "Disk",
       "download": "Download",
-      "ram": "Ram",
+      "ram": "RAM",
       "readThroughput": "Read Throughput",
       "upload": "Upload",
       "writeThroughput": "Write Throughput"

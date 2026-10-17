@@ -10,7 +10,7 @@
     "site": "Sede",
     "policy": "Criterio",
     "states": {
-      "not_reported": "Nessun dato sull’ora disponibile — è necessario un aggiornamento dell’agente che includa la sincronizzazione dell’ora",
+      "not_reported": "Nessun dato sull’ora disponibile — aggiornamento dell’agente richiesto per la sincronizzazione dell’ora",
       "unsupported_os": "Non ancora supportato su questo sistema operativo"
     },
     "health": {
@@ -899,7 +899,7 @@
     "scriptExecutionHistory": "Cronologia di esecuzione degli script",
     "management": "Gestione",
     "agentSettingsAndDeviceManagement": "Impostazioni dell'agente e gestione dei dispositivi",
-    "config": "Config",
+    "config": "Configurazione",
     "resolvedConfigurationFromAllAssignedPolicies": "Configurazione risolta da tutte le policy assegnate",
     "security": "Sicurezza",
     "playbooks": "Playbook",
@@ -951,7 +951,9 @@
       "extensions": "Estensioni"
     },
     "workloads": "Carichi di lavoro",
-    "workloadsTitle": "Container e macchine virtuali su questo host"
+    "workloadsTitle": "Container e macchine virtuali su questo host",
+    "offlineLastSeen": "Offline · ultimo contatto {{ago}}",
+    "locatedIn": "presso <org/> › <site/>"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossibile isolare il dispositivo",

@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceDetailPage from './DeviceDetailPage';
@@ -123,5 +123,31 @@ describe('Devices crumb (ui-flow A4)', () => {
     );
     fireEvent.click(screen.getByText('back'));
     expect(navigateTo).toHaveBeenCalledWith('/organizations/org-42#devices');
+  });
+});
+
+describe('crumb leaf (#9026)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
+  });
+
+  it('shows the display name with the hostname in the title', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
+      id: DEVICE_ID,
+      hostname: 'DESKTOP-7QK2',
+      displayName: 'Front desk PC',
+      osType: 'windows',
+      status: 'online',
+      orgId: 'org-42',
+      orgName: 'Acme Corp',
+      siteId: 'site-1',
+      siteName: 'HQ',
+    }), { status: 200 }));
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    const nav = await screen.findByRole('navigation', { name: /breadcrumb/i });
+    const leaf = await within(nav).findByText('Front desk PC');
+    expect(leaf).toHaveAttribute('title', 'DESKTOP-7QK2');
+    expect(within(nav).queryByText('DESKTOP-7QK2')).toBeNull();
   });
 });

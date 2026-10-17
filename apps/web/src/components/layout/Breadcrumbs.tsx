@@ -8,6 +8,8 @@ import '../../lib/i18n';
 interface BreadcrumbItem {
   label: string;
   href?: string;
+  /** Hover text, e.g. the hostname behind a device's display name. */
+  title?: string;
 }
 
 interface BreadcrumbsProps {
@@ -34,12 +36,16 @@ export default function Breadcrumbs({ items }: BreadcrumbsProps) {
             {item.href && index < items.length - 1 ? (
               <a
                 href={item.href}
+                title={item.title}
                 className="truncate hover:text-foreground transition-colors"
               >
                 {item.label}
               </a>
             ) : (
-              <span className={index === items.length - 1 ? 'truncate text-foreground font-medium max-w-[200px]' : 'truncate'}>
+              <span
+                title={item.title}
+                className={index === items.length - 1 ? 'truncate text-foreground font-medium max-w-[200px]' : 'truncate'}
+              >
                 {item.label}
               </span>
             )}

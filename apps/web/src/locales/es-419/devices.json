@@ -10,7 +10,7 @@
     "site": "Sitio",
     "policy": "Política",
     "states": {
-      "not_reported": "Aún no hay datos de hora — se necesita una actualización del agente que incluya sincronización horaria",
+      "not_reported": "Aún no hay datos de hora — se requiere actualizar el agente para la sincronización horaria",
       "unsupported_os": "Aún no se admite en este sistema operativo"
     },
     "health": {
@@ -899,7 +899,7 @@
     "scriptExecutionHistory": "Historial de ejecución de scripts",
     "management": "Gestión",
     "agentSettingsAndDeviceManagement": "Configuración de agentes y administración de dispositivos",
-    "config": "configuración",
+    "config": "Configuración",
     "resolvedConfigurationFromAllAssignedPolicies": "Configuración resuelta de todas las políticas asignadas.",
     "security": "Seguridad",
     "playbooks": "Playbooks",
@@ -951,7 +951,9 @@
       "extensions": "Extensiones"
     },
     "workloads": "Cargas de trabajo",
-    "workloadsTitle": "Contenedores y máquinas virtuales en este host"
+    "workloadsTitle": "Contenedores y máquinas virtuales en este host",
+    "offlineLastSeen": "Sin conexión · visto por última vez {{ago}}",
+    "locatedIn": "en <org/> › <site/>"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",
@@ -2023,7 +2025,7 @@
       "cpu": "CPU",
       "disk": "Disco",
       "download": "Descargar",
-      "ram": "Ram",
+      "ram": "Memoria RAM",
       "readThroughput": "Rendimiento de lectura",
       "upload": "Subir",
       "writeThroughput": "Rendimiento de escritura"

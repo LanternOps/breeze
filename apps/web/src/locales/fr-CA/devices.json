@@ -10,7 +10,7 @@
     "site": "Site client",
     "policy": "Stratégie",
     "states": {
-      "not_reported": "Aucune donnée horaire pour le moment — une mise à jour de l’agent incluant la synchronisation de l’heure est nécessaire",
+      "not_reported": "Aucune donnée horaire pour le moment — mise à jour de l’agent requise pour la synchronisation de l’heure",
       "unsupported_os": "Pas encore pris en charge sur ce système d’exploitation"
     },
     "health": {
@@ -899,7 +899,7 @@
     "scriptExecutionHistory": "Historique d’exécution des scripts",
     "management": "Gestion",
     "agentSettingsAndDeviceManagement": "Paramètres de l’agent et gestion des appareils",
-    "config": "Configuration",
+    "config": "Configuration appliquée",
     "resolvedConfigurationFromAllAssignedPolicies": "Configuration résolue à partir de toutes les politiques assignées",
     "security": "Sécurité",
     "playbooks": "Procédures",
@@ -914,7 +914,7 @@
     "changeHistoryTitle": "Modifications de configuration et d’inventaire suivies pour cet appareil",
     "diskCleanup": "Nettoyage des disques",
     "diskUsageAnalysisAndCleanup": "Analyse et nettoyage de l’utilisation du disque",
-    "bootPerf": "Perf. de démarrage",
+    "bootPerf": "Performances de démarrage",
     "systemRestore": "Restauration du système",
     "startupTimeAndBootProcessAnalysis": "Temps de démarrage et analyse du processus de démarrage",
     "backup": "Sauvegarde",
@@ -951,7 +951,9 @@
       "extensions": "Modules complémentaires"
     },
     "workloads": "Charges de travail",
-    "workloadsTitle": "Conteneurs et machines virtuelles sur cet hôte"
+    "workloadsTitle": "Conteneurs et machines virtuelles sur cet hôte",
+    "offlineLastSeen": "Hors ligne · vu pour la dernière fois {{ago}}",
+    "locatedIn": "chez <org/> › <site/>"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
@@ -2020,10 +2022,10 @@
     },
     "loading": "Chargement des graphiques de performance...",
     "metrics": {
-      "cpu": "CPU",
+      "cpu": "Processeur",
       "disk": "Disque",
       "download": "Télécharger",
-      "ram": "Ram",
+      "ram": "Mémoire vive",
       "readThroughput": "Débit de lecture",
       "upload": "Téléverser",
       "writeThroughput": "Débit d’écriture"

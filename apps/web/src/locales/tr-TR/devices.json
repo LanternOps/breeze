@@ -10,7 +10,7 @@
     "site": "Konum",
     "policy": "İlke",
     "states": {
-      "not_reported": "Henüz saat verisi yok — saat eşitlemeyi içeren bir aracı güncellemesi gerekiyor",
+      "not_reported": "Henüz saat verisi yok — saat eşitleme için aracı güncellemesi gerekli",
       "unsupported_os": "Bu işletim sisteminde henüz desteklenmiyor"
     },
     "health": {
@@ -914,7 +914,7 @@
     "changeHistoryTitle": "Bu cihaz için takip edilen yapılandırma ve envanter değişiklikleri",
     "diskCleanup": "Disk Temizleme",
     "diskUsageAnalysisAndCleanup": "Disk kullanım analizi ve temizleme",
-    "bootPerf": "Önyükleme Performansı",
+    "bootPerf": "Önyükleme performansı",
     "systemRestore": "Sistem Geri Yükleme",
     "startupTimeAndBootProcessAnalysis": "Başlatma süresi ve önyükleme süreci analizi",
     "backup": "Yedekleme",
@@ -951,7 +951,9 @@
       "extensions": "Uzantılar"
     },
     "workloads": "İş yükleri",
-    "workloadsTitle": "Bu ana makinedeki kapsayıcılar ve sanal makineler"
+    "workloadsTitle": "Bu ana makinedeki kapsayıcılar ve sanal makineler",
+    "offlineLastSeen": "Çevrimdışı · son görülme {{ago}}",
+    "locatedIn": "<org/> › <site/> içinde"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",
@@ -2023,7 +2025,7 @@
       "cpu": "İşlemci",
       "disk": "Disk",
       "download": "İndir",
-      "ram": "Ram",
+      "ram": "Bellek",
       "readThroughput": "Okuma Verimi",
       "upload": "Yükle",
       "writeThroughput": "Yazma Verimi"

@@ -10,7 +10,7 @@
     "site": "Standort",
     "policy": "Richtlinie",
     "states": {
-      "not_reported": "Noch keine Zeitdaten — dafür ist ein Agent-Update mit Zeitsynchronisierung erforderlich",
+      "not_reported": "Noch keine Zeitdaten — Agent-Update für die Zeitsynchronisierung erforderlich",
       "unsupported_os": "Auf diesem Betriebssystem noch nicht unterstützt"
     },
     "health": {
@@ -914,7 +914,7 @@
     "changeHistoryTitle": "Erfasste Konfigurations- und Inventaränderungen für dieses Gerät",
     "diskCleanup": "Datenträgerbereinigung",
     "diskUsageAnalysisAndCleanup": "Analyse und Bereinigung der Festplattennutzung",
-    "bootPerf": "Boot-Perf",
+    "bootPerf": "Startleistung",
     "systemRestore": "Systemwiederherstellung",
     "startupTimeAndBootProcessAnalysis": "Analyse der Startzeit und des Bootvorgangs",
     "backup": "Sicherung",
@@ -951,7 +951,9 @@
       "extensions": "Erweiterungen"
     },
     "workloads": "Workloads",
-    "workloadsTitle": "Container und virtuelle Maschinen auf diesem Host"
+    "workloadsTitle": "Container und virtuelle Maschinen auf diesem Host",
+    "offlineLastSeen": "Offline · zuletzt gesehen {{ago}}",
+    "locatedIn": "bei <org/> › <site/>"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",
@@ -2023,7 +2025,7 @@
       "cpu": "CPU",
       "disk": "Festplatte",
       "download": "Herunterladen",
-      "ram": "Ram",
+      "ram": "Arbeitsspeicher",
       "readThroughput": "Lesedurchsatz",
       "upload": "Hochladen",
       "writeThroughput": "Schreibdurchsatz"

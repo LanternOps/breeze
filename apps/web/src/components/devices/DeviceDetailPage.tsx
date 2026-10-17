@@ -49,6 +49,9 @@ type DeviceDetailPageProps = {
 export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   const { t } = useTranslation("devices");
   const [device, setDevice] = useState<Device | null>(null);
+  // When the newest CPU/RAM sample was taken (null = none in the last 24h), so
+  // the header shows "—" instead of a stale or defaulted 0.0% (#9026).
+  const [metricsSampledAt, setMetricsSampledAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [actionInProgress, setActionInProgress] = useState(false);
@@ -138,6 +141,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         hostname: data.hostname ?? data.displayName ?? "Unknown",
         os: (data.osType ?? data.os ?? "windows") as OSType,
         osVersion: data.osVersion ?? "",
+        // #9026: the header's "Windows 11 Pro (build 22631)" label.
+        osBuild: typeof data.osBuild === "string" ? data.osBuild : undefined,
         status: (data.status ?? "offline") as DeviceStatus,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
         ramPercent: latestMetrics?.ramPercent ?? 0,
@@ -217,6 +222,9 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
             : null,
       };
 
+      setMetricsSampledAt(
+        typeof latestMetrics?.timestamp === "string" ? latestMetrics.timestamp : null,
+      );
       setDevice(transformedDevice);
     } catch (err) {
       setError(
@@ -761,12 +769,17 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
             ? [{ label: device.orgName, href: `/organizations/${device.orgId}` }]
             : []),
           { label: t("deviceDetailPage.devices"), href: devicesHref },
-          { label: device.hostname || "Device" },
+          // #9026: one name — the leaf matches the h1; hostname on hover.
+          {
+            label: device.displayName || device.hostname || "Device",
+            title: device.hostname || undefined,
+          },
         ]}
       />
       <ActiveSessionsBanner key={device.id} deviceId={device.id} deviceStatus={device.status} />
       <DeviceDetails
         device={device}
+        metricsSampledAt={metricsSampledAt}
         onBack={handleBack}
         onAction={handleAction}
       />

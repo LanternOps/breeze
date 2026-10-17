@@ -10,7 +10,7 @@
     "site": "Local",
     "policy": "Política",
     "states": {
-      "not_reported": "Ainda não há dados de hora — é necessária uma atualização do agente que inclua sincronização de hora",
+      "not_reported": "Ainda não há dados de hora — atualização do agente necessária para a sincronização de hora",
       "unsupported_os": "Ainda não há suporte neste sistema operacional"
     },
     "health": {
@@ -914,7 +914,7 @@
     "changeHistoryTitle": "Alterações de configuração e inventário registradas neste dispositivo",
     "diskCleanup": "Limpeza de disco",
     "diskUsageAnalysisAndCleanup": "Análise do uso e limpeza do disco",
-    "bootPerf": "Desemp. inicialização",
+    "bootPerf": "Desempenho de inicialização",
     "systemRestore": "Restauração do Sistema",
     "startupTimeAndBootProcessAnalysis": "Análise do tempo e do processo de inicialização",
     "backup": "Backup",
@@ -951,7 +951,9 @@
       "extensions": "Extensões"
     },
     "workloads": "Cargas de trabalho",
-    "workloadsTitle": "Contêineres e máquinas virtuais neste host"
+    "workloadsTitle": "Contêineres e máquinas virtuais neste host",
+    "offlineLastSeen": "Offline · visto pela última vez {{ago}}",
+    "locatedIn": "em <org/> › <site/>"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Falha ao isolar o dispositivo",
@@ -2020,10 +2022,10 @@
     },
     "loading": "Carregando gráficos de desempenho...",
     "metrics": {
-      "cpu": "CPU",
+      "cpu": "Processador",
       "disk": "Disco",
       "download": "Download",
-      "ram": "RAM",
+      "ram": "Memória RAM",
       "readThroughput": "Taxa de leitura",
       "upload": "Upload",
       "writeThroughput": "Taxa de gravação"

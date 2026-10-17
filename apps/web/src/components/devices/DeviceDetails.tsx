@@ -44,7 +44,8 @@ import {
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
 import type { Device, DeviceStatus } from "./DeviceList";
-import { formatDeviceSummaryOs } from "./osDisplay";
+import { formatOsLabel } from "./formatOsLabel";
+import { formatTimeAgo } from "@/lib/formatTime";
 import RebootScheduledBadge from "./RebootScheduledBadge";
 import UninstallStateBadge from "./UninstallStateBadge";
 import DeviceActions from "./DeviceActions";
@@ -94,7 +95,7 @@ import DeviceReliabilityPanel from "./DeviceReliabilityPanel";
 import DeviceMonitoringTab from "./DeviceMonitoringTab";
 import DeviceComplianceTab from "./DeviceComplianceTab";
 import DeviceLinkedProfilesTab from "./DeviceLinkedProfilesTab";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import ContactResponsibilitiesCard from "../shared/ContactResponsibilitiesCard";
 import { Puzzle } from "lucide-react";
@@ -157,7 +158,35 @@ type DeviceDetailsProps = {
   timezone?: string;
   onBack?: () => void;
   onAction?: (action: string, device: Device) => void;
+  /**
+   * Timestamp of the newest CPU/RAM sample behind `device.cpuPercent` /
+   * `ramPercent`; `null` = the device has no sample in the last 24h. Omitted =
+   * the caller cannot say, so only the offline rule applies (#9026).
+   */
+  metricsSampledAt?: string | null;
 };
+
+// Sub-line record links: foreground colour plus a quiet resting underline, so
+// they are distinguishable from the plain OS / agent text beside them (#9026).
+const SUBLINE_LINK =
+  "text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground";
+
+// Mirrors the API's DEFAULT_OFFLINE_THRESHOLD_MINUTES (services/deviceLiveness):
+// a sample older than the window a heartbeat must land in is not "current".
+const METRIC_SAMPLE_FRESH_MS = 5 * 60 * 1000;
+
+/** Whether the header's CPU/RAM numbers describe the machine right now (#9026). */
+export function metricsAreCurrent(
+  status: DeviceStatus,
+  sampledAt: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (status === "offline" || status === "decommissioned") return false;
+  if (sampledAt === undefined) return true;
+  if (!sampledAt) return false;
+  const at = Date.parse(sampledAt);
+  return Number.isFinite(at) && now - at <= METRIC_SAMPLE_FRESH_MS;
+}
 
 const statusColors: Record<DeviceStatus, string> = {
   online: "bg-success/15 text-success border-success/30",
@@ -358,9 +387,23 @@ export default function DeviceDetails({
   timezone,
   onBack,
   onAction,
+  metricsSampledAt,
 }: DeviceDetailsProps) {
   const { t } = useTranslation("devices");
   usePageItemName(device.displayName || device.hostname);
+  const deviceName = device.displayName || device.hostname;
+  const showHostname = Boolean(device.hostname) && device.hostname !== deviceName;
+  const statsCurrent = metricsAreCurrent(device.status, metricsSampledAt);
+  const formatStat = (value: number) =>
+    statsCurrent && Number.isFinite(value)
+      ? formatPercent(value / 100, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+      : "—";
+  // "Offline · last seen 25 minutes ago": state first when the machine is gone.
+  const lastSeenValid = !Number.isNaN(new Date(device.lastSeen).getTime()) && device.lastSeen !== "";
+  const statusText =
+    device.status === "offline" && lastSeenValid
+      ? t("deviceDetails.offlineLastSeen", { ago: formatTimeAgo(device.lastSeen) })
+      : statusLabels[device.status];
   // Enabled `device.detail.tabs` contributions, deterministically ordered.
   // Never throws — a registry failure or zero enabled contributions simply
   // appends no extension tabs (see useExtensionSlotDescriptors).
@@ -822,14 +865,15 @@ export default function DeviceDetails({
               <div className="flex items-center gap-3 min-w-0">
                 <h1
                   className="truncate text-xl font-semibold tracking-tight"
-                  title={device.displayName || device.hostname}
+                  title={deviceName}
                 >
-                  {device.displayName || device.hostname}
+                  {deviceName}
                 </h1>
                 <span
+                  data-testid="device-status-pill"
                   className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
                 >
-                  {statusLabels[device.status]}
+                  {statusText}
                 </span>
                 {/* "Removed" says the record was offboarded; this says what
                     happened to the agent on the actual machine (#3987).
@@ -859,17 +903,53 @@ export default function DeviceDetails({
                   rebootMaxDeferrals={device.rebootMaxDeferrals}
                 />
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                <span>
-                  {formatDeviceSummaryOs(device.os, device.osVersion)}
-                </span>
+              {/* One name in the h1; the hostname appears once, here, only when
+                  it differs. Org/site links sit in the foreground colour with a
+                  resting underline so they read as links beside plain text. */}
+              <p
+                data-testid="device-header-subline"
+                className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground"
+              >
+                {showHostname && (
+                  <>
+                    <span data-testid="device-header-hostname" className="font-mono">
+                      {device.hostname}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                  </>
+                )}
+                <span>{formatOsLabel(device.os, device.osVersion, device.osBuild)}</span>
+                <span aria-hidden="true">·</span>
                 <span>
                   {t("deviceDetails.agentV")}
                   {device.agentVersion}
                 </span>
-                <EntityLink kind="org" id={device.orgId} name={device.orgName} />
-                <EntityLink kind="site" id={device.siteId} name={device.siteName} />
-              </div>
+                <span aria-hidden="true">·</span>
+                <span>
+                  <Trans
+                    t={t}
+                    i18nKey="deviceDetails.locatedIn"
+                    components={{
+                      org: (
+                        <EntityLink
+                          kind="org"
+                          id={device.orgId}
+                          name={device.orgName}
+                          className={device.orgId ? SUBLINE_LINK : undefined}
+                        />
+                      ),
+                      site: (
+                        <EntityLink
+                          kind="site"
+                          id={device.siteId}
+                          name={device.siteName}
+                          className={device.siteId ? SUBLINE_LINK : undefined}
+                        />
+                      ),
+                    }}
+                  />
+                </span>
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -912,11 +992,8 @@ export default function DeviceDetails({
                     <Cpu className="h-3.5 w-3.5" />
                     CPU
                   </div>
-                  <p className="mt-1 text-lg font-semibold tabular-nums">
-                    {formatPercent(device.cpuPercent / 100, {
-                      minimumFractionDigits: 1,
-                      maximumFractionDigits: 1,
-                    })}
+                  <p data-testid="device-stat-cpu" className="mt-1 text-lg font-semibold tabular-nums">
+                    {formatStat(device.cpuPercent)}
                   </p>
                 </div>
                 <div className="shrink-0">
@@ -924,11 +1001,8 @@ export default function DeviceDetails({
                     <MemoryStick className="h-3.5 w-3.5" />
                     RAM
                   </div>
-                  <p className="mt-1 text-lg font-semibold tabular-nums">
-                    {formatPercent(device.ramPercent / 100, {
-                      minimumFractionDigits: 1,
-                      maximumFractionDigits: 1,
-                    })}
+                  <p data-testid="device-stat-ram" className="mt-1 text-lg font-semibold tabular-nums">
+                    {formatStat(device.ramPercent)}
                   </p>
                 </div>
                 <div className="shrink-0">

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { useMenuKeyboard } from "../billing/shared/menuKeyboard";
 import { usePermissions } from "../../lib/permissions";
 import {
@@ -74,6 +74,13 @@ import "../../lib/i18n";
 // missing gate by adding one; gate queued commands on `decommissioned`
 // (see DeviceList.tsx). Wake (Wake-on-LAN) targets offline devices by design
 // and is never gated.
+// Header button variants (#9026): one height for the whole row; the filled
+// variant is reserved for the single primary action.
+const HEADER_BUTTON =
+  "inline-flex h-9 items-center gap-2 rounded-md px-4 text-sm font-medium transition";
+const FILLED_BUTTON = `${HEADER_BUTTON} bg-primary text-primary-foreground hover:opacity-90 aria-disabled:cursor-progress`;
+const OUTLINE_BUTTON = `${HEADER_BUTTON} border bg-background hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:text-muted-foreground aria-disabled:hover:bg-background`;
+
 function isDeviceOnline(device: Device): boolean {
   return device.status === "online";
 }
@@ -309,6 +316,8 @@ export default function DeviceActions({
   const powerTriggerRef = useRef<HTMLButtonElement>(null);
   const [modalType, setModalType] = useState<ModalType>("none");
   const [loading, setLoading] = useState(false);
+  const offlineReasonId = useId();
+  const remoteToolsReasonId = useId();
 
   // NOTE: `online` gates BOTH live-session buttons (correctly) and queued
   // commands (more strictly than the API requires) — see the category note at
@@ -618,32 +627,60 @@ export default function DeviceActions({
     );
   }
 
+  // #9026: exactly one filled primary — Run Script while online, Wake while
+  // offline. Anything unavailable renders as the outline variant (never a
+  // faded filled button) and stays focusable via aria-disabled, with its reason
+  // wired through aria-describedby so keyboard and screen-reader users get it.
+  const showWake = canWake && device.status === "offline";
+  const remoteToolsPolicyTitle =
+    device.remoteAccessPolicy?.remoteTools === false
+      ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
+      : undefined;
+  const remoteToolsTitle = offlineTitle ?? remoteToolsPolicyTitle;
+  const remoteToolsUnavailable =
+    !online || device.remoteAccessPolicy?.remoteTools === false;
+
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-testid="device-header-actions" className="flex flex-wrap items-center gap-2">
+        {offlineTitle && (
+          <span id={offlineReasonId} className="sr-only">
+            {offlineTitle}
+          </span>
+        )}
+        {remoteToolsTitle && remoteToolsTitle !== offlineTitle && (
+          <span id={remoteToolsReasonId} className="sr-only">
+            {remoteToolsTitle}
+          </span>
+        )}
         {/* When the device is offline, Wake is the one action that matters —
-            promote it to a primary header button instead of burying it in the
+            promote it to the primary header button instead of burying it in the
             Power dropdown, where every other action is disabled anyway. */}
-        {canWake && device.status === "offline" && (
+        {showWake && (
           <button
             type="button"
-            onClick={() => handleAction("wake")}
-            disabled={loading}
+            onClick={() => {
+              if (!loading) void handleAction("wake");
+            }}
+            aria-disabled={loading || undefined}
             title={t("deviceActions.sendAWakeOnLanPacket")}
-            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className={FILLED_BUTTON}
           >
-            <Zap className="h-4 w-4" />
+            <Zap className="h-4 w-4" aria-hidden="true" />
             {t("deviceActions.wake")}{" "}
           </button>
         )}
         <button
           type="button"
-          onClick={() => handleAction("run-script")}
-          disabled={!online || loading}
+          onClick={() => {
+            if (online && !loading) void handleAction("run-script");
+          }}
+          aria-disabled={!online || loading ? true : undefined}
           title={offlineTitle}
-          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          aria-describedby={offlineTitle ? offlineReasonId : undefined}
+          className={online ? FILLED_BUTTON : OUTLINE_BUTTON}
         >
-          <Play className="h-4 w-4" />
+          <Play className="h-4 w-4" aria-hidden="true" />
           {t("deviceActions.runScript")}{" "}
         </button>
         {/* W08 of #5205 (#5246). Renders nothing unless the AI Operator flags
@@ -658,6 +695,7 @@ export default function DeviceActions({
           deviceLabel={device.displayName || device.hostname}
           orgLabel={device.orgName}
           source={{ kind: "device", id: device.id }}
+          className={OUTLINE_BUTTON}
         />
         <ConnectDesktopButton
           deviceId={device.id}
@@ -671,21 +709,21 @@ export default function DeviceActions({
         {canUseRemoteTools && (
           <button
             type="button"
-            onClick={() => handleAction("remote-tools")}
-            disabled={
-              !online ||
-              loading ||
-              device.remoteAccessPolicy?.remoteTools === false
+            onClick={() => {
+              if (!remoteToolsUnavailable && !loading) void handleAction("remote-tools");
+            }}
+            aria-disabled={remoteToolsUnavailable || loading ? true : undefined}
+            title={remoteToolsTitle}
+            aria-describedby={
+              remoteToolsTitle
+                ? remoteToolsTitle === offlineTitle
+                  ? offlineReasonId
+                  : remoteToolsReasonId
+                : undefined
             }
-            title={
-              offlineTitle ??
-              (device.remoteAccessPolicy?.remoteTools === false
-                ? `Remote tools disabled by policy${device.remoteAccessPolicy?.policyName ? ` "${device.remoteAccessPolicy.policyName}"` : ""}`
-                : undefined)
-            }
-            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            className={OUTLINE_BUTTON}
           >
-            <Wrench className="h-4 w-4" />
+            <Wrench className="h-4 w-4" aria-hidden="true" />
             {t("deviceActions.remoteTools")}{" "}
           </button>
         )}
@@ -699,11 +737,12 @@ export default function DeviceActions({
             }}
             aria-disabled={!online || loading ? true : undefined}
             title={offlineTitle}
+            aria-describedby={offlineTitle ? offlineReasonId : undefined}
             ref={powerTriggerRef}
             data-testid="device-power-menu"
             aria-haspopup="menu"
             aria-expanded={powerMenuOpen}
-            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm font-medium transition hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
+            className={OUTLINE_BUTTON}
           >
             <Power className="h-4 w-4" />
             {t("deviceActions.power")}{" "}
@@ -784,7 +823,7 @@ export default function DeviceActions({
               setPowerMenuOpen(false);
             }}
             aria-disabled={loading ? true : undefined}
-            className="flex h-10 w-10 items-center justify-center rounded-md border bg-background transition hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
+            className="flex h-9 w-9 items-center justify-center rounded-md border bg-background transition hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
           >
             <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>

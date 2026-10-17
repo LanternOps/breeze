@@ -129,11 +129,11 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       render(<DeviceActions device={offlineDevice} />);
 
       const runScript = button(/run script/i);
-      expect(runScript).toBeDisabled();
+      expectUnavailable(runScript);
       expect(runScript).toHaveAttribute('title', 'Device is offline');
 
       const remoteTools = button(/remote tools/i);
-      expect(remoteTools).toBeDisabled();
+      expectUnavailable(remoteTools);
       expect(remoteTools).toHaveAttribute('title', 'Device is offline');
     });
 
@@ -164,9 +164,9 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
     it('disables session/command buttons for a device in maintenance mode', () => {
       render(<DeviceActions device={maintenanceDevice} />);
 
-      expect(button(/run script/i)).toBeDisabled();
-      expect(button(/^connect desktop$/i)).toBeDisabled();
-      expect(button(/remote tools/i)).toBeDisabled();
+      expectUnavailable(button(/run script/i));
+      expectUnavailable(button(/^connect desktop$/i));
+      expectUnavailable(button(/remote tools/i));
       expectUnavailable(button(/^power$/i));
     });
 
@@ -181,7 +181,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
     it('uses a status-accurate tooltip for an updating device', () => {
       render(<DeviceActions device={updatingDevice} />);
 
-      expect(button(/run script/i)).toBeDisabled();
+      expectUnavailable(button(/run script/i));
       expect(button(/run script/i)).toHaveAttribute('title', 'Device is updating');
     });
 
@@ -190,7 +190,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
 
       // Wake is Wake-on-LAN — only meaningful for a genuinely offline device.
       expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
-      expect(button(/run script/i)).toBeDisabled();
+      expectUnavailable(button(/run script/i));
       expect(button(/run script/i)).toHaveAttribute('title', 'Device is quarantined');
     });
   });
@@ -206,7 +206,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       render(<DeviceActions device={device} />);
 
       const remoteTools = button(/remote tools/i);
-      expect(remoteTools).toBeDisabled();
+      expectUnavailable(remoteTools);
       expect(remoteTools).toHaveAttribute('title', 'Remote tools disabled by policy "Locked Down"');
     });
 
@@ -215,7 +215,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       render(<DeviceActions device={device} />);
 
       const remoteTools = button(/remote tools/i);
-      expect(remoteTools).toBeDisabled();
+      expectUnavailable(remoteTools);
       expect(remoteTools).toHaveAttribute('title', 'Device is in maintenance mode');
     });
   });
@@ -444,6 +444,54 @@ describe('DeviceActions — Move to Organization entry (device move-org D5)', ()
     render(<DeviceActions device={offlineDevice} onAction={vi.fn()} />);
     await userEvent.click(screen.getByTestId('device-actions-menu'));
     expect(screen.getByTestId('device-action-move-org')).toBeEnabled();
+  });
+});
+
+describe('DeviceActions — one primary, uniform height, reachable reasons (#9026)', () => {
+  const headerButtons = () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[data-testid="device-header-actions"] button'));
+  const isFilled = (el: HTMLElement) => /(^|\s)bg-primary(\s|$)/.test(el.className);
+  const filled = () => headerButtons().filter(isFilled);
+
+  it('online: Run Script is the only filled primary', () => {
+    render(<DeviceActions device={onlineDevice} />);
+    expect(filled()).toHaveLength(1);
+    expect(filled()[0]).toHaveTextContent(/run script/i);
+  });
+
+  it('offline: Wake is the only filled primary and the disabled Run Script drops to outline', () => {
+    render(<DeviceActions device={offlineDevice} />);
+    expect(filled()).toHaveLength(1);
+    expect(filled()[0]).toHaveTextContent(/^wake$/i);
+    const runScript = button(/run script/i);
+    expect(isFilled(runScript)).toBe(false);
+    expect(runScript.className).toMatch(/(^|\s)border(\s|$)/);
+  });
+
+  it('every header button is h-9', () => {
+    render(<DeviceActions device={offlineDevice} />);
+    const buttons = headerButtons();
+    expect(buttons.length).toBeGreaterThanOrEqual(4);
+    for (const el of buttons) expect(el.className).toMatch(/(^|\s)h-9(\s|$)/);
+  });
+
+  it('keeps a disabled header button focusable with its reason wired through aria-describedby', () => {
+    render(<DeviceActions device={offlineDevice} />);
+    for (const name of [/run script/i, /remote tools/i, /^power$/i, /^connect desktop$/i]) {
+      const el = button(name);
+      expect(el).not.toHaveAttribute('disabled');
+      expect(el).toHaveAttribute('aria-disabled', 'true');
+      const describedBy = el.getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)).toHaveTextContent('Device is offline');
+    }
+  });
+
+  it('swallows activation of an aria-disabled Run Script', async () => {
+    const onAction = vi.fn();
+    render(<DeviceActions device={offlineDevice} onAction={onAction} />);
+    await userEvent.click(button(/run script/i));
+    expect(onAction).not.toHaveBeenCalled();
   });
 });
 
