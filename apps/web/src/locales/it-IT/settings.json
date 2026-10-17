@@ -6054,6 +6054,9 @@
     "searchPlaceholder": "Cerca siti",
     "actions": {
       "add": "Aggiungi sito",
+      "open": "Apri",
+      "openSite": "Apri {{name}}",
+      "rowMenu": "Azioni per {{name}}",
       "editSite": "Modifica {{name}}",
       "deleteSite": "Elimina {{name}}"
     },

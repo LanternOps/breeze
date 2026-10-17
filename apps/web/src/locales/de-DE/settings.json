@@ -6006,6 +6006,9 @@
     "searchPlaceholder": "Standorte suchen",
     "actions": {
       "add": "Standort hinzufügen",
+      "open": "Öffnen",
+      "openSite": "{{name}} öffnen",
+      "rowMenu": "Aktionen für {{name}}",
       "editSite": "{{name}} bearbeiten",
       "deleteSite": "{{name}} löschen"
     },

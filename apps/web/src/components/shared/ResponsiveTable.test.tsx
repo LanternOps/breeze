@@ -29,6 +29,20 @@ describe('ResponsiveTable', () => {
     expect(screen.getByTestId('responsive-table-cards').className).toContain('sm:hidden');
   });
 
+  it('keeps its own card chrome by default, and drops it with variant="flat" for a table already inside a card', () => {
+    const { unmount } = render(<ResponsiveTable table={<table />} cards={null} />);
+    expect(screen.getByTestId('responsive-table-desktop').className).toContain('bg-card');
+    expect(screen.getByTestId('responsive-table-desktop').className).toMatch(/(^|\s)border(\s|$)/);
+    unmount();
+
+    render(<ResponsiveTable variant="flat" table={<table />} cards={null} />);
+    const flat = screen.getByTestId('responsive-table-desktop');
+    expect(flat.className).not.toContain('bg-card');
+    expect(flat.className).not.toMatch(/(^|\s)border(\s|$)/);
+    expect(flat.className).toContain('overflow-x-auto');
+    expect(flat.className).toContain('sm:block');
+  });
+
   it('passes through a className for outer spacing', () => {
     render(<ResponsiveTable className="mt-6" table={<table />} cards={null} />);
     expect(screen.getByTestId('responsive-table').className).toContain('mt-6');

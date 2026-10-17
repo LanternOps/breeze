@@ -6006,6 +6006,9 @@
     "searchPlaceholder": "Buscar sitios",
     "actions": {
       "add": "Agregar sitio",
+      "open": "Abrir",
+      "openSite": "Abrir {{name}}",
+      "rowMenu": "Acciones para {{name}}",
       "editSite": "Editar {{name}}",
       "deleteSite": "Eliminar {{name}}"
     },

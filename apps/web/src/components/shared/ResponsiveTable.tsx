@@ -28,17 +28,24 @@ export function ResponsiveTable({
   table,
   cards,
   className,
+  variant = 'card',
 }: {
   table: ReactNode;
   cards: ReactNode;
   className?: string;
+  /** `flat` drops the desktop card chrome for a table that already sits
+   *  inside a card, so the page draws one border, not two (#9022). */
+  variant?: 'card' | 'flat';
 }) {
   return (
     <div className={className} data-testid="responsive-table">
       {/* Card chrome matches the app's other card-wrapped tables
           (rounded border + bg-card + shadow-xs, e.g. security pages, invoices)
           and the mobile DataCard below, so the two surfaces read as one. */}
-      <div className="hidden overflow-x-auto rounded-md border bg-card shadow-xs sm:block" data-testid="responsive-table-desktop">
+      <div
+        className={cn('hidden overflow-x-auto sm:block', variant === 'card' && 'rounded-md border bg-card shadow-xs')}
+        data-testid="responsive-table-desktop"
+      >
         {table}
       </div>
       <div className="space-y-2 sm:hidden" data-testid="responsive-table-cards">

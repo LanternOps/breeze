@@ -6054,6 +6054,9 @@
     "searchPlaceholder": "Search sites",
     "actions": {
       "add": "Add site",
+      "open": "Open",
+      "openSite": "Open {{name}}",
+      "rowMenu": "Actions for {{name}}",
       "editSite": "Edit {{name}}",
       "deleteSite": "Delete {{name}}"
     },

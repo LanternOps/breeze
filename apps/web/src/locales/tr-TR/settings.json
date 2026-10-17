@@ -6059,6 +6059,9 @@
     "searchPlaceholder": "Sitelerde ara",
     "actions": {
       "add": "Site ekle",
+      "open": "Aç",
+      "openSite": "{{name}} aç",
+      "rowMenu": "{{name}} için eylemler",
       "editSite": "{{name}} düzenle",
       "deleteSite": "{{name}} sil"
     },
