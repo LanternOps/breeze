@@ -4085,7 +4085,7 @@
       "offNote": "Runtimes are always detected, but workload listing is off until a policy enables it.",
       "enabled": "List workloads",
       "runtimesHeading": "Runtimes to list",
-      "laterRelease": "Hyper-V and Proxmox VE listing arrives with a later agent release; these toggles take effect then.",
+      "agentSupport": "Hyper-V and Proxmox VE toggles only take effect on agents that include these drivers; older agents ignore them.",
       "interval": "Collection interval (minutes)",
       "invalidInterval": "Interval must be a whole number of minutes between {{min}} and {{max}}."
     },

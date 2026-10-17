@@ -4085,7 +4085,7 @@
       "offNote": "Os runtimes são sempre detectados, mas a listagem de cargas de trabalho fica desativada até que uma política a ative.",
       "enabled": "Listar cargas de trabalho",
       "runtimesHeading": "Runtimes a listar",
-      "laterRelease": "A listagem de Hyper-V e Proxmox VE chegará em uma versão posterior do agente; essas opções passarão a valer então.",
+      "agentSupport": "As opções de Hyper-V e Proxmox VE só valem em agentes que incluem esses drivers; agentes mais antigos as ignoram.",
       "interval": "Intervalo de coleta (minutos)",
       "invalidInterval": "O intervalo deve ser um número inteiro de minutos entre {{min}} e {{max}}."
     },

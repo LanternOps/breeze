@@ -4085,7 +4085,7 @@
       "offNote": "I runtime vengono sempre rilevati, ma l’elenco dei carichi di lavoro resta disattivato finché un criterio non lo abilita.",
       "enabled": "Elenca i carichi di lavoro",
       "runtimesHeading": "Runtime da elencare",
-      "laterRelease": "L’elenco di Hyper-V e Proxmox VE arriverà con una release successiva dell’agente; questi interruttori avranno effetto allora.",
+      "agentSupport": "Gli interruttori Hyper-V e Proxmox VE hanno effetto solo sugli agent che includono questi driver; gli agent meno recenti li ignorano.",
       "interval": "Intervallo di raccolta (minuti)",
       "invalidInterval": "L’intervallo deve essere un numero intero di minuti compreso tra {{min}} e {{max}}."
     },

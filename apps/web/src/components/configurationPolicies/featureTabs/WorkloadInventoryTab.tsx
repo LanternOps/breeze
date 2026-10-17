@@ -127,7 +127,7 @@ export default function WorkloadInventoryTab({
               </label>
             ))}
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">{t('workloads.policy.laterRelease')}</p>
+          <p className="mt-2 text-xs text-muted-foreground">{t('workloads.policy.agentSupport')}</p>
         </div>
         <label className="block text-sm">
           {t('workloads.policy.interval')}

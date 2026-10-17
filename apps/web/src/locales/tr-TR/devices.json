@@ -4085,7 +4085,7 @@
       "offNote": "Çalışma zamanları her zaman algılanır, ancak bir ilke etkinleştirene kadar iş yükü listeleme kapalıdır.",
       "enabled": "İş yüklerini listele",
       "runtimesHeading": "Listelenecek çalışma zamanları",
-      "laterRelease": "Hyper-V ve Proxmox VE listeleme, aracının sonraki bir sürümüyle gelecek; bu anahtarlar o zaman etkili olur.",
+      "agentSupport": "Hyper-V ve Proxmox VE anahtarları yalnızca bu sürücüleri içeren aracılarda etkili olur; eski aracılar bunları yok sayar.",
       "interval": "Toplama aralığı (dakika)",
       "invalidInterval": "Aralık, {{min}} ile {{max}} arasında tam sayı dakika olmalıdır."
     },
