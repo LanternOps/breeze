@@ -80,7 +80,7 @@ describe('useDeviceFilterFields (#8843)', () => {
     let resolveA!: (r: Response) => void;
     mockFetch
       .mockReturnValueOnce(new Promise<Response>((r) => { resolveA = r; }))
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: [] }) } as unknown as Response);
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: [{ ...DEF, id: 'cf-b', fieldKey: 'org_b_only', name: 'B' }] }) } as unknown as Response);
     const { result } = renderHook(() => useDeviceFilterFields());
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
 
@@ -89,6 +89,31 @@ describe('useDeviceFilterFields (#8843)', () => {
     await act(async () => {
       resolveA({ ok: true, status: 200, json: async () => ({ data: [DEF] }) } as unknown as Response);
     });
-    expect(result.current).toBe(FILTER_FIELDS);
+    await waitFor(() => expect(result.current.at(-1)).toMatchObject({ key: 'custom.org_b_only' }));
+    expect(result.current.some((f) => f.key === 'custom.asset_disposition')).toBe(false);
+  });
+
+  it('refetches on a partner switch but not on an unrelated org store update (#8946)', async () => {
+    useOrgStore.setState({ currentOrgId: null, currentPartnerId: 'p-1', allOrgs: false });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: [DEF] }) } as unknown as Response);
+    renderHook(() => useDeviceFilterFields());
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    act(() => useOrgStore.setState({ sites: [] }));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    act(() => useOrgStore.setState({ currentPartnerId: 'p-2' }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+  });
+
+  it('clears the cache without refetching when the scope is reset (logout) (#8946)', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-a', currentPartnerId: 'p-1', allOrgs: false });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: [DEF] }) } as unknown as Response);
+    renderHook(() => useDeviceFilterFields());
+    await waitFor(() => expect(useCustomFieldDefinitionsStore.getState().status).toBe('loaded'));
+
+    act(() => useOrgStore.setState({ currentOrgId: null, currentPartnerId: null, allOrgs: false }));
+    expect(useCustomFieldDefinitionsStore.getState()).toMatchObject({ definitions: [], status: 'idle' });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });

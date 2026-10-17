@@ -92,7 +92,9 @@ void import('./orgStore')
       scopeGeneration += 1;
       const wasInUse = useCustomFieldDefinitionsStore.getState().status !== 'idle';
       useCustomFieldDefinitionsStore.setState({ definitions: [], status: 'idle' });
-      if (wasInUse) void useCustomFieldDefinitionsStore.getState().fetchCustomFieldDefinitions();
+      // Logout/reset clears the whole scope; don't fire an unauthenticated fetch then.
+      const scopeResolved = !!(state.currentOrgId || state.currentPartnerId || state.allOrgs);
+      if (wasInUse && scopeResolved) void useCustomFieldDefinitionsStore.getState().fetchCustomFieldDefinitions();
     });
   })
   .catch((err) => {
