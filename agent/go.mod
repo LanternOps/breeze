@@ -23,6 +23,7 @@ require (
 	github.com/gosnmp/gosnmp v1.45.0
 	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/jezek/xgb v1.3.1
+	github.com/niallnsec/yaraxwasm v1.1.0
 	github.com/pion/rtcp v1.2.19
 	github.com/pion/webrtc/v4 v4.2.22
 	github.com/shirou/gopsutil/v3 v3.24.5
@@ -74,6 +75,7 @@ require (
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/geoffgarside/ber v1.1.0 // indirect
+	github.com/github/smimesign v0.2.1-0.20251208172637-21a327cc040b // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -84,9 +86,11 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.22 // indirect
 	github.com/googleapis/gax-go/v2 v2.26.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
+	github.com/mailru/easyjson v0.9.2 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pierrec/lz4/v4 v4.1.28 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
@@ -113,6 +117,7 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/tetratelabs/wazero v1.12.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
