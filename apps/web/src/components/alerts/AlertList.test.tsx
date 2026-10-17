@@ -78,6 +78,12 @@ describe('AlertList — org link (ui-flow W03)', () => {
     fireEvent.click(link);
     expect(onSelect).not.toHaveBeenCalled();
   });
+
+  it('prints the org as text when the alert has no orgId', () => {
+    render(<AlertList alerts={[{ ...baseAlert, orgId: null }]} showOrgColumn />);
+    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    expect(screen.getByText('Acme Corp')).toBeInTheDocument();
+  });
 });
 
 describe('AlertList — AI verdict column', () => {

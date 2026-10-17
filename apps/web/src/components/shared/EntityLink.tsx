@@ -39,7 +39,8 @@ export interface EntityLinkProps {
  * An empty `id` (the '' sentinel for "no site/org") renders the name as text.
  */
 export function EntityLink({ kind, id, name, hash, className }: EntityLinkProps): JSX.Element {
-  if (id === '') {
+  // No id, or no name to show: plain text, never an empty/dead tab stop.
+  if (id === '' || name === '') {
     return <span className={className}>{name}</span>;
   }
 

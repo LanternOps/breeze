@@ -200,11 +200,13 @@ export default function AlertsFeed({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{title}</span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {alert.deviceHostname ? (
-                      <EntityLink kind="device" id={alert.deviceId ?? ''} name={alert.deviceHostname} />
-                    ) : (
-                      t('states.unknown')
-                    )}
+                    {/* Also links when the hostname is missing, so a row with a
+                        deviceId always has a keyboard path to the device. */}
+                    <EntityLink
+                      kind="device"
+                      id={alert.deviceId ?? ''}
+                      name={alert.deviceHostname || t('states.unknown')}
+                    />
                     {showOrg && alert.orgName && (
                       <>
                         {' · '}

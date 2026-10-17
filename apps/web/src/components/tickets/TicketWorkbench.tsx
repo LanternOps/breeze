@@ -1147,7 +1147,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           )}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName} className="hover:text-foreground" />
+          <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName ?? ''} className="hover:text-foreground" />
           {ticket.deviceHostname && (
             <>
               <span>·</span>

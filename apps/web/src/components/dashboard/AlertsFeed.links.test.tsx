@@ -89,6 +89,13 @@ describe('AlertsFeed row links (ui-flow W03)', () => {
     expect(screen.getByText('DESKTOP-8UG65K6')).toBeInTheDocument();
   });
 
+  it('keeps a keyboard path to the device when the alert has no hostname', () => {
+    renderFeed({ ...baseRow, deviceHostname: null });
+    const link = screen.getByTestId('device-record-link');
+    expect(link).toHaveAttribute('href', '/devices/d1');
+    expect(link).toHaveTextContent('states.unknown');
+  });
+
   it('prints the org as text when the payload has no orgId', () => {
     const { orgId: _omit, ...noOrgId } = baseRow;
     renderFeed(noOrgId);

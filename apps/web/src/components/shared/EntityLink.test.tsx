@@ -72,11 +72,31 @@ describe('EntityLink', () => {
     expect(navigateTo).not.toHaveBeenCalled();
   });
 
+  it.each([{ ctrlKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }])(
+    'leaves a %o click to the browser',
+    (init) => {
+      const row = vi.fn();
+      render(
+        <div onClick={row}>
+          <EntityLink kind="org" id="o1" name="Acme" />
+        </div>,
+      );
+      expect(fireEvent.click(screen.getByTestId('org-record-link'), init)).toBe(true);
+      expect(row).not.toHaveBeenCalled();
+      expect(navigateTo).not.toHaveBeenCalled();
+    },
+  );
+
   it('renders plain text when id is empty', () => {
     render(<EntityLink kind="site" id="" name="Unknown Site" />);
     expect(screen.queryByRole('link')).toBeNull();
     expect(screen.queryByTestId('site-record-link')).toBeNull();
     expect(screen.getByText('Unknown Site')).toBeInTheDocument();
+  });
+
+  it('renders no empty tab stop when the name is empty', () => {
+    render(<EntityLink kind="site" id="s-1" name="" />);
+    expect(screen.queryByRole('link')).toBeNull();
   });
 
   it('merges className', () => {
