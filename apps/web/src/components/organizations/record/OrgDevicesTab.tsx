@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { i18n } from '@/lib/i18n';
 import DeviceList, { type Device, type DeviceStatus } from '@/components/devices/DeviceList';
+import { toDeviceListRow, type ApiDeviceRow } from '@/components/devices/deviceRowTransform';
 import type { OrgFetch } from './orgRecordFetch';
 
 export interface OrgDevicesTabProps {
@@ -56,13 +58,13 @@ export default function OrgDevicesTab({ orgId, orgFetch }: OrgDevicesTabProps) {
         const res = await orgFetch('/devices?limit=200');
         if (!res.ok) throw new Error(`devices load failed: ${res.status}`);
         const body = await res.json();
-        const rows: Device[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
+        const rows: ApiDeviceRow[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
         // A 200 whose body isn't a parseable array tells us nothing about the
         // real device count — treating it as `[]` would render "No devices
         // found" (active guidance to adjust filters) for what is actually an
         // API failure. Fail the same way a non-2xx response does.
         if (rows === null) throw new Error('devices load: malformed response body');
-        if (!cancelled) setDevices(rows);
+        if (!cancelled) setDevices(rows.map(toDeviceListRow));
       } catch (err) {
         console.warn('[OrgDevicesTab] devices load failed', err);
         if (!cancelled) setDevices('failed');
@@ -97,13 +99,17 @@ export default function OrgDevicesTab({ orgId, orgFetch }: OrgDevicesTabProps) {
   const filteredDevices = useMemo(() => {
     if (devices === null || devices === 'failed') return [];
     const q = search.trim().toLowerCase();
-    return devices.filter((d) => {
-      if (statusFilter && d.status !== statusFilter) return false;
-      if (siteFilter && d.siteId !== siteFilter) return false;
-      if (q && !d.hostname?.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [devices, search, statusFilter, siteFilter]);
+    // Same label /devices shows for a device whose site is not in the lookup.
+    const siteNameById = new Map(sites.map((s) => [s.id, s.name]));
+    return devices
+      .filter((d) => {
+        if (statusFilter && d.status !== statusFilter) return false;
+        if (siteFilter && d.siteId !== siteFilter) return false;
+        if (q && !d.hostname?.toLowerCase().includes(q)) return false;
+        return true;
+      })
+      .map((d) => ({ ...d, siteName: siteNameById.get(d.siteId) ?? i18n.t('devices:devicesPage.unknownSite') }));
+  }, [devices, sites, search, statusFilter, siteFilter]);
 
   if (devices === null) {
     return (

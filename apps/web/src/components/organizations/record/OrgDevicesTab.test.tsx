@@ -8,19 +8,18 @@ import type { OrgFetch } from './orgRecordFetch';
 const RECORD_ORG = 'org-record-1';
 const OTHER_ORG = 'org-other-2';
 
+// Raw `/devices` row, as the API sends it (the tab runs it through toDeviceListRow).
 const DEVICE = {
   id: 'd1',
   hostname: 'acme-laptop-01',
-  os: 'windows',
+  osType: 'windows',
   osVersion: '11',
   status: 'online',
-  cpuPercent: 10,
+  cpuPercent: 37.456789012,
   ramPercent: 20,
-  lastSeen: '2026-09-01T00:00:00.000Z',
+  lastSeenAt: '2026-09-01T00:00:00.000Z',
   orgId: RECORD_ORG,
-  orgName: 'Acme Dental',
   siteId: 'site-1',
-  siteName: 'HQ',
   agentVersion: '1.0.0',
   tags: [],
 };
@@ -64,9 +63,12 @@ describe('OrgDevicesTab', () => {
     // this org's — so it must not appear even though the store's scope
     // (fleet-eligible) would otherwise show it.
     expect(screen.queryByText(/^Organization$/)).toBeNull();
+    // Same transform as /devices: percents are rounded, site names resolved from /orgs/sites.
+    expect(screen.getByText('37.5%')).toBeTruthy();
+    expect(screen.getAllByText('HQ').length).toBeGreaterThan(0);
   });
 
-  const secondDevice = { ...DEVICE, id: 'd2', hostname: 'acme-desktop-02', status: 'offline', siteId: 'site-2', siteName: 'Branch' };
+  const secondDevice = { ...DEVICE, id: 'd2', hostname: 'acme-desktop-02', status: 'offline', siteId: 'site-2' };
 
   function renderTwoDevices() {
     const { orgFetch } = makeRecordingOrgFetch({
