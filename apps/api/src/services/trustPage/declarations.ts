@@ -77,7 +77,7 @@ export async function declareTrustControl(a: {
  */
 export async function withdrawTrustDeclaration(a: {
   page: TrustPageRow; declarationId: string; actorUserId: string; expectedRevision: number; now?: Date;
-}): Promise<{ publicationRevision: number; controlId: string }> {
+}): Promise<{ publicationRevision: number; controlId: string; withdrawnPredecessorIds: string[] }> {
   const withdrawnAt = a.now ?? new Date();
   const { result, publicationRevision } = await withTrustPageRevision(
     { pageId: a.page.id, expectedRevision: a.expectedRevision, actorUserId: a.actorUserId },
@@ -87,15 +87,16 @@ export async function withdrawTrustDeclaration(a: {
         .returning({ id: trustPageDeclarations.id, controlId: trustPageDeclarations.controlId });
       // Throwing inside the callback rolls the revision bump back with it.
       if (!row) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
-      await tx.update(trustPageDeclarations).set({ withdrawnAt, withdrawnByUserId: a.actorUserId })
+      const predecessors = await tx.update(trustPageDeclarations).set({ withdrawnAt, withdrawnByUserId: a.actorUserId })
         .where(and(
           eq(trustPageDeclarations.trustPageId, a.page.id), eq(trustPageDeclarations.controlId, row.controlId),
           isNotNull(trustPageDeclarations.supersededAt), isNull(trustPageDeclarations.withdrawnAt),
-        ));
-      return row.controlId;
+        ))
+        .returning({ id: trustPageDeclarations.id });
+      return { controlId: row.controlId, withdrawnPredecessorIds: predecessors.map((p) => p.id) };
     },
   );
-  return { publicationRevision, controlId: result };
+  return { publicationRevision, ...result };
 }
 
 /** Active rows (neither superseded nor withdrawn; expired ones included) and the latest 50 others, newest first. */

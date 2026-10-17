@@ -78,6 +78,17 @@ describe('GET /orgs/:orgId/trust-page/declarations', () => {
     expect(data.partnerName).toBe('Northwind IT');
   });
 
+  it('an unreadable published_config reports no ids and is not silent', async () => {
+    dbm.rows.push([ctxRow]);
+    pub.ensureTrustPage.mockResolvedValueOnce({ ...PAGE, publishedConfig: { declarationIds: 'bad' } });
+    svc.listTrustDeclarations.mockResolvedValueOnce({ active: [], history: [] });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const data = (await (await app.request(`/orgs/${ORG}/trust-page/declarations`, { headers: H() })).json()).data;
+    expect(data.publishedDeclarationIds).toEqual([]);
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
   it('an unpublished page reports no published declaration ids', async () => {
     dbm.rows.push([ctxRow]);
     pub.ensureTrustPage.mockResolvedValueOnce({ ...PAGE, publishedAt: null });
@@ -166,13 +177,21 @@ describe('POST /orgs/:orgId/trust-page/declarations/:declarationId/withdraw', ()
     expect(svc.withdrawTrustDeclaration).not.toHaveBeenCalled();
   });
 
+  it('an unknown / already-withdrawn id maps the service 404 through and is not audited', async () => {
+    dbm.rows.push([ctxRow]);
+    svc.withdrawTrustDeclaration.mockRejectedValueOnce(new TrustPageError('Not found', 404, 'NOT_FOUND'));
+    const res = await app.request(url, { method: 'POST', headers: H(), body: JSON.stringify({ expectedRevision: 4 }) });
+    expect(res.status).toBe(404);
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
   it('a non-uuid declaration id is a 400', async () => {
     expect((await app.request(`/orgs/${ORG}/trust-page/declarations/nope/withdraw`, { method: 'POST', headers: H(), body: JSON.stringify({ expectedRevision: 4 }) })).status).toBe(400);
   });
 
   it('success returns the new revision and writes one withdraw audit row', async () => {
     dbm.rows.push([ctxRow]);
-    svc.withdrawTrustDeclaration.mockResolvedValueOnce({ publicationRevision: 5, controlId: 'incident_response_plan' });
+    svc.withdrawTrustDeclaration.mockResolvedValueOnce({ publicationRevision: 5, controlId: 'incident_response_plan', withdrawnPredecessorIds: ['old-1'] });
     const res = await app.request(url, { method: 'POST', headers: H(), body: JSON.stringify({ expectedRevision: 4 }) });
     expect(res.status).toBe(200);
     expect((await res.json()).data).toEqual({ publicationRevision: 5 });
@@ -180,7 +199,7 @@ describe('POST /orgs/:orgId/trust-page/declarations/:declarationId/withdraw', ()
     expect(auditMock).toHaveBeenCalledTimes(1);
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
       action: 'trust_page.declaration.withdraw',
-      details: { controlId: 'incident_response_plan', declarationId: DECL, publicationRevision: 5 },
+      details: { controlId: 'incident_response_plan', declarationId: DECL, publicationRevision: 5, withdrawnPredecessorIds: ['old-1'] },
     }));
   });
 });

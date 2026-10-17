@@ -121,6 +121,26 @@ describe('TrustDeclarationsSection', () => {
     await waitFor(() => expect(onReload).toHaveBeenCalled());
   });
 
+  it('a withdraw 409 REVISION_MISMATCH reloads too', async () => {
+    api.getTrustDeclarations.mockResolvedValue(declState({ active: [decl()] }));
+    api.withdrawTrustDeclaration.mockResolvedValueOnce(json(409, { error: 'stale', code: 'REVISION_MISMATCH' }));
+    const onReload = mount();
+    fireEvent.click(await screen.findByTestId('trust-withdraw-incident_response_plan'));
+    fireEvent.click(await screen.findByTestId('trust-withdraw-confirm'));
+    await waitFor(() => expect(onReload).toHaveBeenCalled());
+  });
+
+  it('a withdrawn id still frozen on the live page does not ask for a republish', async () => {
+    api.getTrustDeclarations.mockResolvedValueOnce(declState({
+      active: [],
+      history: [decl({ id: 'gone', withdrawnAt: iso(Date.now() - DAY) })],
+      publishedDeclarationIds: ['gone'],
+    }));
+    mount();
+    await screen.findByTestId('trust-declaration-incident_response_plan-status');
+    expect(screen.queryByTestId('trust-declarations-republish')).toBeNull();
+  });
+
   it('a 409 REVISION_MISMATCH calls onReload', async () => {
     api.declareTrustControl.mockResolvedValueOnce(json(409, { error: 'stale', code: 'REVISION_MISMATCH' }));
     const onReload = mount();

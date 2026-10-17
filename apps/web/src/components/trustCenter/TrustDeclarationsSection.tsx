@@ -50,14 +50,20 @@ export default function TrustDeclarationsSection({ orgId, orgFetch, state, canWr
 
   const activeByControl = useMemo(() => new Map((data?.active ?? []).map((d) => [d.controlId, d])), [data]);
   const published = useMemo(() => new Set(data?.publishedDeclarationIds ?? []), [data]);
+  // A withdrawn id stays in the frozen config until a republish, but the refresh already drops it from the public
+  // page — so it never makes a republish "needed".
+  const publishedLive = useMemo(() => {
+    const withdrawn = new Set((data?.history ?? []).filter((h) => h.withdrawnAt !== null).map((h) => h.id));
+    return new Set([...published].filter((id) => !withdrawn.has(id)));
+  }, [data, published]);
   // What a publish would freeze now (active, unexpired) vs what the live page froze.
   const republishNeeded = useMemo(() => {
     if (!data || !state.page.publishedAt) return false;
     const draft = new Set(data.active.filter((d) => new Date(d.expiresAt).getTime() > Date.now()).map((d) => d.id));
-    if (draft.size !== published.size) return true;
-    for (const id of draft) if (!published.has(id)) return true;
+    if (draft.size !== publishedLive.size) return true;
+    for (const id of draft) if (!publishedLive.has(id)) return true;
     return false;
-  }, [data, published, state.page.publishedAt]);
+  }, [data, publishedLive, state.page.publishedAt]);
 
   const afterMutation = async () => {
     await onReload();
@@ -217,9 +223,10 @@ export default function TrustDeclarationsSection({ orgId, orgFetch, state, canWr
               <li key={h.id} className="text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">{copy.controlTitle(h.controlId)}</span>
                 {' · '}
-                {h.withdrawnAt
-                  ? t('orgRecord.trust.declarations.historyWithdrawn', { date: formatDate(h.withdrawnAt) })
-                  : t('orgRecord.trust.declarations.historySuperseded', { date: formatDate(h.supersededAt ?? h.declaredAt) })}
+                {[
+                  h.supersededAt ? t('orgRecord.trust.declarations.historySuperseded', { date: formatDate(h.supersededAt) }) : null,
+                  h.withdrawnAt ? t('orgRecord.trust.declarations.historyWithdrawn', { date: formatDate(h.withdrawnAt) }) : null,
+                ].filter(Boolean).join(' · ')}
               </li>
             ))}
           </ul>
@@ -273,6 +280,7 @@ function DeclareDialog({ controlId, controlTitle, partnerName, initial, orgId, o
   const [evidenceId, setEvidenceId] = useState<string>('');
   const [confirmed, setConfirmed] = useState(false);
   const [library, setLibrary] = useState<OrgDocument[]>([]);
+  const initialEvidenceId = initial?.evidenceDocumentId ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -281,12 +289,13 @@ function DeclareDialog({ controlId, controlTitle, partnerName, initial, orgId, o
         if (cancelled) return;
         const live = docs.filter((d) => d.supersededByDocumentId === null);
         setLibrary(live);
-        // Re-declaring keeps the previous evidence when it is still a current document.
-        if (initial?.evidenceDocumentId && live.some((d) => d.id === initial.evidenceDocumentId)) setEvidenceId(initial.evidenceDocumentId);
+        // Re-declaring keeps the previous evidence when it is still a current document — seeded once, so a
+        // reload of the section while the dialog is open never overwrites the user's pick.
+        if (initialEvidenceId && live.some((d) => d.id === initialEvidenceId)) setEvidenceId((cur) => cur || initialEvidenceId);
       })
       .catch((err: unknown) => console.error('[TrustDeclarationsSection] failed to load the document library', err));
     return () => { cancelled = true; };
-  }, [orgFetch, orgId, initial]);
+  }, [orgFetch, orgId, initialEvidenceId]);
 
   const trimmed = statement.trim();
   const valid = trimmed.length >= STATEMENT_MIN && trimmed.length <= STATEMENT_MAX;

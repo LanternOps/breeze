@@ -69,7 +69,11 @@ export function toDeclarationView(r: TrustPageDeclarationRow): TrustDeclarationV
 function publishedDeclarationIds(page: TrustPageRow): string[] {
   if (!page.publishedAt) return [];
   const parsed = trustPublishedConfigSchema.safeParse(page.publishedConfig);
-  return parsed.success ? parsed.data.declarationIds : [];
+  if (parsed.success) return parsed.data.declarationIds;
+  // Not silent: the refresh also refuses this config (publication.ts), so the editor's markers would mislead.
+  console.error('[trustPage] published_config failed to parse; reporting no published declarations', `pageId=${page.id}`, parsed.error.issues);
+  captureException(new Error(`trust page ${page.id}: published_config failed to parse`));
+  return [];
 }
 
 trustPageDeclarationRoutes.get('/:orgId/trust-page/declarations', scopes, orgRead, zValidator('param', orgParam), async (c) => {
@@ -120,8 +124,11 @@ trustPageDeclarationRoutes.post('/:orgId/trust-page/declarations/:declarationId/
   const { expectedRevision } = c.req.valid('json');
   try {
     const page = await ensureTrustPage(orgId, auth.user.id);
-    const { publicationRevision, controlId } = await withdrawTrustDeclaration({ page, declarationId, actorUserId: auth.user.id, expectedRevision });
-    await audit(c, orgId, 'trust_page.declaration.withdraw', page.id, { controlId, declarationId, publicationRevision });
+    const { publicationRevision, controlId, withdrawnPredecessorIds } = await withdrawTrustDeclaration({ page, declarationId, actorUserId: auth.user.id, expectedRevision });
+    await audit(c, orgId, 'trust_page.declaration.withdraw', page.id, {
+      controlId, declarationId, publicationRevision,
+      ...(withdrawnPredecessorIds.length > 0 ? { withdrawnPredecessorIds } : {}),
+    });
     return c.json({ data: { publicationRevision } });
   } catch (err) { return handleError(c, err); }
 });

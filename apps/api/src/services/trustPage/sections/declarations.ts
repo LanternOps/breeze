@@ -22,7 +22,11 @@ export async function freezeDeclarationIds(ctx: SectionDraftContext): Promise<st
       isNull(trustPageDeclarations.supersededAt), isNull(trustPageDeclarations.withdrawnAt),
       gt(trustPageDeclarations.expiresAt, ctx.asOf),
     ));
-  // The SQL already filters; re-checked here so the rule lives in one readable place.
+  for (const r of rows) {
+    // Not silent: the editor shows this row as declared, but it is not a catalog control, so it cannot be published.
+    if (!isDeclaredControlId(r.controlId)) console.warn('[trustPage] active declaration has a non-catalog control id; not frozen', `declarationId=${r.id}`, `controlId=${r.controlId}`);
+  }
+  // The SQL already filters expiry; re-checked here so the rule lives in one readable place.
   return rows
     .filter((r) => isDeclaredControlId(r.controlId) && r.expiresAt.getTime() > ctx.asOf.getTime())
     .sort(byCatalog)

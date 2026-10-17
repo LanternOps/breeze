@@ -93,14 +93,23 @@ describe('runDeclarationReminders', () => {
 
   it('one failing row does not stop the next', async () => {
     users.resolveUsersWithPermissionForOrg.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(['u3']);
+    // d1's recipient lookup throws before its claim, so the next scripted result is d2's claim.
     dbm.results.push(
       [candidate(), candidate({ id: 'd2', orgId: 'o2', controlId: 'cyber_insurance' })],
-      [{ id: 'd1' }],
       [{ id: 'd2' }], [{ id: 'u3', email: 'c@example.com' }],
     );
     expect(await runDeclarationReminders(now)).toEqual({ reminded: 1 });
     expect(notif.createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u3', dedupeKey: 'trust-declaration-reminder:d2' }));
     expect(captureException).toHaveBeenCalled();
+  });
+
+  it('an org with no organizations:write user is NOT claimed (its reminder is not burned) and nothing is sent', async () => {
+    users.resolveUsersWithPermissionForOrg.mockResolvedValueOnce([]);
+    dbm.results.push([candidate()]);
+    expect(await runDeclarationReminders(now)).toEqual({ reminded: 0 });
+    expect(dbm.update).not.toHaveBeenCalled();
+    expect(notif.createNotification).not.toHaveBeenCalled();
+    expect(mail.sendEmail).not.toHaveBeenCalled();
   });
 
   it('a control id no longer in the declared catalog is skipped without claiming it', async () => {

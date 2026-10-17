@@ -11,11 +11,12 @@ import { and } from 'drizzle-orm';
 import type { TrustPagePublicPayload } from '@breeze/shared';
 import { declareTrustControl, listTrustDeclarations, withdrawTrustDeclaration } from '../../services/trustPage/declarations';
 import { runDeclarationReminders } from '../../services/trustPage/declarationReminders';
+import { PERMISSIONS } from '../../services/permissions';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
 const DAY_MS = 86_400_000;
 
-interface Seeded { orgId: string; userId: string; partnerSlug: string; orgSlug: string }
+interface Seeded { orgId: string; userId: string; partnerId: string; partnerSlug: string; orgSlug: string }
 
 /** Superuser seed (no RLS): one partner, one org, one user. */
 async function seed(): Promise<Seeded> {
@@ -35,7 +36,7 @@ async function seed(): Promise<Seeded> {
     INSERT INTO organizations (partner_id, name, slug, status, currency_code, created_at, updated_at)
     VALUES (${partner!.id}, 'Acme Dental', ${orgSlug}, 'active', 'USD', now(), now()) RETURNING id
   `)) as unknown as Array<{ id: string }>;
-  return { orgId: org!.id, userId: user!.id, partnerSlug, orgSlug };
+  return { orgId: org!.id, userId: user!.id, partnerId: partner!.id, partnerSlug, orgSlug };
 }
 
 async function seedDocument(orgId: string, sha: string): Promise<string> {
@@ -44,6 +45,25 @@ async function seedDocument(orgId: string, sha: string): Promise<string> {
     VALUES (${orgId}, 'IR plan', 'policy', 'db', '\\x01'::bytea, 'application/pdf', 1, ${sha}, 'ir.pdf') RETURNING id
   `)) as unknown as Array<{ id: string }>;
   return doc!.id;
+}
+
+/** Superuser: a partner role granting organizations:write, held by the seeded user for all orgs. */
+async function grantOrgWrite(s: Seeded): Promise<void> {
+  const { resource, action } = PERMISSIONS.ORGS_WRITE;
+  const testDb = getTestDb();
+  const [role] = (await testDb.execute(sql`
+    INSERT INTO roles (partner_id, scope, name) VALUES (${s.partnerId}, 'partner', 'Trust declarer') RETURNING id
+  `)) as unknown as Array<{ id: string }>;
+  const existing = (await testDb.execute(sql`
+    SELECT id FROM permissions WHERE resource = ${resource} AND action = ${action} LIMIT 1
+  `)) as unknown as Array<{ id: string }>;
+  const permId = existing[0]?.id ?? ((await testDb.execute(sql`
+    INSERT INTO permissions (resource, action) VALUES (${resource}, ${action}) RETURNING id
+  `)) as unknown as Array<{ id: string }>)[0]!.id;
+  await testDb.execute(sql`INSERT INTO role_permissions (role_id, permission_id) VALUES (${role!.id}, ${permId})`);
+  await testDb.execute(sql`
+    INSERT INTO partner_users (partner_id, user_id, role_id, org_access) VALUES (${s.partnerId}, ${s.userId}, ${role!.id}, 'all')
+  `);
 }
 
 const freshPage = async (s: Seeded): Promise<TrustPageRow> => {
@@ -180,12 +200,16 @@ describe('trust page declarations (real DB)', () => {
       const [r] = (await getTestDb().execute(sql`
         INSERT INTO trust_page_declarations (trust_page_id, org_id, control_id, statement, declared_by_partner_name, declared_at, expires_at, withdrawn_at)
         SELECT ${page.id}, ${s.orgId}, ${controlId}, 'A statement long enough.', 'Northwind IT', d, d + interval '8760 hours', ${withdrawn ? sql`now()` : sql`NULL`}
-        FROM (SELECT now() + make_interval(secs => ${days} * 86400) - interval '8760 hours' AS d) t
+        FROM (SELECT now() + make_interval(secs => ${days}::float8 * 86400) - interval '8760 hours' AS d) t
         RETURNING id
       `)) as unknown as Array<{ id: string }>;
       return r!.id;
     };
+    await grantOrgWrite(s);
     const due = await insertExpiringIn('incident_response_plan', 29);
+    // The 30-day edge: just inside is reminded, just outside is not.
+    const edgeIn = await insertExpiringIn('penetration_test', 30 - 60 / 86400);
+    const edgeOut = await insertExpiringIn('vendor_risk_management', 30 + 120 / 86400);
     const notYet = await insertExpiringIn('cyber_insurance', 31);
     const expired = await insertExpiringIn('access_review', -1);
     const withdrawn = await insertExpiringIn('data_inventory', 10, true);
@@ -193,12 +217,43 @@ describe('trust page declarations (real DB)', () => {
     const first = await runDeclarationReminders(new Date());
     expect(first.reminded).toBeGreaterThanOrEqual(1);
     const sentAt = async (id: string) => (await sys(() => db.select({ r: trustPageDeclarations.reminderSentAt }).from(trustPageDeclarations).where(eq(trustPageDeclarations.id, id))))[0]!.r;
-    expect(await sentAt(due)).toBeInstanceOf(Date);
-    for (const id of [notYet, expired, withdrawn]) expect(await sentAt(id)).toBeNull();
+    for (const id of [due, edgeIn]) expect(await sentAt(id)).toBeInstanceOf(Date);
+    for (const id of [notYet, edgeOut, expired, withdrawn]) expect(await sentAt(id)).toBeNull();
+    // The recipient got the in-app notification, deduped per declaration.
+    const notes = (await getTestDb().execute(sql`
+      SELECT dedupe_key FROM user_notifications WHERE user_id = ${s.userId} AND dedupe_key = ${`trust-declaration-reminder:${due}`}
+    `)) as unknown as unknown[];
+    expect(notes).toHaveLength(1);
 
     // At-most-once: the claim stands, so a second sweep finds nothing to remind.
     const stamp = await sentAt(due);
     expect((await runDeclarationReminders(new Date())).reminded).toBe(0);
     expect(await sentAt(due)).toEqual(stamp);
+  });
+
+  it('reminders: an org with no organizations:write user is left unclaimed', async () => {
+    const page = await freshPage(s);
+    const [r] = (await getTestDb().execute(sql`
+      INSERT INTO trust_page_declarations (trust_page_id, org_id, control_id, statement, declared_by_partner_name, declared_at, expires_at)
+      SELECT ${page.id}, ${s.orgId}, 'backup_recovery_plan', 'A statement long enough.', 'Northwind IT', d, d + interval '8760 hours'
+      FROM (SELECT now() + interval '10 days' - interval '8760 hours' AS d) t RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    await runDeclarationReminders(new Date());
+    const [row] = await sys(() => db.select({ r: trustPageDeclarations.reminderSentAt }).from(trustPageDeclarations).where(eq(trustPageDeclarations.id, r!.id)));
+    expect(row!.r).toBeNull();
+  });
+
+  it("withdrawing a declaration through another org's page is a 404 and leaves it untouched", async () => {
+    const other = await seed();
+    const otherPage = await freshPage(other);
+    const theirs = await sys(() => declareTrustControl({
+      page: otherPage, controlId: 'cyber_insurance', statement: 'We hold an active cyber policy.', evidenceDocumentId: null,
+      actorUserId: other.userId, partnerName: 'Other MSP', expectedRevision: otherPage.publicationRevision,
+    }));
+    const mine = await freshPage(s);
+    await expect(sys(() => withdrawTrustDeclaration({ page: mine, declarationId: theirs.declaration.id, actorUserId: s.userId, expectedRevision: mine.publicationRevision })))
+      .rejects.toMatchObject({ status: 404 });
+    const [row] = await sys(() => db.select().from(trustPageDeclarations).where(eq(trustPageDeclarations.id, theirs.declaration.id)));
+    expect(row!.withdrawnAt).toBeNull();
   });
 });

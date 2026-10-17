@@ -111,9 +111,9 @@ describe('declareTrustControl', () => {
 describe('withdrawTrustDeclaration', () => {
   it('withdraws the active row and its superseded predecessors, and bumps the revision', async () => {
     const ops: Op[] = [];
-    scriptTx([[{ rev: 3 }], [{ id: 'd-1', controlId: 'incident_response_plan' }], [], [{ publicationRevision: 4 }]], ops);
+    scriptTx([[{ rev: 3 }], [{ id: 'd-1', controlId: 'incident_response_plan' }], [{ id: 'd-0' }], [{ publicationRevision: 4 }]], ops);
     const out = await withdrawTrustDeclaration({ page, declarationId: 'd-1', actorUserId: 'user-1', expectedRevision: 3 });
-    expect(out).toEqual({ publicationRevision: 4, controlId: 'incident_response_plan' });
+    expect(out).toEqual({ publicationRevision: 4, controlId: 'incident_response_plan', withdrawnPredecessorIds: ['d-0'] });
     expect(ops.map((o) => o.kind)).toEqual(['select', 'update', 'update', 'update']);
     expect(ops[1]!.payload).toMatchObject({ withdrawnByUserId: 'user-1' });
     expect(ops[1]!.payload!.withdrawnAt).toBeInstanceOf(Date);
