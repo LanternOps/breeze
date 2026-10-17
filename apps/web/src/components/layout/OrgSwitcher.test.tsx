@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '../../lib/i18n';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -395,5 +395,15 @@ describe('OrgSwitcher (unified control)', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('org-switcher-panel')).toBeNull();
     });
+  });
+  it('rows carry a status dot, not the badge', () => {
+    stubLocation('/devices');
+    mockStoreState.organizations[1].status = 'trial';
+    render(<OrgSwitcher />);
+    openDropdown();
+    const row = screen.getByTestId('org-option-org-b');
+    expect(within(row).getByTestId('org-status-dot').getAttribute('data-status')).toBe('trial');
+    expect(within(row).queryByText('Trial')).toBeNull();
+    expect(within(screen.getByTestId('org-option-org-a')).queryByTestId('org-status-dot')).toBeNull();
   });
 });

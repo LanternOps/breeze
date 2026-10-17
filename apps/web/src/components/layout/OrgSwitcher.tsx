@@ -10,29 +10,12 @@ import {
 import { cn } from '@/lib/utils';
 import { useOrgStore, type Organization } from '@/stores/orgStore';
 import { applyOrgSwitch, consumeSwitchToast, getOrgSwitchRedirect } from '@/lib/orgSwitch';
-import { FALLBACK_STATUS_CLASS, statusColors } from '@/lib/orgStatus';
+import { OrgStatusBadge, OrgStatusDot } from './OrgStatusGlyphs';
 import { showToast } from '@/components/shared/Toast';
 import { useTranslation } from 'react-i18next';
 
 // Re-exported for callers/tests that import the redirect rule from here.
 export { getOrgSwitchRedirect };
-
-// Status colours come from the shared org status map (lib/orgStatus), so the
-// pill in this header is the same pill as on the org list and record page.
-
-function StatusBadge({ status }: { status: string }) {
-  const { t } = useTranslation('common');
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium capitalize',
-        statusColors[status as Organization['status']] ?? FALLBACK_STATUS_CLASS
-      )}
-    >
-      {t(/* i18n-dynamic */ `layout.org.status.${status}`, { defaultValue: status })}
-    </span>
-  );
-}
 
 // Show the filter input once the list is long enough that scanning beats
 // scrolling. Below this the input is dead weight in the panel.
@@ -224,7 +207,7 @@ export default function OrgSwitcher() {
         </span>
         {!isFleet && currentOrg && (
           <span className="hidden shrink-0 md:inline-flex">
-            <StatusBadge status={currentOrg.status} />
+            <OrgStatusBadge status={currentOrg.status} />
           </span>
         )}
         <ChevronDown
@@ -314,10 +297,10 @@ export default function OrgSwitcher() {
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <OrgStatusDot status={org.status} />
                       <span className="truncate font-medium">{org.name}</span>
                       {isSelected && <Check className="h-4 w-4 shrink-0 text-primary" />}
                     </div>
-                    <StatusBadge status={org.status} />
                   </button>
                 );
               })}
