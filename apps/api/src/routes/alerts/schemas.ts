@@ -73,6 +73,12 @@ export const suppressAlertSchema = z.object({
   until: z.string().optional()
 });
 
+export const unsuppressAlertSchema = z.object({
+  // The status the alert had before it was muted (the caller knows; the server
+  // cannot reliably infer it). Omitted => fall back to acknowledgedAt.
+  restoreStatus: z.enum(['active', 'acknowledged']).optional()
+});
+
 // Notification Channels schemas
 export const listChannelsSchema = z.object({
   page: z.string().optional(),

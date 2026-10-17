@@ -134,11 +134,20 @@ export function useAlertActions<A extends ActionableAlert>({
       });
 
       // Undo must lift the mute SERVER-side, not just repaint the row (#8966).
+      let undone = false;
       const undo = async () => {
+        if (undone) return; // double-click guard: a 2nd request would 409 confusingly
+        undone = true;
         if (!(await suppressSettled)) return; // suppress failed — already reverted
         try {
           await runAction({
-            request: () => fetchWithAuth(`/alerts/${alert.id}/unsuppress`, { method: 'POST' }),
+            request: () => fetchWithAuth(`/alerts/${alert.id}/unsuppress`, { method: 'POST',
+              body: JSON.stringify(
+                previousStatus === 'active' || previousStatus === 'acknowledged'
+                  ? { restoreStatus: previousStatus }
+                  : {},
+              ),
+            }),
             errorFallback: t('alertsPage.failedToRestoreAlert'),
             onUnauthorized: () => void navigateTo('/login', { replace: true }),
           });
@@ -147,6 +156,7 @@ export function useAlertActions<A extends ActionableAlert>({
           // runAction already toasted any ActionError (and 401 -> login redirect).
           if (err instanceof ActionError && err.status === 401) return;
           if (!(err instanceof ActionError)) {
+            console.error('[alerts] unsuppress failed', alert.id, err);
             showToast({ message: t('alertsPage.failedToRestoreAlert'), type: 'error' });
           }
         } finally {

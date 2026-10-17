@@ -36,7 +36,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
-import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
+import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, unsuppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
 import { fillStoredAlertCopy } from './alertCopy';
 import { withAlertActorNames } from './actorNames';
@@ -1217,17 +1217,19 @@ alertsRoutes.post(
 
 // POST /alerts/:id/unsuppress - Lift a mute (server half of the Mute toast "Undo", #8966)
 //
-// Restores 'acknowledged' when the alert had been acknowledged before it was muted
-// (acknowledgedAt survives suppression), else 'active'. Compare-and-swap on
+// Restores the caller-supplied pre-mute status, falling back to 'acknowledged' when
+// acknowledgedAt is set, else 'active'. Compare-and-swap on
 // status = 'suppressed' so a stale undo can never reopen a resolved/dismissed alert.
 alertsRoutes.post(
   '/:id/unsuppress',
   requireScope('organization', 'partner', 'system'),
   requireAlertWrite,
   zValidator('param', alertIdParamSchema),
+  zValidator('json', unsuppressAlertSchema),
   async (c) => {
     const auth = c.get('auth');
     const { id: alertId } = c.req.valid('param');
+    const { restoreStatus: requestedStatus } = c.req.valid('json');
 
     const alert = await getAlertWithOrgCheck(alertId, auth);
     if (!alert) {
@@ -1237,7 +1239,9 @@ alertsRoutes.post(
       return c.json({ error: ALERT_UNSUPPRESS_CAS_LOST_MESSAGE }, 409);
     }
 
-    const restoredStatus = alert.acknowledgedAt ? 'acknowledged' : 'active';
+    // The caller knows the pre-mute status; acknowledgedAt alone is only a fallback
+    // (the expiry reaper returns muted alerts to 'active' without clearing it).
+    const restoredStatus = requestedStatus ?? (alert.acknowledgedAt ? 'acknowledged' : 'active');
     const [updated] = await db
       .update(alerts)
       .set({ status: restoredStatus, suppressedUntil: null })

@@ -10,8 +10,9 @@ import type { SQL } from 'drizzle-orm';
  * and clears suppressedUntil. drizzle-orm is REAL so the compiled predicate is
  * asserted, not just substring-matched.
  */
-const { dbMock, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted(() => {
+const { dbMock, updateSets, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted(() => {
   const updateWheres: unknown[] = [];
+  const updateSets: Record<string, unknown>[] = [];
   const updateReturns: unknown[][] = [];
   const selectRows: unknown[][] = [];
   const alertRow = {
@@ -30,15 +31,16 @@ const { dbMock, updateWheres, updateReturns, selectRows, alertRow } = vi.hoisted
       from: () => ({ where: () => ({ limit: () => Promise.resolve(selectRows.shift() ?? []) }) }),
     }),
     update: () => ({
-      set: () => ({
+      set: (payload: Record<string, unknown>) => ({
         where: (predicate: unknown) => {
           updateWheres.push(predicate);
+          updateSets.push(payload);
           return { returning: () => Promise.resolve(updateReturns.shift() ?? []) };
         },
       }),
     }),
   };
-  return { dbMock, updateWheres, updateReturns, selectRows, alertRow };
+  return { dbMock, updateSets, updateWheres, updateReturns, selectRows, alertRow };
 });
 
 const publishEvent = vi.fn((..._args: unknown[]) => Promise.resolve('evt'));
@@ -105,11 +107,15 @@ const dialect = new PgDialect();
 const UNSUPPRESS_CAS_LOST =
   'Alert is no longer suppressed — it was already restored, resolved or dismissed.';
 
-const unsuppressRequest = () =>
-  app.request(`/alerts/${alertRow.id}/unsuppress`, { method: 'POST' });
+const unsuppressRequest = (body?: Record<string, unknown>) =>
+  app.request(`/alerts/${alertRow.id}/unsuppress`, {
+    method: 'POST',
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  });
 
 beforeEach(() => {
   updateWheres.length = 0;
+  updateSets.length = 0;
   updateReturns.length = 0;
   selectRows.length = 0;
   vi.clearAllMocks();
@@ -124,6 +130,7 @@ describe('POST /alerts/:id/unsuppress', () => {
     const res = await unsuppressRequest();
 
     expect(res.status).toBe(200);
+    expect(updateSets[0]).toEqual({ status: 'active', suppressedUntil: null });
     await expect(res.json()).resolves.toMatchObject({ id: alertRow.id, status: 'active' });
     expect(emitAlertStateFeedback).toHaveBeenCalledTimes(1);
     expect(writeRouteAudit).toHaveBeenCalledTimes(1);
@@ -141,7 +148,28 @@ describe('POST /alerts/:id/unsuppress', () => {
     const res = await unsuppressRequest();
 
     expect(res.status).toBe(200);
+    expect(updateSets[0]).toEqual({ status: 'acknowledged', suppressedUntil: null });
     await expect(res.json()).resolves.toMatchObject({ status: 'acknowledged' });
+  });
+
+  it('honours the caller-supplied pre-mute status over acknowledgedAt (expiry-reaper case)', async () => {
+    getAlertWithOrgCheck.mockResolvedValue({
+      ...alertRow,
+      status: 'suppressed',
+      acknowledgedAt: new Date('2026-01-02T00:00:00.000Z'),
+    });
+    updateReturns.push([{ ...alertRow, status: 'active' }]);
+
+    const res = await unsuppressRequest({ restoreStatus: 'active' });
+
+    expect(res.status).toBe(200);
+    expect(updateSets[0]).toEqual({ status: 'active', suppressedUntil: null });
+  });
+
+  it('rejects a restoreStatus outside active/acknowledged', async () => {
+    const res = await unsuppressRequest({ restoreStatus: 'resolved' });
+    expect(res.status).toBe(400);
+    expect(updateWheres).toHaveLength(0);
   });
 
   it('404s an alert the caller cannot see', async () => {
