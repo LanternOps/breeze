@@ -63,8 +63,15 @@ describe('TicketDetails — pending approval banner (#8200)', () => {
   };
 
   it('renders the after-hours window in the viewer local time, not the server UTC', () => {
+    const startIso = '2026-12-02T00:25:00.000Z';
+    const endIso = '2026-12-02T02:25:00.000Z';
+    // Assigning process.env.TZ in-test is best-effort only: it takes effect in a
+    // forked worker but not in a worker thread (see the TZ note in ci.yml), so
+    // derive the expected clock times from whichever zone is actually in effect.
     const prevTz = process.env.TZ;
-    process.env.TZ = 'America/Chicago'; // UTC-6 in December
+    process.env.TZ = 'America/Chicago'; // UTC-6 in December, when it applies
+    const clock = (iso: string, timeZone?: string) =>
+      new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone });
     try {
       render(
         <TicketDetails
@@ -78,17 +85,21 @@ describe('TicketDetails — pending approval banner (#8200)', () => {
                 minutes: null,
                 amount: null,
                 currencyCode: null,
-                coverageStartsAt: '2026-12-02T00:25:00.000Z',
-                coverageEndsAt: '2026-12-02T02:25:00.000Z',
+                coverageStartsAt: startIso,
+                coverageEndsAt: endIso,
               },
             },
           }}
         />
       );
       const text = screen.getByTestId('ticket-pending-approval').textContent ?? '';
-      expect(text).toContain('06:25 PM');
-      expect(text).toContain('08:25 PM');
-      expect(text).not.toContain('12:25 AM');
+      expect(text).toContain(clock(startIso));
+      expect(text).toContain(clock(endIso));
+      // Discriminates only where the effective zone is not UTC (true on a
+      // forked worker with the TZ above, and on any non-UTC host).
+      if (clock(startIso) !== clock(startIso, 'UTC')) {
+        expect(text).not.toContain(clock(startIso, 'UTC'));
+      }
     } finally {
       if (prevTz === undefined) delete process.env.TZ;
       else process.env.TZ = prevTz;
