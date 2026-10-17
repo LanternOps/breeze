@@ -102,6 +102,11 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // per-connection 60/min limiter (checked before any DB read) and rejects
   // anything without the connection's secret.
   { prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 },
+  // Public trust pages (spec trust-center §8, §10): unauthenticated by design. Isolated so a scanner
+  // enumerating slugs cannot burn the shared budget; 120/min is generous for one human reading a page
+  // (payload + badge + a few documents). The SSR card path lives under /trust/card/ and is skip-listed
+  // instead, because portal SSR shares one IP — see routes/trustPagePublic.ts for why it is DB-free.
+  { prefix: '/api/v1/trust/public/', name: 'trustpublic', limit: 120 },
 ];
 
 export function registerGlobalRateLimitSkipPrefix(prefix: string): void {

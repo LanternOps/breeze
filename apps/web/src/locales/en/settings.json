@@ -4391,7 +4391,8 @@
     "sessionInvalid": "Your session changed before linking could finish. Please sign in again and retry.",
     "providerInactive": "That single sign-on provider is no longer active. Contact your administrator.",
     "configChanged": "The single sign-on configuration changed while you were connecting. Please try again.",
-    "emailUnverified": "Your identity provider did not confirm that your email address is verified. Contact your administrator."
+    "emailUnverified": "Your identity provider did not confirm that your email address is verified. Contact your administrator.",
+    "idpVerifyFailed": "Breeze could not verify the sign-in your identity provider returned. Please try again."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Loading connected apps…",
@@ -4592,6 +4593,7 @@
     "ssoReauthProviderInactive": "Single sign-on is no longer available for this account. Ask your administrator, then try again.",
     "ssoReauthConfigChanged": "Your single sign-on settings changed while you were verifying. Start the verification again.",
     "ssoReauthEmailUnverified": "Your identity provider reports that your email address is not verified. Verify it there, then try again.",
+    "ssoReauthIdpVerifyFailed": "Breeze could not verify the sign-in your identity provider returned. Try again. If it keeps failing, ask your administrator to check the server logs.",
     "ssoReauthProofExpired": "Your identity provider verification has expired. Verify again to finish setting up multi-factor authentication.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "This account signs in through an identity provider and has no password. Re-verify with your provider before adding a passkey.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Your identity is verified. Name this passkey and continue.",

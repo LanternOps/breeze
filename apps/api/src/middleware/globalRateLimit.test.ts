@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // Hoisted so individual tests can flip between the in-memory fallback
@@ -275,3 +275,33 @@ describe('ISOLATED_BUCKETS pins', () => {
   });
 });
 
+
+describe('globalRateLimit — public trust pages (spec trust-center §8, §10)', () => {
+  afterEach(() => { __resetSkipPrefixesForTests(); });
+
+  it('the SSR card prefix is not counted once registered (as index.ts does)', async () => {
+    registerGlobalRateLimitSkipPrefix('/api/v1/trust/card/');
+    const app = new Hono();
+    app.use('*', globalRateLimit({ limit: 1, windowSeconds: 60 }));
+    app.get('/api/v1/trust/card/:p/:o', (c) => c.json({ ok: true }));
+    app.get('/api/v1/devices', (c) => c.json({ ok: true }));
+
+    for (let i = 0; i < 3; i++) expect((await app.request('/api/v1/trust/card/nw/acme')).status).toBe(200);
+    // The shared budget is untouched by the card requests above.
+    expect((await app.request('/api/v1/devices')).status).toBe(200);
+  });
+
+  it('meters /api/v1/trust/public/ in its own trustpublic bucket at 120/min', async () => {
+    const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/trust/public/');
+    expect(bucket).toEqual({ prefix: '/api/v1/trust/public/', name: 'trustpublic', limit: 120 });
+
+    const fakeRedis = { marker: 'redis' };
+    mocks.getRedis.mockReturnValue(fakeRedis);
+    mocks.rateLimiter.mockResolvedValue({ allowed: true, remaining: 119, resetAt: new Date(Date.now() + 60_000) });
+    const app = new Hono();
+    app.use('*', globalRateLimit({ limit: 300, windowSeconds: 60 }));
+    app.get('/api/v1/trust/public/:p/:o', (c) => c.json({ ok: true }));
+    await app.request('/api/v1/trust/public/nw/acme');
+    expect(mocks.rateLimiter).toHaveBeenCalledWith(fakeRedis, `global:trustpublic:${TEST_IP}`, 120, 60);
+  });
+});

@@ -315,6 +315,17 @@
       "target": "Destinazione",
       "time": "Ora"
     },
+    "recentlyViewed": {
+      "title": "Riprendi da dove avevi lasciato",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organizzazione",
+        "ticket": "Ticket",
+        "alert": "Avviso",
+        "site": "Sede",
+        "page": "Pagina"
+      }
+    },
     "alerts": {
       "title": "Avvisi recenti",
       "viewAll": "Visualizza tutto",
@@ -805,9 +816,9 @@
       "expand": "Espandi la barra laterale",
       "collapseSections": "Comprimi tutte le sezioni",
       "closeMenu": "Chiudi menu",
-      "recentDevices": "Dispositivi recenti",
-      "hideRecentDevices": "Nascondi dispositivi recenti",
-      "showRecentDevices": "Mostra dispositivi recenti"
+      "recent": "Recenti",
+      "hideRecent": "Nascondi recenti",
+      "showRecent": "Mostra recenti"
     },
     "orgRequired": {
       "title": "Seleziona un'organizzazione",

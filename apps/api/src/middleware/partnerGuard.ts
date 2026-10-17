@@ -38,6 +38,8 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   // guard change can never parse that secret as a JWT or act for a partner before
   // the route's own secret check. Exact `/webhooks/edr/<uuid>` only.
   if (EDR_PUSH_WEBHOOK_PATH.test(path)) return true;
+  // Public trust pages: GETs must never trigger staff account activation (spec trust-center §13)
+  if (path.startsWith('/api/v1/trust/card/') || path.startsWith('/api/v1/trust/public/')) return true;
   // Public token GETs must never trigger staff account activation.
   if (/^\/api\/v1\/autopay\/public\/[^/]+(?:\/(?:setup-session|stop))?$/.test(path)) return true;
   return false;

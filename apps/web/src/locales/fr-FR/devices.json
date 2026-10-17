@@ -1367,7 +1367,7 @@
       "unknown": "Breeze Assist est activé mais non installé (depuis le {{since}})."
     },
     "watchdogInstall": {
-      "gaveUp": "Le watchdog n’a pas pu être installé automatiquement (depuis le {{since}}) : {{reason}}. Exécutez `breeze-agent service install --watchdog` sur l’hôte pour réessayer.",
+      "gaveUp": "Le watchdog n’a pas pu être installé automatiquement (depuis le {{since}}) : {{reason}}. Exécutez <code>breeze-agent service install --watchdog</code> sur l’hôte pour réessayer.",
       "unsupported": "L’installation automatique du watchdog n’est pas prise en charge sur cet hôte (depuis le {{since}}).",
       "reason": {
         "network": "le téléchargement est injoignable",
@@ -4085,7 +4085,7 @@
       "offNote": "Les runtimes sont toujours détectés, mais la liste des charges de travail reste désactivée tant qu’une politique ne l’active pas.",
       "enabled": "Lister les charges de travail",
       "runtimesHeading": "Runtimes à lister",
-      "laterRelease": "La liste pour Hyper-V et Proxmox VE arrivera avec une version ultérieure de l’agent ; ces options prendront effet à ce moment-là.",
+      "agentSupport": "Les options Hyper-V et Proxmox VE ne s’appliquent qu’aux agents qui incluent ces pilotes ; les agents plus anciens les ignorent.",
       "interval": "Intervalle de collecte (minutes)",
       "invalidInterval": "L’intervalle doit être un nombre entier de minutes entre {{min}} et {{max}}."
     },

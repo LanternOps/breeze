@@ -42,7 +42,7 @@ import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
 import DeviceTimeSection from "./time/DeviceTimeSection";
 import { formatNumber } from "@/lib/i18n/format";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
 type DeviceInfoTabProps = {
@@ -269,7 +269,7 @@ function WatchdogInstallNotice({ watchdogInstall }: { watchdogInstall: DeviceInf
   if (state !== "gave_up" && state !== "unsupported") return null;
 
   const since = watchdogInstall.since ? new Date(watchdogInstall.since).toLocaleDateString() : "—";
-  let message: string;
+  let message: React.ReactNode;
   if (state === "unsupported") {
     message = t("deviceInfoTab.watchdogInstall.unsupported", { since });
   } else {
@@ -307,7 +307,14 @@ function WatchdogInstallNotice({ watchdogInstall }: { watchdogInstall: DeviceInf
       default:
         reason = t("deviceInfoTab.watchdogInstall.reason.unknown");
     }
-    message = t("deviceInfoTab.watchdogInstall.gaveUp", { since, reason });
+    message = (
+      <Trans
+        i18nKey="deviceInfoTab.watchdogInstall.gaveUp"
+        t={t}
+        values={{ since, reason }}
+        components={{ code: <code className="font-mono text-xs" /> }}
+      />
+    );
   }
 
   return (

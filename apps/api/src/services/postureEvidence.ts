@@ -233,12 +233,14 @@ function bump(c: ControlEvidence, assessed: boolean, passing: boolean, evidenceA
   c.newestEvidenceAt = newer(c.newestEvidenceAt, evidenceAt);
 }
 
-function orgFact(c: ControlEvidence, known: boolean, value: boolean, evidenceAt: Date | null): void {
+/** Org-wide configuration fact. No real timestamp is selected for these, so none is reported:
+ *  snapshot time is not evidence time (spec §5.4), and stamping `asOf` would change every snapshot's hash. */
+function orgFact(c: ControlEvidence, known: boolean, value: boolean): void {
   c.eligible = 1;
   if (!known) return;
   c.assessed = 1;
   c.passing = value ? 1 : 0;
-  c.newestEvidenceAt = iso(evidenceAt);
+  c.newestEvidenceAt = null;
 }
 
 export async function loadPostureEvidence(
@@ -376,7 +378,7 @@ export async function loadPostureEvidence(
   if (deviceIds.length === 0) {
     const orgWide = includeOrgWide ? await loadOrgWide() : null;
     const out = empty(orgWide, org);
-    if (orgWide) applyOrgWide(out.controls, orgWide, asOf);
+    if (orgWide) applyOrgWide(out.controls, orgWide);
     // maxSecurityStatusAgeDays IS the evidence-age window (spec §5.4); windowDays is the elevation-activity window.
     if (includeOrgWide) out.controls.mfa_registered_m365 = await loadM365MfaEvidence(orgId, asOf, policy.maxSecurityStatusAgeDays);
     return out;
@@ -634,7 +636,7 @@ export async function loadPostureEvidence(
       ? Math.round(cisValues.reduce((a, b) => a + b, 0) / cisValues.length)
       : null;
 
-  if (orgWide) applyOrgWide(controls, orgWide, asOf);
+  if (orgWide) applyOrgWide(controls, orgWide);
 
   // Security-product inventory input — moved from the report, order preserved.
   const deviceProductEvidence: SecurityProductEvidence[] = [];
@@ -709,9 +711,9 @@ function assembleProductEvidence(input: {
   return out;
 }
 
-function applyOrgWide(controls: PostureControlEvidence, w: OrgWideEvidence, asOf: Date): void {
-  orgFact(controls.identity_provider, true, Boolean(w.m365 || w.google), asOf);
+function applyOrgWide(controls: PostureControlEvidence, w: OrgWideEvidence): void {
+  orgFact(controls.identity_provider, true, Boolean(w.m365 || w.google));
   const dnsSync = w.dns?.lastSyncStatus ?? null;
-  orgFact(controls.dns_filtering, true, Boolean(w.dns) && dnsSync !== 'error', asOf);
-  orgFact(controls.privileged_access, true, w.pamRuleRows.length > 0 || w.mfaStepUpEnforced, asOf);
+  orgFact(controls.dns_filtering, true, Boolean(w.dns) && dnsSync !== 'error');
+  orgFact(controls.privileged_access, true, w.pamRuleRows.length > 0 || w.mfaStepUpEnforced);
 }

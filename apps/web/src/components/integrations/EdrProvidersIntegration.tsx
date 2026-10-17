@@ -21,13 +21,17 @@ import EdrTenantMapping from "./EdrTenantMapping";
 import EdrUnlinkedEndpoints from "./EdrUnlinkedEndpoints";
 import "@/lib/i18n";
 
-/** Blank = provider default (null); otherwise an integer 1-1440, else undefined (invalid). */
+/**
+ * Blank = provider default (null); otherwise an integer 5-1440, else undefined (invalid).
+ * Matches the edr_connections CHECK in
+ * apps/api/migrations/2026-12-16-100000-edr-provider-framework.sql.
+ */
 function parseInterval(raw: string): number | null | undefined {
   const trimmed = raw.trim();
   if (trimmed === "") return null;
   if (!/^\d+$/.test(trimmed)) return undefined;
   const n = Number(trimmed);
-  return n >= 1 && n <= 1440 ? n : undefined;
+  return n >= 5 && n <= 1440 ? n : undefined;
 }
 
 type AddForm = {
@@ -259,6 +263,11 @@ export default function EdrProvidersIntegration() {
                 </label>
               </div>
               <p className="mt-3 text-xs text-muted-foreground">{t("edrProviders.intervalHelp")}</p>
+              {(detection === undefined || inventory === undefined) && (
+                <p data-testid="edr-add-interval-error" role="alert" className="mt-1 text-xs text-destructive">
+                  {t("edrProviders.intervalInvalid")}
+                </p>
+              )}
             </>
           )}
           <div className="mt-4 flex gap-2">

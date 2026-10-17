@@ -34,7 +34,16 @@ import {
 export const edrConnectionRoutes = new Hono();
 
 const idParamSchema = z.object({ id: z.string().guid() });
-const intervalSchema = z.number().int().min(1).max(1440);
+// Bounds mirror the edr_connections CHECK constraint
+// (migrations/2026-12-16-100000-edr-provider-framework.sql: BETWEEN 5 AND 1440).
+// Anything looser reaches the database and surfaces as a 500.
+const INTERVAL_MIN_MINUTES = 5;
+const INTERVAL_MAX_MINUTES = 1440;
+const intervalSchema = z
+  .number()
+  .int()
+  .min(INTERVAL_MIN_MINUTES, `Interval must be at least ${INTERVAL_MIN_MINUTES} minutes`)
+  .max(INTERVAL_MAX_MINUTES, `Interval must be at most ${INTERVAL_MAX_MINUTES} minutes`);
 
 const createConnectionSchema = z.object({
   provider: z.string().min(1).max(30),

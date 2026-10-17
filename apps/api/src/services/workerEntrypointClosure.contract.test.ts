@@ -345,6 +345,8 @@ const EXPECTED_NAMES = [
   'aiModelDiscoveryWorker',
   // Workload image currency W05 (#8194).
   'imageCurrencyWorker',
+  // Trust Center W1 (#8768).
+  'trustPageSnapshotWorker',
 ];
 
 // ---------------------------------------------------------------------------

@@ -4386,7 +4386,8 @@
     "sessionInvalid": "Votre session a changé avant que la liaison puisse aboutir. Veuillez vous reconnecter et réessayer.",
     "providerInactive": "Ce fournisseur de connexion unique n’est plus actif. Contactez votre administrateur.",
     "configChanged": "La configuration de la connexion unique a été modifiée pendant l’opération. Veuillez réessayer.",
-    "emailUnverified": "Votre fournisseur d’identité n’a pas confirmé que votre adresse courriel est vérifiée. Contactez votre administrateur."
+    "emailUnverified": "Votre fournisseur d’identité n’a pas confirmé que votre adresse courriel est vérifiée. Contactez votre administrateur.",
+    "idpVerifyFailed": "Breeze n’a pas pu vérifier la connexion renvoyée par votre fournisseur d’identité. Veuillez réessayer."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Chargement des applications connectées...",
@@ -4587,6 +4588,7 @@
     "ssoReauthProviderInactive": "L'authentification unique n'est plus offerte pour ce compte. Communiquez avec votre administrateur, puis réessayez.",
     "ssoReauthConfigChanged": "Vos paramètres d'authentification unique ont changé pendant la vérification. Recommencez la vérification.",
     "ssoReauthEmailUnverified": "Votre fournisseur d'identité indique que votre adresse courriel n'est pas vérifiée. Vérifiez-la auprès de lui, puis réessayez.",
+    "ssoReauthIdpVerifyFailed": "Breeze n'a pas pu vérifier la connexion renvoyée par votre fournisseur d'identité. Réessayez. Si le problème persiste, demandez à votre administrateur de consulter les journaux du serveur.",
     "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité est expirée. Vérifiez de nouveau pour terminer la configuration de l'authentification multifacteur.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Ce compte ouvre une session par un fournisseur d'identité et n'a pas de mot de passe. Vérifiez de nouveau auprès de votre fournisseur avant d'ajouter une clé d'accès.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Votre identité est vérifiée. Nommez cette clé d’accès et continuez.",

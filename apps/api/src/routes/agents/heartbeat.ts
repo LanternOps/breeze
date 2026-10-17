@@ -71,6 +71,7 @@ import { DeferredCacheFills } from '../../services/hotPathCache';
 import {
   buildSettingsDecisionFields,
   retainStateKillSwitchEnabled,
+  agentEchEnabled,
   type RemoteManagementDecision,
 } from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
@@ -96,7 +97,12 @@ import {
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
-import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
+import {
+  recordAgentHeartbeat,
+  recordAgentHeartbeatEch,
+  recordAgentFilterSignatureReport,
+  resolveResponseStatus,
+} from '../metrics';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
@@ -1191,6 +1197,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.updateAttemptCount = null;
   }
 
+  // #8869 — ECH telemetry: counters only (no persistence). Absent = not counted.
+  if (data.echActive !== undefined) recordAgentHeartbeatEch(data.echActive);
+  if (data.filterSignatureSeenAt !== undefined) recordAgentFilterSignatureReport();
+
   // #6925 — persist the agent's Breeze Assist install problem ("enabled but
   // not installed, no server offer", or an abandoned install) so it shows on
   // the device page and device list instead of one agent-side log line.
@@ -2161,6 +2171,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   const mergedConfigUpdate: Record<string, unknown> = {
     backup_server_url: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim(),
   };
+
+  // #8869 — ECH kill switch, ALWAYS sent as true/false (an absent key means
+  // "no change" on the agent, so the explicit value is the only lever).
+  // Takes effect on the agent's next connection; never tears down live
+  // connections.
+  mergedConfigUpdate.ech_enabled = agentEchEnabled();
 
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //

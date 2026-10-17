@@ -473,6 +473,18 @@ describe('EDR connection routes', () => {
       expect(dbState.updated[0]).toMatchObject({ name: 'Renamed' });
     });
 
+    it.each(['detectionIntervalMinutes', 'inventoryIntervalMinutes'])(
+      '%s: 3 and 4 are 400 (DB CHECK minimum is 5), 5 is 200 (#8666)',
+      async (field) => {
+        dbState.connections = [connectionRow()];
+        for (const bad of [1, 3, 4]) {
+          const res = await patch({ [field]: bad });
+          expect(res.status).toBe(400);
+        }
+        expect((await patch({ [field]: 5 })).status).toBe(200);
+      },
+    );
+
     it('404 for an unknown connection', async () => {
       expect((await patch({ name: 'x' })).status).toBe(404);
     });

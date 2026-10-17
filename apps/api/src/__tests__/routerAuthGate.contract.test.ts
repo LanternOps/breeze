@@ -26,6 +26,7 @@ const EXEMPT: Record<string, string> = {
   automationWebhookRoutes: 'Inbound automation webhooks authenticate with webhook secrets.',
   invoicesPublicRoutes: 'Public invoice links authenticate via share tokens.',
   quotesPublicRoutes: 'Public quote links authenticate via share tokens.',
+  trustPagePublicRoutes: 'Public trust pages are unauthenticated by design; non-serving cases are a generic 404 (spec trust-center §7, §13).',
   publicEnrollmentRoutes: 'Public enrollment installer download uses enrollment keys.',
   publicShortLinkRoutes: 'Public short links resolve enrollment downloads.',
   installerRoutes: 'Installer bootstrap/download flow uses bootstrap tokens.',
