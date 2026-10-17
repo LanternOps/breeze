@@ -12,6 +12,11 @@ export const TICKET_TOKEN_RE = /\bT-(\d{4})-(\d{4,})\b/;
 // uppercase word in a subject can never select a ticket (#8965).
 const CUSTOMER_TOKEN_RE = /\[([A-Z0-9_-]{10})\]/;
 
+/** Remove staff and customer ticket tokens from a subject (used when persisting a new ticket's subject). */
+export function stripTicketTokens(subject: string): string {
+  return subject.replace(new RegExp(`\\[?${TICKET_TOKEN_RE.source}\\]?`), '').replace(CUSTOMER_TOKEN_RE, '').replace(/\s{2,}/g, ' ').trim();
+}
+
 /** Subject tokens that may identify a ticket: staff internal number and/or customer ticket_number. */
 function subjectTicketTokens(subject: string | null | undefined): string[] {
   const text = subject ?? '';
