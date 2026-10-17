@@ -1,7 +1,7 @@
 ---
 title: Trust Center — public security-posture pages for organizations
 tracking_issue: LanternOps/breeze#8768 (waves: W01 #8769, W02 #8770, W03 #8771)
-status: approved 2026-10-13 (all §18 defaults); plan-time amendments recorded in §19. Plan: docs/superpowers/plans/2026-10-13-trust-center-w1.md
+status: approved 2026-10-13 (all §18 defaults); plan-time amendments recorded in §19. Plans: docs/superpowers/plans/2026-10-13-trust-center-w1.md (W1), docs/superpowers/plans/2026-10-17-trust-center-w2.md (W2)
 depends_on: LanternOps/breeze#3282 (platform custom domains) — W3 only
 related: #4562 (portal visibility), #5784 (evidence reports), specs/reports/2026-06-29-security-compliance-posture-report.md, specs/reports/2026-07-14-posture-backup-evidence-design.md (parked), #3281, #3229, #3967
 reviewed_by: advisor + codex gpt-6-astra xhigh (read-only), 2026-10-12 — both concur on the architecture; their refinements are folded in and marked "(review)".
@@ -439,3 +439,20 @@ From the whole-branch review of W1 (controller Rulings 20–27). Each changes te
 22. **Partner home requires an internal org** (Ruling 25): setting `is_partner_home` requires `organizations.type = 'internal'` (422 `PARTNER_HOME_INTERNAL_ONLY`), publish re-checks it, and clearing the flag on a published page that has no `publication_authorized_by` is refused (422 `PARTNER_HOME_UNPUBLISH_FIRST`) — a customer page can never be published without the attestation. The editor maps both codes (§8, §10).
 23. **Org/partner slug or status changes refresh the serving set** (Ruling 26): the org and partner PATCH handlers call `refreshServingForPartner(partnerId)` (best-effort, after the write). The §8 editor rename warning is a **W2 follow-up** (§7, §8).
 24. **Deferred to W2** (Ruling 27): the §11 portal-dashboard "Public trust page" link. Ingress: W1 needs no proxy change; proxies that already forward `X-Forwarded-Proto` / `X-Forwarded-Host` (Caddy's default) need nothing; if yours strips them, canonical URLs fall back to the internal origin (§11, §13).
+
+### W2 plan-time amendments (2026-10-16)
+
+From `docs/superpowers/plans/2026-10-17-trust-center-w2.md`, which holds the detail. These are implementation facts and pre-decided product calls, except where the plan's Open Decisions list them for Todd.
+
+25. **CIS framework-view gate.** `BREEZE_TRUST_CIS_FRAMEWORK_VIEW` (default off) gates CIS v8 in the framework view and in the picker. While the flag is off, the default selection is NIST CSF 2.0. CIS chips and attribution on control cards are unchanged. The written CIS confirmation (§18.13) remains Todd's gate; the flag does not replace it (§5.5, §14).
+26. **NIST refs are subcategories** (`PR.PS-02`, not `PR.PS`), so "N of 106" counts like with like. The catalog version becomes `2026-10-17.1` (§5.5).
+27. **Declared controls are a separate payload array** (`declaredControls`, status `current | expired`). `summary.controlsMet` stays telemetry-only. Category `governance` is added for declared-only items (§2, §5.1, §6).
+28. **`published_config` v2** freezes `{document id, visibility}`, `catalogControlIds`, `declarationIds`, `frameworkView`, `showHistory`, FAQ and subprocessor content, NDA text and the render locale. When a field is absent from a W1 config, the refresh uses the W1 meaning: the 15 W1 controls, public documents, `en`, and no W2 blocks (§7, §19 item 17).
+29. **Payload `schemaVersion: 2`** adds `locale`, `declaredControls`, `frameworks`, `subprocessors`, `faq`, `history`, `access` and `documents[].visibility`. A v1 normalizer keeps stored v1 snapshots renderable. `payloadSha256` also excludes `history` (§6).
+30. **`mfa_enforced_m365`** reads `m365_ca_policies` on the trust-page path only, so the posture PDF's query order is untouched (§5.3).
+31. **Portal i18n** uses typed per-locale copy modules, not an i18n runtime. The page renders in the partner's `settings.language`, frozen at publish (§18.7, §19 item 4).
+32. **Access tokens appear only in URL fragments and POST bodies.** Downloads are POST (§12).
+33. **The partner template `trust_page_templates`** is shape 3 with `partner_id NOT NULL UNIQUE` (pre-decided) and carries a `revision`. Publish answers 409 `TEMPLATE_CHANGED` on a stale template revision (§9, §18.8).
+34. **Every W2 child write locks the page and bumps `publication_revision`** in one transaction (§7).
+35. **Gated documents need disclosure confirmation.** A gated→public change re-confirms. Anonymous download requires frozen-public ∩ live-public (§9, §12).
+36. **`access` is a reserved partner slug**, alongside `preview` (§8).
