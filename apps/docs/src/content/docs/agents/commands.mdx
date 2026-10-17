@@ -1032,6 +1032,7 @@ Asks the **explicitly selected console user** to confirm a support request on th
 | `reverseCode` | Four-digit request code shown on the card |
 | `choices` | Three distinct two-digit numbers, in display order |
 | `timeoutMs` | 30,000–300,000 ms |
+| `deadlineAt` | Optional. The verification's absolute expiry (ISO 8601). A command delivered late counts down only to this time (plus a 5-second clock-skew allowance), never longer than `timeoutMs`, and is not shown at all once it has passed; the agent then reports `"timeout"`. Older agents and helpers ignore it. |
 
 The result (`stdout` JSON) contains `delivered`, an optional `choice` (one of the three numbers, `"not_me"` or `"timeout"`), an optional `principal` (exactly one of `sid` or numeric `uid`, plus `username` and an optional OS-provided `upn`), an optional `helperVersion`, and on `delivered: false` an `error` of `no_session_for_user`, `session_not_console` or `helper_outdated`. The agent reports the OS principal itself; the helper never supplies identity.
 
