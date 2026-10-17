@@ -726,15 +726,26 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'create_item',
       'update_item',
       'archive_item',
+      // W02-D5 (#6756): implemented and documented, but Zod rejected them, so
+      // chat could never reach them.
+      'set_price',
+      'remove_price',
       'set_org_price',
       'remove_org_price',
       'set_bundle_components',
     ]),
     catalogId: uuid.optional(),
+    // set_price / remove_price. The handler re-parses with the same schema.
+    currencyCode: currencyCodeSchema.optional(),
     orgId: uuid.optional(),
     item: z.record(z.string(), z.unknown()).optional(),
+    // set_price: { unitPrice } (setItemPriceSchema, re-parsed by the handler).
+    price: z.record(z.string(), z.unknown()).optional(),
     override: z.record(z.string(), z.unknown()).optional(),
     components: z.array(z.record(z.string(), z.unknown())).optional(),
+    // set_bundle_components: currency of every component revenueAllocation.
+    // validateToolInput used to STRIP it, so any allocation failed.
+    allocationCurrency: currencyCodeSchema.optional(),
   }),
 
   list_contracts: z.object({

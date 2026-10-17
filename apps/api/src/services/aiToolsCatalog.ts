@@ -36,6 +36,7 @@ import {
   setItemPrice,
   setOrgPriceOverride,
   updateCatalogItem,
+  readCatalogPreviousState,
   type CatalogActor
 } from './catalogService';
 import { missingParamsJson, zodErrorToJson } from './aiToolValidation';
@@ -524,57 +525,63 @@ export function registerCatalogTools(aiTools: Map<string, AiTool>): void {
       if (missing) return missing;
 
       try {
+        // W02 (#6756): every write that REPLACES something returns the value it
+        // replaced (`previous`), read after validation and before the write,
+        // so the approving human can undo it within a minute.
+        const withPrevious = (result: unknown, previous: unknown) =>
+          JSON.stringify(result && typeof result === 'object' && !Array.isArray(result)
+            ? { ...(result as Record<string, unknown>), previous }
+            : { result, previous });
+        const catalogId = String(input.catalogId);
         switch (action) {
           case 'create_item':
             return JSON.stringify(await createCatalogItem(
               createItemPayload.parse({ item: input.item }).item,
               actor
             ));
-          case 'update_item':
-            return JSON.stringify(await updateCatalogItem(
-              String(input.catalogId),
-              updateItemPayload.parse({ item: input.item }).item,
-              actor
-            ));
-          case 'archive_item':
-            return JSON.stringify(await archiveCatalogItem(String(input.catalogId), actor));
-          case 'set_price':
-            return JSON.stringify(await setItemPrice(
-              String(input.catalogId),
-              currencyParam.parse(input.currencyCode),
-              pricePayload.parse({ price: input.price }).price,
-              actor
-            ));
-          case 'remove_price':
-            return JSON.stringify(await removeItemPrice(
-              String(input.catalogId),
-              currencyParam.parse(input.currencyCode),
-              actor
-            ));
-          case 'set_org_price':
-            return JSON.stringify(await setOrgPriceOverride(
-              String(input.catalogId),
-              String(input.orgId),
-              overridePayload.parse({ override: input.override }).override,
-              actor
-            ));
-          case 'remove_org_price':
-            return JSON.stringify(await removeOrgPriceOverride(
-              String(input.catalogId),
-              String(input.orgId),
-              actor
-            ));
+          case 'update_item': {
+            const patch = updateItemPayload.parse({ item: input.item }).item;
+            const previous = await readCatalogPreviousState(action, { catalogId, fields: Object.keys(patch) }, actor);
+            return withPrevious(await updateCatalogItem(catalogId, patch, actor), previous);
+          }
+          case 'archive_item': {
+            const previous = await readCatalogPreviousState(action, { catalogId, fields: ['isActive'] }, actor);
+            return withPrevious(await archiveCatalogItem(catalogId, actor), previous);
+          }
+          case 'set_price': {
+            const currencyCode = currencyParam.parse(input.currencyCode);
+            const price = pricePayload.parse({ price: input.price }).price;
+            const previous = await readCatalogPreviousState(action, { catalogId, currencyCode }, actor);
+            return withPrevious(await setItemPrice(catalogId, currencyCode, price, actor), previous);
+          }
+          case 'remove_price': {
+            const currencyCode = currencyParam.parse(input.currencyCode);
+            const previous = await readCatalogPreviousState(action, { catalogId, currencyCode }, actor);
+            return withPrevious(await removeItemPrice(catalogId, currencyCode, actor), previous);
+          }
+          case 'set_org_price': {
+            const orgId = String(input.orgId);
+            const override = overridePayload.parse({ override: input.override }).override;
+            const previous = await readCatalogPreviousState(action, { catalogId, orgId }, actor);
+            return withPrevious(await setOrgPriceOverride(catalogId, orgId, override, actor), previous);
+          }
+          case 'remove_org_price': {
+            const orgId = String(input.orgId);
+            const previous = await readCatalogPreviousState(action, { catalogId, orgId }, actor);
+            return withPrevious(await removeOrgPriceOverride(catalogId, orgId, actor), previous);
+          }
           case 'set_bundle_components': {
             const parsed = setBundleComponentsSchema.parse({
               components: input.components ?? [],
               ...(input.allocationCurrency != null ? { allocationCurrency: input.allocationCurrency } : {}),
             });
-            return JSON.stringify(await setBundleComponents(
-              String(input.catalogId),
+            const previous = await readCatalogPreviousState(action, { catalogId }, actor);
+            return withPrevious(await setBundleComponents(
+              catalogId,
               parsed.components,
               actor,
               parsed.allocationCurrency
-            ));
+            ), previous);
           }
           default:
             return JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });

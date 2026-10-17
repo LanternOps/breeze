@@ -266,6 +266,91 @@ async function upsertPriceRow(tx: DbExecutor, itemId: string, partnerId: string,
   return rows[0]!;
 }
 
+/** What `readCatalogPreviousState` reads for one AI billing-catalog write (W02, #6756). */
+export interface CatalogPreviousTarget {
+  catalogId: string;
+  currencyCode?: string;
+  orgId?: string;
+  /** update_item / archive_item: the item columns the write will change. */
+  fields?: string[];
+}
+
+/**
+ * The value an AI `manage_billing_catalog` write is about to replace, so the
+ * tool result can carry it and a supervised approval stays reversible within
+ * a minute (W02 class review: without it set_price/remove_price/
+ * set_bundle_components would be four-eyes).
+ *
+ * Read immediately BEFORE the write under the same caller's RLS context — not
+ * inside the write's transaction, so a concurrent edit in between is not
+ * reflected. It is an undo hint for the approving human, not an audit record.
+ * Returns null when nothing exists yet (a first price, a new override).
+ */
+export async function readCatalogPreviousState(
+  action: string,
+  target: CatalogPreviousTarget,
+  actor: CatalogActor,
+): Promise<unknown> {
+  const partnerId = requirePartner(actor);
+  const { catalogId } = target;
+  switch (action) {
+    case 'update_item':
+    case 'archive_item': {
+      const [row] = await db.select().from(catalogItems)
+        .where(and(eq(catalogItems.id, catalogId), eq(catalogItems.partnerId, partnerId)))
+        .limit(1);
+      if (!row) return null;
+      const record = row as unknown as Record<string, unknown>;
+      const item = Object.fromEntries((target.fields ?? []).filter((f) => f in record).map((f) => [f, record[f]]));
+      if (action === 'archive_item') return item;
+      // update_item can also write the partner-currency price row, so the
+      // price book is part of what it may replace.
+      const prices = await db.select({ currencyCode: catalogItemPrices.currencyCode, unitPrice: catalogItemPrices.unitPrice })
+        .from(catalogItemPrices)
+        .where(and(eq(catalogItemPrices.itemId, catalogId), eq(catalogItemPrices.partnerId, partnerId)));
+      return { item, prices };
+    }
+    case 'set_price':
+    case 'remove_price': {
+      if (!target.currencyCode) return null;
+      const [row] = await db.select({ currencyCode: catalogItemPrices.currencyCode, unitPrice: catalogItemPrices.unitPrice })
+        .from(catalogItemPrices)
+        .where(and(
+          eq(catalogItemPrices.itemId, catalogId),
+          eq(catalogItemPrices.partnerId, partnerId),
+          eq(catalogItemPrices.currencyCode, target.currencyCode),
+        ))
+        .limit(1);
+      return row ?? null;
+    }
+    case 'set_org_price':
+    case 'remove_org_price': {
+      if (!target.orgId) return null;
+      const [row] = await db.select({ currencyCode: catalogItemOrgPricing.currencyCode, unitPrice: catalogItemOrgPricing.unitPrice })
+        .from(catalogItemOrgPricing)
+        .where(and(
+          eq(catalogItemOrgPricing.catalogItemId, catalogId),
+          eq(catalogItemOrgPricing.orgId, target.orgId),
+          eq(catalogItemOrgPricing.partnerId, partnerId),
+        ))
+        .limit(1);
+      return row ?? null;
+    }
+    case 'set_bundle_components':
+      return db.select({
+        componentItemId: catalogBundleComponents.componentItemId,
+        quantity: catalogBundleComponents.quantity,
+        showOnInvoice: catalogBundleComponents.showOnInvoice,
+        revenueAllocation: catalogBundleComponents.revenueAllocation,
+        allocationCurrency: catalogBundleComponents.allocationCurrency,
+      })
+        .from(catalogBundleComponents)
+        .where(and(eq(catalogBundleComponents.bundleItemId, catalogId), eq(catalogBundleComponents.partnerId, partnerId)));
+    default:
+      return null;
+  }
+}
+
 export async function setItemPrice(itemId: string, currencyCode: string, input: SetItemPriceInput, actor: CatalogActor) {
   const partnerId = requirePartner(actor);
   const unitPrice = input.unitPrice.toFixed(2);
