@@ -23,7 +23,8 @@ import {
   listEndpointMessages,
 } from './endpointMessaging/history';
 import { requestLikeFromSnapshot } from './auditEvents';
-import { getUserPermissions } from './permissions';
+import { getUserPermissions, type UserPermissions } from './permissions';
+import { hasExactDeviceCeiling } from './siteCeilingAccess';
 import type { AiTool, AiToolTier } from './aiTools';
 
 function jsonError(error: string, extra: Record<string, unknown> = {}): string {
@@ -40,7 +41,30 @@ async function permissionsFor(auth: AuthContext) {
   })) ?? undefined;
 }
 
-async function sendAction(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
+/**
+ * The caller's SITE ceiling, resolved once per call. The history readers and
+ * the send resolver narrow on `allowedSiteIds` (undefined = unrestricted, `[]`
+ * = no sites). Loaded permissions exist only for a non-admin user-backed
+ * principal; every other caller that reaches this tool (a site-clamped MCP
+ * API key) carries its ceiling on `auth.allowedSiteIds` instead, and without
+ * this it read every site's message history.
+ */
+interface SiteScope {
+  permissions: UserPermissions | undefined;
+  allowedSiteIds: string[] | undefined;
+}
+
+async function siteScopeFor(auth: AuthContext): Promise<SiteScope> {
+  const permissions = await permissionsFor(auth);
+  return { permissions, allowedSiteIds: permissions?.allowedSiteIds ?? auth.allowedSiteIds };
+}
+
+/** The history readers' site filter: only `allowedSiteIds` is read. */
+function historySiteFilter(scope: SiteScope): Pick<UserPermissions, 'allowedSiteIds'> | undefined {
+  return scope.allowedSiteIds === undefined ? undefined : { allowedSiteIds: scope.allowedSiteIds };
+}
+
+async function sendAction(input: Record<string, unknown>, auth: AuthContext, scope: SiteScope): Promise<string> {
   // An autonomous agent must never author end-user-visible text under the
   // MSP's brand.
   if (isAiAgentPrincipal(auth)) return jsonError('send_endpoint_message is not available to autonomous agents');
@@ -54,6 +78,12 @@ async function sendAction(input: Record<string, unknown>, auth: AuthContext): Pr
   // Without an origin the persisted row and queued commands would carry no AI
   // attribution (aiDispatch refuses the same way for device work).
   if (!auth.aiOrigin) return jsonError('send_endpoint_message requires an AI session origin');
+  // The send resolver narrows on loaded permissions. A site-restricted session
+  // whose permissions could not be loaded would resolve targets across every
+  // site, so it fails closed.
+  if (!scope.permissions && scope.allowedSiteIds !== undefined) {
+    return jsonError('send_endpoint_message could not resolve your site access; try again');
+  }
 
   // `confirmedCount` is a human's confirmation of a large send; the model can
   // never supply it. A send resolving above the threshold is refused below and
@@ -70,7 +100,7 @@ async function sendAction(input: Record<string, unknown>, auth: AuthContext): Pr
       {
         req: requestLikeFromSnapshot({ userAgent: 'breeze-ai-tool' }),
         auth,
-        permissions: await permissionsFor(auth),
+        permissions: scope.permissions,
       },
       parsed.data,
     );
@@ -92,26 +122,26 @@ async function sendAction(input: Record<string, unknown>, auth: AuthContext): Pr
   }
 }
 
-async function listAction(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
+async function listAction(input: Record<string, unknown>, auth: AuthContext, scope: SiteScope): Promise<string> {
   const orgId = typeof input.orgId === 'string' ? input.orgId : undefined;
   if (orgId && !auth.canAccessOrg(orgId)) return jsonError('Access to this organization denied');
   const cursor = decodeHistoryCursor(typeof input.cursor === 'string' ? input.cursor : undefined);
   if (cursor === 'invalid') return jsonError('invalid_cursor');
   const limit = Math.min(Math.max(1, Number(input.limit) || 50), HISTORY_PAGE_MAX);
   try {
-    return JSON.stringify(await listEndpointMessages({ auth, permissions: await permissionsFor(auth), orgId, limit, cursor }));
+    return JSON.stringify(await listEndpointMessages({ auth, permissions: historySiteFilter(scope), orgId, limit, cursor }));
   } catch (err) {
     console.error('[send_endpoint_message:list]', err);
     return jsonError('Operation failed. Check server logs for details.');
   }
 }
 
-async function getAction(input: Record<string, unknown>, auth: AuthContext): Promise<string> {
+async function getAction(input: Record<string, unknown>, auth: AuthContext, scope: SiteScope): Promise<string> {
   if (typeof input.messageId !== 'string') return jsonError('messageId is required for get');
   try {
     const detail = await getEndpointMessageDetail({
       auth,
-      permissions: await permissionsFor(auth),
+      permissions: historySiteFilter(scope),
       messageRowId: input.messageId,
     });
     return detail ? JSON.stringify(detail) : jsonError('not_found');
@@ -161,10 +191,25 @@ export function registerMessagingTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
+      // Device axis: every action spans devices (a send fans out, history lists
+      // deliveries across the fleet), so an exact-device ceiling cannot be
+      // narrowed to and fails closed. Only an AI agent run carries one, and
+      // AGENT_HUMAN_ONLY_TOOLS already keeps the tool from those; this holds if
+      // that registry ever changes.
+      if (hasExactDeviceCeiling(auth)) {
+        return jsonError('send_endpoint_message is not available to a device-scoped caller');
+      }
+      let scope: SiteScope;
+      try {
+        scope = await siteScopeFor(auth);
+      } catch (err) {
+        console.error('[send_endpoint_message:scope]', err);
+        return jsonError('Operation failed. Check server logs for details.');
+      }
       switch (input.action) {
-        case 'send': return sendAction(input, auth);
-        case 'list': return listAction(input, auth);
-        case 'get': return getAction(input, auth);
+        case 'send': return sendAction(input, auth, scope);
+        case 'list': return listAction(input, auth, scope);
+        case 'get': return getAction(input, auth, scope);
         default: return jsonError('Unknown action. Use send, list or get.');
       }
     },

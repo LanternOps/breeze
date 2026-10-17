@@ -211,6 +211,65 @@ describe('send_endpoint_message handler', () => {
   });
 });
 
+describe('send_endpoint_message tenancy axes (site + exact device)', () => {
+  const SITE_A = '22222222-2222-4222-8222-222222222222';
+  const apiKeyAuth = (over: Partial<AuthContext> = {}) =>
+    makeAuth({ principal: { kind: 'api_key', apiKeyId: 'k' }, allowedSiteIds: [SITE_A], ...over } as never);
+
+  it("list by a site-clamped API key narrows history to the key's sites (no loaded permissions)", async () => {
+    listMessages.mockResolvedValue({ items: [], nextCursor: null });
+    await tool().handler({ action: 'list' }, apiKeyAuth());
+    expect(listMessages.mock.calls[0]![0].permissions).toEqual({ allowedSiteIds: [SITE_A] });
+  });
+
+  it("get by a site-clamped API key narrows the delivery detail to the key's sites", async () => {
+    getDetail.mockResolvedValue(null);
+    await tool().handler({ action: 'get', messageId: DEVICE }, apiKeyAuth());
+    expect(getDetail.mock.calls[0]![0].permissions).toEqual({ allowedSiteIds: [SITE_A] });
+  });
+
+  it('a site-clamped key with an EMPTY site list sees nothing, not everything', async () => {
+    listMessages.mockResolvedValue({ items: [], nextCursor: null });
+    await tool().handler({ action: 'list' }, apiKeyAuth({ allowedSiteIds: [] }));
+    expect(listMessages.mock.calls[0]![0].permissions).toEqual({ allowedSiteIds: [] });
+  });
+
+  it('an unrestricted API key reads unnarrowed (no site ceiling to apply)', async () => {
+    listMessages.mockResolvedValue({ items: [], nextCursor: null });
+    await tool().handler({ action: 'list' }, apiKeyAuth({ allowedSiteIds: undefined }));
+    expect(listMessages.mock.calls[0]![0].permissions?.allowedSiteIds).toBeUndefined();
+  });
+
+  it("a user session narrows on its loaded permissions' site list", async () => {
+    const { getUserPermissions } = await import('./permissions');
+    vi.mocked(getUserPermissions).mockResolvedValueOnce({
+      permissions: [], partnerId: null, orgId: 'o-1', roleId: 'r', scope: 'organization', allowedSiteIds: [SITE_A],
+    });
+    listMessages.mockResolvedValue({ items: [], nextCursor: null });
+    await tool().handler({ action: 'list' }, makeAuth());
+    expect(listMessages.mock.calls[0]![0].permissions.allowedSiteIds).toEqual([SITE_A]);
+  });
+
+  it('send by a site-restricted session whose permissions cannot be loaded fails closed', async () => {
+    const { getUserPermissions } = await import('./permissions');
+    vi.mocked(getUserPermissions).mockResolvedValueOnce(null);
+    const out = JSON.parse(await tool().handler(sendInput, makeAuth({ allowedSiteIds: [SITE_A] })));
+    expect(out.error).toBeTruthy();
+    expect(executeSend).not.toHaveBeenCalled();
+  });
+
+  it.each(['send', 'list', 'get'])('%s fails closed for a caller with an exact-device ceiling', async (action) => {
+    const out = JSON.parse(await tool().handler(
+      { ...sendInput, action, messageId: DEVICE },
+      makeAuth({ allowedDeviceIds: [DEVICE] } as never),
+    ));
+    expect(out.error).toBeTruthy();
+    expect(executeSend).not.toHaveBeenCalled();
+    expect(listMessages).not.toHaveBeenCalled();
+    expect(getDetail).not.toHaveBeenCalled();
+  });
+});
+
 describe('aiTools registry', () => {
   it('contains send_endpoint_message', async () => {
     const { aiTools } = await import('./aiTools');
