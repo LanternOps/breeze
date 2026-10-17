@@ -315,8 +315,6 @@ function parseCommaList(raw: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
-const parseExcludeActions = parseCommaList;
-
 function buildFilterConditions(
   orgCond: SQL | undefined,
   filters: { user?: string; action?: string; resource?: string; from?: string; to?: string; excludeActions?: string }
@@ -337,15 +335,21 @@ function buildFilterConditions(
 
   // #8975: the UI sends multi-select filters as a comma list; match each term
   // on its own and OR them rather than as one literal "a,b" substring.
+  // A non-empty filter that yields no terms (e.g. ",") fails closed to zero rows
+  // rather than silently dropping the filter.
   const actionTerms = parseCommaList(filters.action);
-  if (actionTerms.length > 0) {
+  if (filters.action && actionTerms.length === 0) {
+    conditions.push(sql`false`);
+  } else if (actionTerms.length > 0) {
     conditions.push(
       or(...actionTerms.map((t) => ilike(auditLogsTable.action, `%${escapeIlike(t)}%`)))!
     );
   }
 
   const resourceTerms = parseCommaList(filters.resource);
-  if (resourceTerms.length > 0) {
+  if (filters.resource && resourceTerms.length === 0) {
+    conditions.push(sql`false`);
+  } else if (resourceTerms.length > 0) {
     conditions.push(
       or(
         ...resourceTerms.flatMap((t) => {
@@ -367,7 +371,7 @@ function buildFilterConditions(
     conditions.push(lte(auditLogsTable.timestamp, new Date(filters.to)));
   }
 
-  const excludeList = parseExcludeActions(filters.excludeActions);
+  const excludeList = parseCommaList(filters.excludeActions);
   if (excludeList.length > 0) {
     conditions.push(not(inArray(auditLogsTable.action, excludeList)));
   }
@@ -692,7 +696,7 @@ function paginatedListHandler(
     // excludeActions is compatible with the fast path — it's applied inside the
     // LATERAL subquery before the per-org LIMIT. The standard path picks it up
     // via buildFilterConditions(orgCond, query) above.
-    const excludeActions = parseExcludeActions(query.excludeActions);
+    const excludeActions = parseCommaList(query.excludeActions);
     // Fast-path org list: a pinned ?orgId= scopes the LATERAL per-org scan to
     // that single org; otherwise it spans every accessible org.
     const fastPathOrgIds: string[] | null = query.orgId
