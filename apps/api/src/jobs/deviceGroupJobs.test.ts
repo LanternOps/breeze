@@ -29,6 +29,7 @@ const {
   mockEmitDeviceChange,
   mockInitializeDeviceEventHandlers,
   dbExports,
+  mockRunAfterDbContextCommit,
 } = vi.hoisted(() => ({
   mockQueueAdd: vi.fn(),
   mockQueueGetJob: vi.fn(),
@@ -41,6 +42,7 @@ const {
   // `withSystemDbAccessContext` disappear the way a partially-loaded module
   // would (#5039 review finding 3).
   dbExports: { withSystemDbAccessContext: undefined as unknown },
+  mockRunAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
 }));
 
 vi.mock('bullmq', () => ({
@@ -71,6 +73,7 @@ vi.mock('../db', () => ({
   get withSystemDbAccessContext() {
     return dbExports.withSystemDbAccessContext;
   },
+  runAfterDbContextCommit: mockRunAfterDbContextCommit,
 }));
 
 vi.mock('../db/schema', () => ({
@@ -95,6 +98,7 @@ import {
   mergeReevaluationRequests,
   processDeviceGroupReevaluation,
   requestDeviceGroupReevaluation,
+  requestDeviceGroupReevaluationAfterCommit,
   runDeviceGroupReevaluationJob,
   scheduleDeviceGroupReevaluation,
   shutdownDeviceGroupJobs,
@@ -327,6 +331,79 @@ describe('requestDeviceGroupReevaluation', () => {
       console.error = original;
     }
     expect(String(errors[0])).toContain(DEVICE_ID);
+  });
+});
+
+describe('requestDeviceGroupReevaluationAfterCommit (#8832)', () => {
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  beforeEach(() => {
+    mockRunAfterDbContextCommit.mockImplementation((_label: string, work: () => unknown) => { void work(); });
+  });
+
+  it('defers the enqueue to the caller\'s commit rather than enqueuing inline', async () => {
+    let deferred: (() => unknown) | undefined;
+    mockRunAfterDbContextCommit.mockImplementationOnce((_label: string, work: () => unknown) => { deferred = work; });
+
+    requestDeviceGroupReevaluationAfterCommit({
+      deviceId: DEVICE_ID, orgId: ORG_ID, eventType: 'device.updated', changedFields: ['tags'], reason: 'device_patch',
+    });
+    await flush();
+    expect(mockQueueGetJob).not.toHaveBeenCalled();
+    expect(mockRunAfterDbContextCommit.mock.calls[0]![0]).toBe('deviceGroupReevaluation.device_patch');
+
+    await deferred!();
+    expect(mockQueueAdd).toHaveBeenCalledTimes(1);
+    expect(mockQueueAdd.mock.calls[0]![1].changedFields).toEqual(['tags']);
+  });
+
+  it('serializes two requests for one device so the second merges into the first instead of racing it', async () => {
+    // One PATCH that edits tags AND a custom field produces two after-commit
+    // requests that start in the same tick. Racing, both see "no job", both
+    // `add` under the same jobId, and BullMQ silently drops the second — its
+    // changed fields with it. Serialized, the second finds the first's job.
+    const queued: { data: DeviceGroupReevaluationJobData; updateData: ReturnType<typeof vi.fn> }[] = [];
+    mockQueueGetJob.mockImplementation(async () => {
+      const job = queued[0];
+      if (!job) return undefined;
+      return { id: `group-reeval-${DEVICE_ID}`, data: job.data, getState: async () => 'delayed', updateData: job.updateData };
+    });
+    mockQueueAdd.mockImplementation(async (_name: string, data: DeviceGroupReevaluationJobData) => {
+      await flush();
+      queued.push({ data, updateData: vi.fn().mockResolvedValue(undefined) });
+      return { id: `group-reeval-${DEVICE_ID}` };
+    });
+
+    requestDeviceGroupReevaluationAfterCommit({
+      deviceId: DEVICE_ID, orgId: ORG_ID, eventType: 'device.updated', changedFields: ['tags'], reason: 'device_patch',
+    });
+    requestDeviceGroupReevaluationAfterCommit({
+      deviceId: DEVICE_ID, orgId: ORG_ID, eventType: 'device.updated', changedFields: ['custom.asset_disposition'], reason: 'custom_field_write:manual',
+    });
+    for (let i = 0; i < 10; i += 1) await flush();
+
+    expect(mockQueueAdd).toHaveBeenCalledTimes(1);
+    expect(queued[0]!.updateData).toHaveBeenCalledTimes(1);
+    expect([...queued[0]!.updateData.mock.calls[0]![0].changedFields].sort()).toEqual(['custom.asset_disposition', 'tags']);
+  });
+
+  it('a failed enqueue does not wedge later requests for the same device', async () => {
+    const original = console.error;
+    console.error = () => {};
+    try {
+      mockQueueGetJob.mockRejectedValueOnce(new Error('redis down'));
+      requestDeviceGroupReevaluationAfterCommit({
+        deviceId: DEVICE_ID, orgId: ORG_ID, eventType: 'device.updated', changedFields: ['tags'], reason: 'device_patch',
+      });
+      requestDeviceGroupReevaluationAfterCommit({
+        deviceId: DEVICE_ID, orgId: ORG_ID, eventType: 'device.updated', changedFields: ['displayName'], reason: 'device_patch',
+      });
+      for (let i = 0; i < 10; i += 1) await flush();
+    } finally {
+      console.error = original;
+    }
+    expect(mockQueueAdd).toHaveBeenCalledTimes(1);
+    expect(mockQueueAdd.mock.calls[0]![1].changedFields).toEqual(['displayName']);
   });
 });
 

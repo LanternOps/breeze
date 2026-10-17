@@ -36,6 +36,7 @@ import OrgSecuritySettings from './OrgSecuritySettings';
 import { CallerVerificationPolicyForm } from '../callerVerification/CallerVerificationPolicyForm';
 import OrgAiProcessingToggle from './OrgAiProcessingToggle';
 import OrgMlFeaturesCard from './OrgMlFeaturesCard';
+import OrgAiDataPolicyCard from './OrgAiDataPolicyCard';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgModelDefaultsCard from './aiModels/OrgModelDefaultsCard';
@@ -712,6 +713,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               settings={(orgDetails?.settings ?? {}) as Record<string, unknown>}
               onSaved={() => void fetchOrgDetails()}
             />
+            <OrgAiDataPolicyCard orgId={effectiveOrgId} />
           </>
         );
       case 'event-logs':

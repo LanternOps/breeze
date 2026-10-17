@@ -7,11 +7,9 @@ import { i18n } from '@/lib/i18n';
 // type makes FEATURE_META below fail to compile until a tab entry is added, and
 // featureTypeParity.test.ts asserts the exclusion stays honest. (#2004)
 //
-// The exclusion list is empty: every canonical feature type has an editor tab
-// (workload_inventory gained one in #8193). The mechanism (const tuple +
-// Exclude) is intentionally retained so a future feature type that
-// legitimately has no tab can be excluded here in one place without
-// re-plumbing the type derivation.
+// Every canonical feature type now has an editor tab (security_agents gained
+// SecurityAgentsTab in #8736), so the tuple is empty. It is kept so a future
+// type that ships before its tab can be excluded here deliberately.
 //
 // FeatureType is sourced FROM this tuple (not a parallel literal) so the runtime
 // exclusion list and the compile-time Exclude can't drift from each other.
@@ -110,6 +108,15 @@ export const FEATURE_META: Record<FeatureType, {
     fetchUrl: null,
     get description() {
       return i18n.t('devices:workloads.policy.description');
+    },
+  },
+  security_agents: {
+    get label() {
+      return i18n.t('policies:configurationPolicies.featureTabs.securityAgentsTab.title');
+    },
+    fetchUrl: null,
+    get description() {
+      return i18n.t('policies:configurationPolicies.featureTabs.securityAgentsTab.description');
     },
   },
   system_protection: {

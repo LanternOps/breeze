@@ -13,6 +13,7 @@ import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { dbAccessContextFromAuth } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
+import { applyDevicePathPolicy } from './aiDevicePathPolicy';
 import { setToolPaginationHintResolver } from './aiToolOutput';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { captureContextFrom, captureLargeToolResult } from './artifacts/toolResultCapture';
@@ -90,6 +91,7 @@ import { registerAiAgentGovernanceTools } from './aiToolsAiAgentGovernance';
 import { registerAiOperatorTools } from './aiToolsAiOperator';
 import { registerUITools } from './aiToolsUI';
 import { registerTicketingTools } from './aiToolsTicketing';
+import { registerMessagingTools } from './aiToolsMessaging';
 import { registerCatalogTools } from './aiToolsCatalog';
 import { registerBillingTools } from './aiToolsBilling';
 import { registerContractTools } from './aiToolsContracts';
@@ -100,6 +102,7 @@ import { registerPamTools } from './aiToolsPam';
 import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
+import { registerTrustPageTools } from './aiToolsTrustPage';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -235,9 +238,12 @@ export async function verifyDeviceAccess(
   return { device };
 }
 
-/** Decision returned by {@link enforceDeviceArgs}: allow, or deny with a reason.
- *  The caller (`executeTool`) owns serialization to the wire format. */
-export type DeviceGateResult = { ok: true } | { ok: false; error: string };
+/** Decision returned by {@link enforceDeviceArgs}: allow (with the device rows
+ *  it verified, in `deviceArgs` order then array order), or deny with a reason. The caller
+ *  (`executeTool`) owns serialization to the wire format. */
+export type DeviceGateResult =
+  | { ok: true; devices: Array<typeof devices.$inferSelect> }
+  | { ok: false; error: string };
 
 /**
  * Central declarative device-access gate. For each input property a tool names
@@ -259,8 +265,9 @@ export async function enforceDeviceArgs(
   input: Record<string, unknown>,
   auth: AuthContext
 ): Promise<DeviceGateResult> {
-  if (!tool.deviceArgs || tool.deviceArgs.length === 0) return { ok: true };
+  if (!tool.deviceArgs || tool.deviceArgs.length === 0) return { ok: true, devices: [] };
   const denied: DeviceGateResult = { ok: false, error: 'Device not found or access denied' };
+  const verified: Array<typeof devices.$inferSelect> = [];
   for (const argName of tool.deviceArgs) {
     const raw = input[argName];
     if (raw == null) continue; // optional arg not supplied — nothing to gate
@@ -271,9 +278,10 @@ export async function enforceDeviceArgs(
       if (typeof id !== 'string' || id.length === 0) return denied;
       const access = await verifyDeviceAccess(id, auth);
       if ('error' in access) return { ok: false, error: access.error };
+      verified.push(access.device);
     }
   }
-  return { ok: true };
+  return { ok: true, devices: verified };
 }
 
 /**
@@ -345,6 +353,7 @@ registerPlaybookTools(aiTools);
 registerAlertTools(aiTools);
 registerDeliveryTools(aiTools);
 registerTicketingTools(aiTools);
+registerMessagingTools(aiTools);
 registerCatalogTools(aiTools);
 registerBillingTools(aiTools);
 registerContractTools(aiTools);
@@ -374,6 +383,7 @@ registerWorkspaceTools(aiTools);
 registerM365Tools(aiTools);
 registerExportTools(aiTools);
 registerArtifactTools(aiTools);
+registerTrustPageTools(aiTools);
 
 // A-W05 (D12): the compactor's truncation guidance follows the tool's real
 // paging shape. Covers extension-contributed tools too — they live in the
@@ -507,7 +517,7 @@ export function getToolAlwaysLoad(toolName: string): boolean {
  * headless `executeTool` path — i.e. it only runs via the inline chat path's
  * makeSessionAwareHandler, which threads a live SSE session id to reach the
  * per-tenant M365/Google OAuth connection. Covers the M365 mutation helpdesk
- * tools (m365_disable_user, m365_reset_password) and ALL Google tools (there is
+ * tools (m365_disable_user, m365_reset_password and the M1 identity write tools) and ALL Google tools (there is
  * no registerGoogleTools into the core map). The durable release worker uses
  * this to fail such intents with `session_required` instead of `Unknown tool`.
  * Phase 2 (headless dispatch) would make these executable and flip this to false.
@@ -682,8 +692,26 @@ export async function executeTool(
   // Structural device-tenant gate: any id named in `tool.deviceArgs` is
   // org+site-checked before the handler runs, so a tool can't reach a device
   // outside the caller's scope even if its handler forgets to check.
-  const gate = await inDispatchContext(() => enforceDeviceArgs(tool, effectiveInput, auth));
-  if (!gate.ok) return JSON.stringify({ error: gate.error });
+  //
+  // Then the tenant AI data policy (spec 2026-10-15 §2): the device file read
+  // level, resolved from the DEVICE org(s) the gate just verified — never the
+  // session org — and refused closed when that org's partner cannot be
+  // established. Here, so it holds for every principal (chat, agent runs, MCP,
+  // helper, script builder, durable approval releases re-entering this
+  // function). Same dispatch context as the device gate. Cost: a context that
+  // cannot see its partner's ceiling row in place (an organization session,
+  // currentPartnerId null) reads it through the pinned system escape in
+  // readOwnPartnerAxisRows, a short second connection; only policy-relevant
+  // calls pay it.
+  const gate = await inDispatchContext(async () => {
+    const devices = await enforceDeviceArgs(tool, effectiveInput, auth);
+    if (!devices.ok) return devices;
+    return applyDevicePathPolicy(toolName, effectiveInput, devices.devices);
+  });
+  if (!gate.ok) {
+    const { ok: _ok, ...denial } = gate; // { error } or { error, condition, policy }
+    return JSON.stringify(denial);
+  }
 
   // A-W05 (D13a/Q4): `read_artifact` must read with the SAME anchor capture
   // would write with — the exact org/run/session this call is attributed to,

@@ -60,6 +60,9 @@ func LoadHelperConfig(cfgFile string) (*Config, error) {
 		IPCSocketPath    *string `yaml:"ipc_socket_path"`
 		LogShippingLevel *string `yaml:"log_shipping_level"`
 		DesktopDebug     *bool   `yaml:"desktop_debug"`
+		// Helpers configure the shared ECH dialer from these (#8869).
+		ECH              *bool `yaml:"ech"`
+		ECHServerEnabled *bool `yaml:"ech_server_enabled"`
 	}
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
@@ -92,6 +95,12 @@ func LoadHelperConfig(cfgFile string) (*Config, error) {
 	}
 	if parsed.DesktopDebug != nil {
 		cfg.DesktopDebug = *parsed.DesktopDebug
+	}
+	if parsed.ECH != nil {
+		cfg.ECH = *parsed.ECH
+	}
+	if parsed.ECHServerEnabled != nil {
+		cfg.ECHServerEnabled = *parsed.ECHServerEnabled
 	}
 
 	return cfg, nil

@@ -9,6 +9,7 @@ import { navigateTo } from './navigation';
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
 import { lineWorkedVsBilled } from '@breeze/shared';
+import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -394,6 +395,11 @@ export interface TicketComment {
    * on an 'email' comment is the only signal that the CUSTOMER wrote it.
    */
   senderPortalUserId?: string | null;
+  /**
+   * Set on a comment imported from another helpdesk (#8313): who wrote it
+   * there. 'requester' is the customer's own reply, which has no portal login.
+   */
+  originalAuthorKind?: 'staff' | 'requester' | null;
   content: string;
   createdAt: string;
   /** Absent on a reply the customer just posted locally. */
@@ -848,6 +854,10 @@ export interface BrandingConfig {
   enablePatchDetail?: boolean;
   /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
   enableVulnerabilityDetail?: boolean;
+  /** Trust Center W3d: per-USER capability, not an org flag — true only when the org
+   *  turned trust-page editing on AND this portal user is an org-scoped admin
+   *  contact. The API re-checks it on every trust-page request. */
+  canEditTrustPage?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
   chromeAccent?: string | null;
@@ -1396,6 +1406,14 @@ export const portalApi = {
     );
   },
 
+  // Public trust pages (spec trust-center §8): anonymous, no auth redirect.
+  getTrustCard: async (partnerSlug: string, orgSlug: string | null, config: ApiRequestConfig = {}) =>
+    apiGet<{ data: TrustCard }>(`/trust/card/${encodeURIComponent(partnerSlug)}${orgSlug ? `/${encodeURIComponent(orgSlug)}` : ''}`, { redirectOnUnauthorized: false, ...config }),
+  getTrustPage: async (partnerSlug: string, orgSlug: string | null, config: ApiRequestConfig = {}) =>
+    apiGet<{ data: TrustPageResponse }>(`/trust/public/${encodeURIComponent(partnerSlug)}${orgSlug ? `/${encodeURIComponent(orgSlug)}` : ''}`, { redirectOnUnauthorized: false, ...config }),
+  getTrustPreview: async (token: string, config: ApiRequestConfig = {}) =>
+    apiGet<{ data: TrustPageResponse }>(`/trust/public/preview/${encodeURIComponent(token)}`, { redirectOnUnauthorized: false, ...config }),
+
   payPublicInvoice: async (token: string, autopay?: SaveForAutopayInput | BankPayInput): Promise<ApiResponse<{ data: InvoicePayResult }>> =>
     apiPost<{ data: InvoicePayResult }>(`/invoices/public/${encodeURIComponent(token)}/pay`, autopay ?? {}, { redirectOnUnauthorized: false }),
 
@@ -1595,3 +1613,11 @@ export const portalApi = {
   documentContentUrl: (documentId: string): PublicApiPath =>
     publicApiPath(`/portal/documents/${documentId}/content`),
 };
+
+export interface TrustCard { title: string; orgName: string; logoUrl: string | null; primaryColor: string | null; managedByName: string | null; summaryLine: string; publishedAt: string; lastEvaluatedAt: string | null; stale: boolean; searchIndexable: boolean; locale: string; controlsShown: number; catalogTotal: number; controlsMet: number }
+export interface TrustPageResponse { payload: TrustPagePublicPayloadAny; lastEvaluatedAt: string | null; stale: boolean; preview?: boolean }
+
+export const trustBadgePath = (p: string, o: string): PublicApiPath => publicApiPath(`/trust/public/${encodeURIComponent(p)}/${encodeURIComponent(o)}/badge.svg`);
+/** `o` null = the partner-home page, which has its own document route (/trust/public/:partnerSlug/documents/:id). */
+export const trustDocumentPath = (p: string, o: string | null, id: string): PublicApiPath =>
+  publicApiPath(`/trust/public/${encodeURIComponent(p)}${o ? `/${encodeURIComponent(o)}` : ''}/documents/${encodeURIComponent(id)}`);

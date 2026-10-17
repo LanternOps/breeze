@@ -354,6 +354,7 @@ func runSupportSession() {
 	supportCfgFile := filepath.Join(workDir, "agent.yaml")
 
 	cfg := config.Default()
+	enableOneShotECH(cfg)
 	cfg.ServerURL = server
 	cfg.LogFile = filepath.Join(workDir, "support.log")
 	// A disposable client neither installs nor is supervised by a watchdog.

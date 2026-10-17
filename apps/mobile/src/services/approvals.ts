@@ -33,8 +33,8 @@ export interface ApprovalRequest {
   riskSummary: string;
   /**
    * Customer tenant (M365) this action targets, e.g. "Example Dental".
-   * Server-derived for M365 mutation approvals (m365_reset_password /
-   * m365_disable_user) by resolving the linked AI session's Delegant M365
+   * Server-derived for M365 mutation approvals (m365_reset_password,
+   * m365_disable_user and the other M365 identity write tools) by resolving the linked AI session's Delegant M365
    * connection. Null for all other approvals. Surfaced prominently on the
    * card so a technician sees the blast radius before deciding.
    *

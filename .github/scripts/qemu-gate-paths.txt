@@ -39,11 +39,13 @@ agent/internal/backup/wingpt/
 agent/internal/backup/winhive/
 agent/internal/backupipc/
 agent/internal/config/
+agent/internal/ech/
 agent/internal/hostpolicy/
 agent/internal/httputil/
 agent/internal/ipc/
 agent/internal/logging/
 agent/internal/mtls/
+agent/internal/netcache/
 agent/internal/recoveryconsole/
 agent/internal/secmem/
 agent/internal/securefs/

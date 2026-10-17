@@ -153,6 +153,7 @@ const FEATURE_META: Record<FeatureType, { label: string; Icon: LucideIcon }> = {
     },
     Icon: History,
   },
+  security_agents: { label: "Security Agents", Icon: ShieldCheck },
 };
 
 // Display order = FEATURE_META insertion order. Derived (not hand-listed) so the

@@ -43,6 +43,12 @@ export interface OrgRecordOrg {
   archived?: boolean;
   currencyCode?: string | null;
   createdAt?: string;
+  billingAddressLine1?: string | null;
+  billingAddressLine2?: string | null;
+  billingAddressCity?: string | null;
+  billingAddressRegion?: string | null;
+  billingAddressPostalCode?: string | null;
+  billingAddressCountry?: string | null;
 }
 
 /** `GET /orgs/organizations/:id/summary`. Sections the caller cannot read are

@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { PERMISSION_GRANTS } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   migrationWindowOrgs,
@@ -7,6 +8,8 @@ import {
   partnerServicePrincipalKeys,
   partnerServicePrincipals,
   partnerUsers,
+  permissions,
+  rolePermissions,
   ticketComments,
   tickets,
   users,
@@ -18,6 +21,7 @@ import { createAuditLog } from './auditService';
 import { publishEvent } from './eventBus';
 import { consumeStepUpGrant, type StepUpGrantBinding } from './mfaStepUpGrant';
 import { MIGRATION_WINDOW_MIN_WRITES_PER_HOUR, migrationWindowLimits } from './migrationWindowLimits';
+import { PARTNER_SERVICE_PRINCIPAL_SCOPE_PERMISSIONS } from './partnerServicePrincipalDelegation';
 import { captureException } from './sentry';
 import { lockActorAssurance } from './stepUpActorAssurance';
 import { lockLiveUserSession } from './unassignedPool/assignParkedDeviceSteps';
@@ -32,7 +36,8 @@ import { notHiddenOrgType } from './unassignedPool/visibility';
  *
  * This module owns the window's lifecycle: open (owner-only, step-up bound),
  * close (admin or sweep), the sweep, and the one summary event per org. Import
- * mode itself — the write-time check and the writer — is wave 1b.
+ * mode itself — the write-time check and the writer — lives in
+ * services/ticketImport/ (wave 1b).
  *
  * Every function runs in the caller's DB context except the sweep, which
  * opens one system transaction per window. Closing locks the window FOR
@@ -42,6 +47,7 @@ import { notHiddenOrgType } from './unassignedPool/visibility';
 
 export type MigrationWindowErrorCode =
   | 'MIGRATION_WINDOW_NOT_FOUND'
+  | 'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED'
   | 'SERVICE_PRINCIPAL_NOT_FOUND'
   | 'SERVICE_PRINCIPAL_OWNER_REQUIRED'
   | 'MIGRATION_WINDOW_PRINCIPAL_INACTIVE'
@@ -52,13 +58,18 @@ export type MigrationWindowErrorCode =
   | 'MIGRATION_WINDOW_INVALID_SPAN'
   | 'MIGRATION_WINDOW_INVALID_WRITES_PER_HOUR'
   | 'SESSION_STALE'
-  | 'STEP_UP_REQUIRED';
+  | 'STEP_UP_REQUIRED'
+  // Import writes (wave 1b, spec §4.4–§4.7, services/ticketImport/).
+  | 'MIGRATION_WINDOW_NOT_OPEN'
+  | 'MIGRATION_WINDOW_RATE_LIMITED'
+  | 'MIGRATION_SOURCE_ID_IN_USE'
+  | 'MIGRATION_IMPORT_INVALID';
 
 export class MigrationWindowError extends Error {
   constructor(
     public readonly code: MigrationWindowErrorCode,
     message: string,
-    public readonly status: 400 | 401 | 403 | 404 | 409,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 429,
     public readonly details?: Record<string, unknown>,
   ) {
     super(message);
@@ -71,6 +82,19 @@ const ONE_OPEN_PER_PARTNER_INDEX = 'migration_windows_one_open_per_partner';
 const SYSTEM_ACTOR_ID = '00000000-0000-0000-0000-000000000000';
 const TICKETS_WRITE_SCOPE = 'tickets:write';
 const DAY_MS = 86_400_000;
+
+/**
+ * The role permissions an opener needs, and keeps needing while the window is
+ * open: organizations.write (the gate on every /migration-windows write) and
+ * what #8332's delegation table requires to grant tickets:write.
+ */
+export const MIGRATION_WINDOW_OPENER_PERMISSIONS = [
+  PERMISSION_GRANTS.ORGS_WRITE,
+  ...PARTNER_SERVICE_PRINCIPAL_SCOPE_PERMISSIONS[TICKETS_WRITE_SCOPE],
+] as const;
+
+export const MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED_MESSAGE =
+  'Only a partner-wide admin of this partner, signed in to the partner and holding the organizations and tickets write permissions, can open a migration window';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -119,6 +143,48 @@ function isUniqueViolationOf(error: unknown, constraint: string): boolean {
     candidate = pg.cause;
   }
   return false;
+}
+
+/**
+ * True when the role on the opener's partner membership grants
+ * `permission`, wildcard-aware like hasPermission(): a `*` resource or action
+ * matches. `roleId` is the partner_users.role_id column of an enclosing query.
+ */
+function roleGrants(roleId: SQLWrapper, permission: { resource: string; action: string }): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${rolePermissions}
+      JOIN ${permissions} ON ${permissions.id} = ${rolePermissions.permissionId}
+     WHERE ${rolePermissions.roleId} = ${roleId}
+       AND ${permissions.resource} IN (${permission.resource}, '*')
+       AND ${permissions.action} IN (${permission.action}, '*'))`;
+}
+
+/**
+ * True while `userId` is a partner-wide admin of `partnerId`: a partner_users
+ * row with org_access 'all'. A system-scope session has no such row.
+ */
+function isPartnerWideAdminSql(userId: SQLWrapper | string, partnerId: SQLWrapper | string): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${partnerUsers}
+     WHERE ${partnerUsers.userId} = ${userId}
+       AND ${partnerUsers.partnerId} = ${partnerId}
+       AND ${partnerUsers.orgAccess} = 'all')`;
+}
+
+/**
+ * True while one partner-wide membership of `userId` in `partnerId` (the same
+ * row: org_access 'all') has a role that still grants every
+ * MIGRATION_WINDOW_OPENER_PERMISSIONS entry. Opening requires it, and the
+ * sweep closes the window as soon as it stops holding (a role downgrade).
+ */
+function holdsOpenerPermissionsSql(userId: SQLWrapper | string, partnerId: SQLWrapper | string): SQL {
+  const grants = MIGRATION_WINDOW_OPENER_PERMISSIONS.map((permission) => roleGrants(partnerUsers.roleId, permission));
+  return sql`EXISTS (
+    SELECT 1 FROM ${partnerUsers}
+     WHERE ${partnerUsers.userId} = ${userId}
+       AND ${partnerUsers.partnerId} = ${partnerId}
+       AND ${partnerUsers.orgAccess} = 'all'
+       AND ${sql.join(grants, sql` AND `)})`;
 }
 
 /**
@@ -328,7 +394,12 @@ export async function openMigrationWindow(input: OpenMigrationWindowInput): Prom
       // asking session (the guard key issue uses). A window ends when either
       // epoch moves (§3.1, #8332).
       const [opener] = await tx
-        .select({ credentialEpoch: users.credentialEpoch, mfaEpoch: users.mfaEpoch })
+        .select({
+          credentialEpoch: users.credentialEpoch,
+          mfaEpoch: users.mfaEpoch,
+          isPartnerWideAdmin: sql<boolean>`${isPartnerWideAdminSql(input.opener.userId, input.partnerId)}`,
+          holdsOpenerPermissions: sql<boolean>`${holdsOpenerPermissionsSql(input.opener.userId, input.partnerId)}`,
+        })
         .from(users)
         .where(and(
           eq(users.id, input.opener.userId),
@@ -339,6 +410,17 @@ export async function openMigrationWindow(input: OpenMigrationWindowInput): Prom
         .limit(1);
       if (!opener) {
         throw new MigrationWindowError('SESSION_STALE', 'Session is no longer valid. Sign in again.', 401);
+      }
+      // The sweep keeps a window open only while its opener is a partner-wide
+      // admin of the partner whose role still grants what opening needs. Open
+      // accepts exactly that, so no window is opened only to be closed by the
+      // next sweep (a system-scope admin has no partner membership).
+      if (!opener.isPartnerWideAdmin || !opener.holdsOpenerPermissions) {
+        throw new MigrationWindowError(
+          'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED',
+          MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED_MESSAGE,
+          403,
+        );
       }
 
       const [alreadyOpen] = await tx
@@ -512,7 +594,12 @@ export async function getMigrationWindow(partnerId: string, windowId: string): P
   return toView(row, orgIds, counts);
 }
 
-/** True while a window is open for the principal (the key routes' refusal, §3.1). */
+/**
+ * True while a window is open for the principal: the key issue and rotate
+ * refusal (§3.1, partnerServicePrincipalKeys.ts). A plain read; the caller
+ * holds the principal row FOR UPDATE, as opening a window does before it
+ * checks for an active key, so the two can never both pass.
+ */
 export async function hasOpenWindowForPrincipal(
   tx: Tx | typeof db,
   principalId: string,
@@ -542,13 +629,17 @@ type SweepCandidate = {
   snapshotCredentialEpoch: number;
   snapshotMfaEpoch: number;
   openerIsPartnerWideAdmin: boolean;
+  /** The opener's partner role still grants MIGRATION_WINDOW_OPENER_PERMISSIONS. */
+  openerHoldsOpenPermissions: boolean;
 };
 
 /**
  * Why an open window must close now, or null (spec §3.1): it expired; its
  * principal is disabled, expired or lost tickets:write; or its opener is no
- * longer an active partner-wide admin of the partner, or either of the
- * opener's epochs moved since the window opened.
+ * longer an active partner-wide admin of the partner, their partner role no
+ * longer grants what opening needs (a downgrade), or either of the opener's
+ * epochs moved since the window opened. Every opener condition is
+ * `opener_inactive`: the reasons are a published webhook contract.
  */
 export function closingReason(c: SweepCandidate, now: Date): MigrationWindowClosedReason | null {
   if (c.endsAt.getTime() <= now.getTime()) return 'expired';
@@ -562,6 +653,7 @@ export function closingReason(c: SweepCandidate, now: Date): MigrationWindowClos
   if (
     c.openerStatus !== 'active'
     || !c.openerIsPartnerWideAdmin
+    || !c.openerHoldsOpenPermissions
     || c.openerCredentialEpoch !== c.snapshotCredentialEpoch
     || c.openerMfaEpoch !== c.snapshotMfaEpoch
   ) {
@@ -583,11 +675,8 @@ async function sweepCandidates(): Promise<SweepCandidate[]> {
       openerMfaEpoch: users.mfaEpoch,
       snapshotCredentialEpoch: migrationWindows.openerCredentialEpoch,
       snapshotMfaEpoch: migrationWindows.openerMfaEpoch,
-      openerIsPartnerWideAdmin: sql<boolean>`EXISTS (
-        SELECT 1 FROM ${partnerUsers}
-         WHERE ${partnerUsers.userId} = ${migrationWindows.openedBy}
-           AND ${partnerUsers.partnerId} = ${migrationWindows.partnerId}
-           AND ${partnerUsers.orgAccess} = 'all')`,
+      openerIsPartnerWideAdmin: sql<boolean>`${isPartnerWideAdminSql(migrationWindows.openedBy, migrationWindows.partnerId)}`,
+      openerHoldsOpenPermissions: sql<boolean>`${holdsOpenerPermissionsSql(migrationWindows.openedBy, migrationWindows.partnerId)}`,
     })
     .from(migrationWindows)
     .leftJoin(partnerServicePrincipals, and(
@@ -596,7 +685,11 @@ async function sweepCandidates(): Promise<SweepCandidate[]> {
     ))
     .leftJoin(users, eq(users.id, migrationWindows.openedBy))
     .where(eq(migrationWindows.status, 'open'));
-  return rows.map((r) => ({ ...r, openerIsPartnerWideAdmin: Boolean(r.openerIsPartnerWideAdmin) }));
+  return rows.map((r) => ({
+    ...r,
+    openerIsPartnerWideAdmin: Boolean(r.openerIsPartnerWideAdmin),
+    openerHoldsOpenPermissions: Boolean(r.openerHoldsOpenPermissions),
+  }));
 }
 
 /**

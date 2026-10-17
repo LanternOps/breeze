@@ -1,5 +1,8 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  // `dev` is persistent in 13 packages, and turbo needs more slots than persistent tasks.
+  // Must be a string: turbo's schema rejects a number here.
+  "concurrency": "20",
   "globalPassThroughEnv": [
     "DATABASE_URL",
     "REDIS_URL",

@@ -2098,7 +2098,7 @@ describe('sweepOffboardingTenants', () => {
         expect(result.failures).toBe(0);
       });
 
-      it('stamps a held shell but keeps it out of erasure, and says so in the audit', async () => {
+      it('stamps a held shell and hands it to (scoped) erasure, and says so in the audit', async () => {
         queueCandidates([], [], [], [], [{ id: 'org-held-1', partnerId: 'partner-1' }]);
         executeQueue.push([{ id: 'org-held-1' }]);
         findEvidenceHoldMock.mockResolvedValue({ survivorOrgId: 'survivor-9', reason: 'pam_evidence' });
@@ -2107,7 +2107,9 @@ describe('sweepOffboardingTenants', () => {
 
         expect(executedSqlLog.join(' ')).toContain('SET deleted_at = now(), updated_at = now()');
         expect(findEvidenceHoldMock).toHaveBeenCalledWith('org-held-1');
-        expect(enqueueTenantErasureMock).not.toHaveBeenCalled();
+        // #8746: cascadeDeleteOrg scopes a held shell's erasure; the stamp
+        // path no longer keeps it out.
+        expect(enqueueTenantErasureMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-held-1' }));
         expect(result.mergeShellsStamped).toBe(1);
         expect(result.failures).toBe(0);
         expect(writeAuditEvent).toHaveBeenCalledWith(
@@ -2116,7 +2118,7 @@ describe('sweepOffboardingTenants', () => {
             action: 'org.merge.stamped_by_sweeper',
             resourceId: 'org-held-1',
             details: expect.objectContaining({
-              note: expect.stringContaining('kept under its evidence hold'),
+              note: expect.stringContaining('keeps the privileged-access evidence under its evidence hold'),
               evidenceHold: { survivorOrgId: 'survivor-9', reason: 'pam_evidence' },
             }),
           })

@@ -80,7 +80,7 @@ The PKG itself is no longer bundled in the zip — `install.sh` downloads the ar
     2. Verify the download passes Gatekeeper's notarization assessment (`spctl --assess`) before installing it as root
     3. `sudo installer -pkg breeze-agent.pkg -target /`
     4. Read `enrollment.json` via `plutil -extract`
-    5. Invoke `sudo /usr/local/bin/breeze-agent enroll <key> --server <url> [--enrollment-secret <secret>]` (the site comes from the enrollment key; the installer no longer passes the deprecated `--site-id`)
+    5. Invoke `sudo <agent> enroll <key> --server <url> [--enrollment-secret <secret>]`, where `<agent>` is the binary the package installed: `/Library/Breeze/bin/breeze-agent` when the package put it there, otherwise `/usr/local/bin/breeze-agent` (the site comes from the enrollment key; the installer no longer passes the deprecated `--site-id`)
     6. Delete `enrollment.json` and the downloaded pkg
   </TabItem>
 </Tabs>
@@ -243,6 +243,33 @@ On agent v0.110.0 and earlier, `service install` stopped the service and did not
 </Aside>
 
 On **Linux and macOS**, `service uninstall` stops and removes both the agent and watchdog services (and the installed agent binary), but does **not** remove `agent.yaml` or `secrets.yaml` — wipe `/etc/breeze` or `/Library/Application Support/Breeze` manually if you want a clean uninstall. On **Windows**, `service uninstall` only deletes the agent's own SCM service registration — it does **not** touch the watchdog service, the installed binaries, or `C:\ProgramData\Breeze`. Run `breeze-watchdog service uninstall` separately for the watchdog, and remove the binaries/config directory by hand.
+
+---
+
+## Encrypted Client Hello (ECH)
+
+Some home and small-office gateways ship a "security" feature (for example Comcast xFi Advanced Security or Spectrum Security Shield) that inspects the TLS server name (SNI) and answers on port 443 with a plaintext HTTP redirect for hosts on a threat feed. The agent then sees plaintext where it expected a TLS handshake and cannot reach the control plane. Encrypted Client Hello hides the server name from the gateway, so the filter has nothing to match.
+
+The agent is **plain-first**. Nothing changes on a network that does not interfere:
+
+- A host flips to ECH only after the agent sees the filter signature (plaintext HTTP answered on the TLS port) twice within 10 minutes, more than 30 seconds apart.
+- In ECH mode the agent fetches the host's ECH config over DNS-over-HTTPS (Cloudflare `cloudflare-dns.com`, then Google `dns.google`; the query carries only the control-plane hostname) and caches it in `ech-cache.json` in the agent data directory. If ECH fails for any reason except a TCP connect failure (returned as-is, since plain would fail the same way), that same dial falls back to a plain connection, and a plain success returns the host to plain.
+- Three consecutive ECH failures put ECH on a one-hour cooldown (plain only). Mode is kept in memory, so a restart starts plain.
+- `enroll`, `bootstrap` and `support` retry with ECH on the first signature, so a first-run enrollment on a filtered network can succeed.
+
+**How to tell:** the `control_plane` health component shows `warning` with the reason "control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)" when the agent has seen the signature in the last 10 minutes and no plain connection has succeeded since, and `healthy` with "reachable via encrypted client hello" when ECH is carrying the connection. Heartbeats also carry `echActive` (true while the most recent successful connection to the control plane used ECH) and `filterSignatureSeenAt` (the last time a filter answered the handshake with plaintext HTTP; omitted once a plain connection has succeeded since).
+
+**Opt out locally** by adding `ech: false` to `agent.yaml` and restarting the agent.
+
+**Server kill switch:** set `AGENT_ECH_ENABLED=false` on the API. Agents receive it in their next heartbeat response and dial plain from then on. Live connections are not torn down; the change takes effect on the next dial. Until then a device still connected over ECH reports `echActive` and a `control_plane` `warning` with the reason "encrypted client hello disabled by control plane; the next reconnect dials plain". Turning `AGENT_ECH_ENABLED` off makes every device that currently depends on ECH dial plain on its next reconnect, so those devices go offline, and turning it back on cannot reach them until they are on an unfiltered network.
+
+<Aside type="caution">
+ECH needs the host to publish an ECH config in DNS. A self-hosted edge without one stays on plain connections, and `control_plane` keeps reporting the filter warning. ECH is also not applied to connections that go through an HTTP proxy (`HTTPS_PROXY`).
+</Aside>
+
+<Aside type="note">
+The installer downloaders (`install.sh` and the PowerShell one-liner) cannot use ECH yet; see [#8874](https://github.com/LanternOps/breeze/issues/8874). On a filtered network, download the MSI or pkg on another network, copy it to the filtered machine and run it there. Enrollment inside the installer works.
+</Aside>
 
 ---
 

@@ -10,6 +10,11 @@ const { flagMock, runnableMock, dispatchMock, accessMock, waitMock, transitionMo
 }));
 
 vi.mock('../config/env', () => ({ aiScriptAuthoringEnabled: flagMock }));
+// AI data policy (#8854): the gate's own resolver, faked per test.
+const policyMock = vi.hoisted(() => vi.fn(async (_devices: Array<{ orgId: string }>) => ({
+  deviceFileReadLevel: 'no_user_profiles' as string, source: { deviceFileReadLevel: 'partner' as string },
+})));
+vi.mock('./aiDevicePathPolicy', () => ({ resolveDevicePolicyForGate: policyMock }));
 vi.mock('./scriptProposals', async () => ({
   // The derivation itself is real (approvalMethod.test.ts pins it per value);
   // this suite proves the handler feeds it the context's decision record.
@@ -179,6 +184,50 @@ describe('run_script proposal branch', () => {
         actionIntentId: 'i1', releaseDecision: { approvalScope: 'four_eyes', decidedVia: 'webauthn_platform' },
       });
       expect(methodOf()).toBe('four_eyes');
+    });
+  });
+
+  describe('AI data policy: profile paths in proposal content (#8854)', () => {
+    const PROFILE_PROPOSAL = {
+      id: 'p1', language: 'powershell', runAs: 'system', timeoutSeconds: 300, contentDigest: 'a'.repeat(64), riskTier: 'low',
+      content: 'Get-Content C:\\Users\\bob\\Documents\\a.txt',
+    };
+
+    beforeEach(() => { policyMock.mockClear(); });
+
+    it('refuses under no_user_profiles, resolved from the target DEVICE rows, before any dispatch', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal: PROFILE_PROPOSAL } as never);
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth));
+      expect(out.condition).toBe('policy_denied');
+      expect(out.policy).toEqual({ level: 'no_user_profiles', source: 'partner' });
+      expect(out.error).toContain('C:\\Users\\bob\\Documents\\a.txt');
+      expect(out.proposalId).toBe('p1');
+      expect(policyMock).toHaveBeenCalledWith([expect.objectContaining({ id: 'd1', orgId: 'org-1' })]);
+      expect(dispatchMock).not.toHaveBeenCalled();
+      expect(transitionMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the partner cannot be established (unresolved = off)', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal: PROFILE_PROPOSAL } as never);
+      policyMock.mockResolvedValueOnce({ deviceFileReadLevel: 'off', source: { deviceFileReadLevel: 'unresolved' } });
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth));
+      expect(out.policy).toEqual({ level: 'off', source: 'unresolved' });
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('dispatches under any_with_approval', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal: PROFILE_PROPOSAL } as never);
+      policyMock.mockResolvedValueOnce({ deviceFileReadLevel: 'any_with_approval', source: { deviceFileReadLevel: 'partner' } });
+      const out = JSON.parse(await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth));
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
+      expect(out.results.d1.executionId).toBe('e1');
+    });
+
+    it('takes no policy read for content without a profile path', async () => {
+      runnableMock.mockResolvedValueOnce({ ok: true, proposal: { ...PROFILE_PROPOSAL, content: 'Get-Content C:\\ProgramData\\Vendor\\app.log' } } as never);
+      await __testOnly.runScriptHandler({ proposalId: 'p1', deviceIds: ['d1'] }, auth);
+      expect(policyMock).not.toHaveBeenCalled();
+      expect(dispatchMock).toHaveBeenCalledTimes(1);
     });
   });
 });

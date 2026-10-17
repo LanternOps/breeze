@@ -76,7 +76,7 @@ const commitImportSchema = z.object({
  * ORGANIZATION scope too, because contact reads admit org-scoped tokens and
  * `canAccessOrg` is false for any org outside the token's allowlist.
  */
-async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
+export async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   // Shape-check before the database: `id` feeds a uuid column, where a

@@ -51,12 +51,15 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'staff.ai_budget_alert': { lane: 'platform' },
       'staff.autopay': { lane: 'platform' },
       'staff.contract_renewal': { lane: 'platform' },
+      'staff.trust_declaration_reminder': { lane: 'platform' },
       'staff.quote_outcome': { lane: 'platform' },
       'staff.sending_domain_status': { lane: 'platform' },
       'staff.alert_notification': { lane: 'platform' },
       'staff.workspace_drift_report': { lane: 'platform' },
       'staff.report_failure': { lane: 'platform' },
       'staff.access_review_notice': { lane: 'platform' },
+      'staff.trust_access_request': { lane: 'platform' },
+      'staff.connection_health_digest': { lane: 'platform' },
       'deployment.invite': { lane: 'platform' },
       'ticket.staff_notification': { lane: 'platform' },
       'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
@@ -68,6 +71,9 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
       'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
+      'trust.access_verification': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+      'trust.access_granted': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
+      'trust.access_denied': { lane: 'partner', stream: 'support', fallbackFrom: 'partner_display_name' },
     });
   });
 
@@ -85,6 +91,9 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'report.delivery',
       'security.caller_verification_link',
       'ticket.customer_notification',
+      'trust.access_denied',
+      'trust.access_granted',
+      'trust.access_verification',
     ]);
   });
 

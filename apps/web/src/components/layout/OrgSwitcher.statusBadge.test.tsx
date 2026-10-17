@@ -10,12 +10,20 @@ const { mockStoreRef } = vi.hoisted(() => ({ mockStoreRef: { current: null as un
 vi.mock('@/stores/auth', () => ({ waitForPendingRefresh: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn().mockResolvedValue('soft') }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
+vi.mock('@/lib/permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/permissions')>()),
+  usePermissions: () => ({ permissions: [{ resource: '*', action: '*' }], can: () => true }),
+}));
+vi.mock('./useOrgSummaryCache', () => ({
+  useOrgSummaryCache: () => ({ summary: undefined, status: 'idle' }),
+}));
 vi.mock('@/stores/orgStore', () => {
   const snapshot = () => ({
     ...(mockStoreRef.current as Record<string, unknown>),
     selectOrganization: vi.fn(),
     selectAllOrgs: vi.fn(),
     fetchOrganizations: vi.fn(),
+    recordRecentOrg: vi.fn(),
   });
   const useOrgStore = vi.fn((selector?: (s: ReturnType<typeof snapshot>) => unknown) =>
     selector ? selector(snapshot()) : snapshot(),
@@ -29,6 +37,8 @@ function seed(status: string) {
     currentOrgId: 'org-a',
     allOrgs: false,
     isLoading: false,
+    recentOrgIds: [],
+    serviceManagementMode: 'native',
     organizations: [{ id: 'org-a', partnerId: 'p1', name: 'Org A', status, createdAt: '2024-01-01' }],
   };
 }

@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import DeviceGroupsPage from './DeviceGroupsPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
+import { useCustomFieldDefinitionsStore } from '../../stores/customFieldDefinitions';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -44,6 +45,23 @@ const SUPPORTING_RESPONSES: Record<string, unknown> = {
   '/orgs/sites': { data: [{ id: 'site-1', name: 'HQ' }], pagination: { page: 1, limit: 50, total: 1 } },
   '/policies': { data: [], pagination: { page: 1, limit: 50, total: 0 } },
   '/scripts': { data: [], pagination: { page: 1, limit: 50, total: 0 } },
+  '/custom-fields': {
+    data: [
+      {
+        id: 'cf-1',
+        orgId: null,
+        partnerId: 'p-1',
+        name: 'Asset disposition',
+        fieldKey: 'asset_disposition',
+        type: 'dropdown',
+        options: { choices: ['In service', 'Retired'] },
+        required: false,
+        defaultValue: null,
+        deviceTypes: null,
+      },
+    ],
+    total: 1,
+  },
 };
 
 /** Serve the given groups plus the fixed supporting endpoints. */
@@ -69,6 +87,7 @@ const exactText = (text: string) => (_content: string, element: Element | null) 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useCustomFieldDefinitionsStore.setState({ definitions: [], status: 'idle' });
   // A resolved focused-org scope: no fleet picker, create proceeds normally
   // (the injected ?orgId= supplies the owner).
   useOrgStore.setState({
@@ -200,5 +219,50 @@ describe('DeviceGroupsPage dynamic groups', () => {
       conditions: [{ field: 'hostname', operator: 'contains', value: 'web' }],
     });
     expect(body).not.toHaveProperty('rules');
+  });
+
+  // #8843 — the rule builder (create + edit) and the card's condition chips
+  // must know about org/partner custom fields, not just the static catalog.
+  it('offers custom fields in the create form\'s rule builder field picker', async () => {
+    const user = userEvent.setup();
+    serveGroups([
+      { id: 'group-1', name: 'Existing', type: 'static', deviceIds: [], deviceCount: 0 },
+    ]);
+
+    render(<DeviceGroupsPage />);
+    await screen.findByText('Existing');
+
+    await user.click(screen.getByRole('button', { name: 'Create Group' }));
+    await user.click(screen.getByRole('button', { name: 'Dynamic' }));
+    await user.click(screen.getByRole('button', { name: /Hostname/ }));
+
+    expect(await screen.findByText('Asset disposition')).toBeInTheDocument();
+    expect(screen.getByText('Custom Fields')).toBeInTheDocument();
+  });
+
+  it('labels an existing custom-field condition by its definition name on the card and in the edit form', async () => {
+    const user = userEvent.setup();
+    serveGroups([
+      {
+        id: 'group-1',
+        name: 'Retired assets',
+        type: 'dynamic',
+        filterConditions: {
+          operator: 'AND',
+          conditions: [{ field: 'custom.asset_disposition', operator: 'equals', value: 'Retired' }],
+        },
+      },
+    ]);
+
+    render(<DeviceGroupsPage />);
+    await screen.findByText('Retired assets');
+
+    expect(await screen.findByText(exactText('Asset disposition equals Retired'))).toBeInTheDocument();
+    expect(screen.queryByText(exactText('custom.asset_disposition equals Retired'))).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    // The FieldSelector button shows the selected field's label; without the
+    // custom catalog it has no match and falls back to the placeholder.
+    expect(await screen.findByRole('button', { name: /Asset disposition/ })).toBeInTheDocument();
   });
 });

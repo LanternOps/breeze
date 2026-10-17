@@ -178,7 +178,8 @@ function resolveOrgIdForWrite(
     return { orgId: auth.accessibleOrgIds[0] };
   }
 
-  return { error: 'orgId is required for this scope', status: 400 };
+  // Any caller with several accessible orgs that omits orgId lands here (#8338), so name the field.
+  return { error: 'orgId is required: send the owning organization as orgId in the request body', status: 400 };
 }
 
 // Resolve the device IDs a site-restricted caller may read within their org,

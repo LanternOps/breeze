@@ -14,6 +14,9 @@ type TranslatedLocale = (typeof translatedLocales)[number];
 // same `Français (Canada)` value in every catalog.
 const namespaceDuplicateBaselines = {
   'pt-BR': {
+    'trustCenter.json': 0,
+    // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in pt-BR.
+    'contactResponsibilities.json': 1,
     // +6: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Status" are
     // identical cognates in pt-BR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -189,6 +192,9 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 14,
   },
   'es-419': {
+    'trustCenter.json': 0,
+    // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in es-419.
+    'contactResponsibilities.json': 1,
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
     // standard CMS loanword in es-419; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -353,6 +359,9 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'fr-FR': {
+    'trustCenter.json': 0,
+    // +1 contactResponsibilities roles.admin — "Administration" is the same French word.
+    'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
     // are identical cognates in fr-FR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -465,7 +474,7 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-FR.
     'monitoring.json': 7,
-    'organizations.json': 11, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
+    'organizations.json': 12, // +1 Trust Center: sections.documentsHeading "Documents" is a fr-FR cognate; W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
     // +1 W03 account board: "PSA" is a locale-invariant acronym.
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
@@ -554,6 +563,9 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'fr-CA': {
+    'trustCenter.json': 0,
+    // +1 contactResponsibilities roles.admin — "Administration" is the same French word.
+    'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
     // are identical cognates in fr-CA; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -659,7 +671,7 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-CA.
     'monitoring.json': 7,
-    'organizations.json': 10, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
+    'organizations.json': 11, // +1 Trust Center: sections.documentsHeading "Documents" is a fr-CA cognate; W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
     // +1 W03 account board: "PSA" is a locale-invariant acronym.
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
     // here) made titles.scripts an intentional cognate ("Script" is the
@@ -750,6 +762,9 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'de-DE': {
+    'trustCenter.json': 0,
+    // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in de-DE.
+    'contactResponsibilities.json': 1,
     // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
     // are identical cognates in de-DE; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -942,6 +957,9 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 21,
   },
   'it-IT': {
+    'trustCenter.json': 0,
+    // +1 contactResponsibilities roles.escalation — "Escalation" is the standard Italian term.
+    'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
     // are identical cognates in it-IT; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
@@ -1092,6 +1110,9 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 18,
   },
   'tr-TR': {
+    'trustCenter.json': 0,
+    // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in tr-TR.
+    'contactResponsibilities.json': 1,
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
     // standard CMS loanword in tr-TR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.

@@ -39,8 +39,14 @@ export type PostureProduct = {
 };
 
 export type PostureControls = {
+  /** Managed EDR coverage over ASSESSED devices (status row, agent row, or recent check-in). */
   edrCoveragePct?: number | null;
+  /** In-scope devices Breeze has no endpoint evidence for (excluded from edrCoveragePct). */
+  edrUnknownCount?: number;
+  /** AV/real-time protection coverage over ASSESSED devices (same rule as edrCoveragePct). */
   anyAvCoveragePct?: number | null;
+  /** In-scope devices Breeze has no endpoint evidence for (excluded from anyAvCoveragePct). */
+  anyAvUnknownCount?: number;
   unprotectedCount?: number;
   avDefinitionsCurrentPct?: number | null;
   encryptionPct?: number | null;

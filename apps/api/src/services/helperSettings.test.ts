@@ -45,7 +45,7 @@ vi.mock('./configPolicyOwnership', () => ({
 const redis = { get: vi.fn(), set: vi.fn() };
 vi.mock('./redis', () => ({ getRedis: vi.fn(() => redis) }));
 
-import { buildHelperConfigUpdate } from './helperSettings';
+import { buildHelperConfigUpdate, helperSettingsFromRows } from './helperSettings';
 
 /** No helper policy link matches, so the legacy org flag decides. */
 function queueNoPolicyMatch() {
@@ -106,5 +106,41 @@ describe('buildHelperConfigUpdate', () => {
 
     await expect(buildHelperConfigUpdate('dev-1', 'org-1')).rejects.toThrow('connection terminated');
     expect(redis.set).not.toHaveBeenCalled();
+  });
+});
+
+describe('endpointMessaging rollout flag (#8741)', () => {
+  const row = (inlineSettings: unknown) => [{ level: 'organization', assignmentPriority: 0, inlineSettings }];
+
+  it('defaults to disabled when the policy does not mention it', () => {
+    expect(helperSettingsFromRows(row({ enabled: true }))?.endpointMessaging).toEqual({ enabled: false, allowUserReply: true });
+  });
+
+  it('maps an explicit endpointMessaging.enabled from the winning policy', () => {
+    expect(helperSettingsFromRows(row({ enabled: true, endpointMessaging: { enabled: true } }))?.endpointMessaging)
+      .toEqual({ enabled: true, allowUserReply: true });
+  });
+
+  it('ignores a non-boolean value (fail closed)', () => {
+    expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: 'yes' } }))?.endpointMessaging)
+      .toEqual({ enabled: false, allowUserReply: true });
+  });
+});
+
+describe('endpointMessaging.allowUserReply chat toggle (#8743)', () => {
+  const row = (inlineSettings: unknown) => [{ level: 'organization', assignmentPriority: 0, inlineSettings }];
+
+  it('defaults ON when the policy does not mention it (owner decision: org toggle, default on)', () => {
+    expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: true } }))?.endpointMessaging?.allowUserReply).toBe(true);
+  });
+
+  it('honours an explicit false from the winning policy', () => {
+    expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: true, allowUserReply: false } }))?.endpointMessaging)
+      .toEqual({ enabled: true, allowUserReply: false });
+  });
+
+  it('treats a present but non-boolean value as off (fail closed)', () => {
+    expect(helperSettingsFromRows(row({ endpointMessaging: { enabled: true, allowUserReply: 'yes' } }))?.endpointMessaging?.allowUserReply)
+      .toBe(false);
   });
 });

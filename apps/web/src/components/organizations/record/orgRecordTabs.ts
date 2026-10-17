@@ -19,6 +19,7 @@ export const ORG_RECORD_TABS = [
   'billing',
   'service',
   'documents',
+  'trust',
   'activity',
 ] as const;
 
@@ -71,6 +72,10 @@ export const TAB_PERMISSION: Record<OrgRecordTab, ReadonlyArray<Grant>> = {
   // stay relevant when a partner runs ticketing in an external PSA, so `off`
   // and `external` must not hide the library.
   documents: [{ resource: 'documents', action: 'read' }],
+  // Trust Center (#8768): visible with organizations:read, like the other
+  // read-only tabs; every mutation in the tab is gated on organizations:write
+  // by the component (plan 19.12).
+  trust: [],
   activity: [{ resource: 'audit', action: 'read' }],
 };
 

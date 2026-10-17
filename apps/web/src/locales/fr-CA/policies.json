@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "montreDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Messagerie des terminaux",
+        "endpointMessagingHelp": "Permet aux techniciens d'envoyer des messages à la personne devant l'appareil.",
+        "allowUserReply": "Autoriser les réponses de l'utilisateur",
+        "allowUserReplyHelp": "Permet à la personne devant l'appareil de répondre dans un chat lancé par un technicien. Désactivé, les chats sont à sens unique."
       },
       "inlineEntityPicker": {
         "search": "Rechercher...",
@@ -1121,6 +1125,22 @@
         "aboutTitle": "À propos de la Restauration du système",
         "aboutBody": "S’applique uniquement aux appareils Windows. La Restauration du système couvre les fichiers système, le registre, les programmes installés et les paramètres. Ce n’est pas une sauvegarde et elle ne couvre pas les fichiers personnels. Par défaut, Windows limite la création de points de restauration à un toutes les 24 heures, et un point créé peut ensuite être supprimé par Windows ou devenir inutilisable."
       },
+      "securityAgentsTab": {
+        "title": "Agents de sécurité",
+        "description": "Déployer et maintenir installés des agents de sécurité gérés sur les appareils",
+        "deployVendor": "Déployer {{vendor}}",
+        "comingSoon": "Bientôt disponible",
+        "platformWindows": "Windows : installé automatiquement.",
+        "platformMacos": "macOS : nécessite une approbation MDM; Breeze ne l’installe donc pas automatiquement. Ces appareils sont affichés comme non applicables.",
+        "platformLinux": "Linux : non pris en charge.",
+        "keysNotice": "Les installations utilisent les clés par client de l’intégration Huntress. Les organisations qui ne sont pas associées dans cette intégration sont ignorées et affichées comme non applicables, sans déploiement en échec. Désactiver un fournisseur met fin à l’application, mais ne désinstalle jamais l’agent.",
+        "closerWarning": "Une politique de configuration attribuée plus près de l’appareil (site, groupe ou appareil, ou politique enfant héritante) qui possède ses propres paramètres d’agents de sécurité remplace entièrement ces paramètres pour ces appareils. Un fournisseur omis à cet endroit n’est pas appliqué.",
+        "partnerWideBadge": "S’applique à toutes les organisations",
+        "noneEnabledNote": "Aucun fournisseur n’est activé : les appareils visés par cette politique sont exclus de tous les agents de sécurité.",
+        "catalogMissing": "Huntress n’est pas encore configuré pour ce partenaire. Connectez d’abord l’intégration Huntress, puis enregistrez de nouveau.",
+        "catalogMissingLink": "Connecter Huntress",
+        "executeRequired": "L’activation des installations exige l’autorisation d’exécuter des commandes sur les appareils, avec l’AMF. Demandez à un administrateur qui possède cette autorisation d’enregistrer ce paramètre."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Les alertes de garantie sont facultatives : les appareils sans stratégie de garantie attribuée ne génèrent aucune alerte. Les seuils ci-dessous s’appliquent uniquement aux couvertures à durée déterminée. Les abonnements AppleCare actifs se renouvellent au lieu d’expirer ; leurs alertes d’expiration sont donc toujours masquées.",
         "enableWarrantyExpiryAlerts": "Activez les alertes d’expiration de garantie",
@@ -1339,7 +1359,9 @@
       "installSkippedNoCatalog": "Une règle obligatoire n'a pas d'élément de catalogue lié, donc il n'y a rien à installer. Ajoutez un lien de catalogue dans l'éditeur de politiques pour corriger cela.",
       "installSkippedCapOrPlatform": "Ce n'est pas un échec — soit la limite d'installations par cycle a été atteinte, soit la plateforme de cet appareil n'a pas de méthode d'installation pour le logiciel. Une nouvelle tentative pourrait avoir lieu au prochain cycle.",
       "installAttempts": "{{count}} tentative(s)",
-      "installLastAttempt": "Dernière tentative d'installation : "
+      "installLastAttempt": "Dernière tentative d'installation : ",
+      "managedByConfigPolicy": "Géré par une politique de configuration",
+      "managedByConfigPolicyHint": "Cette politique est générée à partir d’une politique de configuration et est en lecture seule ici. Modifiez-la dans Politiques de configuration."
     },
     "deploymentList": {
       "running": "En cours",

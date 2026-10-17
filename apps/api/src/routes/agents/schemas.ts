@@ -152,10 +152,13 @@ const agentHealthObservationWireV1Schema = z.object({
 // assertion (agent/internal/heartbeat/identity_sync.go):
 // - env_override: it gave up, and BREEZE_ORG_ID / BREEZE_SITE_ID are set in
 //   its environment, which override agent.yaml on every start.
-// - gave_up: restarting did not apply the identity (or the restart could not
-//   be bounded), so it stopped trying for the life of the process.
+// - gave_up: restarting did not apply the identity, so it stopped trying for
+//   the life of the process.
 // - unpinned_key: the assertion is signed by a key it never pinned.
 // - invalid: the assertion did not verify for any other lasting reason.
+// Agents before #8623 also sent gave_up (or env_override, with those variables
+// set) when they could not write their restart marker; newer agents retry that
+// write and report nothing, since a local write failure is not a refusal.
 export const IDENTITY_ASSERTION_REJECTION_CODES = ['env_override', 'gave_up', 'unpinned_key', 'invalid'] as const;
 
 export const identityAssertionRejectionSchema = z.object({
@@ -225,6 +228,10 @@ export const heartbeatSchema = z.object({
     callerVerify: z.boolean(),
     usernames: z.array(z.string().min(1).max(255)).max(32),
   }).optional().catch(undefined),
+  // #8869 — Encrypted Client Hello telemetry. Both are informational counters
+  // only (no DB column): a malformed value drops to absent, never a 400.
+  echActive: z.boolean().optional().catch(undefined),
+  filterSignatureSeenAt: z.string().datetime({ offset: true }).optional().catch(undefined),
   // #6925 — Breeze Assist install problem the agent is stuck on (e.g.
   // 'awaiting_server_offer'). Omitted when there is none, and the route reads
   // absence as "healthy, clear it". A present but malformed value therefore
@@ -397,6 +404,7 @@ export const heartbeatSchema = z.object({
     peripheralPolicyProtocolVersion: z.number().int().optional().catch(undefined),
     rollbackProtocolVersion: z.number().int().optional().catch(undefined),
     pamLifetimeProtocolVersion: z.number().int().optional().catch(undefined),
+    pamReconciliationResetProtocolVersion: z.number().int().optional().catch(undefined),
     // Revocation lease (fail-closed desktop session revalidation). Same
     // tolerant contract: a malformed value drops this field alone, since the
     // route treats anything other than exactly 1 as "not capable".

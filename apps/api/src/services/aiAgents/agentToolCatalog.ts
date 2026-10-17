@@ -165,6 +165,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- tickets ----
   manage_tickets: 'tickets',
+  send_endpoint_message: 'tickets',
   manage_ticket_checklist: 'tickets',
   list_time_entries: 'tickets',
   get_running_timer: 'tickets',
@@ -194,12 +195,15 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_s1_threats: 'security_response',
   get_edr_status: 'security_response',
   list_edr_detections: 'security_response',
+  edr_endpoint_action: 'security_response',
+  sync_edr_data: 'security_response',
   execute_containment: 'security_response',
   apply_cis_remediation: 'security_response',
   get_cis_compliance: 'security_response',
   get_cis_device_report: 'security_response',
   remediate_sensitive_data: 'security_response',
   get_security_posture: 'security_response',
+  get_trust_page_status: 'security_response', // read-only public trust page status (trust center W2)
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',

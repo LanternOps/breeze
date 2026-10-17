@@ -91,6 +91,20 @@ it.each([null, LINK])(
 );
 });
 
+describe('structured save errors', () => {
+  beforeEach(() => vi.clearAllMocks());
+  it('exposes status, code and body so tabs can render code-specific UI, and clears them with the error', async () => {
+    const body = { error: 'No catalog', code: 'security_agents_catalog_missing', setupPath: '/integrations#huntress' };
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify(body), { status: 400 }));
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    expect(result.current.errorDetail).toBeUndefined();
+    await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
+    expect(result.current.errorDetail).toMatchObject({ status: 400, code: 'security_agents_catalog_missing', body });
+    act(() => result.current.clearError());
+    expect(result.current.errorDetail).toBeUndefined();
+  });
+});
+
 // #6644 review finding 4: the hook is shared by every feature tab.
 describe('shared hook stays feature-neutral', () => {
   beforeEach(() => vi.clearAllMocks());

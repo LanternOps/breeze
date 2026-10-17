@@ -57,6 +57,12 @@ vi.mock('./TicketPushoverSettings', () => ({
   default: () => null,
 }));
 
+// EmailNotificationSettings fetches /users/me/email-preferences on mount; stub it so
+// it doesn't consume from this file's fetchWithAuth mocks (covered by its own test).
+vi.mock('./EmailNotificationSettings', () => ({
+  default: () => null,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

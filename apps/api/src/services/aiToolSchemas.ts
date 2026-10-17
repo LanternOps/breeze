@@ -27,6 +27,7 @@ import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
+import { messagingToolSchemas } from './aiToolSchemasMessaging';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -298,6 +299,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
   // Topology AI tools (M3-D12 + M4 #6000) — strict, extracted to aiToolSchemasTopology.ts
   ...topologyToolSchemas,
+  ...messagingToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -896,6 +898,20 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).max(100).optional(),
   }),
 
+  // #8167 W03. Only actions an adapter implements are offered to the model.
+  edr_endpoint_action: z.object({
+    deviceId: uuid,
+    action: z.enum(['isolate', 'unisolate', 'scan']),
+    connectionId: uuid.optional(),
+    reason: z.string().max(500).optional(),
+  }),
+
+  // #8167 W03 PR-B. Tier-2 "sync now".
+  sync_edr_data: z.object({
+    connectionId: uuid.optional(),
+    orgId: uuid.optional(),
+  }),
+
   s1_isolate_device: z.object({
     orgId: uuid.optional(),
     deviceId: uuid.optional(),
@@ -1400,7 +1416,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     subnet: z.string().max(50).regex(
       /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/,
       'Invalid CIDR notation'
-    ).optional(),
+    ),
     scanType: z.enum(['ping', 'arp', 'full']).optional(),
   }),
 
@@ -1623,6 +1639,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     handle: uuid,
     offset: z.number().int().min(0).optional(),
     maxChars: z.number().int().min(1).max(6000).optional(),
+  }),
+
+  // Trust Center W2 (Ruling 15): read-only page status.
+  get_trust_page_status: z.object({
+    orgId: uuid,
   }),
 
   export_dataset: z.object({

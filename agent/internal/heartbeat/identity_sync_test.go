@@ -295,15 +295,26 @@ func TestApplyIdentityAssertionDoesNotRestartWhenPersistFails(t *testing.T) {
 		t.Fatal("reported a restart although the new identity was never persisted")
 	}
 	expectNoRestart(t, s, 50*time.Millisecond)
+	// #8623 — retried after the write backoff (about one beat), not before.
+	h.applyIdentityAssertion(goldenAssertion())
+	if s.persisted.Load() != 1 {
+		t.Fatalf("retried the persist inside the backoff: %d", s.persisted.Load())
+	}
+	s.now = s.now.Add(identityWriteRetryMin)
 	h.applyIdentityAssertion(goldenAssertion())
 	if s.persisted.Load() != 2 {
-		t.Fatalf("next beat did not retry the persist: %d", s.persisted.Load())
+		t.Fatalf("the beat after the backoff did not retry the persist: %d", s.persisted.Load())
+	}
+	if got := h.identityRejectionForBeat(); got != nil {
+		t.Fatalf("a local write failure was reported to the server: %+v", got)
 	}
 }
 
 // Without a marker nothing bounds the restarts: a new process would see no
 // marker, count attempt 1 and restart again, forever, for an identity that an
 // environment override keeps from taking effect. So no marker, no restart.
+// #8623 — but the failure is local, so the identity is tried again after the
+// backoff rather than given up on (identity_sync_write_retry_test.go).
 func TestApplyIdentityAssertionDoesNotRestartWithoutARestartMarker(t *testing.T) {
 	s := withIdentitySeams(t, nil)
 	s.markerPath = filepath.Join(t.TempDir(), "missing-dir", identityRestartMarkerFile)
@@ -316,9 +327,14 @@ func TestApplyIdentityAssertionDoesNotRestartWithoutARestartMarker(t *testing.T)
 	if s.persisted.Load() != 1 {
 		t.Fatalf("the new identity should still be persisted for the next start: %d", s.persisted.Load())
 	}
-	// The gate is released and the same identity is not retried in this process.
-	if h.applyIdentityAssertion(goldenAssertion()) || s.persisted.Load() != 1 {
-		t.Fatalf("retried an identity whose restart cannot be bounded: persisted=%d", s.persisted.Load())
+	// The gate is released; the next try, after the backoff, still cannot
+	// record the marker and still does not restart.
+	if h.identitySync.restartRequested.Load() {
+		t.Fatal("the restart gate stayed closed after the marker write failed")
+	}
+	s.now = s.now.Add(identityWriteRetryMin)
+	if h.applyIdentityAssertion(goldenAssertion()) || s.persisted.Load() != 2 {
+		t.Fatalf("retry after the backoff: persisted=%d", s.persisted.Load())
 	}
 	expectNoRestart(t, s, 50*time.Millisecond)
 }

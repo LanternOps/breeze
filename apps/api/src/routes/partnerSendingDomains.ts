@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { Hono, type Context, type Next } from 'hono';
 import { z } from 'zod';
-import { senderDisplayNameSchema, senderLocalPartSchema } from '@breeze/shared';
+import { ERROR_CODES, senderDisplayNameSchema, senderLocalPartSchema } from '@breeze/shared';
 import { db } from '../db';
 import { partners } from '../db/schema';
 import { enqueueTestSend } from '../jobs/sendingDomainsWorker';
@@ -49,7 +49,7 @@ const requireOrgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMI
  */
 const requirePartnerWideAdmin = async (c: Context, next: Next) => {
   if (!canManagePartnerWidePolicies(c.get('auth'))) {
-    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
   return next();
 };

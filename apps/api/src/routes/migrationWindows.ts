@@ -20,6 +20,7 @@ import {
 } from '../services/mfaStepUpGrant';
 import { MIGRATION_WINDOW_MAX_ORGS, MIGRATION_WINDOW_SOURCE_LABEL_MAX } from '../services/migrationWindowLimits';
 import {
+  MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED_MESSAGE,
   MigrationWindowError,
   closeMigrationWindow,
   getMigrationWindow,
@@ -40,8 +41,9 @@ import { ENABLE_2FA } from './auth/schemas';
  * §3.3). Staff routes, mounted like /partner-service-principals.
  *
  * Opening is widening (a keyless principal gains import mode across orgs), so
- * only the principal's owner may do it, from an interactive session, with MFA
- * and a single-use step-up grant bound to the exact window. Closing is
+ * only the principal's owner may do it, signed in to the partner (not system
+ * scope), from an interactive session, with MFA and a single-use step-up
+ * grant bound to the exact window. Closing is
  * narrowing: any partner-wide admin. There is no update route — a wrong window
  * is closed and a new one opened — and no Partner API route in V1.
  */
@@ -169,6 +171,16 @@ migrationWindowRoutes.post(
   zValidator('json', openSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
+    // Partner admins only in V1 (#8313). A system-scope session has no
+    // partner membership, so the sweep, which keeps a window open only while
+    // its opener is a partner-wide admin of the partner, would close it at
+    // once as opener_inactive. Refused up front instead.
+    if (auth.scope !== 'partner') {
+      return c.json({
+        error: MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED_MESSAGE,
+        code: 'MIGRATION_WINDOW_PARTNER_ADMIN_REQUIRED',
+      }, 403);
+    }
     const input = c.req.valid('json');
     const resolved = resolvePartnerId(c, input.partnerId);
     if ('response' in resolved) return resolved.response;

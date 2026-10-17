@@ -29,6 +29,7 @@ import {
   MANIFEST_FETCH_MAX_BYTES,
 } from './backupSnapshotStorage';
 import { expectedControlKey, type AttestationObjectRole } from './backupAttestation';
+import { attestedKeyLayoutFor, physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
 import { recordBackupAttestation } from './backupMetrics';
 import { settleVerificationsForFailedAttestation } from './backupAttestationFailureSettlement';
 import { asRecord, resolveSnapshotProviderConfig } from './recoveryBootstrap';
@@ -72,6 +73,8 @@ export type SnapshotUnderVerification = {
   snapshotId: string;
   storageIdentity: string | null;
   keyLayout: string;
+  /** With keyLayout, the snapshot's recorded key root (#7081). */
+  keyPrefix: string | null;
 };
 
 export type AttestationVerifyDeps = {
@@ -186,10 +189,16 @@ export async function verifySnapshotAttestation(
     || snapshot.deviceId !== attestation.deviceId
     || snapshot.snapshotId !== attestation.providerSnapshotId
     || snapshot.storageIdentity !== attestation.storageIdentity
-    || snapshot.keyLayout !== attestation.keyLayout
+    // The statement describes the LOGICAL key layout (#7081 I6).
+    || attestedKeyLayoutFor(snapshot.keyLayout) !== attestation.keyLayout
   ) {
     return finish('mismatch', 'binding_changed');
   }
+  // The attested objects are read at their physical keys under the
+  // snapshot's recorded key root; one this server cannot read cannot be
+  // verified on the snapshot's behalf.
+  const keyRoot = snapshotKeyRootOf(snapshot);
+  if (!keyRoot) return finish('mismatch', 'key_root_invalid');
 
   // Bytes that may still change are never read, let alone decided on.
   if (loaded.writeInFlight) return retry('snapshot_sealing', sealingRetryAt(loaded.sealedUntil));
@@ -216,7 +225,7 @@ export async function verifySnapshotAttestation(
       bytes = await deps.fetchObject({
         provider: provider.type,
         providerConfig: provider.config,
-        key: object.key,
+        key: physicalKeyFor(keyRoot, object.key),
         maxBytes: object.size,
       });
     } catch (err) {
@@ -279,6 +288,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
           snapshotId: backupSnapshots.snapshotId,
           storageIdentity: backupSnapshots.storageIdentity,
           keyLayout: backupSnapshots.keyLayout,
+          keyPrefix: backupSnapshots.keyPrefix,
         })
         .from(backupSnapshots)
         .where(eq(backupSnapshots.id, snapshotDbId))
@@ -325,6 +335,7 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
           snapshotId: backupSnapshots.snapshotId,
           storageIdentity: backupSnapshots.storageIdentity,
           keyLayout: backupSnapshots.keyLayout,
+          keyPrefix: backupSnapshots.keyPrefix,
         })
         .from(backupSnapshots)
         .where(eq(backupSnapshots.id, snapshotDbId))
@@ -347,7 +358,11 @@ export const defaultVerifyDeps: AttestationVerifyDeps = {
         && snapshot.deviceId === row.deviceId
         && snapshot.snapshotId === row.providerSnapshotId
         && snapshot.storageIdentity === row.storageIdentity
-        && snapshot.keyLayout === row.keyLayout;
+        && attestedKeyLayoutFor(snapshot.keyLayout) === row.keyLayout
+        // The objects were fetched under this root. (key_layout/key_prefix
+        // are immutable — DB trigger — so it is the root read before the
+        // fetch; re-checked here so the dependency is explicit.)
+        && snapshotKeyRootOf(snapshot) !== null;
       const written: 'verified' | 'mismatch' = status === 'verified' && !bound ? 'mismatch' : status;
       const moved = await db
         .update(backupSnapshotAttestations)

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { M365_PERMISSION_PROFILES, type RetestRequest, type RetestResult } from '@breeze/shared/m365';
 
-const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
+const { dbMocks, contextMocks, consentMocks, columns, orgColumns, joinTrace } = vi.hoisted(() => ({
   dbMocks: {
     selectResults: [] as unknown[][],
     updateResults: [] as Array<unknown[] | ((set: Record<string, unknown>) => unknown[])>,
@@ -91,7 +91,10 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
     consentAttemptId: { name: 'consent_attempt_id' }, status: { name: 'status' },
     consentGeneration: { name: 'consent_generation' },
     permissionManifestVersion: { name: 'permission_manifest_version' },
+    displayName: { name: 'display_name' }, lastVerifiedAt: { name: 'last_verified_at' },
   },
+  orgColumns: { id: { name: 'id' }, name: { name: 'name' } },
+  joinTrace: { joins: [] as unknown[], orderBys: [] as unknown[], limits: [] as number[] },
 }));
 
 function selectable(rows: unknown[]) {
@@ -111,7 +114,7 @@ function selectable(rows: unknown[]) {
   };
 }
 
-vi.mock('../../db/schema', () => ({ m365Connections: columns }));
+vi.mock('../../db/schema', () => ({ m365Connections: columns, organizations: orgColumns }));
 
 vi.mock('drizzle-orm', async (importActual) => {
   const actual = await importActual<typeof import('drizzle-orm')>();
@@ -121,6 +124,7 @@ vi.mock('drizzle-orm', async (importActual) => {
     eq: vi.fn((column: unknown, value: unknown) => ({ op: 'eq', column, value })),
     inArray: vi.fn((column: unknown, value: unknown) => ({ op: 'inArray', column, value })),
     isNull: vi.fn((column: unknown) => ({ op: 'isNull', column })),
+    lt: vi.fn((column: unknown, value: unknown) => ({ op: 'lt', column, value })),
     or: vi.fn((...conditions: unknown[]) => ({ op: 'or', conditions })),
     sql: vi.fn((strings: TemplateStringsArray, ...params: unknown[]) => ({
       op: 'sql', strings: [...strings], params,
@@ -138,6 +142,25 @@ vi.mock('../../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({
         where: vi.fn(() => selectable(dbMocks.selectResults.shift() ?? [])),
+        innerJoin: vi.fn((table: unknown, on: unknown) => {
+          joinTrace.joins.push({ table, on });
+          return {
+            where: vi.fn((where: unknown) => {
+              joinTrace.joins.push({ where });
+              return {
+                orderBy: vi.fn((order: unknown) => {
+                  joinTrace.orderBys.push(order);
+                  return {
+                    limit: vi.fn(async (n: number) => {
+                      joinTrace.limits.push(n);
+                      return dbMocks.selectResults.shift() ?? [];
+                    }),
+                  };
+                }),
+              };
+            }),
+          };
+        }),
       })),
     })),
     update: vi.fn(() => ({
@@ -357,8 +380,10 @@ describe('customer Graph-read connection lifecycle', () => {
 
   it('flags an actions row stored at manifest v1 (delegated-ID manifest) as manifest-stale (#8648)', () => {
     const manifest = M365_PERMISSION_PROFILES['customer-graph-actions'];
-    expect(manifest.version).toBe(2);
+    expect(manifest.version).toBe(3);
     expect(deriveGrantHealth(snapshot({ permissionManifestVersion: 1, status: 'degraded' }), manifest).state).toBe('manifest-stale');
+    // …and a row on the pre-M1 v2 manifest (#6170) is stale too.
+    expect(deriveGrantHealth(snapshot({ permissionManifestVersion: 2, status: 'active' }), manifest).state).toBe('manifest-stale');
   });
 
   it('does not claim definitive drift before the first authoritative grant observation', () => {
@@ -751,7 +776,7 @@ describe('createConnectionService factory (non-read profile)', () => {
 
   function actionsService(retest = vi.fn(async (_request: RetestRequest) => ({
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
-    organizationDisplayName: 'Contoso', manifestVersion: 2,
+    organizationDisplayName: 'Contoso', manifestVersion: actionsManifest.version,
     verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
     observedGrants: [...ACTIONS_REQUIRED], missingGrants: [], unexpectedGrants: [],
     grantsVerifiedAt: '2026-07-14T16:00:00.000Z',
@@ -788,6 +813,65 @@ describe('createConnectionService factory (non-read profile)', () => {
     expect(connection!.profile).toBe('customer-graph-actions');
     expect(connection!.grantHealth.requiredGrants).toEqual(ACTIONS_REQUIRED);
     expect(connection!.grantHealth.state).toBe('active');
+  });
+
+  describe('listStaleManifestConnections', () => {
+    beforeEach(() => {
+      joinTrace.joins.length = 0;
+      joinTrace.orderBys.length = 0;
+      joinTrace.limits.length = 0;
+      contextMocks.withSystem.mockClear();
+      contextMocks.runOutside.mockClear();
+    });
+
+    it('filters by profile and manifest version below current, joined to organizations, capped at 500', async () => {
+      dbMocks.selectResults.push([{
+        id: CONNECTION_ID, orgId: ORG_ID, orgName: 'Acme', displayName: 'Contoso',
+        tenantId: TENANT_ID, manifestVersion: 2, status: 'active',
+        lastVerifiedAt: new Date('2026-07-14T16:00:00.000Z'),
+      }]);
+      const { service } = actionsService();
+
+      const listed = await service.listStaleManifestConnections();
+
+      expect(listed).toEqual([{
+        id: CONNECTION_ID, orgId: ORG_ID, orgName: 'Acme', displayName: 'Contoso',
+        tenantId: TENANT_ID, manifestVersion: 2, currentManifestVersion: actionsManifest.version,
+        status: 'active', lastVerifiedAt: '2026-07-14T16:00:00.000Z',
+      }]);
+      const where = joinTrace.joins.find((j) => (j as { where?: unknown }).where) as { where: { op: string; conditions: Array<Record<string, unknown>> } };
+      expect(where.where.op).toBe('and');
+      expect(where.where.conditions).toContainEqual({ op: 'eq', column: columns.profile, value: 'customer-graph-actions' });
+      expect(where.where.conditions).toContainEqual({
+        op: 'lt', column: columns.permissionManifestVersion, value: actionsManifest.version,
+      });
+      // Only rows upgrade consent can act on: a never-consented (version 0,
+      // pending-consent) or revoked row is not "on an earlier permission set".
+      expect(where.where.conditions).toContainEqual({
+        op: 'inArray', column: columns.status, value: ['active', 'degraded'],
+      });
+      expect(joinTrace.joins[0]).toMatchObject({ table: orgColumns });
+      expect(joinTrace.limits).toEqual([500]);
+    });
+
+    it('runs under the caller context only, never a system context', async () => {
+      dbMocks.selectResults.push([]);
+      const { service } = actionsService();
+
+      await service.listStaleManifestConnections();
+
+      expect(contextMocks.withSystem).not.toHaveBeenCalled();
+      expect(contextMocks.runOutside).not.toHaveBeenCalled();
+    });
+
+    it('serialises a null last-verified time as null', async () => {
+      dbMocks.selectResults.push([{
+        id: CONNECTION_ID, orgId: ORG_ID, orgName: 'Acme', displayName: null,
+        tenantId: null, manifestVersion: 2, status: 'pending-consent', lastVerifiedAt: null,
+      }]);
+      const { service } = actionsService();
+      expect((await service.listStaleManifestConnections())[0]!.lastVerifiedAt).toBeNull();
+    });
   });
 
   it('drops rows whose stored profile does not match the bound profile', async () => {
@@ -1008,6 +1092,42 @@ describe('upgrade consent finalization', () => {
     expect(set.status).toBe('active');
     expect(set.lastErrorCode).toBeNull();
     expect(set.observedGrants).toEqual(REQUIRED_V3);
+  });
+
+  it('finishes ACTIVE when a row that was degraded completes a full upgrade (#8750 carry-forward)', async () => {
+    // A kept-stale row that was already degraded keeps that status through
+    // Retest. The upgrade carries a fresh tenant-matched application proof and
+    // a complete grant observation, so its finalized status derives from the
+    // grant health alone — as Retest's does — not from the stale status.
+    const degradedAttempt = { ...ATTEMPT, status: 'degraded' as const };
+    dbMocks.selectResults.push([{ ...STORED, status: 'degraded', lastErrorCode: 'manifest_stale' }]);
+    dbMocks.updateResults.push((set) => [{ ...STORED, status: 'degraded', ...set }]);
+
+    const applied = await applyUpgradeFinalizationResult(
+      degradedAttempt,
+      { verifiedTenantId: TENANT_ID, result: successResult(REQUIRED_V3) as never },
+    );
+
+    expect(applied.failureCode).toBeNull();
+    const set = dbMocks.updateSets[0]!;
+    expect(set.permissionManifestVersion).toBe(3);
+    expect(set.status).toBe('active');
+    expect(set.lastErrorCode).toBeNull();
+  });
+
+  it('still finishes degraded when the promoted grant set carries an unexpected grant', async () => {
+    const extra = { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '19dbc75e-c2e2-444c-a770-ec69d8559fc7', value: 'Directory.ReadWrite.All' };
+    dbMocks.selectResults.push([{ ...STORED, status: 'degraded' }]);
+    dbMocks.updateResults.push((set) => [{ ...STORED, ...set }]);
+
+    await applyUpgradeFinalizationResult(
+      { ...ATTEMPT, status: 'degraded' as const },
+      { verifiedTenantId: TENANT_ID, result: successResult([...REQUIRED_V3, extra]) as never },
+    );
+
+    const set = dbMocks.updateSets[0]!;
+    expect(set.status).toBe('degraded');
+    expect(set.lastErrorCode).toBe('grant_unexpected');
   });
 
   it('records the observation but does NOT promote when a v3 grant is missing', async () => {
@@ -1597,4 +1717,179 @@ it('no longer exports the admin-consent-first lifecycle functions', () => {
   ]) {
     expect(removed in connectionServiceModule, removed).toBe(false);
   }
+});
+
+describe('applyRetestResult manifest promotion (retestPromotesManifestOnlyWhenSatisfied, #8661)', () => {
+  const N = 5;
+  const GRANT_A = {
+    resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+    appRoleId: 'aaaaaaaa-0000-4000-8000-000000000001',
+    value: 'Test.A',
+  };
+  const GRANT_B = {
+    resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+    appRoleId: 'bbbbbbbb-0000-4000-8000-000000000002',
+    value: 'Test.B',
+  };
+  const GRANT_EXTRA = {
+    resourceApplicationId: '00000003-0000-0000-c000-000000000000',
+    appRoleId: 'cccccccc-0000-4000-8000-000000000003',
+    value: 'Test.Extra',
+  };
+  const testManifest = {
+    ...M365_PERMISSION_PROFILES['customer-graph-actions'],
+    version: N,
+    applicationPermissionAssignments: [GRANT_A, GRANT_B],
+  };
+
+  function build(flag: boolean) {
+    return createConnectionService({
+      profile: 'customer-graph-actions',
+      manifest: testManifest,
+      loadRuntimeConfig: () => ({
+        clientId: CLIENT_ID,
+        callbackUrl: 'https://console.example.test/api/v1/m365/consent/callback',
+        vaultRef: 'akv://vault.example/m365-customer-graph-actions/0123456789abcdef0123456789abcdef',
+        credentialVersion: '0123456789abcdef0123456789abcdef',
+        executorUrl: 'https://actions-executor.example.test',
+      }),
+      createExecutorClient: vi.fn(() => ({ retest: vi.fn() })),
+      retest: (client, request) => client.retest(request),
+      ...(flag ? { retestPromotesManifestOnlyWhenSatisfied: true } : {}),
+    });
+  }
+
+  function input(storedVersion: number, status: 'active' | 'degraded' = 'active') {
+    return {
+      ...snapshot(),
+      profile: 'customer-graph-actions',
+      permissionManifestVersion: storedVersion,
+      status,
+      tenantId: TENANT_ID,
+      auth: auth(),
+    } as unknown as RetestSnapshot;
+  }
+
+  function complete(observed: unknown[], manifestVersion = N) {
+    return {
+      success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso Fresh', manifestVersion,
+      verifiedAt: '2026-07-15T10:00:00.000Z', grantReconciliation: 'complete',
+      observedGrants: observed, missingGrants: [], unexpectedGrants: [],
+      grantsVerifiedAt: '2026-07-15T10:00:00.000Z',
+    } as unknown as RetestResult;
+  }
+
+  async function apply(flag: boolean, snap: RetestSnapshot, result: RetestResult) {
+    dbMocks.updateSets.length = 0;
+    dbMocks.updateResults.push((set) => [row({ profile: 'customer-graph-actions', ...set })]);
+    await build(flag).applyRetestResult(snap as never, result);
+    return dbMocks.updateSets[0]!;
+  }
+
+  beforeEach(() => {
+    dbMocks.updateResults.length = 0;
+    dbMocks.updateSets.length = 0;
+  });
+
+  it('keeps a current row on the current version when the executor reports an older manifest', async () => {
+    const set = await apply(true, input(N), complete([GRANT_A, GRANT_B], N - 1));
+    expect(set).toMatchObject({ permissionManifestVersion: N, status: 'active', lastErrorCode: null });
+  });
+
+  it('keeps a current row on the current version when reconciliation is unavailable', async () => {
+    const set = await apply(true, input(N), {
+      success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso Fresh', manifestVersion: N,
+      verifiedAt: '2026-07-15T10:00:00.000Z', grantReconciliation: 'unavailable',
+      errorCode: 'grant_reconciliation_unavailable', observedGrants: null,
+      missingGrants: null, unexpectedGrants: null, grantsVerifiedAt: null,
+    } as unknown as RetestResult);
+    expect(set).toMatchObject({
+      permissionManifestVersion: N,
+      status: 'degraded',
+      lastErrorCode: 'grant_reconciliation_unavailable',
+    });
+  });
+
+  it('by design reports a stale row that lost a previously held role as manifest_stale, not grant_missing', async () => {
+    // The control plane has no record of the previous manifest's role set, so
+    // it cannot tell a revoked old role from a not-yet-granted new one. The
+    // observation is still stored; Graph refuses the affected write with
+    // graph_permission_missing, and the upgrade or next Retest resolves it.
+    const set = await apply(true, input(N - 1), complete([]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1,
+      status: 'active',
+      lastErrorCode: 'manifest_stale',
+      observedGrants: [],
+    });
+  });
+
+  it('keeps a stale row stale with manifest_stale (status unchanged) when a required grant is missing', async () => {
+    const set = await apply(true, input(N - 1), complete([GRANT_A]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1,
+      status: 'active',
+      lastErrorCode: 'manifest_stale',
+      observedGrants: [GRANT_A],
+      displayName: 'Contoso Fresh',
+    });
+    expect(set.grantsVerifiedAt).toEqual(new Date('2026-07-15T10:00:00.000Z'));
+    expect(set.lastVerifiedAt).toEqual(new Date('2026-07-15T10:00:00.000Z'));
+  });
+
+  it('preserves an already-degraded status on a kept stale row', async () => {
+    const set = await apply(true, input(N - 1, 'degraded'), complete([GRANT_A]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1, status: 'degraded', lastErrorCode: 'manifest_stale',
+    });
+  });
+
+  it('promotes when every required grant is present and surfaces unexpected extras as grant_unexpected', async () => {
+    const set = await apply(true, input(N - 1), complete([GRANT_A, GRANT_B, GRANT_EXTRA]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N, status: 'degraded', lastErrorCode: 'grant_unexpected',
+    });
+  });
+
+  it('promotes cleanly to active when the observation exactly satisfies the manifest', async () => {
+    const set = await apply(true, input(N - 1), complete([GRANT_A, GRANT_B]));
+    expect(set).toMatchObject({ permissionManifestVersion: N, status: 'active', lastErrorCode: null });
+  });
+
+  it('keeps the stored version when the executor reports a different manifest version', async () => {
+    const set = await apply(true, input(N - 1), complete([GRANT_A, GRANT_B], N + 1));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1, status: 'active', lastErrorCode: 'manifest_stale',
+    });
+  });
+
+  it('keeps the stored version and degrades when reconciliation is unavailable', async () => {
+    const set = await apply(true, input(N - 1), {
+      success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
+      organizationDisplayName: 'Contoso Fresh', manifestVersion: N,
+      verifiedAt: '2026-07-15T10:00:00.000Z', grantReconciliation: 'unavailable',
+      errorCode: 'grant_reconciliation_unavailable', observedGrants: null,
+      missingGrants: null, unexpectedGrants: null, grantsVerifiedAt: null,
+    } as unknown as RetestResult);
+    expect(set).toMatchObject({
+      permissionManifestVersion: N - 1, status: 'degraded', lastErrorCode: 'grant_reconciliation_unavailable',
+    });
+    expect(set).not.toHaveProperty('observedGrants');
+  });
+
+  it('still degrades a CURRENT row with a missing grant to grant_missing', async () => {
+    const set = await apply(true, input(N), complete([GRANT_A]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N, status: 'degraded', lastErrorCode: 'grant_missing',
+    });
+  });
+
+  it('without the flag, the same stale-row retest promotes and degrades to grant_missing (legacy behavior)', async () => {
+    const set = await apply(false, input(N - 1), complete([GRANT_A]));
+    expect(set).toMatchObject({
+      permissionManifestVersion: N, status: 'degraded', lastErrorCode: 'grant_missing',
+    });
+  });
 });

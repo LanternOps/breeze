@@ -17,6 +17,7 @@ import {
   aiToolHandoffIsError,
   aiToolLabel,
   isAiToolHandoffOutput,
+  isAiToolOutputTombstone,
   type AiToolHandoffStatus,
 } from "@breeze/shared";
 
@@ -56,6 +57,8 @@ export default function AiToolCallCard({
   const [expanded, setExpanded] = useState(false);
   const inputPreview = useMemo(() => stringifyForPreview(input), [input]);
   const outputPreview = useMemo(() => stringifyForPreview(output), [output]);
+  // #8855: the nightly retention job replaced this output with a tombstone.
+  const outputExpired = isAiToolOutputTombstone(output);
 
   // #5107 / #6022 — the post-approval outcome of an action the durable
   // approval worker owns: still running, completed, or FAILED.
@@ -198,9 +201,18 @@ export default function AiToolCallCard({
                   ? t("aiToolCallCard.error")
                   : t("aiToolCallCard.output")}
               </span>
-              <pre className="mt-1 max-h-40 overflow-auto rounded bg-gray-100 p-2 text-gray-700 dark:bg-gray-900 dark:text-gray-300">
-                {outputPreview}
-              </pre>
+              {outputExpired ? (
+                <p
+                  className="mt-1 text-xs italic text-gray-500 dark:text-gray-400"
+                  data-testid="ai-tool-output-expired"
+                >
+                  {t("aiToolCallCard.outputExpired")}
+                </p>
+              ) : (
+                <pre className="mt-1 max-h-40 overflow-auto rounded bg-gray-100 p-2 text-gray-700 dark:bg-gray-900 dark:text-gray-300">
+                  {outputPreview}
+                </pre>
+              )}
             </div>
           )}
         </div>

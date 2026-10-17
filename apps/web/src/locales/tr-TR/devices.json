@@ -1367,7 +1367,7 @@
       "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
     },
     "watchdogInstall": {
-      "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede `breeze-agent service install --watchdog` komutunu çalıştırın.",
+      "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede <code>breeze-agent service install --watchdog</code> komutunu çalıştırın.",
       "unsupported": "Otomatik watchdog kurulumu bu ana makinede desteklenmiyor ({{since}} tarihinden beri).",
       "reason": {
         "network": "indirme adresine ulaşılamadı",
@@ -2364,9 +2364,13 @@
     "updatesAvailable_other": "{{count}} güncellemeler mevcut"
   },
   "deviceUserIdleStat": {
+    "active": "Aktif",
+    "asOf": "{{time}} itibarıyla",
     "label": "Kullanıcı Boşta",
+    "locked": "Kilitli",
     "retryAria": "Bekleme durumu yüklenemedi — tekrar deneyin",
-    "retryTitle": "Bekleme durumu yüklenemedi — yeniden denemek için tıklayın"
+    "retryTitle": "Bekleme durumu yüklenemedi — yeniden denemek için tıklayın",
+    "unknown": "Bilinmiyor"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {
@@ -4081,7 +4085,7 @@
       "offNote": "Çalışma zamanları her zaman algılanır, ancak bir ilke etkinleştirene kadar iş yükü listeleme kapalıdır.",
       "enabled": "İş yüklerini listele",
       "runtimesHeading": "Listelenecek çalışma zamanları",
-      "laterRelease": "Hyper-V ve Proxmox VE listeleme, aracının sonraki bir sürümüyle gelecek; bu anahtarlar o zaman etkili olur.",
+      "agentSupport": "Hyper-V ve Proxmox VE anahtarları yalnızca bu sürücüleri içeren aracılarda etkili olur; eski aracılar bunları yok sayar.",
       "interval": "Toplama aralığı (dakika)",
       "invalidInterval": "Aralık, {{min}} ile {{max}} arasında tam sayı dakika olmalıdır."
     },
@@ -4156,6 +4160,263 @@
       "false_positive": "Yanlış pozitif",
       "dismissed": "Yoksayıldı",
       "unknown": "Bilinmiyor"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Cihazı izole et",
+        "unisolate": "İzolasyonu kaldır",
+        "scan": "Tarama başlat",
+        "update_agent": "Aracıyı güncelle"
+      },
+      "unavailable": "Kullanılamıyor",
+      "mfaRequired": "Müdahale eylemlerini çalıştırmak için MFA ile doğrulayın",
+      "error": "Müdahale eylemi istenemedi.",
+      "requested": "{{device}} için {{action}} istendi",
+      "inProgress": "Bu cihaz için başka bir müdahale eylemi zaten sürüyor.",
+      "confirming": "İstendi — {{vendor}} ile doğrulanıyor",
+      "reasonLabel": "Neden (isteğe bağlı)",
+      "confirm": {
+        "isolate": {
+          "title": "{{device}} izole edilsin mi?",
+          "message": "{{vendor}}, {{device}} cihazını izole edecek: cihaz, {{vendor}} dışında ağ erişimini kaybeder. İzolasyonu daha sonra kaldırabilirsiniz."
+        },
+        "unisolate": {
+          "title": "{{device}} izolasyonu kaldırılsın mı?",
+          "message": "{{vendor}}, {{device}} için normal ağ erişimini geri yükleyecek."
+        }
+      }
+    },
+    "history": {
+      "heading": "Son müdahale eylemleri",
+      "checking": "Kontrol ediliyor",
+      "aiBadge": "YZ",
+      "status": {
+        "queued": "Sırada",
+        "submitted": "Devam ediyor",
+        "succeeded": "Başarılı",
+        "failed": "Başarısız"
+      }
     }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Kullanıcılara mesaj gönder",
+    "sendAction": "Mesaj gönder",
+    "fields": {
+      "title": "Başlık",
+      "body": "Mesaj",
+      "severity": "Önem düzeyi",
+      "requiresAck": "Onay gerektir",
+      "expiry": "Son kullanma"
+    },
+    "severity": {
+      "info": "Bilgi",
+      "warning": "Uyarı",
+      "critical": "Kritik"
+    },
+    "expiry": {
+      "h1": "1 saat",
+      "h4": "4 saat",
+      "h24": "24 saat",
+      "h72": "72 saat",
+      "untilClosed": "Kapatılana kadar (en fazla 7 gün)"
+    },
+    "preview": {
+      "heading": "Önizleme",
+      "sender": "Şirketinizden",
+      "footer": "BT sağlayıcınız tarafından gönderildi",
+      "acknowledge": "Onayla"
+    },
+    "recipients": "Alıcılar: {{count}} cihaz",
+    "columns": {
+      "device": "Cihaz",
+      "delivery": "Teslimat"
+    },
+    "capability": {
+      "assist_card": "Assist kartı (konsol oturumu) veya yedek olarak yerel bildirim",
+      "native": "Yerel bildirim",
+      "unsupported": "Desteklenmeyen aracı sürümü - teslim edilmeyecek"
+    },
+    "confirm": {
+      "text": "Bu mesaj {{count}} cihaza gönderilecek. Aşağıdaki kartı kontrol edin.",
+      "send": "{{count}} cihaza gönder"
+    },
+    "result": {
+      "summary": "{{queued}} kuyrukta, {{failed}} başarısız",
+      "queued": "Kuyrukta",
+      "failed": "Başarısız"
+    },
+    "actions": {
+      "send": "Mesaj gönder",
+      "sending": "Gönderiliyor...",
+      "cancel": "İptal",
+      "back": "Geri",
+      "close": "Kapat"
+    },
+    "errors": {
+      "send_failed": "Mesaj gönderilemedi. Tekrar deneyin.",
+      "agent_unsupported": "Bu cihazdaki aracı henüz mesajları desteklemiyor.",
+      "no_permission": "Bu cihaza mesaj gönderme izniniz yok.",
+      "offline_rejected": "Cihaz çevrimdışı ve mesaj kuyruğa alınmadı.",
+      "rate_limited": "Yakın zamanda çok fazla mesaj gönderildi. Daha sonra tekrar deneyin.",
+      "cap_exceeded": "Bu gönderim izin verilen sınırı aşıyor.",
+      "feature_disabled": "Bu kuruluş için uç nokta mesajlaşması etkin değil.",
+      "queue_failed": "Mesaj bu cihaz için kuyruğa alınamadı.",
+      "in_progress": "Bu mesaj zaten gönderiliyor. Biraz bekleyin, ardından sonucu kontrol edin.",
+      "unavailable": "Mesaj gönderimi geçici olarak kullanılamıyor. Kısa süre sonra tekrar deneyin.",
+      "no_devices_resolved": "Bu seçimle eşleşen cihaz bulunamadı.",
+      "idempotency_conflict": "Bu mesaj kimliği daha önce farklı bir mesaj için kullanıldı. Mesajı düzenleyip yeniden gönderin."
+    },
+    "issues": {
+      "html": "Mesaj gövdesinde HTML kullanılamaz.",
+      "images": "Mesaj gövdesinde görsel kullanılamaz.",
+      "httpsLinks": "Mesaj gövdesindeki bağlantılar https kullanmalıdır.",
+      "referenceLinks": "Referans tarzı bağlantılara izin verilmez. Bunun yerine satır içi bağlantılar kullanın.",
+      "titleHtml": "Başlıkta HTML kullanılamaz.",
+      "titleLinks": "Başlıkta bağlantı kullanılamaz.",
+      "invalid": "Mesaj izin verilmeyen içerik barındırıyor."
+    },
+    "history": {
+      "title": "Uç nokta mesajları",
+      "description": "Kişilere cihazlarında gönderilen mesajlar ve her birine ne olduğu.",
+      "empty": "Henüz mesaj gönderilmedi.",
+      "loading": "Yükleniyor...",
+      "loadFailed": "Mesajlar yüklenemedi.",
+      "retry": "Tekrar dene",
+      "loadMore": "Daha fazla yükle",
+      "selectPrompt": "Teslimat ayrıntılarını görmek için bir mesaj seçin.",
+      "detailLoadFailed": "Bu mesaj yüklenemedi.",
+      "notFound": "Bu mesaj bulunamadı.",
+      "noAccess": "Uç nokta mesajlarını görüntüleme izniniz yok.",
+      "purgedTitle": "İçerik kaldırıldı",
+      "purgedBody": "Mesaj metni 90 gün sonra kaldırıldı. Teslimat geçmişi saklanır.",
+      "purgedListTitle": "(içerik kaldırıldı)",
+      "badgeRetracted": "Geri çekildi",
+      "badgeAi": "Yapay zekâ",
+      "devicesLabel": "Cihazlar: {{count}}",
+      "fields": {
+        "body": "Mesaj",
+        "deliveries": "Cihazlar",
+        "host": "Cihaz",
+        "status": "Durum",
+        "surface": "Gösterildiği yer",
+        "error": "Hata",
+        "sent": "Gönderildi",
+        "expires": "Sona erer",
+        "delivered": "Teslim edildi",
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "retracted": "Geri çekildi",
+        "receipts": "Makbuzlar",
+        "noReceipts": "Yok",
+        "requiresAck": "Onay gerekir"
+      },
+      "receiptEvents": {
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "expired": "Süresi doldu"
+      },
+      "surface": {
+        "assist": "Assist kartı",
+        "native": "Yerel bildirim"
+      },
+      "statuses": {
+        "queued": "Kuyrukta",
+        "delivered": "Teslim edildi",
+        "displayed": "Gösterildi",
+        "acknowledged": "Onaylandı",
+        "dismissed": "Kapatıldı",
+        "expired": "Süresi doldu",
+        "retracted": "Geri çekildi",
+        "failed": "Başarısız",
+        "superseded": "Değiştirildi"
+      },
+      "actions": {
+        "retract": "Geri çek",
+        "retracting": "Geri çekiliyor...",
+        "resend": "Başarısız veya süresi dolanlara yeniden gönder",
+        "resending": "Yeniden gönderiliyor..."
+      },
+      "retractConfirm": {
+        "title": "Bu mesaj geri çekilsin mi?",
+        "message": "Şu anda gösteren cihazlardan kaldırılır. Henüz almamış cihazlar mesajı almaz.",
+        "confirm": "Geri çek"
+      },
+      "messages": {
+        "retractSuccess": "Mesaj geri çekildi.",
+        "retractPartial": "Mesaj geri çekildi, ancak {{count}} cihaz güncellenemedi.",
+        "retractFailed": "Mesaj geri çekilemedi.",
+        "resendSuccess": "Mesaj yeniden gönderildi. Cihazlar: {{count}}.",
+        "resendFailed": "Mesaj yeniden gönderilemedi."
+      },
+      "resendErrors": {
+        "retracted": "Bu mesaj geri çekildi ve yeniden gönderilemez.",
+        "body_purged": "Mesaj metni kaldırıldığı için yeniden gönderilemez.",
+        "in_progress": "Bu mesaj için bir gönderim zaten sürüyor.",
+        "idempotency_conflict": "Bu yeniden gönderim zaten farklı ayrıntılarla iletildi.",
+        "nothing_to_resend": "Yeniden gönderilecek başarısız veya süresi dolmuş cihaz yok."
+      }
+    }
+  },
+  "endpointChat": {
+    "tabLabel": "Sohbet",
+    "tabTitle": "Bu cihazdaki kişiyle canlı sohbet",
+    "unsupported": "Bu cihazda sohbet yok. Sohbet, bir Windows konsol oturumunda Breeze Assist gerektirir.",
+    "footer": "Kullanıcı bunu bir sohbet penceresi olarak görür. Sohbet hiçbir zaman uzaktan erişim vermez.",
+    "startHeading": "Sohbet başlat",
+    "firstMessageLabel": "İlk mesaj",
+    "startChat": "Sohbeti başlat",
+    "starting": "Başlatılıyor...",
+    "recentHeading": "Son sohbetler",
+    "empty": "Bu cihazla henüz sohbet yok.",
+    "loadFailed": "Sohbetler yüklenemedi.",
+    "loading": "Yükleniyor...",
+    "back": "Sohbetlere dön",
+    "endChat": "Sohbeti bitir",
+    "ending": "Bitiriliyor...",
+    "messageLabel": "Mesaj",
+    "send": "Gönder",
+    "sending": "Gönderiliyor...",
+    "openExisting": "Mevcut sohbeti aç",
+    "user": "Kullanıcı",
+    "technician": "Teknisyen",
+    "fromUser": "{{name}} (kullanıcı)",
+    "undelivered": "Teslim edilmedi",
+    "status": {
+      "opening": "Kullanıcının sohbet penceresini görmesi bekleniyor...",
+      "open": "Sohbet açık",
+      "closed": "Bu sohbet sona erdi.",
+      "expired": "Bu sohbet 30 dakikalık hareketsizlikten sonra sona erdi.",
+      "failed": "Sohbet başlatılamadı."
+    },
+    "statusShort": {
+      "opening": "Açılıyor",
+      "open": "Açık",
+      "closed": "Bitti",
+      "expired": "Süresi doldu",
+      "failed": "Başarısız"
+    },
+    "errors": {
+      "chat_requires_assist": "Sohbet, bir Windows konsol oturumunda Breeze Assist gerektirir.",
+      "agent_unsupported": "Bu cihazdaki aracı henüz sohbeti desteklemiyor.",
+      "device_offline": "Cihaz çevrimdışı. Çevrimiçi olduğunda tekrar deneyin.",
+      "platform_unsupported": "Sohbet yalnızca Windows cihazlarda kullanılabilir.",
+      "conversation_active": "Bu cihazla zaten devam eden bir sohbet var.",
+      "rate_limited": "Yakın zamanda çok fazla sohbet veya mesaj gönderildi. Daha sonra tekrar deneyin.",
+      "open_timeout": "Cihaz zamanında yanıt vermedi, bu yüzden sohbet başlatılmadı.",
+      "chat_window_failed": "Cihaz sohbet penceresini gösteremedi.",
+      "conversation_not_open": "Bu sohbet artık açık değil.",
+      "feature_disabled": "Sohbet bu kuruluş için etkin değil.",
+      "no_permission": "Bu cihazla sohbet etme izniniz yok.",
+      "device_not_found": "Bu cihaz bulunamadı.",
+      "generic": "Sohbetle ilgili bir sorun oluştu. Tekrar deneyin.",
+      "open_failed": "Sohbet başlatılamadı. Tekrar deneyin.",
+      "send_failed": "Mesaj gönderilemedi. Tekrar deneyin.",
+      "close_failed": "Sohbet bitirilemedi. Tekrar deneyin."
+    },
+    "updatesPaused": "Canlı güncellemeler duraklatıldı — yeniden deneniyor",
+    "closeNotAnnounced": "Sohbet burada kapatıldı. Kullanıcının sohbet penceresi, cihazı yeniden bağlanana veya kullanıcı yanıt verene kadar açık kalabilir.",
+    "unavailable": "Bu sohbet artık kullanılamıyor"
   }
 }

@@ -77,7 +77,7 @@ import {
   findCommandRestoreAuthorization,
   type StoredRestoreAuthorization,
 } from './backupRestoreAuthorization';
-import { isSupportedKeyLayout } from './backupKeyLayout';
+import { originKeyRootAllows, physicalKeyFor, snapshotKeyRootOf } from './backupKeyLayout';
 import { classifyBackupObjectKey, parseBackupObjectKey } from './backupObjectKey';
 import {
   STORAGE_SESSION_CALL_BURST,
@@ -150,6 +150,8 @@ export type StorageSnapshotRow = {
   storageIdentity: string | null;
   /** Object-key layout (services/backupKeyLayout.ts); only a supported one is ever read. */
   keyLayout: string;
+  /** With keyLayout, the snapshot's recorded key root (#7081); see backupKeyLayout.ts. */
+  keyPrefix: string | null;
   fileIndexStatus: string;
   /** SHA-256 of the manifest bytes the server-built file index was built from. */
   fileIndexManifestSha256: string | null;
@@ -203,6 +205,11 @@ export type VerifiedOriginRow = {
   originOrgId: string;
   originDeviceId: string;
   originStorageIdentity: string;
+  /**
+   * The origin's recorded key root pair, from its live snapshot row or its
+   * retirement row; undefined when neither is left (see originKeyRootAllows).
+   */
+  originKeyRoot?: { keyLayout: string; keyPrefix: string | null };
 };
 
 export type StorageDestination = { provider: string; providerConfig: Record<string, unknown> };
@@ -802,9 +809,10 @@ async function mint(
   if (candidates.length !== 1) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
   const snapshot = candidates[0]!;
   if (!snapshot.configId || snapshot.orgId !== orgId) return { mode: 'unbrokered', reason: 'snapshot_unresolved' };
-  // A layout this server does not understand is a permanent property of the
-  // snapshot: its keys cannot be derived, so it is refused, never guessed.
-  if (!isSupportedKeyLayout(snapshot.keyLayout)) return { mode: 'unbrokered', reason: 'key_layout_unsupported' };
+  // A key root (layout + prefix) this server does not understand is a
+  // permanent property of the snapshot: its keys cannot be derived, so it is
+  // refused, never guessed.
+  if (!snapshotKeyRootOf(snapshot)) return { mode: 'unbrokered', reason: 'key_layout_unsupported' };
   // The snapshot id is agent-reported and every authorized key is built from
   // it: it must be a single segment of the object-key grammar.
   if (!isObjectKeySnapshotId(snapshot.snapshotId)) return { mode: 'unbrokered', reason: 'invalid_snapshot_key' };
@@ -1018,12 +1026,14 @@ export async function resolveStorageSessionObjects(
   // destination that moved, disappeared or was re-pointed ends the session.
   const snapshot = await store.loadSnapshotById(session.snapshotId);
   const destination = snapshot ? await store.resolveConfig(session.configId, session.orgId) : null;
+  // Every granted key is presigned under the snapshot's recorded key root.
+  const ownRoot = snapshot ? snapshotKeyRootOf(snapshot) : null;
   if (
     !snapshot
     || snapshot.orgId !== session.orgId
     || snapshot.deviceId !== session.sourceDeviceId
     || snapshot.storageIdentity !== session.storageIdentity
-    || !isSupportedKeyLayout(snapshot.keyLayout)
+    || !ownRoot
     || !destination
     || destination.provider !== 's3'
     || !httpsEndpoint(destination.providerConfig)
@@ -1091,6 +1101,10 @@ export async function resolveStorageSessionObjects(
           origin.originOrgId !== session.orgId
           || origin.originDeviceId !== session.sourceDeviceId
           || origin.originStorageIdentity !== session.storageIdentity
+          // A dedupe chain never spans key roots (I4): an external ref is
+          // served under the snapshot's own root only when the origin's
+          // recorded root is the same one.
+          || !originKeyRootAllows(ownRoot, origin.originKeyRoot)
         ) continue;
         for (const key of external.get(origin.originSnapshotId) ?? []) granted.add(key);
       }
@@ -1118,7 +1132,7 @@ export async function resolveStorageSessionObjects(
       denied.push(key);
       continue;
     }
-    const url = await deps.presignGet({ providerConfig: destination.providerConfig, key, expiresInSeconds: ttl });
+    const url = await deps.presignGet({ providerConfig: destination.providerConfig, key: physicalKeyFor(ownRoot, key), expiresInSeconds: ttl });
     objects.push({ key, method: 'GET', url, headers: {}, expiresAt: rfc3339(expiry), expiresIn: 0 });
   }
   // Remaining lifetime as of the answer, after every URL has been signed.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -93,6 +94,8 @@ func runDesktopHelper() {
 		log.Warn("helper config load failed; helper log shipping disabled", "error", err)
 		cfg = config.Default()
 	}
+	// The log shipper below dials through the shared ECH dialer.
+	ech.Configure(cfg.ECH, cfg.ECHServerEnabled)
 
 	socketPath := ipc.DefaultSocketPath()
 	if cfg.IPCSocketPath != "" {
@@ -121,6 +124,7 @@ func runDesktopHelper() {
 			AgentVersion: version + "-desktop-helper",
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
+			HTTPClient:   newShipperHTTPClient(),
 			// The WebRTC/ICE diagnostics live in this process, so it must
 			// follow the agent's set_log_level override too (#7416).
 			LevelOverridePath: config.LogLevelOverridePath(),

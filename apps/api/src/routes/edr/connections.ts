@@ -21,6 +21,8 @@ import { buildEdrAdapterContext } from '../../services/edrProviders/context';
 import { capabilitySnapshot } from '../../services/edrProviders/capabilities';
 import type { EdrProviderAdapter } from '../../services/edrProviders/types';
 import { enqueueEdrSync } from '../../jobs/edrProviderSync';
+import { readLastEdrHintAt } from '../../services/edrProviders/hints';
+import { getRedis } from '../../services/redis';
 import {
   EDR_CONNECTION_PUBLIC_SELECT,
   isGateFailure,
@@ -32,7 +34,16 @@ import {
 export const edrConnectionRoutes = new Hono();
 
 const idParamSchema = z.object({ id: z.string().guid() });
-const intervalSchema = z.number().int().min(1).max(1440);
+// Bounds mirror the edr_connections CHECK constraint
+// (migrations/2026-12-16-100000-edr-provider-framework.sql: BETWEEN 5 AND 1440).
+// Anything looser reaches the database and surfaces as a 500.
+const INTERVAL_MIN_MINUTES = 5;
+const INTERVAL_MAX_MINUTES = 1440;
+const intervalSchema = z
+  .number()
+  .int()
+  .min(INTERVAL_MIN_MINUTES, `Interval must be at least ${INTERVAL_MIN_MINUTES} minutes`)
+  .max(INTERVAL_MAX_MINUTES, `Interval must be at most ${INTERVAL_MAX_MINUTES} minutes`);
 
 const createConnectionSchema = z.object({
   provider: z.string().min(1).max(30),
@@ -51,6 +62,8 @@ const patchConnectionSchema = z.object({
   inventoryIntervalMinutes: intervalSchema.nullable().optional(),
   credentials: z.record(z.string(), z.unknown()).optional(),
   baseUrl: z.string().max(300).optional(),
+  /** W03 (#8167): allow response actions through this console. Partner admin + MFA (route gates). */
+  actionsEnabled: z.boolean().optional(),
 }).refine((v) => Object.keys(v).length > 0, { message: 'At least one field must be supplied' });
 
 const OPEN_STATUSES = ['open', 'in_progress', 'unknown'] as const;
@@ -93,6 +106,15 @@ function checkBaseUrl(adapter: EdrProviderAdapter, baseUrl: string | undefined |
   return v.ok ? null : `Invalid Access URL: ${v.reason}`;
 }
 
+function pushSupported(provider: string): boolean {
+  try {
+    const a = getEdrProvider(provider);
+    return typeof a.registerPush === 'function' && typeof a.verifyWebhook === 'function';
+  } catch {
+    return false;
+  }
+}
+
 async function enqueueBoth(connectionId: string): Promise<string[]> {
   // Outside every DB context: the queue is instrumented with assertOutsideHeldDbContext.
   return runOutsideDbContext(async () => [
@@ -115,7 +137,16 @@ edrConnectionRoutes.get(
       .from(edrConnections)
       .where(eq(edrConnections.partnerId, gate.partnerId))
       .orderBy(edrConnections.name);
-    return c.json({ data: rows });
+    // W03 PR-B: push UI fields. `lastHintAt` is display-only (Redis, best
+    // effort; the cleared marker cannot carry it), falling back to an unacked marker.
+    const lastHints = await runOutsideDbContext(() => readLastEdrHintAt(rows.map((r) => r.id), getRedis()));
+    return c.json({
+      data: rows.map((r) => ({
+        ...r,
+        pushSupported: pushSupported(r.provider),
+        lastHintAt: lastHints.get(r.id) ?? r.pendingHintAt?.toISOString?.() ?? null,
+      })),
+    });
   },
 );
 
@@ -266,6 +297,9 @@ edrConnectionRoutes.patch(
     if (body.isActive !== undefined) updates.isActive = body.isActive;
     if (body.detectionIntervalMinutes !== undefined) updates.detectionIntervalMinutes = body.detectionIntervalMinutes;
     if (body.inventoryIntervalMinutes !== undefined) updates.inventoryIntervalMinutes = body.inventoryIntervalMinutes;
+    // Turning actions on needs no re-test: every action still passes the
+    // adapter's capability check and the vendor stays authoritative.
+    if (body.actionsEnabled !== undefined) updates.actionsEnabled = body.actionsEnabled;
 
     const retest = body.credentials !== undefined || body.baseUrl !== undefined;
     if (retest) {
@@ -354,6 +388,16 @@ edrConnectionRoutes.patch(
         credentialsRotated: body.credentials !== undefined,
       },
     });
+    if (body.actionsEnabled !== undefined) {
+      // A dedicated, greppable record of who switched remote containment on/off.
+      writeRouteAudit(c, {
+        orgId: null,
+        action: body.actionsEnabled ? 'edr.connection.actions_enabled' : 'edr.connection.actions_disabled',
+        resourceType: 'edr_connection',
+        resourceId: id,
+        details: { partnerId: gate.partnerId, actionsEnabled: body.actionsEnabled },
+      });
+    }
 
     return c.json({ data: updated });
   },

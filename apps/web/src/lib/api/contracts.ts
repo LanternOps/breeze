@@ -328,7 +328,10 @@ export function listContractHourPeriods(contractId: string, query: { limit?: num
   if (query.limit != null) params.set('limit', String(query.limit));
   if (query.cursor) params.set('cursor', query.cursor);
   const qs = params.toString();
-  return fetchWithAuth(`/contracts/${contractId}/hour-periods${qs ? `?${qs}` : ''}`);
+  // The route's query schema is .strict() and the contract is resolved by id
+  // under the caller's tenant access, so the switcher's ambient `?orgId=` would
+  // 400 ("Unrecognized key") — and is meaningless for an id-scoped read.
+  return fetchWithAuth(`/contracts/${contractId}/hour-periods${qs ? `?${qs}` : ''}`, { skipOrgIdInjection: true });
 }
 
 /** Body of `POST /contracts/:id/currency`. The stamped currency is only ever

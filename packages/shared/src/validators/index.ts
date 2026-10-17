@@ -30,6 +30,7 @@ export * from './currency';
 export * from './remoteAccessInlineSettings';
 export * from './warrantyInlineSettings';
 export * from './systemProtectionInlineSettings';
+export * from './securityAgents';
 export * from './safeRelativePath';
 export * from './authenticator';
 export * from './catalog';
@@ -1130,6 +1131,7 @@ export {
   type CreateBackupProfileInput,
   type UpdateBackupProfileInput,
 } from './backupTargets';
+export * from './backupDestinationPrefix';
 export {
   deliverableCadenceSchema,
   deliverableCompletionModeSchema,
@@ -1387,6 +1389,8 @@ export const maintenanceInlineSettingsSchema = z
 
 export type MaintenanceInlineSettings = z.infer<typeof maintenanceInlineSettingsSchema>;
 export * from './callerVerification';
+export * from './endpointMessage';
+export * from './endpointChat';
 
 // Business reports (#3198 W02)
 export * from './businessReports';
@@ -1399,3 +1403,8 @@ export * from './aiModelOptions';
 export * from './aiModelChoice';
 export * from './aiModelRegistryApi';
 export * from './autopay';
+export * from './trustCenter';
+export * from './trustCenterDeclarations';
+export * from './trustCenterAccess';
+export * from './trustCenterContent';
+export * from './trustCenterTemplate';

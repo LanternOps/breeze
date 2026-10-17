@@ -22,6 +22,10 @@ import { formatTime as formatUserTime } from '@/lib/dateTimeFormat';
 import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import { usePermissions } from '@/lib/permissions';
+import { ENABLE_ENDPOINT_MESSAGING } from '@/lib/featureFlags';
+import SendMessageDialog from '../endpointMessages/SendMessageDialog';
+import ContactResponsibilitiesCard from '../shared/ContactResponsibilitiesCard';
 
 // --- Types ---
 
@@ -107,6 +111,8 @@ const formatTime = (date: Date) =>
 
 export default function SiteDetailPage({ siteId }: { siteId: string }) {
   const { t } = useTranslation('settings');
+  const { can } = usePermissions();
+  const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can('endpoint_messages', 'send'); // #8968: hidden until the build enables messaging
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
   const [activeTab, setActiveTab] = useHashTab<TabKey>(VALID_TABS, 'details');
@@ -119,6 +125,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   const [site, setSite] = useState<SiteDetails | null>(null);
   usePageItemName(site?.name);
   const [org, setOrg] = useState<OrgInfo | null>(null);
+  const [sendMessageOpen, setSendMessageOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -434,6 +441,16 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
             )}
           </div>
         </div>
+        {canSendMessage && (
+          <button
+            type="button"
+            data-testid="site-send-message"
+            onClick={() => setSendMessageOpen(true)}
+            className="inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+          >
+            {t('siteDetailPage.actions.sendMessage')}
+          </button>
+        )}
         {activeTab === 'details' && (
           <div className="flex items-center gap-2 rounded-full border bg-card px-4 py-2 text-sm">
             {saveState.hasUnsavedChanges ? (
@@ -445,6 +462,8 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           </div>
         )}
       </header>
+
+      <SendMessageDialog open={sendMessageOpen} onClose={() => setSendMessageOpen(false)} targets={{ siteIds: [site.id] }} />
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -485,6 +504,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           {/* Details Tab */}
           {activeTab === 'details' && (
             <div className="space-y-6">
+              {site && <ContactResponsibilitiesCard orgId={site.orgId} siteId={site.id} />}
               <section className="rounded-lg border bg-card p-6 shadow-xs">
                 <h2 className="text-lg font-semibold">{t('siteDetailPage.details.title')}</h2>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">

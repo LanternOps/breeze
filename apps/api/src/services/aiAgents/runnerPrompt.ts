@@ -26,6 +26,7 @@ import {
   TICKET_TRIAGE_CONFIDENCE_FLOOR, TICKET_TRIAGE_PRIORITIES,
 } from '@breeze/shared';
 import { ANALYSIS_WORKSPACE_PROMPT } from './analysisProfile';
+import { UNTRUSTED_TOOL_OUTPUT_RULE } from '../aiAgentSystemPrompt';
 import { RESEARCH_MODE_PROMPT } from './researchProfile';
 // Type-only: researchContext.ts imports the db; nothing of it survives into this module's runtime.
 import type { ResearchRunContext } from './researchContext';
@@ -555,7 +556,10 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
       ? '- Write it in one pass. The run has a hard budget and a low turn limit; re-stating the same '
         + 'figures back to yourself before submitting costs the customer money and buys nothing.'
       : '- Prefer a small number of high-signal reads over exhaustive enumeration; every call '
-        + 'costs the customer money and the run has a hard budget and time limit.'),
+        + 'costs the customer money and the run has a hard budget and time limit.')
+    // #8852 W04: same text as chat rule 6a, outside the operator-guidance
+    // block so an agent's configured instructions cannot displace it.
+    + `\n- ${UNTRUSTED_TOOL_OUTPUT_RULE}`,
   );
 
   sections.push(

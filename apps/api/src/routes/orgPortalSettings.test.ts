@@ -93,6 +93,7 @@ vi.mock('../db/schema', () => ({
     enablePatchDetail: 'enablePatchDetail',
     enableVulnerabilityDetail: 'enableVulnerabilityDetail',
     enableEdrVisibility: 'enableEdrVisibility',
+    enableTrustPageEditing: 'enableTrustPageEditing',
     chromeAccent: 'chromeAccent',
     supportEmail: 'supportEmail',
     supportPhone: 'supportPhone',
@@ -241,6 +242,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enablePatchDetail: false,
       enableVulnerabilityDetail: false,
       enableEdrVisibility: false,
+      enableTrustPageEditing: false,
       chromeAccent: null,
       supportEmail: null,
       supportPhone: null,
@@ -352,6 +354,28 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableEdrVisibility', 'enableEdrVisibility');
     expect(onPortalFlagsChanged).toHaveBeenCalledWith(
       expect.objectContaining({ requested: { enableEdrVisibility: true } }),
+    );
+  });
+
+  it('persists the trust-page editing permission flag without treating it as a visibility flag (Trust Center W3d)', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableTrustPageEditing: true }]);
+
+    const res = await patch({ enableTrustPageEditing: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableTrustPageEditing: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableTrustPageEditing: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableTrustPageEditing', 'enableTrustPageEditing');
+    expect(onPortalFlagsChanged).not.toHaveBeenCalled();
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ details: expect.objectContaining({ changedFields: ['enableTrustPageEditing'] }) }),
     );
   });
 

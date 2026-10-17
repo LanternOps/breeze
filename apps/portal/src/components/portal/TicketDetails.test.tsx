@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 
 const addTicketComment = vi.fn();
 // The real module pulls in astro-only imports through @/lib/navigation, so it
@@ -56,8 +57,79 @@ describe('TicketDetails — statuses', () => {
 });
 
 describe('TicketDetails — pending approval banner (#8200)', () => {
+  const budgetApproval = {
+    trigger: 'budget' as const,
+    ticketNumber: 'T-1',
+    ask: { minutes: 60, amount: null, currencyCode: null, coverageStartsAt: null, coverageEndsAt: null },
+  };
+
+  it('server-renders no ask sentence, so no server-zone time reaches the HTML', () => {
+    // RTL runs effects, so only a server render shows what the `mounted` gate
+    // keeps out of the SSR HTML (the sentence formats times in the runtime zone).
+    const html = renderToString(
+      <TicketDetails
+        ticket={ticket()}
+        pendingApproval={{
+          id: 'req-9',
+          approval: {
+            trigger: 'after_hours',
+            ticketNumber: 'T-1',
+            ask: { minutes: null, amount: null, currencyCode: null, coverageStartsAt: '2026-12-02T00:25:00.000Z', coverageEndsAt: '2026-12-02T02:25:00.000Z' },
+          },
+        }}
+      />
+    );
+    expect(html).toContain('This ticket has work waiting for your approval');
+    expect(html).not.toContain('Approve after-hours work');
+  });
+
+  it('renders the after-hours window in the viewer local time, not the server UTC', () => {
+    const startIso = '2026-12-02T00:25:00.000Z';
+    const endIso = '2026-12-02T02:25:00.000Z';
+    // Assigning process.env.TZ in-test is best-effort only: measured here, it
+    // took effect under vitest's default (forks) pool but not under
+    // --pool=threads, and ci.yml warns it may not apply at all. So derive the
+    // expected clock times from whichever zone is actually in effect.
+    const prevTz = process.env.TZ;
+    process.env.TZ = 'America/Chicago'; // UTC-6 in December, when it applies
+    const clock = (iso: string, timeZone?: string) =>
+      new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone });
+    try {
+      render(
+        <TicketDetails
+          ticket={ticket()}
+          pendingApproval={{
+            id: 'req-9',
+            approval: {
+              trigger: 'after_hours',
+              ticketNumber: 'T-1',
+              ask: {
+                minutes: null,
+                amount: null,
+                currencyCode: null,
+                coverageStartsAt: startIso,
+                coverageEndsAt: endIso,
+              },
+            },
+          }}
+        />
+      );
+      const text = screen.getByTestId('ticket-pending-approval').textContent ?? '';
+      expect(text).toContain(clock(startIso));
+      expect(text).toContain(clock(endIso));
+      // Discriminates only where the effective zone is not UTC (when the TZ
+      // above applied, or on any non-UTC host).
+      if (clock(startIso) !== clock(startIso, 'UTC')) {
+        expect(text).not.toContain(clock(startIso, 'UTC'));
+      }
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    }
+  });
+
   it('shows a banner linking to the request when work awaits approval', () => {
-    render(<TicketDetails ticket={ticket()} pendingApproval={{ id: 'req-9', askSentence: 'Approve up to 1 h more on ticket #T-1' }} />);
+    render(<TicketDetails ticket={ticket()} pendingApproval={{ id: 'req-9', approval: budgetApproval }} />);
     const banner = screen.getByTestId('ticket-pending-approval');
     expect(banner.textContent).toContain('This ticket has work waiting for your approval');
     expect(banner.textContent).toContain('Approve up to 1 h more on ticket #T-1');
@@ -202,6 +274,45 @@ describe('TicketDetails — who wrote it', () => {
     const item = screen.getByTestId('ticket-comment').textContent ?? '';
     expect(item).not.toContain('Customer email');
     expect(item).not.toContain('Your IT team');
+  });
+
+  // #8313: a customer's reply imported from another helpdesk is stored with
+  // author_type 'email' and no portal login; original_author_kind is the only
+  // thing that says the customer wrote it.
+  it("labels an imported requester reply as the customer's, not the IT team's", () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-imported-requester',
+        authorName: 'Maya',
+        authorType: 'email',
+        senderPortalUserId: null,
+        originalAuthorKind: 'requester',
+        content: 'Written in the old helpdesk',
+        createdAt: '2021-03-04T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(screen.getByTestId('ticket-comment-imported-customer').textContent).toBe('Customer');
+    expect(item).not.toContain('Your IT team');
+  });
+
+  it('keeps labelling an imported staff reply as the IT team', () => {
+    render(<TicketDetails ticket={ticket({
+      comments: [{
+        id: 'c-imported-staff',
+        authorName: 'Former Tech',
+        authorType: 'internal',
+        senderPortalUserId: null,
+        originalAuthorKind: 'staff',
+        content: 'Answered in the old helpdesk',
+        createdAt: '2021-03-04T00:00:00Z',
+      }],
+    })} />);
+
+    const item = screen.getByTestId('ticket-comment').textContent ?? '';
+    expect(item).toContain('Your IT team');
+    expect(screen.queryByTestId('ticket-comment-imported-customer')).toBeNull();
   });
 });
 

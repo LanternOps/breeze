@@ -53,6 +53,11 @@ export interface LockMachineState {
   authUnavailable: boolean;
   /** A sign-out is in flight; the lock stays up until the session is gone. */
   signingOut: boolean;
+  /**
+   * A system biometric sheet that this app raised (unlock, approve, approval
+   * signature) is on screen. See {@link coverFor} for what it changes.
+   */
+  biometricPrompt: boolean;
 }
 
 export type LockEvent =
@@ -67,7 +72,14 @@ export type LockEvent =
   | { type: 'authenticatorUnavailable' }
   | { type: 'signOutRequested'; now: number }
   /** The session is gone — the login screen is showing. */
-  | { type: 'signedOut' };
+  | { type: 'signedOut' }
+  /** One of our own biometric prompts went up (`services/biometricPromptState`). */
+  | { type: 'biometricPromptStarted' }
+  /**
+   * Our last biometric prompt settled. `lifecycle` is the app state at that
+   * moment, read fresh from React Native.
+   */
+  | { type: 'biometricPromptEnded'; lifecycle: AppLifecycle };
 
 export interface LockReduction {
   state: LockMachineState;
@@ -83,7 +95,31 @@ export const initialLockState: LockMachineState = {
   unlockFailed: false,
   authUnavailable: false,
   signingOut: false,
+  biometricPrompt: false,
 };
+
+/**
+ * Whether the privacy cover should be up after moving to non-`active`
+ * `lifecycle`.
+ *
+ * Normally any non-`active` state covers: iOS snapshots the UI on the way out
+ * to `inactive` to build the app-switcher card and writes that image to disk.
+ * The one exception is `inactive` while one of OUR biometric prompts is up —
+ * iOS reports `inactive` for the Face ID sheet itself, and covering then
+ * flashed the full-screen wordmark on every Approve and Unlock. In that case
+ * the cover keeps whatever it already was (an existing cover is never lowered).
+ *
+ * Accepted trade-off (Todd, 2026-10): if the user swipes to the app switcher
+ * while our Face ID sheet is up, iOS may take that one snapshot before the
+ * `background` transition lands, and it is uncovered. A real `background`
+ * still covers and arms the lock clock as usual — it is a genuine switch-away,
+ * prompt or not.
+ */
+function coverFor(state: LockMachineState, lifecycle: AppLifecycle): boolean {
+  if (lifecycle === 'active') return false;
+  if (lifecycle === 'inactive' && state.biometricPrompt) return state.obscured;
+  return true;
+}
 
 /**
  * What to write for a given phase. `booting` persists as locked — see
@@ -132,7 +168,7 @@ export function reduceLock(
           bootDecided: true,
           phase: lock ? 'locked' : 'unlocked',
           unlockFailed: false,
-          obscured: lifecycle !== 'active',
+          obscured: coverFor(state, lifecycle),
           backgroundedAt: lock ? null : earlier(state.backgroundedAt, seed),
         },
         // Make the lock durable immediately rather than waiting for the next
@@ -177,8 +213,8 @@ export function reduceLock(
       return {
         // Cover on `inactive`, not just `background`: iOS snapshots the UI on
         // the way out to build the app-switcher card and writes that image to
-        // disk.
-        state: { ...state, obscured: true, backgroundedAt },
+        // disk. Except for our own biometric sheet — see `coverFor`.
+        state: { ...state, obscured: coverFor(state, next), backgroundedAt },
         // Stamp here too. A force-quit from the app switcher may only ever
         // deliver `inactive`, and this write is fire-and-forget — if iOS
         // suspends us before it lands, the record is simply stale or absent,
@@ -247,6 +283,27 @@ export function reduceLock(
           unlockFailed: false,
           authUnavailable: false,
           signingOut: false,
+        },
+        persist: null,
+      };
+
+    case 'biometricPromptStarted':
+      // Changes only what `inactive` covers. Never the lock clock: that is
+      // armed by `background` alone, prompt or not.
+      return { state: { ...state, biometricPrompt: true }, persist: null };
+
+    case 'biometricPromptEnded':
+      // Never lowers a cover — only an `active` transition does that. And it
+      // does not raise one for `inactive` either: the prompt promise can settle
+      // a beat before iOS reports `active`, and covering in that gap would
+      // bring the flash straight back. If the app is really leaving, the
+      // `background` transition that follows covers it. A non-`inactive`,
+      // non-`active` state here (a `background` whose event we missed) covers.
+      return {
+        state: {
+          ...state,
+          biometricPrompt: false,
+          obscured: state.obscured || coverFor({ ...state, biometricPrompt: true }, event.lifecycle),
         },
         persist: null,
       };

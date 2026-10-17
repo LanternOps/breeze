@@ -795,6 +795,14 @@ describe('POST /devices/:id/move-org', () => {
         );
       }
 
+      // #8746: elevation_requests restamps only UN-actuated requests; an
+      // actuated request of any ownership epoch is frozen PAM evidence.
+      expect(flat).toContain(
+        `UPDATE elevation_requests r SET org_id = ${TARGET_ORG}::uuid WHERE r.device_id = ${DEVICE_ID}::uuid ` +
+          `AND r.org_id IS DISTINCT FROM ${TARGET_ORG}::uuid ` +
+          'AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)',
+      );
+
       // tickets stays UNFILTERED: the trigger already moved tickets.org_id but
       // not partner_id, and the RETURNING ids drive assignee revalidation. A
       // filter here would skip every trigger-moved ticket.
@@ -1612,7 +1620,20 @@ describe('POST /devices/:id/move-org', () => {
       // expired post-commit in system scope (they are per-approver under RLS).
       expect(collapseStmt(statements[17]!)).toContain('UPDATE diagnostic_access_grants SET status = \'expired\'');
       expect(collapseStmt(statements[18]!)).toContain('UPDATE diagnostic_access_grants SET status = \'revoked\'');
-      expect(statements[19]).toBe('UPDATE devices');
+      // #8742 W02 — endpoint message deliveries detach from their source-org
+      // message immediately before the flip: the flip's trigger restamps the
+      // delivery's org_id, and the (endpoint_message_id, org_id) FK is
+      // DEFERRABLE INITIALLY IMMEDIATE, so a still-attached row 23503s the move.
+      expect(collapseStmt(statements[19]!)).toContain(
+        'UPDATE endpoint_message_deliveries SET endpoint_message_id = NULL',
+      );
+      // #8743 W03 — a live endpoint chat ends in the SOURCE org before the
+      // flip, so a destination-org technician never inherits it. History
+      // itself follows the device through the flip's restamp trigger.
+      const chatClose = collapseStmt(statements[20]!);
+      expect(chatClose).toContain("UPDATE endpoint_conversations SET status = 'closed', close_reason = 'device_moved'");
+      expect(chatClose).toContain("status IN ('opening', 'open')");
+      expect(statements[21]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

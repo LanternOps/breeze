@@ -216,7 +216,27 @@ Open a device and find the **Reliability** card. It is designed to explain the s
 - **Headline stat.** Servers and always-on infrastructure show 30-day uptime as the headline stat. Workstations — where uptime carries no weight — instead show **Biggest drag**: the factor costing the most points and its 30-day event count, so the headline is always meaningful.
 - **Trend and MTBF** are shown alongside the score, and the "At risk" badge (score ≤ 70) names the biggest-drag factor in its tooltip.
 
-One action is available: **Ask AI about reliability** — hands the device's reliability snapshot to the Breeze AI assistant for a plain-language diagnosis and suggested next steps.
+Two actions are available: **Ask AI about reliability** hands the device's reliability snapshot to the Breeze AI assistant for a plain-language diagnosis and suggested next steps, and **Mark work done** places a baseline marker (below).
+
+### Baseline markers
+
+After you fix a device, its old crashes and failures would otherwise keep dragging the score down for weeks. A baseline marker restarts scoring from the point the work finished, so only what happens afterwards counts.
+
+<Steps>
+
+1. On the device's **Reliability** card, click **Mark work done**.
+
+2. Under **What was done**, choose **Reimaged**, **Remediated** or **Hardware replaced**. **Remediated** needs a note describing what was fixed; for the others the note is optional.
+
+3. Set **When the work finished**. It can be up to 30 days in the past, but not in the future.
+
+4. Click **Save marker**.
+
+</Steps>
+
+The card then shows a banner such as *Scoring since Reimaged on (date) by (technician)*. The score is marked **Provisional** until 14 days of data have been reported since the marker. A **Before → since** comparison sets the score and the 30-day crash, hang, service-failure and hardware-error counts from before the marker against now, and **Marker history** lists every marker on the device. **Clear** removes a marker from scoring: the score falls back to the previous marker, or to the device's full history, and the marker stays in the history marked **Cleared**. When a bare-metal recovery of the device completes, Breeze places a **Reimaged** marker automatically (shown as by *Breeze (automatic)*).
+
+Placing or clearing a marker needs `devices:write` and is audit logged (`device.reliability.baseline_set`, `device.reliability.baseline_cleared`).
 
 ### Fleet Overview
 
@@ -343,6 +363,9 @@ The AI tool supports the same filters as the list API: organization, score range
 | GET | `/reliability/org/:orgId/summary` | Organization-level reliability summary with worst devices |
 | GET | `/reliability/:deviceId` | Full reliability snapshot and 30-day history for a device |
 | GET | `/reliability/:deviceId/history` | Daily reliability history with configurable lookback (`?days=`) |
+| GET | `/reliability/:deviceId/baselines` | List the device's baseline markers, including cleared ones |
+| POST | `/reliability/:deviceId/baselines` | Place a marker (body: `reason` = `reimaged`, `remediated` or `hardware_replaced`; optional `baselineAt`, at most 30 days back; `note`, required for `remediated`). Requires `devices:write` |
+| DELETE | `/reliability/:deviceId/baselines/:baselineId` | Clear a marker. Requires `devices:write` |
 
 ### Agent Ingestion
 

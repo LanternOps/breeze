@@ -10,6 +10,7 @@ import type { Context, Next } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
 import { and, eq, ilike, inArray, isNull, ne, not, notInArray, or, sql } from 'drizzle-orm';
+import { scheduleServingRefreshForPartner } from '../services/trustPage/servingSet';
 import { db, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { resolveAuditOrgIdForPartner } from '../services/auditOrgResolver';
 import { deleteSiteOwnedTopologyAlerts, lockSiteForDelete } from '../services/siteOwnedAlerts';
@@ -106,6 +107,7 @@ import { writeOrgImportAudits } from '../services/orgImport/audit';
 import { commitImportRowSchema, importRowSchema } from '../services/orgImport/schemas';
 import { resolveImportPartnerId } from './importScope';
 import { registerOrgContactsRoutes } from './orgContacts';
+import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibilities';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
@@ -273,6 +275,9 @@ const updatePartnerSchema = createPartnerSchema.partial().extend({
   // Operator-only per-partner AI for Office entitlement. Settable here (system
   // scope) but NOT on /partners/me (partner scope) — partners can't self-enable.
   aiForOfficeEnabled: z.boolean().optional(),
+  // Operator-only: remove the "Powered by Breeze" attribution from this partner's
+  // public trust pages. Settable here (system scope), NOT on /partners/me.
+  trustPageUnbranded: z.boolean().optional(),
   settings: z.any().optional().refine(settingsAllowlistEntriesValid, {
     message: 'Each IP allowlist entry must be a valid IP address or CIDR range',
   }).refine((settings) => sessionTimeoutSettingsError(settings) === null, {
@@ -581,6 +586,7 @@ const partnerPublicColumns = () => ({
   invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
   catalogAiStyle: partners.catalogAiStyle,
   aiForOfficeEnabled: partners.aiForOfficeEnabled,
+  trustPageUnbranded: partners.trustPageUnbranded,
   serviceManagementMode: partners.serviceManagementMode,
   serviceManagementPsaConnectionId: partners.serviceManagementPsaConnectionId,
   createdAt: partners.createdAt,
@@ -1562,6 +1568,9 @@ orgRoutes.patch('/partners/:id', requireScope('system'), requireOrgWrite, requir
     return c.json({ error: 'Partner not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
+  // Trust Center (Ruling 26): a slug/status change can publish or hide this partner's trust pages.
+  if (data.slug !== undefined || data.status !== undefined) scheduleServingRefreshForPartner(partner.id, 'partner.update');
+
   // Invalidate the OAuth scope-policy cache (settings may have changed).
   clearPartnerScopePolicyCache(partner.id);
   // Settings writes can change security.ipAllowlist — drop the 30s cache so
@@ -1632,6 +1641,7 @@ orgRoutes.delete('/partners/:id', requireScope('system'), requireOrgWrite, requi
   }
 
   await revokePartnerTenantAccess(partner.id);
+  scheduleServingRefreshForPartner(partner.id, 'partner.delete');
 
   const auditOrgId = auth.orgId ?? await resolveAuditOrgIdForPartner(id);
   writeAuditEvent(c, {
@@ -2860,6 +2870,10 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   // The org's agent update policy and topology flags are served to its agents
   // from a per-org heartbeat cache (#8053).
   invalidateAgentOrgSettingsCaches(organization.id);
+  // Trust Center (Ruling 26): a slug/status change can publish or hide this org's trust page.
+  if ((data.slug !== undefined || data.status !== undefined) && organization.partnerId) {
+    scheduleServingRefreshForPartner(organization.partnerId, 'organization.update');
+  }
 
   if (data.status === 'offboarding') {
     // #2774 — terminal-intent drain: users/API keys/OAuth out now, agents kept
@@ -2910,6 +2924,8 @@ registerOrgBillingProfileRoutes(orgRoutes);
 registerOrgAuditRetentionSettingsRoutes(orgRoutes);
 // First-class contacts (contacts + the dedicated importer) — see routes/orgContacts.ts
 registerOrgContactsRoutes(orgRoutes);
+// Read-only who-to-contact resolution (Site / Device) — see routes/orgContactResponsibilities.ts
+registerOrgContactResponsibilitiesRoutes(orgRoutes);
 
 orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requireOrgWrite, requireMfa(), async (c) => {
   const auth = c.get('auth') as AuthContext;
@@ -2947,6 +2963,7 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
   }
 
   await revokeOrganizationTenantAccess(organization.id);
+  if (organization.partnerId) scheduleServingRefreshForPartner(organization.partnerId, 'organization.delete');
 
   writeRouteAudit(c, {
     orgId: organization.id,

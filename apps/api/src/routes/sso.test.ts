@@ -2162,6 +2162,25 @@ describe('sso routes', () => {
       expect(verifyIdTokenSignature).toHaveBeenCalled();
     });
 
+    // #8862: only re-auth gets clock tolerance. Login verification stays strict.
+    it('verifies a login-mode id_token strictly (no clock tolerance)', async () => {
+      wireHappyPathDb();
+      vi.mocked(verifyIdTokenSignature).mockRejectedValue(
+        new Error('ID token signature verification failed: "exp" claim timestamp check failed')
+      );
+
+      const res = await app.request('/sso/callback?code=oidc-code&state=state', {
+        method: 'GET',
+        headers: { cookie: ssoStateCookieHeader('state') }
+      });
+
+      expect(res.headers.get('location') ?? '').toContain('/login?error=sso_error');
+      expect(verifyIdTokenSignature).toHaveBeenCalledTimes(1);
+      const options = vi.mocked(verifyIdTokenSignature).mock.calls[0]![3];
+      expect(options).toEqual({ mode: 'login' });
+      expect(options).not.toHaveProperty('clockToleranceSeconds');
+    });
+
     // security review #2 (C-2): a token response with no id_token must be
     // rejected — the callback no longer accepts an unsigned/absent id_token.
     it('rejects a callback whose token response has no id_token', async () => {
@@ -4176,6 +4195,33 @@ describe('sso routes', () => {
       expect(exchangeCodeForTokens).toHaveBeenCalled();
       expect(db.insert).not.toHaveBeenCalled();
       expect(createTokenPair).not.toHaveBeenCalled();
+    });
+
+    // #8862: a signed-in user linking an IdP stays on the profile page when the
+    // id_token fails verification, and link verification stays strict.
+    it('callback link mode keeps an id_token verification failure on the profile page', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      primeLinkCallback({ linkUserId: USER_UUID });
+      vi.mocked(verifyIdTokenSignature).mockRejectedValueOnce(
+        new Error('ID token signature verification failed: "exp" claim timestamp check failed')
+      );
+
+      const res = await doCallback();
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=idp_verify_failed');
+      expect(vi.mocked(verifyIdTokenSignature).mock.calls[0]![3]).toEqual({ mode: 'link' });
+      expect(getUserInfo).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(createTokenPair).not.toHaveBeenCalled();
+      expect(writeRouteAudit).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: 'sso.identity.link_rejected',
+          result: 'denied',
+          details: expect.objectContaining({ reason: 'idp_verify_failed', userId: USER_UUID }),
+        })
+      );
     });
 
     it('callback link mode rejects an email mismatch (no insert)', async () => {
