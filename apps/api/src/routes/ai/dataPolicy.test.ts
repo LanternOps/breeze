@@ -268,6 +268,22 @@ describe('PUT /data-policy', () => {
     expect(writes[0]!.set).toMatchObject({ deviceFileReadLevel: null, toolOutputRetentionDays: null });
   });
 
+  // W01 review follow-up (#8854): an org token's own org is the only target;
+  // a ?orgId naming another org is ignored, never honoured.
+  it("org token naming another org in ?orgId= reads and writes only its own org", async () => {
+    selectQueue = [[]];
+    expect((await getReq(`/data-policy?orgId=${ORG_B}`)).status).toBe(200);
+    expect(resolveAiDataPolicy).toHaveBeenCalledWith(ORG_A);
+    expect(resolveAiDataPolicy).not.toHaveBeenCalledWith(ORG_B);
+    expect(resolveAiDataPolicyCeiling).not.toHaveBeenCalledWith(ORG_B);
+
+    expect((await putReq({ deviceFileReadLevel: 'off' }, `/data-policy?orgId=${ORG_B}`)).status).toBe(200);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.values).toMatchObject({ orgId: ORG_A });
+    expect(resolveAiDataPolicyCeiling).toHaveBeenLastCalledWith(ORG_A);
+    expect(auditLog[0]).toMatchObject({ orgId: ORG_A });
+  });
+
   it('partner token writes the ?orgId= org', async () => {
     currentAuth = partnerAuth();
     expect((await putReq({ deviceFileReadLevel: 'off' })).status).toBe(200);
