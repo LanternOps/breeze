@@ -2523,13 +2523,19 @@ export default function DevicesPage() {
             variant="warning"
             confirmLabel={verb}
             confirmTestId="confirm-bulk-command"
-            message={t(split ? 'devicesPage.confirmBulkCommand.messageSplit' : 'devicesPage.confirmBulkCommand.message', {
-              action: verb,
-              count: targets.length,
-              scope,
-              online,
-              queued: targets.length - online,
-            })}
+            message={split
+              ? t('devicesPage.confirmBulkCommand.messageSplit', {
+                action: verb,
+                count: targets.length,
+                scope,
+                online,
+                queued: targets.length - online,
+              })
+              : t('devicesPage.confirmBulkCommand.message', {
+                action: verb,
+                count: targets.length,
+                scope,
+              })}
             isLoading={actionInProgress}
           />
         );
