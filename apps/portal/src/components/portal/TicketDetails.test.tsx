@@ -65,9 +65,10 @@ describe('TicketDetails — pending approval banner (#8200)', () => {
   it('renders the after-hours window in the viewer local time, not the server UTC', () => {
     const startIso = '2026-12-02T00:25:00.000Z';
     const endIso = '2026-12-02T02:25:00.000Z';
-    // Assigning process.env.TZ in-test is best-effort only: it takes effect in a
-    // forked worker but not in a worker thread (see the TZ note in ci.yml), so
-    // derive the expected clock times from whichever zone is actually in effect.
+    // Assigning process.env.TZ in-test is best-effort only: measured here, it
+    // took effect under vitest's default (forks) pool but not under
+    // --pool=threads, and ci.yml warns it may not apply at all. So derive the
+    // expected clock times from whichever zone is actually in effect.
     const prevTz = process.env.TZ;
     process.env.TZ = 'America/Chicago'; // UTC-6 in December, when it applies
     const clock = (iso: string, timeZone?: string) =>
@@ -95,8 +96,8 @@ describe('TicketDetails — pending approval banner (#8200)', () => {
       const text = screen.getByTestId('ticket-pending-approval').textContent ?? '';
       expect(text).toContain(clock(startIso));
       expect(text).toContain(clock(endIso));
-      // Discriminates only where the effective zone is not UTC (true on a
-      // forked worker with the TZ above, and on any non-UTC host).
+      // Discriminates only where the effective zone is not UTC (when the TZ
+      // above applied, or on any non-UTC host).
       if (clock(startIso) !== clock(startIso, 'UTC')) {
         expect(text).not.toContain(clock(startIso, 'UTC'));
       }

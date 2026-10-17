@@ -155,8 +155,10 @@ function parseHash(hash: string): { selection: string | null; sort: TicketSort; 
 
 // The whole queue hash as ONE piece of state (#8682 sweep). Selection, sort and
 // type must move together: with one `useHashState` per field, each field had
-// its own hashchange listener, and a browser commits (and runs effects) after
-// every listener — so the auto-select effect saw e.g. the new selection with
+// its own hashchange listener. React flushes a discrete event like hashchange
+// in a microtask, which the browser runs between listener callbacks, so each
+// field's update committed (and ran effects) separately — so the auto-select
+// effect saw e.g. the new selection with
 // the OLD type and wrote that stale mix straight back over the new URL.
 type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | '' };
 const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '' };
