@@ -50,6 +50,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   AI_INVOCATIONS_RETENTION_DAYS: 'data retention window',
   AI_INVOCATIONS_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   AI_TOOL_EVAL_KEY: 'dev script (services/llm/__scripts__)',
+  AI_TOOL_OUTPUT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  AI_TOOL_OUTPUT_RETENTION_CRON: 'job schedule override',
+  AI_TOOL_OUTPUT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   AI_TOOL_SEARCH: 'AI chat tool-search override (auto/on/off)',
   // ALERT_*
   ALERT_WORKER_CHUNK_SIZE: 'worker throughput knob',

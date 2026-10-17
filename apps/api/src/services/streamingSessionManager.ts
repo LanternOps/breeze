@@ -50,6 +50,7 @@ import { REFUSAL_DOCS_URL, listRefusalAlternatives, refusalMessageText, type Ref
 import { describeTurnModel, persistLastTurnModel, turnDisplayFrom, type TurnDisplay } from './aiModels/turnModel';
 import { sanitizeErrorForClient } from './aiAgent';
 import { captureException, captureMessage } from './sentry';
+import { storeSdkSessionPointer } from './aiSdkSessionPointer';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
@@ -1587,16 +1588,19 @@ export class StreamingSessionManager {
           case 'system': {
             if ('subtype' in message && message.subtype === 'init' && 'session_id' in message) {
               const sid = message.session_id;
+              // #8855: stored only over the id this query started from (see
+              // storeSdkSessionPointer), so a resume that raced the retention
+              // job's clear cannot make the raw transcript resumable again.
+              const startedFrom = session.sdkSessionId;
               session.sdkSessionId = sid;
               session.inputController.setSdkSessionId(sid);
 
-              withDbAccessContext(
-                { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
-                () =>
-                  db.update(aiSessions)
-                    .set({ sdkSessionId: sid })
-                    .where(eq(aiSessions.id, session.breezeSessionId))
-              ).catch((err) => { captureException(err); console.error('[StreamingSessionManager] Failed to store SDK session ID:', err); });
+              storeSdkSessionPointer({
+                breezeSessionId: session.breezeSessionId,
+                orgId: session.orgId,
+                sdkSessionId: sid,
+                startedFrom,
+              }).catch((err) => { captureException(err); console.error('[StreamingSessionManager] Failed to store SDK session ID:', err); });
             }
 
             if (session.state === 'initializing') {

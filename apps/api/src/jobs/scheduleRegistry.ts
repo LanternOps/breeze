@@ -99,6 +99,9 @@ export const JOB_SCHEDULES = {
   'partner-api-idempotency-retention': '18 4 * * *',
   'audit-chain-verify': '13 4 * * *',
   'pax8-sync': '28 4 * * *',
+  // AI device file read policy W03 (#8855): nightly scrub of AI tool outputs
+  // past each org's retention window. Daily tier, minute ≡ 3 (mod 5).
+  'ai-tool-output-retention': '33 4 * * *',
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
   // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
