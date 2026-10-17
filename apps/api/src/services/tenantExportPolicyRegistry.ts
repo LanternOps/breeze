@@ -1035,7 +1035,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
     excludedOpen: ["payload"],
   }),
   "trust_pages": tablePolicy("org_id", {
-    included: ["id", "org_id", "partner_id", "is_partner_home", "published_at", "publication_revision", "search_indexable", "show_percentages", "show_device_count", "show_managed_by", "security_contact_email", "website_url", "intro_html", "hidden_control_ids", "framework_view", "show_history", "nda_text", "access_request_creates_ticket", "publication_authorized_by", "publication_authorized_at", "publication_authorized_by_user_id", "last_evaluated_at", "created_by_user_id", "updated_by_user_id", "created_at", "updated_at"],
+    included: ["id", "org_id", "partner_id", "is_partner_home", "published_at", "publication_revision", "search_indexable", "show_percentages", "show_device_count", "show_managed_by", "security_contact_email", "website_url", "intro_html", "hidden_control_ids", "framework_view", "show_history", "nda_text", "access_request_creates_ticket", "embed_allowed_origins", "publication_authorized_by", "publication_authorized_at", "publication_authorized_by_user_id", "last_evaluated_at", "created_by_user_id", "updated_by_user_id", "created_at", "updated_at"],
     reviewedIncluded: [], excludedSensitive: [],
     // published_config: jsonb frozen publication settings -> excludedOpen by rule.
     excludedOpen: ["published_config"],

@@ -1408,3 +1408,4 @@ export * from './trustCenterDeclarations';
 export * from './trustCenterAccess';
 export * from './trustCenterContent';
 export * from './trustCenterTemplate';
+export * from './trustCenterEmbed';
