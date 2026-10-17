@@ -738,7 +738,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'topology/templateApplications.ts': { gap: '#6778' },
   // The topology template library and version publishing have no registered AI tool.
   'topology/templates.ts': { gap: '#6778' },
-  'trustPage.ts': { exempt: 'tool_in_later_wave', note: "Editor/publish routes for the public trust page. Writes are human-attested (customer authorization + MFA) and stay human-only; a READ-ONLY status tool (get_trust_page_status) is a W2 candidate under #8770." },
+  'trustPage.ts': { tools: ['get_trust_page_status'] }, // Read-only status; publish/edit stay human-attested (customer authorization + MFA).
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },
   'trustPageAttestation.ts': { exempt: 'portal', note: 'Unauthenticated signed copy of the public trust payload plus its JWKS; read by insurer/auditor tooling, not a tool surface.' },
   // ---- Trust Center W2 (#8770) route modules. W02a created the stub routers (routes/trustPage{Declarations,

@@ -303,6 +303,8 @@ export const TOOL_TIERS = {
   export_dataset: 1,
   // A-W05 (D13a): reads only the caller's own already-captured artifacts.
   read_artifact: 1,
+  // Trust Center W2 (Ruling 15): read-only page status; publish/edit stay human-attested.
+  get_trust_page_status: 1,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -4101,6 +4103,16 @@ export function buildBreezeSdkTools(
           }) }],
         };
       }
+    ),
+
+    // Trust Center W2 (Ruling 15): read-only; never creates the draft page.
+    tool(
+      'get_trust_page_status',
+      registryDescription('get_trust_page_status'),
+      {
+        orgId: uuid.describe('Organization UUID'),
+      },
+      makeHandler('get_trust_page_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound

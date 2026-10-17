@@ -102,6 +102,7 @@ import { registerPamTools } from './aiToolsPam';
 import { registerDiagnosticAccessTools } from './aiToolsDiagnosticAccess';
 import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
+import { registerTrustPageTools } from './aiToolsTrustPage';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -382,6 +383,7 @@ registerWorkspaceTools(aiTools);
 registerM365Tools(aiTools);
 registerExportTools(aiTools);
 registerArtifactTools(aiTools);
+registerTrustPageTools(aiTools);
 
 // A-W05 (D12): the compactor's truncation guidance follows the tool's real
 // paging shape. Covers extension-contributed tools too — they live in the
