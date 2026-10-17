@@ -4358,5 +4358,65 @@
         "nothing_to_resend": "No hay dispositivos fallidos o vencidos a los que reenviar."
       }
     }
+  },
+  "endpointChat": {
+    "tabLabel": "Chat en vivo",
+    "tabTitle": "Chat en vivo con la persona que usa este dispositivo",
+    "unsupported": "Este dispositivo no tiene chat. El chat requiere Breeze Assist en una sesión de consola de Windows.",
+    "footer": "El usuario lo ve como una ventana de chat. Un chat nunca otorga acceso remoto.",
+    "startHeading": "Iniciar un chat",
+    "firstMessageLabel": "Primer mensaje",
+    "startChat": "Iniciar chat",
+    "starting": "Iniciando...",
+    "recentHeading": "Chats recientes",
+    "empty": "Aún no hay chats con este dispositivo.",
+    "loadFailed": "No se pudieron cargar los chats.",
+    "loading": "Cargando...",
+    "back": "Volver a los chats",
+    "endChat": "Finalizar chat",
+    "ending": "Finalizando...",
+    "messageLabel": "Mensaje",
+    "send": "Enviar",
+    "sending": "Enviando...",
+    "openExisting": "Abrir el chat existente",
+    "user": "Usuario",
+    "technician": "Técnico",
+    "fromUser": "{{name}} (usuario)",
+    "undelivered": "No entregado",
+    "status": {
+      "opening": "Esperando a que el usuario vea la ventana de chat...",
+      "open": "Chat abierto",
+      "closed": "Este chat finalizó.",
+      "expired": "Este chat finalizó tras 30 minutos de inactividad.",
+      "failed": "No se pudo iniciar el chat."
+    },
+    "statusShort": {
+      "opening": "Abriendo",
+      "open": "Abierto",
+      "closed": "Finalizado",
+      "expired": "Vencido",
+      "failed": "Con error"
+    },
+    "errors": {
+      "chat_requires_assist": "El chat requiere Breeze Assist en una sesión de consola de Windows.",
+      "agent_unsupported": "El agente de este dispositivo aún no admite el chat.",
+      "device_offline": "El dispositivo está sin conexión. Inténtalo de nuevo cuando esté en línea.",
+      "platform_unsupported": "El chat solo está disponible en dispositivos Windows.",
+      "conversation_active": "Ya hay un chat en curso con este dispositivo.",
+      "rate_limited": "Se enviaron demasiados chats o mensajes recientemente. Inténtalo de nuevo más tarde.",
+      "open_timeout": "El dispositivo no respondió a tiempo, por lo que no se inició el chat.",
+      "chat_window_failed": "El dispositivo no pudo mostrar la ventana de chat.",
+      "conversation_not_open": "Este chat ya no está abierto.",
+      "feature_disabled": "El chat no está habilitado para esta organización.",
+      "no_permission": "No tienes permiso para chatear con este dispositivo.",
+      "device_not_found": "No se encontró este dispositivo.",
+      "generic": "Algo salió mal con el chat. Inténtalo de nuevo.",
+      "open_failed": "No se pudo iniciar el chat. Inténtalo de nuevo.",
+      "send_failed": "No se pudo enviar el mensaje. Inténtalo de nuevo.",
+      "close_failed": "No se pudo finalizar el chat. Inténtalo de nuevo."
+    },
+    "updatesPaused": "Actualizaciones en vivo en pausa — reintentando",
+    "closeNotAnnounced": "El chat está cerrado aquí. Es posible que la ventana de chat del usuario siga abierta hasta que su dispositivo se reconecte o él responda.",
+    "unavailable": "Este chat ya no está disponible"
   }
 }

@@ -885,6 +885,70 @@ fn message_close(
     Ok(())
 }
 
+/// What the endpoint live chat window in this window should render. Only the
+/// window labelled `chat-<conversation_id>` may read it (#8743).
+#[tauri::command]
+fn get_chat_view(
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::chat::ChatBridge>>,
+    conversation_id: String,
+) -> Result<crate::ipc::chat::ChatView, String> {
+    if !crate::ipc::chat::label_matches(window.label(), &conversation_id) {
+        return Err("wrong window".into());
+    }
+    bridge.view(&conversation_id).ok_or_else(|| "chat unavailable".into())
+}
+
+/// The `chat_send_reply` result: the nonce the reply travels under.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatReplyAck {
+    client_nonce: String,
+}
+
+/// The user sent a reply. Rust validates (conversation open, replies allowed,
+/// trimmed 1..=2000 chars), generates a fresh nonce, records the reply as
+/// pending and sends `chat_reply`; the status settles on `chat_reply_result`.
+/// `client_nonce` re-sends a failed reply under its ORIGINAL nonce.
+#[tauri::command]
+fn chat_send_reply(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::chat::ChatBridge>>,
+    conversation_id: String,
+    body: String,
+    client_nonce: Option<String>,
+) -> Result<ChatReplyAck, String> {
+    if !crate::ipc::chat::label_matches(window.label(), &conversation_id) {
+        return Err("wrong window".into());
+    }
+    let nonce = bridge
+        .send_reply(&conversation_id, &body, client_nonce.as_deref())
+        .inspect_err(|e| eprintln!("[helper] chat_send_reply refused: {e}"))?;
+    if let Some(view) = bridge.view(&conversation_id) {
+        crate::ipc::desktop::emit_chat_update(&app, &view);
+    }
+    Ok(ChatReplyAck { client_nonce: nonce })
+}
+
+/// The chat window was looked at (focused / became visible): clear its unread
+/// badge. Local only; nothing is sent to the agent.
+#[tauri::command]
+fn chat_mark_read(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    bridge: tauri::State<'_, std::sync::Arc<crate::ipc::chat::ChatBridge>>,
+    conversation_id: String,
+) -> Result<(), String> {
+    if !crate::ipc::chat::label_matches(window.label(), &conversation_id) {
+        return Err("wrong window".into());
+    }
+    if bridge.tracker().mark_read(&conversation_id) {
+        refresh_chat_tray(&app);
+    }
+    Ok(())
+}
+
 /// Submit the local user's choice (`<one of the 3 numbers>` | `not_me` |
 /// `timeout`). Single-use; the Rust side enforces the deadline. Closes the
 /// window on success.
@@ -1453,11 +1517,71 @@ fn tray_menu_label(id: &str) -> &'static str {
     }
 }
 
+/// The tray's endpoint-chat entry (#8743): present while a conversation is
+/// open or unread; "(N)" is the unread count. This and the tooltip are the
+/// badge -- an incoming technician message after the first never raises a window.
+fn chat_menu_label(summary: &crate::ipc::chat::TraySummary) -> Option<String> {
+    summary.target.as_ref()?;
+    Some(if summary.total_unread > 0 {
+        format!("Open chat ({})", summary.total_unread)
+    } else {
+        "Open chat".to_string()
+    })
+}
+
+fn chat_tooltip(summary: &crate::ipc::chat::TraySummary) -> String {
+    let base = format!("Breeze Helper v{}", env!("CARGO_PKG_VERSION"));
+    match summary.total_unread {
+        0 => base,
+        1 => format!("{base} - 1 unread chat message"),
+        n => format!("{base} - {n} unread chat messages"),
+    }
+}
+
+fn chat_summary(app: &AppHandle) -> crate::ipc::chat::TraySummary {
+    app.try_state::<std::sync::Arc<crate::ipc::chat::ChatBridge>>()
+        .map(|b| b.tracker().summary())
+        .unwrap_or_default()
+}
+
+/// Re-render the tray tooltip and menu from the chat state. Called whenever
+/// unread changes; never shows a window.
+pub(crate) fn refresh_chat_tray(app: &AppHandle) {
+    let summary = chat_summary(app);
+    let Some(tray) = app.tray_by_id("main") else { return };
+    let _ = tray.set_tooltip(Some(&chat_tooltip(&summary)));
+    match build_tray_menu(app, &load_helper_config()) {
+        Ok(menu) => {
+            if let Err(e) = tray.set_menu(Some(menu)) {
+                eprintln!("[helper] Failed to update tray menu: {}", e);
+            }
+        }
+        Err(e) => eprintln!("[helper] Failed to rebuild tray menu: {}", e),
+    }
+}
+
+/// Tray "Open chat": the user's own action, so it may raise the window.
+fn open_chat_from_tray(app: &AppHandle) {
+    let Some(bridge) = app.try_state::<std::sync::Arc<crate::ipc::chat::ChatBridge>>() else {
+        return;
+    };
+    let target = bridge.tracker().summary().target;
+    if let Some(id) = target {
+        if let Err(e) = crate::ipc::desktop::show_chat_window(app, &id, true) {
+            eprintln!("[helper] chat window could not be opened: {}", e);
+        }
+    }
+}
+
 fn build_tray_menu(
     app: &AppHandle,
     config: &HelperConfig,
 ) -> Result<tauri::menu::Menu<tauri::Wry>, tauri::Error> {
     let mut builder = MenuBuilder::new(app);
+    if let Some(label) = chat_menu_label(&chat_summary(app)) {
+        let item = MenuItemBuilder::with_id("open_chat", label).build(app)?;
+        builder = builder.item(&item);
+    }
     for id in tray_menu_item_ids(config) {
         let item = MenuItemBuilder::with_id(id, tray_menu_label(id)).build(app)?;
         builder = builder.item(&item);
@@ -1521,6 +1645,9 @@ pub fn run() {
             get_message_view,
             message_ack,
             message_close,
+            get_chat_view,
+            chat_send_reply,
+            chat_mark_read,
             workspace_open::open_workspace_path,
         ])
         .setup(move |app| {
@@ -1659,6 +1786,8 @@ pub fn run() {
                 "open_assist" | "request_support" => {
                     show_window(&menu_handle);
                 }
+                // Endpoint live chat (#8743): the user asked for the chat window.
+                "open_chat" => open_chat_from_tray(&menu_handle),
                 // macOS app menu Cmd+Q (#8399): hide, never quit.
                 #[cfg(target_os = "macos")]
                 app_shell::HIDE_WINDOW_MENU_ID => {
@@ -1747,11 +1876,16 @@ pub fn run() {
             let messages =
                 std::sync::Arc::new(crate::ipc::message::MessageBridge::default());
             app.manage(messages.clone());
+            // Endpoint live chat (#8743): conversations in process memory; each
+            // lives in its own `chat-<id>` window, never the main one.
+            let chat = std::sync::Arc::new(crate::ipc::chat::ChatBridge::default());
+            app.manage(chat.clone());
             let desktop_ctx = crate::ipc::client::DesktopCtx {
                 app: app.handle().clone(),
                 bridge,
                 caller_verify,
                 messages,
+                chat,
             };
             let _ = IPC_DRIVER_CTX.set(IpcDriverCtx {
                 stop: stop_rx,
@@ -2062,6 +2196,12 @@ mod tests {
             ("get_message_view", "crate::ipc::message::label_matches(window.label()"),
             ("message_ack", "crate::ipc::message::label_matches(window.label()"),
             ("message_close", "crate::ipc::message::label_matches(window.label()"),
+            //  - get_chat_view / chat_send_reply / chat_mark_read: the endpoint
+            //    live chat window (src/components/EndpointChat.tsx), valid only
+            //    for `chat-<conversationId>`; a card or any other window never matches.
+            ("get_chat_view", "crate::ipc::chat::label_matches(window.label()"),
+            ("chat_send_reply", "crate::ipc::chat::label_matches(window.label()"),
+            ("chat_mark_read", "crate::ipc::chat::label_matches(window.label()"),
             (
                 "get_caller_verify_request",
                 "crate::ipc::caller_verify::label_matches(window.label()",
@@ -2146,6 +2286,101 @@ mod tests {
             );
         }
         assert_eq!(cap["windows"], serde_json::json!(["message-*"]));
+    }
+
+    // #8743: the shared guard must itself refuse chat-* callers, so every
+    // command that calls it (all but the label-checked allowlist above, which
+    // `privileged_commands_refuse_message_card_windows` enforces) is closed to
+    // chat windows too -- including commands added later.
+    #[test]
+    fn shared_privileged_guard_also_refuses_chat_windows() {
+        let msg = include_str!("ipc/message.rs").split("\nmod tests {").next().unwrap();
+        let start = msg.find("pub fn deny_message_window").expect("guard");
+        let end = msg[start..].find("\n}\n").map(|i| i + start).unwrap();
+        assert!(msg[start..end].contains("deny_chat_window"));
+        assert!(crate::ipc::message::deny_message_window("chat-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").is_err());
+        assert!(crate::ipc::message::deny_message_window("message-x").is_err());
+        assert!(crate::ipc::message::deny_message_window("main").is_ok());
+    }
+
+    // #8743: each chat command checks the caller's label before it touches
+    // any state, and only for its own conversation's window.
+    #[test]
+    fn chat_commands_check_the_label_before_touching_state() {
+        let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
+        for cmd in ["fn get_chat_view(", "fn chat_send_reply(", "fn chat_mark_read("] {
+            let start = lib.find(cmd).expect(cmd);
+            let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+            let body = &lib[start..end];
+            let check = body.find("crate::ipc::chat::label_matches(window.label(), &conversation_id)").expect(cmd);
+            let first_use = body.find("bridge.").expect(cmd);
+            assert!(check < first_use, "{cmd} uses the bridge before checking the label");
+            assert!(!body.contains("show_window"), "{cmd} shows a window");
+            assert!(!body.contains("\"main\""), "{cmd} touches main");
+        }
+    }
+
+    // #8743: the chat window gets the least it truly needs: listening for
+    // its own `chat-updated` event. No window, webview, tray, menu, shell or
+    // emit permission, and not core:default (which would add all of those).
+    #[test]
+    fn endpoint_chat_capability_is_minimal() {
+        let cap: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/endpoint-chat.json")).unwrap();
+        assert_eq!(cap["identifier"], "endpoint-chat");
+        assert_eq!(cap["windows"], serde_json::json!(["chat-*"]));
+        let perms: Vec<&str> = cap["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().unwrap())
+            .collect();
+        assert_eq!(perms, vec!["core:event:allow-listen", "core:event:allow-unlisten"]);
+        // And the default (main/consent/banner) capability never covers chat windows.
+        let default: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        for w in default["windows"].as_array().unwrap() {
+            assert!(!w.as_str().unwrap().starts_with("chat"), "default capability covers {w}");
+        }
+        assert!(cap["description"].as_str().unwrap().len() > 40, "justify the permissions");
+        // The regenerated schema agrees with the source capability.
+        let gen: serde_json::Value =
+            serde_json::from_str(include_str!("../gen/schemas/capabilities.json")).unwrap();
+        assert_eq!(gen["endpoint-chat"]["windows"], cap["windows"]);
+        assert_eq!(gen["endpoint-chat"]["permissions"], cap["permissions"]);
+    }
+
+    #[test]
+    fn tray_chat_entry_shows_only_with_a_conversation_and_carries_the_unread_count() {
+        use crate::ipc::chat::TraySummary;
+        assert_eq!(chat_menu_label(&TraySummary::default()), None);
+        let one = TraySummary { total_unread: 0, target: Some("a".into()), has_open: true };
+        assert_eq!(chat_menu_label(&one).as_deref(), Some("Open chat"));
+        let three = TraySummary { total_unread: 3, target: Some("a".into()), has_open: true };
+        assert_eq!(chat_menu_label(&three).as_deref(), Some("Open chat (3)"));
+        assert!(chat_tooltip(&three).contains("3 unread chat messages"));
+        assert!(chat_tooltip(&TraySummary { total_unread: 1, ..TraySummary::default() }).contains("1 unread chat message"));
+        assert!(!chat_tooltip(&TraySummary::default()).contains("unread"));
+        // The static menu ids are untouched: the chat entry is added dynamically.
+        assert!(!tray_menu_item_ids(&HelperConfig::default()).contains(&"open_chat"));
+    }
+
+    // #8743: a chat never raises the main Assist window, and the only chat
+    // window builder call in lib.rs is the user-initiated tray item.
+    #[test]
+    fn chat_paths_in_lib_never_touch_main_or_auto_show() {
+        let lib = include_str!("lib.rs").split("\nmod tests {").next().unwrap();
+        let start = lib.find("fn open_chat_from_tray").expect("open_chat_from_tray");
+        let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+        let body = &lib[start..end];
+        assert!(!body.contains("show_window("));
+        assert!(!body.contains("\"main\""));
+        let start = lib.find("pub(crate) fn refresh_chat_tray").expect("refresh_chat_tray");
+        let end = lib[start..].find("\n}\n").map(|i| i + start).unwrap();
+        let body = &lib[start..end];
+        assert!(!body.contains("show_window(") && !body.contains("set_focus") && !body.contains("show_chat_window"));
+        // Only the user's own menu click opens a chat window.
+        assert_eq!(lib.matches("\"open_chat\" =>").count(), 1);
     }
 
     // #8138: a plain agent-driven start (`--config`, nothing pending) builds

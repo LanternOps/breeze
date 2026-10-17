@@ -183,3 +183,19 @@ it('/trust/<p>/<o> is public-cacheable only for a loaded 200; 404s, degraded she
     expect(fetchMock).not.toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
 });
+
+it('W2: /trust/access/* token pages are never cached, never indexed and send no referrer, even on a loaded 200', async () => {
+  const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+  try {
+    for (const path of ['/trust/access/verify', '/trust/access/download']) {
+      const context = contextFor(path, { signedIn: false });
+      (context.locals as { trustCacheable?: boolean }).trustCacheable = true;
+      const out = await onRequest(context as never, () => Promise.resolve(new Response('<html>ok</html>', { headers: { 'Content-Type': 'text/html' } })));
+      if (!(out instanceof Response)) throw new Error('no Response');
+      expect(out.headers.get('Cache-Control'), path).toBe('no-store');
+      expect(out.headers.get('X-Robots-Tag'), path).toBe('noindex, nofollow, noarchive');
+      expect(out.headers.get('Referrer-Policy'), path).toBe('no-referrer');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});

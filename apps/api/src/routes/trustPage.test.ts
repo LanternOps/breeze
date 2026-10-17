@@ -31,6 +31,20 @@ vi.mock('../services/auditService', () => ({ createAuditLogAsync: auditMock }));
 const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], values: [] as unknown[], tx: 0 }));
 const servingMock = vi.hoisted(() => ({ scheduleServingRefreshForPartner: vi.fn() }));
 vi.mock('../services/trustPage/servingSet', () => servingMock);
+// withTrustPageRevision is unit-tested in revision.test.ts; here a faithful stand-in: the "locked" revision is
+// rev.locked, a stale expectedRevision is the real 409, and the bumped revision is rev.next.
+const rev = vi.hoisted(() => ({ locked: 0, next: 1 }));
+vi.mock('../services/trustPage/revision', async () => {
+  const { TrustPageError } = await import('../services/trustPage/publication');
+  const { db } = await import('../db');
+  return {
+    withTrustPageRevision: async (args: { expectedRevision: number | undefined }, fn: (tx: unknown) => Promise<unknown>) => {
+      dbm.tx++;
+      if (args.expectedRevision !== undefined && args.expectedRevision !== rev.locked) throw new TrustPageError('stale', 409, 'REVISION_MISMATCH');
+      return { result: await fn(db), publicationRevision: rev.next };
+    },
+  };
+});
 vi.mock('../db', () => {
   const chain = () => { const c: any = {}; for (const m of ['select', 'from', 'where', 'innerJoin', 'leftJoin', 'limit', 'orderBy', 'update', 'set', 'insert', 'values', 'returning', 'delete', 'onConflictDoNothing']) c[m] = vi.fn(() => c); c.values = vi.fn((v: unknown) => { dbm.values.push(v); return c; }); c.then = (r: any) => Promise.resolve(dbm.rows.shift() ?? []).then(r); return c; };
   return { db: Object.assign(chain(), { transaction: async (fn: any) => { dbm.tx++; return fn(chain()); } }), runOutsideDbContext: (fn: any) => fn(), withSystemDbAccessContext: (fn: any) => fn() };
@@ -43,11 +57,72 @@ import { trustPageRoutes } from './trustPage';
 const ORG = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
 const PAGE = { id: 'pg1', orgId: ORG, partnerId: 'p1', isPartnerHome: false, publishedAt: null, publicationRevision: 0, hiddenControlIds: [], showPercentages: false, showDeviceCount: false, showManagedBy: true, searchIndexable: false, introHtml: null, securityContactEmail: null, websiteUrl: null, publicationAuthorizedBy: null };
+/** A page created after W02a: every inheritable setting NULL. */
+const FRESH_PAGE = { ...PAGE, hiddenControlIds: null, showPercentages: null, showDeviceCount: null, showManagedBy: null, searchIndexable: null, showHistory: null, frameworkView: null, ndaText: null, accessRequestCreatesTicket: false };
 const app = new Hono(); app.use('*', authMiddleware); app.route('/orgs', trustPageRoutes);
 const H = (extra: Record<string, string> = {}) => ({ authorization: 'Bearer t', 'x-allow': 'organizations:read,organizations:write', 'content-type': 'application/json', ...extra });
 
 describe('trust page routes', () => {
-  beforeEach(() => { intro.override = null; trustMode.value = 'off'; dbm.rows = []; dbm.values = []; dbm.tx = 0; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
+  beforeEach(() => { intro.override = null; trustMode.value = 'off'; dbm.rows = []; dbm.values = []; dbm.tx = 0; rev.locked = 0; rev.next = 1; vi.clearAllMocks(); svc.ensureTrustPage.mockResolvedValue(PAGE); });
+
+  describe('W2 effective settings, explicit-empty intro, revision discipline', () => {
+    const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', partnerId: 'p1', trustState: 'trusted', partnerCountry: 'AU', deletedAt: null };
+    it('GET reports effective values with their source, the template revision and the framework options', async () => {
+      svc.ensureTrustPage.mockResolvedValueOnce(FRESH_PAGE);
+      dbm.rows.push([ctxRow], []);
+      const res = await app.request(`/orgs/${ORG}/trust-page`, { headers: H() });
+      const body = (await res.json()).data;
+      expect(body.effective.sources.showPercentages).toBe('default');
+      expect(body.effective.values).toMatchObject({ showPercentages: false, showManagedBy: true, hiddenControlIds: [], frameworkView: ['nist_csf_2'] });
+      expect(body.template).toBeNull();
+      expect(body.frameworkOptions.map((o: { framework: string }) => o.framework)).toEqual(['cis_v8', 'essential_eight', 'cyber_essentials', 'nist_csf_2']);
+    });
+    it("PUT { introHtml: '<p> </p>' } stores '' and GET then reports no intro, sourced from the page", async () => {
+      svc.ensureTrustPage.mockResolvedValueOnce(FRESH_PAGE);
+      dbm.rows.push([ctxRow], [{ ...FRESH_PAGE, introHtml: '' }]);
+      const res = await app.request(`/orgs/${ORG}/trust-page`, { method: 'PUT', headers: H(), body: JSON.stringify({ introHtml: '<p> </p>' }) });
+      expect(res.status).toBe(200);
+      const setCalls = vi.mocked((db as unknown as { set: (v: unknown) => unknown }).set).mock.calls.map((c) => c[0] as Record<string, unknown>);
+      expect(setCalls.find((v) => 'introHtml' in v)?.introHtml).toBe('');
+      expect((await res.json()).data.page.publicationRevision).toBe(1);
+      svc.ensureTrustPage.mockResolvedValueOnce({ ...FRESH_PAGE, introHtml: '' });
+      dbm.rows.push([ctxRow], []);
+      const get = (await (await app.request(`/orgs/${ORG}/trust-page`, { headers: H() })).json()).data;
+      expect(get.effective.values.introHtml).toBeNull();
+      expect(get.effective.sources.introHtml).toBe('page');
+    });
+    it('PUT { introHtml: null } stores NULL (inherit)', async () => {
+      dbm.rows.push([ctxRow], [{ ...PAGE }]);
+      await app.request(`/orgs/${ORG}/trust-page`, { method: 'PUT', headers: H(), body: JSON.stringify({ introHtml: null }) });
+      const setCalls = vi.mocked((db as unknown as { set: (v: unknown) => unknown }).set).mock.calls.map((c) => c[0] as Record<string, unknown>);
+      expect(setCalls.find((v) => 'introHtml' in v)?.introHtml).toBeNull();
+    });
+    it('PUT with a stale expectedRevision is 409 REVISION_MISMATCH and writes nothing', async () => {
+      rev.locked = 4;
+      dbm.rows.push([ctxRow]);
+      const res = await app.request(`/orgs/${ORG}/trust-page`, { method: 'PUT', headers: H(), body: JSON.stringify({ showPercentages: true, expectedRevision: 3 }) });
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('REVISION_MISMATCH');
+      expect(vi.mocked((db as unknown as { set: (v: unknown) => unknown }).set)).not.toHaveBeenCalled();
+      expect(auditMock).not.toHaveBeenCalled();
+    });
+    it('PUT writes the W2 fields (null = inherit) and leaves expectedRevision out of the audit field list', async () => {
+      dbm.rows.push([ctxRow], [{ ...PAGE }]);
+      const res = await app.request(`/orgs/${ORG}/trust-page`, { method: 'PUT', headers: H(), body: JSON.stringify({ showPercentages: null, frameworkView: ['essential_eight'], showHistory: true, ndaText: 'NDA', accessRequestCreatesTicket: true, expectedRevision: 0 }) });
+      expect(res.status).toBe(200);
+      const set = vi.mocked((db as unknown as { set: (v: unknown) => unknown }).set).mock.calls[0]![0] as Record<string, unknown>;
+      expect(set).toEqual({ showPercentages: null, frameworkView: ['essential_eight'], showHistory: true, ndaText: 'NDA', accessRequestCreatesTicket: true });
+      const fields = (auditMock.mock.calls[0] as unknown as [{ details: { fields: string[] } }])[0].details.fields;
+      expect([...fields].sort()).toEqual(['accessRequestCreatesTicket', 'frameworkView', 'ndaText', 'showHistory', 'showPercentages']);
+    });
+    it('publish passes expectedTemplateRevision through to the service', async () => {
+      svc.publishTrustPage.mockResolvedValueOnce({ page: { ...PAGE, publishedAt: new Date(), publicationRevision: 1 }, snapshotId: 's1' });
+      dbm.rows.push([ctxRow]);
+      const res = await app.request(`/orgs/${ORG}/trust-page/publish`, { method: 'POST', headers: H({ 'x-mfa': '1' }), body: JSON.stringify({ expectedRevision: 0, expectedTemplateRevision: 3 }) });
+      expect(res.status).toBe(200);
+      expect(svc.publishTrustPage).toHaveBeenCalledWith(expect.objectContaining({ expectedTemplateRevision: 3 }));
+    });
+  });
 
   it.each([
     ['shadow', 'probation', { allowed: false, reason: 'probation_default_deny' }],
@@ -208,7 +283,8 @@ describe('trust page routes', () => {
       expect(dbm.tx).toBe(0);
     });
     it('replaces links with confirmation stamps, audits added/removed/confirmed, returns the new revision', async () => {
-      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [{ documentId: D1, disclosureConfirmedAt: null, disclosureConfirmedByUserId: null }, { documentId: 'old-doc', disclosureConfirmedAt: null, disclosureConfirmedByUserId: null }], [], [], [], [{ publicationRevision: 5 }]];
+      rev.next = 5;
+      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [{ documentId: D1, visibility: 'public', disclosureConfirmedAt: null, disclosureConfirmedByUserId: null }, { documentId: 'old-doc', visibility: 'public', disclosureConfirmedAt: null, disclosureConfirmedByUserId: null }], [], []];
       const res = await put([{ documentId: D1, visibility: 'public', disclosureConfirmed: true }, { documentId: D2, visibility: 'public', disclosureConfirmed: true }]);
       expect(res.status).toBe(200);
       expect((await res.json()).data.publicationRevision).toBe(5);
@@ -226,7 +302,8 @@ describe('trust page routes', () => {
     });
     it('I7: a reorder keeps the ORIGINAL confirmation stamp of an already-linked confirmed document', async () => {
       const T0 = new Date('2026-10-01T09:00:00.000Z');
-      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [{ documentId: D1, disclosureConfirmedAt: T0, disclosureConfirmedByUserId: 'u0' }], [], [], [], [{ publicationRevision: 6 }]];
+      rev.next = 6;
+      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [{ documentId: D1, visibility: 'public', disclosureConfirmedAt: T0, disclosureConfirmedByUserId: 'u0' }], [], []];
       const res = await put([{ documentId: D2, visibility: 'public', disclosureConfirmed: true }, { documentId: D1, visibility: 'public', disclosureConfirmed: true }]);
       expect(res.status).toBe(200);
       const rows = dbm.values[0] as Array<Record<string, unknown>>;
@@ -236,6 +313,33 @@ describe('trust page routes', () => {
       expect(d2.disclosureConfirmedAt).toBeInstanceOf(Date);
       expect((d2.disclosureConfirmedAt as Date).getTime()).not.toBe(T0.getTime());
       expect(d2.disclosureConfirmedByUserId).toBe('u1');
+    });
+    it('amendment 35: a visibility change re-stamps the disclosure confirmation (gated→public and public→gated)', async () => {
+      const T0 = new Date('2026-10-01T09:00:00.000Z');
+      dbm.rows = [[ctxRow], [{ id: D1 }, { id: D2 }], [
+        { documentId: D1, visibility: 'gated', disclosureConfirmedAt: T0, disclosureConfirmedByUserId: 'u0' },
+        { documentId: D2, visibility: 'public', disclosureConfirmedAt: T0, disclosureConfirmedByUserId: 'u0' },
+      ], [], []];
+      const res = await put([{ documentId: D1, visibility: 'public', disclosureConfirmed: true }, { documentId: D2, visibility: 'gated', disclosureConfirmed: true }]);
+      expect(res.status).toBe(200);
+      const rows = dbm.values[0] as Array<Record<string, unknown>>;
+      for (const r of rows) {
+        expect((r.disclosureConfirmedAt as Date).getTime()).not.toBe(T0.getTime());
+        expect(r.disclosureConfirmedByUserId).toBe('u1');
+      }
+      expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ details: expect.objectContaining({ visibilityChanged: [D1, D2], gated: 1 }) }));
+    });
+    it('a gated document without confirmation is refused at the schema (400)', async () => {
+      const res = await put([{ documentId: D1, visibility: 'gated', disclosureConfirmed: false }]);
+      expect(res.status).toBe(400);
+      expect(dbm.tx).toBe(0);
+    });
+    it('a stale expectedRevision is 409 and writes no link', async () => {
+      rev.locked = 2;
+      dbm.rows = [[ctxRow], [{ id: D1 }], []];
+      const res = await app.request(`/orgs/${ORG}/trust-page/documents`, { method: 'PUT', headers: H(), body: JSON.stringify({ documents: [{ documentId: D1, visibility: 'public', disclosureConfirmed: true }], expectedRevision: 1 }) });
+      expect(res.status).toBe(409);
+      expect(dbm.values).toEqual([]);
     });
   });
 

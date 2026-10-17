@@ -14,6 +14,8 @@
  * command that would only fail as an unknown type.
  */
 import {
+  ENDPOINT_CHAT_MIN_AGENT_VERSION,
+  agentSupportsEndpointChat,
   ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION,
   ENDPOINT_MESSAGING_MIN_AGENT_VERSION,
   agentSupportsEndpointMessageRetract,
@@ -23,6 +25,8 @@ import {
 export const COMMAND_MIN_AGENT_VERSION: Readonly<Record<string, string>> = Object.freeze({
   notify_user_messaging: ENDPOINT_MESSAGING_MIN_AGENT_VERSION,
   retract_message: ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION,
+  // Endpoint live chat (#8743 W03): chat_open / chat_message / chat_close.
+  chat: ENDPOINT_CHAT_MIN_AGENT_VERSION,
 });
 
 /** Fails closed: null, unparseable and older versions are all false. */
@@ -33,4 +37,9 @@ export function agentSupportsMessaging(agentVersion: string | null | undefined):
 /** Fails closed, like agentSupportsMessaging. */
 export function agentSupportsRetract(agentVersion: string | null | undefined): boolean {
   return agentSupportsEndpointMessageRetract(agentVersion);
+}
+
+/** Fails closed, like agentSupportsMessaging. Gates every chat command (#8743). */
+export function agentSupportsChat(agentVersion: string | null | undefined): boolean {
+  return agentSupportsEndpointChat(agentVersion);
 }

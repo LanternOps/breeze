@@ -130,7 +130,7 @@ describe('HelperTab', () => {
     fireEvent.click(screen.getByText('Save'));
     await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
     const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
-    expect(call[1].inlineSettings.endpointMessaging).toEqual({ enabled: true });
+    expect(call[1].inlineSettings.endpointMessaging).toEqual({ enabled: true, allowUserReply: true });
   });
 
   it('saves endpointMessaging.enabled false by default and reads a stored true', async () => {
@@ -139,7 +139,7 @@ describe('HelperTab', () => {
     fireEvent.click(screen.getByText('Save'));
     await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
     const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
-    expect(call[1].inlineSettings.endpointMessaging).toEqual({ enabled: false });
+    expect(call[1].inlineSettings.endpointMessaging).toEqual({ enabled: false, allowUserReply: true });
     unmount();
 
     render(
@@ -149,6 +149,40 @@ describe('HelperTab', () => {
       />,
     );
     expect(screen.getByTestId('helper-endpoint-messaging').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('has an "Allow replies from the user" switch that defaults on and saves with enabled (#8743)', async () => {
+    saveMock.mockClear();
+    render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+    const toggle = screen.getByTestId('helper-allow-user-reply');
+    expect(screen.getByText('Allow replies from the user')).toBeTruthy();
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(screen.getByTestId('helper-endpoint-messaging'));
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
+    expect(call[1].inlineSettings.endpointMessaging).toEqual({ enabled: true, allowUserReply: false });
+  });
+
+  it('reads a stored allowUserReply:false and treats an absent value as on (#8743)', () => {
+    const { unmount } = render(
+      <HelperTab
+        {...baseProps}
+        existingLink={{ ...helperLink(true), inlineSettings: { enabled: true, endpointMessaging: { enabled: true, allowUserReply: false } } }}
+      />,
+    );
+    expect(screen.getByTestId('helper-allow-user-reply').getAttribute('aria-checked')).toBe('false');
+    unmount();
+    render(
+      <HelperTab
+        {...baseProps}
+        existingLink={{ ...helperLink(true), inlineSettings: { enabled: true, endpointMessaging: { enabled: true } } }}
+      />,
+    );
+    expect(screen.getByTestId('helper-allow-user-reply').getAttribute('aria-checked')).toBe('true');
   });
 
   // #5080: `featurePolicyId` means a standalone entity id — Breeze Assist is

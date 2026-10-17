@@ -326,6 +326,9 @@
       "grant_reconciliation_unavailable": "Vérification d'autorisation indisponible",
       "grant_revoked_reuse": "Autorisation révoquée (réutilisation de jeton)",
       "grant_revoked": "Autorisation révoquée",
+      "delivery_failed": "Échec des livraisons",
+      "sync_stale": "Synchronisation bloquée",
+      "verification_failed": "Échec de la vérification",
       "unknown": "Nécessite une intervention"
     }
   },

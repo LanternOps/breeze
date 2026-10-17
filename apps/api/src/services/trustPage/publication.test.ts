@@ -1,15 +1,20 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 vi.mock('../postureEvidence', () => ({ loadPostureEvidence: vi.fn(), TRUST_PAGE_EVIDENCE_POLICY: { sites: [], windowDays: 30, minPasswordLength: 8, maxLocalAdmins: 2, maxAvDefinitionsAgeDays: 7, maxSecurityStatusAgeDays: 30, includeCis: true, monitoringWindowHours: 24 } }));
+vi.mock('./trustOnlyEvidence', () => ({ loadTrustOnlyEvidence: vi.fn(async () => ({})) }));
 vi.mock('./servingSet', () => ({ addServing: vi.fn(), removeServing: vi.fn(), cacheSnapshotPayload: vi.fn(), trustServingMember: (p: string, o?: string) => (o ? `${p}/${o}` : p) }));
 vi.mock('../portal/edrVisibility', () => ({ isEdrVisibilityEnabled: vi.fn(async () => false) }));
+// W02b: the declarations section reads its own table; this suite scripts the builder's selects in order (sections/declarations.test.ts covers it).
+vi.mock('./sections/declarations', () => ({ freezeDeclarationIds: vi.fn(async () => []), buildDeclaredControls: vi.fn(async () => []) }));
+vi.mock('./template', () => ({ loadPartnerTemplate: vi.fn(async () => null) }));
 const trustMode = vi.hoisted(() => ({ value: 'enforce' as 'off' | 'shadow' | 'enforce' }));
 vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode: () => trustMode.value }));
 const dbm = vi.hoisted(() => ({ select: vi.fn(), transaction: vi.fn(), insert: vi.fn(), update: vi.fn() }));
 vi.mock('../../db', () => ({ db: dbm, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() }));
-import { emptyControlEvidence } from '@breeze/shared';
+import { emptyControlEvidence, TELEMETRY_CONTROL_IDS } from '@breeze/shared';
 import type { TrustPageRow } from '../../db/schema/trustPages';
 import { loadPostureEvidence } from '../postureEvidence';
 import { addServing, cacheSnapshotPayload, removeServing } from './servingSet';
+import { loadPartnerTemplate } from './template';
 import { publishTrustPage, trustPublishDecision, unpublishTrustPage, validatePublishSlugs, TrustPageError } from './publication';
 
 /** Thenable query-builder stand-in: every builder method returns itself; awaiting it yields `result`. */
@@ -30,6 +35,7 @@ function pageRow(overrides: Partial<TrustPageRow> = {}): TrustPageRow {
     id: 'pg', orgId: 'o', partnerId: 'p', isPartnerHome: false, publishedAt: null, publicationRevision: 0,
     searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true,
     securityContactEmail: null, websiteUrl: null, introHtml: null, hiddenControlIds: [],
+    frameworkView: null, showHistory: null, ndaText: null, accessRequestCreatesTicket: false,
     publicationAuthorizedBy: null, publicationAuthorizedAt: null, publicationAuthorizedByUserId: null,
     lastEvaluatedAt: null, publishedConfig: null, createdByUserId: null, updatedByUserId: null, createdAt: now, updatedAt: now,
     ...overrides,
@@ -156,7 +162,38 @@ describe('publishTrustPage guards', () => {
     expect(pageSet.publishedConfig).toEqual({
       hiddenControlIds: ['dns_filtering'], showPercentages: true, showDeviceCount: false, showManagedBy: true,
       searchIndexable: false, introHtml: '<p>Hi</p>', websiteUrl: null, securityContactEmail: null, documentIds: [],
+      // W2 (amendment 28): every field frozen explicitly, inherited values resolved.
+      documents: [], catalogControlIds: [...TELEMETRY_CONTROL_IDS], declarationIds: [], frameworkView: ['nist_csf_2'],
+      showHistory: false, subprocessors: [], faq: [], ndaText: null, locale: 'en',
     });
+  });
+
+  it('inherited (NULL) settings freeze as their resolved defaults, and the partner language is the frozen locale', async () => {
+    const page = pageRow({ publicationAuthorizedBy: 'Jane Doe, COO', showPercentages: null, showManagedBy: null, hiddenControlIds: null, ndaText: 'Keep it confidential.' });
+    dbm.select.mockReturnValueOnce(chain([page]));
+    dbm.select
+      .mockReturnValueOnce(chain([{ orgName: 'Acme', partnerName: 'Northwind', partnerSettings: { language: 'fr-CA' }, billingWebsite: null, trustPageUnbranded: false }]))
+      .mockReturnValueOnce(chain([]))
+      .mockReturnValueOnce(chain([]));
+    const sets: unknown[] = [];
+    dbm.transaction.mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      select: () => chain([{ rev: 0 }]),
+      update: () => ({ set: (v: unknown) => { sets.push(v); return chain([{ ...page, publicationRevision: 1 }]); } }),
+      insert: () => chain(undefined),
+    }));
+    await publishTrustPage({ orgId: 'o', expectedRevision: 0, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' });
+    const cfg = (sets.find((v) => (v as Record<string, unknown>).publishedConfig) as Record<string, Record<string, unknown>>).publishedConfig!;
+    expect(cfg).toMatchObject({ showPercentages: false, showManagedBy: true, hiddenControlIds: [], ndaText: 'Keep it confidential.', locale: 'fr-CA' });
+  });
+
+  it('publish with an expectedTemplateRevision that no longer matches is 409 TEMPLATE_CHANGED before building', async () => {
+    vi.mocked(loadPostureEvidence).mockClear();
+    vi.mocked(loadPartnerTemplate).mockResolvedValueOnce(null);
+    dbm.select.mockReturnValueOnce(chain([pageRow({ publicationAuthorizedBy: 'Jane Doe, COO' })]));
+    await expect(publishTrustPage({ orgId: 'o', expectedRevision: 0, expectedTemplateRevision: 3, actorUserId: 'u', partnerTrustState: 'trusted', partnerSlug: 'nw', orgSlug: 'acme' }))
+      .rejects.toMatchObject({ status: 409, code: 'TEMPLATE_CHANGED' });
+    expect(loadPostureEvidence).not.toHaveBeenCalled();
+    expect(dbm.transaction).not.toHaveBeenCalled();
   });
 
   it('the partner home page is exempt from the attestation and serves both members, after the transaction settles', async () => {

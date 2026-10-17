@@ -4358,5 +4358,65 @@
         "nothing_to_resend": "Yeniden gönderilecek başarısız veya süresi dolmuş cihaz yok."
       }
     }
+  },
+  "endpointChat": {
+    "tabLabel": "Sohbet",
+    "tabTitle": "Bu cihazdaki kişiyle canlı sohbet",
+    "unsupported": "Bu cihazda sohbet yok. Sohbet, bir Windows konsol oturumunda Breeze Assist gerektirir.",
+    "footer": "Kullanıcı bunu bir sohbet penceresi olarak görür. Sohbet hiçbir zaman uzaktan erişim vermez.",
+    "startHeading": "Sohbet başlat",
+    "firstMessageLabel": "İlk mesaj",
+    "startChat": "Sohbeti başlat",
+    "starting": "Başlatılıyor...",
+    "recentHeading": "Son sohbetler",
+    "empty": "Bu cihazla henüz sohbet yok.",
+    "loadFailed": "Sohbetler yüklenemedi.",
+    "loading": "Yükleniyor...",
+    "back": "Sohbetlere dön",
+    "endChat": "Sohbeti bitir",
+    "ending": "Bitiriliyor...",
+    "messageLabel": "Mesaj",
+    "send": "Gönder",
+    "sending": "Gönderiliyor...",
+    "openExisting": "Mevcut sohbeti aç",
+    "user": "Kullanıcı",
+    "technician": "Teknisyen",
+    "fromUser": "{{name}} (kullanıcı)",
+    "undelivered": "Teslim edilmedi",
+    "status": {
+      "opening": "Kullanıcının sohbet penceresini görmesi bekleniyor...",
+      "open": "Sohbet açık",
+      "closed": "Bu sohbet sona erdi.",
+      "expired": "Bu sohbet 30 dakikalık hareketsizlikten sonra sona erdi.",
+      "failed": "Sohbet başlatılamadı."
+    },
+    "statusShort": {
+      "opening": "Açılıyor",
+      "open": "Açık",
+      "closed": "Bitti",
+      "expired": "Süresi doldu",
+      "failed": "Başarısız"
+    },
+    "errors": {
+      "chat_requires_assist": "Sohbet, bir Windows konsol oturumunda Breeze Assist gerektirir.",
+      "agent_unsupported": "Bu cihazdaki aracı henüz sohbeti desteklemiyor.",
+      "device_offline": "Cihaz çevrimdışı. Çevrimiçi olduğunda tekrar deneyin.",
+      "platform_unsupported": "Sohbet yalnızca Windows cihazlarda kullanılabilir.",
+      "conversation_active": "Bu cihazla zaten devam eden bir sohbet var.",
+      "rate_limited": "Yakın zamanda çok fazla sohbet veya mesaj gönderildi. Daha sonra tekrar deneyin.",
+      "open_timeout": "Cihaz zamanında yanıt vermedi, bu yüzden sohbet başlatılmadı.",
+      "chat_window_failed": "Cihaz sohbet penceresini gösteremedi.",
+      "conversation_not_open": "Bu sohbet artık açık değil.",
+      "feature_disabled": "Sohbet bu kuruluş için etkin değil.",
+      "no_permission": "Bu cihazla sohbet etme izniniz yok.",
+      "device_not_found": "Bu cihaz bulunamadı.",
+      "generic": "Sohbetle ilgili bir sorun oluştu. Tekrar deneyin.",
+      "open_failed": "Sohbet başlatılamadı. Tekrar deneyin.",
+      "send_failed": "Mesaj gönderilemedi. Tekrar deneyin.",
+      "close_failed": "Sohbet bitirilemedi. Tekrar deneyin."
+    },
+    "updatesPaused": "Canlı güncellemeler duraklatıldı — yeniden deneniyor",
+    "closeNotAnnounced": "Sohbet burada kapatıldı. Kullanıcının sohbet penceresi, cihazı yeniden bağlanana veya kullanıcı yanıt verene kadar açık kalabilir.",
+    "unavailable": "Bu sohbet artık kullanılamıyor"
   }
 }

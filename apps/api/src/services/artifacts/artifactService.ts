@@ -457,13 +457,18 @@ export function artifactDownloadContentType(stored: string): string {
   return SAFE_DOWNLOAD_CONTENT_TYPES.has(normalised) ? normalised : 'application/octet-stream';
 }
 
-/** Route-side resolve: scoped by `auth.orgCondition`, which is `undefined` (no filter) for system scope. */
+/**
+ * Route-side resolve: scoped by `auth.orgCondition`, which is `undefined` (no filter) for system scope.
+ * An expired row is not downloadable (#8855): the AI tool output retention job
+ * expires a scrubbed capture immediately, and the hourly sweeper removes the
+ * blob only later.
+ */
 export async function findArtifactForAuth(handle: string, auth: AuthContext): Promise<ArtifactRecord | null> {
   if (!UUID.safeParse(handle).success) return null;
   const [row] = await db
     .select(ARTIFACT_COLUMNS)
     .from(aiRunArtifacts)
-    .where(and(eq(aiRunArtifacts.id, handle), auth.orgCondition(aiRunArtifacts.orgId)))
+    .where(and(eq(aiRunArtifacts.id, handle), auth.orgCondition(aiRunArtifacts.orgId), gt(aiRunArtifacts.expiresAt, new Date())))
     .limit(1);
   return (row as ArtifactRecord | undefined) ?? null;
 }

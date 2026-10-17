@@ -338,6 +338,10 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/portal/tickets/:id/comments': 'portal session: portal session auth (portalAuthMiddleware)',
   'PATCH /api/v1/portal/tickets/:id/comments/:commentId': 'portal session: portal session auth (portalAuthMiddleware)',
   'DELETE /api/v1/portal/tickets/:id/comments/:commentId': 'portal session: portal session auth (portalAuthMiddleware)',
+  // routes/portal/trustPage.ts (Trust Center W3d)
+  'PUT /api/v1/portal/trust-page': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
+  'POST /api/v1/portal/trust-page/preview-token': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
+  'POST /api/v1/portal/trust-page/unpublish': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
   // routes/quotesPublic.ts
   'POST /api/v1/quotes/public/:token/accept': 'public: Signed public quote link token; single-use claims checked in resolve()',
   'POST /api/v1/quotes/public/:token/decline': 'public: Signed public quote link token; single-use claims checked in resolve()',
@@ -362,6 +366,11 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PATCH /api/v1/topology/templates/:templateId': 'equivalent check: hasPermission(topology+devices write) in templateLibrary service',
   'POST /api/v1/topology/templates/:templateId/versions': 'equivalent check: hasPermission(topology+devices write) in templateLibrary service',
   'POST /api/v1/topology/templates/:templateId/versions/:versionId/publish': 'equivalent check: hasPermission(topology+devices write) in templateLibrary service',
+  // routes/trustAccessPublic.ts (Trust Center W02d) — anonymous by design: no staff JWT exists on these requests
+  'POST /api/v1/trust/access/requests': 'public: anonymous gated-document access request; rate-limited per IP/address/page, generic 202/404 (spec trust-center §12)',
+  'POST /api/v1/trust/access/verify': 'public: one-shot hashed email-verification token in the POST body is the credential; rate-limited, generic 404',
+  'POST /api/v1/trust/access/grant': 'public: hashed download token in the POST body is the credential; read-only grant view; rate-limited, generic 404',
+  'POST /api/v1/trust/access/download': 'public: hashed download token in the POST body + approved, unexpired grant re-checked per call; rate-limited, generic 404',
   // routes/tunnels.ts
   'POST /api/v1/tunnels/:id/ws-ticket': 'equivalent check: requireMfa + owner check + authorizeRemoteSessionContinuation (REMOTE_ACCESS/DEVICES_EXECUTE)',
   'POST /api/v1/tunnels/:id/http-ticket': 'equivalent check: requireMfa + owner check + authorizeRemoteSessionContinuation (REMOTE_ACCESS/DEVICES_EXECUTE)',

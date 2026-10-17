@@ -27,6 +27,9 @@ export const DIGEST_CONDITION_LABELS: Readonly<Record<string, string>> = {
   grant_reconciliation_unavailable: 'Grant check unavailable',
   grant_revoked_reuse: 'Grant revoked (token reuse)',
   grant_revoked: 'Grant revoked',
+  delivery_failed: 'Deliveries failing',
+  sync_stale: 'Sync stalled',
+  verification_failed: 'Verification failed',
 };
 
 export function conditionLabel(code: string): string {

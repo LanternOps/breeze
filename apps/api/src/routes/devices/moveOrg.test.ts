@@ -1627,7 +1627,13 @@ describe('POST /devices/:id/move-org', () => {
       expect(collapseStmt(statements[19]!)).toContain(
         'UPDATE endpoint_message_deliveries SET endpoint_message_id = NULL',
       );
-      expect(statements[20]).toBe('UPDATE devices');
+      // #8743 W03 — a live endpoint chat ends in the SOURCE org before the
+      // flip, so a destination-org technician never inherits it. History
+      // itself follows the device through the flip's restamp trigger.
+      const chatClose = collapseStmt(statements[20]!);
+      expect(chatClose).toContain("UPDATE endpoint_conversations SET status = 'closed', close_reason = 'device_moved'");
+      expect(chatClose).toContain("status IN ('opening', 'open')");
+      expect(statements[21]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,

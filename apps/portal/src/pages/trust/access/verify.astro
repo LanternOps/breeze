@@ -1,0 +1,9 @@
+---
+// Emailed "confirm your request" landing. The token is in the URL fragment (never sent to the server), so there
+// is NO SSR data fetching here; the island reads and clears the fragment, then waits for an explicit click.
+import TrustPageLayout from '../../../layouts/TrustPageLayout.astro';
+import AccessVerifyView from '../../../components/trust/access/AccessVerifyView';
+---
+<TrustPageLayout title="Confirm document request" description="Confirm your document access request." canonicalPath="/trust/access/verify" indexable={false}>
+  <AccessVerifyView client:load />
+</TrustPageLayout>

@@ -83,6 +83,12 @@ import { trustPageRoutes } from './routes/trustPage';
 import { trustPagePublicRoutes } from './routes/trustPagePublic';
 import { trustPageAttestationRoutes } from './routes/trustPageAttestation';
 import { byTrustCrossOriginPath } from './middleware/trustCrossOrigin';
+// Trust Center W2 (#8770) — W02a stub routers, filled by W02b/d/f/g.
+import { trustPageDeclarationRoutes } from './routes/trustPageDeclarations';
+import { trustPageContentRoutes } from './routes/trustPageContent';
+import { trustPageAccessRoutes } from './routes/trustPageAccess';
+import { trustAccessPublicRoutes } from './routes/trustAccessPublic';
+import { trustPageTemplateRoutes } from './routes/trustPageTemplate';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -794,6 +800,8 @@ registerGlobalRateLimitSkipPrefix('/api/v1/trust/card/');
 // Signed attestation + JWKS (Trust Center W3b): public like the W1 block above and mounted ahead of it for the same
 // reason; its own 'trustattest' bucket; CORP cross-origin comes from byTrustCrossOriginPath above.
 api.route('/trust/attestation', trustPageAttestationRoutes);
+// Gated-document access flow (Trust Center W2, no auth): before /trust so its paths are never read as slugs.
+api.route('/trust/access', trustAccessPublicRoutes);
 api.route('/trust', trustPagePublicRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
@@ -879,6 +887,10 @@ api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
 api.route('/ticket-checklist-templates', ticketChecklistTemplateRoutes); // (#5783 W02)
 api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
 api.route('/orgs', trustPageRoutes); // /orgs/:orgId/trust-page/* (Trust Center W1)
+api.route('/orgs', trustPageDeclarationRoutes); // /orgs/:orgId/trust-page/declarations/* (Trust Center W2, W02b)
+api.route('/orgs', trustPageContentRoutes); // /orgs/:orgId/trust-page/{faq,subprocessors}/* (Trust Center W2, W02f)
+api.route('/orgs', trustPageAccessRoutes); // /orgs/:orgId/trust-page/access/* (Trust Center W2, W02d)
+api.route('/trust-page-template', trustPageTemplateRoutes); // partner-wide template (Trust Center W2, W02g)
 api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);

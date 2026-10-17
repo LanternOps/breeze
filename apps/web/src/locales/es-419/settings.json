@@ -1954,6 +1954,10 @@
       "title": "Características del portal",
       "description": "Controla lo que este cliente puede hacer en su portal. Cada organización es independiente.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Edición de la página de confianza por el cliente",
+          "description": "Los contactos administradores del cliente con acceso al portal pueden editar el borrador de la página de confianza: contacto de seguridad, sitio web, controles ocultos y lo que muestra la página. Tú sigues publicando sus cambios. También pueden retirar la página publicada."
+        },
         "enableTickets": {
           "label": "Envío de tickets",
           "description": "Los clientes pueden abrir y realizar un seguimiento de los tickets de soporte desde el portal."

@@ -202,3 +202,23 @@ describe('buildPortalNavItems — Approvals (/approvals) (#8200)', () => {
     expect(find(undefined)).not.toHaveProperty('badge');
   });
 });
+
+describe('buildPortalNavItems — Trust page (/security/trust-page) (Trust Center W3d)', () => {
+  const hrefs = (b: Parameters<typeof buildPortalNavItems>[0]) => buildPortalNavItems(b).map((i) => i.href);
+
+  it('appears only when canEditTrustPage is strictly true', () => {
+    expect(hrefs({ enableSecurity: true })).not.toContain('/security/trust-page');
+    expect(hrefs({ enableSecurity: true, canEditTrustPage: false })).not.toContain('/security/trust-page');
+    expect(buildPortalNavItems({ canEditTrustPage: true }).find((i) => i.href === '/security/trust-page'))
+      .toEqual({ href: '/security/trust-page', label: 'Trust page' });
+  });
+
+  it('sits directly under Security when Security is on', () => {
+    const list = hrefs({ enableSecurity: true, canEditTrustPage: true });
+    expect(list.indexOf('/security/trust-page')).toBe(list.indexOf('/security') + 1);
+  });
+
+  it('does not depend on the Security flag (its own permission)', () => {
+    expect(hrefs({ enableSecurity: false, canEditTrustPage: true })).toContain('/security/trust-page');
+  });
+});

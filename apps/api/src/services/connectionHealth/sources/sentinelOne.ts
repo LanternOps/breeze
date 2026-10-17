@@ -10,6 +10,8 @@ const sentinelOne = partnerSyncSource({
   tableName: 's1_integrations',
   intervalMinutes: 15,
   failedValue: 'error',
+  syncIntervalMinutes: 15,
+  withTimezone: false,
   displayName: 'SentinelOne',
   fixHref: '/integrations#sentinelone',
   verdict: sentinelOneHealth,

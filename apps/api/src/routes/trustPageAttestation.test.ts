@@ -25,6 +25,7 @@ vi.mock('../services/secretCrypto', () => ({
 }));
 
 import { trustPageAttestationRoutes } from './trustPageAttestation';
+import { normalizeTrustPagePayload } from '@breeze/shared';
 import {
   activateTrustSigningKey,
   prepareTrustSigningKey,
@@ -132,7 +133,8 @@ describe('GET /:partnerSlug/:orgSlug', () => {
     expect(res.headers.get('Access-Control-Allow-Credentials')).toBeNull();
     const token = await res.text();
     const { payload } = await jwtVerify(token, createLocalJWKSet(await jwks()), verifyOpts(`${ISSUER}/portal/trust/nw/acme`));
-    expect((payload.trust as { payload: unknown }).payload).toEqual(PAYLOAD);
+    // The route signs the normalized (v2) shape, exactly what the public payload route serves (W02a).
+    expect((payload.trust as { payload: unknown }).payload).toEqual(normalizeTrustPagePayload(PAYLOAD as never));
 
     const maxAge = Number(/^public, max-age=(\d+)$/.exec(res.headers.get('Cache-Control') ?? '')?.[1]);
     expect(maxAge).toBeLessThanOrEqual(60);
@@ -199,7 +201,7 @@ describe('GET /:partnerSlug/:orgSlug', () => {
     resolve.resolvePublishedTrustPage.mockResolvedValue({ ...RESOLVED(), payload: null });
     const res = await get('/nw/acme');
     expect(res.status).toBe(200);
-    expect((decodeJwt(await res.text()).trust as { payload: unknown }).payload).toEqual(PAYLOAD);
+    expect((decodeJwt(await res.text()).trust as { payload: unknown }).payload).toEqual(normalizeTrustPagePayload(PAYLOAD as never));
   });
 
   it('stale page → 503 ATTESTATION_STALE, Retry-After 3600, no-store', async () => {

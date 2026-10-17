@@ -60,6 +60,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableHourBlock: false, // block hours (W04): fail-closed, never in "Enable all"
   enablePatchDetail: false, // visibility W05: sensitive, fail-closed, never in "Enable all"
   enableVulnerabilityDetail: false, // visibility W06: sensitive, fail-closed, never in "Enable all"
+  enableTrustPageEditing: false, // Trust Center W3d: permission flag, fail-closed, never in "Enable all"
   chromeAccent: null,
   supportEmail: null,
   supportPhone: null,
@@ -92,6 +93,7 @@ type PortalSettingsRow = {
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
   enableVulnerabilityDetail: boolean;
+  enableTrustPageEditing: boolean;
   chromeAccent: string | null;
   supportEmail: string | null;
   supportPhone: string | null;
@@ -132,6 +134,7 @@ const portalSettingsColumns = () => ({
   enableHourBlock: portalBranding.enableHourBlock,
   enablePatchDetail: portalBranding.enablePatchDetail,
   enableVulnerabilityDetail: portalBranding.enableVulnerabilityDetail,
+  enableTrustPageEditing: portalBranding.enableTrustPageEditing,
   chromeAccent: portalBranding.chromeAccent,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
@@ -167,6 +170,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableHourBlock: row.enableHourBlock,
     enablePatchDetail: row.enablePatchDetail,
     enableVulnerabilityDetail: row.enableVulnerabilityDetail,
+    enableTrustPageEditing: row.enableTrustPageEditing,
     chromeAccent: row.chromeAccent,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,

@@ -19,7 +19,7 @@ describe('evaluateTrustControls', () => {
   it('returns one assessment per catalog entry, in insurer order', () => {
     const out = evaluateTrustControls(TRUST_CONTROL_CATALOG, evidence(), DEFAULT_TRUST_EVALUATION_POLICY, AS_OF);
     expect(out).toHaveLength(TRUST_CONTROL_CATALOG.length);
-    expect(out[0]?.id).toBe('mfa_registered_m365');
+    expect(out[0]?.id).toBe('mfa_enforced_m365');
   });
 
   it('no data → not_assessed/no_data with null percent', () => {

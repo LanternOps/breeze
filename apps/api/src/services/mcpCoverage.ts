@@ -218,6 +218,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'admin/llmProviderCatalog.ts': { exempt: 'platform_admin' },
   'admin/monitorConversion.ts': { exempt: 'platform_admin' },
   'admin/sendingDomains.ts': { exempt: 'platform_admin' },
+  'admin/systemConnectionHealth.ts': { exempt: 'platform_admin' },
   'admin/systemConnections.ts': { exempt: 'platform_admin' },
   'admin/tenantErasure.ts': { exempt: 'platform_admin' },
   'admin/tenantExport.ts': { exempt: 'platform_admin' },
@@ -390,6 +391,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'configurationPolicies/resolution.ts': { tools: ['get_effective_configuration', 'preview_configuration_change', 'configuration_policy_compliance'] },
   'connectedApps.ts': { exempt: 'identity' },
   'connectionHealth.ts': { exempt: 'tool_in_later_wave', note: 'Connection health incidents: read-only panel feed (W2 UI); no MCP tool planned yet (#8844).' },
+  'connectionHealthSettings.ts': { exempt: 'tool_in_later_wave', note: 'Customer-notice setting (partner default / org override, W5); no MCP tool planned yet (#8844).' },
   'contracts/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/cancel; the single-item equivalents already have tools.' },
   'contracts/contracts.ts': { tools: ['list_contracts', 'get_contract', 'manage_contracts'] },
   'contracts/deliverables.ts': { tools: ['list_deliverables'] },
@@ -473,6 +475,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'docs.ts': { tools: ['search_documentation'] },
   'dr.ts': { tools: ['query_dr_plans', 'get_dr_plan_details', 'get_dr_execution_status', 'execute_dr_plan', 'manage_dr_plan'] },
   'emailUnsubscribe.ts': { exempt: 'internal_plumbing', note: 'Public unauthenticated one-click email unsubscribe (RFC 8058); the signed token is the only credential and can only opt its own user out. Not an agent tool surface.' },
+  'endpointMessages/conversations.ts': { exempt: 'human_only_message_control', note: 'Technician live chat with the device user (#8743); a person typing in an interactive session, never an AI surface (plan: no AI chat in W3).' },
   'endpointMessages/list.ts': { tools: ['send_endpoint_message'] },
   'endpointMessages/resend.ts': { exempt: 'human_only_message_control', note: 'Operator re-send of a stored message (#8742); the AI tool authors new approval-gated sends only.' },
   'endpointMessages/retract.ts': { exempt: 'human_only_message_control', note: 'Operator safety stop that withdraws a message from user desktops (#8742); not an AI action.' },
@@ -615,6 +618,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/security.ts': { exempt: 'portal' },
   'portal/service.ts': { exempt: 'portal' },
   'portal/tickets.ts': { exempt: 'portal' },
+  'portal/trustPage.ts': { exempt: 'portal', note: 'Customer org-admin edits of their own trust page draft (Trust Center W3d); human-only, publishing stays with the MSP.' },
   'psa.ts': { tools: ['query_psa_status'] },
   'quotes/acceptanceEvidence.ts': { exempt: 'human_only_legal_evidence', note: 'Upload/download of the evidence file behind an on-behalf quote acceptance (#6633); the acceptance itself has no AI tool by design.' },
   'quotes/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/send; the single-item equivalents already have tools.' },
@@ -738,6 +742,21 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'trustPage.ts': { exempt: 'tool_in_later_wave', note: "Editor/publish routes for the public trust page. Writes are human-attested (customer authorization + MFA) and stay human-only; a READ-ONLY status tool (get_trust_page_status) is a W2 candidate under #8770." },
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },
   'trustPageAttestation.ts': { exempt: 'portal', note: 'Unauthenticated signed copy of the public trust payload plus its JWKS; read by insurer/auditor tooling, not a tool surface.' },
+  // ---- Trust Center W2 (#8770) route modules. W02a created the stub routers (routes/trustPage{Declarations,
+  // Access,Content,Template}.ts, routes/trustAccessPublic.ts) but cannot register them here: mcp-coverage.test.ts
+  // rejects an entry for a module that registers no route. Each owner inserts its entry on the line directly
+  // BELOW its own anchor, in the same commit that adds the module's first route (anchor inserts merge cleanly).
+  // W02b anchor: 'trustPageDeclarations.ts': { exempt: 'human_only_trust_material', note: 'Declared controls are attestations made by a named MSP user; human-only.' },
+  'trustPageDeclarations.ts': { exempt: 'human_only_trust_material', note: 'Declared controls are attestations made by a named MSP user (MFA, audited); human-only.' },
+  //
+  // W02d anchor: 'trustPageAccess.ts': { exempt: 'human_only_approval', note: 'Approving release of gated documents to an outside party; human-only, MFA.' }, 'trustAccessPublic.ts': { exempt: 'portal', note: 'Anonymous gated-document request/verify/download for end customers.' },
+  'trustPageAccess.ts': { exempt: 'human_only_approval', note: 'Approving release of gated documents to an outside party; human-only, MFA.' },
+  'trustAccessPublic.ts': { exempt: 'portal', note: 'Anonymous gated-document request/verify/download for end customers.' },
+  //
+  // W02f anchor: 'trustPageContent.ts': { exempt: 'tool_in_later_wave', note: 'Trust page FAQ/subprocessor editing; read access arrives via get_trust_page_status (#8770 W02i).' },
+  //
+  // W02g anchor: 'trustPageTemplate.ts': { exempt: 'tool_in_later_wave', note: 'Partner Trust Center template; partner-wide admin + MFA (#8770 W02g).' },
+  //
   'tunnelHttp.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnelWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnels.ts': { exempt: 'internal_plumbing' },

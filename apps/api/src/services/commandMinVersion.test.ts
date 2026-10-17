@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION, ENDPOINT_MESSAGING_MIN_AGENT_VERSION } from '@breeze/shared';
-import { COMMAND_MIN_AGENT_VERSION, agentSupportsMessaging, agentSupportsRetract } from './commandMinVersion';
+import {
+  ENDPOINT_CHAT_MIN_AGENT_VERSION,
+  ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION,
+  ENDPOINT_MESSAGING_MIN_AGENT_VERSION,
+} from '@breeze/shared';
+import { COMMAND_MIN_AGENT_VERSION, agentSupportsChat, agentSupportsMessaging, agentSupportsRetract } from './commandMinVersion';
 
 describe('agentSupportsMessaging (#8293 W1 version gate)', () => {
   it('rejects null, garbage and older versions; accepts the gate and above', () => {
@@ -19,6 +23,14 @@ describe('agentSupportsMessaging (#8293 W1 version gate)', () => {
     expect(agentSupportsRetract(null)).toBe(false);
     expect(agentSupportsRetract('0.0.1')).toBe(false);
     expect(agentSupportsRetract(ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION)).toBe(true);
+  });
+
+  it('gates endpoint chat on its own shared value, failing closed (#8743)', () => {
+    expect(COMMAND_MIN_AGENT_VERSION.chat).toBe(ENDPOINT_CHAT_MIN_AGENT_VERSION);
+    expect(agentSupportsChat(null)).toBe(false);
+    expect(agentSupportsChat('not-a-version')).toBe(false);
+    expect(agentSupportsChat('0.123.0')).toBe(false);
+    expect(agentSupportsChat(ENDPOINT_CHAT_MIN_AGENT_VERSION)).toBe(true);
   });
 
   it('is frozen so a caller cannot lower the gate at runtime', () => {

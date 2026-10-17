@@ -984,6 +984,13 @@ const REPOINT_TABLES: readonly string[] = [
   "edr_tenants",
   "elevation_audit",
   "elevation_requests",
+  // Endpoint live chat (#8743 W03): plain repoints under SET CONSTRAINTS ALL
+  // DEFERRED; the (conversation_id, org_id) and (device_id, org_id) composite
+  // FKs re-resolve at commit. The only unique keys are (conversation_id,
+  // client_nonce) and the one-live-chat-per-device partial index, neither of
+  // which carries org_id, so a repoint cannot collide.
+  "endpoint_conversation_messages",
+  "endpoint_conversations",
   // Endpoint messaging (#8742 W02): plain repoints under SET CONSTRAINTS ALL
   // DEFERRED, so the (x, org_id) composite FKs between them re-resolve at
   // commit. No org-scoped unique key: endpoint_messages is deliberately not
@@ -1255,6 +1262,13 @@ const REPOINT_TABLES: readonly string[] = [
   // Children of trust_pages: ON DELETE CASCADE removes them with the loser's page in the custom executor; a plain repoint here only ever sees zero rows and keeps the registry total.
   "trust_page_documents",
   "trust_page_snapshots",
+  // Trust Center W2 (#8770 W02a): same reasoning — each cascades with the loser's page
+  // (access_tokens via access_requests).
+  "trust_page_access_requests",
+  "trust_page_access_tokens",
+  "trust_page_declarations",
+  "trust_page_faq_items",
+  "trust_page_subprocessors",
   "tunnel_sessions",
   "unifi_clients",
   "unifi_collectors",

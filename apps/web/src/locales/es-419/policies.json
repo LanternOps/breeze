@@ -703,7 +703,9 @@
         "showRequestSupport": "showRequestSupport",
         "portalUrl": "portalUrl",
         "endpointMessaging": "Mensajes al equipo",
-        "endpointMessagingHelp": "Permite a los técnicos enviar mensajes a la persona que usa el dispositivo."
+        "endpointMessagingHelp": "Permite a los técnicos enviar mensajes a la persona que usa el dispositivo.",
+        "allowUserReply": "Permitir respuestas del usuario",
+        "allowUserReplyHelp": "Permite que la persona del dispositivo responda en un chat iniciado por un técnico. Si está desactivado, los chats son unidireccionales."
       },
       "inlineEntityPicker": {
         "search": "Buscar...",

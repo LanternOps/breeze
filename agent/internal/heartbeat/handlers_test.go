@@ -97,6 +97,7 @@ var allCommandTypes = []string{
 
 	// handlers_user.go init()
 	CmdNotifyUser, CmdTrayUpdate, CmdRetractMessage,
+	CmdChatOpen, CmdChatMessage, CmdChatClose,
 	// caller_verify.go (#6354 W02)
 	cmdCallerVerify,
 

@@ -1954,6 +1954,10 @@
       "title": "Portal özellikleri",
       "description": "Bu müşterinin portalında neler yapabileceğini kontrol edin. Her kuruluş bağımsızdır.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Müşterinin güven sayfasını düzenlemesi",
+          "description": "Portal girişi olan müşteri yönetici kişileri güven sayfası taslağını düzenleyebilir: güvenlik iletişimi, web sitesi, gizli kontroller ve sayfanın gösterdikleri. Değişiklikleri yine siz yayımlarsınız. Yayımlanmış sayfayı geri de çekebilirler."
+        },
         "enableTickets": {
           "label": "Bilet gönderimi",
           "description": "Müşteriler portaldan destek bildirimleri açabilir ve takip edebilir."

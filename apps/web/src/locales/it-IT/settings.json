@@ -1954,6 +1954,10 @@
       "title": "Funzioni portale",
       "description": "Controlla cosa può fare questo cliente nel proprio portale. Ogni organizzazione è indipendente.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Modifica della pagina di fiducia da parte del cliente",
+          "description": "I contatti amministratori del cliente con accesso al portale possono modificare la bozza della pagina di fiducia: contatto di sicurezza, sito web, controlli nascosti e ciò che la pagina mostra. La pubblicazione resta a te. Possono anche ritirare la pagina pubblicata."
+        },
         "enableTickets": {
           "label": "Invio ticket",
           "description": "I clienti possono aprire e seguire ticket di assistenza dal portale."

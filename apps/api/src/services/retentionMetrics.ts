@@ -29,6 +29,7 @@ export const RETENTION_JOB_NAMES = [
   'agent_log_retention',
   'ai_agent_op_evidence_retention',
   'ai_invocation_retention',
+  'ai_tool_output_retention',
   'ai_unattended_exposure_retention',
   'audit_retention',
   'change_log_retention',

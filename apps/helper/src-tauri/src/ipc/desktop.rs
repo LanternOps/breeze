@@ -369,6 +369,80 @@ pub fn close_message_window(app: &AppHandle, message_id: &str) {
     }
 }
 
+/// The event the chat window listens for; carries the full `ChatView`. Sent
+/// only to that window's label, never broadcast.
+pub const CHAT_UPDATED_EVENT: &str = "chat-updated";
+
+/// What the real chat window for `conversation_id` looks like right now.
+pub fn chat_win_state(app: &AppHandle, conversation_id: &str) -> super::chat::WinState {
+    match app.get_webview_window(&super::chat::window_label(conversation_id)) {
+        Some(win) => super::chat::WinState {
+            exists: true,
+            visible: win.is_visible().unwrap_or(false),
+            minimised: win.is_minimized().unwrap_or(false),
+        },
+        None => super::chat::WinState { exists: false, visible: false, minimised: false },
+    }
+}
+
+/// Create the endpoint live chat window (#8743): `chat-<conversationId>` /
+/// `index.html#chat/<id>`, its own webview, NEVER the main Assist window and
+/// not the AI chat. This is the deliberate "incoming call" interruption, so
+/// it takes focus when built. It is called only from the live `chat_open` arm
+/// (`user_initiated = false`) and from the tray's "Open chat" item
+/// (`user_initiated = true`). An existing window is left exactly as it is
+/// unless the user asked for it: nothing automatic may re-raise it.
+pub fn show_chat_window(app: &AppHandle, conversation_id: &str, user_initiated: bool) -> Result<(), String> {
+    use super::chat::{window_label, window_url};
+
+    let label = window_label(conversation_id);
+    if let Some(existing) = app.get_webview_window(&label) {
+        if user_initiated {
+            let _ = existing.unminimize();
+            let _ = existing.show();
+            let _ = existing.set_focus();
+        }
+        return Ok(());
+    }
+
+    const CHAT_W: f64 = 380.0;
+    const CHAT_H: f64 = 520.0;
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(window_url(conversation_id).into()))
+        .title("Chat with your IT provider")
+        .inner_size(CHAT_W, CHAT_H)
+        .min_inner_size(300.0, 360.0)
+        .decorations(true)
+        .always_on_top(false)
+        .focused(true)
+        // In the taskbar so a new message can flash it.
+        .skip_taskbar(false)
+        .resizable(true);
+    let builder = match primary_bottom_right(app, CHAT_W, CHAT_H) {
+        Some((x, y)) => builder.position(x, y),
+        None => builder.center(),
+    };
+    builder.build().map(|_| ()).map_err(|e| format!("create chat window: {}", e))
+}
+
+/// Push the current view to the chat window (no-op when it is not open).
+pub fn emit_chat_update(app: &AppHandle, view: &super::chat::ChatView) {
+    let label = super::chat::window_label(&view.conversation_id);
+    if app.get_webview_window(&label).is_none() {
+        return;
+    }
+    if let Err(e) = app.emit_to(label.as_str(), CHAT_UPDATED_EVENT, view) {
+        eprintln!("[helper] failed to emit {}: {}", CHAT_UPDATED_EVENT, e);
+    }
+}
+
+/// Flash the chat window's taskbar button. Attention only: it neither shows
+/// nor focuses nor un-minimises the window.
+pub fn flash_chat_window(app: &AppHandle, conversation_id: &str) {
+    if let Some(win) = app.get_webview_window(&super::chat::window_label(conversation_id)) {
+        let _ = win.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+}
+
 /// Logical bottom-right coordinates for a `w`x`h` window on the primary monitor.
 fn primary_bottom_right(app: &AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
     let monitor = app.primary_monitor().ok().flatten()?;

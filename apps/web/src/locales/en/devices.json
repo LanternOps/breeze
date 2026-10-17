@@ -4358,5 +4358,65 @@
         "nothing_to_resend": "No failed or expired devices to resend to."
       }
     }
+  },
+  "endpointChat": {
+    "tabLabel": "Chat",
+    "tabTitle": "Live chat with the person at this device",
+    "unsupported": "No chat on this device. Chat needs Breeze Assist on a Windows console session.",
+    "footer": "The user sees this as a chat window. A chat never grants remote access.",
+    "startHeading": "Start a chat",
+    "firstMessageLabel": "First message",
+    "startChat": "Start chat",
+    "starting": "Starting...",
+    "recentHeading": "Recent chats",
+    "empty": "No chats with this device yet.",
+    "loadFailed": "Could not load chats.",
+    "loading": "Loading...",
+    "back": "Back to chats",
+    "endChat": "End chat",
+    "ending": "Ending...",
+    "messageLabel": "Message",
+    "send": "Send",
+    "sending": "Sending...",
+    "openExisting": "Open the existing chat",
+    "user": "User",
+    "technician": "Technician",
+    "fromUser": "{{name}} (user)",
+    "undelivered": "Not delivered",
+    "status": {
+      "opening": "Waiting for the user to see the chat window...",
+      "open": "Chat open",
+      "closed": "This chat has ended.",
+      "expired": "This chat ended after 30 minutes of inactivity.",
+      "failed": "The chat could not be started."
+    },
+    "statusShort": {
+      "opening": "Opening",
+      "open": "Open",
+      "closed": "Ended",
+      "expired": "Expired",
+      "failed": "Failed"
+    },
+    "errors": {
+      "chat_requires_assist": "Chat needs Breeze Assist on a Windows console session.",
+      "agent_unsupported": "The agent on this device does not support chat yet.",
+      "device_offline": "The device is offline. Try again when it is online.",
+      "platform_unsupported": "Chat is only available on Windows devices.",
+      "conversation_active": "A chat with this device is already in progress.",
+      "rate_limited": "Too many chats or messages sent recently. Try again later.",
+      "open_timeout": "The device did not respond in time, so the chat was not started.",
+      "chat_window_failed": "The device could not show the chat window.",
+      "conversation_not_open": "This chat is no longer open.",
+      "feature_disabled": "Chat is not enabled for this organization.",
+      "no_permission": "You do not have permission to chat with this device.",
+      "device_not_found": "This device was not found.",
+      "generic": "Something went wrong with the chat. Try again.",
+      "open_failed": "The chat could not be started. Try again.",
+      "send_failed": "The message could not be sent. Try again.",
+      "close_failed": "The chat could not be ended. Try again."
+    },
+    "updatesPaused": "Live updates paused — retrying",
+    "closeNotAnnounced": "The chat is closed here. The user's chat window may stay open until their device reconnects or they reply.",
+    "unavailable": "This chat is no longer available"
   }
 }

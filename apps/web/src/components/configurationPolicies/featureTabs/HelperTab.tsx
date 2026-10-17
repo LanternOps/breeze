@@ -14,10 +14,12 @@ type HelperSettings = {
   portalUrl?: string;
   lifecycleMode?: "auto" | "always-on" | "on-demand";
   // Lets technicians send messages to the person at the device (#8742).
-  endpointMessaging: { enabled: boolean };
+  // `allowUserReply` (#8743) lets the user answer a technician-started chat;
+  // absent means on.
+  endpointMessaging: { enabled: boolean; allowUserReply: boolean };
 };
 const defaults: HelperSettings = {
-  endpointMessaging: { enabled: false },
+  endpointMessaging: { enabled: false, allowUserReply: true },
   enabled: false,
   showOpenPortal: true,
   showDeviceInfo: true,
@@ -33,7 +35,10 @@ function storedSettings(raw: unknown): Partial<HelperSettings> {
     showTrayIcon?: unknown;
   };
   if (rest.endpointMessaging !== undefined) {
-    rest.endpointMessaging = { enabled: rest.endpointMessaging?.enabled === true };
+    rest.endpointMessaging = {
+      enabled: rest.endpointMessaging?.enabled === true,
+      allowUserReply: rest.endpointMessaging?.allowUserReply !== false,
+    };
   }
   return rest;
 }
@@ -160,11 +165,45 @@ export default function HelperTab({
             role="switch"
             aria-checked={settings.endpointMessaging.enabled}
             data-testid="helper-endpoint-messaging"
-            onClick={() => update("endpointMessaging", { enabled: !settings.endpointMessaging.enabled })}
+            onClick={() =>
+              update("endpointMessaging", {
+                ...settings.endpointMessaging,
+                enabled: !settings.endpointMessaging.enabled,
+              })
+            }
             className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.endpointMessaging.enabled ? "bg-emerald-500/80" : "bg-muted"}`}
           >
             <span
               className={`inline-block h-5 w-5 rounded-full bg-white transition ${settings.endpointMessaging.enabled ? "translate-x-5" : "translate-x-1"}`}
+            />
+          </button>
+        </div>
+
+        {/* Chat replies (#8743): stored beside `enabled`, settable while messaging is off. */}
+        <div className={`flex items-center justify-between rounded-md border bg-background px-4 py-3 ${settings.endpointMessaging.enabled ? "" : "opacity-60"}`}>
+          <div>
+            <p className="text-sm font-medium">
+              {i18n.t("policies:configurationPolicies.featureTabs.helperTab.allowUserReply")}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {i18n.t("policies:configurationPolicies.featureTabs.helperTab.allowUserReplyHelp")}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.endpointMessaging.allowUserReply}
+            data-testid="helper-allow-user-reply"
+            onClick={() =>
+              update("endpointMessaging", {
+                ...settings.endpointMessaging,
+                allowUserReply: !settings.endpointMessaging.allowUserReply,
+              })
+            }
+            className={`relative inline-flex h-6 w-11 items-center rounded-full border transition ${settings.endpointMessaging.allowUserReply ? "bg-emerald-500/80" : "bg-muted"}`}
+          >
+            <span
+              className={`inline-block h-5 w-5 rounded-full bg-white transition ${settings.endpointMessaging.allowUserReply ? "translate-x-5" : "translate-x-1"}`}
             />
           </button>
         </div>

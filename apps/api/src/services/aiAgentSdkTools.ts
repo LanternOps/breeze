@@ -22,6 +22,7 @@ import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
@@ -670,6 +671,43 @@ function inputShape(toolName: string): z.ZodRawShape {
   return shape;
 }
 
+
+/**
+ * Text blocks that ride alongside a vision tool's image. Built from the RAW
+ * handler result (the image branch skips compactToolResultForChat), so the
+ * device-reported strings in them — the agent's screenshot error, device
+ * fields, the action echo — are fenced here (#8852 W04).
+ */
+export function visionMetadataTextBlocks(
+  toolName: string,
+  parsed: Record<string, unknown>,
+): Array<{ type: 'text'; text: string }> {
+  const blocks: Array<{ type: 'text'; text: string }> = [];
+  // For analyze_screen, include device context as text
+  if (toolName === 'analyze_screen' && parsed.device) {
+    blocks.push({
+      type: 'text',
+      text: JSON.stringify(sanitizeUntrustedToolValue({
+        analysisContext: parsed.analysisContext,
+        device: parsed.device,
+        capturedAt: parsed.capturedAt,
+        resolution: `${parsed.width}x${parsed.height}`,
+      })),
+    });
+  }
+  // For computer_control, include action metadata as text
+  if (toolName === 'computer_control') {
+    const meta: Record<string, unknown> = {
+      actionExecuted: parsed.actionExecuted,
+      capturedAt: parsed.capturedAt,
+      resolution: `${parsed.width}x${parsed.height}`,
+    };
+    if (parsed.screenshotError) meta.screenshotError = parsed.screenshotError;
+    blocks.push({ type: 'text', text: JSON.stringify(sanitizeUntrustedToolValue(meta)) });
+  }
+  return blocks;
+}
+
 function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -833,28 +871,7 @@ function makeToolHandler(
                 mimeType: `image/${parsed.format || 'jpeg'}`,
               },
             ];
-            // For analyze_screen, include device context as text
-            if (toolName === 'analyze_screen' && parsed.device) {
-              contentBlocks.push({
-                type: 'text',
-                text: JSON.stringify({
-                  analysisContext: parsed.analysisContext,
-                  device: parsed.device,
-                  capturedAt: parsed.capturedAt,
-                  resolution: `${parsed.width}x${parsed.height}`,
-                }),
-              });
-            }
-            // For computer_control, include action metadata as text
-            if (toolName === 'computer_control') {
-              const meta: Record<string, unknown> = {
-                actionExecuted: parsed.actionExecuted,
-                capturedAt: parsed.capturedAt,
-                resolution: `${parsed.width}x${parsed.height}`,
-              };
-              if (parsed.screenshotError) meta.screenshotError = parsed.screenshotError;
-              contentBlocks.push({ type: 'text', text: JSON.stringify(meta) });
-            }
+            contentBlocks.push(...visionMetadataTextBlocks(toolName, parsed));
             return { content: contentBlocks };
           }
         } catch (err) {

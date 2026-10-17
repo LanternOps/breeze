@@ -222,6 +222,8 @@ describe('syncConnectionById — abort guards', () => {
   });
 });
 
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
+
 describe('syncConnectionById — failure handling', () => {
   it('does not persist anything when the vendor enumeration fails, and records the error', async () => {
     const boom = new Error('cove page 3 of 7 failed');
@@ -238,6 +240,23 @@ describe('syncConnectionById — failure handling', () => {
     await expect(syncConnectionById(CONNECTION_ID, { isFinalAttempt: false })).rejects.toThrow('transient');
     expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'running')).toBe(true);
     expect(updatePayloads.some((u) => u.payload.lastSyncStatus === 'error')).toBe(false);
+  });
+
+  it('nudges connection health only when a terminal failure is recorded (W4)', async () => {
+    listDevices.mockRejectedValueOnce(new Error('transient'));
+    await expect(syncConnectionById(CONNECTION_ID, { isFinalAttempt: false })).rejects.toThrow('transient');
+    expect(nudgeConnectionHealth).not.toHaveBeenCalled();
+
+    listDevices.mockRejectedValueOnce(new Error('exhausted'));
+    await expect(syncConnectionById(CONNECTION_ID, { isFinalAttempt: true })).rejects.toThrow('exhausted');
+    expect(nudgeConnectionHealth).toHaveBeenCalledTimes(1);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('backup_provider');
+  });
+
+  it('nudges connection health on a mid-retry reauth failure (W4)', async () => {
+    listCustomers.mockRejectedValueOnce(new FakeProviderRequestError('credentials rejected', true));
+    await syncConnectionById(CONNECTION_ID, { isFinalAttempt: false }).then(() => null, (e: unknown) => e);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('backup_provider');
   });
 
   it('on a reauth failure sets status reauth_required and throws UnrecoverableError even mid-retry', async () => {

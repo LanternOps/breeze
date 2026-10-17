@@ -1954,6 +1954,10 @@
       "title": "Recursos do portal",
       "description": "Controle o que este cliente pode fazer no portal. Cada organização é independente.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Edição da página de confiança pelo cliente",
+          "description": "Os contatos administradores do cliente com acesso ao portal podem editar o rascunho da página de confiança: contato de segurança, site, controles ocultos e o que a página exibe. Você continua publicando as alterações. Eles também podem retirar a página publicada."
+        },
         "enableTickets": {
           "label": "Envio de chamados",
           "description": "Os clientes podem abrir e acompanhar chamados de suporte pelo portal."

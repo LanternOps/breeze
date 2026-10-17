@@ -629,6 +629,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'edr_tenants',
   'elevation_audit',
   'elevation_requests',
+  // Endpoint live chat (#8743 W03). messages -> conversations (conversation_id,
+  // org_id) FK is ON DELETE CASCADE; both also cascade from devices.
+  'endpoint_conversation_messages',
+  'endpoint_conversations',
   // Endpoint messaging (#8742 W02). receipts -> deliveries -> endpoint_messages
   // FKs are all ON DELETE CASCADE; topologicalCascadeOrder() orders the live
   // FK graph regardless of position.
@@ -1060,10 +1064,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'topology_site_template_bindings',
   'topology_telemetry_arms',
   'topology_view_exclusions',
-  // trust_page_* : documents/snapshots -> trust_pages (children first);
-  // localeCompare puts '_' before 's', so alphabetical order IS FK order here.
+  // trust_page_* : children -> trust_pages (children first); access_tokens -> access_requests.
+  // localeCompare puts '_' before 's', so alphabetical order IS FK order here (and the
+  // runtime topological sort handles FK direction regardless).
+  'trust_page_access_requests',
+  'trust_page_access_tokens',
+  'trust_page_declarations',
   'trust_page_documents',
+  'trust_page_faq_items',
   'trust_page_snapshots',
+  'trust_page_subprocessors',
   'trust_pages',
   'tunnel_allowlists',
   'tunnel_sessions',

@@ -6,7 +6,8 @@ import {
   updatePortalUserSchema,
   findUnsafePortalCssPattern,
   PORTAL_CUSTOM_CSS_MAX_LENGTH,
-  PORTAL_SENSITIVE_FLAG_KEYS
+  PORTAL_SENSITIVE_FLAG_KEYS,
+  PORTAL_PERMISSION_FLAG_KEYS
 } from './portal';
 
 describe('updatePortalSettingsSchema', () => {
@@ -282,6 +283,11 @@ describe('updatePortalSettingsSchema W04 flags', () => {
   it.each([true, false])('accepts the strict EDR visibility flag=%s and keeps it in "Enable all"', (enableEdrVisibility) => {
     expect(updatePortalSettingsSchema.parse({ enableEdrVisibility })).toEqual({ enableEdrVisibility });
     expect(PORTAL_SENSITIVE_FLAG_KEYS).not.toContain('enableEdrVisibility');
+  });
+  it.each([true, false])('accepts the trust-page editing permission flag=%s, outside "Enable all" (Trust Center W3d)', (enableTrustPageEditing) => {
+    expect(updatePortalSettingsSchema.parse({ enableTrustPageEditing })).toEqual({ enableTrustPageEditing });
+    expect(PORTAL_PERMISSION_FLAG_KEYS).toEqual(['enableTrustPageEditing']);
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).not.toContain('enableTrustPageEditing');
   });
   it('still rejects an unknown flag', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableProjects: true }).success).toBe(false);

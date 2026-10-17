@@ -93,6 +93,15 @@ function isHttpsUrl(raw: string): boolean {
   }
 }
 
+/**
+ * Restricted-markdown body problems (https links only, no images, no HTML, no
+ * reference links). Shared with endpoint chat (#8743), whose technician
+ * messages render through the same helper renderer.
+ */
+export function endpointMessageBodyIssues(body: string): string[] {
+  return bodyIssues(body);
+}
+
 function bodyIssues(body: string): string[] {
   const issues: string[] = [];
   if (MARKDOWN_IMAGE.test(body)) issues.push('images are not allowed');

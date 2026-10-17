@@ -3,9 +3,22 @@ export type TrustFramework = (typeof TRUST_FRAMEWORKS)[number];
 export interface FrameworkRef { framework: TrustFramework; ref: string }
 
 export const TRUST_CONTROL_CATEGORY_ORDER = [
-  'endpoint_protection', 'patching_hardening', 'identity_access', 'data_protection', 'monitoring',
+  'endpoint_protection', 'patching_hardening', 'identity_access', 'data_protection', 'monitoring', 'governance',
 ] as const;
 export type TrustControlCategory = (typeof TRUST_CONTROL_CATEGORY_ORDER)[number];
+
+/**
+ * The 15 telemetry controls W1 shipped, frozen. A trust page published under W1 has a `published_config`
+ * with no `catalogControlIds`; its refresh keeps exactly these (spec §19 item 28) so the page gains no
+ * control until it is republished. Never edit this list.
+ */
+export const W1_TELEMETRY_CONTROL_IDS = Object.freeze([
+  'endpoint_protection', 'edr_coverage', 'definitions_current', 'host_firewall',
+  'os_patch_currency', 'hardening_baseline',
+  'password_policy', 'least_privilege', 'identity_provider', 'mfa_registered_m365', 'privileged_access',
+  'disk_encryption', 'backups_verified',
+  'dns_filtering', 'continuous_monitoring',
+] as const);
 
 export const TELEMETRY_CONTROL_IDS = [
   'endpoint_protection', 'edr_coverage', 'definitions_current', 'host_firewall',
@@ -13,6 +26,7 @@ export const TELEMETRY_CONTROL_IDS = [
   'password_policy', 'least_privilege', 'identity_provider', 'mfa_registered_m365', 'privileged_access',
   'disk_encryption', 'backups_verified',
   'dns_filtering', 'continuous_monitoring',
+  'mfa_enforced_m365',
 ] as const;
 export type TelemetryControlId = (typeof TELEMETRY_CONTROL_IDS)[number];
 

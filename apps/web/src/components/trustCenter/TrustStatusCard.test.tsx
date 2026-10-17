@@ -17,6 +17,7 @@ function stateWith(reason: string | null): TrustPageState {
     slugs: { valid: true, problems: [] },
     canPublish: { allowed: false, reason },
     publicPath: '/portal/trust/a/b',
+    effective: { values: { searchIndexable: false }, sources: { searchIndexable: 'default' } },
   } as unknown as TrustPageState;
 }
 
