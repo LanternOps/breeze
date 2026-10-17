@@ -25,12 +25,12 @@ branch: feature/6154-mcp-modernization/wave-6156
 
 ## Advisor quorum (spec open decision 4), 2026-10-17
 
-**Procedure.** I formed a position first: P1–P11, recorded verbatim in the PR that adds this plan. Codex `gpt-6-astra` at `xhigh`, read-only, then critiqued it against `origin/main` `0b146d32d7`. The verdicts were Q1 agree-with-changes, Q2 agree-with-changes (with a preferred alternative), Q3 agree-with-changes, Q4 agree, Q5 agree-with-changes, Q6 agree-with-changes and Q7 agree-with-changes. Each item below is labelled **adopted** (both agree, or the change was taken) or **open** (still disagreed, with both arguments and a recommendation).
+**Procedure.** I formed a position first: P1–P11, summarised in the PR that adds this plan. Codex `gpt-6-astra` at `xhigh`, read-only, then critiqued it against `origin/main` `0b146d32d7`. The verdicts were Q1 agree-with-changes, Q2 agree-with-changes (with a preferred alternative), Q3 agree-with-changes, Q4 agree, Q5 agree-with-changes, Q6 agree-with-changes and Q7 agree-with-changes. Each item below is labelled **adopted** (both agree, or the change was taken) or **open** (still disagreed, with both arguments and a recommendation).
 
 ## Decisions
 
 - **D-B1 — OAuth domains go in a real column, not the grant `payload`, and the column is `text[]`, not `jsonb`.** *Adopted.*
-  - oidc-provider owns `payload`. `Grant.IN_PAYLOAD` drops unknown keys on save (`oauth/adapter.ts:29-38`, `oauth/provider.ts:214-217`), which is why partner/org tenancy already lives in columns.
+  - oidc-provider owns `payload`. `Grant.IN_PAYLOAD` drops unknown keys on save (`oauth/adapter.ts:39-46`, `oauth/provider.ts:214-217`), which is why partner/org tenancy already lives in columns.
   - Bearer admission already reads the grant row once per request in `assertLiveOAuthUser` (`middleware/bearerTokenAuth.ts:~105`). Selecting one more column there is free, and it makes domains live: editable and revocable without re-minting a token.
   - The JWT never carries domains as authority.
   - `text[]` fits a homogeneous string set, following the `partner_service_principals.scopes` precedent. `jsonb` would add nothing.
@@ -38,11 +38,11 @@ branch: feature/6154-mcp-modernization/wave-6156
   - The DB CHECK covers shape only: not empty, no `core`, no NULL element (quorum change: a NULL element makes `'core' = ANY(...)` UNKNOWN, which a CHECK accepts).
   - Unknown stored values grant nothing and never widen.
 - **D-B2 — `NULL` = unrestricted, with no backfill.** *Adopted.* The column is added nullable, so every existing key and grant stays unrestricted, which is exactly today's behaviour. "Unrestricted" includes domains added later and unclassified tools. API and UI expose `mcpDomains: McpGrantableDomain[] | null`. The UI uses an explicit "All tools (including areas added later)" radio and never "nothing checked means all". This amends the spec's "empty = all" wording: no selection is no longer a storable state. **How a restricted grant is represented is Open Decision 1.**
-- **D-B3 — `core` is always *domain-eligible*. It is never stored and is shown checked and disabled.** *Adopted, with the quorum's wording.* Eligibility is not authority. `resolve_device_context` is a tier-2 core tool (`services/aiToolsDevice.ts:693`), and an `ai:read`-only principal is still refused it by the existing write gate (`routes/mcpServer.ts:1648`). The domain predicate runs in addition to the scope, approval, MFA, allowlist, RBAC and rate-limit gates, never instead of them. Task 5 pins this with `'domain gate never loosens the tier gate'`.
+- **D-B3 — `core` is always *domain-eligible*. It is never stored and is shown checked and disabled.** *Adopted, with the quorum's wording.* Eligibility is not authority. `resolve_device_context` is a tier-2 core tool (`services/aiToolsDevice.ts:699`), and an `ai:read`-only principal is still refused it by the existing write gate (`routes/mcpServer.ts:1649`). The domain predicate runs in addition to the scope, approval, MFA, allowlist, RBAC and rate-limit gates, never instead of them. Task 5 pins this with `'domain gate never loosens the tier gate'`.
 - **D-B4 — Tier-3 over OAuth stays as it is: wholly gated is hidden, mixed is labelled.** *Adopted.* #3031 already shipped both halves of #2550's fix (`isToolWhollyGatedOverMcp` `:1174`, `gatedActionsForTool` `:1214`), and since then every effective tier 3 is `MCP_APPROVAL_REQUIRED` regardless of auth kind. B-W02 adds only #2550's optional `whoami`. B-W04 (#6158) changes tier-3 behaviour. #2550 can be closed by Todd after the implementation merges. The implementation PR uses `Refs`, not `Closes`.
 - **D-B5 — API keys get domain selection; partner service principal keys stay unrestricted this wave.** *Adopted, with quorum changes.*
   - The create form gets a picker (Task 10). Editing is via REST `PATCH` (Task 8), because there is no edit dialog today.
-  - **Widening** a key's domains (to `NULL`, or to a superset) runs the same delegation check the route uses for `scopes` (`validateApiKeyScopeDelegation`, `routes/apiKeys.ts:~205-228`) against the key's **current** scopes for the updater. That proves the updater could have granted the authority being restored. Narrowing needs no extra check.
+  - **Widening** a key's domains (to `NULL`, or to a superset) runs the same delegation check the route uses for `scopes` (`validateRequestedScopes`, `routes/apiKeys.ts:228`, which calls `validateApiKeyScopeDelegation` in `services/apiKeyScopes.ts:90`) against the key's **current** scopes for the updater. That proves the updater could have granted the authority being restored. Narrowing needs no extra check.
   - **Org service-principal keys** live in `api_keys`, and rotation inserts a fresh row (`services/servicePrincipals.ts:118`). Rotation must carry `mcp_domains` from the key it revokes, or a rotation would silently widen it.
   - Partner service principal keys (`brz_sp_`, a separate table) are set to `mcpDomains: null` explicitly in their middleware. Their domain least privilege is a filed follow-up.
 - **D-B6 — Domains are not OAuth scopes this wave.** *Adopted.* Making them scopes would touch issuance, consent and the partner-policy intersection (`oauth/effectiveScopes.ts:140`) in the hardened MCP-OAUTH-01/02 chain. Client-requested preselection and scope-driven step-up for domains are deferred. `scopes_supported` stays `mcp:read mcp:write mcp:execute`.
@@ -64,7 +64,7 @@ branch: feature/6154-mcp-modernization/wave-6156
 - **D-B11 — Denials and changes are audited.** *Adopted (quorum change).*
   - The `mcp_request` audit details gain `{ canonicalTool, domain, deniedReason: 'domain_not_granted' }` on a domain denial.
   - API-key create, update and rotate audit rows gain `mcpDomains` (previous and new on update).
-  - The consent route's grant creation records `mcpDomains` wherever it already records the consent. If no audit event exists there, add `oauth.consent.granted` with `{ clientId, grantId, partnerId, orgId, mcpDomains }`.
+  - The consent route's existing `writeRouteAudit` call (`oauth.client.partner_grant_recorded` / `oauth.client.partner_grant_refreshed`, `routes/oauthInteraction.ts:~484`) gains `grantId` and `mcpDomains` in its details. No new audit action is added.
 - **D-B12 — Tenancy needs no new table.** *Adopted.* Both columns are `excludedOpen` in `CORE_TENANT_EXPORT_POLICY`. The existing cascade and merge registrations are sufficient (see "Tenancy contract").
 
 ## Open Decisions
@@ -87,7 +87,7 @@ branch: feature/6154-mcp-modernization/wave-6156
      - Reason: the 403 is dormant anyway.
    - **(B) Codex:** intercept before enqueueing, so both transports return the 403 challenge.
    - **Recommend A.** Revisit only if a client on the legacy transport is shown to implement step-up.
-   - The B delta is to call `applyInsufficientScopeChallenge` before the `session.queue.push` at `mcpServer.ts:~746` and return early.
+   - The B delta is to call `applyInsufficientScopeChallenge` before the `session.queue.push` at `mcpServer.ts:~750` and return early.
 
 ---
 
@@ -157,7 +157,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
 1. **Deprecated alias against a restricted grant.** A `tools/call` that uses an old tool name whose canonical tool is outside the grant must be refused as `domain_not_granted`, not dispatched. Pinned in Task 5: `'a deprecated alias is gated on its canonical tool's domain'`.
 2. **A stored domain that is no longer in `AI_TOOL_DOMAINS`.** This happens after a future rename or removal, or a hand-edited row. It must grant nothing, and it must not crash or turn into "unrestricted". `['tickets','legacy_x']` behaves as `['tickets']`, and `['legacy_x']` behaves as core-only. Pinned in Task 3: `'unknown stored values grant nothing and never widen'`.
 3. **Re-consent for the same client.** The consent route always constructs a new Grant (`oauthInteraction.ts:~317`). Tokens minted from the older grant keep the older grant's domains until it expires or is revoked. Neither token may see the other's set. Pinned in Task 4: `'two grants for one client resolve their own domains'`.
-4. **Legacy HTTP+SSE transport.** A `/message` request with a verified session pushes its JSON-RPC response into the stream and returns 202 (`mcpServer.ts:~746`). A domain denial must arrive in that stream as a JSON-RPC error. The step-up 403 must never replace the 202. Pinned in Task 7: `'legacy SSE path keeps 202 and queues the error'`.
+4. **Legacy HTTP+SSE transport.** A `/message` request with a verified session pushes its JSON-RPC response into the stream and returns 202 (`mcpServer.ts:~750`). A domain denial must arrive in that stream as a JSON-RPC error. The step-up 403 must never replace the 202. Pinned in Task 7: `'legacy SSE path keeps 202 and queues the error'`.
 5. **Tenant (BYO MCP) and unclassified tools under a restricted grant.** Tenant tools count as `integrations`. Extension tools (no `domain` in `ExtensionAiTool`) and bootstrap auth tools are unclassified and appear only for an unrestricted principal. Pinned in Task 5: `'tenant tools follow integrations; unclassified tools need an unrestricted grant'`.
 
 ---
@@ -283,7 +283,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
 - Modify: `apps/api/src/middleware/bearerTokenAuth.ts`. `assertLiveOAuthUser` (`:79-163`) adds `mcpDomains: oauthGrants.mcpDomains` to its existing single select, and the success result gains `grantMcpDomains: string[] | null`. The middleware's `c.set('apiKey', …)` (`:~497`) passes it on, and `OAuthApiKeyContext` gains the field.
 - Modify: `apps/api/src/middleware/partnerServicePrincipalMcpAuth.ts` (`:225`, `mcpDomains: null`; see Decisions)
 - Modify: `apps/api/src/routes/mcpServer.ts`. `McpApiKeyContext` (`:355`) gains a **required** `mcpDomains: readonly string[] | null`. Typecheck then lists every construction site. Fix each test fixture to pass `mcpDomains: null` explicitly, because a missing field now fails closed (D-B9). Expect fixture churn across the `mcpServer.*.test.ts` files, and keep it in this task's commit.
-- Test: `apiKeyAuth.test.ts`, `bearerTokenAuth.test.ts`, `partnerServicePrincipalMcpAuth.test.ts` (if absent, add the case to the nearest existing SP auth test)
+- Test: `apiKeyAuth.test.ts`, `bearerTokenAuth.test.ts`. Also create `middleware/partnerServicePrincipalMcpAuth.test.ts`, since no unit test covers that middleware today. The integration counterpart is `__tests__/integration/mcpPartnerServicePrincipal.integration.test.ts`.
 
 **Interfaces:**
 - Produces: `c.get('apiKey').mcpDomains: readonly string[] | null`, always present (never `undefined`) after any of the three middlewares. `mcpServer.ts` calls `parseStoredMcpDomains(apiKey?.mcpDomains)` once per request.
@@ -294,7 +294,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
   - bearerTokenAuth: `'two grants for one client resolve their own domains'`. Two tokens with the same `client_id` and different `grant_id` get mocked rows `['devices']` and `null`, and each context carries its own grant's value.
   - SP auth: `'partner service principal keys are unrestricted'` (`mcpDomains === null`, present rather than `undefined`).
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/middleware/apiKeyAuth src/middleware/bearerTokenAuth src/middleware/partnerServicePrincipalMcpAuth`. Expected: the new cases FAIL.
-- [ ] **Step 3: Implement.** Do not add a second query on the bearer path.
+- [ ] **Step 3: Implement.** Do not add a second query on the bearer path. The value comes through the existing LEFT JOIN, so a missing or inactive grant yields `NULL`, which would read as unrestricted. That is safe only because `grantActive === false` throws 401 before the context is set (`bearerTokenAuth.ts:~307`). Keep that ordering, and add the test `'inactive grant never reaches the context with a NULL (unrestricted) mcpDomains'`.
 - [ ] **Step 4: Run again.** Expected: PASS. Run the whole `src/middleware` folder, because the select-chain mocks are shared.
 - [ ] **Step 5: Commit** with `feat(mcp): carry mcp_domains on the MCP principal context (#6156)`.
 
@@ -332,7 +332,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
   - `'domain gate never loosens the tier gate'`: under `['devices']` with `ai:read` only, a tier-2 devices tool is still absent and still refused with the existing `requires ai:write scope`.
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/routes/mcpServer.domains`. Expected: FAIL.
 - [ ] **Step 3: Implement** the call sites listed above. The order inside `handleToolsCall` is: name present → tenant dispatch → alias resolve → **domain gate** → bootstrap → unknown-tool → guardrails → approval gate → scope gates → allowlist → RBAC → rate limit. The domain gate returns before `checkGuardrails` runs. That is safe because guardrails are pure, and it means a restricted principal learns nothing about action-level tiers of tools it cannot use.
-- [ ] **Step 4: Run** `cd apps/api && npx vitest run src/routes/mcpServer`, which runs all `mcpServer.*` files (about 23; check the count). Expected: PASS.
+- [ ] **Step 4: Run** `cd apps/api && npx vitest run src/routes/mcpServer`, which runs all `mcpServer.*` files (19 today, so about 22 after this plan adds three; check the count). Expected: PASS.
 - [ ] **Step 5: Commit** with `feat(mcp): enforce per-grant tool domains on list, call and resources (#6156)`.
 
 ---
@@ -367,7 +367,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
       notes: string[];                  // e.g. tier-3 needs the web app; MFA-gated actions unavailable; how to widen
     };
     ```
-  - `capability` is `'execute'` if `ai:execute` is held, otherwise `'write'` if `ai:write`, otherwise `'read'`. `principal.kind` comes from `apiKey`: `oauthGrantId` set means `'oauth'`, `partnerServicePrincipalId` set means `'partner_service_principal'`, anything else is `'api_key'`. For OAuth, `id` is the grant id and `name` is the client name if it is already on the context, otherwise `null`. The tool does no extra DB read.
+  - `capability` is `'execute'` if `ai:execute` is held, otherwise `'write'` if `ai:write`, otherwise `'read'`. `principal.kind` comes from `apiKey`: `oauthGrantId` set means `'oauth'`, `partnerServicePrincipalId` set means `'partner_service_principal'`, anything else is `'api_key'`. For OAuth, `id` is the grant id, `clientId` comes from `apiKey.oauthClientId`, and `name` is the context's fixed `'OAuth bearer'` (`bearerTokenAuth.ts:~500`). The real client name is not on the context, and fetching it is out of scope. The tool does no extra DB read.
 
 - [ ] **Step 1: Write the failing tests** (`mcpWhoami.test.ts`):
   - `'capability ladder'`
@@ -393,9 +393,9 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
 - Create: `apps/api/src/services/mcpAuthChallenge.ts`, `apps/api/src/services/mcpAuthChallenge.test.ts`
 - Modify: `apps/api/src/routes/mcpServer.ts`
   - `setWwwAuthenticate` (`:152`) uses `buildBearerChallenge()`.
-  - The scope-gate denials in `handleToolsCall` (`:1642-1650`) and `handleTenantToolCall` (`:~1921-1930`) attach `data: { reason: 'insufficient_scope', requiredScope }` to the existing -32603 errors. The message text does not change, because existing tests pin it.
-  - The two HTTP response sites (`:~754` legacy `/message` without a session, and `:~1006` streamable) call `applyInsufficientScopeChallenge(c, apiKey, response)` before `c.json(response)`. The queued legacy-session branch (`:~746`) does not; see Open Decision 2.
-  - The preflight 403 for a missing `ai:read` (`:592`) always adds `WWW-Authenticate: buildBearerChallenge({ error: 'insufficient_scope', scope: ['mcp:read'] })` when the caller is a bearer. This is additive (the status is already 403) and not flagged.
+  - The scope-gate denials in `handleToolsCall` (`:1643-1649`) and `handleTenantToolCall` (`:~1927-1933`) attach `data: { reason: 'insufficient_scope', requiredScope }` to the existing -32603 errors. The message text does not change, because existing tests pin it.
+  - The two HTTP response sites (`:~754` legacy `/message` without a session, and `:~1006` streamable) call `applyInsufficientScopeChallenge(c, apiKey, response)` before `c.json(response)`. The queued legacy-session branch (`:~750`) does not; see Open Decision 2.
+  - The preflight 403 for a missing `ai:read` (`:593`) always adds `WWW-Authenticate: buildBearerChallenge({ error: 'insufficient_scope', scope: ['mcp:read'] })` when the caller is a bearer. This is additive (the status is already 403) and not flagged.
 - Modify: `apps/api/src/middleware/bearerTokenAuth.ts`. Bearer-path 401s gain the same challenge header via the shared builder. They have none today, so a client that sends an expired token learns nothing about where to re-authorize.
 - Test: `mcpServer.stepUp.test.ts` (create), `bearerTokenAuth.test.ts`
 
@@ -418,7 +418,10 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
     - `'approval, MFA, RBAC and execute_admin denials never carry insufficient_scope'`
   - `bearerTokenAuth.test.ts`: `'expired-token 401 carries the bearer challenge'`.
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/mcpAuthChallenge src/routes/mcpServer.stepUp src/middleware/bearerTokenAuth`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Bearer 401s are thrown as `HTTPException`. Attach the header via `new HTTPException(401, { message, res })` or the app's existing error-to-response mapping. Check which pattern `apps/api/src/index.ts`'s `onError` honours before choosing.
+- [ ] **Step 3: Implement.**
+  - Bearer 401s are thrown as `HTTPException` inside `bearerTokenAuthMiddleware`, which `mcpAuthMiddleware` dispatches to at `mcpServer.ts:314`. They reach `app.onError` (`apps/api/src/index.ts:~1183-1198`), which builds its own `c.json(...)`. It **ignores** `HTTPException`'s `res` and headers, so `new HTTPException(401, { res })` would silently lose the challenge.
+  - Fix: call `c.header('WWW-Authenticate', buildBearerChallenge())` before each 401 `throw`. `onError`'s `c.json` keeps headers already set on the context. Prove it with a test through the real `app.request`, not by calling the middleware directly.
+  - Only the missing-credentials 401 at `:327` uses `setWwwAuthenticate`.
 - [ ] **Step 4: Run again, then all of `src/routes/mcpServer`.** Expected: PASS.
 - [ ] **Step 5: Commit** with `feat(mcp): WWW-Authenticate scope + dormant insufficient_scope step-up (#6156)`.
 
@@ -429,10 +432,10 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
 **Files:**
 - Modify: `apps/api/src/routes/apiKeys.ts`. `createApiKeySchema` (`:258`) and `updateApiKeySchema` (`:266`) gain `mcpDomains: mcpDomainsInputSchema.optional()`. The insert (`:~450`) and update (`:548`) write `normalizeMcpDomainsInput(...)`. The list select (`:340`) and the single-get and create responses include `mcpDomains`.
 - Modify: `apps/api/src/services/servicePrincipals.ts`. `rotateServicePrincipalKey` (`:97`) selects the `mcp_domains` of the active key it is about to revoke and inserts the new row with it (D-B5).
-- Test: `apps/api/src/routes/apiKeys.test.ts`, `apps/api/src/services/servicePrincipals.test.ts` (create it if absent, next to the existing SP tests)
+- Test: `apps/api/src/routes/apiKeys.test.ts`, `apps/api/src/services/servicePrincipals.test.ts` (it exists; add to it)
 
 **Interfaces:**
-- Consumes: `mcpDomainsInputSchema` and `normalizeMcpDomainsInput` (Task 1), and the route's existing `validateRequestedScopes` / `validateApiKeyScopeDelegation`.
+- Consumes: `mcpDomainsInputSchema` and `normalizeMcpDomainsInput` (Task 1), and the route's existing `validateRequestedScopes(c, scopes)` (`routes/apiKeys.ts:228`, which calls `validateApiKeyScopeDelegation` in `services/apiKeyScopes.ts:90`). `enforceApiKeyDelegationCeiling` already runs on PATCH against stored scopes. Widening additionally calls `validateRequestedScopes(c, existingKey.scopes)`.
 - Produces: `isMcpDomainsWidening(prev: string[] | null, next: string[] | null): boolean`, local to `routes/apiKeys.ts`. It is true when `next === null && prev !== null`, or when `next` has an element missing from `prev`.
 - Produces: the REST shape `mcpDomains: McpGrantableDomain[] | null` on every api-key response. Omitting it on create gives `null`. Omitting it on PATCH leaves it unchanged. An explicit `null` on PATCH clears it to unrestricted.
 
@@ -449,6 +452,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
   - `servicePrincipals.test.ts`: `'rotation carries mcp_domains from the revoked key'`.
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/routes/apiKeys`. Expected: the new cases FAIL.
 - [ ] **Step 3: Implement.**
+  - Add `mcpDomains: apiKeys.mcpDomains` to every hand-written column list: the list select (`:340`), the single-get select, the create `.returning`, the PATCH `.returning` (`:~606-624`) and the rotate `.returning` (`:~805-822`).
   - Narrowing needs nothing beyond the route's existing `requirePermission(ORGS_WRITE)` + `requireMfa()`.
   - Widening (`isMcpDomainsWidening`) re-runs the route's scope-delegation validation on the key's **stored** scopes as if the updater were granting them, and returns that validation's 403 unchanged. No change to `validateApiKeyScopeDelegation` itself.
   - The existing update audit gains `mcpDomains: { previous, next }`.
@@ -475,7 +479,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
   - 13 checkboxes `data-testid="mcp-domain-<domain>"`, plus one disabled, checked "Core (always included)".
   - With "selected" and zero boxes checked, it shows an inline error `data-testid="mcp-domains-error"`, and the parent's submit is disabled (Open Decision 1 default).
   - The consent variant renders one line under the picker, `data-testid="mcp-domains-reconnect-note"`: "Applies to this connection. To narrow an existing connection, revoke it under Connected apps, then reconnect." (D-B10)
-- The consent route records `mcpDomains` in the consent audit event, or adds `oauth.consent.granted` if none exists (D-B11). Test: `'consent audit records mcpDomains'`.
+- The consent route's existing `writeRouteAudit` (`oauth.client.partner_grant_recorded` / `_refreshed`, `:~484`) gains `grantId` and `mcpDomains` in its details (D-B11). Test: `'partner_grant audit details carry grantId and mcpDomains'`.
 
 - [ ] **Step 1: Write the failing tests.**
   - `oauthInteraction.test.ts`: `'consent without mcp_domains persists null'`, `'consent with ["tickets"] persists it via setGrantBreezeMeta'`, `'consent with ["core"] or [] is a 400 and saves no grant meta'`. For the last one, the check must run before `grant.save()`, so assert that `save` was not called.
