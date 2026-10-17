@@ -8,7 +8,12 @@ import {
   OpenApiRequestError,
 } from './openapiClient';
 import type { OperationBinding } from './openapiProjection';
-import { ResponseTooLargeError } from '../urlSafety';
+import { ResponseTooLargeError, safeFetch } from '../urlSafety';
+
+vi.mock('../urlSafety', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../urlSafety')>();
+  return { ...actual, safeFetch: vi.fn() };
+});
 
 const BASE = 'https://api.example.com/v1';
 const ORIGIN = 'https://api.example.com';
@@ -110,7 +115,7 @@ describe('OpenApiClient.callOperation', () => {
   it('sends the method, credential, headers and the safeFetch bounds', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({ id: '1' }));
     const result = await client(fetchImpl).callOperation(showPet, { petId: '1', X_Trace: 'abc' });
-    const [url, init] = fetchImpl.mock.calls[0];
+    const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe('https://api.example.com/v1/pets/1');
     expect(init.method).toBe('GET');
     expect(init.headers.Authorization).toBe('Bearer tok');
@@ -127,7 +132,7 @@ describe('OpenApiClient.callOperation', () => {
   it('sends Content-Type and the JSON body for a write', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({ id: '2' }, 201));
     await client(fetchImpl).callOperation(createPet, { body: { name: 'Rex' } });
-    const init = fetchImpl.mock.calls[0][1];
+    const init = fetchImpl.mock.calls[0]![1];
     expect(init.method).toBe('POST');
     expect(init.headers['Content-Type']).toBe('application/json');
     expect(init.body).toBe('{"name":"Rex"}');
@@ -138,7 +143,7 @@ describe('OpenApiClient.callOperation', () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({}));
     await client(fetchImpl, { authKind: 'api_key_header', headerName: 'X-Api-Key', value: 'real-key' })
       .callOperation(binding, { petId: '1', k: 'model-supplied' });
-    const headers = fetchImpl.mock.calls[0][1].headers as Record<string, string>;
+    const headers = fetchImpl.mock.calls[0]![1].headers as Record<string, string>;
     const keyHeaders = Object.entries(headers).filter(([k]) => k.toLowerCase() === 'x-api-key');
     expect(keyHeaders).toEqual([['X-Api-Key', 'real-key']]);
   });
@@ -196,10 +201,59 @@ describe('OpenApiClient.callOperation', () => {
     await expect(client(fetchImpl).callOperation(showPet, { petId: '1' })).resolves.toEqual({ isError: false, text: 'HTTP 204 (no content)' });
   });
 
+  it('uses safeFetch by default and passes the private-egress flag through', async () => {
+    vi.mocked(safeFetch).mockResolvedValue(json({ ok: true }));
+    const viaDefault = new OpenApiClient({ baseUrl: BASE, credentialOrigin: ORIGIN, auth: { authKind: 'none' }, allowPrivateNetwork: true });
+    await viaDefault.callOperation(showPet, { petId: '1' });
+    expect(safeFetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(safeFetch).mock.calls[0]![1]).toMatchObject({ allowPrivateNetwork: true, method: 'GET' });
+  });
+
+  it('keeps the documented per-call limits', () => {
+    expect(OPENAPI_TIMEOUT_MS).toBe(30_000);
+    expect(OPENAPI_MAX_RESPONSE_BYTES).toBe(1_048_576);
+    expect(OPENAPI_ERROR_BODY_CHARS).toBe(2_048);
+  });
+
+  it('never mints an oauth2 token when the base URL has drifted off the pinned origin', async () => {
+    const fetchImpl = vi.fn();
+    const drifted = new OpenApiClient({
+      baseUrl: 'https://other.example/v1', credentialOrigin: ORIGIN, fetchImpl,
+      auth: { authKind: 'oauth2_client_credentials', tokenUrl: 'https://id.example/token', clientId: 'drift-1', clientSecret: 's' },
+    });
+    const result = await drifted.callOperation(showPet, { petId: '1' });
+    expect(result.isError).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('enforces the response cap itself even when a transport ignores maxBytes', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('x'.repeat(OPENAPI_MAX_RESPONSE_BYTES + 1), { status: 200 }));
+    await expect(client(fetchImpl).callOperation(showPet, { petId: '1' }))
+      .resolves.toEqual({ isError: true, text: `response exceeded the ${OPENAPI_MAX_RESPONSE_BYTES}-byte limit` });
+  });
+
+  it.each([
+    ['api_key_header', { authKind: 'api_key_header', headerName: 'X-Api-Key', value: 'k3y-val-778' }, ['k3y-val-778']],
+    ['basic', { authKind: 'basic', username: 'usr-1', password: 'pw-secret-55' }, [Buffer.from('usr-1:pw-secret-55').toString('base64')]],
+  ])('redacts a %s credential echoed in an error body', async (_l, auth, secrets) => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(`echo ${(secrets as string[]).join(' ')} done`, { status: 400 }));
+    const result = await client(fetchImpl, auth).callOperation(showPet, { petId: '1' });
+    for (const secret of secrets as string[]) expect(result.text).not.toContain(secret);
+    expect(result.text).toContain('[REDACTED]');
+  });
+
+  it('redacts before cutting the error body, so a secret straddling the cut leaves no prefix', async () => {
+    const token = 'straddling-secret-token-0123456789';
+    const body = `${'x'.repeat(OPENAPI_ERROR_BODY_CHARS - 10)}${token}`;
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(body, { status: 500 }));
+    const result = await client(fetchImpl, { authKind: 'bearer', token }).callOperation(showPet, { petId: '1' });
+    expect(result.text).not.toContain(token.slice(0, 10));
+  });
+
   it('calls without credentials for authKind none even off the pinned origin', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json({}));
     const anon = new OpenApiClient({ baseUrl: BASE, credentialOrigin: ORIGIN, auth: { authKind: 'none' }, fetchImpl });
     await anon.callOperation(showPet, { petId: '1' });
-    expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBeUndefined();
+    expect(fetchImpl.mock.calls[0]![1].headers.Authorization).toBeUndefined();
   });
 });

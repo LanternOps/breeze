@@ -74,6 +74,7 @@
     "skippedHeading": "Skipped operations",
     "skippedBody": "These operations were not turned into tools. Breeze skips what it cannot call safely rather than guessing.",
     "skippedShowing": "Showing {{shown}} of {{total}}",
+    "summaryAt": "From the discovery run at {{at}}.",
     "serverOriginWarning": "The document lists server URLs on other origins. They were ignored — operations are only sent to the API base URL.",
     "skipReasons": {
       "unsupported_method": "Unsupported HTTP method (OPTIONS/TRACE)",

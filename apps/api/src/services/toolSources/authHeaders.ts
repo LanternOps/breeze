@@ -145,6 +145,8 @@ export async function buildToolSourceAuthHeaders(
       return { Authorization: `Bearer ${accessToken}` };
     }
     default:
-      return {};
+      // Unreachable for a well-typed config; never send a request
+      // unauthenticated because a stored auth kind is unknown to this build.
+      throw new ToolSourceAuthError(`unsupported auth kind: ${String((auth as { authKind?: unknown }).authKind)}`, 'auth');
   }
 }

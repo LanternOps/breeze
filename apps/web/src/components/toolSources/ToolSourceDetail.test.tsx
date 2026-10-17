@@ -277,4 +277,40 @@ describe('ToolSourceDetail — openapi diagnostics (#5217)', () => {
     expect(box.querySelector('img')).toBeNull();
     expect(box.textContent).toContain('<img src=x onerror=alert(1)>');
   });
+
+  it('says which discovery run the skips and warnings come from (a failed run keeps the old summary)', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({
+        kind: 'openapi',
+        status: 'error',
+        lastError: 'spec_fetch_failed: HTTP 503',
+        specUrl: 'https://a.test/o.json',
+        lastDiscoverySummary: summary({
+          skipped: [{ name: 'a', reason: 'unsupported_method' }],
+          skippedTotal: 1,
+          warnings: [{ code: 'server_origin_mismatch', origins: ['https://x.example.test'] }],
+        }),
+      }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    expect((await screen.findByTestId('tool-source-skipped-at')).textContent).toMatch(/^From the discovery run at .+\.$/);
+    expect(screen.getByTestId('tool-source-warnings-at').textContent).toMatch(/^From the discovery run at /);
+  });
+
+  it('falls back to the raw code for a skip reason or warning this build does not know', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({
+        kind: 'openapi',
+        specUrl: 'https://a.test/o.json',
+        lastDiscoverySummary: summary({
+          skipped: [{ name: 'a', reason: 'some_future_reason' }],
+          skippedTotal: 1,
+          warnings: [{ code: 'some_future_warning', origins: [] }],
+        }),
+      }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    expect((await screen.findByTestId('tool-source-skipped')).textContent).toContain('some_future_reason');
+    expect(screen.getByTestId('tool-source-warnings').textContent).toContain('some_future_warning');
+  });
 });

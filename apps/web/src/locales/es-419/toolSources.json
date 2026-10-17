@@ -74,6 +74,7 @@
     "skippedHeading": "Operaciones omitidas",
     "skippedBody": "Estas operaciones no se convirtieron en herramientas. Breeze omite lo que no puede invocar de forma segura en lugar de adivinar.",
     "skippedShowing": "Mostrando {{shown}} de {{total}}",
+    "summaryAt": "Del análisis de descubrimiento del {{at}}.",
     "serverOriginWarning": "El documento enumera URL de servidor en otros orígenes. Se ignoraron: las operaciones solo se envían a la URL base de la API.",
     "skipReasons": {
       "unsupported_method": "Método HTTP no admitido (OPTIONS/TRACE)",

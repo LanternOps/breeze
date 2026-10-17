@@ -495,6 +495,7 @@ describe('discoverSource — openapi kind (W2)', () => {
     await discoverSource(SOURCE_ID, { specFetcher });
 
     expect((set.mock.calls[0]![0] as Record<string, string>).lastError).toBe('spec_fetch_failed: echo [REDACTED]');
+    expect(set.mock.calls[0]![0]).not.toHaveProperty('lastDiscoverySummary');
   });
 
   it('fails a document over the operation cap through the same error path', async () => {
@@ -507,6 +508,31 @@ describe('discoverSource — openapi kind (W2)', () => {
 
     expect(outcome.status).toBe('error');
     expect((set.mock.calls[0]![0] as Record<string, string>).lastError).toBe('too_many_operations: 2001 (limit 2000)');
+    expect(set.mock.calls[0]![0]).not.toHaveProperty('lastDiscoverySummary');
+  });
+
+  it('passes the private-egress flag through to the spec fetch', async () => {
+    vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(true);
+    mockSourceLookup(openapiRow());
+    mockExistingTools([]);
+    mockInsertCapture();
+    mockUpdateCapture();
+    const specFetcher = vi.fn().mockResolvedValue(petstore());
+
+    await discoverSource(SOURCE_ID, { specFetcher });
+
+    expect(specFetcher.mock.calls[0]![0]).toMatchObject({ allowPrivateNetwork: true });
+    vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(false);
+  });
+
+  it('fails a document with no operations through the same error path (no empty "active" source)', async () => {
+    mockSourceLookup(openapiRow());
+    const { set } = mockUpdateCapture();
+
+    const outcome = await discoverSource(SOURCE_ID, { specFetcher: vi.fn().mockResolvedValue({ openapi: '3.1.0', paths: {} }) });
+
+    expect(outcome.status).toBe('error');
+    expect((set.mock.calls[0]![0] as Record<string, string>).lastError).toMatch(/^spec_has_no_operations/);
   });
 
   it('never lowers an effective tier on re-discovery, and bumps the revision when the route moves', async () => {

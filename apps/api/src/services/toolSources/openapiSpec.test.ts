@@ -11,7 +11,12 @@ import {
   parseOpenApiDocument,
   SPEC_FETCH_TIMEOUT_MS,
 } from './openapiSpec';
-import { ResponseTooLargeError } from '../urlSafety';
+import { ResponseTooLargeError, safeFetch } from '../urlSafety';
+
+vi.mock('../urlSafety', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../urlSafety')>();
+  return { ...actual, safeFetch: vi.fn() };
+});
 
 const fixture = (name: string) => readFileSync(join(__dirname, '__fixtures__', name), 'utf8');
 const ok = (body: string) => new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
@@ -161,6 +166,25 @@ describe('dereferenceLocal', () => {
     expect((doc.x as any).example).toEqual({ $ref: 'https://not-a-ref.example/literal' });
   });
 
+  it('dereferences schema PROPERTIES named like literal keywords (default, enum, x-…) and checks their refs', () => {
+    const doc = dereferenceLocal({
+      openapi: '3.1.0',
+      components: { schemas: { Foo: { type: 'string' }, default: { type: 'integer' } } },
+      x: {
+        type: 'object',
+        properties: {
+          default: { $ref: '#/components/schemas/Foo' },
+          enum: { $ref: '#/components/schemas/Foo' },
+          'x-vendor-id': { $ref: '#/components/schemas/default' },
+        },
+      },
+    });
+    expect((doc.x as any).properties).toEqual({ default: { type: 'string' }, enum: { type: 'string' }, 'x-vendor-id': { type: 'integer' } });
+    expect(specErr(() => dereferenceLocal({
+      openapi: '3.1.0', x: { type: 'object', properties: { default: { $ref: 'https://evil.example/x.json' } } },
+    })).code).toBe('remote_ref');
+  });
+
   it('dereferences the petstore fixture fully', () => {
     const doc = dereferenceLocal(parseOpenApiDocument(fixture('petstore.json')));
     expect(JSON.stringify(doc.paths)).not.toContain('$ref');
@@ -177,7 +201,7 @@ describe('fetchOpenApiDocument', () => {
       auth: { authKind: 'bearer', token: 'tok' }, fetchImpl, allowPrivateNetwork: true,
     });
     expect(doc.openapi).toBe('3.0.3');
-    const [url, init] = fetchImpl.mock.calls[0];
+    const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe('https://api.example.com/openapi.json');
     expect(init.method).toBe('GET');
     expect(init.headers.Authorization).toBe('Bearer tok');
@@ -188,13 +212,23 @@ describe('fetchOpenApiDocument', () => {
     expect(init.redirect).toBeUndefined();
   });
 
+  it('uses safeFetch by default and passes the private-egress flag through', async () => {
+    vi.mocked(safeFetch).mockResolvedValue(ok(fixture('petstore.json')));
+    await fetchOpenApiDocument({
+      specUrl: 'https://api.example.com/openapi.json', credentialOrigin: ORIGIN, auth: { authKind: 'none' }, allowPrivateNetwork: true,
+    });
+    expect(safeFetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(safeFetch).mock.calls[0]![0]).toBe('https://api.example.com/openapi.json');
+    expect(vi.mocked(safeFetch).mock.calls[0]![1]).toMatchObject({ allowPrivateNetwork: true, maxBytes: MAX_SPEC_BYTES });
+  });
+
   it('omits the credential when the spec is served off-origin', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(ok(fixture('petstore.json')));
     await fetchOpenApiDocument({
       specUrl: 'https://docs.example.net/openapi.json', credentialOrigin: ORIGIN,
       auth: { authKind: 'bearer', token: 'tok' }, fetchImpl,
     });
-    expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBeUndefined();
+    expect(fetchImpl.mock.calls[0]![1].headers.Authorization).toBeUndefined();
   });
 
   it('maps an oversize body to too_large', async () => {

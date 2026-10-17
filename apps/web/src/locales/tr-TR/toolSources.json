@@ -74,6 +74,7 @@
     "skippedHeading": "Atlanan işlemler",
     "skippedBody": "Bu işlemler araca dönüştürülmedi. Breeze, güvenli biçimde çağıramadığı şeyleri tahmin yürütmek yerine atlar.",
     "skippedShowing": "{{total}} içinden {{shown}} gösteriliyor",
+    "summaryAt": "{{at}} tarihli keşif çalıştırmasından.",
     "serverOriginWarning": "Belge, başka kaynaklardaki sunucu URL’lerini listeliyor. Bunlar yok sayıldı; işlemler yalnızca API temel URL’sine gönderilir.",
     "skipReasons": {
       "unsupported_method": "Desteklenmeyen HTTP yöntemi (OPTIONS/TRACE)",

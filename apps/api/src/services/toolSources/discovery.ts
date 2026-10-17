@@ -252,6 +252,16 @@ export async function discoverSource(sourceId: string, deps?: DiscoveryDeps): Pr
     // error message is a crypto library message (metadata), never remote
     // content, so there is nothing of the vendor's to redact.
     const redacted = redactSecrets(message, decryptedAuth ? secretValuesOf(decryptedAuth) : []);
+    // The job itself "succeeds" (the failure is captured onto the row), so the
+    // worker's failed-job log never fires — leave a server-side trace here.
+    // Redacted text only; the error class distinguishes a vendor/document
+    // fault (OpenApiSpecError, McpClientError…) from a bug in our own code.
+    console.warn('[toolSourceDiscovery] discovery failed', {
+      sourceId,
+      kind: source.kind,
+      errorName: err instanceof Error ? err.name : typeof err,
+      error: redacted,
+    });
     await withSystemDbAccessContext(async () => {
       await db
         .update(toolSources)

@@ -215,7 +215,9 @@ export function boundedJsonStringify(value: unknown, maxBytes: number): string |
 
 /** OpenAPI 3.0 `nullable: true` → a JSON-Schema type union (3.1 already uses the union). */
 function schemaReviver(this: unknown, _key: string, value: unknown): unknown {
-  if (isPlainObject(value) && Object.prototype.hasOwnProperty.call(value, 'nullable')) {
+  // Only the boolean keyword: an object under a property NAMED `nullable`
+  // (`properties: { nullable: {…} }`) is a schema, not the keyword, and stays.
+  if (isPlainObject(value) && typeof value.nullable === 'boolean') {
     const nullable = value.nullable === true;
     delete value.nullable;
     if (nullable) {
@@ -386,6 +388,15 @@ export function projectOpenApiDocument(doc: OpenApiDocument, ctx: ProjectionCont
   if (operationCount > MAX_OPERATIONS) {
     throw new OpenApiSpecError(`too_many_operations: ${operationCount} (limit ${MAX_OPERATIONS})`, 'too_many_operations');
   }
+  // A document with nothing to project is almost always the wrong URL (a docs
+  // landing page that parsed, a webhooks-only spec). Fail loudly rather than
+  // report an empty, "active" source — re-discovery would otherwise also
+  // soft-remove every existing tool with no visible reason.
+  const hasUnprojectedMethods = pathEntries.some(([, item]) =>
+    UNPROJECTED_HTTP_METHODS.some((m) => isPlainObject(item[m])));
+  if (operationCount === 0 && !hasUnprojectedMethods) {
+    throw new OpenApiSpecError('spec_has_no_operations: the document declares no callable operations under paths', 'parse');
+  }
 
   const components = isPlainObject(doc.components) ? doc.components : {};
   const securitySchemes = isPlainObject(components.securitySchemes) ? components.securitySchemes : {};
@@ -501,7 +512,7 @@ export function projectOpenApiDocument(doc: OpenApiDocument, ctx: ProjectionCont
       const properties: Record<string, unknown> = {};
       const required: string[] = [];
       const binding: OperationBinding = {
-        method,
+        method: method as ProjectableMethod, // unprojected verbs were skipped above
         path,
         operationId,
         params: [],

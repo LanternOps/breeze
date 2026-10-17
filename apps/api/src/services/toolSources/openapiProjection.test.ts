@@ -215,7 +215,7 @@ describe('projectOpenApiDocument — rules', () => {
       }),
       CTX,
     );
-    const binding = asOperationBinding(r.operations[0].annotations)!;
+    const binding = asOperationBinding(r.operations[0]!.annotations)!;
     expect(binding.params).toEqual([{ name: 'X-Trace', in: 'header', property: 'X_Trace', required: false }]);
   });
 
@@ -229,7 +229,7 @@ describe('projectOpenApiDocument — rules', () => {
       }),
       CTX,
     );
-    expect((r.operations[0].inputSchema as any).properties.id).toEqual({ type: 'integer', description: 'inner' });
+    expect((r.operations[0]!.inputSchema as any).properties.id).toEqual({ type: 'integer', description: 'inner' });
   });
 
   it('adds an undeclared path template variable as a required string, and always requires path params', () => {
@@ -237,12 +237,12 @@ describe('projectOpenApiDocument — rules', () => {
       doc({ '/x/{id}/{other}': { get: { operationId: 'op', parameters: [{ name: 'id', in: 'path', schema: { type: 'string' } }], ...ok } } }),
       CTX,
     );
-    const binding = asOperationBinding(r.operations[0].annotations)!;
+    const binding = asOperationBinding(r.operations[0]!.annotations)!;
     expect(binding.params).toEqual([
       { name: 'id', in: 'path', property: 'id', required: true },
       { name: 'other', in: 'path', property: 'other', required: true },
     ]);
-    expect((r.operations[0].inputSchema as any).required).toEqual(['id', 'other']);
+    expect((r.operations[0]!.inputSchema as any).required).toEqual(['id', 'other']);
   });
 
   it('sanitises and de-duplicates property names, keeping `body` for the request body', () => {
@@ -264,7 +264,7 @@ describe('projectOpenApiDocument — rules', () => {
       }),
       CTX,
     );
-    const binding = asOperationBinding(r.operations[0].annotations)!;
+    const binding = asOperationBinding(r.operations[0]!.annotations)!;
     expect(binding.params.map((p) => p.property)).toEqual(['x_id', 'x_id_2', 'p_1st', 'body']);
     expect(binding.body).toEqual({ property: 'body_2', required: false });
   });
@@ -304,7 +304,7 @@ describe('projectOpenApiDocument — rules', () => {
       CTX,
     );
     expect(r.operations).toHaveLength(1);
-    expect(r.operations[0].outputSchema).toBeUndefined();
+    expect(r.operations[0]!.outputSchema).toBeUndefined();
   });
 
   it('translates OpenAPI 3.0 `nullable` into a JSON-Schema type union', () => {
@@ -312,7 +312,31 @@ describe('projectOpenApiDocument — rules', () => {
       doc({ '/x': { get: { operationId: 'op', parameters: [{ name: 'q', in: 'query', schema: { type: 'string', nullable: true } }], ...ok } } }),
       CTX,
     );
-    expect((r.operations[0].inputSchema as any).properties.q).toEqual({ type: ['string', 'null'] });
+    expect((r.operations[0]!.inputSchema as any).properties.q).toEqual({ type: ['string', 'null'] });
+  });
+
+  it('keeps a schema property that is NAMED nullable', () => {
+    const r = projectOpenApiDocument(
+      doc({ '/x': { post: { operationId: 'op', requestBody: { content: { 'application/json': { schema: {
+        type: 'object', properties: { nullable: { type: 'boolean' }, name: { type: 'string', nullable: true } },
+      } } } }, ...ok } } }),
+      CTX,
+    );
+    expect((r.operations[0]!.inputSchema as any).properties.body.properties).toEqual({
+      nullable: { type: 'boolean' }, name: { type: ['string', 'null'] },
+    });
+  });
+
+  it('fails a document with no callable operations instead of reporting an empty source', () => {
+    for (const d of [doc({}), dereferenceLocal({ openapi: '3.1.0', webhooks: { a: { post: ok } } })]) {
+      let err: unknown;
+      try { projectOpenApiDocument(d, CTX); } catch (e) { err = e; }
+      expect(err).toBeInstanceOf(OpenApiSpecError);
+      expect((err as OpenApiSpecError).message).toMatch(/^spec_has_no_operations/);
+    }
+    // Only unprojectable verbs: not an error — the skips explain it.
+    const optionsOnly = projectOpenApiDocument(doc({ '/x': { options: ok } }), CTX);
+    expect(optionsOnly.skipped).toEqual([expect.objectContaining({ reason: 'unsupported_method' })]);
   });
 
   it('refuses a document over MAX_OPERATIONS rather than truncating it', () => {
@@ -343,7 +367,7 @@ describe('projectOpenApiDocument — rules', () => {
       CTX,
     );
     expect(r.serverOriginWarnings).toEqual(['https://eu.other.example']);
-    expect(asOperationBinding(r.operations[0].annotations)!.declaredServer).toBe('/v2');
+    expect(asOperationBinding(r.operations[0]!.annotations)!.declaredServer).toBe('/v2');
   });
 
   it('caps description length and falls back to METHOD path', () => {

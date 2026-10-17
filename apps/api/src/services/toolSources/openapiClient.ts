@@ -206,8 +206,13 @@ export class OpenApiClient {
         return { isError: true, text: `HTTP ${res.status}: redirect not followed (operations are only sent to the API base URL)` };
       }
       const text = await res.text();
+      // Depth: safeFetch enforces maxBytes while buffering; this holds for any transport.
+      if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+        return { isError: true, text: `response exceeded the ${maxBytes}-byte limit` };
+      }
       if (!res.ok) {
-        return { isError: true, text: redactSecrets(`HTTP ${res.status}: ${text.slice(0, OPENAPI_ERROR_BODY_CHARS)}`, secrets) };
+        // Redact BEFORE cutting, so a secret straddling the cut cannot leave a prefix.
+        return { isError: true, text: `HTTP ${res.status}: ${redactSecrets(text, secrets).slice(0, OPENAPI_ERROR_BODY_CHARS)}` };
       }
       if (text === '') return { isError: false, text: `HTTP ${res.status} (no content)` };
       return { isError: false, text: redactSecrets(text, secrets) };

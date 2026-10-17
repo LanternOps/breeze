@@ -74,6 +74,7 @@
     "skippedHeading": "Operazioni saltate",
     "skippedBody": "Queste operazioni non sono state trasformate in strumenti. Breeze salta ciò che non può chiamare in sicurezza invece di tirare a indovinare.",
     "skippedShowing": "Visualizzati {{shown}} di {{total}}",
+    "summaryAt": "Dall’esecuzione di rilevamento del {{at}}.",
     "serverOriginWarning": "Il documento elenca URL di server su altre origini. Sono stati ignorati: le operazioni vengono inviate solo all’URL di base dell’API.",
     "skipReasons": {
       "unsupported_method": "Metodo HTTP non supportato (OPTIONS/TRACE)",

@@ -74,6 +74,7 @@
     "skippedHeading": "Übersprungene Operationen",
     "skippedBody": "Diese Operationen wurden nicht in Tools umgewandelt. Breeze überspringt, was es nicht sicher aufrufen kann, statt zu raten.",
     "skippedShowing": "{{shown}} von {{total}} werden angezeigt",
+    "summaryAt": "Aus dem Ermittlungslauf vom {{at}}.",
     "serverOriginWarning": "Das Dokument führt Server-URLs mit anderen Ursprüngen auf. Sie wurden ignoriert – Operationen werden nur an die API-Basis-URL gesendet.",
     "skipReasons": {
       "unsupported_method": "Nicht unterstützte HTTP-Methode (OPTIONS/TRACE)",

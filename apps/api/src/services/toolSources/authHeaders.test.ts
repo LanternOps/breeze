@@ -76,6 +76,20 @@ describe('buildToolSourceAuthHeaders', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('throws origin_mismatch for an off-origin oauth2 target WITHOUT contacting the token endpoint', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(tokenResponse('at-x'));
+    const err = await buildToolSourceAuthHeaders(
+      { authKind: 'oauth2_client_credentials', tokenUrl: 'https://id.example.com/token', clientId: 'a-unique-4', clientSecret: 'b' },
+      URL_OFF_ORIGIN, ORIGIN, { fetchImpl },
+    ).catch((e) => e);
+    expect(err).toMatchObject({ code: 'origin_mismatch' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses an auth kind it does not know rather than sending the request unauthenticated', async () => {
+    await expect(buildToolSourceAuthHeaders({ authKind: 'mystery' } as any, URL_ON_ORIGIN, ORIGIN)).rejects.toMatchObject({ code: 'auth' });
+  });
+
   it('reports an oauth2 token failure as ToolSourceAuthError code auth', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('nope', { status: 401 }));
     const err = await buildToolSourceAuthHeaders(

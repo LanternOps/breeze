@@ -118,6 +118,9 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
   const skipped = summary?.skipped ?? [];
   const skippedTotal = summary?.skippedTotal ?? skipped.length;
   const warnings = summary?.warnings ?? [];
+  // A failed run leaves the previous summary in place, so always say which run it describes.
+  const summaryAtText = summary?.at ? formatDiscoveredAt(summary.at) : null;
+  const summaryAt = summaryAtText ? t('detail.summaryAt', { at: summaryAtText }) : null;
 
   if (loadError) {
     return <p data-testid="tool-source-detail-error" className="p-4 text-sm text-destructive">{loadError}</p>;
@@ -187,7 +190,7 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
         >
           {warnings.map((warning) => (
             <div key={warning.code}>
-              {warning.code === 'server_origin_mismatch' && <p>{t('detail.serverOriginWarning')}</p>}
+              <p>{warning.code === 'server_origin_mismatch' ? t('detail.serverOriginWarning') : warning.code}</p>
               <ul className="mt-1 list-disc pl-5 font-mono text-xs">
                 {warning.origins.map((origin) => (
                   <li key={origin} className="break-all">{origin}</li>
@@ -195,6 +198,7 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
               </ul>
             </div>
           ))}
+          {summaryAt && <p data-testid="tool-source-warnings-at" className="text-xs">{summaryAt}</p>}
         </section>
       )}
 
@@ -213,6 +217,7 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
         <section data-testid="tool-source-skipped" className="space-y-2">
           <h2 className="text-sm font-medium">{t('detail.skippedHeading')}</h2>
           <p className="text-xs text-muted-foreground">{t('detail.skippedBody')}</p>
+          {summaryAt && <p data-testid="tool-source-skipped-at" className="text-xs text-muted-foreground">{summaryAt}</p>}
           <ul className="divide-y rounded-md border text-sm">
             {skipped.map((skip, index) => (
               <li key={`${skip.name}-${index}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 p-2">
@@ -224,7 +229,7 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
                 )}
                 <span className="text-xs text-muted-foreground">
                   {/* i18n-dynamic: one detail.skipReasons.* key per ToolSourceSkipReason. */}
-                  {t(/* i18n-dynamic */ `detail.skipReasons.${skip.reason}`)}
+                  {t(/* i18n-dynamic */ `detail.skipReasons.${skip.reason}`, { defaultValue: skip.reason })}
                 </span>
               </li>
             ))}

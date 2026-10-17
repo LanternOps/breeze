@@ -37,6 +37,18 @@ const MAX_YAML_ALIASES = 1_000;
 const MAX_YAML_MERGE_KEYS = 1_000;
 /** Literal-value keys whose contents are data, never Reference Objects. */
 const LITERAL_VALUE_KEYS = new Set(['example', 'default', 'enum', 'const']);
+/**
+ * Keys whose value is a MAP OF NAMES (property names, component names, path
+ * templates, status codes, media types…). Inside such a map a key called
+ * `default`, `enum` or `x-foo` is a name, not a literal-value keyword, so its
+ * value must still be dereferenced (and its `$ref`s checked for remoteness).
+ */
+const NAMED_MAP_KEYS = new Set([
+  'properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas',
+  'schemas', 'parameters', 'responses', 'requestBodies', 'headers', 'securitySchemes',
+  'links', 'callbacks', 'pathItems', 'examples', 'encoding', 'content', 'paths',
+  'webhooks', 'variables',
+]);
 
 export type OpenApiDocument = Record<string, unknown>;
 
@@ -159,7 +171,7 @@ export function parseOpenApiDocument(body: string): OpenApiDocument {
         maxDepth: MAX_STRUCTURAL_DEPTH,
       });
     } catch (err) {
-      const detail = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      const detail = err instanceof Error ? (err.message.split('\n')[0] ?? '') : String(err);
       throw new OpenApiSpecError(`spec_parse_failed: not valid JSON or YAML (${detail.slice(0, 200)})`, 'parse');
     }
   }
@@ -233,8 +245,13 @@ export function dereferenceLocal(doc: OpenApiDocument): OpenApiDocument {
   /** pointer → dereferenced target (memo); `inProgress` marks the resolution path for cycle detection. */
   const resolved = new Map<string, unknown>();
   const inProgress = new Set<string>();
-  /** original node → COMPLETED dereferenced node, so a shared/aliased subtree is walked once. */
-  const walked = new WeakMap<object, unknown>();
+  /**
+   * original node → COMPLETED dereferenced node, so a shared/aliased subtree is
+   * walked once — one memo per walk context (inside a named map or not), since
+   * the literal-key rule differs between them.
+   */
+  const walkedPlain = new WeakMap<object, unknown>();
+  const walkedNamed = new WeakMap<object, unknown>();
   /**
    * Original nodes on the current walk path. Meeting one again is a cycle —
    * through a `$ref` back into an ancestor, or a self-referencing YAML alias —
@@ -272,11 +289,12 @@ export function dereferenceLocal(doc: OpenApiDocument): OpenApiDocument {
     }
   };
 
-  const walk = (node: unknown, refDepth: number, structDepth: number): unknown => {
+  const walk = (node: unknown, refDepth: number, structDepth: number, namedMap = false): unknown => {
     if (node === null || typeof node !== 'object') return node;
     if (structDepth > MAX_STRUCTURAL_DEPTH) {
       throw new OpenApiSpecError(`spec_too_complex: nesting deeper than ${MAX_STRUCTURAL_DEPTH}`, 'deref_limit');
     }
+    const walked = namedMap ? walkedNamed : walkedPlain;
     const seen = walked.get(node);
     if (seen !== undefined) return seen;
     if (walking.has(node)) return Array.isArray(node) ? [] : {};
@@ -299,12 +317,12 @@ export function dereferenceLocal(doc: OpenApiDocument): OpenApiDocument {
         if (siblings.length === 0 || !isPlainObject(target)) return target;
         const merged: Record<string, unknown> = {};
         for (const key of Object.keys(target)) defineOwn(merged, key, target[key]);
-        for (const key of siblings) defineOwn(merged, key, walkChild(key, obj[key], refDepth, structDepth));
+        for (const key of siblings) defineOwn(merged, key, walkChild(key, obj[key], refDepth, structDepth, namedMap));
         return merged;
       }
 
       const out: Record<string, unknown> = {};
-      for (const key of Object.keys(obj)) defineOwn(out, key, walkChild(key, obj[key], refDepth, structDepth));
+      for (const key of Object.keys(obj)) defineOwn(out, key, walkChild(key, obj[key], refDepth, structDepth, namedMap));
       walked.set(node, out);
       return out;
     } finally {
@@ -312,11 +330,13 @@ export function dereferenceLocal(doc: OpenApiDocument): OpenApiDocument {
     }
   };
 
-  const walkChild = (key: string, value: unknown, refDepth: number, structDepth: number): unknown => {
+  const walkChild = (key: string, value: unknown, refDepth: number, structDepth: number, parentIsNamedMap: boolean): unknown => {
     // Literal values and vendor extensions are data: an `example` that happens
     // to contain a `$ref` key must neither be resolved nor fail the document.
-    if (LITERAL_VALUE_KEYS.has(key) || key.startsWith('x-')) return value;
-    return walk(value, refDepth, structDepth + 1);
+    // Inside a map of names (`properties`, `components.schemas`, …) the key is
+    // a NAME, so `properties.default` is a schema and is walked like any other.
+    if (!parentIsNamedMap && (LITERAL_VALUE_KEYS.has(key) || key.startsWith('x-'))) return value;
+    return walk(value, refDepth, structDepth + 1, !parentIsNamedMap && NAMED_MAP_KEYS.has(key));
   };
 
   const out = walk(doc, 0, 0);

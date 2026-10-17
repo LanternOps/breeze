@@ -44,6 +44,7 @@ import { loadTenantToolForExecution } from './resolver';
 import { checkTenantToolRateLimit } from './guardrails';
 import { writeAuditEvent } from '../auditEvents';
 import { decryptToolSourceAuth } from './secrets';
+import { toolSourcesAllowPrivateEgress } from '../../config/env';
 
 const BINDING = {
   method: 'get', path: '/pets/{petId}', operationId: 'showPetById',
@@ -111,6 +112,17 @@ describe('executeTenantToolDetailed — openapi kind (W2)', () => {
       allowPrivateNetwork: false,
     });
     expect(mockCallOperation).toHaveBeenCalledWith(BINDING, { petId: '1' });
+  });
+
+  it('passes the private-egress flag through to the OpenAPI client', async () => {
+    vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(true);
+    mockLoaded({ operation: BINDING });
+    mockCallOperation.mockResolvedValue({ isError: false, text: 'ok' });
+
+    await executeTenantToolDetailed(descriptor(), { petId: '1' }, auth, { surface: 'chat' });
+
+    expect(mockOpenApiCtor.mock.calls[0]![0]).toMatchObject({ allowPrivateNetwork: true });
+    vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(false);
   });
 
   it('reports a missing or malformed operation binding without calling out, and still audits', async () => {
