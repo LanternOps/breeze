@@ -126,10 +126,13 @@ describe('OrgRecordHeader - Send message is gated on endpoint_messages:send', ()
   // entry point stays hidden until the build enables endpoint messaging.
   it('hides the button when the build-time endpoint messaging flag is off', () => {
     flags.ENABLE_ENDPOINT_MESSAGING = false;
-    granted.clear();
-    granted.add('endpoint_messages:send');
-    renderHeader({ onSendMessage: vi.fn() });
-    expect(screen.queryByTestId('org-record-send-message')).toBeNull();
-    flags.ENABLE_ENDPOINT_MESSAGING = true;
+    try {
+      granted.clear();
+      granted.add('endpoint_messages:send');
+      renderHeader({ onSendMessage: vi.fn() });
+      expect(screen.queryByTestId('org-record-send-message')).toBeNull();
+    } finally {
+      flags.ENABLE_ENDPOINT_MESSAGING = true;
+    }
   });
 });
