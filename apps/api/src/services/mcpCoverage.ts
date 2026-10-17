@@ -617,6 +617,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'portal/security.ts': { exempt: 'portal' },
   'portal/service.ts': { exempt: 'portal' },
   'portal/tickets.ts': { exempt: 'portal' },
+  'portal/trustPage.ts': { exempt: 'portal', note: 'Customer org-admin edits of their own trust page draft (Trust Center W3d); human-only, publishing stays with the MSP.' },
   'psa.ts': { tools: ['query_psa_status'] },
   'quotes/acceptanceEvidence.ts': { exempt: 'human_only_legal_evidence', note: 'Upload/download of the evidence file behind an on-behalf quote acceptance (#6633); the acceptance itself has no AI tool by design.' },
   'quotes/bulk.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk delete/send; the single-item equivalents already have tools.' },

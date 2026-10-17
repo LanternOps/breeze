@@ -25,6 +25,7 @@ import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
 import { portalDocumentRoutes } from './documents';
+import { portalTrustPageRoutes } from './trustPage';
 import { portalNetworkRoutes } from './network';
 import { portalHourBlockRoutes } from './hourBlock';
 import { portalApprovalRoutes } from './approvals';
@@ -157,6 +158,8 @@ portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);
 portalRoutes.route('/', portalDocumentRoutes);
+// Trust Center W3d: the router carries portal auth + the editor gate itself.
+portalRoutes.route('/trust-page', portalTrustPageRoutes);
 portalRoutes.route('/', portalNetworkRoutes);
 portalRoutes.route('/', portalHourBlockRoutes);
 portalRoutes.route('/', portalApprovalRoutes);
