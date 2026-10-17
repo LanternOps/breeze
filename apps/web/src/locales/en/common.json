@@ -699,7 +699,23 @@
       "noSelection": "Select organization",
       "searchOrganizations": "Search organizations…",
       "noMatches": "No organizations match",
-      "legacyFilterNotice": "Organization filtering now follows the header selector."
+      "legacyFilterNotice": "Organization filtering now follows the header selector.",
+      "recent": "Recent",
+      "pane": {
+        "destinations": {
+          "overview": "Overview",
+          "devices": "Devices",
+          "tickets": "Tickets",
+          "alerts": "Alerts",
+          "sites": "Sites",
+          "billing": "Billing"
+        },
+        "offlineCount": "{{count}} offline",
+        "openCount": "{{count}} open",
+        "criticalCount": "{{count}} critical",
+        "noCritical": "none",
+        "hint": "Click a name to switch · click a page to switch and go there"
+      }
     },
     "header": {
       "menu": "Menu",
