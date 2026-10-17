@@ -200,12 +200,55 @@
         "title": "Vista per framework"
       },
       "subprocessors": {
+        "description": "Terze parti che trattano dati per conto del vostro cliente. Gli strumenti rilevati sono solo suggerimenti; nulla viene pubblicato finché non pubblicate la pagina.",
+        "addDetected": "Aggiungi dagli strumenti rilevati",
+        "addManual": "Aggiungi manualmente",
+        "noSuggestions": "Non ci sono altri strumenti rilevati da aggiungere.",
+        "empty": "Nessun sub-responsabile elencato.",
+        "name": "Nome",
+        "purpose": "Finalità",
+        "location": "Ubicazione",
+        "website": "Sito web",
+        "websiteInvalid": "Usate un indirizzo https://.",
+        "moveUp": "Sposta su",
+        "moveDown": "Sposta giù",
+        "remove": "Rimuovi",
+        "save": "Salva i sub-responsabili",
+        "saved": "Sub-responsabili salvati",
+        "saveFailed": "Impossibile salvare i sub-responsabili",
+        "loadFailed": "Impossibile caricare i sub-responsabili.",
+        "duplicate": "Lo stesso strumento rilevato compare più volte.",
+        "limit": "Raggiunto il massimo di {{max}} sub-responsabili.",
         "title": "Sub-responsabili del trattamento"
       },
       "faq": {
+        "description": "Risposte alle domande più frequenti di acquirenti e revisori. Pubblicate insieme alla pagina.",
+        "add": "Aggiungi domanda",
+        "question": "Domanda",
+        "questionShort": "La domanda deve avere almeno {{min}} caratteri.",
+        "answer": "Risposta",
+        "answerTooLong": "Questa risposta è troppo lunga; accorciatela.",
+        "moveUp": "Sposta su",
+        "moveDown": "Sposta giù",
+        "remove": "Rimuovi",
+        "save": "Salva le FAQ",
+        "saved": "FAQ salvate",
+        "saveFailed": "Impossibile salvare le FAQ",
+        "loadFailed": "Impossibile caricare le FAQ.",
+        "empty": "Nessuna domanda per ora.",
+        "limit": "Raggiunto il massimo di {{max}} domande.",
         "title": "Domande frequenti"
       },
       "history": {
+        "toggle": "Mostra i controlli soddisfatti nel tempo",
+        "description": "Aggiunge un grafico di 90 giorni con il numero di controlli soddisfatti. Ogni variazione viene registrata quando Breeze rivaluta la pagina.",
+        "saved": "Impostazione della cronologia salvata",
+        "saveFailed": "Impossibile salvare l’impostazione della cronologia",
+        "source": {
+          "page": "Impostato su questa organizzazione",
+          "template": "Dal modello del partner",
+          "default": "Predefinito"
+        },
         "title": "Controlli soddisfatti nel tempo"
       },
       "access": {

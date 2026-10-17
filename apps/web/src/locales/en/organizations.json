@@ -200,12 +200,55 @@
         "title": "Framework view"
       },
       "subprocessors": {
+        "description": "Third parties that process data on your customer’s behalf. Detected tools are suggestions only; nothing is published until you publish the page.",
+        "addDetected": "Add from detected tools",
+        "addManual": "Add manually",
+        "noSuggestions": "No detected tools left to add.",
+        "empty": "No subprocessors listed yet.",
+        "name": "Name",
+        "purpose": "Purpose",
+        "location": "Location",
+        "website": "Website",
+        "websiteInvalid": "Use an https:// address.",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "remove": "Remove",
+        "save": "Save subprocessors",
+        "saved": "Subprocessors saved",
+        "saveFailed": "Could not save subprocessors",
+        "loadFailed": "Could not load subprocessors.",
+        "duplicate": "The same detected tool appears more than once.",
+        "limit": "Maximum of {{max}} subprocessors reached.",
         "title": "Subprocessors"
       },
       "faq": {
+        "description": "Answers to the questions buyers and auditors ask most. Shown on the page once you publish it.",
+        "add": "Add question",
+        "question": "Question",
+        "questionShort": "The question needs at least {{min}} characters.",
+        "answer": "Answer",
+        "answerTooLong": "This answer is too long; shorten it.",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "remove": "Remove",
+        "save": "Save FAQ",
+        "saved": "FAQ saved",
+        "saveFailed": "Could not save the FAQ",
+        "loadFailed": "Could not load the FAQ.",
+        "empty": "No questions yet.",
+        "limit": "Maximum of {{max}} questions reached.",
         "title": "Frequently asked questions"
       },
       "history": {
+        "toggle": "Show controls met over time",
+        "description": "Adds a 90-day chart of how many controls were met. Each change is recorded when Breeze re-evaluates the page.",
+        "saved": "History setting saved",
+        "saveFailed": "Could not save the history setting",
+        "source": {
+          "page": "Set on this organization",
+          "template": "From partner template",
+          "default": "Default"
+        },
         "title": "Controls met over time"
       },
       "access": {

@@ -200,12 +200,55 @@
         "title": "Visão por framework"
       },
       "subprocessors": {
+        "description": "Terceiros que processam dados em nome do seu cliente. As ferramentas detectadas são apenas sugestões; nada é publicado até você publicar a página.",
+        "addDetected": "Adicionar das ferramentas detectadas",
+        "addManual": "Adicionar manualmente",
+        "noSuggestions": "Não há mais ferramentas detectadas para adicionar.",
+        "empty": "Nenhum subprocessador listado ainda.",
+        "name": "Nome",
+        "purpose": "Finalidade",
+        "location": "Localização",
+        "website": "Site",
+        "websiteInvalid": "Use um endereço https://.",
+        "moveUp": "Mover para cima",
+        "moveDown": "Mover para baixo",
+        "remove": "Remover",
+        "save": "Salvar subprocessadores",
+        "saved": "Subprocessadores salvos",
+        "saveFailed": "Não foi possível salvar os subprocessadores",
+        "loadFailed": "Não foi possível carregar os subprocessadores.",
+        "duplicate": "A mesma ferramenta detectada aparece mais de uma vez.",
+        "limit": "Limite de {{max}} subprocessadores atingido.",
         "title": "Subprocessadores"
       },
       "faq": {
+        "description": "Respostas às perguntas mais comuns de compradores e auditores. Publicadas junto com a página.",
+        "add": "Adicionar pergunta",
+        "question": "Pergunta",
+        "questionShort": "A pergunta precisa ter pelo menos {{min}} caracteres.",
+        "answer": "Resposta",
+        "answerTooLong": "Esta resposta é longa demais; encurte-a.",
+        "moveUp": "Mover para cima",
+        "moveDown": "Mover para baixo",
+        "remove": "Remover",
+        "save": "Salvar FAQ",
+        "saved": "FAQ salvo",
+        "saveFailed": "Não foi possível salvar o FAQ",
+        "loadFailed": "Não foi possível carregar o FAQ.",
+        "empty": "Nenhuma pergunta ainda.",
+        "limit": "Limite de {{max}} perguntas atingido.",
         "title": "Perguntas frequentes"
       },
       "history": {
+        "toggle": "Mostrar controles atendidos ao longo do tempo",
+        "description": "Adiciona um gráfico de 90 dias com quantos controles foram atendidos. Cada mudança é registrada quando o Breeze reavalia a página.",
+        "saved": "Configuração do histórico salva",
+        "saveFailed": "Não foi possível salvar a configuração do histórico",
+        "source": {
+          "page": "Definido nesta organização",
+          "template": "Do modelo do parceiro",
+          "default": "Padrão"
+        },
         "title": "Controles atendidos ao longo do tempo"
       },
       "access": {

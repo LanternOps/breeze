@@ -200,12 +200,55 @@
         "title": "Çerçeve görünümü"
       },
       "subprocessors": {
+        "description": "Müşterinizin adına veri işleyen üçüncü taraflar. Algılanan araçlar yalnızca öneridir; siz sayfayı yayımlayana kadar hiçbir şey yayımlanmaz.",
+        "addDetected": "Algılanan araçlardan ekle",
+        "addManual": "El ile ekle",
+        "noSuggestions": "Eklenecek başka algılanmış araç kalmadı.",
+        "empty": "Henüz alt veri işleyen listelenmedi.",
+        "name": "Ad",
+        "purpose": "Amaç",
+        "location": "Konum",
+        "website": "Web sitesi",
+        "websiteInvalid": "https:// adresi kullanın.",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "remove": "Kaldır",
+        "save": "Alt veri işleyenleri kaydet",
+        "saved": "Alt veri işleyenler kaydedildi",
+        "saveFailed": "Alt veri işleyenler kaydedilemedi",
+        "loadFailed": "Alt veri işleyenler yüklenemedi.",
+        "duplicate": "Aynı algılanan araç birden fazla kez yer alıyor.",
+        "limit": "En fazla {{max}} alt veri işleyen sınırına ulaşıldı.",
         "title": "Alt işleyiciler"
       },
       "faq": {
+        "description": "Alıcıların ve denetçilerin en sık sorduğu soruların yanıtları. Sayfayla birlikte yayımlanır.",
+        "add": "Soru ekle",
+        "question": "Soru",
+        "questionShort": "Soru en az {{min}} karakter olmalıdır.",
+        "answer": "Yanıt",
+        "answerTooLong": "Bu yanıt çok uzun; kısaltın.",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "remove": "Kaldır",
+        "save": "SSS’yi kaydet",
+        "saved": "SSS kaydedildi",
+        "saveFailed": "SSS kaydedilemedi",
+        "loadFailed": "SSS yüklenemedi.",
+        "empty": "Henüz soru yok.",
+        "limit": "En fazla {{max}} soru sınırına ulaşıldı.",
         "title": "Sıkça sorulan sorular"
       },
       "history": {
+        "toggle": "Karşılanan kontrolleri zaman içinde göster",
+        "description": "Kaç kontrolün karşılandığını gösteren 90 günlük bir grafik ekler. Breeze sayfayı yeniden değerlendirdiğinde her değişiklik kaydedilir.",
+        "saved": "Geçmiş ayarı kaydedildi",
+        "saveFailed": "Geçmiş ayarı kaydedilemedi",
+        "source": {
+          "page": "Bu kuruluşta ayarlandı",
+          "template": "İş ortağı şablonundan",
+          "default": "Varsayılan"
+        },
         "title": "Zaman içinde karşılanan kontroller"
       },
       "access": {

@@ -200,12 +200,55 @@
         "title": "Vue par référentiel"
       },
       "subprocessors": {
+        "description": "Tiers qui traitent des données pour le compte de votre client. Les outils détectés ne sont que des suggestions ; rien n’est publié tant que vous ne publiez pas la page.",
+        "addDetected": "Ajouter depuis les outils détectés",
+        "addManual": "Ajouter manuellement",
+        "noSuggestions": "Aucun autre outil détecté à ajouter.",
+        "empty": "Aucun sous-traitant ultérieur listé pour l’instant.",
+        "name": "Nom",
+        "purpose": "Finalité",
+        "location": "Emplacement",
+        "website": "Site web",
+        "websiteInvalid": "Utilisez une adresse https://.",
+        "moveUp": "Monter",
+        "moveDown": "Descendre",
+        "remove": "Retirer",
+        "save": "Enregistrer les sous-traitants",
+        "saved": "Sous-traitants enregistrés",
+        "saveFailed": "Impossible d’enregistrer les sous-traitants",
+        "loadFailed": "Impossible de charger les sous-traitants.",
+        "duplicate": "Le même outil détecté apparaît plusieurs fois.",
+        "limit": "Maximum de {{max}} sous-traitants atteint.",
         "title": "Sous-traitants"
       },
       "faq": {
+        "description": "Réponses aux questions que posent le plus les acheteurs et les auditeurs. Publiées avec la page.",
+        "add": "Ajouter une question",
+        "question": "Intitulé de la question",
+        "questionShort": "La question doit contenir au moins {{min}} caractères.",
+        "answer": "Réponse",
+        "answerTooLong": "Cette réponse est trop longue ; raccourcissez-la.",
+        "moveUp": "Monter",
+        "moveDown": "Descendre",
+        "remove": "Retirer",
+        "save": "Enregistrer la FAQ",
+        "saved": "FAQ enregistrée",
+        "saveFailed": "Impossible d’enregistrer la FAQ",
+        "loadFailed": "Impossible de charger la FAQ.",
+        "empty": "Aucune question pour l’instant.",
+        "limit": "Maximum de {{max}} questions atteint.",
         "title": "Questions fréquentes"
       },
       "history": {
+        "toggle": "Afficher les contrôles satisfaits dans le temps",
+        "description": "Ajoute un graphique sur 90 jours du nombre de contrôles satisfaits. Chaque changement est enregistré lorsque Breeze réévalue la page.",
+        "saved": "Paramètre d’historique enregistré",
+        "saveFailed": "Impossible d’enregistrer le paramètre d’historique",
+        "source": {
+          "page": "Défini sur cette organisation",
+          "template": "Issu du modèle du partenaire",
+          "default": "Par défaut"
+        },
         "title": "Contrôles respectés dans le temps"
       },
       "access": {
