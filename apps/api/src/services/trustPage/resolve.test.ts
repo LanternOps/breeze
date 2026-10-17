@@ -57,7 +57,7 @@ describe('resolvePublishedTrustPage', () => {
     const publishedAt = new Date();
     dbMock.row = { pageId: 'pg', orgId: 'o', partnerId: 'p', publishedAt, searchIndexable: false, lastEvaluatedAt: null, snapshotId: null, payload: null, embedAllowedOrigins: ['https://example.com'] };
     const r = await resolvePublishedTrustPage('nw', 'acme');
-    const fields = (dbMock.args.select?.[0]?.[0] ?? {}) as Record<string, { name?: string }>;
+    const fields = ((dbMock.args.select?.[0] as unknown[] | undefined)?.[0] ?? {}) as Record<string, { name?: string }>;
     expect(fields.embedAllowedOrigins?.name).toBe('embed_allowed_origins');
     expect(r?.embedAllowedOrigins).toEqual(['https://example.com']);
   });
