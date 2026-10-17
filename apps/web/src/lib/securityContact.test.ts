@@ -50,7 +50,7 @@ describe('buildSecurityTxt', () => {
     expect(buildSecurityTxt({ policyUrl: 'https://example.com/trust' }, now)).toBeNull();
   });
 
-  it('emits an RFC 9116 body: security contact first, then abuse, policy, one-year expiry', () => {
+  it('emits an RFC 9116 body: security contact first, then abuse, policy, 180-day expiry (RFC 9116 §2.5.5: under a year)', () => {
     const body = buildSecurityTxt(
       {
         abuseEmail: 'abuse@example.com',
@@ -63,7 +63,7 @@ describe('buildSecurityTxt', () => {
       [
         'Contact: mailto:security@example.com',
         'Contact: mailto:abuse@example.com',
-        'Expires: 2027-10-16T02:00:00.000Z',
+        'Expires: 2027-04-14T02:00:00.000Z',
         'Policy: https://example.com/trust',
         'Preferred-Languages: en',
         '',
@@ -73,7 +73,7 @@ describe('buildSecurityTxt', () => {
 
   it('omits Policy when unset and works with a single contact', () => {
     expect(buildSecurityTxt({ abuseEmail: 'abuse@example.com' }, now)).toBe(
-      ['Contact: mailto:abuse@example.com', 'Expires: 2027-10-16T02:00:00.000Z', 'Preferred-Languages: en', ''].join(
+      ['Contact: mailto:abuse@example.com', 'Expires: 2027-04-14T02:00:00.000Z', 'Preferred-Languages: en', ''].join(
         '\n',
       ),
     );
