@@ -295,29 +295,38 @@
     "saving": "Salvando...",
     "saveSettings": "Salvar configurações"
   },
-  "connectorStatusPanel": {
-    "healthy": "Saudável",
-    "degraded": "Degradado",
-    "paused": "Pausado",
-    "connectorStatus": "Status do conector",
-    "trackIntegrationHealthAndRecentActivityAtA": "Acompanhe rapidamente a integridade da integração e as atividades recentes. ",
-    "refreshAll": "Atualizar tudo ",
-    "integration": "Integração",
-    "health": "Saúde",
-    "lastActivity": "Última atividade",
-    "errors": "Erros",
-    "syncNow": "Sincronize agora ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Monitoramento",
-      "webhooks": "Webhooks",
-      "backup": "Backup"
+  "connectionHealthPanel": {
+    "title": "Integridade das conexões",
+    "allHealthy": "Todas as conexões estão saudáveis",
+    "loadError": "Não foi possível carregar a integridade das conexões.",
+    "retry": "Tentar novamente",
+    "since": "desde {{time}}",
+    "fix": "Corrigir",
+    "truncated": "Mostrando os primeiros {{count}}",
+    "recentlyResolved": "Resolvidos recentemente ({{count}})",
+    "resolution": {
+      "recovered": "Recuperada",
+      "retired": "Desativada"
     },
-    "activity": {
-      "threeMinutesAgo": "há 3 min",
-      "elevenMinutesAgo": "há 11 min",
-      "fiveMinutesAgo": "há 5 min",
-      "oneDayAgo": "há 1 dia"
+    "condition": {
+      "sync_failed": "Falha na sincronização",
+      "reauth_required": "Reautorização necessária",
+      "disconnected": "Desconectada",
+      "error": "Erro",
+      "mailbox_error": "Erro na caixa de correio",
+      "poll_failing": "Falha na consulta periódica",
+      "needs_consent": "Consentimento necessário",
+      "degraded": "Degradada",
+      "suspended": "Suspensa",
+      "grant_missing": "Concessão ausente",
+      "grant_unexpected": "Concessão inesperada",
+      "manifest_stale": "Manifesto desatualizado",
+      "application_token_invalid": "Token do aplicativo inválido",
+      "tenant_mismatch": "Tenant divergente",
+      "grant_reconciliation_unavailable": "Verificação da concessão indisponível",
+      "grant_revoked_reuse": "Concessão revogada (reutilização de token)",
+      "grant_revoked": "Concessão revogada",
+      "unknown": "Requer atenção"
     }
   },
   "googleWorkspaceIntegration": {

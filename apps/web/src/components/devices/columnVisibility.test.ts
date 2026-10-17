@@ -5,6 +5,8 @@ import {
   COLUMN_STORAGE_KEY,
   DEFAULT_VISIBLE_COLUMNS,
   isValidColumnId,
+  ORG_TAB_COLUMN_PRESET,
+  ORG_TAB_COLUMN_STORAGE_KEY,
   readColumnOrder,
   readColumnVisibility,
   resetColumns,
@@ -282,6 +284,38 @@ describe('columnVisibility', () => {
       expect(vis.has('watchdogVersion')).toBe(false);
       // full catalog is represented.
       expect(new Set(order).size).toBe(COLUMN_IDS.length);
+    });
+  });
+
+  describe('column presets', () => {
+    const ORG_TAB_DEFAULTS = ['hostname', 'site', 'os', 'status', 'cpu', 'ram', 'lastSeen'];
+
+    it('the orgTab preset defaults to exactly hostname, site, os, status, cpu, ram, lastSeen', () => {
+      expect(readColumnVisibility(ORG_TAB_COLUMN_PRESET)).toEqual(new Set(ORG_TAB_DEFAULTS));
+    });
+
+    it('writes under breeze.devices.columns.orgTab and leaves breeze.devices.columns untouched', () => {
+      writeColumnVisibility(['hostname'], ORG_TAB_COLUMN_PRESET);
+      expect(window.localStorage.getItem(COLUMN_STORAGE_KEY)).toBeNull();
+      expect(window.localStorage.getItem(ORG_TAB_COLUMN_STORAGE_KEY)).not.toBeNull();
+      expect(ORG_TAB_COLUMN_STORAGE_KEY).toBe('breeze.devices.columns.orgTab');
+      expect(readColumnVisibility()).toEqual(new Set(DEFAULT_VISIBLE_COLUMNS));
+    });
+
+    it("all-hidden falls back to the preset's defaults", () => {
+      window.localStorage.setItem(
+        ORG_TAB_COLUMN_STORAGE_KEY,
+        JSON.stringify({ v: 1, columns: COLUMN_IDS.map((id) => ({ id, visible: false })) }),
+      );
+      expect(readColumnVisibility(ORG_TAB_COLUMN_PRESET)).toEqual(new Set(ORG_TAB_DEFAULTS));
+    });
+
+    it('resetColumns(preset) restores the preset defaults under its own key', () => {
+      writeColumnVisibility(['hostname'], ORG_TAB_COLUMN_PRESET);
+      const cols = resetColumns(ORG_TAB_COLUMN_PRESET);
+      expect(new Set(cols.filter((c) => c.visible).map((c) => c.id))).toEqual(new Set(ORG_TAB_DEFAULTS));
+      expect(readColumnVisibility(ORG_TAB_COLUMN_PRESET)).toEqual(new Set(ORG_TAB_DEFAULTS));
+      expect(window.localStorage.getItem(COLUMN_STORAGE_KEY)).toBeNull();
     });
   });
 

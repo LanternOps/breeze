@@ -5996,6 +5996,8 @@
     },
     "columns": {
       "timezone": "Saat Dilimi",
+      "address": "Adres",
+      "contact": "Kişi",
       "devices": "Cihazlar"
     },
     "empty": "Hiçbir site bulunamadı. Başlamak için bir site ekleyin."

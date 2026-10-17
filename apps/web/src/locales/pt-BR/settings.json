@@ -5996,6 +5996,8 @@
     },
     "columns": {
       "timezone": "Fuso horário",
+      "address": "Endereço",
+      "contact": "Contato",
       "devices": "Dispositivos"
     },
     "empty": "Nenhum site encontrado. Adicione um site para começar."

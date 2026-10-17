@@ -316,6 +316,17 @@
       "target": "Objetivo",
       "time": "Tiempo"
     },
+    "recentlyViewed": {
+      "title": "Continúa donde lo dejaste",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organización",
+        "ticket": "Ticket",
+        "alert": "Alerta",
+        "site": "Sitio",
+        "page": "Página"
+      }
+    },
     "alerts": {
       "title": "Alertas recientes",
       "viewAll": "Ver todo",
@@ -806,9 +817,9 @@
       "expand": "Expandir barra lateral",
       "collapseSections": "Contraer todas las secciones",
       "closeMenu": "Cerrar menú",
-      "recentDevices": "Dispositivos recientes",
-      "hideRecentDevices": "Ocultar dispositivos recientes",
-      "showRecentDevices": "Mostrar dispositivos recientes"
+      "recent": "Recientes",
+      "hideRecent": "Ocultar recientes",
+      "showRecent": "Mostrar recientes"
     },
     "orgRequired": {
       "title": "Selecciona una organización",

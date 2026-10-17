@@ -41,6 +41,7 @@ import UnifiIntegration from "./UnifiIntegration";
 import BackupProvidersIntegration from "./BackupProvidersIntegration";
 import EdrProvidersIntegration from "./EdrProvidersIntegration";
 import AccessDenied from "../shared/AccessDenied";
+import ConnectionHealthPanel from "./ConnectionHealthPanel";
 import { usePermissions } from "../../lib/permissions";
 import { getJwtClaims } from "../../lib/authScope";
 import { useHelpStore, rebaseDocsUrl } from "../../stores/helpStore";
@@ -518,6 +519,8 @@ export default function IntegrationsPage({
           </button>
         }
       />
+
+      <ConnectionHealthPanel />
 
       {/* Top-level tabs */}
       <div className="flex flex-wrap gap-3">

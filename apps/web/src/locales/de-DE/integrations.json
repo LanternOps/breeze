@@ -295,29 +295,38 @@
     "saving": "Speichern...",
     "saveSettings": "Einstellungen speichern"
   },
-  "connectorStatusPanel": {
-    "healthy": "Gesund",
-    "degraded": "Degradiert",
-    "paused": "Angehalten",
-    "connectorStatus": "Connector-Status",
-    "trackIntegrationHealthAndRecentActivityAtA": "Verfolgen Sie den Integrationszustand und die letzten Aktivitäten auf einen Blick.",
-    "refreshAll": "Alles aktualisieren",
-    "integration": "Integration",
-    "health": "Zustand",
-    "lastActivity": "Letzte Aktivität",
-    "errors": "Fehler",
-    "syncNow": "Jetzt synchronisieren",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Überwachung",
-      "webhooks": "Webhooks",
-      "backup": "Sicherung"
+  "connectionHealthPanel": {
+    "title": "Verbindungsstatus",
+    "allHealthy": "Alle Verbindungen sind in Ordnung",
+    "loadError": "Der Verbindungsstatus konnte nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "since": "seit {{time}}",
+    "fix": "Beheben",
+    "truncated": "Die ersten {{count}} werden angezeigt",
+    "recentlyResolved": "Kürzlich behoben ({{count}})",
+    "resolution": {
+      "recovered": "Wiederhergestellt",
+      "retired": "Stillgelegt"
     },
-    "activity": {
-      "threeMinutesAgo": "Vor 3m",
-      "elevenMinutesAgo": "Vor 11m",
-      "fiveMinutesAgo": "Vor 5m",
-      "oneDayAgo": "Vor 1 Tag"
+    "condition": {
+      "sync_failed": "Synchronisierung fehlgeschlagen",
+      "reauth_required": "Erneute Autorisierung erforderlich",
+      "disconnected": "Getrennt",
+      "error": "Fehler",
+      "mailbox_error": "Postfachfehler",
+      "poll_failing": "Abfrage schlägt fehl",
+      "needs_consent": "Zustimmung erforderlich",
+      "degraded": "Eingeschränkt",
+      "suspended": "Ausgesetzt",
+      "grant_missing": "Berechtigung fehlt",
+      "grant_unexpected": "Unerwartete Berechtigung",
+      "manifest_stale": "Manifest veraltet",
+      "application_token_invalid": "Anwendungstoken ungültig",
+      "tenant_mismatch": "Mandant stimmt nicht überein",
+      "grant_reconciliation_unavailable": "Berechtigungsprüfung nicht verfügbar",
+      "grant_revoked_reuse": "Berechtigung widerrufen (Token-Wiederverwendung)",
+      "grant_revoked": "Berechtigung widerrufen",
+      "unknown": "Erfordert Aufmerksamkeit"
     }
   },
   "googleWorkspaceIntegration": {

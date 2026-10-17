@@ -41,9 +41,13 @@ function observedColumns(o: HealthObservation, now: Date) {
   };
 }
 
-export async function loadTracked(kind: ConnectionSourceKind, now: Date): Promise<TrackedIncident[]> {
-  // Inclusive boundary: matches planTransitions' `now - resolvedAt <= REOPEN_WINDOW_MS`.
-  const since = new Date(now.getTime() - REOPEN_WINDOW_MS);
+export async function loadTracked(
+  kind: ConnectionSourceKind,
+  now: Date,
+  windowMs: number = REOPEN_WINDOW_MS,
+): Promise<TrackedIncident[]> {
+  // Inclusive boundary: matches planTransitions' `now - resolvedAt <= reopenWindowMs`.
+  const since = new Date(now.getTime() - windowMs);
   const rows = await db
     .select({
       id: chi.id,
@@ -140,17 +144,24 @@ export async function applyActions(
         counts.resolved += 1;
         break;
       case 'reopen':
-        // Resolve's mark-read already retired the old notices; the fresh opened_at
-        // gives the new 'opened' notice its own dedupe key. Only a resolved row
-        // reopens: on a row that is still open this is a no-op.
+        // A flap inside the reopen window is the SAME episode (spec §1.2, goal 3):
+        // opened_at, and with it the notice dedupe keys, is kept. If the episode
+        // already reached someone (notified_user_ids is kept through the resolve),
+        // no new notice is queued and an undelivered 'resolved' is cancelled, so
+        // those notices stay unread. If it never reached anyone (a seed, or an
+        // 'opened' the resolve cancelled before delivery), it is queued now. An
+        // escalation to permanent always notifies; its ':permanent' key dedupes
+        // against one already sent this episode. Only a resolved row reopens: on a
+        // row that is still open this is a no-op.
         await db.update(chi).set({
           ...observedColumns(a.obs, now),
           resolvedAt: null,
           resolution: null,
-          openedAt: now,
           healthyStreak: 0,
           flapCount: sql`${chi.flapCount} + 1`,
-          pendingNotice: 'opened',
+          pendingNotice: a.escalated
+            ? 'escalated'
+            : sql`CASE WHEN cardinality(${chi.notifiedUserIds}) = 0 THEN 'opened' ELSE NULL END`,
         }).where(and(eq(chi.id, a.incidentId), isNotNull(chi.resolvedAt)));
         counts.opened += 1;
         break;
@@ -162,12 +173,23 @@ export async function applyActions(
   return counts;
 }
 
+/**
+ * Delete resolved incidents older than 90 days, in batches. Each kind's newest
+ * resolved row is always kept: "the kind has rows" is what stops a re-seed
+ * (spec §1.2), so retention alone must never empty a kind and make its next
+ * break silent.
+ */
 export async function deleteExpiredResolved(now: Date, limit = 1000): Promise<number> {
   const cutoff = new Date(now.getTime() - RETENTION_MS);
+  const newestPerKind = sql`(
+    SELECT DISTINCT ON (k.source_kind) k.id FROM ${chi} k
+    WHERE k.resolved_at IS NOT NULL
+    ORDER BY k.source_kind, k.resolved_at DESC, k.id DESC
+  )`;
   const victims = await db
     .select({ id: chi.id })
     .from(chi)
-    .where(lt(chi.resolvedAt, cutoff))
+    .where(and(lt(chi.resolvedAt, cutoff), sql`${chi.id} NOT IN ${newestPerKind}`))
     .limit(limit);
   if (victims.length === 0) return 0;
   const deleted = await db

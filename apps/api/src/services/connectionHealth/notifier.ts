@@ -4,6 +4,7 @@ import { connectionHealthIncidents as chi } from '../../db/schema';
 // Namespace import on purpose: tests spy on createNotification to simulate a
 // mid-delivery failure.
 import * as userNotificationsModule from '../userNotifications';
+import { recordZeroRecipientIncident } from './metrics';
 import { resolveIncidentRecipients } from './recipients';
 
 // Drains the pending_notice outbox (spec §2.1, §4). The store sets the value in
@@ -12,10 +13,11 @@ import { resolveIncidentRecipients } from './recipients';
 // losing or duplicating a notice (createNotification dedupes on the key).
 //
 // pending_notice is a single slot: a later transition can overwrite a value the
-// notifier never delivered (resolved → reopen replaces 'resolved' and the old
-// opened_at with it). Every delivery therefore first retires the recorded
-// users' notices from earlier episodes by key prefix, sparing only the current
-// episode's keys, instead of trusting that the previous value was delivered.
+// notifier never delivered (a reopen cancels an undelivered 'resolved'; a new
+// episode after the reopen window brings a new opened_at). Every delivery
+// therefore first retires the recorded users' notices from earlier episodes by
+// key prefix, sparing only the current episode's keys, instead of trusting that
+// the previous value was delivered.
 
 type IncidentRow = typeof chi.$inferSelect;
 
@@ -34,10 +36,11 @@ function noticeText(row: IncidentRow, escalated: boolean) {
   return { title: title.slice(0, 255), message };
 }
 
-async function deliverOne(incidentId: string): Promise<void> {
+/** Returns whether an opened/escalated notice reached nobody. */
+async function deliverOne(incidentId: string): Promise<{ zeroRecipients: boolean; sourceKind?: string }> {
   // Re-read under a row lock: the listing ran in an earlier transaction.
   const [row] = await db.select().from(chi).where(eq(chi.id, incidentId)).for('update');
-  if (!row?.pendingNotice) return;
+  if (!row?.pendingNotice) return { zeroRecipients: false };
 
   const keys = noticeDedupeKeys(row.id, row.openedAt ?? row.firstFailedAt);
 
@@ -47,8 +50,10 @@ async function deliverOne(incidentId: string): Promise<void> {
     await userNotificationsModule.markNotificationsReadByDedupeKeyPrefix(
       row.notifiedUserIds, incidentKeyPrefix(row.id), [],
     );
-    await db.update(chi).set({ pendingNotice: null, notifiedUserIds: [] }).where(eq(chi.id, row.id));
-    return;
+    // The recipient list is kept: a reopen inside the window checks it to tell an
+    // episode someone was told about (stay quiet) from one nobody heard of.
+    await db.update(chi).set({ pendingNotice: null }).where(eq(chi.id, row.id));
+    return { zeroRecipients: false };
   }
 
   // Non-empty here means an earlier episode was never retired (see top).
@@ -93,13 +98,16 @@ async function deliverOne(incidentId: string): Promise<void> {
     // UPDATE in this transaction, so no other writer can change it meanwhile.
     notifiedUserIds: escalated ? [...new Set([...row.notifiedUserIds, ...recipients])] : recipients,
   }).where(eq(chi.id, row.id));
+  return { zeroRecipients: recipients.length === 0, sourceKind: row.sourceKind };
 }
+
+export type DeliveryCounts = { delivered: number; failed: number; zeroRecipients: number };
 
 /** Drain the outbox. Each incident in its own system transaction, so one failure never blocks the rest. */
 export async function deliverPendingNotices(
   _now: Date,
   opts: { limit?: number } = {},
-): Promise<{ delivered: number; failed: number }> {
+): Promise<DeliveryCounts> {
   const limit = opts.limit ?? 200;
   const rows = await runOutsideDbContext(() => withSystemDbAccessContext(
     () => db.select({ id: chi.id }).from(chi).where(isNotNull(chi.pendingNotice)).limit(limit),
@@ -107,10 +115,16 @@ export async function deliverPendingNotices(
   ));
   let delivered = 0;
   let failed = 0;
+  let zeroRecipients = 0;
   for (const { id } of rows) {
     try {
-      await runOutsideDbContext(() => withSystemDbAccessContext(() => deliverOne(id), 'connectionHealth.deliver'));
+      const r = await runOutsideDbContext(() => withSystemDbAccessContext(() => deliverOne(id), 'connectionHealth.deliver'));
       delivered += 1;
+      // Counted only after the delivery committed (spec §8 zero-recipient count).
+      if (r.zeroRecipients) {
+        zeroRecipients += 1;
+        recordZeroRecipientIncident(r.sourceKind ?? 'other');
+      }
     } catch (err) {
       failed += 1;
       console.error(JSON.stringify({
@@ -120,5 +134,5 @@ export async function deliverPendingNotices(
       }));
     }
   }
-  return { delivered, failed };
+  return { delivered, failed, zeroRecipients };
 }

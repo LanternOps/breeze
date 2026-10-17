@@ -295,29 +295,38 @@
     "saving": "Enregistrement...",
     "saveSettings": "Enregistrer les paramètres"
   },
-  "connectorStatusPanel": {
-    "healthy": "En bonne santé",
-    "degraded": "Dégradé",
-    "paused": "En pause",
-    "connectorStatus": "Statut du connecteur",
-    "trackIntegrationHealthAndRecentActivityAtA": "Suivez la santé de l’intégration et les activités récentes d’un coup d’œil. ",
-    "refreshAll": "Rafraîchir tout ",
-    "integration": "Intégration",
-    "health": "Santé",
-    "lastActivity": "Dernière activité",
-    "errors": "Erreurs",
-    "syncNow": "Synchronisez maintenant ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Surveillance",
-      "webhooks": "Webhooks",
-      "backup": "Sauvegarde"
+  "connectionHealthPanel": {
+    "title": "État des connexions",
+    "allHealthy": "Toutes les connexions sont opérationnelles",
+    "loadError": "Impossible de charger l'état des connexions.",
+    "retry": "Réessayer",
+    "since": "depuis {{time}}",
+    "fix": "Corriger",
+    "truncated": "Affichage des {{count}} premiers",
+    "recentlyResolved": "Résolus récemment ({{count}})",
+    "resolution": {
+      "recovered": "Rétablie",
+      "retired": "Retirée"
     },
-    "activity": {
-      "threeMinutesAgo": "Il y a 3 min",
-      "elevenMinutesAgo": "Il y a 11 minutes",
-      "fiveMinutesAgo": "Il y a 5 min",
-      "oneDayAgo": "Il y a 1 d"
+    "condition": {
+      "sync_failed": "Échec de la synchronisation",
+      "reauth_required": "Réautorisation requise",
+      "disconnected": "Déconnectée",
+      "error": "Erreur",
+      "mailbox_error": "Erreur de boîte aux lettres",
+      "poll_failing": "Échec de l'interrogation",
+      "needs_consent": "Consentement requis",
+      "degraded": "Dégradée",
+      "suspended": "Suspendue",
+      "grant_missing": "Autorisation manquante",
+      "grant_unexpected": "Autorisation inattendue",
+      "manifest_stale": "Manifeste désuet",
+      "application_token_invalid": "Jeton d'application invalide",
+      "tenant_mismatch": "Locataire non concordant",
+      "grant_reconciliation_unavailable": "Vérification d'autorisation indisponible",
+      "grant_revoked_reuse": "Autorisation révoquée (réutilisation de jeton)",
+      "grant_revoked": "Autorisation révoquée",
+      "unknown": "Nécessite une intervention"
     }
   },
   "googleWorkspaceIntegration": {

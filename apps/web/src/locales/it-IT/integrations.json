@@ -295,29 +295,38 @@
     "saving": "Salvataggio...",
     "saveSettings": "Salva impostazioni"
   },
-  "connectorStatusPanel": {
-    "healthy": "Integro",
-    "degraded": "Degradato",
-    "paused": "In pausa",
-    "connectorStatus": "Stato connettori",
-    "trackIntegrationHealthAndRecentActivityAtA": "Monitora a colpo d'occhio integrità delle integrazioni e attività recente. ",
-    "refreshAll": "Aggiorna tutto ",
-    "integration": "Integrazione",
-    "health": "Integrità",
-    "lastActivity": "Ultima attività",
-    "errors": "Errori",
-    "syncNow": "Sincronizza ora ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Monitoraggio",
-      "webhooks": "Webhooks",
-      "backup": "Backup"
+  "connectionHealthPanel": {
+    "title": "Stato delle connessioni",
+    "allHealthy": "Tutte le connessioni funzionano correttamente",
+    "loadError": "Impossibile caricare lo stato delle connessioni.",
+    "retry": "Riprova",
+    "since": "da {{time}}",
+    "fix": "Risolvi",
+    "truncated": "Vengono mostrati i primi {{count}}",
+    "recentlyResolved": "Risolti di recente ({{count}})",
+    "resolution": {
+      "recovered": "Ripristinata",
+      "retired": "Ritirata"
     },
-    "activity": {
-      "threeMinutesAgo": "3 min fa",
-      "elevenMinutesAgo": "11 min fa",
-      "fiveMinutesAgo": "5 min fa",
-      "oneDayAgo": "1 g fa"
+    "condition": {
+      "sync_failed": "Sincronizzazione non riuscita",
+      "reauth_required": "Riautorizzazione necessaria",
+      "disconnected": "Disconnessa",
+      "error": "Errore",
+      "mailbox_error": "Errore della casella di posta",
+      "poll_failing": "Polling non riuscito",
+      "needs_consent": "Consenso necessario",
+      "degraded": "Prestazioni ridotte",
+      "suspended": "Sospesa",
+      "grant_missing": "Concessione mancante",
+      "grant_unexpected": "Concessione imprevista",
+      "manifest_stale": "Manifest obsoleto",
+      "application_token_invalid": "Token dell'applicazione non valido",
+      "tenant_mismatch": "Tenant non corrispondente",
+      "grant_reconciliation_unavailable": "Verifica della concessione non disponibile",
+      "grant_revoked_reuse": "Concessione revocata (riutilizzo del token)",
+      "grant_revoked": "Concessione revocata",
+      "unknown": "Richiede attenzione"
     }
   },
   "googleWorkspaceIntegration": {
