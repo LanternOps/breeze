@@ -759,6 +759,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // W02g anchor: 'trustPageTemplate.ts': { exempt: 'tool_in_later_wave', note: 'Partner Trust Center template; partner-wide admin + MFA (#8770 W02g).' },
   'trustPageTemplate.ts': { exempt: 'tool_in_later_wave', note: 'Partner Trust Center template; partner-wide admin + MFA (#8770 W02g).' },
   //
+  'tunnelHost.ts': { exempt: 'internal_plumbing', note: 'Network Proxy host-mode transport: serves device web UIs on tunnel hosts, never app routes.' },
   'tunnelHttp.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnelWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnels.ts': { exempt: 'internal_plumbing' },
