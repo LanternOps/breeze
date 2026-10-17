@@ -15,7 +15,7 @@
   "PATH_NOT_FOUND": "Percorso non trovato",
   "PATH_CONFLICT": "Il percorso esiste già",
   "AGENT_COMMAND_REJECTED": "Il dispositivo ha rifiutato il comando",
-  "SCHEME_NOT_ALLOWED": "Questo link di accesso remoto non è consentito dalla policy",
+  "SCHEME_NOT_ALLOWED": "Questo link di accesso remoto non è consentito dal criterio",
   "INVALID_CUSTOM_FIELD_VALUE": "Uno dei valori dei campi personalizzati non è valido",
   "RACE_LOST": "Qualcun altro ha già gestito questa richiesta",
   "RE_ENROLLMENT_REQUIRED": "Questo dispositivo deve essere registrato di nuovo",
