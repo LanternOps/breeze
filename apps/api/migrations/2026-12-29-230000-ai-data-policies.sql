@@ -1,4 +1,4 @@
--- apps/api/migrations/2026-12-29-160000-ai-data-policies.sql
+-- apps/api/migrations/2026-12-29-230000-ai-data-policies.sql
 -- AI device file read policy (spec 2026-10-15). Dual-owner config table
 -- (#2135 Partner-Wide First): the PARTNER row is the default/ceiling for
 -- every org under it, the ORG row may only tighten. NULL on an org row =
