@@ -125,6 +125,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_ROLE: 'process role (api/worker)',
   BREEZE_SEED_E2E_FORCE: 'E2E seed toggle',
   BREEZE_TEST_DB_URL: 'test harness (testUtils)',
+  BREEZE_TRUST_CIS_FRAMEWORK_VIEW: 'Trust Center CIS v8 framework view rollout gate; set only after CIS licensing confirmation (spec §18.13)',
   BREEZE_UPGRADE_PREFLIGHT_STRICT: 'upgrade CLI flag',
   // CALLER_*
   CALLER_VERIFICATION_ENABLED: 'feature flag',
