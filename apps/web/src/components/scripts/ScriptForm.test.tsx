@@ -139,8 +139,11 @@ describe('ScriptForm Monaco lifecycle (issue #1186)', () => {
   // import landing in the route <head> so it survives View-Transition swaps. That's
   // invisible to jsdom (CSS imports are no-ops in vitest), so nothing else here would
   // catch someone "cleaning up an unused import" and silently regressing the fix.
-  it('keeps the static Monaco editor.main.css import (headline #1186 cure)', () => {
-    expect(scriptFormSource).toMatch(/import\s+['"]monaco-editor\/min\/vs\/editor\/editor\.main\.css['"]/);
+  // The import now lives in lib/monacoLoader.ts (shared with the approvals
+  // script-proposal card, which regressed the same way); this pins ScriptForm to
+  // that module, and lib/monacoEditorCss.test.ts pins the CSS import to it.
+  it('reaches the static Monaco editor.main.css import via lib/monacoLoader (headline #1186 cure)', () => {
+    expect(scriptFormSource).toMatch(/from\s+['"]@\/lib\/monacoLoader['"]/);
   });
 });
 

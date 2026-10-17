@@ -6,7 +6,7 @@ import path from 'node:path';
 // monaco-editor >=0.56's package.json `exports` map only publishes
 // `"./*.js"` / `"./*"` -> `esm/vs/*.js` — it no longer exposes the AMD
 // `min/vs/**` assets (including CSS) via any subpath specifier, so
-// `ScriptForm.tsx`'s `import 'monaco-editor/min/vs/editor/editor.main.css'`
+// `lib/monacoLoader.ts`'s `import 'monaco-editor/min/vs/editor/editor.main.css'`
 // fails module resolution under Vite. Mirrored from the same alias in
 // astro.config.mjs — keep both in sync.
 const require = createRequire(import.meta.url);

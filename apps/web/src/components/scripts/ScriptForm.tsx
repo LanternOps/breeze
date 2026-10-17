@@ -5,19 +5,6 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus, Trash2, Sparkles, AlertTriangle, Braces } from 'lucide-react';
 import type { EditorProps } from '@monaco-editor/react';
 
-// Statically import Monaco's editor stylesheet so Astro bundles it into the
-// route's <head> as a hashed <link>. @monaco-editor/loader otherwise injects
-// this CSS into <head> at runtime, and Astro's View-Transition document swap
-// rebuilds <head> from the new page's server markup — dropping that runtime
-// injection and leaving the editor's hidden `.inputarea` <textarea> rendered as
-// a bare unstyled white box on SPA navigation (issue #1186). A build-time <link>
-// is part of every editor route's server markup, so it survives the swap. The
-// stylesheet is self-contained (all its url() assets — the codicon font and a
-// few images — are inline data: URIs), so Vite processes it without external
-// asset resolution. CSS-only — does not pull the Monaco JS wrapper into the
-// static bundle (see lib/monacoLoader.ts).
-import 'monaco-editor/min/vs/editor/editor.main.css';
-
 import { SCRIPT_BUILTIN_PARAMETER_KEYS, SCRIPT_PARAMETER_SOURCES, scriptSecretEnvName } from '@breeze/shared';
 import ScriptAiPanel from './ScriptAiPanel';
 import ScriptTestRunner from './ScriptTestRunner';
