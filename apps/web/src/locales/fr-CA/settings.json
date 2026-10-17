@@ -1954,6 +1954,10 @@
       "title": "Fonctionnalités du portail",
       "description": "Contrôlez ce que ce client peut faire sur son portail. Chaque organisation est indépendante.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Modification de la page de confiance par le client",
+          "description": "Les contacts administrateurs du client ayant un accès au portail peuvent modifier le brouillon de la page de confiance : contact de sécurité, site Web, contrôles masqués et ce que la page affiche. Vous publiez toujours leurs modifications. Ils peuvent aussi retirer la page publiée."
+        },
         "enableTickets": {
           "label": "Soumission de billets",
           "description": "Les clients peuvent ouvrir et suivre les billets de support depuis le portail."

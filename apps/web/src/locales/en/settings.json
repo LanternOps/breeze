@@ -1954,6 +1954,10 @@
       "title": "Portal features",
       "description": "Control what this customer can do in their portal. Each organization is independent.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Customer trust page editing",
+          "description": "Customers' admin contacts with a portal login can edit the trust page draft: security contact, website, hidden controls and what the page shows. You still publish their changes. They can also withdraw the published page."
+        },
         "enableTickets": {
           "label": "Ticket submission",
           "description": "Customers can open and track support tickets from the portal."

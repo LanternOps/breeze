@@ -1954,6 +1954,10 @@
       "title": "Portalfunktionen",
       "description": "Steuern Sie, was dieser Kunde in seinem Portal tun kann. Jede Organisation ist unabhängig.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Bearbeitung der Trust-Seite durch den Kunden",
+          "description": "Admin-Kontakte des Kunden mit Portalzugang können den Entwurf der Trust-Seite bearbeiten: Sicherheitskontakt, Website, ausgeblendete Kontrollen und was die Seite anzeigt. Die Veröffentlichung bleibt bei Ihnen. Sie können die veröffentlichte Seite auch zurückziehen."
+        },
         "enableTickets": {
           "label": "Ticketeinreichung",
           "description": "Kunden können Support-Tickets über das Portal öffnen und verfolgen."
