@@ -1367,7 +1367,7 @@
       "unknown": "Breeze Assist etkin ancak yüklü değil ({{since}} tarihinden beri)."
     },
     "watchdogInstall": {
-      "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede `breeze-agent service install --watchdog` komutunu çalıştırın.",
+      "gaveUp": "Watchdog otomatik olarak yüklenemedi ({{since}} tarihinden beri): {{reason}}. Yeniden denemek için ana makinede <code>breeze-agent service install --watchdog</code> komutunu çalıştırın.",
       "unsupported": "Otomatik watchdog kurulumu bu ana makinede desteklenmiyor ({{since}} tarihinden beri).",
       "reason": {
         "network": "indirme adresine ulaşılamadı",

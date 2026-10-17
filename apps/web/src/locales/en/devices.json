@@ -1367,7 +1367,7 @@
       "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
     },
     "watchdogInstall": {
-      "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run `breeze-agent service install --watchdog` on the host to retry.",
+      "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run <code>breeze-agent service install --watchdog</code> on the host to retry.",
       "unsupported": "Automatic watchdog install is not supported on this host (since {{since}}).",
       "reason": {
         "network": "the download could not be reached",
