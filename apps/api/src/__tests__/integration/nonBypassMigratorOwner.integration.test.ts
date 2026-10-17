@@ -120,8 +120,10 @@ describe('migration role is NOSUPERUSER NOBYPASSRLS and not breeze_app', () => {
       await tx`SELECT set_config('breeze.scope', 'none', true)`;
     }
 
-    async function seedCatalogPartner(tx: TransactionSql, mapsSonnet46: boolean) {
-      const partner = await createPartner();
+    // The partner is created (committed) BEFORE the transaction: the restore
+    // holds locks on partners / partner_ai_connections that a second
+    // connection's insert would wait on for the rest of the transaction.
+    async function seedCatalogPartner(tx: TransactionSql, partnerId: string, mapsSonnet46: boolean) {
       const entryId = randomUUID();
       const revisionId = randomUUID();
       const configId = randomUUID();
@@ -134,9 +136,9 @@ describe('migration role is NOSUPERUSER NOBYPASSRLS and not breeze_app', () => {
         VALUES (${revisionId}, ${entryId}, 1, 'https://llm.example.test', 'x-api-key', ${tx.json(modelMap)})`;
       await tx`UPDATE llm_provider_catalog SET active_revision_id = ${revisionId} WHERE id = ${entryId}`;
       await tx`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, catalog_entry_id)
-        VALUES (${configId}, ${partner.id}, 'ciphertext', 'abcd', 'fp', ${entryId})`;
+        VALUES (${configId}, ${partnerId}, 'ciphertext', 'abcd', 'fp', ${entryId})`;
       await tx`INSERT INTO partner_ai_connections (id, partner_id, kind, name, api_key_encrypted, key_last4, key_fingerprint, catalog_entry_id)
-        VALUES (${configId}, ${partner.id}, 'catalog', 'Pin test endpoint', 'ciphertext', 'abcd', 'fp', ${entryId})`;
+        VALUES (${configId}, ${partnerId}, 'catalog', 'Pin test endpoint', 'ciphertext', 'abcd', 'fp', ${entryId})`;
       return { configId, entryId };
     }
 
@@ -155,9 +157,10 @@ describe('migration role is NOSUPERUSER NOBYPASSRLS and not breeze_app', () => {
     }
 
     runDb('control: the shipped pin matches nothing for this role while partner_llm_configs has only its breeze_app policy', async () => {
+      const partner = await createPartner();
       await inRolledBackTx(async (tx) => {
         await restoreLegacy(tx);
-        const seeded = await seedCatalogPartner(tx, true);
+        const seeded = await seedCatalogPartner(tx, partner.id, true);
         // Recreate the database as it was when the shipped pin ran: the
         // role-agnostic system policy arrived two days later (2026-11-14).
         await tx.unsafe('DROP POLICY partner_llm_configs_system_only ON public.partner_llm_configs');
@@ -169,10 +172,11 @@ describe('migration role is NOSUPERUSER NOBYPASSRLS and not breeze_app', () => {
     });
 
     runDb('the replay pins tracking catalog rows and their connection mirror, leaves the rest alone, and is idempotent', async () => {
+      const [p1, p2] = [await createPartner(), await createPartner()];
       await inRolledBackTx(async (tx) => {
         await restoreLegacy(tx);
-        const tracking = await seedCatalogPartner(tx, true);
-        const unmapped = await seedCatalogPartner(tx, false);
+        const tracking = await seedCatalogPartner(tx, p1.id, true);
+        const unmapped = await seedCatalogPartner(tx, p2.id, false);
         await applyAsMigrator(tx, PIN_REPLAY);
 
         expect(await readPin(tx, tracking.configId)).toEqual({
