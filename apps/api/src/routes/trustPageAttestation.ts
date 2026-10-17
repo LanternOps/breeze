@@ -7,8 +7,8 @@
 // uncacheable 404. The token signs the CURRENT immutable snapshot payload; posture is never computed here.
 //
 // Rate limit: the isolated global bucket 'trustattest' (middleware/globalRateLimit.ts). Cross-origin: CORP
-// `cross-origin` is applied at the secureHeaders registration (middleware/trustCrossOrigin.ts); this file sets
-// `Access-Control-Allow-Origin: *` and removes the credentialed-CORS header the app-wide cors() adds.
+// `cross-origin` is applied at the secureHeaders registration (middleware/trustCrossOrigin.ts); the middleware
+// below sets `Access-Control-Allow-Origin: *` and removes the credentialed-CORS header the app-wide cors() adds.
 import { Hono, type Context } from 'hono';
 import { decodeJwt } from 'jose';
 import type { TrustPagePublicPayload } from '@breeze/shared';
@@ -43,16 +43,15 @@ const stale = (c: Context) => {
   return c.json({ error: 'No current attestation: the page has not been evaluated in the last 24 hours', code: 'ATTESTATION_STALE' }, 503);
 };
 
-/** Readable from any origin, never with credentials (the app-wide cors() runs with credentials: true). */
-function crossOrigin(c: Context): void {
-  c.header('Access-Control-Allow-Origin', '*');
-  c.header('Access-Control-Allow-Credentials', undefined);
-}
-
-// Every non-200 is uncacheable — the generic 404, the 503s and an unexpected error alike: a page published, an
-// operator's key activation or an evaluation a minute later must not stay hidden behind a proxy cache.
+// Every response, errors included (a verifier in a browser must be able to read ATTESTATION_STALE):
+// - readable from any origin, never with credentials — the app-wide cors() runs with credentials: true and echoes
+//   allowlisted origins, which must not carry over to an unauthenticated public resource;
+// - every non-200 is uncacheable — the generic 404, the 503s and an unexpected error alike: a page published, an
+//   operator's key activation or an evaluation a minute later must not stay hidden behind a proxy cache.
 trustPageAttestationRoutes.use('*', async (c, next) => {
   await next();
+  c.res.headers.set('Access-Control-Allow-Origin', '*');
+  c.res.headers.delete('Access-Control-Allow-Credentials');
   if (c.res.status !== 200) c.res.headers.set('Cache-Control', 'no-store');
 });
 
@@ -66,7 +65,6 @@ trustPageAttestationRoutes.get('/jwks.json', async (c) => {
   }
   const jwks = await loadTrustJwks();
   if (jwks.keys.length === 0) return unavailable(c);
-  crossOrigin(c);
   c.header('Content-Type', 'application/jwk-set+json');
   c.header('Cache-Control', `public, max-age=${TRUST_JWKS_MAX_AGE_SECONDS}`);
   c.header('X-Content-Type-Options', 'nosniff');
@@ -114,7 +112,6 @@ async function attestation(c: Context, partnerSlug: string, orgSlug?: string) {
   // A cache must never hold the token past its exp (and the token cache leaves ≥ 60 s on a hit).
   const exp = decodeJwt(token).exp ?? 0;
   const maxAge = Math.max(0, Math.min(ATTESTATION_MAX_AGE_SECONDS, exp - Math.floor(Date.now() / 1000)));
-  crossOrigin(c);
   c.header('Content-Type', 'application/jwt');
   c.header('Cache-Control', `public, max-age=${maxAge}`);
   c.header('X-Robots-Tag', 'noindex');

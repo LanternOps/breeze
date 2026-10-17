@@ -165,7 +165,7 @@ describe('GET /:partnerSlug/:orgSlug', () => {
     const tooLong = await snapshot(await get(`/${'x'.repeat(80)}/acme`));
     const reserved = await snapshot(await get('/preview/acme'));
     const deeper = await snapshot(await get('/nw/acme/extra'));
-    expect(unknown).toEqual({ status: 404, body: GENERIC, headers: expect.arrayContaining([['cache-control', 'no-store']]) });
+    expect(unknown).toEqual({ status: 404, body: GENERIC, headers: expect.arrayContaining([['cache-control', 'no-store'], ['access-control-allow-origin', '*']]) });
     for (const other of [notServing, invalid, tooLong, reserved, deeper]) expect(other).toEqual(unknown);
   });
 
@@ -211,6 +211,18 @@ describe('GET /:partnerSlug/:orgSlug', () => {
       expect(res.headers.get('Retry-After')).toBe('3600');
       expect(res.headers.get('Cache-Control')).toBe('no-store');
     }
+  });
+
+  it('error responses are readable cross-origin too, never with credentials', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValue({ ...RESOLVED(), lastEvaluatedAt: null });
+    const stale = await get('/nw/acme', { Origin: 'https://dashboard.example.com' });
+    expect(stale.status).toBe(503);
+    expect(stale.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(stale.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+    const missing = await get('/NW/acme', { Origin: 'https://dashboard.example.com' });
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(missing.headers.get('Access-Control-Allow-Credentials')).toBeNull();
   });
 
   it('attestation from a rotated-out kid verifies against the JWKS', async () => {
