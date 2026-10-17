@@ -384,6 +384,7 @@
     "hide": "gizle"
   },
   "deviceActions": {
+    "moreActions": "Diğer işlemler",
     "unavailable": {
       "offline": "Cihaz çevrimdışı",
       "maintenance": "Cihaz bakım modunda",

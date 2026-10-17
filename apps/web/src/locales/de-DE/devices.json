@@ -384,6 +384,7 @@
     "hide": "ausblenden"
   },
   "deviceActions": {
+    "moreActions": "Weitere Aktionen",
     "unavailable": {
       "offline": "Gerät ist offline",
       "maintenance": "Gerät befindet sich im Wartungsmodus",

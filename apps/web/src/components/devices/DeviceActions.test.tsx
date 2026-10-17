@@ -64,7 +64,12 @@ const remoteToolsDeniedPolicy = {
 
 // Native disabled buttons aren't reported as disabled via getByRole's name in
 // every jsdom case, so query the DOM element directly and read its props.
-const button = (name: RegExp) => screen.getByRole('button', { name });
+// Menu items and the Power trigger use aria-disabled (so the reason stays
+// keyboard-reachable); header buttons keep the native attribute.
+const expectUnavailable = (el: HTMLElement) =>
+  expect(el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true').toBe(true);
+const button = (name: RegExp) =>
+  screen.queryByRole('menuitem', { name }) ?? screen.getByRole('button', { name });
 
 it.each(['power', 'menu'])('labels an active lease as exit in the %s menu after a heartbeat reports online', async (menu) => {
   const onAction = vi.fn();
@@ -103,7 +108,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       render(<DeviceActions device={offlineDevice} />);
 
       const connect = button(/^connect desktop$/i);
-      expect(connect).toBeDisabled();
+      expectUnavailable(connect);
       expect(connect).toHaveAttribute('title', 'Device is offline');
     });
 
@@ -111,7 +116,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       render(<DeviceActions device={offlineDevice} />);
 
       const power = button(/^power$/i);
-      expect(power).toBeDisabled();
+      expectUnavailable(power);
       expect(power).toHaveAttribute('title', 'Device is offline');
     });
 
@@ -162,7 +167,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       expect(button(/run script/i)).toBeDisabled();
       expect(button(/^connect desktop$/i)).toBeDisabled();
       expect(button(/remote tools/i)).toBeDisabled();
-      expect(button(/^power$/i)).toBeDisabled();
+      expectUnavailable(button(/^power$/i));
     });
 
     it('uses a status-accurate tooltip (not "Device is offline") for maintenance', () => {
@@ -225,7 +230,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       fireEvent.click(screen.getByRole('button'));
 
       const connect = button(/^connect desktop$/i);
-      expect(connect).toBeDisabled();
+      expectUnavailable(connect);
       expect(connect).toHaveAttribute('title', 'Device is offline');
 
       const wake = button(/^wake$/i);
@@ -250,9 +255,9 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
 
       fireEvent.click(screen.getByRole('button'));
 
-      expect(button(/run script/i)).toBeDisabled();
+      expectUnavailable(button(/run script/i));
       const connect = button(/^connect desktop$/i);
-      expect(connect).toBeDisabled();
+      expectUnavailable(connect);
       expect(connect).toHaveAttribute('title', 'Device is in maintenance mode');
       expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
     });
@@ -401,7 +406,7 @@ describe('DeviceActions — maintenance mode in the Power menu (#4936)', () => {
     const onAction = vi.fn();
     render(<DeviceActions device={maintenanceDevice} onAction={onAction} />);
 
-    expect(button(/^power$/i)).toBeDisabled();
+    expectUnavailable(button(/^power$/i));
 
     await user.click(screen.getByTestId('device-actions-menu'));
     await user.click(await screen.findByText('Exit Maintenance'));

@@ -154,8 +154,11 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
         />,
       );
 
-      const btn = screen.getByRole('button');
-      expect(btn).toBeDisabled();
+      // The compact variant is a menuitem that uses aria-disabled so its
+      // reason stays keyboard-reachable (#9025); the others keep native disabled.
+      const btn = screen.getByRole(variant === 'compact' ? 'menuitem' : 'button');
+      if (variant === 'compact') expect(btn).toHaveAttribute('aria-disabled', 'true');
+      else expect(btn).toBeDisabled();
       expect(btn).toHaveAttribute('title', 'Device is offline');
     });
 
@@ -170,7 +173,7 @@ describe('ConnectDesktopButton — disabled prop gating (issue #2013)', () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole('button'));
+      fireEvent.click(screen.getByRole(variant === 'compact' ? 'menuitem' : 'button'));
       expect(fetchMock).not.toHaveBeenCalled();
     });
   }

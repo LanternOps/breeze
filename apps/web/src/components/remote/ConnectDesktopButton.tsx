@@ -559,12 +559,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   // Entry point for a connect click. RDS hosts open the session picker first;
   // everything else connects immediately (unchanged behavior).
   const handleClick = useCallback(() => {
+    if (disabled) return;
     if (helperLifecycleMode === 'on-demand') {
       setPickerOpen(true);
       return;
     }
     void startConnect();
-  }, [helperLifecycleMode, startConnect]);
+  }, [disabled, helperLifecycleMode, startConnect]);
 
   const handleDismiss = useCallback(() => {
     setVncFallback(null);
@@ -1101,10 +1102,12 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       <div className="relative">
         <button
           type="button"
+          role="menuitem"
+          tabIndex={-1}
           onClick={handleClick}
-          disabled={disabled || status === 'creating' || status === 'launching'}
+          aria-disabled={disabled || status === 'creating' || status === 'launching' ? true : undefined}
           title={error || (disabled ? disabledTitle : undefined)}
-          className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
+          className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
         >
           <Monitor className="h-4 w-4" />
           {error ? t('connectDesktopButton.errors.connectionFailed') :

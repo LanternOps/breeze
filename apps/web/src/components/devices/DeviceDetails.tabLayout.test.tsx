@@ -99,7 +99,7 @@ describe('DeviceDetails tab layout', () => {
     expect(visibleTabNames()).toEqual([
       'Overview', 'Details', 'Performance', 'Alerts', 'Event Log', 'Hardware', 'Software', 'Patches', 'Scripts',
     ]);
-    fireEvent.click(screen.getByRole('button', { name: /more/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     const items = screen.getAllByRole('menuitem').map((m) => m.textContent);
     expect(items).toEqual(expect.arrayContaining(['Anomalies', 'Tickets', 'Operator Tasks', 'Monitoring', 'Compliance']));
     const headers = Array.from(screen.getByRole('menu').querySelectorAll('[data-overflow-group]')).map((h) => h.textContent);
@@ -124,7 +124,7 @@ describe('DeviceDetails tab layout', () => {
 
     await waitFor(() => expect(screen.getByTestId('overflow-tabs-hidden-dot')).toBeInTheDocument());
     expect(screen.queryByRole('tab', { name: /compliance/i })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /more/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     expect(screen.getByRole('menuitem', { name: /compliance/i })).toHaveTextContent('Compliance3');
     expect(screen.getByRole('menuitem', { name: /monitoring/i })).toHaveTextContent('Monitoring1');
   });
@@ -150,7 +150,7 @@ describe('DeviceDetails tab layout', () => {
     // Not promoted into the primary row (an enabled org would show it there,
     // badged "2" — see the sibling Tickets-promotion test above).
     expect(screen.queryByRole('tab', { name: /anomalies/i })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /more/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
     expect(screen.getByRole('menuitem', { name: /anomalies/i })).toHaveTextContent('Anomalies');
     expect(screen.getByRole('menuitem', { name: /anomalies/i })).not.toHaveTextContent('Anomalies2');
   });
