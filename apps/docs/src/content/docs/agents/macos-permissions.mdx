@@ -202,7 +202,7 @@ Without an MDM, grant the permissions on the device under **System Settings > Pr
 
 2. **Accessibility** -- open **Privacy & Security > Accessibility** and add the same two binaries.
 
-3. **Screen Recording** -- open **Privacy & Security > Screen & System Audio Recording** (labeled **Screen Recording** on macOS 12-14) and enable `breeze-desktop-helper`. If the helper has already attempted a capture, it appears in the list automatically; otherwise the first remote desktop connection triggers the standard macOS approval prompt.
+3. **Screen Recording** -- open **Privacy & Security > Screen & System Audio Recording** (labeled **Screen Recording** on macOS 12-14) and enable `breeze-desktop-helper`. The helper never captures the screen to check this permission, so it may not appear in the list until you add it with **+** (`/usr/local/bin/breeze-desktop-helper`). On macOS 12-15 the helper asks macOS for the grant once a day while it is missing, and a remote desktop connection is refused (with a `missing_permission` reason in the console) until it is granted; on macOS 26 the first connection is allowed and its own capture decides.
 
 </Steps>
 

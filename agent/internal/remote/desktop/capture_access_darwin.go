@@ -71,10 +71,11 @@ var captureAccessUnverifiedWarned atomic.Bool
 //
 // At the login window and on macOS 12/13 preflight alone decides: there is
 // no ScreenCaptureKit session to learn from and no other-app window to read.
+// On macOS 26 an unreliable "no" is still "unknown" in every context — the
+// login window must not report a denial the preflight cannot prove.
 func CheckCaptureAccess(config CaptureConfig) CaptureAccessReport {
-	signals := captureAccessSignals{preflight: screenRecordingPreflight}
+	signals := captureAccessSignals{preflight: screenRecordingPreflight, preflightUnreliable: preflightUnreliable()}
 	if config.DesktopContext != "login_window" && hasSCScreenshotManager() {
-		signals.preflightUnreliable = preflightUnreliable()
 		signals.namedWindowVisible = namedWindowVisibleFn
 		signals.lastSessionCaptured = sckPolicy.lastSessionCaptured
 	}

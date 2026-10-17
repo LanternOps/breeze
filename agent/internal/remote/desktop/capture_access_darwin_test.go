@@ -60,16 +60,34 @@ func TestCheckCaptureAccess_NeverOpensABackend(t *testing.T) {
 // At the login window and on macOS 12/13 only preflight decides: a titled
 // window or a recorded user session says nothing about that context.
 func TestCheckCaptureAccess_LoginWindowIsPreflightOnly(t *testing.T) {
-	origPreflight, origNames := screenRecordingPreflight, namedWindowVisibleFn
-	t.Cleanup(func() { screenRecordingPreflight, namedWindowVisibleFn = origPreflight, origNames })
+	origPreflight, origNames, origMajor := screenRecordingPreflight, namedWindowVisibleFn, macOSMajorVersion
+	t.Cleanup(func() {
+		screenRecordingPreflight, namedWindowVisibleFn, macOSMajorVersion = origPreflight, origNames, origMajor
+	})
 	screenRecordingPreflight = func() bool { return false }
 	namedWindowVisibleFn = func() bool {
 		t.Fatal("window names consulted at the login window")
 		return true
 	}
-	report := CheckCaptureAccess(CaptureConfig{DesktopContext: "login_window"})
-	if report.State != CaptureAccessDenied || report.Reason != "preflight" {
-		t.Fatalf("report = %+v, want denied by preflight", report)
+	for _, tc := range []struct {
+		name  string
+		major int
+		want  CaptureAccessState
+		why   string
+	}{
+		// Preflight is trustworthy below macOS 26: its "no" is a denial.
+		{"macOS 15", 24, CaptureAccessDenied, "preflight"},
+		// macOS 26 can report false while the grant is present; with no other
+		// signal available at the login window the answer is unknown, not denied.
+		{"macOS 26", 25, CaptureAccessUnknown, "unverified"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			macOSMajorVersion = tc.major
+			report := CheckCaptureAccess(CaptureConfig{DesktopContext: "login_window"})
+			if report.State != tc.want || report.Reason != tc.why {
+				t.Fatalf("report = %+v, want %s by %s", report, tc.want, tc.why)
+			}
+		})
 	}
 }
 
