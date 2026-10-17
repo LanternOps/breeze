@@ -1363,6 +1363,14 @@
           "migrationWindowClosed": {
             "description": "Acionado uma vez por organização quando uma janela de migração de tickets é encerrada, com as contagens importadas.",
             "label": "Janela de migração encerrada"
+          },
+          "integrationHealthOpened": {
+            "description": "Acionado quando um incidente de integridade é aberto na conexão de uma organização.",
+            "label": "Incidente de integridade da conexão aberto"
+          },
+          "integrationHealthResolved": {
+            "description": "Acionado quando um incidente de integridade de uma conexão é resolvido.",
+            "label": "Incidente de integridade da conexão resolvido"
           }
         },
         "fields": {

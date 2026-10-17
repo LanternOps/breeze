@@ -329,6 +329,27 @@
       "unknown": "Nécessite une intervention"
     }
   },
+  "connectionHealthSettings": {
+    "title": "Notifications d'état",
+    "description": "Le personnel du MSP qui peut réparer une connexion défaillante reçoit toujours sa notification dans l'application et le résumé quotidien. Choisissez si les administrateurs des organisations clientes sont aussi informés des connexions de leur propre organisation.",
+    "partnerLabel": "Notifier les administrateurs clients par défaut",
+    "partnerDescription": "S'applique à chaque organisation qui n'a pas de paramètre propre. Les connexions à l'échelle du partenaire n'atteignent jamais les administrateurs clients.",
+    "partnerReadOnly": "Seuls les administrateurs du partenaire ayant accès à toutes les organisations peuvent modifier la valeur par défaut.",
+    "orgLabel": "Cette organisation",
+    "orgDescription": "Remplace la valeur par défaut pour l'organisation sélectionnée ci-dessus.",
+    "selectOrg": "Sélectionnez une organisation pour remplacer la valeur par défaut pour celle-ci.",
+    "inherit": "Hériter",
+    "inheritOn": "Hériter (activé, depuis {{from}})",
+    "inheritOff": "Hériter (désactivé, depuis {{from}})",
+    "fromPartner": "le paramètre du partenaire",
+    "fromDefault": "la valeur par défaut intégrée",
+    "on": "Activé",
+    "off": "Désactivé",
+    "loadFailed": "Impossible de charger les paramètres de notification d'état.",
+    "retry": "Réessayer",
+    "saved": "Paramètre de notification d'état enregistré",
+    "saveFailed": "Impossible d'enregistrer le paramètre de notification d'état"
+  },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Connexion vérifiée et enregistrée.",
     "googleWorkspace": "Google Workspace",

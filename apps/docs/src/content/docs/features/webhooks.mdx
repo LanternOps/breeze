@@ -146,6 +146,34 @@ A ticket migration window lets a partner admin import ticket history from anothe
 |-------|---------|-------------|
 | `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
 
+### Integration Events
+
+Integration events report the health of an organization's own connections: an integration, a sync or an OAuth grant. A health incident opens when a connection breaks and resolves when it recovers or is retired.
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `integration.health_opened` | `incidentId`, `orgId`, `sourceKind`, `sourceId`, `condition`, `severity`, `fixHref`, `openedAt`, `resolvedAt`, `resolution` | A connection health incident opened. `resolvedAt` and `resolution` are `null` |
+| `integration.health_resolved` | `incidentId`, `orgId`, `sourceKind`, `sourceId`, `condition`, `severity`, `fixHref`, `openedAt`, `resolvedAt`, `resolution` | A connection health incident resolved |
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `incidentId` | string (uuid) | The incident. Both events for one incident carry the same value |
+| `orgId` | string (uuid) | The organization that owns the connection |
+| `sourceKind` | string | The kind of connection, for example `m365_connection`, `dns_filter` or `webhook` |
+| `sourceId` | string or `null` | The connection's id. `null` for `oauth_grant`, because that id embeds a user id |
+| `condition` | string | A fixed code for what is wrong, for example `sync_failed` or `reauth_required` |
+| `severity` | string | `permanent` (needs someone to act) or `transient` (may clear on its own) |
+| `fixHref` | string | A relative path in the Breeze web app where the connection can be repaired |
+| `openedAt` | string (ISO timestamp) | When the incident opened |
+| `resolvedAt` | string (ISO timestamp) or `null` | When the incident resolved. `null` while it is open |
+| `resolution` | string or `null` | `recovered` or `retired`. `null` while the incident is open |
+
+- **No free text.** The payload never contains provider error text or the connection's display name. Use `fixHref` and the API to look up more.
+- **Organization connections only.** Only incidents about an organization's own connections emit events. Partner-wide connections do not.
+- **Level-triggered.** Events follow the state seen at each health check, about every 15 minutes. A connection that breaks and recovers between two checks may emit nothing. A consumer can also receive an `integration.health_resolved` event for an incident it never saw open, for example an incident that existed before the feature shipped.
+- **Stable event ids.** The event id is stable for a given incident and state, so retried deliveries are deduplicated.
+- **No self-delivery.** An incident about a webhook is never delivered to that same webhook.
+
 ### Other Events
 
 | Event | Description |

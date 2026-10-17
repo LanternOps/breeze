@@ -42,6 +42,7 @@ import BackupProvidersIntegration from "./BackupProvidersIntegration";
 import EdrProvidersIntegration from "./EdrProvidersIntegration";
 import AccessDenied from "../shared/AccessDenied";
 import ConnectionHealthPanel from "./ConnectionHealthPanel";
+import ConnectionHealthSettingsCard from "./ConnectionHealthSettingsCard";
 import { usePermissions } from "../../lib/permissions";
 import { getJwtClaims } from "../../lib/authScope";
 import { useHelpStore, rebaseDocsUrl } from "../../stores/helpStore";
@@ -521,6 +522,10 @@ export default function IntegrationsPage({
       />
 
       <ConnectionHealthPanel />
+
+      {/* W5: who besides MSP staff hears about broken connections. Partner and
+          system scope only; the API refuses org scope. */}
+      {!isOrgScoped && <ConnectionHealthSettingsCard orgId={currentOrgId ?? null} />}
 
       {/* Top-level tabs */}
       <div className="flex flex-wrap gap-3">

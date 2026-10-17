@@ -1363,6 +1363,14 @@
           "migrationWindowClosed": {
             "description": "Attivato una volta per organizzazione quando una finestra di migrazione dei ticket si chiude, con i conteggi importati.",
             "label": "Finestra di migrazione chiusa"
+          },
+          "integrationHealthOpened": {
+            "description": "Si attiva quando viene aperto un incidente di stato sulla connessione di un'organizzazione.",
+            "label": "Incidente di stato della connessione aperto"
+          },
+          "integrationHealthResolved": {
+            "description": "Si attiva quando un incidente di stato di una connessione viene risolto.",
+            "label": "Incidente di stato della connessione risolto"
           }
         },
         "fields": {

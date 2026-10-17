@@ -1438,5 +1438,26 @@
     "pushTestNote": "The test event can take a few minutes to arrive.",
     "pushLast": "Last push event: {{relative}}",
     "pushNone": "No push events received yet"
+  },
+  "connectionHealthSettings": {
+    "title": "Health notifications",
+    "description": "MSP staff who can fix a broken connection always get its in-app notice and daily digest. Choose whether customer organization admins also hear about their own organization's connections.",
+    "partnerLabel": "Notify customer admins by default",
+    "partnerDescription": "Applies to every organization that has no setting of its own. Partner-wide connections never reach customer admins.",
+    "partnerReadOnly": "Only partner admins with access to all organizations can change the default.",
+    "orgLabel": "This organization",
+    "orgDescription": "Overrides the default for the organization selected above.",
+    "selectOrg": "Select an organization to override the default for it.",
+    "inherit": "Inherit",
+    "inheritOn": "Inherit (on, from the {{from}})",
+    "inheritOff": "Inherit (off, from the {{from}})",
+    "fromPartner": "partner setting",
+    "fromDefault": "built-in default",
+    "on": "On",
+    "off": "Off",
+    "loadFailed": "Couldn't load the health notification settings.",
+    "retry": "Retry",
+    "saved": "Health notification setting saved",
+    "saveFailed": "Couldn't save the health notification setting"
   }
 }
