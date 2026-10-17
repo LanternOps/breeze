@@ -6,11 +6,13 @@
  * Publishing and editing stay human-only: a publish records a customer authorization and needs MFA, so no
  * AI tool writes here. This tool reads in the caller's DB context, never creates the draft page
  * (unlike the editor's GET), and reports only page-level aggregates from the current snapshot — nothing
- * device-level and no requester details.
+ * device-level and no requester details. The one system-scoped read is the partner slug for the public path:
+ * `partners` is invisible to an organization-scoped caller under RLS, the slug is already public (it is in
+ * the URL), and it is keyed by a page row the caller's own context returned.
  */
-import { and, count, eq, gt, isNull, lte, sql } from 'drizzle-orm';
+import { and, count, eq, gt, isNull, sql } from 'drizzle-orm';
 import { normalizeTrustPagePayload, type TrustPagePublicPayloadAny } from '@breeze/shared';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { organizations, partners, trustPageAccessRequests, trustPageDeclarations, trustPages, trustPageSnapshots } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -38,11 +40,10 @@ export interface TrustPageStatus {
 async function loadTrustPageStatus(orgId: string): Promise<TrustPageStatus> {
   const [page] = await db.select({
     id: trustPages.id, publishedAt: trustPages.publishedAt, lastEvaluatedAt: trustPages.lastEvaluatedAt,
-    isPartnerHome: trustPages.isPartnerHome, orgSlug: organizations.slug, partnerSlug: partners.slug,
+    isPartnerHome: trustPages.isPartnerHome, partnerId: trustPages.partnerId, orgSlug: organizations.slug,
   })
     .from(trustPages)
     .innerJoin(organizations, eq(organizations.id, trustPages.orgId))
-    .innerJoin(partners, eq(partners.id, trustPages.partnerId))
     .where(eq(trustPages.orgId, orgId))
     .limit(1);
   if (!page) {
@@ -62,7 +63,7 @@ async function loadTrustPageStatus(orgId: string): Promise<TrustPageStatus> {
   // "Current" = the live row of its lineage: not superseded, not withdrawn, not yet expired.
   const [decl] = await db.select({
     current: count(),
-    expiringWithin30Days: sql<number>`count(*) filter (where ${trustPageDeclarations.expiresAt} <= ${windowEnd})`.mapWith(Number),
+    expiringWithin30Days: sql<number>`count(*) filter (where ${trustPageDeclarations.expiresAt} <= ${windowEnd.toISOString()}::timestamptz)`.mapWith(Number),
   }).from(trustPageDeclarations).where(and(
     eq(trustPageDeclarations.trustPageId, page.id), isNull(trustPageDeclarations.supersededAt),
     isNull(trustPageDeclarations.withdrawnAt), gt(trustPageDeclarations.expiresAt, now),
@@ -71,12 +72,17 @@ async function loadTrustPageStatus(orgId: string): Promise<TrustPageStatus> {
     .where(and(eq(trustPageAccessRequests.trustPageId, page.id), eq(trustPageAccessRequests.status, 'pending_approval')));
 
   const published = page.publishedAt !== null;
-  const base = `/portal/trust/${page.partnerSlug}`;
+  let publicPath: string | null = null;
+  if (published) {
+    const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+      db.select({ slug: partners.slug }).from(partners).where(eq(partners.id, page.partnerId)).limit(1)));
+    if (partner) publicPath = page.isPartnerHome ? `/portal/trust/${partner.slug}` : `/portal/trust/${partner.slug}/${page.orgSlug}`;
+  }
   return {
     exists: true,
     published,
     publishedAt: page.publishedAt?.toISOString() ?? null,
-    publicPath: published ? (page.isPartnerHome ? base : `${base}/${page.orgSlug}`) : null,
+    publicPath,
     lastEvaluatedAt: page.lastEvaluatedAt?.toISOString() ?? null,
     // Staleness is a property of a live page; a draft has no public freshness to lose.
     stale: published && (!page.lastEvaluatedAt || now.getTime() - page.lastEvaluatedAt.getTime() > STALE_AFTER_MS),

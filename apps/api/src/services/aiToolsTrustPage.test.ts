@@ -1,7 +1,7 @@
 // apps/api/src/services/aiToolsTrustPage.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], insert: vi.fn(), update: vi.fn(), delete: vi.fn() }));
+const dbm = vi.hoisted(() => ({ rows: [] as unknown[][], insert: vi.fn(), update: vi.fn(), delete: vi.fn(), systemReads: 0 }));
 vi.mock('../db', () => {
   const chain = () => {
     const c: Record<string, unknown> = {};
@@ -9,7 +9,11 @@ vi.mock('../db', () => {
     c.then = (r: (v: unknown) => unknown) => Promise.resolve(dbm.rows.shift() ?? []).then(r);
     return c;
   };
-  return { db: { select: vi.fn(() => chain()), insert: dbm.insert, update: dbm.update, delete: dbm.delete } };
+  return {
+    db: { select: vi.fn(() => chain()), insert: dbm.insert, update: dbm.update, delete: dbm.delete },
+    runOutsideDbContext: <T,>(fn: () => T): T => fn(),
+    withSystemDbAccessContext: <T,>(fn: () => T): T => { dbm.systemReads++; return fn(); },
+  };
 });
 
 import { registerTrustPageTools } from './aiToolsTrustPage';
@@ -31,7 +35,7 @@ const payload = {
 };
 
 describe('get_trust_page_status', () => {
-  beforeEach(() => { dbm.rows = []; vi.clearAllMocks(); });
+  beforeEach(() => { dbm.rows = []; dbm.systemReads = 0; vi.clearAllMocks(); });
 
   it('is a tier-1 read-only tool with a bounded description and an orgId-only input', () => {
     expect(tool.tier).toBe(1);
@@ -68,10 +72,11 @@ describe('get_trust_page_status', () => {
     const publishedAt = new Date(NOW - 3 * 86_400_000);
     const lastEvaluatedAt = new Date(NOW - 3600_000);
     dbm.rows = [
-      [{ id: 'pg1', publishedAt, lastEvaluatedAt, isPartnerHome: false, orgSlug: 'acme', partnerSlug: 'nw' }],
+      [{ id: 'pg1', publishedAt, lastEvaluatedAt, isPartnerHome: false, orgSlug: 'acme', partnerId: 'p1' }],
       [{ payload }],
       [{ current: 3, expiringWithin30Days: 1 }],
       [{ pendingApproval: 2 }],
+      [{ slug: 'nw' }],
     ];
     const out = await run({ orgId: ORG });
     expect(out).toEqual({
@@ -81,12 +86,14 @@ describe('get_trust_page_status', () => {
       declarations: { current: 3, expiringWithin30Days: 1 }, accessRequests: { pendingApproval: 2 },
     });
     expect(dbm.insert).not.toHaveBeenCalled();
+    // Only the partner slug (already public, in the URL) is read under system scope.
+    expect(dbm.systemReads).toBe(1);
   });
 
   it('a partner-home page reports the partner path; an evaluation older than 24 h is stale', async () => {
     dbm.rows = [
-      [{ id: 'pg1', publishedAt: new Date(NOW - 86_400_000 * 5), lastEvaluatedAt: new Date(NOW - 25 * 3600_000), isPartnerHome: true, orgSlug: 'acme', partnerSlug: 'nw' }],
-      [{ payload }], [{ current: 0, expiringWithin30Days: 0 }], [{ pendingApproval: 0 }],
+      [{ id: 'pg1', publishedAt: new Date(NOW - 86_400_000 * 5), lastEvaluatedAt: new Date(NOW - 25 * 3600_000), isPartnerHome: true, orgSlug: 'acme', partnerId: 'p1' }],
+      [{ payload }], [{ current: 0, expiringWithin30Days: 0 }], [{ pendingApproval: 0 }], [{ slug: 'nw' }],
     ];
     const out = await run({ orgId: ORG });
     expect(out.publicPath).toBe('/portal/trust/nw');
@@ -95,11 +102,12 @@ describe('get_trust_page_status', () => {
 
   it('a draft (unpublished) page has no public path and no stale flag', async () => {
     dbm.rows = [
-      [{ id: 'pg1', publishedAt: null, lastEvaluatedAt: null, isPartnerHome: false, orgSlug: 'acme', partnerSlug: 'nw' }],
+      [{ id: 'pg1', publishedAt: null, lastEvaluatedAt: null, isPartnerHome: false, orgSlug: 'acme', partnerId: 'p1' }],
       [], [{ current: 0, expiringWithin30Days: 0 }], [{ pendingApproval: 0 }],
     ];
     const out = await run({ orgId: ORG });
     expect(out).toMatchObject({ exists: true, published: false, publicPath: null, stale: false, controls: null });
+    expect(dbm.systemReads).toBe(0);
   });
 
   it('system scope may read any org', async () => {
