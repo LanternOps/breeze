@@ -5,7 +5,7 @@
  * (TRUST_INTRO_STORED_MAX_CHARS = TRUST_INTRO_MAX_CHARS * 8 = 40,000), and published_config round-trips as
  * jsonb. A 20,000 CHECK used to turn a valid sanitized intro into a 23514 → 500.
  *
- * W2 (#8770 W02a, migration 2026-12-30-100300-trust-center-w2.sql): the five new shape-1 tables refuse a
+ * W2 (#8770 W02a, migration 2026-12-30-120300-trust-center-w2.sql): the five new shape-1 tables refuse a
  * cross-tenant insert as breeze_app (42501), the declaration immutability trigger allows exactly the documented
  * transitions, the evidence/user FKs SET NULL without losing the row, and the CHECKs hold.
  */
@@ -195,7 +195,7 @@ describe.skipIf(!RUN)('trust center W2 tables', () => {
     const withIntro = await newPage();
     await sys(() => db.update(trustPages).set({ introHtml: '<p>Kept</p>' }).where(eq(trustPages.id, withIntro.page.id)));
     expect(empty.page.introHtml).toBeNull();
-    await replayMigration('2026-12-30-100300-trust-center-w2.sql');
+    await replayMigration('2026-12-30-120300-trust-center-w2.sql');
     const rows = await sys(() => db.select({ id: trustPages.id, introHtml: trustPages.introHtml }).from(trustPages)
       .where(sql`${trustPages.id} IN (${empty.page.id}, ${withIntro.page.id})`));
     expect(Object.fromEntries(rows.map((r) => [r.id, r.introHtml]))).toEqual({ [empty.page.id]: '', [withIntro.page.id]: '<p>Kept</p>' });

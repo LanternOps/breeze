@@ -85,7 +85,7 @@ export const trustPageDocuments = pgTable('trust_page_documents', {
 ]);
 export type TrustPageDocumentRow = typeof trustPageDocuments.$inferSelect;
 
-// ---- Trust Center W2 (#8770 W02a; migration 2026-12-30-100300-trust-center-w2.sql). Shape 1. As above, the
+// ---- Trust Center W2 (#8770 W02a; migration 2026-12-30-120300-trust-center-w2.sql). Shape 1. As above, the
 // composite deferrable FKs ((trust_page_id, org_id) → trust_pages, (request_id, org_id) → requests,
 // (evidence_document_id, org_id) → org_documents) live in SQL only.
 export const trustAccessRequestStatusEnum = pgEnum('trust_access_request_status', ['pending_verification', 'pending_approval', 'approved', 'denied', 'revoked']);
