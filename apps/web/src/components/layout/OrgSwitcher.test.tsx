@@ -10,9 +10,11 @@ const {
   fetchOrganizationsMock,
   waitForPendingRefreshMock,
   navigateToMock,
+  recordRecentOrgMock,
   mockStoreRef,
 } = vi.hoisted(() => ({
   navigateToMock: vi.fn().mockResolvedValue('soft'),
+  recordRecentOrgMock: vi.fn(),
   selectOrganizationMock: vi.fn(),
   selectAllOrgsMock: vi.fn(),
   fetchOrganizationsMock: vi.fn(),
@@ -37,6 +39,7 @@ let mockStoreState: {
   lastOrgId?: string | null;
   organizations: Array<{ id: string; partnerId: string; name: string; status: string; createdAt: string }>;
   isLoading: boolean;
+  recentOrgIds: string[];
 };
 
 vi.mock('@/stores/orgStore', () => {
@@ -45,6 +48,7 @@ vi.mock('@/stores/orgStore', () => {
     selectOrganization: selectOrganizationMock,
     selectAllOrgs: selectAllOrgsMock,
     fetchOrganizations: fetchOrganizationsMock,
+    recordRecentOrg: recordRecentOrgMock,
   });
   const useOrgStore = vi.fn((selector?: (state: ReturnType<typeof buildStoreSnapshot>) => unknown) => {
     const snap = buildStoreSnapshot();
@@ -102,8 +106,10 @@ describe('OrgSwitcher (unified control)', () => {
       currentOrgId: 'org-a',
       allOrgs: false,
       organizations: makeOrgs(2),
-      isLoading: false
+      isLoading: false,
+      recentOrgIds: []
     };
+    recordRecentOrgMock.mockReset();
     mockStoreRef.current = mockStoreState;
   });
 

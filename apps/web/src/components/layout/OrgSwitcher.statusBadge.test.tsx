@@ -16,6 +16,7 @@ vi.mock('@/stores/orgStore', () => {
     selectOrganization: vi.fn(),
     selectAllOrgs: vi.fn(),
     fetchOrganizations: vi.fn(),
+    recordRecentOrg: vi.fn(),
   });
   const useOrgStore = vi.fn((selector?: (s: ReturnType<typeof snapshot>) => unknown) =>
     selector ? selector(snapshot()) : snapshot(),
@@ -29,6 +30,7 @@ function seed(status: string) {
     currentOrgId: 'org-a',
     allOrgs: false,
     isLoading: false,
+    recentOrgIds: [],
     organizations: [{ id: 'org-a', partnerId: 'p1', name: 'Org A', status, createdAt: '2024-01-01' }],
   };
 }
