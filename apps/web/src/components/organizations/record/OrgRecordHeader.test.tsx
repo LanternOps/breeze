@@ -78,6 +78,43 @@ describe('OrgRecordHeader', () => {
     expect(screen.queryByText('No primary contact')).toBeNull();
   });
 
+  it('renders the billing address on its own line under the contact line', () => {
+    renderHeader({
+      org: {
+        ...ORG,
+        billingAddressLine1: '1 Main St',
+        billingAddressLine2: 'Suite 200',
+        billingAddressCity: 'Springfield',
+        billingAddressRegion: 'IL',
+        billingAddressPostalCode: '62701',
+        billingAddressCountry: 'US',
+      },
+    });
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain(
+      '1 Main St, Suite 200 · Springfield, IL 62701 · US',
+    );
+    expect(screen.queryByTestId('org-record-billing-address-link')).toBeNull();
+  });
+
+  it('offers the billing settings tab when every address field is empty', () => {
+    renderHeader();
+    expect(screen.getByText('No billing address')).toBeTruthy();
+    expect(screen.getByTestId('org-record-billing-address-link').getAttribute('href')).toBe(
+      '/settings/organizations/org-1#billing',
+    );
+  });
+
+  it('renders a partial address rather than the empty state', () => {
+    renderHeader({ org: { ...ORG, billingAddressCountry: 'US' } });
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain('US');
+    expect(screen.queryByText('No billing address')).toBeNull();
+  });
+
+  it('shows the address even while the summary is still null', () => {
+    renderHeader({ summary: null, org: { ...ORG, billingAddressCity: 'Austin' } });
+    expect(screen.getByTestId('org-record-billing-address')).toBeTruthy();
+  });
+
   it('drops every write affordance when the org is archived', () => {
     renderHeader({ archived: true });
     expect(screen.queryByTestId('org-record-work-here')).toBeNull();

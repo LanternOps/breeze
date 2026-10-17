@@ -114,7 +114,8 @@
     "ticketsIncidents": "Olaylar",
     "ticketsServiceRequests": "Hizmet talepleri",
     "ticketsProblems": "Sorunlar",
-    "ticketsChanges": "Değişiklikler"
+    "ticketsChanges": "Değişiklikler",
+    "endpointMessages": "Mesajlar"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

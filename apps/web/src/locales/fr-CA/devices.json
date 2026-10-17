@@ -4274,6 +4274,89 @@
       "titleHtml": "Le HTML n'est pas autorisé dans le titre.",
       "titleLinks": "Les liens ne sont pas autorisés dans le titre.",
       "invalid": "Le message contient du contenu non autorisé."
+    },
+    "history": {
+      "title": "Messages aux terminaux",
+      "description": "Messages envoyés aux personnes sur leurs appareils, et ce qu'il est advenu de chacun.",
+      "empty": "Aucun message n'a encore été envoyé.",
+      "loading": "Chargement...",
+      "loadFailed": "Impossible de charger les messages.",
+      "retry": "Réessayer",
+      "loadMore": "Charger plus",
+      "selectPrompt": "Sélectionnez un message pour voir les détails de livraison.",
+      "detailLoadFailed": "Impossible de charger ce message.",
+      "notFound": "Ce message est introuvable.",
+      "noAccess": "Vous n'avez pas l'autorisation de consulter les messages aux terminaux.",
+      "purgedTitle": "Contenu supprimé",
+      "purgedBody": "Le texte du message a été supprimé après 90 jours. L'historique de livraison est conservé.",
+      "purgedListTitle": "(contenu supprimé)",
+      "badgeRetracted": "Retiré",
+      "badgeAi": "IA",
+      "devicesLabel": "Appareils : {{count}}",
+      "fields": {
+        "body": "Contenu",
+        "deliveries": "Appareils",
+        "host": "Appareil",
+        "status": "Statut",
+        "surface": "Affiché dans",
+        "error": "Erreur",
+        "sent": "Envoyé",
+        "expires": "Expire",
+        "delivered": "Livré",
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "retracted": "Retiré",
+        "receipts": "Accusés",
+        "noReceipts": "Aucun",
+        "requiresAck": "Confirmation requise"
+      },
+      "receiptEvents": {
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "expired": "Expiré"
+      },
+      "surface": {
+        "assist": "Carte Assist",
+        "native": "Notification native"
+      },
+      "statuses": {
+        "queued": "En file",
+        "delivered": "Livré",
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "expired": "Expiré",
+        "retracted": "Retiré",
+        "failed": "Échec",
+        "superseded": "Remplacé"
+      },
+      "actions": {
+        "retract": "Retirer",
+        "retracting": "Retrait...",
+        "resend": "Renvoyer aux échecs ou expirés",
+        "resending": "Renvoi..."
+      },
+      "retractConfirm": {
+        "title": "Retirer ce message ?",
+        "message": "Il sera retiré des appareils qui l'affichent. Les appareils qui ne l'ont pas encore reçu ne le recevront pas.",
+        "confirm": "Retirer"
+      },
+      "messages": {
+        "retractSuccess": "Message retiré.",
+        "retractPartial": "Message retiré, mais {{count}} appareils n'ont pas pu être mis à jour.",
+        "retractFailed": "Impossible de retirer le message.",
+        "resendSuccess": "Message renvoyé. Appareils : {{count}}.",
+        "resendFailed": "Impossible de renvoyer le message."
+      },
+      "resendErrors": {
+        "retracted": "Ce message a été retiré et ne peut pas être renvoyé.",
+        "body_purged": "Le texte du message a été supprimé, il ne peut donc pas être renvoyé.",
+        "in_progress": "Un envoi de ce message est déjà en cours.",
+        "idempotency_conflict": "Ce renvoi a déjà été soumis avec des détails différents.",
+        "nothing_to_resend": "Aucun appareil en échec ou expiré à qui renvoyer."
+      }
     }
   }
 }

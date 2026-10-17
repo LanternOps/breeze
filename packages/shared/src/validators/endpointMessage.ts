@@ -33,12 +33,33 @@ export type EndpointMessageSeverity = (typeof ENDPOINT_MESSAGE_SEVERITIES)[numbe
  */
 export const ENDPOINT_MESSAGING_MIN_AGENT_VERSION = '999.0.0';
 
-/** False for null, unparseable and older versions — never guesses in favour. */
-export function agentSupportsEndpointMessaging(agentVersion: string | null | undefined): boolean {
+/**
+ * First agent release with the `retract_message` handler (#8742 W02). A
+ * W1-era agent has the IPC type but no command handler, so retract is refused
+ * (`agent_unsupported`) below it. Same fail-closed placeholder as above until
+ * the release is cut.
+ */
+export const ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION = '999.0.0';
+
+function versionAtLeast(agentVersion: string | null | undefined, min: string): boolean {
   if (typeof agentVersion !== 'string' || agentVersion.trim() === '') return false;
-  const cmp = semverCompare(agentVersion.trim(), ENDPOINT_MESSAGING_MIN_AGENT_VERSION);
+  const cmp = semverCompare(agentVersion.trim(), min);
   return cmp !== null && cmp >= 0;
 }
+
+/** False for null, unparseable and older versions — never guesses in favour. */
+export function agentSupportsEndpointMessaging(agentVersion: string | null | undefined): boolean {
+  return versionAtLeast(agentVersion, ENDPOINT_MESSAGING_MIN_AGENT_VERSION);
+}
+
+/** Same fail-closed rule for the retract handler. */
+export function agentSupportsEndpointMessageRetract(agentVersion: string | null | undefined): boolean {
+  return versionAtLeast(agentVersion, ENDPOINT_MESSAGE_RETRACT_MIN_AGENT_VERSION);
+}
+
+/** Resend body: a fresh client id; the content comes from the stored message. */
+export const endpointMessageResendSchema = z.object({ messageId: z.string().uuid() }).strict();
+export type EndpointMessageResendInput = z.infer<typeof endpointMessageResendSchema>;
 
 // Any HTML-looking tag: `<b>`, `</b>`, `<img ...>`, `<!-- -->`. A lone `<` or
 // `a < b` comparison is fine. Autolinks `<https://…>` are judged by the URL rule.

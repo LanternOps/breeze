@@ -5993,6 +5993,8 @@
     },
     "columns": {
       "timezone": "Timezone",
+      "address": "Address",
+      "contact": "Contact",
       "devices": "Devices"
     },
     "empty": "No sites found. Add a site to get started."

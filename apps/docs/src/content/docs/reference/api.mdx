@@ -1240,6 +1240,10 @@ Core ticket CRUD follows the standard REST pattern under `/tickets`; the endpoin
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/tickets?deleted=only` | List soft-deleted tickets (the Archived queue). Requires `tickets:manage`. |
+| `GET` | `/tickets?ticketType=incident,problem` | Filter the list by ticket type (`incident`, `service_request`, `problem`, `change`; one to four, comma-separated). Combines with the other list filters. Create and `PATCH` accept `ticketType`; an invalid value returns `400`. |
+| `GET` | `/tickets/:id/links` | List the ticket's related-ticket links. Requires `tickets:read`. Counterparts outside your site scope are left out; deleted counterparts are flagged. |
+| `POST` | `/tickets/:id/links` | Link two tickets in the same organization: `{ targetTicketId \| targetTicketNumber, linkType }`, where `linkType` is `related`, `caused_by`, `resolves` or `duplicate_of`. Requires `tickets:write`. Refusals: `422` for a self or cross-organization link, `409` for an existing link, a `caused_by`/`resolves` cycle (`LINK_CYCLE`), a duplicate rule (`SOURCE_ALREADY_DUPLICATE`, `SOURCE_HAS_DUPLICATES`, `DUPLICATE_TARGET_IS_DUPLICATE`) or the 50-link cap (`LINK_LIMIT`). |
+| `DELETE` | `/tickets/:id/links/:linkId` | Remove a link. Requires `tickets:write`. |
 | `DELETE` | `/tickets/:id` | Soft-delete a ticket. Requires `tickets:manage`. Reversible; by-id operations on a deleted ticket return `404`. |
 | `POST` | `/tickets/:id/restore` | Restore a soft-deleted ticket. Requires `tickets:manage`. |
 | `POST` | `/tickets/bulk` | Bulk `assign` / status change / `delete` across up to 100 ticket IDs. The `delete` action requires `tickets:manage`; `assign` and status changes require `tickets:write`. Returns per-ticket `updated`/`skipped`/`failed` counts. |
@@ -1287,7 +1291,7 @@ Canned reply templates are partner-scoped. Management operations require `partne
 | `GET` | `/orgs/:orgId/ticketing/approval-settings` | The organization's resolved approval settings (partner default plus org override) |
 | `PATCH` | `/orgs/:orgId/ticketing/approval-settings` | Update the organization override. Requires `organizations:write` and MFA |
 
-Customer approval of ticket work is settings-only in v0.122.1: it is off by default (`enabled: false`), has no dashboard UI, and no approval workflow acts on it yet.
+Customer approval of ticket work is off by default (`enabled: false`). From v0.123.0 the approval workflow acts on these settings; see [Customer approval of ticket work](/features/ticket-customer-approval/).
 
 ## PSA Integrations
 

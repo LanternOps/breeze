@@ -67,6 +67,16 @@ describe('DeviceCard sparkline history', () => {
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/device-1/metrics?range=1h', { signal: expect.any(AbortSignal) });
   });
 
+  it('rounds a raw float percent before printing it', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ metrics: [] }));
+
+    render(<DeviceCard device={{ ...baseDevice, cpuPercent: 37.456789012 }} />);
+
+    expect(screen.getByText('37.5%')).toBeTruthy();
+    expect(screen.queryByText('37.456789012%')).toBeNull();
+    await screen.findAllByText('No trend data');
+  });
+
   it('shows an explicit empty state when no metric history exists', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ metrics: [] }));
 

@@ -210,6 +210,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
       { name: 'manage_saved_filters (list/get)', description: 'List and view saved filters', category: 'Other' },
+      // Endpoint messaging (#8742 W02)
+      { name: 'send_endpoint_message (list/get)', description: 'List sent end-user messages and their delivery status', category: 'Ticketing' },
     ],
   },
   {
@@ -346,6 +348,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
+      // Endpoint messaging (#8742 W02): customer-visible text, always approved.
+      { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
       { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
       { name: 'operator_plan', description: 'Approve an AI Operator plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
@@ -497,6 +501,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'operator_plan', tier: 3, permission: 'organizations.write', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
+  // Endpoint messaging (#8742 W02)
+  { toolName: 'send_endpoint_message', tier: 3, permission: 'endpoint_messages.send', category: 'Ticketing' },
 ];
 
 // ── RBAC mappings (flat reference, not rendered in grouped UI) ───────────────

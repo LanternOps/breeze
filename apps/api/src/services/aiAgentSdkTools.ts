@@ -39,6 +39,7 @@ import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTI
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
+import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
@@ -182,6 +183,8 @@ export type PostToolUseCallback = (
 // ============================================
 
 export const TOOL_TIERS = {
+  // #8742. Base tier 3: `send` is always human-approved; list/get downgrade to 1 in aiGuardrails.
+  send_endpoint_message: 3,
   list_time_entries: 1,
   get_running_timer: 1,
   get_timesheet: 1,
@@ -2285,6 +2288,13 @@ export function buildBreezeSdkTools(
         captureDelayMs: z.number().int().min(0).max(3000).optional(),
       },
       makeHandler('computer_control', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'send_endpoint_message',
+      registryDescription('send_endpoint_message'),
+      sendEndpointMessageShape,
+      makeHandler('send_endpoint_message', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Fleet orchestration tools

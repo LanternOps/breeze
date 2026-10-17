@@ -183,6 +183,15 @@ export type McpExemptReason =
    */
   | 'human_only_trust_material'
   /**
+   * Operator control of an already-sent endpoint message (#8742): retracting a
+   * card from user desktops and re-sending a stored one. Retract is the
+   * operator's safety stop and resend re-publishes content a human already
+   * reviewed, to devices the operator picks, behind `endpoint_messages:send`
+   * + MFA. The AI tool (`send_endpoint_message`) authors NEW approval-gated
+   * sends and reads history only; it never withdraws or replays a message.
+   */
+  | 'human_only_message_control'
+  /**
    * A route module of a multi-wave feature whose AI tool is a LATER wave of
    * the same tracked feature. Not a design exemption and not a gap: the note
    * must name the wave sub-issue that ships the tool (mcp-coverage.test.ts
@@ -462,7 +471,10 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },
   'docs.ts': { tools: ['search_documentation'] },
   'dr.ts': { tools: ['query_dr_plans', 'get_dr_plan_details', 'get_dr_execution_status', 'execute_dr_plan', 'manage_dr_plan'] },
-  'endpointMessages/send.ts': { exempt: 'tool_in_later_wave', note: 'endpoint messaging W02 (#8742) ships the approval-gated send_endpoint_message AI tool.' },
+  'endpointMessages/list.ts': { tools: ['send_endpoint_message'] },
+  'endpointMessages/resend.ts': { exempt: 'human_only_message_control', note: 'Operator re-send of a stored message (#8742); the AI tool authors new approval-gated sends only.' },
+  'endpointMessages/retract.ts': { exempt: 'human_only_message_control', note: 'Operator safety stop that withdraws a message from user desktops (#8742); not an AI action.' },
+  'endpointMessages/send.ts': { tools: ['send_endpoint_message'] },
   'enrollmentKeys.ts': { exempt: 'identity' },
   'eventWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'extensionsAdmin.ts': { exempt: 'platform_admin', note: 'Extension runtime administration is platform-admin gated.' },

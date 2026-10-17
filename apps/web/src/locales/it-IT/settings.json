@@ -5993,6 +5993,8 @@
     },
     "columns": {
       "timezone": "Fuso orario",
+      "address": "Indirizzo",
+      "contact": "Contatto",
       "devices": "Dispositivi"
     },
     "empty": "Nessun sito trovato. Aggiungi un sito per iniziare."

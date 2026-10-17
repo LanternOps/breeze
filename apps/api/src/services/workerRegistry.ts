@@ -242,6 +242,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8742 W02: endpoint message body purge, expiry close-out, history delete.
+    name: 'endpointMessageRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/endpointMessageRetention');
+      return {
+        init: m.initializeEndpointMessageRetentionWorker,
+        shutdown: m.shutdownEndpointMessageRetentionWorker,
+      };
+    },
+  },
+  {
     name: 'fleetFindingsWorker',
     placement: 'global',
     load: async () => {

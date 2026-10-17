@@ -357,6 +357,12 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_workload_runtimes', 'device_workloads',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
+  // Endpoint messaging (#8742 W02): delivery/receipt history follows the
+  // device. moveDeviceOrgInTransaction.ts first detaches
+  // endpoint_message_id (the message stays with the source org); the
+  // breeze_cascade_device_org_id() trigger then restamps both tables, so this
+  // loop's UPDATE normally matches nothing.
+  'endpoint_message_deliveries', 'endpoint_message_receipts',
   'fleet_finding_devices',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
@@ -741,6 +747,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // devices by FK; it is deleted by device_id.
   'pam_actuation_results', 'pam_actuations', 'elevation_requests',
   'device_ownership_epoch_closures', 'device_ownership_epochs', 'pam_ledger_retirements',
+  // Endpoint messaging (#8742 W02): receipts before deliveries (receipts ->
+  // deliveries FK, ON DELETE CASCADE either way).
+  'endpoint_message_receipts', 'endpoint_message_deliveries',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',

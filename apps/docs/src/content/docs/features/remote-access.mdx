@@ -250,6 +250,33 @@ From v0.122.1, Ctrl/Cmd+Shift+V and Ctrl/Cmd+Shift+F are no longer viewer shortc
 - **Nothing stays held down.** When the viewer window loses focus or the session drops, the viewer and agent release every key and mouse button they pressed on the remote. If a key still seems stuck, use **Release stuck keys**.
 - **German and French keyboards** (QWERTZ and AZERTY) type the right letters on Windows and Linux remotes.
 
+### Keyboard Mode
+
+The **Keyboard mode** control in the Breeze Viewer toolbar (v0.123.0+) sets how your keystrokes reach the remote:
+
+- **Type what I see** (default). The remote resolves each key through its own keyboard layout, so the characters you see on your keys are what gets typed. IME composition (Chinese, Japanese, Korean input) and dead keys (for example ´ then E for É) are sent as finished text once you commit them. The remote sees nothing until the composition is committed.
+- **Physical keys**. The viewer sends the physical key position, which keeps distinctions such as the numpad and the right-hand modifier keys. It needs a WebRTC session and an agent from v0.123.0 or later; on an older agent or a WebSocket session the option is disabled and its tooltip says why.
+
+The mode is remembered for each device, and the last mode you chose becomes the default for devices that have no choice of their own. Keyboard mode does not apply to VNC sessions.
+
+### Viewer Options
+
+The toolbar's **More options** menu (v0.123.0+) adds:
+
+| Option | What it does |
+|--------|--------------|
+| **View only** | Stops sending your keyboard and mouse to the remote, so you can watch without clicking anything by accident. Turning it on releases any held keys first, and an indicator shows while it is on. Nothing is sent to the device; it only affects your viewer. |
+| **Block remote input** | Blocks the keyboard and mouse at the remote device while you work. WebRTC sessions only. The option is disabled when the device does not support it, and the toggle shows the device's confirmed state rather than assuming the request worked. |
+| **Stats overlay** | Shows round-trip time, frame rate, bitrate, packet loss, codec and connection path. Off by default. |
+| **Copy screenshot** / **Save screenshot** | Captures the current frame to your clipboard, or saves it as a PNG in your Pictures folder (Downloads if there is none). Screenshots stay on your machine and are never uploaded. |
+| **Fit to window** / **100% (scroll)** | Scales the remote screen to the window, or shows it at one remote pixel per screen point with scrollbars. |
+
+Scaling and audio are remembered per device, along with keyboard mode. These preferences are stored by the Breeze Viewer on your computer and are never sent to Breeze.
+
+**Fullscreen keyboard lock.** In fullscreen, the viewer captures system shortcuts such as Alt+Tab, the Windows key and Esc, so they reach the remote instead of your computer. Exit fullscreen with the toolbar button or the fullscreen shortcut. Where the platform does not support keyboard lock, nothing changes and **Send Keys** remains the way to send those combinations.
+
+**macOS viewer.** Cmd+H, Cmd+M and Cmd+W go to the remote; Hide, Minimize and Close Window are still in the menu bar. Cmd+Q asks before quitting while sessions are open.
+
 ### Clipboard
 
 On a WebRTC session the clipboard syncs in both directions: text up to 1 MiB and PNG or JPEG images up to 8 MiB. Each direction is a separate setting on the **Remote Access** feature of a configuration policy: **Clipboard: remote → viewer (copy from remote)** and **Clipboard: viewer → remote (paste to remote)**. Copying from the remote is the data-egress direction (whatever the end user copies reaches the technician) and is off by default on hosted Breeze.

@@ -4274,6 +4274,89 @@
       "titleHtml": "HTML não é permitido no título.",
       "titleLinks": "Links não são permitidos no título.",
       "invalid": "A mensagem contém conteúdo não permitido."
+    },
+    "history": {
+      "title": "Mensagens para dispositivos",
+      "description": "Mensagens enviadas às pessoas em seus dispositivos e o que aconteceu com cada uma.",
+      "empty": "Nenhuma mensagem foi enviada ainda.",
+      "loading": "Carregando...",
+      "loadFailed": "Não foi possível carregar as mensagens.",
+      "retry": "Tentar novamente",
+      "loadMore": "Carregar mais",
+      "selectPrompt": "Selecione uma mensagem para ver os detalhes de entrega.",
+      "detailLoadFailed": "Não foi possível carregar esta mensagem.",
+      "notFound": "Esta mensagem não foi encontrada.",
+      "noAccess": "Você não tem permissão para ver as mensagens para dispositivos.",
+      "purgedTitle": "Conteúdo removido",
+      "purgedBody": "O texto da mensagem foi removido após 90 dias. O histórico de entrega é mantido.",
+      "purgedListTitle": "(conteúdo removido)",
+      "badgeRetracted": "Retirada",
+      "badgeAi": "IA",
+      "devicesLabel": "Dispositivos: {{count}}",
+      "fields": {
+        "body": "Mensagem",
+        "deliveries": "Dispositivos",
+        "host": "Dispositivo",
+        "status": "Situação",
+        "surface": "Exibida em",
+        "error": "Erro",
+        "sent": "Enviada",
+        "expires": "Expira",
+        "delivered": "Entregue",
+        "displayed": "Exibida",
+        "acknowledged": "Confirmada",
+        "dismissed": "Dispensada",
+        "retracted": "Retirada",
+        "receipts": "Recibos",
+        "noReceipts": "Nenhum",
+        "requiresAck": "Exige confirmação"
+      },
+      "receiptEvents": {
+        "displayed": "Exibida",
+        "acknowledged": "Confirmada",
+        "dismissed": "Dispensada",
+        "expired": "Expirada"
+      },
+      "surface": {
+        "assist": "Cartão do Assist",
+        "native": "Notificação nativa"
+      },
+      "statuses": {
+        "queued": "Na fila",
+        "delivered": "Entregue",
+        "displayed": "Exibida",
+        "acknowledged": "Confirmada",
+        "dismissed": "Dispensada",
+        "expired": "Expirada",
+        "retracted": "Retirada",
+        "failed": "Falhou",
+        "superseded": "Substituída"
+      },
+      "actions": {
+        "retract": "Retirar",
+        "retracting": "Retirando...",
+        "resend": "Reenviar para falhas ou expiradas",
+        "resending": "Reenviando..."
+      },
+      "retractConfirm": {
+        "title": "Retirar esta mensagem?",
+        "message": "Ela será removida dos dispositivos que a exibem agora. Os dispositivos que ainda não a receberam não a receberão.",
+        "confirm": "Retirar"
+      },
+      "messages": {
+        "retractSuccess": "Mensagem retirada.",
+        "retractPartial": "Mensagem retirada, mas {{count}} dispositivos não puderam ser atualizados.",
+        "retractFailed": "Não foi possível retirar a mensagem.",
+        "resendSuccess": "Mensagem reenviada. Dispositivos: {{count}}.",
+        "resendFailed": "Não foi possível reenviar a mensagem."
+      },
+      "resendErrors": {
+        "retracted": "Esta mensagem foi retirada e não pode ser reenviada.",
+        "body_purged": "O texto da mensagem foi removido, então ela não pode ser reenviada.",
+        "in_progress": "Já há um envio em andamento para esta mensagem.",
+        "idempotency_conflict": "Este reenvio já foi enviado com detalhes diferentes.",
+        "nothing_to_resend": "Não há dispositivos com falha ou expirados para reenviar."
+      }
     }
   }
 }

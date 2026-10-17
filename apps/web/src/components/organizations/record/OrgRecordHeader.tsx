@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { usePermissions } from '@/lib/permissions';
 import { ENABLE_ENDPOINT_MESSAGING } from '@/lib/featureFlags';
 import { formatDate } from '@/lib/dateTimeFormat';
+import { formatAddress } from '@/lib/formatAddress';
 import { statusColors, statusLabelKeys } from '@/lib/orgStatus';
 import type { Organization } from '@/stores/orgStore';
 import type { OrgRecordOrg, OrgSummary } from './orgRecordFetch';
@@ -72,6 +73,14 @@ export default function OrgRecordHeader({
 
   const primary = summary?.contacts?.primary ?? null;
   const siteCount = summary?.sites.count;
+  const billingAddress = formatAddress({
+    line1: org.billingAddressLine1,
+    line2: org.billingAddressLine2,
+    city: org.billingAddressCity,
+    region: org.billingAddressRegion,
+    postalCode: org.billingAddressPostalCode,
+    country: org.billingAddressCountry,
+  });
   const hasLifecycleActions = !archived && (onArchive || onMerge);
 
   return (
@@ -137,6 +146,27 @@ export default function OrgRecordHeader({
               summary && (
                 <p className="mt-1 text-sm text-muted-foreground">{t('orgRecord.header.noPrimaryContact')}</p>
               )
+            )}
+
+            {billingAddress ? (
+              <div
+                data-testid="org-record-billing-address"
+                className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"
+              >
+                <span className="text-muted-foreground">{t('orgRecord.header.billingAddress')}:</span>
+                <span>{billingAddress}</span>
+              </div>
+            ) : (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {t('orgRecord.header.noBillingAddress')}
+                <a
+                  data-testid="org-record-billing-address-link"
+                  href={`/settings/organizations/${org.id}#billing`}
+                  className="ml-2 text-primary hover:underline"
+                >
+                  {t('orgRecord.header.billingSettingsLink')}
+                </a>
+              </p>
             )}
           </div>
         </div>

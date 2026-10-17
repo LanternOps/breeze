@@ -247,6 +247,10 @@ export const JOB_SCHEDULES = {
   // on hours 1,7,13,19 is unused by any existing hour/minute combination in
   // this lane.
   'helper-screenshot-retention': '27 1,7,13,19 * * *',
+  // Endpoint messaging W02 (#8742) — body purge (90 d), past-expiry delivery
+  // close-out and 13-month history delete. 4x/day keeps the expiry view within
+  // ~6 h; minute 29 on hours 2,8,14,20 is unused in this lane.
+  'endpoint-message-retention': '29 2,8,14,20 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

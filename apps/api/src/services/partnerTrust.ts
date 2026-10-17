@@ -39,6 +39,8 @@ export const LIFECYCLE_COMMAND_TYPES = [
   'patch_scan',
   'refresh_inventory',
   'restart_agent',
+  // Endpoint messaging W02 (#8742): carries only a message id, no content.
+  'retract_message',
   'script_cancel',
   'script_list_running',
   'security_collect_status',

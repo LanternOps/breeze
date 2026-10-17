@@ -935,13 +935,18 @@ async fn read_agent_config(window: tauri::WebviewWindow) -> Result<AgentConfig, 
         api_url: state.config.api_url.clone(),
         agent_id: state.config.agent_id.clone(),
         has_mtls: state.config.mtls_cert_pem.is_some() && state.config.mtls_key_pem.is_some(),
-        os_username: get_os_username(),
+        os_username: os_username(),
         helper_version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
 
 #[tauri::command]
-fn get_os_username() -> String {
+fn get_os_username(window: tauri::WebviewWindow) -> Result<String, String> {
+    crate::ipc::message::deny_message_window(window.label())?;
+    Ok(os_username())
+}
+
+fn os_username() -> String {
     // When running as SYSTEM (spawned by agent service), whoami returns "SYSTEM".
     // Fall back to the USERNAME environment variable which is set to the
     // logged-in user's name even for SYSTEM processes in user sessions.
@@ -961,8 +966,9 @@ fn get_os_username() -> String {
 }
 
 #[tauri::command]
-fn get_helper_config() -> HelperConfig {
-    load_helper_config()
+fn get_helper_config(window: tauri::WebviewWindow) -> Result<HelperConfig, String> {
+    crate::ipc::message::deny_message_window(window.label())?;
+    Ok(load_helper_config())
 }
 
 /// Restart the IPC client if it stopped (it gives up after a permanent broker
@@ -2035,34 +2041,84 @@ mod tests {
 
     // #8741: build.rs declares no app-command ACL, so Tauri does not gate app
     // commands per window -- a `message-*` card window (technician-authored
-    // content) could otherwise invoke every command below. Each one refuses a
-    // card caller through the shared `deny_message_window` guard.
+    // content) could otherwise invoke every registered command. The test reads
+    // the `generate_handler![ ... ]` list from source, so a command added there
+    // without the shared `deny_message_window` guard fails here by name unless
+    // it is in the explicit allowlist below.
     #[test]
     fn privileged_commands_refuse_message_card_windows() {
         let prod_of = |s: &'static str| s.split("\nmod tests {").next().unwrap();
         let lib = prod_of(include_str!("lib.rs"));
-        let workspace = prod_of(include_str!("workspace_open.rs"));
-        let guarded: &[(&str, &str)] = &[
-            (lib, "fn helper_fetch("),
-            (lib, "fn read_agent_config("),
-            (lib, "fn submit_consent("),
-            (lib, "fn consent_presented("),
-            (lib, "fn get_consent_request("),
-            (lib, "fn hide_window("),
-            (lib, "fn minimize_window("),
-            (lib, "fn update_chat_active("),
-            (lib, "fn restart_ipc_if_stopped("),
-            (lib, "fn helper_token_ready("),
-            (workspace, "fn open_workspace_path("),
+
+        // Commands a card window (or the other self-labelled windows) must be
+        // able to call. Each does its own exact-label check instead of the
+        // blanket guard; the loop below enforces that.
+        //  - get_message_view / message_ack / message_close: the card itself
+        //    (src/components/MessageCard.tsx), valid only for `message-<id>`.
+        //  - get_caller_verify_request / submit_caller_verify: the caller-verify
+        //    window, valid only for `caller-verify-<id>`, so a card (label
+        //    `message-*`) can never match.
+        let label_checked: &[(&str, &str)] = &[
+            ("get_message_view", "crate::ipc::message::label_matches(window.label()"),
+            ("message_ack", "crate::ipc::message::label_matches(window.label()"),
+            ("message_close", "crate::ipc::message::label_matches(window.label()"),
+            (
+                "get_caller_verify_request",
+                "crate::ipc::caller_verify::label_matches(window.label()",
+            ),
+            (
+                "submit_caller_verify",
+                "crate::ipc::caller_verify::label_matches(window.label()",
+            ),
         ];
-        for (src, cmd) in guarded {
-            let start = src.find(cmd).unwrap_or_else(|| panic!("{cmd} not found"));
-            let end = src[start..].find("\n}\n").map(|i| i + start).unwrap();
-            let body = &src[start..end];
-            assert!(
-                body.contains("deny_message_window(window.label())"),
-                "{cmd} does not refuse message-* windows"
-            );
+
+        // Parse the registered command list out of the macro invocation.
+        let marker = "tauri::generate_handler![";
+        let start = lib.find(marker).expect("generate_handler! not found") + marker.len();
+        let end = start + lib[start..].find(']').expect("generate_handler! not closed");
+        let registered: Vec<&str> = lib[start..end]
+            .lines()
+            .map(|l| l.split("//").next().unwrap().trim())
+            .flat_map(|l| l.split(','))
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        assert!(
+            registered.len() >= 10,
+            "parsed too few commands from generate_handler!: {registered:?}"
+        );
+        // Every allowlisted command must really be registered (guards a stale allowlist).
+        for (name, _) in label_checked {
+            assert!(registered.contains(name), "allowlisted {name} is not registered");
+        }
+
+        for cmd in &registered {
+            // `module::command` lives in that module's file; bare names in lib.rs.
+            let (src, name) = match cmd.split_once("::") {
+                None => (lib, *cmd),
+                Some(("workspace_open", name)) => {
+                    (prod_of(include_str!("workspace_open.rs")), name)
+                }
+                Some((module, _)) => panic!(
+                    "{cmd}: command module `{module}` is unknown to this test; add its source here"
+                ),
+            };
+            let sig = format!("fn {name}(");
+            let fn_start = src
+                .find(&sig)
+                .unwrap_or_else(|| panic!("{cmd}: {sig} not found"));
+            let fn_end = src[fn_start..].find("\n}\n").map(|i| i + fn_start).unwrap();
+            let body = &src[fn_start..fn_end];
+            match label_checked.iter().find(|(n, _)| *n == name) {
+                Some((_, check)) => assert!(
+                    body.contains(check),
+                    "{cmd} is allowlisted for card/self-labelled windows but lacks its label check `{check}`"
+                ),
+                None => assert!(
+                    body.contains("deny_message_window(window.label())"),
+                    "{cmd} does not refuse message-* windows (call deny_message_window or allowlist it with its own label check)"
+                ),
+            }
         }
     }
 

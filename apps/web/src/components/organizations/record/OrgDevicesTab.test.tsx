@@ -1,26 +1,28 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
 import OrgDevicesTab from './OrgDevicesTab';
 import { useOrgStore } from '@/stores/orgStore';
 import type { OrgFetch } from './orgRecordFetch';
+import { navigateTo } from '@/lib/navigation';
+
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 const RECORD_ORG = 'org-record-1';
 const OTHER_ORG = 'org-other-2';
 
+// Raw `/devices` row, as the API sends it (the tab runs it through toDeviceListRow).
 const DEVICE = {
   id: 'd1',
   hostname: 'acme-laptop-01',
-  os: 'windows',
+  osType: 'windows',
   osVersion: '11',
   status: 'online',
-  cpuPercent: 10,
+  cpuPercent: 37.456789012,
   ramPercent: 20,
-  lastSeen: '2026-09-01T00:00:00.000Z',
+  lastSeenAt: '2026-09-01T00:00:00.000Z',
   orgId: RECORD_ORG,
-  orgName: 'Acme Dental',
   siteId: 'site-1',
-  siteName: 'HQ',
   agentVersion: '1.0.0',
   tags: [],
 };
@@ -45,6 +47,11 @@ function makeRecordingOrgFetch(handlers: Record<string, () => Response>): { orgF
 }
 
 describe('OrgDevicesTab', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.mocked(navigateTo).mockClear();
+  });
+
   it('loads devices through orgFetch (org-pinned) and renders them with forceSingleOrg, while the store points elsewhere', async () => {
     useOrgStore.setState({ currentOrgId: OTHER_ORG, allOrgs: false } as never);
     const { orgFetch, calls } = makeRecordingOrgFetch({
@@ -64,9 +71,12 @@ describe('OrgDevicesTab', () => {
     // this org's — so it must not appear even though the store's scope
     // (fleet-eligible) would otherwise show it.
     expect(screen.queryByText(/^Organization$/)).toBeNull();
+    // Same transform as /devices: percents are rounded, site names resolved from /orgs/sites.
+    expect(screen.getByText('37.5%')).toBeTruthy();
+    expect(screen.getAllByText('HQ').length).toBeGreaterThan(0);
   });
 
-  const secondDevice = { ...DEVICE, id: 'd2', hostname: 'acme-desktop-02', status: 'offline', siteId: 'site-2', siteName: 'Branch' };
+  const secondDevice = { ...DEVICE, id: 'd2', hostname: 'acme-desktop-02', status: 'offline', siteId: 'site-2' };
 
   function renderTwoDevices() {
     const { orgFetch } = makeRecordingOrgFetch({
@@ -81,6 +91,26 @@ describe('OrgDevicesTab', () => {
     });
     return render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
   }
+
+  it('row click navigates to the device page', async () => {
+    renderTwoDevices();
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    fireEvent.click(screen.getByText('acme-laptop-01'));
+    expect(navigateTo).toHaveBeenCalledWith('/devices/d1');
+  });
+
+  it('uses the embedded column preset and persists it under its own key', async () => {
+    renderTwoDevices();
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    expect(screen.queryByText(/^Class$/)).toBeNull();
+    expect(screen.queryByText(/^Role$/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /columns/i }));
+    fireEvent.click(screen.getByLabelText('OS Version'));
+
+    expect(window.localStorage.getItem('breeze.devices.columns.orgTab')).not.toBeNull();
+    expect(window.localStorage.getItem('breeze.devices.columns')).toBeNull();
+  });
 
   it('the search filter narrows the rendered rows client-side', async () => {
     renderTwoDevices();

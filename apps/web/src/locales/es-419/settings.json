@@ -5945,6 +5945,8 @@
     },
     "columns": {
       "timezone": "Zona horaria",
+      "address": "Dirección",
+      "contact": "Contacto",
       "devices": "Dispositivos"
     },
     "empty": "No se encontraron sitios. Agregue un sitio para comenzar."

@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { zValidator } from '../../lib/validation';
 import { db, runOutsideDbContext } from '../../db';
@@ -8,14 +8,15 @@ import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { getRedis } from '../../services/redis';
 import { writeAuditEventAsync } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
+import { recordDeliveryEvent } from '../../services/endpointMessaging/receipts';
 
 // Endpoint messaging (#8741 W1): the main agent reports what the signed-in
 // user did with a technician message (card displayed, acknowledged, dismissed,
 // expired). The acting user is agent-attested, so this is deliberately the
 // agent bearer route and NOT the helper token route.
 //
-// W1 sink = one audit_logs row in the device's org. W2 replaces the sink with
-// receipt rows + a DB unique constraint; the wire contract stays.
+// W2 sink (#8742) = an endpoint_message_receipts row + the delivery aggregate;
+// pre-W2 messages (no delivery row) keep the W1 audit_logs sink for a release.
 //
 // Trust boundary: org, device and batch are NEVER taken from the body. The org
 // and device come from the authenticated agent context; the batch comes from
@@ -70,11 +71,30 @@ messageEventsRoutes.post(
         eq(deviceCommands.type, 'notify_user'),
         sql`${deviceCommands.payload}->>'messageId' = ${event.messageId}`,
       ))
+      // A client message id is reused when an all-failed send is retried; the
+      // newest command on this device is the one the card came from.
+      .orderBy(desc(deviceCommands.createdAt))
       .limit(1);
     if (!sent) return c.json({ error: 'Unknown message' }, 404);
 
     const sessionKey = event.session.sid
       ?? (event.session.winSessionId !== undefined ? String(event.session.winSessionId) : event.session.username);
+
+    // W2 sink: a receipt row on the delivery, deduped by the DB unique key.
+    const receipt = await recordDeliveryEvent({
+      deviceId,
+      commandId: sent.id,
+      batchId: sent.batchId,
+      messageId: event.messageId,
+      sessionKey,
+      sessionUsername: event.session.username,
+      eventType: event.eventType,
+      occurredAt: new Date(event.at),
+    });
+    if (receipt.found) return c.json({ ok: true, duplicate: !receipt.inserted });
+
+    // One-release fallback: a message sent before W2 has no delivery row, so
+    // its events still land as Redis-deduped audit rows (the W1 sink).
     const dedupKey = `endpoint-msg-event:${deviceId}:${event.messageId}:${sessionKey}:${event.eventType}`;
 
     // Redis round-trip outside the request's held DB transaction (#1105).

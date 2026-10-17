@@ -2050,7 +2050,10 @@
       "syncingToProvider": "Wird synchronisiert…",
       "providerSyncFailed": "{{provider}}-Synchronisierung fehlgeschlagen",
       "reverseInProviderToo": "Stornieren Sie diese Zahlung auch in {{provider}}",
-      "overpayment": "Der Betrag übersteigt den offenen Saldo ({{balance}})."
+      "overpayment": "Der Betrag übersteigt den offenen Saldo ({{balance}}).",
+      "fillLabel": "Betrag übernehmen",
+      "fillDeposit": "Anzahlung ({{amount}})",
+      "fillBalance": "Gesamter Restbetrag ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Rechnung verschickt",
@@ -2065,7 +2068,8 @@
       "paid": "Bezahlt",
       "subtotal": "Zwischensumme",
       "tax": "Steuer",
-      "total": "Insgesamt"
+      "total": "Insgesamt",
+      "depositDueNow": "Jetzt fällige Anzahlung"
     },
     "terms": "Allgemeine Geschäftsbedingungen",
     "void": {
