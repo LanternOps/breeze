@@ -35,6 +35,10 @@ describe('TrustSubprocessors', () => {
     expect(link).toHaveAttribute('rel', expect.stringContaining('noopener'));
     expect(screen.getAllByTestId('trust-subprocessor-row')).toHaveLength(2);
   });
+  it('defense in depth: a non-https website is never rendered as a link', () => {
+    render(<TrustSubprocessors {...props({ subprocessors: [{ name: 'Evil', purpose: 'P', location: null, websiteUrl: 'javascript:alert(1)' }] })} />);
+    expect(screen.queryByRole('link')).toBeNull();
+  });
   it('uses the page locale', () => {
     render(<TrustLocaleContext.Provider value="de-DE"><TrustSubprocessors {...props({ subprocessors: [{ name: 'A', purpose: 'P', location: null, websiteUrl: null }] })} /></TrustLocaleContext.Provider>);
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Unterauftragsverarbeiter');

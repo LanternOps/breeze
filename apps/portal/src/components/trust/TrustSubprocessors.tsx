@@ -25,7 +25,7 @@ export default function TrustSubprocessors({ payload }: TrustSectionViewProps) {
                 <td className="px-4 py-2">{s.purpose}</td>
                 <td className="px-4 py-2 text-muted-foreground">{s.location ?? ''}</td>
                 <td className="px-4 py-2">
-                  {s.websiteUrl && <a className="doc-accent-text hover:underline" href={s.websiteUrl} rel="noopener noreferrer">{s.websiteUrl.replace(/^https:\/\//, '')}</a>}
+                  {s.websiteUrl && /^https:\/\//i.test(s.websiteUrl) && <a className="doc-accent-text hover:underline" href={s.websiteUrl} rel="noopener noreferrer">{s.websiteUrl.replace(/^https:\/\//i, '')}</a>}
                 </td>
               </tr>
             ))}
