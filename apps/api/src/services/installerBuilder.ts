@@ -529,6 +529,19 @@ async function fetchVerifiedLocalArtifact(args: {
   return { buffer, verified };
 }
 
+/**
+ * Forces a fresh verified fetch of one arch's pkg and swaps it into the cache
+ * only once it succeeds, so a failed background refresh never evicts a still-
+ * good entry. Used by the background warmer (#8333), never by a request.
+ */
+async function refreshVerifiedMacosPkg(arch: 'amd64' | 'arm64'): Promise<void> {
+  const value = await fetchVerifiedMacosPkgUncached(arch);
+  verifiedMacosPkgCache.set(arch, {
+    expiresAt: Date.now() + VERIFIED_MACOS_PKG_CACHE_MS,
+    value: Promise.resolve(value),
+  });
+}
+
 export async function fetchVerifiedMacosPkg(
   arch: 'amd64' | 'arm64',
 ): Promise<VerifiedMacosPackage> {
@@ -713,6 +726,20 @@ function warmRegularMsiCache(): void {
   // start rather than from the cache's own last write, that would let the
   // entry actually expire between two ticks that each believed the other
   // had it covered.
+  // #8333: POST /enrollment-keys/:id/installer-link (macOS) verifies both pkgs
+  // under the request's held transaction, and that route cannot go self-managed
+  // (same linearizability constraint as above). Keep the verified-pkg cache hot
+  // too so the pre-flight is a cache hit instead of a safeFetch in the tx.
+  for (const arch of ['amd64', 'arm64'] as const) {
+    refreshVerifiedMacosPkg(arch).catch((err) => {
+      // warn, not error: a deployment that never staged a macOS pkg fails this
+      // every tick and that is not an outage.
+      console.warn(
+        `[installer-builder] background macOS ${arch} pkg cache warm failed (next request falls back to its own fetch):`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
   refreshRegularMsiCache().catch((err) => {
     console.error(
       '[installer-builder] background MSI cache warm failed (next request falls back to its own fetch):',

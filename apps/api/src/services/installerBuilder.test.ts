@@ -1800,3 +1800,46 @@ describe('installers for a BINARY_VERSION pinned before the edition field (#7830
     });
   });
 });
+
+// #8333 — POST /enrollment-keys/:id/installer-link (macOS) calls
+// assertMacosInstallerPkgsReachable under the request's held transaction; on a
+// cold cache that is a safeFetch inside the tx (#1105 tripwire). The background
+// warmer keeps the verified-pkg cache hot so the request lands on a cache hit.
+describe('startRegularMsiCacheWarmer also warms the verified macOS pkgs (#8333)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    __resetVerifiedMacosPkgCache();
+    __resetRegularMsiCache();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    __stopRegularMsiCacheWarmer();
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    __resetVerifiedMacosPkgCache();
+    __resetRegularMsiCache();
+  });
+
+  it('kicks off a verified fetch for both macOS arches on start, with no request', async () => {
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = 'irrelevant-for-this-test';
+    const fetchMock = vi.fn(async (_url: string) => new Response('boom', { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    startRegularMsiCacheWarmer();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Each verified fetch (MSI + amd64 pkg + arm64 pkg) starts by pulling the
+    // signed manifest, so three manifest requests prove the pkgs were warmed.
+    const manifestCalls = fetchMock.mock.calls.filter(([u]) =>
+      String(u).endsWith('/release-artifact-manifest.json'),
+    ).length;
+    expect(manifestCalls).toBe(3);
+  });
+});
