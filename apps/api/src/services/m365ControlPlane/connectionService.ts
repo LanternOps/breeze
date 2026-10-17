@@ -150,6 +150,10 @@ function requiredGrants(
   return [...(manifest.applicationPermissionAssignments ?? [])];
 }
 
+// Per-app-role readiness (spec §4.1/§7.2). Lives in a leaf module so the write
+// ladder can use it without importing the connection lifecycle.
+export { m365RoleReadiness } from './grantReadiness';
+
 export function deriveGrantHealth(
   row: Pick<
     CustomerGraphReadConnectionSnapshot,
@@ -1095,8 +1099,13 @@ export function createConnectionService<
 
       const verifiedAt = new Date(result.verifiedAt);
       const grantsVerifiedAt = new Date(result.grantsVerifiedAt);
+      // Start from `active`, as Retest's resultState does: this finalization
+      // carries a fresh tenant-matched application proof and a complete grant
+      // observation, so the grant health alone decides. Starting from the
+      // stored status made an earlier `degraded` sticky — a fully approved
+      // upgrade still finished degraded and needed one more Retest.
       const health = deriveGrantHealth({
-        status: current.status,
+        status: 'active',
         permissionManifestVersion: deps.manifest.version,
         observedGrants: result.observedGrants,
         grantsVerifiedAt,

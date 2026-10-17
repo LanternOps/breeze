@@ -357,8 +357,10 @@ describe('customer Graph-read connection lifecycle', () => {
 
   it('flags an actions row stored at manifest v1 (delegated-ID manifest) as manifest-stale (#8648)', () => {
     const manifest = M365_PERMISSION_PROFILES['customer-graph-actions'];
-    expect(manifest.version).toBe(2);
+    expect(manifest.version).toBe(3);
     expect(deriveGrantHealth(snapshot({ permissionManifestVersion: 1, status: 'degraded' }), manifest).state).toBe('manifest-stale');
+    // …and a row on the pre-M1 v2 manifest (#6170) is stale too.
+    expect(deriveGrantHealth(snapshot({ permissionManifestVersion: 2, status: 'active' }), manifest).state).toBe('manifest-stale');
   });
 
   it('does not claim definitive drift before the first authoritative grant observation', () => {
@@ -751,7 +753,7 @@ describe('createConnectionService factory (non-read profile)', () => {
 
   function actionsService(retest = vi.fn(async (_request: RetestRequest) => ({
     success: true, tenantId: TENANT_ID, applicationId: CLIENT_ID,
-    organizationDisplayName: 'Contoso', manifestVersion: 2,
+    organizationDisplayName: 'Contoso', manifestVersion: actionsManifest.version,
     verifiedAt: '2026-07-14T16:00:00.000Z', grantReconciliation: 'complete',
     observedGrants: [...ACTIONS_REQUIRED], missingGrants: [], unexpectedGrants: [],
     grantsVerifiedAt: '2026-07-14T16:00:00.000Z',
@@ -1008,6 +1010,42 @@ describe('upgrade consent finalization', () => {
     expect(set.status).toBe('active');
     expect(set.lastErrorCode).toBeNull();
     expect(set.observedGrants).toEqual(REQUIRED_V3);
+  });
+
+  it('finishes ACTIVE when a row that was degraded completes a full upgrade (#8750 carry-forward)', async () => {
+    // A kept-stale row that was already degraded keeps that status through
+    // Retest. The upgrade carries a fresh tenant-matched application proof and
+    // a complete grant observation, so its finalized status derives from the
+    // grant health alone — as Retest's does — not from the stale status.
+    const degradedAttempt = { ...ATTEMPT, status: 'degraded' as const };
+    dbMocks.selectResults.push([{ ...STORED, status: 'degraded', lastErrorCode: 'manifest_stale' }]);
+    dbMocks.updateResults.push((set) => [{ ...STORED, status: 'degraded', ...set }]);
+
+    const applied = await applyUpgradeFinalizationResult(
+      degradedAttempt,
+      { verifiedTenantId: TENANT_ID, result: successResult(REQUIRED_V3) as never },
+    );
+
+    expect(applied.failureCode).toBeNull();
+    const set = dbMocks.updateSets[0]!;
+    expect(set.permissionManifestVersion).toBe(3);
+    expect(set.status).toBe('active');
+    expect(set.lastErrorCode).toBeNull();
+  });
+
+  it('still finishes degraded when the promoted grant set carries an unexpected grant', async () => {
+    const extra = { resourceApplicationId: '00000003-0000-0000-c000-000000000000', appRoleId: '19dbc75e-c2e2-444c-a770-ec69d8559fc7', value: 'Directory.ReadWrite.All' };
+    dbMocks.selectResults.push([{ ...STORED, status: 'degraded' }]);
+    dbMocks.updateResults.push((set) => [{ ...STORED, ...set }]);
+
+    await applyUpgradeFinalizationResult(
+      { ...ATTEMPT, status: 'degraded' as const },
+      { verifiedTenantId: TENANT_ID, result: successResult([...REQUIRED_V3, extra]) as never },
+    );
+
+    const set = dbMocks.updateSets[0]!;
+    expect(set.status).toBe('degraded');
+    expect(set.lastErrorCode).toBe('grant_unexpected');
   });
 
   it('records the observation but does NOT promote when a v3 grant is missing', async () => {
