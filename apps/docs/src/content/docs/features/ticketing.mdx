@@ -28,6 +28,17 @@ Across the top, view tabs slice the queue:
 
 Below the tabs, a filter bar narrows any view by **organization**, **priority**, **category**, and **assignee**, and a search box matches against ticket subjects. Each row shows the ticket number, subject, status, priority, and an SLA chip when the clock is running low.
 
+### Ticket types
+
+Every ticket has a **type**: **Incident**, **Service request**, **Problem**, or **Change**. The type tells your team what kind of work a ticket is, separately from its category.
+
+- **Defaults.** New tickets are Incidents, whether they come from an alert, the portal, email, the API, the AI assistant, or a technician. Planned work -- tickets created for a service deliverable occurrence or a project task -- starts as a Service request. The **Create ticket** form defaults to Incident and lets you pick another type.
+- **In the queue.** Each row shows a type chip, and the filter bar has a **Filter by type** control. The Service Desk section of the sidebar has an entry per type -- **Incidents**, **Service Requests**, **Problems**, and **Changes** -- next to **Tickets**, which shows every type. The type filter is kept in the page URL, so a filtered view can be bookmarked.
+- **On a ticket.** Users with ticket edit permission change the type from the **Ticket type** selector in the workbench; read-only users see the chip. Changing the type is recorded in the ticket's activity as an internal note. It does not recalculate the SLA or re-run category rules.
+- **In the portal.** Customers see the type as a label next to the ticket number, but cannot choose it: tickets they submit get the default type.
+
+The AI assistant's ticket tool can filter by type, set the type when it creates a ticket, and change it on an existing one.
+
 ### Site-scoped technicians
 
 Organization users restricted to specific sites only see tickets whose device belongs to one of their sites. Tickets with no device attached (general, org-level requests) remain visible to every technician in the organization. Site-restricted users also can't create tickets against — or move tickets onto — devices outside their sites.
@@ -45,6 +56,30 @@ The workbench shows everything you need to resolve a ticket without leaving the 
 - **Properties rail** -- requester, source, created date, due date, the reason a ticket is waiting, the resolution note, a **linked device** that links straight to the device's page, and any **linked alerts** with one-click navigation to the alert itself.
 
 Click the expand icon (or press `Enter`) to open the ticket as a full page when you need more room.
+
+### Related tickets
+
+The **Related tickets** panel in the workbench links a ticket to other tickets in the same organization -- for example, several incidents to the problem behind them, or a change to the problem it resolves. Click **Link a ticket**, choose how this ticket relates to the other one, then search for it by number or subject:
+
+| Link | Shown on this ticket | Shown on the other ticket |
+|---|---|---|
+| **is related to** | Related | Related |
+| **was caused by** | Caused by | Causes |
+| **resolves** | Resolves | Resolved by |
+| **is a duplicate of** | Duplicate of | Duplicates |
+
+Each linked ticket shows its number, subject, status, and type, and opens in its full-page view. A link to a ticket that was later deleted stays in the list with a **Deleted** marker so you can remove it.
+
+Linking never changes either ticket's status, SLA, or assignee -- marking a ticket as a duplicate only records the relationship, so close the duplicate yourself. Adding or removing a link writes an internal note on both tickets and an entry in the audit log.
+
+The panel refuses a link that breaks these rules, and says why:
+
+- Both tickets must be in the **same organization**, and a ticket cannot link to itself.
+- **Caused by** and **resolves** links cannot form a loop (A caused by B caused by A).
+- Duplicates are one level deep: a ticket can be a duplicate of only one ticket, a ticket that already has duplicates cannot itself be marked as a duplicate, and you cannot mark a ticket as a duplicate of another duplicate -- link to the original instead.
+- A ticket can have at most **50 links**. Links to tickets you cannot see (for example, at a site outside your access) still count toward the cap and these rules.
+
+Viewing links needs ticket read permission; adding and removing them needs ticket edit permission. The AI assistant's ticket tool can list, add, and remove links under the same rules. Links are not shown in the customer portal, and moving a ticket to another organization removes its links.
 
 ### Assignment notifications
 

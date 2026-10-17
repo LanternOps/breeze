@@ -307,6 +307,8 @@ Opening a device and selecting **Info** shows the device's identity and inventor
 | **Desktop Access** | macOS remote-desktop readiness (macOS devices only). |
 | **Tags** and **Custom Fields** | Organizational metadata, when present. |
 
+The device's **Overview** tab also has a **Responsible contacts** card: who to contact about this device for each role (billing, technical, escalation and so on), resolved from its device group, site or organization. See [Responsible contacts](/reference/organizations-and-sites/#responsible-contacts).
+
 A device's physical placement (room, rack, rack unit and height) can be recorded through the API only, with `GET`/`PUT`/`DELETE /devices/:id/placement`; discovered network assets use `/discovery/assets/:id/placement`. The Info tab does not show it yet.
 
 ### System Restore tab

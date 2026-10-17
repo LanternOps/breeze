@@ -138,6 +138,12 @@ Old refresh tokens are revoked on each rotation to prevent replay.
 
 `POST /auth/logout` revokes all active tokens for the user and clears the refresh cookie.
 
+### Session Timeout
+
+**Session Timeout (minutes)** signs a user out of the web app after that long without activity. It is set on the **Security** tab of partner settings (applies to every organization and locks the organization field) or of organization settings. The Users page links to it.
+
+The maximum is 720 minutes (12 hours), from v0.123.0. A write above 720 is rejected with `400`, and a value stored above 720 by an earlier release is enforced as 720.
+
 ### Registration
 
 When enabled (`ENABLE_REGISTRATION=true`), self-service MSP signup is a **two-step, email-verified** flow, not a single call:

@@ -445,6 +445,14 @@ On `PATCH`, an explicit `null` clears a field and an omitted key leaves it alone
   Writing `billingContact` edits that billing contact (or creates one with the `billing` role when none exists) and never touches any other contact. Writing an empty value — or, on `PATCH /orgs/:orgId/billing-settings`, `billingContactEmail: null` — removes the `billing` role from the current billing contact; the contact itself is kept.
 </Aside>
 
+### Responsible contacts
+
+A site's **Details** tab and a device's **Overview** tab show a read-only **Responsible contacts** card: for each contact role (Billing, Technical, Escalation, Administration, Local contact, After hours, Portal), who to call about this site or device. Each role shows its contacts with title, email and phone, a **Primary** marker, and the level the answer came from -- **Device group**, **This site**, or **Entire organization**.
+
+The most specific assignment wins: a device group the device belongs to, then the device's site, then the organization. Roles with no one assigned at any level are left out, and the card says so when no role has anyone. Contacts and their roles are still managed on the organization's contacts; the card does not edit them.
+
+The same answer is available from `GET /orgs/organizations/:id/contact-responsibilities` with exactly one of `siteId` or `deviceId` (see [Contact Endpoints](#contact-endpoints)).
+
 ---
 
 ## Multi-Tenant Access Control
@@ -571,6 +579,7 @@ These endpoints allow partner-scoped users to view and update their own partner 
 | `POST` | `/orgs/organizations/:id/contacts` | `organization`, `partner`, `system` | Create a contact. Returns the created record with a `201` status. |
 | `PATCH` | `/orgs/contacts/:contactId` | `organization`, `partner`, `system` | Update a contact. No organisation in the path. An explicit `null` clears a field; an omitted key leaves it alone. |
 | `DELETE` | `/orgs/contacts/:contactId` | `organization`, `partner`, `system` | Delete a contact. Returns `{ success: true }`. |
+| `GET` | `/orgs/organizations/:id/contact-responsibilities` | `organization`, `partner`, `system` | The responsible contacts for one site or device, per role, with the level each was resolved at (device group, site, organization). Takes exactly one of `siteId` or `deviceId` (`400` otherwise); a site or device outside the organization or your site access returns `404`. Requires `organizations:read`. |
 | `POST` | `/orgs/contacts/import/preview` | `organization`, `partner`, `system` | Annotate a batch of contact rows against existing state without writing anything. Up to 1,000 rows. |
 | `POST` | `/orgs/contacts/import` | `organization`, `partner`, `system` | Commit a previewed batch. Always answers `200` with `{ imported, updated, skipped, errors }`, including on a partial failure. |
 
