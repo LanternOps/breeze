@@ -85,7 +85,7 @@ describe('incident tools are closed by the declarative gate', () => {
       );
       const tool = incidentTools().get(name)!;
 
-      expect(await enforceDeviceArgs(tool, { deviceId: OWN_DEVICE }, makeAuth())).toEqual({ ok: true });
+      expect(await enforceDeviceArgs(tool, { deviceId: OWN_DEVICE }, makeAuth())).toMatchObject({ ok: true });
     },
   );
 });

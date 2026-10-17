@@ -40,9 +40,10 @@ export function mergeAiDataPolicies(partner: AiDataPolicyRow | null, org: AiData
 /**
  * The org's owning partner, read under the CALLER's RLS. This read is the
  * access gate for everything below: an org the caller cannot see yields no
- * partner id, so no partner row is ever read on its behalf.
+ * partner id, so no partner row is ever read on its behalf. Exported for the
+ * executeTool gate, which treats `null` as "cannot establish" and refuses.
  */
-async function partnerIdOf(orgId: string): Promise<string | null> {
+export async function readOrgPartnerId(orgId: string): Promise<string | null> {
   const [row] = await db.select({ partnerId: organizations.partnerId }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
   return row?.partnerId ?? null;
 }
@@ -55,7 +56,7 @@ async function partnerIdOf(orgId: string): Promise<string | null> {
  * plain read returns zero rows and the merge silently falls back to the looser
  * built-in default. The helper reads in place when the ambient context can
  * see the partner's rows and otherwise escapes to a system read. `partnerId`
- * comes only from `partnerIdOf` (an access-checked org row) and the query is
+ * comes only from `readOrgPartnerId` (an access-checked org row) and the query is
  * pinned to it. The query goes through `db` on purpose: a caller-pinned
  * executor would keep it on the caller's connection inside the escape.
  */
@@ -82,10 +83,24 @@ async function readOrgRow(orgId: string): Promise<AiDataPolicyRow | null> {
 export async function resolveAiDataPolicyWithCeiling(
   orgId: string,
 ): Promise<{ effective: EffectiveAiDataPolicy; ceiling: EffectiveAiDataPolicy }> {
-  const partnerId = await partnerIdOf(orgId);
+  const partnerId = await readOrgPartnerId(orgId);
   const partner = partnerId ? await readPartnerCeilingRow(partnerId) : null;
   const org = await readOrgRow(orgId);
   return { effective: mergeAiDataPolicies(partner, org), ceiling: mergeAiDataPolicies(partner, null) };
+}
+
+/**
+ * Effective policy for one org whose owning partner the CALLER has already
+ * established (the executeTool gate, `aiDevicePathPolicy.ts`). The other
+ * resolvers map "org invisible → no partner" to the built-in default, which
+ * is right for the settings routes but would fail OPEN in the gate: the gate
+ * reads the partner itself with `readOrgPartnerId` and refuses on `null`.
+ * `partnerId` must come from that access-checked organizations row for `orgId`.
+ */
+export async function resolveAiDataPolicyForEstablishedPartner(orgId: string, partnerId: string): Promise<EffectiveAiDataPolicy> {
+  const partner = await readPartnerCeilingRow(partnerId);
+  const org = await readOrgRow(orgId);
+  return mergeAiDataPolicies(partner, org);
 }
 
 /** Effective policy for one org: the partner ceiling, tightened by the org row. */
@@ -95,6 +110,6 @@ export async function resolveAiDataPolicy(orgId: string): Promise<EffectiveAiDat
 
 /** The partner ceiling alone, for validating an org write (never the effective value: that ratchets). */
 export async function resolveAiDataPolicyCeiling(orgId: string): Promise<EffectiveAiDataPolicy> {
-  const partnerId = await partnerIdOf(orgId);
+  const partnerId = await readOrgPartnerId(orgId);
   return mergeAiDataPolicies(partnerId ? await readPartnerCeilingRow(partnerId) : null, null);
 }
