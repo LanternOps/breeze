@@ -213,7 +213,12 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
 
   const handleWorkHere = () => {
     if (!org) return;
-    void applyOrgSwitch(orgId, t('orgRecord.actions.workHereToast', { orgName: org.name }), '/');
+    // Switch and STAY (#9019): the record's own URL, tab hash included. Every
+    // read on this page is pinned to `orgId` via `orgFetch`, so nothing here
+    // needs a remount — the store update alone turns the button into the
+    // "Working here" state and drops the mismatch line.
+    const { pathname, search, hash } = window.location;
+    void applyOrgSwitch(orgId, t('orgRecord.actions.workHereToast', { orgName: org.name }), `${pathname}${search}${hash}`);
   };
 
   const handleRestore = async () => {
@@ -361,6 +366,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         summary={summary}
         archived={archived}
         mismatchedScopeOrgName={scopeOrgId && scopeOrgId !== orgId ? scopeOrgName : null}
+        workingHere={scopeOrgId === orgId}
         onWorkHere={handleWorkHere}
         onOpenSettings={() => void navigateTo(`/settings/organizations/${orgId}`)}
         onArchive={archived ? undefined : () => setModal('archive')}

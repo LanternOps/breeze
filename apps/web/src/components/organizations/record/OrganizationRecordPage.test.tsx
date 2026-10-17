@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@/lib/i18n';
 import OrganizationRecordPage from './OrganizationRecordPage';
@@ -291,12 +291,38 @@ describe('OrganizationRecordPage — happy path', () => {
     expect(tab?.getAttribute('aria-controls')).toBe('tab-activity-panel');
   });
 
-  it('switches the context and lands on the dashboard from Work in this org', async () => {
+  // #9019: the switch used to hand the tech the dashboard, losing the record.
+  it('switches the context and STAYS on this record (same tab) from Work in this org', async () => {
     const user = userEvent.setup();
+    window.history.replaceState(null, '', `/organizations/${RECORD_ORG}#sites`);
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-record-work-here')).toBeTruthy());
     await user.click(screen.getByTestId('org-record-work-here'));
-    expect(applyOrgSwitchMock).toHaveBeenCalledWith(RECORD_ORG, expect.stringContaining('Acme Dental'), '/');
+    expect(applyOrgSwitchMock).toHaveBeenCalledWith(
+      RECORD_ORG,
+      'Switched to Acme Dental',
+      `/organizations/${RECORD_ORG}#sites`,
+    );
+    expect(applyOrgSwitchMock).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), '/');
+    expect(navigateToMock).not.toHaveBeenCalled();
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('shows "Working here" instead of the button once the switcher points at this org', async () => {
+    seedStore([{ id: RECORD_ORG, name: 'Acme Dental' }], RECORD_ORG);
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-working-here')).toBeTruthy());
+    expect(screen.queryByTestId('org-record-work-here')).toBeNull();
+  });
+
+  it('swaps the button for "Working here" in place when the switch lands (no remount needed)', async () => {
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-scope-chip')).toBeTruthy());
+    // What applyOrgSwitch's selectOrganization does to the store.
+    act(() => useOrgStore.setState({ currentOrgId: RECORD_ORG, allOrgs: false } as never));
+    await waitFor(() => expect(screen.getByTestId('org-record-working-here')).toBeTruthy());
+    expect(screen.queryByTestId('org-record-scope-chip')).toBeNull();
+    expect(screen.queryByTestId('org-record-work-here')).toBeNull();
   });
 });
 

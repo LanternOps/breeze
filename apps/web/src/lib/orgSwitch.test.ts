@@ -150,4 +150,16 @@ describe('applyOrgSwitch — soft navigation instead of a full reload', () => {
     await applyOrgSwitch('org-b', 'x', '/dashboard');
     expect(navigateToMock).toHaveBeenLastCalledWith('/dashboard', { replace: false });
   });
+
+  // #9019: "Work in this org" on the org record switches and STAYS. The router
+  // treats a same-page URL that carries a hash as an anchor move and never
+  // swaps, so navigating there would report 'hard' and strand the toast.
+  it('stays in place when the destination is exactly the current URL: no navigation, toast shown now', async () => {
+    stubLocation('/organizations/org-b', '', '#sites');
+    await applyOrgSwitch('org-b', 'Switched to B', '/organizations/org-b#sites');
+    expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
+    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Switched to B' });
+    expect(consumeSwitchToast()).toBeNull();
+  });
 });

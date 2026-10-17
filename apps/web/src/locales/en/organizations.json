@@ -13,8 +13,9 @@
       "billingSettingsLink": "Add in Billing settings",
       "sites_one": "{{count}} site",
       "sites_other": "{{count}} sites",
-      "scopeChip": "Workspace: {{orgName}}",
-      "scopeChipHint": "Your workspace is set to another organization. This page always shows {{orgName}}.",
+      "workingHere": "Working here",
+      "workingHereLabel": "Working in {{orgName}}",
+      "scopeLine": "Working in {{currentOrg}} · this record is {{orgName}}",
       "created": "Customer since {{date}}"
     },
     "actions": {

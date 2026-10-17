@@ -13,8 +13,9 @@
       "billingSettingsLink": "Adicionar nas configurações de cobrança",
       "sites_one": "{{count}} site",
       "sites_other": "{{count}} sites",
-      "scopeChip": "Espaço de trabalho: {{orgName}}",
-      "scopeChipHint": "Seu espaço de trabalho está definido para outra organização. Esta página sempre mostra {{orgName}}.",
+      "workingHere": "Trabalhando aqui",
+      "workingHereLabel": "Trabalhando em {{orgName}}",
+      "scopeLine": "Trabalhando em {{currentOrg}} · este registro é {{orgName}}",
       "created": "Cliente desde {{date}}"
     },
     "actions": {

@@ -136,12 +136,47 @@ describe('OrgRecordHeader', () => {
     expect(screen.queryByTestId('org-record-merge')).toBeNull();
   });
 
-  it('names the other workspace in the scope chip, and shows nothing when scopes agree', () => {
+  it('states the mismatch as a visible line naming both orgs, and shows nothing when scopes agree', () => {
     const { unmount } = renderHeader({ mismatchedScopeOrgName: 'Beta Legal' });
-    expect(screen.getByTestId('org-record-scope-chip').textContent).toContain('Beta Legal');
+    const line = screen.getByTestId('org-record-scope-chip');
+    expect(line.textContent).toBe('Working in Beta Legal · this record is Acme Dental');
+    // No tooltip-only meaning: the text is on the page, and the action it
+    // explains points at it for screen readers.
+    expect(line.getAttribute('title')).toBeNull();
+    expect(screen.getByTestId('org-record-work-here').getAttribute('aria-describedby')).toBe(line.id);
     unmount();
     renderHeader({ mismatchedScopeOrgName: null });
     expect(screen.queryByTestId('org-record-scope-chip')).toBeNull();
+  });
+
+  // #9019: the filled button used to render identically whether or not the
+  // working org already was this one.
+  it('shows a quiet "Working here" state instead of the button when the working org is this one', () => {
+    renderHeader({ workingHere: true });
+    const pill = screen.getByTestId('org-record-working-here');
+    expect(pill.textContent).toBe('Working here');
+    expect(pill.tagName).not.toBe('BUTTON');
+    expect(pill.getAttribute('aria-label')).toBe('Working in Acme Dental');
+    expect(screen.queryByTestId('org-record-work-here')).toBeNull();
+    expect(screen.queryByTestId('org-record-scope-chip')).toBeNull();
+  });
+
+  it('offers "Work in this org" when the working org differs', async () => {
+    const user = userEvent.setup();
+    const onWorkHere = vi.fn();
+    renderHeader({ workingHere: false, onWorkHere });
+    expect(screen.queryByTestId('org-record-working-here')).toBeNull();
+    await user.click(screen.getByTestId('org-record-work-here'));
+    expect(onWorkHere).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives every header action the same h-9 height', () => {
+    granted.add('endpoint_messages:send');
+    renderHeader({ onSendMessage: vi.fn() });
+    for (const id of ['org-record-work-here', 'org-record-send-message', 'org-record-settings', 'org-record-more']) {
+      expect(screen.getByTestId(id).className, id).toMatch(/\bh-9\b/);
+    }
+    granted.clear();
   });
 });
 

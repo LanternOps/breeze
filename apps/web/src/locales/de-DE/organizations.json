@@ -13,8 +13,9 @@
       "billingSettingsLink": "In den Abrechnungseinstellungen hinzufügen",
       "sites_one": "{{count}} Standort",
       "sites_other": "{{count}} Standorte",
-      "scopeChip": "Arbeitsbereich: {{orgName}}",
-      "scopeChipHint": "Ihr Arbeitsbereich ist auf eine andere Organisation eingestellt. Diese Seite zeigt immer {{orgName}}.",
+      "workingHere": "Hier aktiv",
+      "workingHereLabel": "Aktiv in {{orgName}}",
+      "scopeLine": "Aktiv in {{currentOrg}} · dieser Datensatz ist {{orgName}}",
       "created": "Kunde seit {{date}}"
     },
     "actions": {

@@ -13,8 +13,9 @@
       "billingSettingsLink": "Faturalandırma ayarlarından ekleyin",
       "sites_one": "{{count}} site",
       "sites_other": "{{count}} site",
-      "scopeChip": "Çalışma alanı: {{orgName}}",
-      "scopeChipHint": "Çalışma alanınız başka bir kuruluşa ayarlı. Bu sayfa her zaman {{orgName}} kuruluşunu gösterir.",
+      "workingHere": "Burada çalışıyorsunuz",
+      "workingHereLabel": "{{orgName}} içinde çalışıyorsunuz",
+      "scopeLine": "{{currentOrg}} içinde çalışıyorsunuz · bu kayıt {{orgName}}",
       "created": "{{date}} tarihinden beri müşteri"
     },
     "actions": {

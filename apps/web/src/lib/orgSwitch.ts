@@ -79,10 +79,10 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
  * same-path navigation that carries a hash as a scroll-to-anchor and does not
  * swap the document, and hash state (selected tab/row) is org-specific anyway.
  *
- * `destination` overrides both: for a switch that is itself a navigation ("Work
- * in this org" on the organization record hands the user their new workspace's
- * dashboard), the caller knows where the user is going and the redirect table
- * has nothing to add.
+ * `destination` overrides both: for a switch that is itself a navigation (e.g.
+ * the org record's "Open in Devices"), the caller knows where the user is
+ * going and the redirect table has nothing to add. A destination equal to the
+ * current URL means "switch and stay": no navigation happens at all.
  */
 export async function applyOrgSwitch(
   orgId: string | null,
@@ -96,6 +96,17 @@ export async function applyOrgSwitch(
   } else store.selectAllOrgs();
   stashSwitchToast(toastMessage);
   await waitForPendingRefresh();
+  // "Switch and stay" (#9019: the org record's own URL, hash included). The
+  // router treats a same-page URL with a hash as an anchor move and never
+  // swaps, so navigating would report 'hard' and strand the toast. The caller
+  // owns re-rendering here — its view must already be independent of the
+  // ambient org, as the org record's pinned fetches are.
+  const here = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (destination !== undefined && destination === here) {
+    const message = consumeSwitchToast();
+    if (message) showToast({ type: 'success', message });
+    return;
+  }
   const target = destination
     ?? getOrgSwitchRedirect(window.location.pathname)
     ?? `${window.location.pathname}${window.location.search}`;

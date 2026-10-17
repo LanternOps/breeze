@@ -13,8 +13,9 @@
       "billingSettingsLink": "Agregar en la configuración de facturación",
       "sites_one": "{{count}} sitio",
       "sites_other": "{{count}} sitios",
-      "scopeChip": "Espacio de trabajo: {{orgName}}",
-      "scopeChipHint": "Su espacio de trabajo está configurado en otra organización. Esta página siempre muestra {{orgName}}.",
+      "workingHere": "Trabajando aquí",
+      "workingHereLabel": "Trabajando en {{orgName}}",
+      "scopeLine": "Trabajando en {{currentOrg}} · este registro es {{orgName}}",
       "created": "Cliente desde {{date}}"
     },
     "actions": {
