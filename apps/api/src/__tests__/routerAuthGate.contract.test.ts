@@ -27,6 +27,7 @@ const EXEMPT: Record<string, string> = {
   invoicesPublicRoutes: 'Public invoice links authenticate via share tokens.',
   quotesPublicRoutes: 'Public quote links authenticate via share tokens.',
   trustPagePublicRoutes: 'Public trust pages are unauthenticated by design; non-serving cases are a generic 404 (spec trust-center §7, §13).',
+  trustPageAttestationRoutes: 'Public, unauthenticated attestation of an already-public payload; generic 404 (Trust Center W3b).',
   publicEnrollmentRoutes: 'Public enrollment installer download uses enrollment keys.',
   publicShortLinkRoutes: 'Public short links resolve enrollment downloads.',
   installerRoutes: 'Installer bootstrap/download flow uses bootstrap tokens.',

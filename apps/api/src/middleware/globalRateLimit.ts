@@ -107,6 +107,10 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // (payload + badge + a few documents). The SSR card path lives under /trust/card/ and is skip-listed
   // instead, because portal SSR shares one IP — see routes/trustPagePublic.ts for why it is DB-free.
   { prefix: '/api/v1/trust/public/', name: 'trustpublic', limit: 120 },
+  // Signed trust attestation + JWKS (Trust Center W3b): unauthenticated, read by insurer/auditor tooling that
+  // fetches one page at a time. Isolated from 'trustpublic' so a verifier polling attestations cannot starve a
+  // human reading the page, and vice versa.
+  { prefix: '/api/v1/trust/attestation/', name: 'trustattest', limit: 60 },
 ];
 
 export function registerGlobalRateLimitSkipPrefix(prefix: string): void {

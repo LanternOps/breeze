@@ -81,6 +81,8 @@ import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates
 import { orgDocumentRoutes } from './routes/orgDocuments';
 import { trustPageRoutes } from './routes/trustPage';
 import { trustPagePublicRoutes } from './routes/trustPagePublic';
+import { trustPageAttestationRoutes } from './routes/trustPageAttestation';
+import { byTrustCrossOriginPath } from './middleware/trustCrossOrigin';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -501,18 +503,27 @@ app.use('*', tunnelHostClassifier());
 const TUNNEL_HTTP_PATH_PREFIX = '/api/v1/tunnel-http/';
 const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, exceptTunnelSurface(mw));
 
+const SECURE_HEADERS_OPTIONS = {
+  // Override defaults to match Breeze security policy:
+  // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
+  strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
+  // - X-Frame-Options: DENY (default is SAMEORIGIN)
+  xFrameOptions: 'DENY',
+  // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
+  referrerPolicy: 'strict-origin-when-cross-origin',
+} as const;
+
+// Trust Center W3b: the public badge and the attestation/JWKS paths get the same headers except
+// `Cross-Origin-Resource-Policy: cross-origin` (middleware/trustCrossOrigin.ts), so other origins can load them.
+// It must be chosen here, not in the handlers: secureHeaders writes its headers after next() and would
+// overwrite a handler's CORP.
 app.use(
   '*',
   exceptTunnelHttp(
-    secureHeaders({
-      // Override defaults to match Breeze security policy:
-      // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
-      strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
-      // - X-Frame-Options: DENY (default is SAMEORIGIN)
-      xFrameOptions: 'DENY',
-      // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
-      referrerPolicy: 'strict-origin-when-cross-origin',
-    })
+    byTrustCrossOriginPath(
+      secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
+      secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+    )
   )
 );
 app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface }));
@@ -779,6 +790,9 @@ api.route('/config', configRoutes);
 // IP) and is DB-free on a serving-set miss; /trust/public/* has its own isolated
 // 'trustpublic' bucket. Unrelated to /partner/trust (partnerTrustRoutes).
 registerGlobalRateLimitSkipPrefix('/api/v1/trust/card/');
+// Signed attestation + JWKS (Trust Center W3b): public like the W1 block above and mounted ahead of it for the same
+// reason; its own 'trustattest' bucket; CORP cross-origin comes from byTrustCrossOriginPath above.
+api.route('/trust/attestation', trustPageAttestationRoutes);
 api.route('/trust', trustPagePublicRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);

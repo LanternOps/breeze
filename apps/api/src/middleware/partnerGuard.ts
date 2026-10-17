@@ -40,6 +40,7 @@ export function isPartnerGuardExemptPath(path: string): boolean {
   if (EDR_PUSH_WEBHOOK_PATH.test(path)) return true;
   // Public trust pages: GETs must never trigger staff account activation (spec trust-center §13)
   if (path.startsWith('/api/v1/trust/card/') || path.startsWith('/api/v1/trust/public/')) return true;
+  if (path.startsWith('/api/v1/trust/attestation/')) return true;   // signed attestation + JWKS (Trust Center W3b)
   // Public token GETs must never trigger staff account activation.
   if (/^\/api\/v1\/autopay\/public\/[^/]+(?:\/(?:setup-session|stop))?$/.test(path)) return true;
   return false;

@@ -304,4 +304,18 @@ describe('globalRateLimit — public trust pages (spec trust-center §8, §10)',
     await app.request('/api/v1/trust/public/nw/acme');
     expect(mocks.rateLimiter).toHaveBeenCalledWith(fakeRedis, `global:trustpublic:${TEST_IP}`, 120, 60);
   });
+
+  it('meters /api/v1/trust/attestation/ in its own trustattest bucket at 60/min', async () => {
+    const bucket = ISOLATED_BUCKETS.find((b) => b.prefix === '/api/v1/trust/attestation/');
+    expect(bucket).toEqual({ prefix: '/api/v1/trust/attestation/', name: 'trustattest', limit: 60 });
+
+    const fakeRedis = { marker: 'redis' };
+    mocks.getRedis.mockReturnValue(fakeRedis);
+    mocks.rateLimiter.mockResolvedValue({ allowed: true, remaining: 59, resetAt: new Date(Date.now() + 60_000) });
+    const app = new Hono();
+    app.use('*', globalRateLimit({ limit: 300, windowSeconds: 60 }));
+    app.get('/api/v1/trust/attestation/:p/:o', (c) => c.json({ ok: true }));
+    await app.request('/api/v1/trust/attestation/nw/acme');
+    expect(mocks.rateLimiter).toHaveBeenCalledWith(fakeRedis, `global:trustattest:${TEST_IP}`, 60, 60);
+  });
 });
