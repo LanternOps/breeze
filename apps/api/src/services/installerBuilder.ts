@@ -547,8 +547,10 @@ export async function fetchVerifiedMacosPkg(
 ): Promise<VerifiedMacosPackage> {
   const cached = verifiedMacosPkgCache.get(arch);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
-  const value = fetchVerifiedMacosPkgUncached(arch).catch((err) => {
-    verifiedMacosPkgCache.delete(arch);
+  const value: Promise<VerifiedMacosPackage> = fetchVerifiedMacosPkgUncached(arch).catch((err) => {
+    // Only evict our own entry: the background warmer may have swapped in a
+    // good one while this request's fetch was in flight (#8333).
+    if (verifiedMacosPkgCache.get(arch)?.value === value) verifiedMacosPkgCache.delete(arch);
     throw err;
   });
   verifiedMacosPkgCache.set(arch, {
@@ -726,6 +728,13 @@ function warmRegularMsiCache(): void {
   // start rather than from the cache's own last write, that would let the
   // entry actually expire between two ticks that each believed the other
   // had it covered.
+  refreshRegularMsiCache().catch((err) => {
+    console.error(
+      '[installer-builder] background MSI cache warm failed (next request falls back to its own fetch):',
+      err instanceof Error ? err.message : err,
+    );
+  });
+
   // #8333: POST /enrollment-keys/:id/installer-link (macOS) verifies both pkgs
   // under the request's held transaction, and that route cannot go self-managed
   // (same linearizability constraint as above). Keep the verified-pkg cache hot
@@ -740,12 +749,6 @@ function warmRegularMsiCache(): void {
       );
     });
   }
-  refreshRegularMsiCache().catch((err) => {
-    console.error(
-      '[installer-builder] background MSI cache warm failed (next request falls back to its own fetch):',
-      err instanceof Error ? err.message : err,
-    );
-  });
 }
 
 /**
