@@ -2726,5 +2726,10 @@
     "errors": {
       "loadFailed": "Não foi possível carregar a memória de correções."
     }
+  },
+  "islandError": {
+    "title": "Esta seção falhou",
+    "description": "Um erro de renderização impediu a exibição desta página. Tente novamente e, se continuar acontecendo, inclua a mensagem abaixo ao relatar o problema.",
+    "retry": "Tentar novamente"
   }
 }

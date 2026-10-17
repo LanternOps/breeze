@@ -41,12 +41,26 @@ import { formatDateTime } from "@/lib/dateTimeFormat";
 import Breadcrumbs from "../layout/Breadcrumbs";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import IslandErrorBoundary from "../shared/IslandErrorBoundary";
 
 type DeviceDetailPageProps = {
   deviceId: string;
 };
 
-export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
+// #8982: the island used to go fully blank ~1 s after first paint — React 18
+// unmounting the root on an uncaught render error from one of the overview
+// cards, with nothing on screen and nothing reported. The boundary must sit
+// INSIDE the island's React tree (wrapping in the .astro page would make the
+// child a separate island passed as static slot HTML, outside the boundary).
+export default function DeviceDetailPage(props: DeviceDetailPageProps) {
+  return (
+    <IslandErrorBoundary island="device-detail">
+      <DeviceDetailPageInner {...props} />
+    </IslandErrorBoundary>
+  );
+}
+
+function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   const { t } = useTranslation("devices");
   const [device, setDevice] = useState<Device | null>(null);
   const [loading, setLoading] = useState(true);
