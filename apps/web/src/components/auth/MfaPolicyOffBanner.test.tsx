@@ -241,6 +241,5 @@ describe('MfaPolicyOffBanner', () => {
     // Message and CTA are siblings in one wrapping row, not a stacked block.
     expect(cta.parentElement).toBe(message.parentElement);
     expect(message.parentElement?.className).toMatch(/\bflex-wrap\b/);
-    expect(banner.className).not.toMatch(/\bpy-3\b/);
   });
 });

@@ -13,6 +13,16 @@ describe('app shell 11px floor (#9031)', () => {
     expect(src).not.toMatch(/text-muted-foreground\/50/);
   });
 
+  it('keeps the footer and badges at exactly the 11px floor (not removed, not smaller)', () => {
+    expect(read('Sidebar.tsx')).toMatch(/border-t px-4 py-2 text-\[11px\] text-muted-foreground"/);
+    const palette = read('CommandPalette.tsx');
+    expect((palette.match(/text-\[11px\]/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    for (const src of [read('Sidebar.tsx'), palette]) {
+      const sizes = [...src.matchAll(/text-\[(\d+(?:\.\d+)?)px\]/g)].map((m) => Number(m[1]));
+      expect(sizes.filter((n) => n < 11)).toEqual([]);
+    }
+  });
+
   it('CommandPalette badges are not 10px and avoid muted-foreground on bg-muted', () => {
     const src = read('CommandPalette.tsx');
     expect(src).not.toMatch(/text-\[10px\]/);
