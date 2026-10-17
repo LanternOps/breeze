@@ -2235,14 +2235,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // #8053: the heartbeat's own (longer) max age — the default 30 s is
     // shorter than the 60 s beat, so it never hit and every beat re-ran the
     // full effective-config resolution inside this org transaction.
-    // #8997: in its own savepoint. A failed policy read (e.g. a permission
-    // error) aborts the surrounding Postgres transaction; without the
-    // savepoint this catch "recovers" but the org transaction's commit then
-    // re-throws, so the whole heartbeat 500s instead of degrading to
-    // `{ resolved: false }`.
-    const remoteAccess = await withDbTransaction(() => resolveRemoteAccessForDevice(device.id, {
+    // #8997: `savepoint` confines a failed policy read (e.g. a permission
+    // error) to a savepoint taken only on a cache miss. Otherwise the failure
+    // aborts the org transaction: this catch "recovers" but the commit
+    // re-throws and the whole heartbeat 500s. Cache hits add no statement.
+    const remoteAccess = await resolveRemoteAccessForDevice(device.id, {
       maxAgeMs: HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS,
-    }));
+      savepoint: true,
+    });
     remoteManagement = { resolved: remoteAccess.resolved, value: remoteAccess.settings.vncRelay === true };
   } catch (err) {
     console.error('[heartbeat] Failed to resolve remote access policy:', err);
