@@ -753,6 +753,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'trustAccessPublic.ts': { exempt: 'portal', note: 'Anonymous gated-document request/verify/download for end customers.' },
   //
   // W02f anchor: 'trustPageContent.ts': { exempt: 'tool_in_later_wave', note: 'Trust page FAQ/subprocessor editing; read access arrives via get_trust_page_status (#8770 W02i).' },
+  'trustPageContent.ts': { exempt: 'tool_in_later_wave', note: 'Trust page FAQ/subprocessor editing; read access arrives via get_trust_page_status (#8770 W02i).' },
   //
   // W02g anchor: 'trustPageTemplate.ts': { exempt: 'tool_in_later_wave', note: 'Partner Trust Center template; partner-wide admin + MFA (#8770 W02g).' },
   //
