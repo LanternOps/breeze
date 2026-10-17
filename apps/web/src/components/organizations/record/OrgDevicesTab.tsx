@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import DeviceList, { type Device, type DeviceStatus } from '@/components/devices/DeviceList';
+import { ORG_TAB_COLUMN_PRESET } from '@/components/devices/columnVisibility';
+import { navigateTo } from '@/lib/navigation';
 import { toDeviceListRow, type ApiDeviceRow } from '@/components/devices/deviceRowTransform';
 import type { OrgFetch } from './orgRecordFetch';
 
@@ -167,7 +169,13 @@ export default function OrgDevicesTab({ orgId, orgFetch }: OrgDevicesTabProps) {
           </select>
         )}
       </div>
-      <DeviceList devices={filteredDevices} sites={sites} forceSingleOrg />
+      <DeviceList
+        devices={filteredDevices}
+        sites={sites}
+        forceSingleOrg
+        columnPreset={ORG_TAB_COLUMN_PRESET}
+        onSelect={(d) => void navigateTo(`/devices/${d.id}`)}
+      />
     </div>
   );
 }
