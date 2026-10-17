@@ -4,7 +4,9 @@
 // Anonymous paths (create, verify, readGrant, openGrantedDocument) own their system db context; MSP paths
 // (approve, deny, revoke, resend) run in the caller's request context, scoped by orgId + RLS.
 // Delivery is at-most-once (Open Decision 3): mail, in-app notices and the optional ticket go out after the
-// state change and their failures are logged, never thrown back into a committed flow. The MSP can Resend a grant.
+// state change commits (MSP paths: runAfterDbContextCommit, because the route's request transaction is still open)
+// and their failures are logged with the request id and sent to Sentry, never thrown back into a committed flow.
+// The MSP can Resend a grant.
 import { createHash } from 'node:crypto';
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
@@ -12,13 +14,14 @@ import {
   PERMISSION_GRANTS, TRUST_ACCESS_GRANT_TTL_DAYS, TRUST_ACCESS_VERIFY_TTL_HOURS, normalizeTrustPagePayload,
   type TrustAccessRequestCreate, type TrustPagePublicPayload, type TrustPagePublicPayloadAny,
 } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
+import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
 import {
   orgDocuments, organizations, partnerUsers, partners, trustPageAccessRequests, trustPageAccessTokens, trustPageDocuments,
   trustPages, trustPageSnapshots, users,
 } from '../../../db/schema';
 import type { TrustPageAccessRequestRow } from '../../../db/schema/trustPages';
 import { createAuditLogAsync } from '../../auditService';
+import { captureException } from '../../sentry';
 import { ANONYMOUS_ACTOR_ID } from '../../auditEvents';
 import { portalBase } from '../../portalUrl';
 import { createNotification } from '../../userNotifications';
@@ -96,15 +99,20 @@ function orderedLinks(order: string[], links: LiveLink[]): LiveLink[] {
  * is the payload's — derived server-side and bound to the snapshot id, never taken from the client.
  * A repeat request from the same address while the first is still unconfirmed reuses that row.
  */
+/** Whether this snapshot records a request with this NDA answer (otherwise create is a silent no-op). */
+export function acceptsAccessRequest(payload: TrustPagePublicPayload, ndaAccepted: boolean): boolean {
+  if (!payload.access || gatedIdsOf(payload).length === 0) return false;
+  return !payload.access.ndaText || ndaAccepted;
+}
+
 export async function createAccessRequest(
   input: TrustAccessRequestCreate,
   resolved: { pageId: string; orgId: string; partnerId: string },
   payload: TrustPagePublicPayload,
   now: Date,
 ): Promise<void> {
-  if (!payload.access || gatedIdsOf(payload).length === 0) return;
+  if (!payload.access || !acceptsAccessRequest(payload, input.ndaAccepted)) return;
   const ndaText = payload.access.ndaText;
-  if (ndaText && !input.ndaAccepted) return;
   const nda = ndaText
     ? { ndaTextAccepted: ndaText, ndaTextSha256: sha256(ndaText), ndaAcceptedAt: now }
     : { ndaTextAccepted: null, ndaTextSha256: null, ndaAcceptedAt: null };
@@ -141,6 +149,7 @@ export async function createAccessRequest(
   await sendAccessVerificationEmail(
     { to: input.email, partnerId: resolved.partnerId, partnerName: created.partnerName },
     { orgName: created.orgName, partnerName: created.partnerName, verifyUrl: verifyUrlFor(created.raw) },
+    created.requestId,
   );
   await auditAnonymous({
     orgId: resolved.orgId, pageId: resolved.pageId, action: 'trust_page.access.request', requesterEmail: input.email,
@@ -156,14 +165,16 @@ export async function createAccessRequest(
 export async function verifyAccessRequest(raw: string, now: Date): Promise<{ orgName: string } | null> {
   if (typeof raw !== 'string' || !RAW_TOKEN_RE.test(raw)) return null;
   const hash = hashAccessToken(raw);
+  const live = and(
+    eq(trustPageAccessTokens.tokenHash, hash), eq(trustPageAccessTokens.purpose, 'verify_email'),
+    isNull(trustPageAccessTokens.consumedAt), isNull(trustPageAccessTokens.revokedAt),
+    sql`${trustPageAccessTokens.expiresAt} > ${now.toISOString()}::timestamptz`,
+  );
   const done = await sys(() => db.transaction(async (tx) => {
+    // Lock order is request → token everywhere (create's re-mint, deny, revoke and mint all lock the request
+    // first), so the token is read unlocked here and claimed with a conditional UPDATE after the request lock.
     const [token] = await tx.select({ id: trustPageAccessTokens.id, requestId: trustPageAccessTokens.requestId, orgId: trustPageAccessTokens.orgId })
-      .from(trustPageAccessTokens)
-      .where(and(
-        eq(trustPageAccessTokens.tokenHash, hash), eq(trustPageAccessTokens.purpose, 'verify_email'),
-        isNull(trustPageAccessTokens.consumedAt), isNull(trustPageAccessTokens.revokedAt),
-        sql`${trustPageAccessTokens.expiresAt} > ${now.toISOString()}::timestamptz`,
-      )).limit(1).for('update');
+      .from(trustPageAccessTokens).where(live).limit(1);
     if (!token) return null;
     const [request] = await tx.select().from(trustPageAccessRequests)
       .where(and(
@@ -171,7 +182,10 @@ export async function verifyAccessRequest(raw: string, now: Date): Promise<{ org
         eq(trustPageAccessRequests.status, 'pending_verification'),
       )).limit(1).for('update');
     if (!request) return null;
-    await tx.update(trustPageAccessTokens).set({ consumedAt: now }).where(eq(trustPageAccessTokens.id, token.id));
+    // The claim: exactly one concurrent verify of this token sees a row here.
+    const [claimed] = await tx.update(trustPageAccessTokens).set({ consumedAt: now })
+      .where(and(eq(trustPageAccessTokens.id, token.id), live)).returning({ id: trustPageAccessTokens.id });
+    if (!claimed) return null;
     await tx.update(trustPageAccessRequests).set({ status: 'pending_approval', emailVerifiedAt: now, updatedAt: now })
       .where(eq(trustPageAccessRequests.id, request.id));
     const [ctx] = await tx.select({
@@ -202,6 +216,11 @@ async function notifyStaff(request: TrustPageAccessRequestRow, ctx: { orgName: s
     const staff = ids.length === 0 ? [] : await sys(() => db.select({ id: users.id, email: users.email }).from(users)
       .innerJoin(partnerUsers, eq(partnerUsers.userId, users.id))
       .where(and(inArray(users.id, ids), eq(partnerUsers.partnerId, ctx.partnerId), eq(users.status, 'active'))));
+    if (staff.length === 0) {
+      // The request still sits in the inbox, but nobody is told; say so where an operator will look.
+      console.warn('[trustAccess] confirmed request has no MSP staff to notify', { requestId: request.id, orgId: request.orgId });
+      return;
+    }
     const title = 'Trust Center document request';
     const message = `${request.requesterName} (${request.requesterCompany}) asked for ${ctx.orgName}'s gated documents.`.slice(0, 500);
     for (const s of staff) {
@@ -212,16 +231,18 @@ async function notifyStaff(request: TrustPageAccessRequestRow, ctx: { orgName: s
           dedupeKey: `trust-access:${request.id}`,
         }));
       } catch (err) {
-        console.error('[trustAccess] in-app notification failed', { requestId: request.id, userId: s.id }, err instanceof Error ? err.message : err);
+        console.error('[trustAccess] in-app notification failed', { requestId: request.id, userId: s.id }, err);
+        captureException(err);
       }
     }
     await sendStaffAccessRequestEmail(staff.map((s) => s.email), {
       orgName: ctx.orgName, requesterName: request.requesterName, requesterEmail: request.requesterEmail,
       requesterCompany: request.requesterCompany, purpose: request.purpose,
       reviewUrl: `${dashboardBase()}/organizations/${request.orgId}#trust`,
-    });
+    }, request.id);
   } catch (err) {
-    console.error('[trustAccess] staff notification failed', { requestId: request.id }, err instanceof Error ? err.message : err);
+    console.error('[trustAccess] staff notification failed', { requestId: request.id }, err);
+    captureException(err);
   }
 }
 
@@ -238,7 +259,13 @@ async function createRequestTicket(request: TrustPageAccessRequestRow, orgName: 
     }, TRUST_ACCESS_TICKET_ACTOR));
     return ticket?.id ?? null;
   } catch (err) {
-    console.error('[trustAccess] ticket creation failed (not retried)', { requestId: request.id }, err instanceof Error ? err.message : err);
+    // Ticketing switched off for the partner is a configuration state, not a fault.
+    if ((err as { code?: unknown } | null)?.code === 'service_management_off') {
+      console.warn('[trustAccess] ticket per request is on but service management is off; no ticket', { requestId: request.id });
+      return null;
+    }
+    console.error('[trustAccess] ticket creation failed (not retried)', { requestId: request.id }, err);
+    captureException(err);
     return null;
   }
 }
@@ -296,10 +323,12 @@ export async function approveAccessRequest(a: Decision & { note: string | null }
     const raw = await mintAccessToken(tx, { requestId: request.id, orgId: request.orgId, purpose: 'download', ttlMs: GRANT_TTL_MS, now: a.now });
     return { request, page, raw, grantExpiresAt, grantedDocumentIds, titles: links.map((l) => l.title) };
   });
-  await sendAccessGrantedEmail(
+  // MSP routes run inside the request's transaction (the block above is a savepoint): mail only once it commits.
+  runAfterDbContextCommit('trustAccess.approve.email', () => sendAccessGrantedEmail(
     { to: out.request.requesterEmail, partnerId: out.page.partnerId, partnerName: out.page.partnerName },
     { orgName: out.page.orgName, partnerName: out.page.partnerName, downloadUrl: downloadUrlFor(out.raw), expiresAt: out.grantExpiresAt, documentTitles: out.titles },
-  );
+    out.request.id,
+  ));
   return { grantExpiresAt: out.grantExpiresAt, grantedDocumentIds: out.grantedDocumentIds };
 }
 
@@ -317,10 +346,11 @@ export async function denyAccessRequest(a: Decision & { note: string | null }): 
     return { request, names };
   });
   if (out.request.emailVerifiedAt) {
-    await sendAccessDeniedEmail(
+    runAfterDbContextCommit('trustAccess.deny.email', () => sendAccessDeniedEmail(
       { to: out.request.requesterEmail, partnerId: out.names.partnerId, partnerName: out.names.partnerName },
       { orgName: out.names.orgName, partnerName: out.names.partnerName, note: a.note },
-    );
+      out.request.id,
+    ));
   }
 }
 
@@ -353,10 +383,11 @@ export async function resendAccessGrant(a: Decision): Promise<void> {
     });
     return { request, names, raw, titles: links.map((l) => l.title), grantExpiresAt: request.grantExpiresAt };
   });
-  await sendAccessGrantedEmail(
+  runAfterDbContextCommit('trustAccess.resend.email', () => sendAccessGrantedEmail(
     { to: out.request.requesterEmail, partnerId: out.names.partnerId, partnerName: out.names.partnerName },
     { orgName: out.names.orgName, partnerName: out.names.partnerName, downloadUrl: downloadUrlFor(out.raw), expiresAt: out.grantExpiresAt, documentTitles: out.titles },
-  );
+    out.request.id,
+  ));
 }
 
 export interface TrustAccessRequestListItem {
@@ -397,6 +428,8 @@ export interface GrantView {
 export interface OpenedDocument {
   storageBackend: LiveLink['storageBackend']; storageKey: string | null; data: LiveLink['data'];
   contentType: string; originalFilename: string; byteSize: number;
+  /** Who and what to record once the bytes actually start flowing (recordGrantedDownload). */
+  grant: { requestId: string; orgId: string; pageId: string; requesterEmail: string; documentId: string };
 }
 
 /**
@@ -439,25 +472,33 @@ export async function readGrant(raw: string, now: Date): Promise<GrantView | nul
   });
 }
 
-/** On success: download_count + 1, last_downloaded_at, audit `trust_page.access.download` with the requester as actor. */
+/**
+ * Every condition re-checked (loadGrant); null when any fails. Records nothing: the route calls
+ * recordGrantedDownload only after the blob opened, so a storage outage never counts or audits a download.
+ */
 export async function openGrantedDocument(raw: string, documentId: string, now: Date): Promise<OpenedDocument | null> {
-  const opened = await sys(async () => {
+  return sys(async () => {
     const grant = await loadGrant(raw, now);
     const doc = grant?.documents.find((d) => d.id === documentId);
     if (!grant || !doc) return null;
-    await db.update(trustPageAccessRequests).set({
-      downloadCount: sql`${trustPageAccessRequests.downloadCount} + 1`, lastDownloadedAt: now,
-    }).where(eq(trustPageAccessRequests.id, grant.request.id));
-    return { grant, doc };
+    return {
+      storageBackend: doc.storageBackend, storageKey: doc.storageKey, data: doc.data,
+      contentType: doc.contentType, originalFilename: doc.originalFilename, byteSize: doc.byteSize,
+      grant: {
+        requestId: grant.request.id, orgId: grant.request.orgId, pageId: grant.request.trustPageId,
+        requesterEmail: grant.request.requesterEmail, documentId: doc.id,
+      },
+    };
   });
-  if (!opened) return null;
-  const { grant, doc } = opened;
+}
+
+/** download_count + 1, last_downloaded_at, and audit `trust_page.access.download` with the requester as actor. */
+export async function recordGrantedDownload(g: OpenedDocument['grant'], now: Date): Promise<void> {
+  await sys(() => db.update(trustPageAccessRequests).set({
+    downloadCount: sql`${trustPageAccessRequests.downloadCount} + 1`, lastDownloadedAt: now,
+  }).where(and(eq(trustPageAccessRequests.id, g.requestId), eq(trustPageAccessRequests.orgId, g.orgId))));
   await auditAnonymous({
-    orgId: grant.request.orgId, pageId: grant.request.trustPageId, action: 'trust_page.access.download',
-    requesterEmail: grant.request.requesterEmail, details: { requestId: grant.request.id, documentId: doc.id },
+    orgId: g.orgId, pageId: g.pageId, action: 'trust_page.access.download', requesterEmail: g.requesterEmail,
+    details: { requestId: g.requestId, documentId: g.documentId },
   });
-  return {
-    storageBackend: doc.storageBackend, storageKey: doc.storageKey, data: doc.data,
-    contentType: doc.contentType, originalFilename: doc.originalFilename, byteSize: doc.byteSize,
-  };
 }

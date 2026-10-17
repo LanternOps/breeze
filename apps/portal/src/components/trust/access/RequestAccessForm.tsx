@@ -23,6 +23,7 @@ export default function RequestAccessForm({ partnerSlug, orgSlug, ndaText, onCan
   const [nda, setNda] = useState(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [retry, setRetry] = useState(false);
 
   if (done) {
     return <p className="mt-4 rounded-lg border bg-card px-4 py-3 text-sm" data-testid="trust-access-submitted" role="status">{t.submitted}</p>;
@@ -32,14 +33,15 @@ export default function RequestAccessForm({ partnerSlug, orgSlug, ndaText, onCan
     e.preventDefault();
     if (busy || (ndaText && !nda)) return;
     setBusy(true);
-    try {
-      await requestAccess({
-        partnerSlug, orgSlug, email: email.trim(), name: name.trim(), company: company.trim(),
-        purpose: purpose.trim(), ndaAccepted: ndaText ? nda : false,
-      });
-    } catch {
-      // never reveal the outcome
-    }
+    setRetry(false);
+    // 'sent' covers every outcome that could depend on the address or the page; 'retry' is only a rate limit,
+    // a server fault or no connection, so the form stays filled in for another try.
+    const outcome = await requestAccess({
+      partnerSlug, orgSlug, email: email.trim(), name: name.trim(), company: company.trim(),
+      purpose: purpose.trim(), ndaAccepted: ndaText ? nda : false,
+    }).catch(() => 'retry' as const);
+    setBusy(false);
+    if (outcome === 'retry') { setRetry(true); return; }
     setDone(true);
   }
 
@@ -72,6 +74,7 @@ export default function RequestAccessForm({ partnerSlug, orgSlug, ndaText, onCan
           </label>
         </div>
       )}
+      {retry && <p className="text-destructive" role="alert" data-testid="trust-access-retry">{t.rateLimited}</p>}
       <div className="flex gap-2">
         <button type="submit" disabled={busy} className="rounded-md border px-3 py-2 text-sm font-medium doc-accent-text hover:underline disabled:opacity-50" data-testid="trust-access-submit">{t.submit}</button>
         {onCancel && <button type="button" className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:underline" data-testid="trust-access-cancel" onClick={onCancel}>{t.cancel}</button>}

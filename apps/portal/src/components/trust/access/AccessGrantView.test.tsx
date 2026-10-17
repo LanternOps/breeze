@@ -81,4 +81,14 @@ describe('AccessGrantView', () => {
     fireEvent.click(await screen.findByTestId('trust-access-download-d1'));
     await waitFor(() => expect(screen.getByTestId('trust-access-download-error')).toHaveTextContent('The download failed. Try again, or ask for a new link.'));
   });
+
+  it('a transient failure offers Try again, which re-fetches the grant', async () => {
+    fetchGrant.mockResolvedValueOnce('retry').mockResolvedValueOnce(grant);
+    render(<AccessGrantView />);
+    await waitFor(() => expect(screen.getByTestId('trust-access-retry')).toBeInTheDocument());
+    expect(screen.queryByTestId('trust-access-invalid')).toBeNull();
+    fireEvent.click(screen.getByTestId('trust-access-retry-button'));
+    await waitFor(() => expect(screen.getByTestId('trust-access-doc-d1')).toBeInTheDocument());
+    expect(fetchGrant).toHaveBeenCalledTimes(2);
+  });
 });

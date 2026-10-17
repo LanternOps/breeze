@@ -27,7 +27,10 @@ vi.mock('../db', () => ({
 }));
 const svc = vi.hoisted(() => ({
   createAccessRequest: vi.fn(async () => {}), verifyAccessRequest: vi.fn(), readGrant: vi.fn(), openGrantedDocument: vi.fn(),
+  acceptsAccessRequest: vi.fn(() => true), recordGrantedDownload: vi.fn(async () => {}),
 }));
+const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => sentry);
 vi.mock('../services/trustPage/access/requests', () => svc);
 const blob = vi.hoisted(() => ({ getBlobStream: vi.fn() }));
 vi.mock('../services/blobStorage', () => ({ ...blob, BlobStorageError: class BlobStorageError extends Error {} }));
@@ -42,6 +45,7 @@ const PAYLOAD = {
   schemaVersion: 2, snapshotId: '2a9a4f4e-3b8e-4f2a-9c51-7d1f2c0e9a33',
   documents: [{ id: DOC, title: 'SOC 2', visibility: 'gated' }], access: { ndaText: null },
 };
+const GRANT = { requestId: 'r1', orgId: 'o', pageId: 'pg', requesterEmail: 'jane@example.test', documentId: DOC };
 const RESOLVED = { pageId: 'pg', orgId: 'o', partnerId: 'p', publishedAt: new Date(), searchIndexable: false, lastEvaluatedAt: new Date(), snapshotId: 's1', payload: PAYLOAD };
 const validRequest = (over: Record<string, unknown> = {}) => ({
   partnerSlug: 'nw', orgSlug: 'acme', email: 'jane@example.test', name: 'Jane Doe', company: 'Example Ins',
@@ -55,6 +59,7 @@ beforeEach(() => {
   vi.clearAllMocks(); counts.clear(); ctx.entered = 0; depthAtLimit.length = 0;
   serving.isServing.mockResolvedValue(true);
   resolve.resolvePublishedTrustPage.mockResolvedValue(RESOLVED);
+  svc.acceptsAccessRequest.mockReturnValue(true);
 });
 
 describe('headers and method discipline', () => {
@@ -75,10 +80,14 @@ describe('headers and method discipline', () => {
     expect(res.headers.get('Referrer-Policy')).toBe('no-referrer');
     expect(res.headers.get('X-Robots-Tag')).toContain('noindex');
   });
-  it('no handler reads a token from the query string or a path param', () => {
+  it('no handler reads the URL, a query string or a path param, and nothing is logged with the body', () => {
     const source = readFileSync(fileURLToPath(new URL('./trustAccessPublic.ts', import.meta.url)), 'utf8');
-    expect(source).not.toMatch(/req\.(query|param)\(['"]token/);
-    expect(source).not.toMatch(/\/:token/);
+    expect(source).not.toMatch(/req\.(query|param|queries|url|text|raw)\b/);
+    expect(source).not.toMatch(/\/:\w+/);
+    // The only log lines carry ids (requestId/documentId); none may take the parsed input or the token.
+    for (const line of source.split('\n').filter((l) => /console\.|captureException\(/.test(l))) {
+      expect(line).not.toMatch(/input|token|body\b/);
+    }
   });
 });
 
@@ -108,10 +117,25 @@ describe('POST /requests', () => {
     expect(res.status).toBe(429);
     expect(svc.createAccessRequest).toHaveBeenCalledTimes(5);
   });
-  it('the 4th request in a day for one email → 429 (whatever the IP)', async () => {
+  it('the 4th request in a day for one email is a silent 202: nothing recorded, and no "address used" oracle', async () => {
     for (let i = 0; i < 3; i++) expect((await post('/requests', validRequest())).status).toBe(202);
     counts.forEach((_v, k) => { if (k.includes(':ip:')) counts.set(k, 0); });
-    expect((await post('/requests', validRequest())).status).toBe(429);
+    const res = await post('/requests', validRequest());
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ data: { accepted: true } });
+    expect(svc.createAccessRequest).toHaveBeenCalledTimes(3);
+  });
+  it('a request that would not be recorded spends no page budget (nobody can switch the form off with junk)', async () => {
+    svc.acceptsAccessRequest.mockReturnValue(false);
+    expect((await post('/requests', validRequest())).status).toBe(202);
+    expect(svc.createAccessRequest).not.toHaveBeenCalled();
+    expect([...counts.keys()].some((k) => k.includes(':page:'))).toBe(false);
+  });
+  it('the per-page budget (30 recorded requests a day) → 429', async () => {
+    counts.set('trust-access:req:page:nw/acme', 30);
+    const res = await post('/requests', validRequest());
+    expect(res.status).toBe(429);
+    expect(svc.createAccessRequest).not.toHaveBeenCalled();
   });
   it('an invalid body (or malformed JSON) is the generic 404, never a validation body', async () => {
     for (const body of [validRequest({ email: 'nope' }), validRequest({ extra: 1 }), '{not json']) {
@@ -168,7 +192,7 @@ describe('POST /grant and /download', () => {
     expect(await res.json()).toEqual(GENERIC);
   });
   it('download streams an attachment (no-store, nosniff, noindex)', async () => {
-    svc.openGrantedDocument.mockResolvedValueOnce({ storageBackend: 'db', storageKey: null, data: Buffer.from('pdf'), contentType: 'image/png', originalFilename: 'soc2.png', byteSize: 3 });
+    svc.openGrantedDocument.mockResolvedValueOnce({ storageBackend: 'db', storageKey: null, data: Buffer.from('pdf'), contentType: 'image/png', originalFilename: 'soc2.png', byteSize: 3, grant: GRANT });
     blob.getBlobStream.mockResolvedValueOnce({ body: Buffer.from('pdf'), contentLength: 3 });
     const res = await post('/download', { token: TOKEN, documentId: DOC });
     expect(res.status).toBe(200);
@@ -177,6 +201,16 @@ describe('POST /grant and /download', () => {
     expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff');
     expect(res.headers.get('X-Robots-Tag')).toContain('noindex');
     expect(svc.openGrantedDocument).toHaveBeenCalledWith(TOKEN, DOC, expect.any(Date));
+    expect(svc.recordGrantedDownload).toHaveBeenCalledWith(GRANT, expect.any(Date));
+  });
+  it('a storage failure is a 503, reaches Sentry, and is NOT counted as a download', async () => {
+    svc.openGrantedDocument.mockResolvedValueOnce({ storageBackend: 's3', storageKey: 'k', data: null, contentType: 'application/pdf', originalFilename: 'a.pdf', byteSize: 3, grant: GRANT });
+    const { BlobStorageError } = await import('../services/blobStorage');
+    blob.getBlobStream.mockRejectedValueOnce(new BlobStorageError('down'));
+    const res = await post('/download', { token: TOKEN, documentId: DOC });
+    expect(res.status).toBe(503);
+    expect(sentry.captureException).toHaveBeenCalled();
+    expect(svc.recordGrantedDownload).not.toHaveBeenCalled();
   });
   it('download refused → generic 404; a bad documentId never reaches the service', async () => {
     svc.openGrantedDocument.mockResolvedValueOnce(null);

@@ -23,7 +23,8 @@ import { getBlobStream, BlobStorageError } from '../services/blobStorage';
 import { contentDispositionFor } from '../services/attachmentFilename';
 import { isServing, readCachedSnapshotPayload, cacheSnapshotPayload, trustServingMember } from '../services/trustPage/servingSet';
 import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage } from '../services/trustPage/resolve';
-import { createAccessRequest, openGrantedDocument, readGrant, verifyAccessRequest } from '../services/trustPage/access/requests';
+import { acceptsAccessRequest, createAccessRequest, openGrantedDocument, readGrant, recordGrantedDownload, verifyAccessRequest } from '../services/trustPage/access/requests';
+import { captureException } from '../services/sentry';
 
 export const trustAccessPublicRoutes = new Hono();
 
@@ -75,14 +76,20 @@ trustAccessPublicRoutes.post('/requests', async (c) => {
   if (await limited(`req:ip:${ipKey(c)}`, 5, HOUR)) return tooMany(c);
   const input = await body(c, trustAccessRequestCreateSchema);
   if (!input) return notFound(c);
-  if (await limited(`req:email:${sha256(input.email)}`, 3, DAY)) return tooMany(c);
-  if (await limited(`req:page:${input.partnerSlug}/${input.orgSlug ?? ''}`, 30, DAY)) return tooMany(c);
+  const accepted = () => c.json({ data: { accepted: true } }, 202);
   const admitted = await admit(input.partnerSlug, input.orgSlug);
   if (!admitted) return notFound(c);
-  // The same 202 whether a request was recorded, merged into an unconfirmed one, or ignored (no gated
-  // document, NDA not accepted): the response never says whether an address or a document exists.
+  // The same 202 whether a request was recorded, merged into an unconfirmed one, or ignored: the response never
+  // says whether an address was used before, or whether the request was kept.
+  //  - nothing to record (no access flow, NDA not accepted) → 202, and no page budget is spent on it;
+  //  - the per-address budget is spent → 202 with nothing sent (a 429 here would say "this address was used");
+  //  - the per-page budget (spent only by requests that are recorded) → 429; it says nothing about any address.
+  // Every limiter runs outside a DB context (admit's system context has closed).
+  if (!acceptsAccessRequest(admitted.payload, input.ndaAccepted)) return accepted();
+  if (await limited(`req:email:${sha256(input.email)}`, 3, DAY)) return accepted();
+  if (await limited(`req:page:${input.partnerSlug}/${input.orgSlug ?? ''}`, 30, DAY)) return tooMany(c);
   await createAccessRequest(input, admitted.resolved, admitted.payload, new Date());
-  return c.json({ data: { accepted: true } }, 202);
+  return accepted();
 });
 
 trustAccessPublicRoutes.post('/verify', async (c) => {
@@ -107,10 +114,24 @@ trustAccessPublicRoutes.post('/download', async (c) => {
   if (!input) return notFound(c);
   const doc = await openGrantedDocument(input.token, input.documentId, new Date());
   if (!doc) return notFound(c);
+  // A valid, approved grant that cannot be served is a server fault: the requester sees the generic answer, the
+  // operator gets the log line and the Sentry event (ids only, never the token).
+  const ids = { requestId: doc.grant.requestId, documentId: doc.grant.documentId };
   let opened: Awaited<ReturnType<typeof getBlobStream>>;
   try { opened = await getBlobStream({ storageBackend: doc.storageBackend, storageKey: doc.storageKey, data: doc.data }); }
-  catch (err) { if (err instanceof BlobStorageError) return c.json({ error: 'Temporarily unavailable', code: 'SERVICE_UNAVAILABLE' }, 503); throw err; }
-  if (!opened.body) return notFound(c);
+  catch (err) {
+    console.error('[trustAccess] granted document could not be opened', ids, err);
+    captureException(err);
+    if (err instanceof BlobStorageError) return c.json({ error: 'Temporarily unavailable', code: 'SERVICE_UNAVAILABLE' }, 503);
+    throw err;
+  }
+  if (!opened.body) {
+    console.error('[trustAccess] granted document has no stored content', ids);
+    captureException(new Error(`trust access: granted document ${ids.documentId} has no stored content`));
+    return notFound(c);
+  }
+  // Counted and audited only once the bytes are about to flow.
+  await recordGrantedDownload(doc.grant, new Date());
   // contentDispositionFor returns `inline` for image/*; gated documents always download (W1 documentRoute).
   const headers: Record<string, string> = {
     'Content-Type': doc.contentType,

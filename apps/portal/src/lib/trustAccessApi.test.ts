@@ -8,13 +8,19 @@ import { requestAccess, verifyAccess, fetchGrant, downloadGrantDocument } from '
 beforeEach(() => { apiPost.mockReset(); vi.unstubAllGlobals(); });
 
 describe('trustAccessApi', () => {
-  it('requestAccess POSTs the body and never throws on failure', async () => {
-    apiPost.mockResolvedValue({ error: 'x', statusCode: 429 });
+  it('requestAccess: 202 and 404 read "sent" (no oracle); 429, 5xx and network failures read "retry"; never throws', async () => {
     const body = { partnerSlug: 'p', orgSlug: null, email: 'a@b.co', name: 'Al', company: 'Co', purpose: 'long enough purpose', ndaAccepted: false };
-    await expect(requestAccess(body)).resolves.toBeUndefined();
+    apiPost.mockResolvedValue({ data: { data: { accepted: true } }, statusCode: 202 });
+    await expect(requestAccess(body)).resolves.toBe('sent');
     expect(apiPost).toHaveBeenCalledWith('/trust/access/requests', body, { redirectOnUnauthorized: false });
+    apiPost.mockResolvedValue({ error: 'nf', statusCode: 404 });
+    await expect(requestAccess(body)).resolves.toBe('sent');
+    apiPost.mockResolvedValue({ error: 'x', statusCode: 429 });
+    await expect(requestAccess(body)).resolves.toBe('retry');
+    apiPost.mockResolvedValue({ error: 'x', statusCode: 503 });
+    await expect(requestAccess(body)).resolves.toBe('retry');
     apiPost.mockRejectedValue(new Error('boom'));
-    await expect(requestAccess(body)).resolves.toBeUndefined();
+    await expect(requestAccess(body)).resolves.toBe('retry');
   });
   it('verifyAccess returns orgName or null; token only in body', async () => {
     apiPost.mockResolvedValue({ data: { data: { orgName: 'Acme' } }, statusCode: 200 });
@@ -24,6 +30,10 @@ describe('trustAccessApi', () => {
     expect(apiPost.mock.calls[0][1]).toEqual({ token: 'tok' });
     apiPost.mockResolvedValue({ error: 'nf', statusCode: 404 });
     expect(await verifyAccess('tok')).toBeNull();
+    apiPost.mockResolvedValue({ error: 'x', statusCode: 429 });
+    expect(await verifyAccess('tok')).toBe('retry');
+    apiPost.mockRejectedValue(new Error('net'));
+    expect(await verifyAccess('tok')).toBe('retry');
   });
   it('fetchGrant returns the grant or null', async () => {
     const grant = { orgName: 'A', expiresAt: '2026-10-20T00:00:00Z', documents: [] };
@@ -31,6 +41,8 @@ describe('trustAccessApi', () => {
     expect(await fetchGrant('tok')).toEqual(grant);
     apiPost.mockResolvedValue({ error: 'nf', statusCode: 404 });
     expect(await fetchGrant('tok')).toBeNull();
+    apiPost.mockResolvedValue({ error: 'x', statusCode: 500 });
+    expect(await fetchGrant('tok')).toBe('retry');
   });
   it('downloadGrantDocument returns blob + filename from Content-Disposition', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('abc', { status: 200, headers: { 'content-disposition': 'attachment; filename="policy.pdf"' } }));

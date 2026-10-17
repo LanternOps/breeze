@@ -6,7 +6,7 @@ import { formatTrustDate, pickTrustCopy } from '../trustCopy';
 import { accessCopy } from './accessCopy';
 import { useFragmentToken } from './useFragmentToken';
 
-type Load = { kind: 'loading' } | { kind: 'bad' } | { kind: 'ok'; grant: AccessGrant };
+type Load = { kind: 'loading' } | { kind: 'bad' } | { kind: 'retry' } | { kind: 'ok'; grant: AccessGrant };
 
 function save(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -27,13 +27,18 @@ export default function AccessGrantView() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!ready) return;
     if (!token) { setLoad({ kind: 'bad' }); return; }
     let cancelled = false;
-    void fetchGrant(token).then((grant) => { if (!cancelled) setLoad(grant ? { kind: 'ok', grant } : { kind: 'bad' }); });
+    setLoad({ kind: 'loading' });
+    void fetchGrant(token).then((grant) => {
+      if (cancelled) return;
+      setLoad(grant === 'retry' ? { kind: 'retry' } : grant ? { kind: 'ok', grant } : { kind: 'bad' });
+    });
     return () => { cancelled = true; };
-  }, [ready, token]);
+  }, [ready, token, attempt]);
 
   async function download(id: string, title: string) {
     if (!token) return;
@@ -52,6 +57,14 @@ export default function AccessGrantView() {
       <h1 className="mb-3 text-lg font-semibold">{t.grantHeading}</h1>
       {load.kind === 'loading' && <p className="text-muted-foreground">{t.loading}</p>}
       {load.kind === 'bad' && <p data-testid="trust-access-invalid" role="alert">{t.invalid}</p>}
+      {load.kind === 'retry' && (
+        <div role="alert">
+          <p className="mb-3 text-destructive" data-testid="trust-access-retry">{t.retry}</p>
+          <button type="button" onClick={() => setAttempt((n) => n + 1)} className="rounded-md border px-3 py-2 font-medium doc-accent-text hover:underline" data-testid="trust-access-retry-button">
+            {t.tryAgain}
+          </button>
+        </div>
+      )}
       {load.kind === 'ok' && (
         <>
           <p className="mb-3 text-muted-foreground" data-testid="trust-access-expires">{t.expires(formatTrustDate(load.grant.expiresAt, locale))}</p>

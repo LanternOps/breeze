@@ -6,6 +6,7 @@ const script = vi.hoisted(() => ({
   selects: [] as unknown[][],
   writes: [] as Array<{ op: 'insert' | 'update'; values: Record<string, unknown> }>,
   insertReturning: [] as unknown[][],
+  afterCommit: [] as string[],
 }));
 function chain(result: unknown): unknown {
   const proxy: unknown = new Proxy(function () { /* target */ }, {
@@ -24,7 +25,11 @@ vi.mock('../../../db', () => {
     update: () => ({ set: (v: Record<string, unknown>) => { script.writes.push({ op: 'update', values: v }); return chain([{ id: 'x' }]); } }),
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(fakeDb),
   });
-  return { db: fakeDb, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() };
+  return {
+    db: fakeDb, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    // Records the label so the tests can assert MSP-path mail waits for the commit; runs the work at once.
+    runAfterDbContextCommit: (label: string, fn: () => unknown) => { script.afterCommit.push(label); void fn(); },
+  };
 });
 
 const emails = vi.hoisted(() => ({
@@ -41,10 +46,11 @@ vi.mock('../../ticketService', () => ({ createTicket }));
 const audit = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../auditService', () => ({ createAuditLogAsync: audit }));
 vi.mock('../../portalUrl', () => ({ portalBase: () => 'https://portal.example.test/portal' }));
+vi.mock('../../sentry', () => ({ captureException: vi.fn() }));
 
 import {
-  approveAccessRequest, createAccessRequest, denyAccessRequest, openGrantedDocument, readGrant, resendAccessGrant,
-  revokeAccessGrant, verifyAccessRequest,
+  acceptsAccessRequest, approveAccessRequest, createAccessRequest, denyAccessRequest, openGrantedDocument, readGrant,
+  recordGrantedDownload, resendAccessGrant, revokeAccessGrant, verifyAccessRequest,
 } from './requests';
 import { hashAccessToken } from './tokens';
 import type { TrustPagePublicPayload } from '@breeze/shared';
@@ -75,7 +81,7 @@ const inserted = () => script.writes.filter((w) => w.op === 'insert');
 const updated = () => script.writes.filter((w) => w.op === 'update');
 
 beforeEach(() => {
-  script.selects = []; script.writes = []; script.insertReturning = [];
+  script.selects = []; script.writes = []; script.insertReturning = []; script.afterCommit = [];
   vi.clearAllMocks();
 });
 
@@ -124,6 +130,16 @@ describe('createAccessRequest', () => {
   });
 });
 
+describe('acceptsAccessRequest', () => {
+  it('needs an access block with a gated document, and an accepted NDA when there is NDA text', () => {
+    expect(acceptsAccessRequest(payload(), true)).toBe(true);
+    expect(acceptsAccessRequest(payload(), false)).toBe(false);
+    expect(acceptsAccessRequest(payload({ access: { ndaText: null } }), false)).toBe(true);
+    expect(acceptsAccessRequest(payload({ access: null }), true)).toBe(false);
+    expect(acceptsAccessRequest(payload({ documents: [{ ...payload().documents[0]!, visibility: 'public' }] }), true)).toBe(false);
+  });
+});
+
 describe('verifyAccessRequest', () => {
   const tokenRow = { id: 't1', requestId: 'req-1', orgId: 'org-1' };
   const reqRow = { id: 'req-1', trustPageId: 'page-1', orgId: 'org-1', requesterEmail: 'jane@example.test', requesterName: 'Jane', requesterCompany: 'Ex', purpose: 'Underwriting' };
@@ -140,7 +156,7 @@ describe('verifyAccessRequest', () => {
     expect(createNotification).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'staff-1', orgId: 'org-1', type: 'approval', dedupeKey: 'trust-access:req-1', link: '/organizations/org-1#trust',
     }));
-    expect(emails.sendStaffAccessRequestEmail).toHaveBeenCalledWith(['tech@msp.test'], expect.objectContaining({ orgName: 'Contoso' }));
+    expect(emails.sendStaffAccessRequestEmail).toHaveBeenCalledWith(['tech@msp.test'], expect.objectContaining({ orgName: 'Contoso' }), 'req-1');
     expect(createTicket).not.toHaveBeenCalled();
   });
 
@@ -154,6 +170,16 @@ describe('verifyAccessRequest', () => {
   it('a malformed token is null without touching the db', async () => {
     await expect(verifyAccessRequest('nope', NOW)).resolves.toBeNull();
     expect(script.selects).toHaveLength(0);
+  });
+
+  it('notifies nobody (and says so) when the org has no MSP staff to tell', async () => {
+    resolveUsersWithPermissionForOrg.mockResolvedValueOnce([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    script.selects.push([tokenRow], [reqRow], [pageCtx]);
+    await expect(verifyAccessRequest(RAW, NOW)).resolves.toEqual({ orgName: 'Contoso' });
+    expect(createNotification).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no MSP staff'), expect.objectContaining({ requestId: 'req-1' }));
+    warn.mockRestore();
   });
 
   it('the request is no longer pending_verification → null, token left unconsumed', async () => {
@@ -187,6 +213,7 @@ describe('approveAccessRequest', () => {
     const [, mail] = emails.sendAccessGrantedEmail.mock.calls[0] as unknown as [unknown, { downloadUrl: string; documentTitles: string[] }];
     expect(mail.downloadUrl).toMatch(/\/trust\/access\/download#[A-Za-z0-9_-]{48}$/);
     expect(mail.documentTitles).toEqual(['SOC 2 report']);
+    expect(script.afterCommit).toEqual(['trustAccess.approve.email']);
   });
 
   it('pending_verification → 409 INVALID_STATE', async () => {
@@ -226,7 +253,7 @@ describe('deny / revoke / resend', () => {
       expect.objectContaining({ status: 'denied', decidedAt: NOW, decidedByUserId: 'u1', decisionNote: 'Need an NDA' }),
       { revokedAt: NOW },
     ]);
-    expect(emails.sendAccessDeniedEmail).toHaveBeenCalledWith(expect.objectContaining({ to: 'jane@example.test' }), expect.objectContaining({ note: 'Need an NDA' }));
+    expect(emails.sendAccessDeniedEmail).toHaveBeenCalledWith(expect.objectContaining({ to: 'jane@example.test' }), expect.objectContaining({ note: 'Need an NDA' }), 'req-1');
   });
 
   it('deny an unverified request mails nobody (the address was never proven)', async () => {
@@ -280,10 +307,14 @@ describe('readGrant / openGrantedDocument — every condition is necessary', () 
     script.selects.push(o.token ?? [token()], o.request ?? [request()], o.page ?? [page()], o.links ?? [link()]);
   };
 
-  it('all conditions hold → opens, increments the count and audits with the requester as actor', async () => {
+  it('all conditions hold → opens WITHOUT recording; recordGrantedDownload then counts and audits', async () => {
     queue();
     const opened = await openGrantedDocument(RAW, DOC, NOW);
     expect(opened).toMatchObject({ contentType: 'application/pdf', originalFilename: 'soc2.pdf' });
+    expect(opened!.grant).toEqual({ requestId: 'req-1', orgId: 'org-1', pageId: 'page-1', requesterEmail: 'jane@example.test', documentId: DOC });
+    expect(updated()).toHaveLength(0);
+    expect(audit).not.toHaveBeenCalled();
+    await recordGrantedDownload(opened!.grant, NOW);
     expect(updated()[0]!.values).toMatchObject({ lastDownloadedAt: NOW });
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'trust_page.access.download', actorEmail: 'jane@example.test', orgId: 'org-1' }));
   });

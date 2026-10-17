@@ -3,6 +3,7 @@
 // Every interpolated value is escaped: the requester's name, company and purpose are attacker-controlled.
 import { escapeHtml, renderButton, renderLayout, renderParagraph } from '../../emailLayout';
 import { getEmailService } from '../../email';
+import { captureException } from '../../sentry';
 
 export interface TrustAccessEmail { subject: string; html: string; text: string }
 
@@ -71,46 +72,52 @@ export function buildStaffAccessRequestEmail(p: {
   };
 }
 
-// ---- senders. Each is best-effort for its caller: a false return is logged, never thrown into a committed flow
-// (Open Decision 3: at-most-once; the MSP can Resend a grant).
+// ---- senders. Each is best-effort for its caller: it never throws (building the mail included) and returns false
+// on any failure, which it logs with the request id and sends to Sentry (Open Decision 3: at-most-once; the MSP
+// can Resend a grant). An unconfigured email service is a deployment state, logged as a warning only.
 
 type PartnerLane = { to: string; partnerId: string; partnerName: string };
+type Purpose = 'trust.access_verification' | 'trust.access_granted' | 'trust.access_denied' | 'staff.trust_access_request';
 
-async function sendPartnerLane(
-  purpose: 'trust.access_verification' | 'trust.access_granted' | 'trust.access_denied',
-  a: PartnerLane, mail: TrustAccessEmail,
-): Promise<boolean> {
-  const service = getEmailService();
-  if (!service) { console.warn(`[trustAccess] email not configured; ${purpose} not sent`); return false; }
+async function deliver(purpose: Purpose, requestId: string | null, send: () => Promise<unknown>): Promise<boolean> {
   try {
-    await service.sendEmail({ to: a.to, subject: mail.subject, html: mail.html, text: mail.text, purpose, partnerId: a.partnerId, partnerName: a.partnerName });
+    if (!getEmailService()) {
+      console.warn(`[trustAccess] email not configured; ${purpose} not sent`, { requestId });
+      return false;
+    }
+    await send();
     return true;
   } catch (err) {
-    console.error(`[trustAccess] ${purpose} send failed`, err instanceof Error ? err.message : err);
+    console.error(`[trustAccess] ${purpose} send failed`, { requestId }, err);
+    captureException(err);
     return false;
   }
 }
 
-export function sendAccessVerificationEmail(a: PartnerLane, p: Parameters<typeof buildAccessVerificationEmail>[0]): Promise<boolean> {
-  return sendPartnerLane('trust.access_verification', a, buildAccessVerificationEmail(p));
-}
-export function sendAccessGrantedEmail(a: PartnerLane, p: Parameters<typeof buildAccessGrantedEmail>[0]): Promise<boolean> {
-  return sendPartnerLane('trust.access_granted', a, buildAccessGrantedEmail(p));
-}
-export function sendAccessDeniedEmail(a: PartnerLane, p: Parameters<typeof buildAccessDeniedEmail>[0]): Promise<boolean> {
-  return sendPartnerLane('trust.access_denied', a, buildAccessDeniedEmail(p));
+function sendPartnerLane(purpose: Exclude<Purpose, 'staff.trust_access_request'>, a: PartnerLane, build: () => TrustAccessEmail, requestId: string | null): Promise<boolean> {
+  return deliver(purpose, requestId, async () => {
+    const mail = build();
+    await getEmailService()!.sendEmail({ to: a.to, subject: mail.subject, html: mail.html, text: mail.text, purpose, partnerId: a.partnerId, partnerName: a.partnerName });
+  });
 }
 
-export async function sendStaffAccessRequestEmail(to: string[], p: Parameters<typeof buildStaffAccessRequestEmail>[0]): Promise<boolean> {
-  if (to.length === 0) return false;
-  const service = getEmailService();
-  if (!service) { console.warn('[trustAccess] email not configured; staff.trust_access_request not sent'); return false; }
-  const mail = buildStaffAccessRequestEmail(p);
-  try {
-    await service.sendEmail({ to, subject: mail.subject, html: mail.html, text: mail.text, purpose: 'staff.trust_access_request' });
-    return true;
-  } catch (err) {
-    console.error('[trustAccess] staff.trust_access_request send failed', err instanceof Error ? err.message : err);
+export function sendAccessVerificationEmail(a: PartnerLane, p: Parameters<typeof buildAccessVerificationEmail>[0], requestId: string | null = null): Promise<boolean> {
+  return sendPartnerLane('trust.access_verification', a, () => buildAccessVerificationEmail(p), requestId);
+}
+export function sendAccessGrantedEmail(a: PartnerLane, p: Parameters<typeof buildAccessGrantedEmail>[0], requestId: string | null = null): Promise<boolean> {
+  return sendPartnerLane('trust.access_granted', a, () => buildAccessGrantedEmail(p), requestId);
+}
+export function sendAccessDeniedEmail(a: PartnerLane, p: Parameters<typeof buildAccessDeniedEmail>[0], requestId: string | null = null): Promise<boolean> {
+  return sendPartnerLane('trust.access_denied', a, () => buildAccessDeniedEmail(p), requestId);
+}
+
+export async function sendStaffAccessRequestEmail(to: string[], p: Parameters<typeof buildStaffAccessRequestEmail>[0], requestId: string | null = null): Promise<boolean> {
+  if (to.length === 0) {
+    console.warn('[trustAccess] no staff recipients; staff.trust_access_request not sent', { requestId });
     return false;
   }
+  return deliver('staff.trust_access_request', requestId, async () => {
+    const mail = buildStaffAccessRequestEmail(p);
+    await getEmailService()!.sendEmail({ to, subject: mail.subject, html: mail.html, text: mail.text, purpose: 'staff.trust_access_request' });
+  });
 }

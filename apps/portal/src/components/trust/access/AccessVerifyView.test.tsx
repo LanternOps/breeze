@@ -48,4 +48,15 @@ describe('AccessVerifyView', () => {
     expect(screen.queryByTestId('trust-access-confirm')).toBeNull();
     expect(verifyAccess).not.toHaveBeenCalled();
   });
+
+  it('a transient failure (rate limit, outage) keeps Confirm so the requester can try again on this page', async () => {
+    verifyAccess.mockResolvedValueOnce('retry').mockResolvedValueOnce({ orgName: 'Acme' });
+    render(<AccessVerifyView />);
+    fireEvent.click(screen.getByTestId('trust-access-confirm'));
+    await waitFor(() => expect(screen.getByTestId('trust-access-retry')).toBeInTheDocument());
+    expect(screen.queryByTestId('trust-access-invalid')).toBeNull();
+    fireEvent.click(screen.getByTestId('trust-access-confirm'));
+    await waitFor(() => expect(screen.getByTestId('trust-access-verified')).toBeInTheDocument());
+    expect(verifyAccess).toHaveBeenNthCalledWith(2, 'tok123');
+  });
 });

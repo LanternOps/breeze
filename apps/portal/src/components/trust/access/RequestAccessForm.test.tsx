@@ -60,8 +60,16 @@ describe('RequestAccessForm', () => {
     await waitFor(() => expect(requestAccess).toHaveBeenCalledWith(expect.objectContaining({ ndaAccepted: true, orgSlug: 'acme' })));
   });
 
-  it('shows the same confirmation when the request throws', async () => {
-    requestAccess.mockRejectedValue(new Error('429'));
+  it('an unexpected client error is treated as transient (try again), never as sent', async () => {
+    requestAccess.mockRejectedValue(new Error('boom'));
+    render(<RequestAccessForm partnerSlug="nw" orgSlug="acme" ndaText={null} />);
+    fill();
+    fireEvent.click(screen.getByTestId('trust-access-submit'));
+    await waitFor(() => expect(screen.getByTestId('trust-access-retry')).toBeInTheDocument());
+    expect(screen.queryByTestId('trust-access-submitted')).toBeNull();
+  });
+  it('a 404 from the API (page no longer serving) still reads as sent', async () => {
+    requestAccess.mockResolvedValue('sent');
     render(<RequestAccessForm partnerSlug="nw" orgSlug="acme" ndaText={null} />);
     fill();
     fireEvent.click(screen.getByTestId('trust-access-submit'));
@@ -73,5 +81,15 @@ describe('RequestAccessForm', () => {
     render(<RequestAccessForm partnerSlug="nw" orgSlug="acme" ndaText={null} onCancel={onCancel} />);
     fireEvent.click(screen.getByTestId('trust-access-cancel'));
     expect(onCancel).toHaveBeenCalled();
+  });
+
+  it('a rate limit or outage keeps the form and asks to try later; it never claims an email was sent', async () => {
+    requestAccess.mockResolvedValueOnce('retry');
+    render(<RequestAccessForm partnerSlug="nw" orgSlug="acme" ndaText={null} />);
+    fill();
+    fireEvent.submit(screen.getByTestId('trust-access-form'));
+    await waitFor(() => expect(screen.getByTestId('trust-access-retry')).toBeInTheDocument());
+    expect(screen.queryByTestId('trust-access-submitted')).toBeNull();
+    expect(screen.getByTestId('trust-access-name')).toHaveValue('Alice Smith');
   });
 });

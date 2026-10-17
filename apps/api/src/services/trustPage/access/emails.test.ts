@@ -3,6 +3,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const sendEmail = vi.hoisted(() => vi.fn());
 const getEmailService = vi.hoisted(() => vi.fn());
 vi.mock('../../email', () => ({ getEmailService }));
+const captureException = vi.hoisted(() => vi.fn());
+vi.mock('../../sentry', () => ({ captureException }));
 
 import {
   buildAccessDeniedEmail, buildAccessGrantedEmail, buildAccessVerificationEmail, buildStaffAccessRequestEmail,
@@ -57,7 +59,20 @@ describe('senders', () => {
     expect(params.purpose).toBe('staff.trust_access_request');
     expect(params).not.toHaveProperty('partnerId');
   });
-  it('a send failure is reported as false, never thrown', async () => {
+  it('a mail that cannot even be built (bad date) is false and reaches Sentry, never thrown', async () => {
+    await expect(sendAccessGrantedEmail({ to: 'r@x', partnerId: 'p', partnerName: 'A' }, { orgName: 'C', partnerName: 'A', downloadUrl: 'u', expiresAt: new Date('nope'), documentTitles: [] }, 'req-9'))
+      .resolves.toBe(false);
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalled();
+  });
+  it('a send failure is reported as false, never thrown, and logged with the request id', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sendEmail.mockRejectedValueOnce(new Error('smtp down'));
+    await expect(sendAccessGrantedEmail({ to: 'r@x', partnerId: 'p', partnerName: 'A' }, { orgName: 'C', partnerName: 'A', downloadUrl: 'u', expiresAt: new Date(), documentTitles: [] }, 'req-7')).resolves.toBe(false);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('trust.access_granted'), { requestId: 'req-7' }, expect.any(Error));
+    error.mockRestore();
+  });
+  it('a send failure without a request id is still false', async () => {
     sendEmail.mockRejectedValueOnce(new Error('smtp down'));
     await expect(sendAccessGrantedEmail({ to: 'r@x', partnerId: 'p', partnerName: 'A' }, { orgName: 'C', partnerName: 'A', downloadUrl: 'u', expiresAt: new Date(), documentTitles: [] })).resolves.toBe(false);
   });

@@ -17,32 +17,43 @@ export interface RequestAccessInput {
 export interface AccessGrantDocument { id: string; title: string; category: string; contentType: string; byteSize: number }
 export interface AccessGrant { orgName: string; expiresAt: string; documents: AccessGrantDocument[] }
 
-/** Fire-and-forget by design: the response (202/404/429/network) must never reveal anything, so it is swallowed. */
-export async function requestAccess(input: RequestAccessInput): Promise<void> {
+/** A failure worth retrying: rate limited, a server fault, or no response at all. It says nothing about the token. */
+export type Transient = 'retry';
+const transient = (statusCode: number | undefined) => statusCode === undefined || statusCode === 0 || statusCode === 429 || statusCode >= 500;
+
+/**
+ * 'sent' for an accepted request AND for a 404 (the API's 202 never says whether a request was kept, and a 404
+ * only says the page does not serve, which the page itself already shows). 'retry' for 429/5xx/network.
+ */
+export async function requestAccess(input: RequestAccessInput): Promise<'sent' | Transient> {
   try {
-    await apiPost('/trust/access/requests', input, OPTS);
+    const res = await apiPost('/trust/access/requests', input, OPTS);
+    return res.error && transient(res.statusCode) ? 'retry' : 'sent';
   } catch {
-    // intentionally silent
+    return 'retry';
   }
 }
 
-export async function verifyAccess(token: string): Promise<{ orgName: string } | null> {
+/** The org name, null for an invalid/expired/used link (every such case is the same 404), or 'retry'. */
+export async function verifyAccess(token: string): Promise<{ orgName: string } | null | Transient> {
   try {
     const res = await apiPost<{ data?: { orgName?: string } }>('/trust/access/verify', { token }, OPTS);
     const orgName = res.data?.data?.orgName;
-    return !res.error && typeof orgName === 'string' ? { orgName } : null;
+    if (!res.error && typeof orgName === 'string') return { orgName };
+    return res.error && transient(res.statusCode) ? 'retry' : null;
   } catch {
-    return null;
+    return 'retry';
   }
 }
 
-export async function fetchGrant(token: string): Promise<AccessGrant | null> {
+export async function fetchGrant(token: string): Promise<AccessGrant | null | Transient> {
   try {
     const res = await apiPost<{ data?: AccessGrant }>('/trust/access/grant', { token }, OPTS);
     const grant = res.data?.data;
-    return !res.error && grant && Array.isArray(grant.documents) ? grant : null;
+    if (!res.error && grant && Array.isArray(grant.documents)) return grant;
+    return res.error && transient(res.statusCode) ? 'retry' : null;
   } catch {
-    return null;
+    return 'retry';
   }
 }
 
