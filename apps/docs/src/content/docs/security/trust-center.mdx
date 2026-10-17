@@ -55,6 +55,16 @@ Controls can show references to safeguards in frameworks such as CIS Controls v8
 
 {/* W02b: declared controls */}
 
+## Declared controls
+
+Some practices cannot be measured from telemetry, such as security awareness training, an incident response plan, vendor risk management, a data inventory, periodic access reviews, a backup and recovery plan, penetration testing and cyber insurance. You can **declare** these on the page.
+
+- A declaration is a short statement (10 to 1000 characters) made by a named member of your team, on behalf of your company. You confirm that it is accurate and that you are authorized to make it. You can attach a document from the organization's library as evidence; the public page names it only when that document is also shared on the page.
+- Declaring, re-declaring and withdrawing need the `organizations:write` permission and a session with multi-factor authentication, and each action is recorded in the audit log.
+- The public page lists declared controls in their own section, labeled "Declared by *your company* on *date*". They never carry a Met or Not met status, and they are never counted in the number of controls met.
+- Each declaration expires exactly **365 days** after it is made. Thirty days before it expires, users with `organizations:write` on the organization get an in-app notification and an email. An expired declaration stays on the public page, muted and marked "Declaration expired on *date*", until you withdraw it or publish again. A publish never carries an expired declaration forward, so re-declare it first to keep it on the page.
+- A new or re-declared control appears on the public page when you publish again. A withdrawal and an expiry take effect at the next hourly refresh, without a publish.
+
 {/* W02d: gated documents */}
 
 {/* W02e: framework view */}
