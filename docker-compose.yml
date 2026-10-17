@@ -785,6 +785,13 @@ services:
       CADDY_TRUSTED_PROXIES: "${CADDY_TRUSTED_PROXIES:-127.0.0.1/32 ::1/128}"
       CADDY_CLIENT_IP_HEADERS: "${CADDY_CLIENT_IP_HEADERS:-CF-Connecting-IP X-Forwarded-For}"
       REMOTE_ACCESS_ADMISSION_MODE: ${REMOTE_ACCESS_ADMISSION_MODE:?Set REMOTE_ACCESS_ADMISSION_MODE to open or closed}
+      # Network Proxy host mode (optional). Default matches nothing.
+      # `:-` (not `-`) is load-bearing: an EMPTY TUNNEL_SITE_ADDRESS makes
+      # `caddy adapt` fail (amended 2026-10-12b, item 3).
+      TUNNEL_SITE_ADDRESS: ${TUNNEL_SITE_ADDRESS:-http://tunnel-disabled.invalid}
+      TUNNEL_TLS_DIRECTIVE: ${TUNNEL_TLS_DIRECTIVE:-}
+      # Same `:-` rule: Caddy's own `{$VAR:default}` ignores a set-but-empty var.
+      TUNNEL_HOST_SUFFIX: ${TUNNEL_HOST_SUFFIX:-tunnel-disabled.invalid}
     volumes:
       - ./docker/Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
