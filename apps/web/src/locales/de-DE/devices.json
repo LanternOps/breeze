@@ -2037,7 +2037,9 @@
       "writeThroughput": "Schreibdurchsatz"
     },
     "networkBandwidth": "Netzwerkbandbreite",
-    "title": "Leistungsdiagramme"
+    "title": "Leistungsdiagramme",
+    "noSamples": "Keine Messwerte in den letzten {{range}}",
+    "offlineSince": "Gerät offline · zuletzt gesehen {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2114,7 +2116,7 @@
     "details": "Details",
     "disabled": "Die Zuverlässigkeitsbewertung ist für diese Organisation deaktiviert.",
     "distinctEvents": "Einzelne Ereignisse aus dem Jahr {{window}}.",
-    "empty": "Noch kein Zuverlässigkeits-Snapshot verfügbar.",
+    "empty": "Noch keine Zuverlässigkeitsdaten",
     "errors": {
       "loadDetail": "Zuverlässigkeitsdetails konnten nicht geladen werden",
       "loadScore": "Der Zuverlässigkeitswert konnte nicht geladen werden",
@@ -2460,7 +2462,7 @@
     "loadFailed": "Garantie konnte nicht geladen werden.",
     "lookupUnavailable": "Für diesen Hersteller ist keine Garantiesuche verfügbar",
     "manufacturer": "Hersteller",
-    "noInformation": "Keine Garantieinformationen",
+    "noInformation": "Keine Garantie hinterlegt",
     "renews": "Erneuert",
     "serialNumber": "Seriennummer",
     "source": "Quelle: {{source}}",
@@ -2486,7 +2488,8 @@
       "refreshing": "Garantie wird aktualisiert…",
       "stillInProgress": "Die Garantieaktualisierung ist noch im Gange; Die Karte wird aktualisiert, wenn der Vorgang abgeschlossen ist.",
       "updated": "Garantieinformationen aktualisiert."
-    }
+    },
+    "lookUp": "Abfragen"
   },
   "devicesPage": {
     "accessDenied": "Sie haben keine Berechtigung zum Anzeigen von Geräten.",
@@ -4442,5 +4445,15 @@
     "updatesPaused": "Live-Aktualisierungen pausiert — neuer Versuch läuft",
     "closeNotAnnounced": "Der Chat ist hier geschlossen. Das Chatfenster des Benutzers bleibt möglicherweise geöffnet, bis sich sein Gerät erneut verbindet oder er antwortet.",
     "unavailable": "Dieser Chat ist nicht mehr verfügbar"
+  },
+  "deviceOverviewState": {
+    "label": "Gerätestatus",
+    "lastCheckIn": "Letzte Meldung {{ago}}",
+    "openAlerts_one": "{{count}} offene Warnung",
+    "openAlerts_other": "{{count}} offene Warnungen",
+    "openTickets_one": "{{count}} offenes Ticket",
+    "openTickets_other": "{{count}} offene Tickets",
+    "noOpenAlerts": "Keine offenen Warnungen",
+    "untitledAlert": "Warnung gemeldet"
   }
 }

@@ -60,6 +60,7 @@ import DeviceAlertHistory from "./DeviceAlertHistory";
 import DeviceActivityFeed from "./DeviceActivityFeed";
 import DeviceAiActivitySignal from "./DeviceAiActivitySignal";
 import DeviceQueuedActions from "./DeviceQueuedActions";
+import DeviceOverviewState from "./DeviceOverviewState";
 import DeviceScriptHistory from "./DeviceScriptHistory";
 import DevicePerformanceGraphs from "./DevicePerformanceGraphs";
 import DeviceEventLogViewer from "./DeviceEventLogViewer";
@@ -1015,7 +1016,20 @@ export default function DeviceDetails({
       {activeTab === "overview" && (
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div className="min-w-0 flex-1 space-y-6">
-            <ContactResponsibilitiesCard orgId={device.orgId} siteId={device.siteId} deviceId={device.id} />
+            {/* #9029: blocks run in triage order — (1) state + what is open,
+                (2) health, (3) the performance chart, (4) contacts / warranty
+                / billing. Empty cards collapse to one line with a next step. */}
+            <DeviceOverviewState
+              deviceId={device.id}
+              status={device.status}
+              lastSeen={device.lastSeen}
+              alertCount={tabCounts?.alerts}
+              ticketCount={tabCounts?.tickets}
+              onOpenTab={(tab) => switchTab(tab)}
+            />
+            {device.status !== "decommissioned" && (
+              <DeviceQueuedActions deviceId={device.id} />
+            )}
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — side by side on ≥xl (stacked and wrapping below,
                 since the Activity rail narrows this card at lg). Stats are
@@ -1025,7 +1039,10 @@ export default function DeviceDetails({
                 itself is also allowed to truncate as a last resort under
                 extreme width constraints (#7153) — both blocks get min-w-0
                 so the Health block can't starve the Activity block. */}
-            <div className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 xl:flex-row xl:gap-6">
+            <div
+              data-testid="device-health-strip"
+              className="flex flex-col gap-4 rounded-lg border bg-card px-5 py-4 xl:flex-row xl:gap-6"
+            >
               <div className="flex min-w-0 flex-1 flex-wrap gap-x-6 gap-y-3">
                 <div className="shrink-0">
                   <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-muted-foreground">
@@ -1089,19 +1106,26 @@ export default function DeviceDetails({
               </div>
             </div>
 
-            <NetworkAssetRow deviceId={device.id} />
-
             <DeviceReliabilityPanel deviceId={device.id} />
 
-            <DevicePerformanceGraphs deviceId={device.id} compact />
+            <DevicePerformanceGraphs
+              deviceId={device.id}
+              compact
+              offlineSince={device.status === "offline" ? device.lastSeen : undefined}
+            />
+
+            <ContactResponsibilitiesCard
+              orgId={device.orgId}
+              siteId={device.siteId}
+              deviceId={device.id}
+              assignHref={device.orgId ? `/organizations/${device.orgId}#contacts` : undefined}
+            />
 
             <DeviceWarrantyCard deviceId={device.id} compact />
 
             <DeviceBillingCard deviceId={device.id} />
 
-            {device.status !== "decommissioned" && (
-              <DeviceQueuedActions deviceId={device.id} />
-            )}
+            <NetworkAssetRow deviceId={device.id} />
           </div>
 
           <div
@@ -1246,7 +1270,10 @@ export default function DeviceDetails({
 
       {activeTab === "performance" && (
         <div className="space-y-6">
-          <DevicePerformanceGraphs deviceId={device.id} />
+          <DevicePerformanceGraphs
+            deviceId={device.id}
+            offlineSince={device.status === "offline" ? device.lastSeen : undefined}
+          />
           <DeviceAnomaliesPanel deviceId={device.id} compact onChanged={refreshTabCounts} />
         </div>
       )}

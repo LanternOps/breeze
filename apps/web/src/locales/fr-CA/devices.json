@@ -2037,7 +2037,9 @@
       "writeThroughput": "Débit d’écriture"
     },
     "networkBandwidth": "Bande passante réseau",
-    "title": "Graphiques de performance"
+    "title": "Graphiques de performance",
+    "noSamples": "Aucun échantillon sur les dernières {{range}}",
+    "offlineSince": "Appareil hors ligne · vu pour la dernière fois {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2114,7 +2116,7 @@
     "details": "Détails",
     "disabled": "Le score de fiabilité est désactivé pour cette organisation.",
     "distinctEvents": "Événements distincts du {{window}}.",
-    "empty": "Aucun instantané de fiabilité disponible pour l’instant.",
+    "empty": "Aucune donnée de fiabilité pour l’instant",
     "errors": {
       "loadDetail": "Impossible de charger le détail de fiabilité",
       "loadScore": "Impossible de charger le score de fiabilité",
@@ -2460,7 +2462,7 @@
     "loadFailed": "Impossible de charger la garantie.",
     "lookupUnavailable": "Recherche de garantie non disponible pour ce fabricant",
     "manufacturer": "Fabricant",
-    "noInformation": "Aucune information sur la garantie",
+    "noInformation": "Aucune garantie enregistrée",
     "renews": "Renouvellements",
     "serialNumber": "Numéro de série",
     "source": "Source : {{source}}",
@@ -2486,7 +2488,8 @@
       "refreshing": "Garantie rafraîchissante...",
       "stillInProgress": "La refonte de la garantie est encore en cours ; La carte sera mise à jour une fois terminée.",
       "updated": "Informations sur la garantie mises à jour."
-    }
+    },
+    "lookUp": "Rechercher"
   },
   "devicesPage": {
     "accessDenied": "Vous n’avez pas la permission de voir les appareils.",
@@ -4442,5 +4445,15 @@
     "updatesPaused": "Mises à jour en direct suspendues — nouvelle tentative en cours",
     "closeNotAnnounced": "Le chat est fermé ici. La fenêtre de chat de l'utilisateur peut rester ouverte jusqu'à la reconnexion de son appareil ou jusqu'à sa réponse.",
     "unavailable": "Ce chat n'est plus disponible"
+  },
+  "deviceOverviewState": {
+    "label": "État de l’appareil",
+    "lastCheckIn": "Dernier signalement {{ago}}",
+    "openAlerts_one": "{{count}} alerte ouverte",
+    "openAlerts_other": "{{count}} alertes ouvertes",
+    "openTickets_one": "{{count}} billet ouvert",
+    "openTickets_other": "{{count}} billets ouverts",
+    "noOpenAlerts": "Aucune alerte ouverte",
+    "untitledAlert": "Alerte signalée"
   }
 }

@@ -2037,7 +2037,9 @@
       "writeThroughput": "Yazma Verimi"
     },
     "networkBandwidth": "Ağ Bant Genişliği",
-    "title": "Performans Grafikleri"
+    "title": "Performans Grafikleri",
+    "noSamples": "Son {{range}} içinde örnek yok",
+    "offlineSince": "Cihaz çevrimdışı · son görülme {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2114,7 +2116,7 @@
     "details": "ayrıntılar",
     "disabled": "Bu kuruluş için güvenilirlik puanlaması devre dışı bırakıldı.",
     "distinctEvents": "{{window}}'den farklı olaylar.",
-    "empty": "Henüz güvenilirlik anlık görüntüsü mevcut değil.",
+    "empty": "Henüz güvenilirlik verisi yok",
     "errors": {
       "loadDetail": "Güvenilirlik ayrıntıları yüklenemedi",
       "loadScore": "Güvenilirlik puanı yüklenemedi",
@@ -2460,7 +2462,7 @@
     "loadFailed": "Garanti yüklenemedi.",
     "lookupUnavailable": "Bu üretici için garanti araması mevcut değil",
     "manufacturer": "Üretici",
-    "noInformation": "Garanti bilgisi yok",
+    "noInformation": "Kayıtlı garanti yok",
     "renews": "Yenilenir",
     "serialNumber": "Seri Numarası",
     "source": "Kaynak: {{source}}",
@@ -2486,7 +2488,8 @@
       "refreshing": "Garanti yenileniyor…",
       "stillInProgress": "Garanti yenileme işlemi halen devam etmektedir; kart tamamlandığında güncellenecektir.",
       "updated": "Garanti bilgileri güncellendi."
-    }
+    },
+    "lookUp": "Sorgula"
   },
   "devicesPage": {
     "accessDenied": "Cihazları görüntüleme izniniz yok.",
@@ -4442,5 +4445,15 @@
     "updatesPaused": "Canlı güncellemeler duraklatıldı — yeniden deneniyor",
     "closeNotAnnounced": "Sohbet burada kapatıldı. Kullanıcının sohbet penceresi, cihazı yeniden bağlanana veya kullanıcı yanıt verene kadar açık kalabilir.",
     "unavailable": "Bu sohbet artık kullanılamıyor"
+  },
+  "deviceOverviewState": {
+    "label": "Cihaz durumu",
+    "lastCheckIn": "Son bildirim {{ago}}",
+    "openAlerts_one": "{{count}} açık uyarı",
+    "openAlerts_other": "{{count}} açık uyarı",
+    "openTickets_one": "{{count}} açık talep",
+    "openTickets_other": "{{count}} açık talep",
+    "noOpenAlerts": "Açık uyarı yok",
+    "untitledAlert": "Uyarı bildirildi"
   }
 }

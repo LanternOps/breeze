@@ -14,6 +14,7 @@ import {
   Legend
 } from 'recharts';
 import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
+import { formatTimeAgo } from '@/lib/formatTime';
 import { fetchWithAuth } from '../../stores/auth';
 import { createCancellableRequest, type CancellableRequest } from '../../lib/cancellableRequest';
 import ProcessDrilldownPanel from './ProcessDrilldownPanel';
@@ -52,6 +53,8 @@ function formatBytesPerSec(bps: number): string {
 type DevicePerformanceGraphsProps = {
   deviceId: string;
   compact?: boolean;
+  /** Last-seen time of an OFFLINE device; the empty state says so (#9029). */
+  offlineSince?: string;
 };
 
 // Resolve the drilldown timestamp from a recharts click state. Exported (and
@@ -107,7 +110,7 @@ function formatTimestamp(value: string, range: TimeRange) {
   return formatDate(date, { month: 'short', day: 'numeric' });
 }
 
-export default function DevicePerformanceGraphs({ deviceId, compact = false }: DevicePerformanceGraphsProps) {
+export default function DevicePerformanceGraphs({ deviceId, compact = false, offlineSince }: DevicePerformanceGraphsProps) {
   const { t } = useTranslation('devices');
   const [timeRange, setTimeRange] = useState<TimeRange>('24h');
   const [data, setData] = useState<MetricPoint[]>([]);
@@ -263,6 +266,22 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false }: D
             <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
             <p className="mt-3 text-sm text-muted-foreground">{t('devicePerformanceGraphs.loading')}</p>
           </div>
+        </div>
+      ) : data.length === 0 ? (
+        // #9029: say there is nothing to plot instead of drawing blank axes and
+        // a legend; same height as the chart so the layout does not jump.
+        <div
+          data-testid="device-performance-empty"
+          className={`flex flex-col items-center justify-center gap-1 rounded-md border border-dashed text-center text-sm text-muted-foreground ${
+            compact ? 'mt-4 h-56' : 'mt-6 h-80'
+          }`}
+        >
+          <p className="font-medium text-foreground">
+            {t('devicePerformanceGraphs.noSamples', { range: rangeLabels[timeRange] })}
+          </p>
+          {offlineSince && !Number.isNaN(new Date(offlineSince).getTime()) && (
+            <p>{t('devicePerformanceGraphs.offlineSince', { ago: formatTimeAgo(offlineSince) })}</p>
+          )}
         </div>
       ) : (
         <>

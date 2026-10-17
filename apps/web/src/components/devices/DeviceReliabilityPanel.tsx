@@ -511,17 +511,16 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     );
   }
 
+  // #9029: no snapshot yet is one muted line, not an empty card body.
   if (!snapshot) {
     return (
-      <div className="rounded-lg border bg-card p-5 shadow-xs">
-        <div className="flex items-center gap-3">
-          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <div>
-            <h3 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h3>
-            <p className="text-sm text-muted-foreground">{t('deviceReliabilityPanel.empty')}</p>
-          </div>
-        </div>
-      </div>
+      <p
+        data-testid="device-reliability-empty"
+        className="flex items-center gap-2 rounded-lg border bg-card px-5 py-3 text-sm text-muted-foreground"
+      >
+        <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+        {t('deviceReliabilityPanel.empty')}
+      </p>
     );
   }
 

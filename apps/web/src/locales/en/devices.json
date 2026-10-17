@@ -2037,7 +2037,9 @@
       "writeThroughput": "Write Throughput"
     },
     "networkBandwidth": "Network Bandwidth",
-    "title": "Performance Graphs"
+    "title": "Performance Graphs",
+    "noSamples": "No samples in the last {{range}}",
+    "offlineSince": "Device offline · last seen {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2114,7 +2116,7 @@
     "details": "details",
     "disabled": "Reliability scoring is disabled for this organization.",
     "distinctEvents": "Distinct events from the {{window}}.",
-    "empty": "No reliability snapshot available yet.",
+    "empty": "No reliability data yet",
     "errors": {
       "loadDetail": "Failed to load reliability detail",
       "loadScore": "Failed to load reliability score",
@@ -2460,7 +2462,7 @@
     "loadFailed": "Couldn't load warranty.",
     "lookupUnavailable": "Warranty lookup not available for this manufacturer",
     "manufacturer": "Manufacturer",
-    "noInformation": "No warranty information",
+    "noInformation": "No warranty on file",
     "renews": "Renews",
     "serialNumber": "Serial Number",
     "source": "Source: {{source}}",
@@ -2486,7 +2488,8 @@
       "refreshing": "Refreshing warranty…",
       "stillInProgress": "Warranty refresh is still in progress; the card will update when it completes.",
       "updated": "Warranty information updated."
-    }
+    },
+    "lookUp": "Look up"
   },
   "devicesPage": {
     "accessDenied": "You don't have permission to view devices.",
@@ -4442,5 +4445,15 @@
     "updatesPaused": "Live updates paused — retrying",
     "closeNotAnnounced": "The chat is closed here. The user's chat window may stay open until their device reconnects or they reply.",
     "unavailable": "This chat is no longer available"
+  },
+  "deviceOverviewState": {
+    "label": "Device state",
+    "lastCheckIn": "Last check-in {{ago}}",
+    "openAlerts_one": "{{count}} open alert",
+    "openAlerts_other": "{{count}} open alerts",
+    "openTickets_one": "{{count}} open ticket",
+    "openTickets_other": "{{count}} open tickets",
+    "noOpenAlerts": "No open alerts",
+    "untitledAlert": "Alert reported"
   }
 }

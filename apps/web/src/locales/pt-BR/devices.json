@@ -2037,7 +2037,9 @@
       "writeThroughput": "Taxa de gravação"
     },
     "networkBandwidth": "Largura de banda da rede",
-    "title": "Gráficos de desempenho"
+    "title": "Gráficos de desempenho",
+    "noSamples": "Nenhuma amostra nas últimas {{range}}",
+    "offlineSince": "Dispositivo offline · visto pela última vez {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2114,7 +2116,7 @@
     "details": "detalhes",
     "disabled": "A pontuação de confiabilidade está desativada para esta organização.",
     "distinctEvents": "Eventos distintos de {{window}}.",
-    "empty": "Ainda não há um instantâneo de confiabilidade disponível.",
+    "empty": "Ainda não há dados de confiabilidade",
     "errors": {
       "loadDetail": "Falha ao carregar os detalhes de confiabilidade",
       "loadScore": "Falha ao carregar a pontuação de confiabilidade",
@@ -2460,7 +2462,7 @@
     "loadFailed": "Não foi possível carregar a garantia.",
     "lookupUnavailable": "A consulta de garantia não está disponível para este fabricante",
     "manufacturer": "Fabricante",
-    "noInformation": "Nenhuma informação de garantia",
+    "noInformation": "Nenhuma garantia registrada",
     "renews": "Renova em",
     "serialNumber": "Número de série",
     "source": "Origem: {{source}}",
@@ -2486,7 +2488,8 @@
       "refreshing": "Atualizando a garantia…",
       "stillInProgress": "A atualização da garantia ainda está em andamento; o cartão será atualizado quando ela for concluída.",
       "updated": "Informações da garantia atualizadas."
-    }
+    },
+    "lookUp": "Consultar"
   },
   "devicesPage": {
     "accessDenied": "Você não tem permissão para visualizar dispositivos.",
@@ -4442,5 +4445,15 @@
     "updatesPaused": "Atualizações ao vivo pausadas — tentando novamente",
     "closeNotAnnounced": "O chat está encerrado aqui. A janela de chat do usuário pode continuar aberta até o dispositivo dele se reconectar ou ele responder.",
     "unavailable": "Este chat não está mais disponível"
+  },
+  "deviceOverviewState": {
+    "label": "Estado do dispositivo",
+    "lastCheckIn": "Último contato {{ago}}",
+    "openAlerts_one": "{{count}} alerta aberto",
+    "openAlerts_other": "{{count}} alertas abertos",
+    "openTickets_one": "{{count}} chamado aberto",
+    "openTickets_other": "{{count}} chamados abertos",
+    "noOpenAlerts": "Nenhum alerta aberto",
+    "untitledAlert": "Alerta registrado"
   }
 }

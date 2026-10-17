@@ -2037,7 +2037,9 @@
       "writeThroughput": "Throughput in scrittura"
     },
     "networkBandwidth": "Larghezza di banda di rete",
-    "title": "Grafici delle prestazioni"
+    "title": "Grafici delle prestazioni",
+    "noSamples": "Nessun campione nelle ultime {{range}}",
+    "offlineSince": "Dispositivo offline · ultimo contatto {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2114,7 +2116,7 @@
     "details": "dettagli",
     "disabled": "Il punteggio di affidabilità è disabilitato per questa organizzazione.",
     "distinctEvents": "Eventi distinti nella finestra {{window}}.",
-    "empty": "Nessuna istantanea di affidabilità ancora disponibile.",
+    "empty": "Nessun dato di affidabilità ancora disponibile",
     "errors": {
       "loadDetail": "Impossibile caricare i dettagli di affidabilità",
       "loadScore": "Impossibile caricare il punteggio di affidabilità",
@@ -2460,7 +2462,7 @@
     "loadFailed": "Impossibile caricare la garanzia.",
     "lookupUnavailable": "Ricerca della garanzia non disponibile per questo produttore",
     "manufacturer": "Produttore",
-    "noInformation": "Nessuna informazione sulla garanzia",
+    "noInformation": "Nessuna garanzia registrata",
     "renews": "Si rinnova",
     "serialNumber": "Numero di serie",
     "source": "Fonte: {{source}}",
@@ -2486,7 +2488,8 @@
       "refreshing": "Aggiornamento della garanzia…",
       "stillInProgress": "L'aggiornamento della garanzia è ancora in corso; la scheda si aggiornerà al completamento.",
       "updated": "Informazioni sulla garanzia aggiornate."
-    }
+    },
+    "lookUp": "Cerca"
   },
   "devicesPage": {
     "accessDenied": "Non hai il permesso di visualizzare i dispositivi.",
@@ -4442,5 +4445,15 @@
     "updatesPaused": "Aggiornamenti in tempo reale in pausa — nuovo tentativo in corso",
     "closeNotAnnounced": "La chat è chiusa qui. La finestra di chat dell'utente potrebbe restare aperta finché il suo dispositivo non si riconnette o finché non risponde.",
     "unavailable": "Questa chat non è più disponibile"
+  },
+  "deviceOverviewState": {
+    "label": "Stato del dispositivo",
+    "lastCheckIn": "Ultimo contatto {{ago}}",
+    "openAlerts_one": "{{count}} avviso aperto",
+    "openAlerts_other": "{{count}} avvisi aperti",
+    "openTickets_one": "{{count}} ticket aperto",
+    "openTickets_other": "{{count}} ticket aperti",
+    "noOpenAlerts": "Nessun avviso aperto",
+    "untitledAlert": "Avviso segnalato"
   }
 }
