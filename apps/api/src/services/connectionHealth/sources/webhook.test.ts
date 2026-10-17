@@ -6,7 +6,16 @@ import type { SQL } from 'drizzle-orm';
 // __tests__/integration/connectionHealthSources.integration.test.ts.
 vi.mock('../../../db', () => ({ db: {} }));
 
-import { TERMINAL_FAILURE_WINDOW_MS, webhookObservation, webhookSource, type WebhookRow } from './webhook';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import {
+  DECRYPT_FAILED_MESSAGE,
+  DEFAULT_MAX_RETRIES,
+  TERMINAL_FAILURE_WINDOW_MS,
+  webhookObservation,
+  webhookSource,
+  type WebhookRow,
+} from './webhook';
 
 const NOW = new Date('2026-10-17T12:00:00Z');
 const OLD = new Date('2026-09-01T00:00:00Z');
@@ -75,5 +84,16 @@ describe('webhook source', () => {
     expect(q.sql).toContain(`NOT LIKE 'superseded\\_by\\_edit:%'`);
     expect(q.params).toContain(new Date(NOW.getTime() - TERMINAL_FAILURE_WINDOW_MS).toISOString());
     expect(TERMINAL_FAILURE_WINDOW_MS).toBe(60 * 60 * 1000);
+  });
+
+  it('stays in step with the delivery worker it reads (retry budget, decrypt-failure message)', () => {
+    const worker = readFileSync(path.resolve(__dirname, '../../../workers/webhookDelivery.ts'), 'utf8');
+    expect(worker).toContain(`const MAX_RETRIES = ${DEFAULT_MAX_RETRIES};`);
+    expect(worker).toContain(`'${DECRYPT_FAILED_MESSAGE}'`);
+  });
+
+  it('counts an undecryptable-credentials delivery as terminal although it is written as superseded', () => {
+    const q = new PgDialect().sqlToQuery(webhookSource.brokenQuery(NOW) as SQL);
+    expect(q.sql).toContain(`d.error_message = '${DECRYPT_FAILED_MESSAGE}'`);
   });
 });

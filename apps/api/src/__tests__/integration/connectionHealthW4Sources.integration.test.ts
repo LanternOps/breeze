@@ -13,11 +13,17 @@ import {
   backupProviderConnections,
   googleWorkspaceConnections,
   huntressIntegrations,
+  pax8Integrations,
+  s1Integrations,
+  unifiIntegrations,
   webhookDeliveries,
   webhooks,
 } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
 import { webhookSource } from '../../services/connectionHealth/sources/webhook';
+import { sentinelOneSource } from '../../services/connectionHealth/sources/sentinelOne';
+import { pax8Source } from '../../services/connectionHealth/sources/pax8';
+import { unifiSource } from '../../services/connectionHealth/sources/unifi';
 import { huntressSource } from '../../services/connectionHealth/sources/huntress';
 import { backupProviderSource } from '../../services/connectionHealth/sources/backupProvider';
 import { googleWorkspaceSource } from '../../services/connectionHealth/sources/googleWorkspace';
@@ -66,6 +72,14 @@ describe('webhook source (terminal delivery failures)', () => {
       state: 'broken', condition: 'delivery_failed', orgId: o, partnerId: p, detail: 'HTTP 503 from https://hooks.example.test',
     })]);
     for (const id of [midRetry, superseded, sweep, old]) expect(ids(obs)).not.toContain(id);
+  });
+
+  it('a delivery dropped because the stored credentials cannot be decrypted opens (never retried, attempts 1)', async () => {
+    const { o } = await org();
+    const w = await webhook(o);
+    await delivery(w, { attempts: 1, errorMessage: 'superseded_by_edit: webhook credentials could not be decrypted' });
+    expect((await observe(webhookSource)).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken', condition: 'delivery_failed' });
+    expect((await observe(webhookSource, [w])).find((x) => x.sourceId === w)).toMatchObject({ state: 'broken' });
   });
 
   it('honours a custom retry budget', async () => {
@@ -122,6 +136,41 @@ describe('sync staleness (W4)', () => {
     const obs = await observe(backupProviderSource);
     expect(ids(obs)).not.toContain(within);
     expect(obs.find((x) => x.sourceId === past)).toMatchObject({ state: 'broken', condition: 'sync_stale' });
+  });
+});
+
+describe('sync staleness: pax8, unifi, sentinelone (W4)', () => {
+  it('pax8 (timestamptz, 4320 min): 5000 min is sync_stale, 4000 min is not, never-synced old row is sync_stale', async () => {
+    const [stale, fresh, never] = [randomUUID(), randomUUID(), randomUUID()];
+    const base = { name: 'P', clientIdEncrypted: 'x', clientSecretEncrypted: 'x', tokenUrl: 'https://px.example.test', createdAt: OLD };
+    await asSystem(async () => db.insert(pax8Integrations).values([
+      { ...base, id: stale, partnerId: (await createPartner()).id, lastSyncStatus: 'success', lastSyncAt: minAgo(5000) },
+      { ...base, id: fresh, partnerId: (await createPartner()).id, lastSyncStatus: 'success', lastSyncAt: minAgo(4000) },
+      { ...base, id: never, partnerId: (await createPartner()).id, lastSyncStatus: 'success', lastSyncAt: null },
+    ]));
+    const obs = await observe(pax8Source);
+    expect(obs.find((x) => x.sourceId === stale)).toMatchObject({ state: 'broken', condition: 'sync_stale' });
+    expect(ids(obs)).not.toContain(fresh);
+    expect(obs.find((x) => x.sourceId === never)).toMatchObject({ state: 'broken', condition: 'sync_stale' });
+  });
+
+  it('unifi (timestamp, 90 min): 120 min is sync_stale, 60 min is not, a pending integration is not read', async () => {
+    const [stale, fresh, pending] = [randomUUID(), randomUUID(), randomUUID()];
+    await asSystem(async () => db.insert(unifiIntegrations).values([
+      { id: stale, partnerId: (await createPartner()).id, apiKeyEncrypted: 'x', status: 'connected', lastSyncStatus: 'success', lastSyncAt: minAgo(120), createdAt: OLD },
+      { id: fresh, partnerId: (await createPartner()).id, apiKeyEncrypted: 'x', status: 'connected', lastSyncStatus: 'success', lastSyncAt: minAgo(60), createdAt: OLD },
+      { id: pending, partnerId: (await createPartner()).id, apiKeyEncrypted: 'x', status: 'pending', lastSyncAt: minAgo(120), createdAt: OLD },
+    ]));
+    const obs = await observe(unifiSource);
+    expect(obs.find((x) => x.sourceId === stale)).toMatchObject({ state: 'broken', condition: 'sync_stale' });
+    expect(ids(obs)).not.toContain(fresh);
+    expect(ids(obs)).not.toContain(pending);
+  });
+
+  it('sentinelone: a partial sync 120 min ago is sync_stale', async () => {
+    const id = randomUUID();
+    await asSystem(async () => db.insert(s1Integrations).values({ id, partnerId: (await createPartner()).id, name: 'S', apiTokenEncrypted: 'x', managementUrl: 'https://s1.example.test', lastSyncStatus: 'partial', lastSyncAt: minAgo(120), createdAt: OLD }));
+    expect((await observe(sentinelOneSource)).find((x) => x.sourceId === id)).toMatchObject({ state: 'broken', condition: 'sync_stale' });
   });
 });
 

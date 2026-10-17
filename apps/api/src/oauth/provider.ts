@@ -36,7 +36,8 @@ import { assertActiveTenantContext } from '../services/tenantStatus';
 
 let providerInstance: Provider | null = null;
 // The hook feeds the connection-health "still retrying" detail (W4).
-const logProviderGrantError = createGrantErrorLogger({ onRefreshTokenNotFound: (clientId) => recordRefreshRetry(clientId) });
+/** Exported for provider.test.ts (the hook wiring); the provider registers it on `grant.error`. */
+export const logProviderGrantError = createGrantErrorLogger({ onRefreshTokenNotFound: (clientId) => recordRefreshRetry(clientId) });
 
 // Shared AccessToken TTL. Used for the JWT exp AND as the TTL for the
 // grant-revocation cache marker (see revocationCache.revokeGrant) so the

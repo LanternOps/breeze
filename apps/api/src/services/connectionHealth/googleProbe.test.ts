@@ -6,6 +6,17 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
+const directoryThrow = vi.hoisted(() => ({ current: null as unknown }));
+vi.mock('../secretCrypto', () => ({
+  decryptForColumn: vi.fn(() => '{"client_email":"SENTINEL-KEY-xyz","private_key":"SENTINEL-PEM"}'),
+}));
+vi.mock('../googleClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../googleClient')>()),
+  getDirectoryClient: vi.fn(() => ({
+    users: { get: vi.fn(async () => { throw directoryThrow.current; }) },
+  })),
+}));
+
 import { GoogleApiError } from '../googleClient';
 import {
   classifyProbeError,
@@ -15,6 +26,7 @@ import {
   ProbeCredentialsError,
   ProbeTimeoutError,
   runGoogleProbes,
+  probeConnection,
   type ProbeDeps,
   type ProbeTarget,
 } from './googleProbe';
@@ -47,8 +59,14 @@ describe('classifyProbeError', () => {
     ['404 admin deleted', Object.assign(new Error('Resource Not Found: userKey'), { response: { status: 404 } }), 'failed'],
     ['400 unauthorized_client at token exchange', Object.assign(new Error('unauthorized_client: Client is unauthorized'), { status: 400 }), 'failed'],
     ['malformed key', new GoogleApiError('invalid_service_account', 'Service-account key is not valid JSON.'), 'failed'],
-    ['unreadable ciphertext', new ProbeCredentialsError(), 'failed'],
+    // Breeze-side (wrong encryption key on this worker would hit every org): no verdict.
+    ['unreadable ciphertext', new ProbeCredentialsError(), 'unavailable'],
     ['429', Object.assign(new Error('Rate Limit Exceeded'), { status: 429 }), 'unavailable'],
+    ['403 rateLimitExceeded (Directory quota)', Object.assign(new Error('Rate Limit Exceeded'), { status: 403, errors: [{ reason: 'rateLimitExceeded' }] }), 'unavailable'],
+    ['403 userRateLimitExceeded via response body', Object.assign(new Error('User Rate Limit'), { response: { status: 403, data: { error: { errors: [{ reason: 'userRateLimitExceeded' }] } } } }), 'unavailable'],
+    ['403 quotaExceeded', Object.assign(new Error('Quota'), { code: 403, errors: [{ reason: 'quotaExceeded' }] }), 'unavailable'],
+    ['403 forbidden stays failed', Object.assign(new Error('Not Authorized'), { status: 403, errors: [{ reason: 'forbidden' }] }), 'failed'],
+    ['408', Object.assign(new Error('Request Timeout'), { status: 408 }), 'unavailable'],
     ['503', Object.assign(new Error('Backend Error'), { code: '503' }), 'unavailable'],
     ['network', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }), 'unavailable'],
     ['our timeout', new ProbeTimeoutError(PROBE_TIMEOUT_MS), 'unavailable'],
@@ -57,6 +75,17 @@ describe('classifyProbeError', () => {
     const r = classifyProbeError(err);
     expect(r.status).toBe(status);
     expect(r.error === null || r.error.length <= 300).toBe(true);
+  });
+
+  it('logs an error it cannot classify (without its message text), so a probe bug is visible', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    classifyProbeError(new TypeError('x is not a function SENTINEL'));
+    classifyProbeError(new ProbeCredentialsError());
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('connection_health_google_probe_unclassified') && l.includes('TypeError'))).toBe(true);
+    expect(lines.some((l) => l.includes('connection_health_google_probe_credentials_unreadable'))).toBe(true);
+    expect(lines.join('\n')).not.toContain('SENTINEL');
+    warn.mockRestore();
   });
 
   it('never records key material, even if an error echoes it', () => {
@@ -110,7 +139,7 @@ describe('runGoogleProbes', () => {
     expect(res.unavailable).toBe(1);
   });
 
-  it('a lost CAS is counted as discarded; a record error does not stop the batch', async () => {
+  it('a lost CAS is counted as discarded; one record error does not stop the batch', async () => {
     const d = deps({
       record: vi.fn(async (t: ProbeTarget) => {
         if (t.id === target(1).id) return false;
@@ -121,6 +150,11 @@ describe('runGoogleProbes', () => {
     expect(res).toMatchObject({ claimed: 2, discarded: 1, recordErrors: 1 });
   });
 
+  it('throws when every claimed result failed to record, so the kind fails and the streak alert can fire', async () => {
+    const d = deps({ record: vi.fn(async () => { throw new Error('column missing'); }) });
+    await expect(runGoogleProbes(NOW, d)).rejects.toThrow(/could not record any probe result/);
+  });
+
   it('a failed claim throws, so the kind fails instead of reading stale results as fresh', async () => {
     await expect(runGoogleProbes(NOW, deps({ claim: vi.fn(async () => { throw new Error('claim failed'); }) }))).rejects.toThrow('claim failed');
   });
@@ -129,3 +163,29 @@ describe('runGoogleProbes', () => {
     expect({ PROBE_BATCH, PROBE_CONCURRENCY, PROBE_TIMEOUT_MS }).toEqual({ PROBE_BATCH: 16, PROBE_CONCURRENCY: 4, PROBE_TIMEOUT_MS: 8000 });
   });
 });
+
+describe('probeConnection keeps key material out of results and logs', () => {
+  it.each([
+    ['a parse-style error echoing the key', () => new SyntaxError('Unexpected token in {"client_email":"SENTINEL-KEY-xyz"')],
+    ['a Google error echoing the key', () => new GoogleApiError('invalid_service_account', 'bad key SENTINEL-KEY-xyz')],
+    ['a 400 echoing the key', () => Object.assign(new Error('invalid_grant for SENTINEL-KEY-xyz'), { status: 400 })],
+  ])('%s', async (_name, makeErr) => {
+    directoryThrow.current = makeErr();
+    const logs: string[] = [];
+    for (const level of ['info', 'warn', 'error'] as const) {
+      vi.spyOn(console, level).mockImplementation((...a: unknown[]) => { logs.push(a.map(String).join(' ')); });
+    }
+    const recorded: Array<{ status: string; error: string | null }> = [];
+    await runGoogleProbes(NOW, {
+      claim: async () => [target(1)],
+      probe: probeConnection,
+      record: async (_t, r) => { recorded.push(r); return true; },
+      timeoutMs: 1000,
+    });
+    expect(recorded).toHaveLength(1);
+    expect(JSON.stringify(recorded)).not.toContain('SENTINEL');
+    expect(logs.join('\n')).not.toContain('SENTINEL');
+    vi.restoreAllMocks();
+  });
+});
+

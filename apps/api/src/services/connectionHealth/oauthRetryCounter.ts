@@ -19,11 +19,12 @@ export function retryCounterKey(clientId: string, now: Date): string {
   return `connection-health:oauth-retry:${clientId}:${utcDay(now)}`;
 }
 
-let lastWarnAt = 0;
+const lastWarnAt = new Map<string, number>();
+/** At most one line per operation per minute, so one failing op cannot hide another. */
 function warnThrottled(op: string, err: unknown) {
   const at = Date.now();
-  if (at - lastWarnAt < 60_000) return;
-  lastWarnAt = at;
+  if (at - (lastWarnAt.get(op) ?? 0) < 60_000) return;
+  lastWarnAt.set(op, at);
   console.warn(JSON.stringify({
     event: 'connection_health_oauth_retry_counter_error',
     op,
@@ -37,8 +38,10 @@ export function recordRefreshRetry(clientId: string, now: Date = new Date()): vo
     const redis = getRedis();
     if (!redis) return;
     const key = retryCounterKey(clientId, now);
+    // EXPIRE on every hit, not only the first: a lost EXPIRE is repaired by
+    // the next retry instead of leaving a key that never expires.
     void redis.incr(key)
-      .then((n) => (n === 1 ? redis.expire(key, RETRY_COUNTER_TTL_S) : undefined))
+      .then(() => redis.expire(key, RETRY_COUNTER_TTL_S))
       .catch((err: unknown) => warnThrottled('incr', err));
   } catch (err) {
     warnThrottled('get-client', err);

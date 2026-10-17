@@ -14,7 +14,8 @@ import { observeRows, toHealthObservation, validUuids } from './observeRows';
 // state), so `failed` alone is not terminal. Excluded:
 //   - superseded deliveries (webhook edited or disabled after enqueue,
 //     workers/webhookDelivery.ts; error_message `superseded_by_edit:`), which
-//     were never attempted against the endpoint;
+//     were never attempted against the endpoint (the exception is
+//     DECRYPT_FAILED_MESSAGE below: undecryptable credentials are a break);
 //   - rows the recovery sweep resolved (jobs/webhookDeliveryRecovery.ts), which
 //     carry attempts 0: a Breeze-side failure, not the endpoint's.
 // Recovery is affirmative: webhooks.last_success_at after the latest terminal
@@ -34,8 +35,16 @@ const ATTEMPTED = sql.raw(`d.attempts > 0`);
 const FIX_HREF = '/integrations#webhooks';
 /** Spec §3: terminal failures inside this window open an incident. */
 export const TERMINAL_FAILURE_WINDOW_MS = 60 * 60 * 1000;
-/** The worker's default retry budget (workers/webhookDelivery.ts MAX_RETRIES). */
-const DEFAULT_MAX_RETRIES = 5;
+/** The worker's default retry budget (workers/webhookDelivery.ts MAX_RETRIES; webhook.test.ts pins the two together). */
+export const DEFAULT_MAX_RETRIES = 5;
+/**
+ * The worker writes this for a delivery dropped because the webhook's stored
+ * credentials cannot be decrypted. It carries the superseded prefix and is
+ * never retried (attempts stays 1), but unlike an edit or a disable it is a
+ * break someone must repair (re-save the webhook), so it counts as terminal.
+ * webhook.test.ts pins it to the worker's literal.
+ */
+export const DECRYPT_FAILED_MESSAGE = 'superseded_by_edit: webhook credentials could not be decrypted';
 
 // Inlined as literals, not bound: the planner must see `status = 'failed'` to
 // match the partial indexes. `_` is escaped so LIKE does not treat it as a wildcard.
@@ -48,6 +57,8 @@ const TERMINAL_ATTEMPTS = sql.raw(
   `GREATEST(1, CASE WHEN (w.retry_policy->>'maxRetries') ~ '^[0-9]{1,6}$' `
   + `THEN (w.retry_policy->>'maxRetries')::int ELSE ${DEFAULT_MAX_RETRIES} END)`,
 );
+/** A terminal failure: the retry budget is used up, or the credentials are undecryptable. */
+const TERMINAL = sql`((d.attempts >= ${TERMINAL_ATTEMPTS} AND ${NOT_SUPERSEDED}) OR d.error_message = ${sql.raw(`'${DECRYPT_FAILED_MESSAGE}'`)})`;
 
 export type WebhookRow = {
   id: string;
@@ -99,8 +110,7 @@ function brokenWebhooksQuery(now: Date): SQL {
         JOIN webhooks w ON w.id = d.webhook_id
         WHERE d.status = ${FAILED}
           AND d.created_at >= ${windowStart(now)}::timestamp
-          AND d.attempts >= ${TERMINAL_ATTEMPTS}
-          AND ${NOT_SUPERSEDED}
+          AND ${TERMINAL}
       )`;
 }
 
@@ -110,10 +120,9 @@ type DbRow = {
 };
 
 /** The given webhooks with their latest terminal failure (any age). A deleted webhook is absent. */
-async function loadWebhooks(ids: string[]): Promise<WebhookRow[]> {
-  const valid = validUuids(ids);
-  if (valid.length === 0) return [];
-  const rows = (await db.execute(sql`
+/** Tracked-path query: one row per webhook id with its latest terminal failure. `ids` must already be valid uuids. */
+export function trackedWebhooksQuery(ids: string[]): SQL {
+  return sql`
     SELECT w.id, w.org_id, o.partner_id, w.name, w.status, w.created_at,
       f.created_at AS failed_at, f.error_message, f.response_status,
       (f.created_at IS NOT NULL AND w.last_success_at IS NOT NULL AND w.last_success_at > f.created_at) AS recovered
@@ -123,12 +132,17 @@ async function loadWebhooks(ids: string[]): Promise<WebhookRow[]> {
       SELECT d.created_at, d.error_message, d.response_status
       FROM webhook_deliveries d
       WHERE d.webhook_id = w.id AND d.status = ${FAILED} AND ${ATTEMPTED}
-        AND d.attempts >= ${TERMINAL_ATTEMPTS}
-        AND ${NOT_SUPERSEDED}
+        AND ${TERMINAL}
       ORDER BY d.created_at DESC
       LIMIT 1
     ) f ON true
-    WHERE w.id IN (${sql.join(valid.map((id) => sql`${id}::uuid`), sql`, `)})`)) as unknown as DbRow[];
+    WHERE w.id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})`;
+}
+
+async function loadWebhooks(ids: string[]): Promise<WebhookRow[]> {
+  const valid = validUuids(ids);
+  if (valid.length === 0) return [];
+  const rows = (await db.execute(trackedWebhooksQuery(valid))) as unknown as DbRow[];
   return rows.map((r) => ({
     id: r.id,
     orgId: r.org_id,

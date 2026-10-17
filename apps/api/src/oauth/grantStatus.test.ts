@@ -122,10 +122,15 @@ describe('revokeGrantsDurablyInCurrentDbContext', () => {
     await revokeGrantsDurablyInCurrentDbContext({ grantIds: [], reason: 'noop' });
     expect(nudge).not.toHaveBeenCalled();
 
-    nudge.mockImplementation(() => { expect(updates.length).toBeGreaterThanOrEqual(2); });
+    // Production wraps the nudge in try/catch, so an assertion thrown inside the
+    // mock would be swallowed: capture the count and assert after the call.
+    let updatesAtNudge = -1;
+    nudge.mockImplementation(() => { updatesAtNudge = updates.length; });
     await revokeGrantsDurablyInCurrentDbContext({ grantIds: ['g1'], reason: 'refresh-token-reuse' });
     expect(nudge).toHaveBeenCalledTimes(1);
     expect(nudge).toHaveBeenCalledWith('oauth_grant');
+    // code-consume and grant-stamp updates both happened before the nudge
+    expect(updatesAtNudge).toBeGreaterThanOrEqual(2);
     nudge.mockReset();
   });
 

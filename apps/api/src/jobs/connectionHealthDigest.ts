@@ -27,9 +27,11 @@ export async function initializeConnectionHealthDigestWorker(): Promise<void> {
   if (worker) return;
   worker = new Worker(CONNECTION_HEALTH_DIGEST_QUEUE, async () => {
     const result = await runDigest();
-    // Dead-man for /admin/system (W4): written only after a completed run;
-    // never fails the job.
-    await writeDigestHeartbeat(getRedis(), new Date());
+    // Dead-man for /admin/system (W4): written only after a run that completed
+    // and did not fail every send, so a digest that runs but delivers nothing
+    // goes stale there too. Never fails the job.
+    const nothingDelivered = ((result.failed ?? 0) + (result.errored ?? 0)) > 0 && (result.sent ?? 0) === 0;
+    if (!nothingDelivered) await writeDigestHeartbeat(getRedis(), new Date());
     return result;
   }, {
     connection: getBullMQConnection(),

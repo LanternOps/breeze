@@ -47,9 +47,15 @@ export class ProbeTimeoutError extends Error {
   }
 }
 
+/**
+ * The stored key could not be decrypted on this process. Most often a
+ * deployment problem (a wrong or missing encryption key on a worker), which
+ * would hit every org at once, so it is `unavailable` (no verdict) and logged
+ * for ops, not a customer-facing incident.
+ */
 export class ProbeCredentialsError extends Error {
   constructor() {
-    super('The stored service-account key could not be read. Save the connection again.');
+    super('Breeze could not read the stored service-account key.');
     this.name = 'ProbeCredentialsError';
   }
 }
@@ -59,6 +65,32 @@ const KEY_MATERIAL = /PRIVATE KEY|BEGIN [A-Z ]+-----|ya29\.|"private_key"/i;
 function cleanMessage(message: string): string | null {
   if (KEY_MATERIAL.test(message)) return 'Google rejected the service-account credentials.';
   return sanitizeHealthDetail(message);
+}
+
+/** Google reports Directory quota and rate limits as 403 with one of these reasons, not only as 429. */
+const RATE_LIMIT_REASONS = new Set(['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded', 'dailyLimitExceeded', 'backendError', 'internalError']);
+/** Node / undici network error codes: the request never got an HTTP answer. */
+const NETWORK_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'ECONNABORTED']);
+
+function googleReason(err: unknown): string | undefined {
+  const e = err as { errors?: unknown; response?: { data?: { error?: { errors?: unknown } } } } | null;
+  for (const list of [e?.errors, e?.response?.data?.error?.errors]) {
+    if (Array.isArray(list)) {
+      const reason = (list[0] as { reason?: unknown } | undefined)?.reason;
+      if (typeof reason === 'string') return reason;
+    }
+  }
+  return undefined;
+}
+
+function warnProbe(event: string, err: unknown) {
+  // Name and code only: a message may echo request details.
+  const e = err as { name?: unknown; code?: unknown } | null;
+  console.warn(JSON.stringify({
+    event,
+    name: typeof e?.name === 'string' ? e.name.slice(0, 64) : typeof err,
+    code: typeof e?.code === 'string' || typeof e?.code === 'number' ? String(e.code).slice(0, 64) : null,
+  }));
 }
 
 function httpStatusOf(err: unknown): number | undefined {
@@ -77,14 +109,25 @@ function httpStatusOf(err: unknown): number | undefined {
  */
 export function classifyProbeError(err: unknown): ProbeResult {
   if (err instanceof ProbeTimeoutError) return { status: 'unavailable', error: err.message };
-  if (err instanceof ProbeCredentialsError) return { status: 'failed', error: err.message };
+  if (err instanceof ProbeCredentialsError) {
+    warnProbe('connection_health_google_probe_credentials_unreadable', err);
+    return { status: 'unavailable', error: err.message };
+  }
   if (err instanceof GoogleApiError) return { status: 'failed', error: cleanMessage(err.message) };
   const status = httpStatusOf(err);
   if (status === undefined) {
+    const code = (err as { code?: unknown } | null)?.code;
+    // Anything that is neither an HTTP answer nor a known network failure is
+    // most likely our own bug: no verdict, but never silent.
+    if (!(typeof code === 'string' && NETWORK_CODES.has(code))) warnProbe('connection_health_google_probe_unclassified', err);
     return { status: 'unavailable', error: 'Google could not be reached.' };
   }
-  if (status === 429 || status >= 500) {
+  if (status === 408 || status === 429 || status >= 500) {
     return { status: 'unavailable', error: `Google is unavailable (${status}).` };
+  }
+  const reason = googleReason(err);
+  if (reason && RATE_LIMIT_REASONS.has(reason)) {
+    return { status: 'unavailable', error: `Google is rate limiting requests (${status} ${reason}).` };
   }
   const e = err as { message?: unknown; errors?: unknown };
   const { message } = normalizeGoogleError({
@@ -104,8 +147,46 @@ export async function probeConnection(target: ProbeTarget, timeoutMs: number = P
     throw new ProbeCredentialsError();
   }
   if (!keyJson) throw new ProbeCredentialsError();
-  const dir = getDirectoryClient(keyJson, target.adminEmail);
-  await dir.users.get({ userKey: target.adminEmail, fields: 'id' }, { timeout: timeoutMs });
+  try {
+    const dir = getDirectoryClient(keyJson, target.adminEmail);
+    await dir.users.get({ userKey: target.adminEmail, fields: 'id' }, { timeout: timeoutMs });
+  } catch (err) {
+    throw scrubKeyMaterial(err, keyJson);
+  }
+}
+
+/** Values of the service-account JSON that must never reach a stored detail or a log line. */
+function keySecrets(keyJson: string): string[] {
+  try {
+    const parsed = JSON.parse(keyJson) as Record<string, unknown>;
+    return ['private_key', 'private_key_id', 'client_email', 'client_id']
+      .map((k) => parsed[k])
+      .filter((v): v is string => typeof v === 'string' && v.length >= 6);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * An error whose text echoes part of the key is rebuilt with those values
+ * redacted, keeping what classification reads (status, code, reason). Errors
+ * that echo nothing pass through unchanged.
+ */
+function scrubKeyMaterial(err: unknown, keyJson: string): unknown {
+  const secrets = keySecrets(keyJson);
+  const e = (err ?? {}) as { message?: unknown; name?: unknown; status?: unknown; code?: unknown; response?: { status?: unknown }; errors?: unknown };
+  const message = typeof e.message === 'string' ? e.message : '';
+  const leaks = secrets.some((x) => message.includes(x) || keyJson.length > 0 && message.includes(keyJson));
+  if (!leaks) return err;
+  const redacted = secrets.reduce((m, x) => m.split(x).join('[redacted]'), message);
+  if (err instanceof GoogleApiError) return new GoogleApiError(err.code, redacted);
+  const reason = googleReason(err);
+  return Object.assign(new Error(redacted), {
+    name: typeof e.name === 'string' ? e.name : 'Error',
+    status: e.status ?? e.response?.status,
+    code: e.code,
+    ...(reason ? { errors: [{ reason }] } : {}),
+  });
 }
 
 const sys = <T>(fn: () => Promise<T>, label: string) =>
@@ -214,5 +295,11 @@ export async function runGoogleProbes(now: Date, deps: ProbeDeps = defaultDeps):
   };
   await Promise.all(Array.from({ length: Math.min(PROBE_CONCURRENCY, targets.length) }, worker));
   if (counts.claimed > 0) console.info(JSON.stringify({ event: 'connection_health_google_probe_run', ...counts }));
+  // Every result lost (a schema, RLS or timeout problem on the write): fail the
+  // kind so the failure streak and its ops alert fire, instead of a green run
+  // whose claimed rows silently wait six hours.
+  if (counts.claimed > 0 && counts.recordErrors === counts.claimed) {
+    throw new Error(`Google probe could not record any probe result (${counts.recordErrors} of ${counts.claimed})`);
+  }
   return counts;
 }

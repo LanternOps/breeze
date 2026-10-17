@@ -35,7 +35,7 @@ describe('oauth retry counter', () => {
     expect(retryCounterKey('client-a', NOW)).toBe('connection-health:oauth-retry:client-a:2026-10-17');
   });
 
-  it('increments, and sets the TTL on the first hit of the day only', async () => {
+  it('increments and (re)sets the TTL on every hit, so one lost EXPIRE cannot leave a key without one', async () => {
     recordRefreshRetry('client-a', NOW);
     await flush();
     expect(redis.incr).toHaveBeenCalledWith('connection-health:oauth-retry:client-a:2026-10-17');
@@ -43,7 +43,20 @@ describe('oauth retry counter', () => {
     redis.incr.mockResolvedValueOnce(7);
     recordRefreshRetry('client-a', NOW);
     await flush();
-    expect(redis.expire).toHaveBeenCalledTimes(1);
+    expect(redis.expire).toHaveBeenCalledTimes(2);
+  });
+
+  it('throttles warnings per operation, so an incr failure does not hide an mget failure', async () => {
+    const warn = vi.mocked(console.warn);
+    warn.mockClear();
+    redis.incr.mockRejectedValueOnce(new Error('incr down'));
+    recordRefreshRetry('c', NOW);
+    await flush();
+    redis.mget.mockRejectedValueOnce(new Error('mget down'));
+    await readRefreshRetryCounts(['c'], NOW);
+    const text = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(text).toContain('incr down');
+    expect(text).toContain('mget down');
   });
 
   it('returns synchronously and never throws, whatever Redis does', async () => {

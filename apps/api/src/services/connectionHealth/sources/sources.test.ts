@@ -96,6 +96,18 @@ describe('sync staleness (W4)', () => {
     expect(q.sql).toContain(`make_interval(mins => ${minutes})`);
     expect(q.params).toContain(NOW.toISOString());
   });
+  it.each([
+    ['pax8', pax8Source, true], ['backupProvider', backupProviderSource, true],
+    ['huntress', huntressSource, false], ['sentinelOne', sentinelOneSource, false], ['unifi', unifiSource, false],
+  ] as const)('%s: stale arm casts the NOW param to the column type (timestamptz=%s)', (_n, source, tz) => {
+    const text = sqlOf(source.brokenQuery(NOW)).sql;
+    if (tz) {
+      expect(text).toContain('::timestamptz - make_interval');
+    } else {
+      expect(text).toContain('::timestamp - make_interval');
+      expect(text).not.toContain('::timestamptz');
+    }
+  });
   it('backup: the stale threshold follows each row\'s own interval', () => {
     expect(sqlOf(backupProviderSource.brokenQuery(NOW)).sql).toMatch(/make_interval\(mins => GREATEST\(3 \* "backup_provider_connections"\."sync_interval_minutes", 60\)\)/);
   });
