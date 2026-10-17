@@ -113,16 +113,24 @@ export async function readDevicePolicyCache<T>(
   parse: (settings: unknown) => T = (settings) => settings as T,
 ): Promise<T | null> {
   if (!orgId) return null;
+  let raw: string | null;
   try {
     const redis = getRedis();
     if (!redis) return null;
-    const raw = await redis.get(devicePolicyCacheKey(feature, deviceId));
-    if (!raw) return null;
+    raw = await redis.get(devicePolicyCacheKey(feature, deviceId));
+  } catch (cacheErr) {
+    console.warn(`[${feature}] Redis cache read failed for device ${deviceId}:`, cacheErr);
+    return null;
+  }
+  if (!raw) return null;
+  try {
     const entry: unknown = JSON.parse(raw);
     if (!isCacheEntry(entry) || entry.orgId !== orgId) return null;
     return parse(entry.settings);
-  } catch (cacheErr) {
-    console.warn(`[${feature}] Redis cache read failed for device ${deviceId}:`, cacheErr);
+  } catch (parseErr) {
+    // Stale or malformed entry (e.g. a settings schema changed under a live
+    // entry): re-resolve; the resolver's write replaces it.
+    console.warn(`[${feature}] cached policy entry unparseable for device ${deviceId}; treating as a miss:`, parseErr);
     return null;
   }
 }

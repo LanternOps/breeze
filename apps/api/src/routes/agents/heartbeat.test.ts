@@ -1031,19 +1031,23 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
       }
     });
 
-    it('without a hierarchy the cached resolvers still name the device org (#8257)', async () => {
+    it('without a hierarchy the cached resolvers name the DEVICE ROW org, not the auth org (#8257)', async () => {
       const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
       const helpers = await import('./helpers');
       vi.mocked(loadDeviceHierarchy).mockRejectedValueOnce(new Error('hierarchy read failed'));
-      arrangeBeat();
+      // The device row (scoped.deviceOrgId) differs from the authenticated agent's org-1.
+      selectMock.mockReturnValueOnce(selectChainResolving([{ ...pendingDevice, orgId: 'org-row' }]));
+      selectMock.mockReturnValue(selectChainResolving([]));
+      updateMock.mockReturnValue({ set: vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) })) });
+      insertMock.mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) });
 
       expect((await beat()).status).toBe(200);
-      expect(vi.mocked(helpers.readCachedHelperSettings)).toHaveBeenCalledWith('device-1', 'org-1');
+      expect(vi.mocked(helpers.readCachedHelperSettings)).toHaveBeenCalledWith('device-1', 'org-row');
       for (const builder of [
         helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
         helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
       ]) {
-        expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ orgId: 'org-1' }));
+        expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ orgId: 'org-row' }));
       }
     });
 
