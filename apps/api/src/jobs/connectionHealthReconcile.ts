@@ -20,6 +20,9 @@ const REPEAT_JOB_ID = 'connection-health-reconcile';
 const REPEAT_PATTERN = '2,17,32,47 * * * *';
 
 let queue: Queue | null = null;
+// Literal (not the imported queue constant) so workerReadinessCoverage's AST
+// scan can resolve the stable name; the queue shares it with nudge.ts.
+const OBSERVABILITY_NAME = 'connection-health-reconcile';
 let worker: Worker | null = null;
 
 export function getConnectionHealthQueue(): Queue {
@@ -43,7 +46,7 @@ export async function initializeConnectionHealthReconcileWorker(): Promise<void>
     const { kinds, notices, retained } = await runReconcile();
     return { kinds: kinds.map((k) => [k.kind, k.status]), notices, retained };
   }, { connection: getBullMQConnection(), concurrency: 1 });
-  attachWorkerObservability(worker, CONNECTION_HEALTH_QUEUE);
+  attachWorkerObservability(worker, OBSERVABILITY_NAME);
   // Sub-hourly (every 15 minutes), so it is exempt from scheduleRegistry.ts
   // (which only allocates coarse, >= hourly schedules). The offset minutes keep
   // it off the :00/:15/:30/:45 pile-up and away from ai-budget-alert's 7/22/37/52.
