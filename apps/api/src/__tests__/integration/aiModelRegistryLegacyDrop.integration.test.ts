@@ -29,6 +29,7 @@ import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { cascadeDeletePartner } from '../../services/tenantCascade';
 import { RESTORE_AI_MODEL_LEGACY_CONFIG_SQL } from './fixtures/aiModelRegistryLegacyConfig';
 
 const MIGRATION = '2026-12-30-200000-ai-model-registry-legacy-drop.sql';
@@ -222,11 +223,13 @@ describe('archive then drop the legacy AI model config (#7606 W08b)', () => {
 
     const runAsApp = async (archiveBlock: string) => {
       let archived = -1;
+      let seeded = -1;
       await inRolledBackTx(async (tx) => {
         await tx`SELECT set_config('breeze.scope', 'system', true)`;
         await tx.unsafe(RESTORE_AI_MODEL_LEGACY_CONFIG_SQL);
         await tx.unsafe(archiveDdl!);
         const s = await seed(tx);
+        seeded = Object.values(s.expected).flat().length;
         await tx.unsafe('SET LOCAL ROLE breeze_app');
         await tx`SELECT set_config('breeze.scope', 'none', true)`;
         await tx.unsafe(archiveBlock);
@@ -236,12 +239,35 @@ describe('archive then drop the legacy AI model config (#7606 W08b)', () => {
           WHERE partner_id IN (${s.a.partnerId}, ${s.b.partnerId})`;
         archived = n!.n as number;
       });
-      return archived;
+      return { archived, seeded };
     };
     // Control: without the election, breeze_app archives nothing (the fail-open the election closes).
-    expect(await runAsApp(mutated)).toBe(0);
+    expect((await runAsApp(mutated)).archived).toBe(0);
     // Real block: every seeded value.
-    expect(await runAsApp(block!)).toBe(10);
+    const real = await runAsApp(block!);
+    expect(real.seeded).toBeGreaterThan(0);
+    expect(real.archived).toBe(real.seeded);
+  });
+
+  it('archiving twice while the sources still exist adds nothing (ON CONFLICT DO NOTHING)', async () => {
+    const migration = await loadMigration();
+    const block = migration.match(/-- 3\) Archive[\s\S]*?END \$\$;/)?.[0];
+    const archiveDdl = migration.match(/-- 2\) The archive table[\s\S]*?(?=-- 3\) Archive)/)?.[0];
+    expect(block && archiveDdl, 'archive blocks not found').toBeTruthy();
+    await inRolledBackTx(async (tx, notices) => {
+      await tx`SELECT set_config('breeze.scope', 'system', true)`;
+      await tx.unsafe(RESTORE_AI_MODEL_LEGACY_CONFIG_SQL);
+      await tx.unsafe(archiveDdl!);
+      const s = await seed(tx);
+      await tx.unsafe(block!);
+      notices.length = 0;
+      await tx.unsafe(block!);
+      for (const [partnerId, keys] of Object.entries(s.expected)) {
+        expect(await archiveKeys(tx, partnerId), partnerId).toEqual([...keys].sort());
+      }
+      expect(notices).toContainEqual(expect.stringContaining('archived 0 partner_llm_configs row(s)'));
+      expect(notices).toContainEqual(expect.stringContaining('archived 0 ai_agents.model value(s)'));
+    });
   });
 });
 
@@ -292,6 +318,17 @@ describe('ai_model_registry_legacy_archive — partner-axis RLS', () => {
       INSERT INTO ai_model_registry_legacy_archive (partner_id, source_table, source_id, source_column, value, had_cutover)
       VALUES (${partnerA}, 'ai_agents', ${randomUUID()}, 'model', '"x"'::jsonb, true)`)))
       .rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
+  it('erasing the partner removes every archive row (partner_id sweep; the partner FK has no ON DELETE)', async () => {
+    await cascadeDeletePartner(partnerA, '00000000-0000-0000-0000-000000000000');
+    await withSystemDbAccessContext(async () => {
+      const rows = (await db.execute(sql`SELECT
+          (SELECT count(*)::int FROM ai_model_registry_legacy_archive WHERE partner_id = ${partnerA}) AS archive,
+          (SELECT count(*)::int FROM partners WHERE id = ${partnerA}) AS partner,
+          (SELECT count(*)::int FROM partners WHERE id = ${partnerB}) AS other`)) as unknown as Array<{ archive: number; partner: number; other: number }>;
+      expect(rows[0]).toEqual({ archive: 0, partner: 0, other: 1 });
+    });
   });
 
   it('erasing the org removes its archive rows through the cascading composite FK (rollback safety, W08 D12)', async () => {

@@ -10,7 +10,9 @@
 --
 -- ARCHIVE BEFORE DROP, NEVER REFUSE. Every legacy value that still exists is
 -- copied into ai_model_registry_legacy_archive first (a full snapshot, not only
--- values the registry lacks), keyed (source_table, source_id, source_column),
+-- values the registry lacks; the only skipped value is client_ai_org_policies'
+-- empty '[]' default, which configures nothing), keyed (source_table,
+-- source_id, source_column),
 -- so a re-apply is a no-op. Per #6472 nothing here raises on tenant data:
 -- partners that held legacy config without a registry row are COUNTED in a
 -- warning (their values are in the archive), and a column already dropped by
