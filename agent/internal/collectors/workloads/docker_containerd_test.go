@@ -33,7 +33,7 @@ func collectContainerd(t *testing.T, versionFixture string) (Result, []string) {
 	eng, dial := newFakeEngine(t, containerdRoutes(t, versionFixture))
 	d := newEngineDriver(RuntimeDocker, dial)
 	det := d.Detect(context.Background())
-	if det.State != DetectionPresent {
+	if det.State != DetectionPresent || det.apiVersion == "" {
 		t.Fatalf("detection = %+v", det)
 	}
 	res := d.Collect(context.Background(), det)
@@ -115,15 +115,101 @@ func TestClassicStoreOnIdentityEngineKeepsRepoDigests(t *testing.T) {
 
 // Podman never gets the Docker-only identity query, whatever API it claims.
 func TestPodmanNeverRequestsImageIdentity(t *testing.T) {
+	var v map[string]any
+	if err := json.Unmarshal(fixture(t, "podman_version.json"), &v); err != nil {
+		t.Fatal(err)
+	}
+	v["ApiVersion"] = "1.99"
+	high, _ := json.Marshal(v)
 	routes := containerdRoutes(t, "podman_version.json")
+	routes["/version"] = serve(high)
 	eng, dial := newFakeEngine(t, routes)
 	d := newEngineDriver(RuntimePodman, dial)
 	det := d.Detect(context.Background())
-	det.apiVersion = "1.99"
+	if det.apiVersion != "1.99" {
+		t.Fatalf("detection = %+v", det)
+	}
 	d.Collect(context.Background(), det)
 	for _, r := range eng.seen() {
 		if strings.Contains(r, "identity") {
 			t.Fatalf("podman requested %s", r)
+		}
+	}
+}
+
+// An identity engine that refuses or garbles the identity list falls back to
+// the plain list once: digests behave as before instead of all being lost.
+func TestIdentityListFailureFallsBackToPlainList(t *testing.T) {
+	for name, broken := range map[string]func(http.ResponseWriter){
+		"http 400": status(http.StatusBadRequest),
+		"not json": serve([]byte("{not json")),
+		"http 500": status(http.StatusInternalServerError),
+	} {
+		t.Run(name, func(t *testing.T) {
+			routes := containerdRoutes(t, "docker_version_29_4.json")
+			routes[identityImagesPath] = broken
+			eng, dial := newFakeEngine(t, routes)
+			d := newEngineDriver(RuntimeDocker, dial)
+			res := d.Collect(context.Background(), d.Detect(context.Background()))
+			if res.Collection != CollectionOK || !res.Complete || res.Error != "" {
+				t.Fatalf("result = %+v", res)
+			}
+			ws := byName(res.Workloads)
+			if got := val(ws["alpine"].ImageDigest); got != containerdDigest("11111111") {
+				t.Errorf("alpine digest = %q", got)
+			}
+			if got := val(ws["lab-local"].ImageDigest); got != containerdDigest("22222222") {
+				t.Errorf("lab-local digest = %q, want the pre-identity behavior", got)
+			}
+			seen := eng.seen()
+			if want := []string{"GET " + identityImagesPath, "GET /images/json"}; !reflect.DeepEqual(seen[len(seen)-2:], want) {
+				t.Errorf("requests = %v", seen)
+			}
+		})
+	}
+	// Both lists failing is the existing incomplete snapshot, not a retry loop.
+	routes := containerdRoutes(t, "docker_version_29_4.json")
+	routes[identityImagesPath] = status(http.StatusBadRequest)
+	routes["/images/json"] = status(http.StatusInternalServerError)
+	eng, dial := newFakeEngine(t, routes)
+	d := newEngineDriver(RuntimeDocker, dial)
+	res := d.Collect(context.Background(), d.Detect(context.Background()))
+	if res.Collection != CollectionOK || res.Complete || res.Error != "images_list_failed" {
+		t.Fatalf("result = %+v", res)
+	}
+	if got := len(eng.seen()); got != 5 {
+		t.Fatalf("requests = %v, want ping, version, containers and two image lists", eng.seen())
+	}
+}
+
+// A container created from a bare image id recovers its name from the image's
+// tags, and provenance is checked against that recovered repository.
+func TestContainerdBareImageIDRefUsesRecoveredRepository(t *testing.T) {
+	var list []apiImage
+	if err := json.Unmarshal(fixture(t, "docker_containerd_images.json"), &list); err != nil {
+		t.Fatal(err)
+	}
+	images := map[string]apiImage{}
+	for _, img := range list {
+		images[normalizeImageID(img.ID)] = img
+	}
+	retag, local := containerdDigest("44444444"), containerdDigest("22222222")
+	ws := byName(buildContainerWorkloads([]apiContainer{
+		{ID: strings.Repeat("e1", 32), Names: []string{"/by-id-pulled"}, Image: retag, ImageID: retag},
+		{ID: strings.Repeat("e2", 32), Names: []string{"/by-id-local"}, Image: local, ImageID: local},
+		{ID: strings.Repeat("e3", 32), Names: []string{"/pinned-local"}, Image: "lab-local@" + local, ImageID: local},
+	}, images, true))
+	checks := []struct{ name, got, want string }{
+		{"recovered ref sorts to the hub tag", val(ws["by-id-pulled"].ImageRef), "nginx:1.27"},
+		{"recovered pulled repository keeps its digest", val(ws["by-id-pulled"].ImageDigest), retag},
+		{"recovered local build has no repo digest", val(ws["by-id-local"].ImageDigest), "<nil>"},
+		// A digest-pinned reference keeps the digest it names; the server
+		// classifies any pinned reference as pinned before looking at it.
+		{"pinned reference keeps its own digest", val(ws["pinned-local"].ImageDigest), local},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)
 		}
 	}
 }
@@ -178,6 +264,9 @@ func TestPulledFrom(t *testing.T) {
 		{"one of several", pulled("docker.io/library/nginx", "registry.example.com/team/nginx"), "registry.example.com/team/nginx", true},
 		{"no identity", apiImage{Manifests: []apiManifest{{Kind: "image", ImageData: &apiImageData{}}}}, "docker.io/library/alpine", false},
 		{"no manifests", apiImage{}, "docker.io/library/alpine", false},
+		{"identity on a non-image manifest is ignored", apiImage{Manifests: []apiManifest{
+			{Kind: "attestation", ImageData: &apiImageData{Identity: &apiIdentity{Pull: []apiPullIdentity{{Repository: "docker.io/library/alpine"}}}}},
+		}}, "docker.io/library/alpine", false},
 		{"empty repository", pulled(""), "", false},
 	}
 	for _, tc := range cases {

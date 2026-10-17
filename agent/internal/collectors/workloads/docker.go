@@ -326,14 +326,14 @@ func (d *engineDriver) Collect(ctx context.Context, det Detection) Result {
 	// Only Docker answers the identity query; Podman's compat API has no such
 	// option. Older Docker engines would ignore it, so ask only where it works.
 	identity := d.runtime == RuntimeDocker && apiVersionAtLeast(det.apiVersion, 1, 54)
-	imagesPath := "/images/json"
-	if identity {
-		imagesPath += "?" + imageIdentityQuery
-	}
-	istatus, ibody, ierr := d.get(ctx, imagesPath, maxListBytes)
-	var list []apiImage
-	if ierr == nil && istatus == http.StatusOK {
-		ierr = json.Unmarshal(ibody, &list)
+	list, istatus, ierr := d.listImages(ctx, identity)
+	if identity && (ierr != nil || istatus != http.StatusOK) && ctx.Err() == nil {
+		// An engine (or a socket proxy) that refuses the identity options
+		// must not cost every digest: retry once with the plain list, which
+		// is exactly the behavior before provenance was asked for.
+		slog.Warn("workloads: image list with identity failed, retrying without", "runtime", d.runtime, "status", istatus, "error", errString(ierr))
+		identity = false
+		list, istatus, ierr = d.listImages(ctx, false)
 	}
 	if ierr != nil || istatus != http.StatusOK {
 		slog.Warn("workloads: image list failed", "runtime", d.runtime, "status", istatus, "error", errString(ierr))
@@ -353,6 +353,24 @@ func (d *engineDriver) Collect(ctx context.Context, det Detection) Result {
 		}
 	}
 	return Result{Collection: CollectionOK, Complete: complete, Workloads: ws, ObservedCount: observed, Error: code}
+}
+
+// listImages fetches GET /images/json, with the identity options when asked.
+// A body that does not decode is returned as an error with the HTTP status.
+func (d *engineDriver) listImages(ctx context.Context, identity bool) ([]apiImage, int, error) {
+	path := "/images/json"
+	if identity {
+		path += "?" + imageIdentityQuery
+	}
+	status, body, err := d.get(ctx, path, maxListBytes)
+	if err != nil || status != http.StatusOK {
+		return nil, status, err
+	}
+	var list []apiImage
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, status, err
+	}
+	return list, status, nil
 }
 
 func failureResult(status int, err error) (Result, bool) {
@@ -413,17 +431,27 @@ func normalizeImageID(id string) string {
 func buildContainerWorkloads(containers []apiContainer, images map[string]apiImage, identity bool) []Workload {
 	seen := make(map[string]bool, len(containers))
 	out := make([]Workload, 0, len(containers))
+	noProvenance := 0
 	for _, c := range containers {
 		if c.ID == "" || seen[c.ID] {
 			continue
 		}
 		seen[c.ID] = true
-		out = append(out, mapContainer(c, images, identity))
+		w, dropped := mapContainer(c, images, identity)
+		if dropped {
+			noProvenance++
+		}
+		out = append(out, w)
+	}
+	if noProvenance > 0 {
+		slog.Debug("workloads: containerd-store repo digests without registry provenance reported as local", "containers", noProvenance)
 	}
 	return out
 }
 
-func mapContainer(c apiContainer, images map[string]apiImage, identity bool) Workload {
+// mapContainer also reports whether a repo digest was withheld for lack of
+// registry provenance (see below).
+func mapContainer(c apiContainer, images map[string]apiImage, identity bool) (Workload, bool) {
 	imageID := normalizeImageID(c.ImageID)
 	img := images[imageID]
 	ref := strings.TrimSpace(c.Image)
@@ -448,8 +476,9 @@ func mapContainer(c apiContainer, images map[string]apiImage, identity bool) Wor
 	// to) this repository, else report none and the server calls it local
 	// without asking any registry. Engines without provenance (Docker < 29.3)
 	// keep the old behavior.
+	dropped := false
 	if identity && digest != "" && digest == imageID && !img.pulledFrom(parsed.Repository) {
-		digest = ""
+		digest, dropped = "", true
 	}
 	if digest == "" && parsed.Pinned && digestPattern.MatchString(parsed.Digest) {
 		digest = parsed.Digest
@@ -483,7 +512,7 @@ func mapContainer(c apiContainer, images map[string]apiImage, identity bool) Wor
 	// StartedAt stays null: the list response only carries a relative "Up 3
 	// hours" string, which is neither exact nor stable between collections.
 	w.Bound()
-	return w
+	return w, dropped
 }
 
 func mapContainerState(raw string) string {
