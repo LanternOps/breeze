@@ -2621,7 +2621,7 @@
       "title": "{{action}}: {{count}} Gerät(e)?",
       "verbs": {
         "lock": "Sperren",
-        "maintenanceOff": "Wartung beenden für",
+        "maintenanceOff": "Wartung beenden",
         "reboot": "Neustart",
         "reboot_safe_mode": "Neustart im abgesicherten Modus",
         "shutdown": "Herunterfahren",

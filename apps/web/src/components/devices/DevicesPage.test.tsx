@@ -1448,6 +1448,9 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     ).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
+    // #9032: the skip dialog hands off to the verb/org confirm before anything is sent.
+    expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
 
     await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
     const [deviceIds, action] = vi.mocked(sendBulkCommand).mock.calls[0];
@@ -1581,6 +1584,45 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
       expect(dialog.textContent).toMatch(/1 queued for next check-in/);
       fireEvent.click(confirm);
       await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
+    });
+
+    it.each([
+      ['bulk-reboot', 'Reboot'],
+      ['bulk-wake', 'Wake'],
+      ['bulk-maintenance-off', 'End maintenance'],
+    ])('%s dialog names the verb and the org', async (testId, verb) => {
+      await selectFleet();
+      fireEvent.click(screen.getByTestId(testId));
+      await screen.findByTestId('confirm-bulk-command');
+      const text = screen.getByRole('dialog').textContent ?? '';
+      expect(text).toContain(verb);
+      expect(text).toMatch(/in Org One|in org-1|in the selected organization/);
+      if (testId !== 'bulk-reboot') expect(text).not.toMatch(/online now/);
+    });
+
+    it('lists every org when the selection spans organizations', async () => {
+      const { sendBulkCommand } = await import('../../services/deviceActions');
+      vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}, {}], failed: [], skipped: [] } as never);
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          { ...rawDevice(DEV_1, 'host-alpha'), orgId: 'org-a' },
+          { ...rawDevice(DEV_2, 'host-beta'), orgId: 'org-b' },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2]);
+      fireEvent.click(screen.getByTestId('bulk-reboot'));
+      await screen.findByTestId('confirm-bulk-command');
+      expect(screen.getByRole('dialog').textContent).toMatch(/across 2 organizations \(.*org-a.*org-b.*\)/);
+      expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+    });
+
+    it('every confirm-required action has a verb in the en locale', async () => {
+      const { CONFIRM_REQUIRED_BULK_COMMANDS } = await import('./bulkActionGating');
+      const en = (await import('../../locales/en/devices.json')).default as any;
+      for (const a of CONFIRM_REQUIRED_BULK_COMMANDS) {
+        const key = a === 'maintenance-off' ? 'maintenanceOff' : a;
+        expect(en.devicesPage.confirmBulkCommand.verbs[key], a).toBeTruthy();
+      }
     });
 
     it('cancel sends nothing', async () => {
@@ -1948,7 +1990,8 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     boundaryFleet();
     await renderMixedFleet();
     fireEvent.click(screen.getByTestId('bulk-reboot'));
-    const confirm = await screen.findByTestId('confirm-decommissioned-skip');
+    fireEvent.click(await screen.findByTestId('confirm-decommissioned-skip'));
+    const confirm = await screen.findByTestId('confirm-bulk-command');
 
     // An impatient double-click on a bulk REBOOT must not reboot the fleet twice.
     //
@@ -2405,6 +2448,9 @@ describe('DevicesPage — network filter + decommissioned gate compose (#1322 ×
     expect(screen.getByText(/1 of 3 selected devices are removed/i)).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('confirm-decommissioned-skip'));
+    // #9032: the skip dialog hands off to the verb/org confirm before anything is sent.
+    expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command'));
 
     await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
     const [deviceIds] = vi.mocked(sendBulkCommand).mock.calls[0];

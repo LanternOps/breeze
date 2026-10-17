@@ -2621,7 +2621,7 @@
       "title": "{{action}} su {{count}} dispositivo/i?",
       "verbs": {
         "lock": "Blocca",
-        "maintenanceOff": "Termina manutenzione su",
+        "maintenanceOff": "Termina manutenzione",
         "reboot": "Riavvia",
         "reboot_safe_mode": "Riavvia in modalità provvisoria",
         "shutdown": "Arresta",

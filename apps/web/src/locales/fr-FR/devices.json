@@ -2621,7 +2621,7 @@
       "title": "{{action}} : {{count}} appareil(s) ?",
       "verbs": {
         "lock": "Verrouiller",
-        "maintenanceOff": "Terminer la maintenance sur",
+        "maintenanceOff": "Terminer la maintenance",
         "reboot": "Redémarrer",
         "reboot_safe_mode": "Redémarrer en mode sans échec",
         "shutdown": "Arrêter",

@@ -2621,7 +2621,7 @@
       "title": "{{action}}: {{count}} cihaz?",
       "verbs": {
         "lock": "Kilitle",
-        "maintenanceOff": "Bakım modunu bitir:",
+        "maintenanceOff": "Bakım modunu bitir",
         "reboot": "Yeniden başlat",
         "reboot_safe_mode": "Güvenli modda yeniden başlat",
         "shutdown": "Kapat",

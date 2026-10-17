@@ -2561,6 +2561,12 @@ export default function DevicesPage() {
           onConfirm={() => {
             const p = pendingDecommissionedSkip;
             setPendingDecommissionedSkip(null);
+            // #9032: the skip dialog names neither verb nor orgs, so the
+            // confirm-required commands still get their own confirm.
+            if (CONFIRM_REQUIRED_BULK_COMMANDS.has(p.action)) {
+              setPendingBulkCommand({ action: p.action, devices: p.devices });
+              return;
+            }
             void runBulkAction(p.action, p.devices);
           }}
           title={t('devicesPage.confirmDecommissionedSkip.title')}

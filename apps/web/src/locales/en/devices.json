@@ -2621,7 +2621,7 @@
       "title": "{{action}} {{count}} device(s)?",
       "verbs": {
         "lock": "Lock",
-        "maintenanceOff": "End maintenance on",
+        "maintenanceOff": "End maintenance",
         "reboot": "Reboot",
         "reboot_safe_mode": "Reboot into safe mode",
         "shutdown": "Shut down",
