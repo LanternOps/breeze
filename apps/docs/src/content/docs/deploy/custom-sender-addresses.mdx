@@ -47,6 +47,13 @@ you can give it a display name:
 EMAIL_FROM="Acme IT <support@acme.com>"
 ```
 
+Customer-facing mail (invoices, quotes, portal invites and password resets,
+ticket replies and notices, scheduled reports) is sent with the partner's
+company name as the display name when `EMAIL_FROM` is a bare address such as
+`support@acme.com`. Before v0.122.1 it read "Company via Breeze". An
+`EMAIL_FROM` that already has its own display name is sent unchanged. Staff and
+security mail keeps the platform sender.
+
 Nothing else on this page applies. Skip to [Environment
 Variables](/deploy/environment/) if that is all you wanted.
 

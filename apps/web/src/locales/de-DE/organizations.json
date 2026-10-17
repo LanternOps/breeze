@@ -8,6 +8,9 @@
       },
       "primaryContact": "Hauptansprechpartner",
       "noPrimaryContact": "Kein Hauptansprechpartner",
+      "billingAddress": "Rechnungsadresse",
+      "noBillingAddress": "Keine Rechnungsadresse",
+      "billingSettingsLink": "In den Abrechnungseinstellungen hinzufügen",
       "sites_one": "{{count}} Standort",
       "sites_other": "{{count}} Standorte",
       "scopeChip": "Arbeitsbereich: {{orgName}}",
@@ -34,6 +37,7 @@
       "billing": "Verträge & Abrechnung",
       "service": "Leistungen",
       "documents": "Dokumente",
+      "trust": "Vertrauenszentrum",
       "activity": "Aktivität"
     },
     "comingSoon": {
@@ -151,6 +155,164 @@
         "invoices": "Rechnungen",
         "quotes": "Angebote",
         "agreements": "Vereinbarungen"
+      }
+    },
+    "trust": {
+      "title": "Vertrauenszentrum",
+      "subtitle": "Eine öffentliche Seite mit dem Sicherheitsstatus dieser Organisation, erstellt aus der Live-Telemetrie von Breeze.",
+      "loading": "Vertrauenszentrum wird geladen…",
+      "loadFailed": "Die Seite des Vertrauenszentrums konnte nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "status": {
+        "unpublished": "Nicht veröffentlicht",
+        "published": "Veröffentlicht am {{date}}",
+        "publicUrl": "Öffentliche Seite",
+        "copy": "Link kopieren",
+        "copied": "Link kopiert",
+        "copyFailed": "Der Link konnte nicht kopiert werden.",
+        "lastEvaluated": "Kontrollen zuletzt bewertet am {{date}}",
+        "gate": {
+          "probation_default_deny": "Ihr Konto befindet sich noch in der Testphase. Die Veröffentlichung wird freigeschaltet, sobald Ihr Konto als vertrauenswürdig eingestuft ist.",
+          "probation_enrollment_cap": "Ihr Konto hat das Limit der Testphase erreicht. Die Veröffentlichung wird freigeschaltet, sobald Ihr Konto als vertrauenswürdig eingestuft ist.",
+          "restricted": "Ihr Konto ist eingeschränkt, daher ist die Veröffentlichung deaktiviert.",
+          "partner_unresolved": "Das Partnerkonto dieser Organisation konnte nicht ermittelt werden.",
+          "generic": "Die Veröffentlichung ist für dieses Konto derzeit deaktiviert."
+        }
+      },
+      "publish": {
+        "button": "Veröffentlichen",
+        "republish": "Aktualisierung veröffentlichen",
+        "title": "Seite des Vertrauenszentrums veröffentlichen",
+        "intro": "Dadurch ist die Seite für alle mit dem Link sichtbar{{indexable}}. Die Kontrollen werden beim Veröffentlichen erneut bewertet.",
+        "indexableSuffix": ", und Suchmaschinen können sie indexieren",
+        "attestationCheckbox": "Der Kunde hat die Veröffentlichung dieser Seite genehmigt",
+        "authorizedBy": "Genehmigt von (Name, Funktion)",
+        "authorizedByPlaceholder": "Anna Schmidt, Betriebsleiterin",
+        "recorded": "Genehmigt von {{name}} am {{date}}",
+        "change": "Ändern",
+        "partnerHomeNote": "Dies ist die eigene Seite des Partners, daher ist keine Kundengenehmigung erforderlich.",
+        "confirm": "Veröffentlichen",
+        "publishing": "Wird veröffentlicht…",
+        "cancel": "Abbrechen",
+        "success": "Seite des Vertrauenszentrums veröffentlicht.",
+        "failed": "Die Seite des Vertrauenszentrums konnte nicht veröffentlicht werden.",
+        "disabledNoWrite": "Zum Veröffentlichen benötigen Sie die Berechtigung, Organisationen zu bearbeiten.",
+        "disabledSlug": "Korrigieren Sie die Seitenadresse vor dem Veröffentlichen."
+      },
+      "unpublish": {
+        "button": "Veröffentlichung aufheben",
+        "title": "Veröffentlichung der Vertrauenszentrum-Seite aufheben",
+        "message": "Der öffentliche Link funktioniert sofort nicht mehr und das Siegel wird deaktiviert. Sie können jederzeit erneut veröffentlichen.",
+        "confirm": "Veröffentlichung aufheben",
+        "success": "Veröffentlichung der Vertrauenszentrum-Seite aufgehoben.",
+        "failed": "Die Veröffentlichung der Vertrauenszentrum-Seite konnte nicht aufgehoben werden."
+      },
+      "preview": {
+        "button": "Vorschau",
+        "failed": "Die Vorschau konnte nicht geöffnet werden.",
+        "popupBlocked": "Ihr Browser hat das Vorschaufenster blockiert. Erlauben Sie Pop-ups für diese Website und versuchen Sie es erneut."
+      },
+      "partnerHome": {
+        "label": "Als eigene Vertrauenszentrum-Seite des Partners verwenden",
+        "description": "Zeigt diese Seite unter der Adresse des Partners statt unter einer Kundenadresse an. Eine Kundengenehmigung ist nicht erforderlich.",
+        "success": "Einstellung der Partnerseite gespeichert.",
+        "failed": "Die Einstellung der Partnerseite konnte nicht geändert werden."
+      },
+      "slug": {
+        "warningTitle": "Die Adresse dieser Seite ist noch nicht gültig",
+        "openSettings": "In den Organisationseinstellungen bearbeiten",
+        "partner_slug": "Der Partner-Slug ist für eine öffentliche Adresse nicht gültig.",
+        "org_slug": "Der Organisations-Slug ist für eine öffentliche Adresse nicht gültig.",
+        "unknown": "Die Seitenadresse hat ein Problem ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "Die Veröffentlichung ist noch nicht verfügbar. {{reason}}",
+        "readOnly": "Sie können diese Seite ansehen, benötigen aber die Berechtigung, Organisationen zu bearbeiten, um sie zu ändern oder zu veröffentlichen."
+      },
+      "errors": {
+        "revisionMismatch": "Diese Seite wurde seit dem Laden geändert. Laden Sie sie neu und versuchen Sie es erneut.",
+        "authorizationRequired": "Geben Sie an, wer die Veröffentlichung genehmigt hat.",
+        "mfaRequired": "Das Veröffentlichen erfordert eine Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut.",
+        "trustProbation": "Die Veröffentlichung wird freigeschaltet, sobald Ihr Konto als vertrauenswürdig eingestuft ist.",
+        "trustRestricted": "Die Veröffentlichung wird freigeschaltet, sobald Ihr Konto als vertrauenswürdig eingestuft ist.",
+        "slugInvalid": "Die Seitenadresse ist ungültig. Korrigieren Sie den Slug in den Organisationseinstellungen.",
+        "introTooLong": "Die Einleitung ist zu lang.",
+        "partnerWideRequired": "Nur partnerweite Administratoren können die Partnerseite ändern.",
+        "partnerHomeInternalOnly": "Nur Ihre eigene (interne) Organisation kann die Partnerseite sein.",
+        "partnerHomeUnpublishFirst": "Diese Seite ist ohne erfasste Kundengenehmigung veröffentlicht. Heben Sie die Veröffentlichung auf, bevor Sie die Partnerseite deaktivieren."
+      },
+      "controls": {
+        "republishBanner": "Änderungen werden auf der öffentlichen Seite wirksam, sobald Sie erneut veröffentlichen.",
+        "saveFailed": "Die Änderung konnte nicht gespeichert werden.",
+        "unavailable": "Die Kontrollergebnisse sind derzeit nicht verfügbar.",
+        "assessedCount": "{{assessed}} von {{eligible}} bewertet",
+        "shown": "Angezeigt",
+        "hidden": "Ausgeblendet",
+        "toggles": {
+          "showPercentages": {
+            "label": "Prozentwerte anzeigen",
+            "description": "Zeigt den Prozentwert jeder Kontrolle auf der öffentlichen Seite an."
+          },
+          "showDeviceCount": {
+            "label": "Geräteanzahl anzeigen",
+            "description": "Zeigt an, wie viele Geräte abgedeckt sind."
+          },
+          "showManagedBy": {
+            "label": "„Verwaltet von“ anzeigen",
+            "description": "Nennt Ihr Unternehmen als verwaltenden Anbieter."
+          },
+          "searchIndexable": {
+            "label": "Suchmaschinen zulassen",
+            "description": "Erlaubt Suchmaschinen, die öffentliche Seite zu indexieren."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Einleitung",
+        "contactLabel": "E-Mail-Adresse des Sicherheitskontakts",
+        "contactInvalid": "Geben Sie eine gültige E-Mail-Adresse ein.",
+        "websiteLabel": "Webseite",
+        "websiteInvalid": "Geben Sie eine vollständige Adresse mit https:// ein.",
+        "save": "Inhalt speichern",
+        "saved": "Inhalt gespeichert.",
+        "saveFailed": "Der Inhalt konnte nicht gespeichert werden."
+      },
+      "documents": {
+        "description": "Dokumente, die Sie auf der öffentlichen Seite teilen möchten. Nur ausdrücklich freigegebene Dokumente werden angezeigt.",
+        "upload": "Dokument hochladen",
+        "library": "Dokumentenbibliothek",
+        "libraryEmpty": "Keine weiteren Dokumente verfügbar.",
+        "libraryFailed": "Die Dokumentenbibliothek konnte nicht geladen werden.",
+        "add": "Hinzufügen",
+        "linked": "Auf der öffentlichen Seite ({{count}} von {{max}})",
+        "linkedEmpty": "Keine Dokumente ausgewählt.",
+        "remove": "Entfernen",
+        "moveUp": "Nach oben",
+        "moveDown": "Nach unten",
+        "superseded": "Ersetzt — verknüpfen Sie die neuere Version erneut",
+        "save": "Dokumente speichern",
+        "saved": "Dokumente gespeichert.",
+        "saveFailed": "Die Dokumente konnten nicht gespeichert werden.",
+        "unavailable": "Diese Dokumente sind nicht mehr verfügbar: {{titles}}. Entfernen Sie sie oder verknüpfen Sie sie erneut.",
+        "disclosureTitle": "Dieses Dokument veröffentlichen?",
+        "disclosureMessage": "„{{title}}“ ist für alle mit dem Link zur öffentlichen Seite sichtbar.",
+        "disclosureCheckbox": "Ich bestätige, dass dieses Dokument für die öffentliche Freigabe genehmigt ist",
+        "disclosureConfirm": "Dokument hinzufügen"
+      },
+      "sections": {
+        "controlsHeading": "Sicherheitskontrollen",
+        "contentHeading": "Seiteninhalt",
+        "documentsHeading": "Dokumente"
+      },
+      "badge": {
+        "title": "Siegel",
+        "description": "Binden Sie ein Live-Statussiegel in Ihre Website ein. Es verlinkt auf die öffentliche Seite.",
+        "unpublishedNote": "Das Siegel erscheint, sobald die Seite veröffentlicht ist.",
+        "snippet": "Siegel-HTML",
+        "alt": "Siegel zum Sicherheitsstatus",
+        "copy": "Snippet kopieren",
+        "copied": "Snippet kopiert",
+        "copyFailed": "Das Snippet konnte nicht kopiert werden."
       }
     },
     "documents": {

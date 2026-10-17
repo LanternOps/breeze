@@ -10,6 +10,10 @@ import { Hono } from 'hono';
 // mock those at the helper boundary instead of standing up real Drizzle
 // mocks for every downstream query.
 
+// PATCH /devices/:id requests a dynamic-group re-evaluation after commit (#8832);
+// the db mock has no runAfterDbContextCommit, so stub the producer.
+vi.mock('../../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
+
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),

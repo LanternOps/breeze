@@ -27,6 +27,11 @@ const h = vi.hoisted(() => ({
   completeIdem: vi.fn(async () => {}),
   releaseIdem: vi.fn(async () => {}),
   requirePermission: vi.fn(),
+  persist: vi.fn(),
+  attach: vi.fn(async (): Promise<string | void> => {}),
+  markFailed: vi.fn(async () => {}),
+  withdraw: vi.fn(),
+  order: [] as string[],
   auth: {} as Record<string, unknown>,
   outsideDepth: 0,
 }));
@@ -77,6 +82,14 @@ vi.mock('../../services/endpointMessaging/idempotency', () => ({
   claimMessageIdempotency: h.claimIdem,
   completeMessageIdempotency: h.completeIdem,
   releaseMessageIdempotency: h.releaseIdem,
+}));
+vi.mock('../../services/endpointMessaging/persistence', () => ({
+  persistSend: h.persist,
+  attachDeliveryCommand: h.attach,
+  markDeliveryQueueFailed: h.markFailed,
+}));
+vi.mock('../../services/endpointMessaging/retract', () => ({
+  withdrawCommand: h.withdraw,
 }));
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.7' }));
 
@@ -140,6 +153,11 @@ describe('POST /endpoint-messages (#8741)', () => {
     h.claimCritical.mockResolvedValue(true);
     h.claimIdem.mockResolvedValue({ state: 'claimed' });
     h.outsideDepth = 0;
+    h.order = [];
+    h.persist.mockImplementation(async (args: { devices: Array<{ deviceId: string }> }) => {
+      h.order.push('persist');
+      return new Map(args.devices.map((d) => [d.deviceId, `del-${d.deviceId}`]));
+    });
   });
 
   it('requires the endpoint_messages:send permission', () => {
@@ -543,5 +561,71 @@ describe('POST /endpoint-messages (#8741)', () => {
     expect(json.results[0].status).toBe('failed');
     expect(h.completeIdem).not.toHaveBeenCalled();
     expect(h.releaseIdem).toHaveBeenCalledWith(USER, MSG);
+  });
+  describe('W02 persistence and carry-forwards (#8742)', () => {
+    it('checks confirmation_required BEFORE resolving the per-device rollout flag', async () => {
+      const ids = Array.from({ length: 101 }, (_, i) => i + 1);
+      h.groups = [group(ORG_A, ids)];
+      const { res, json } = await post(baseBody({ targets: { deviceIds: ids.map(dev) } }));
+      expect(res.status).toBe(409);
+      expect(json).toEqual({ error: 'confirmation_required', deviceCount: 101 });
+      expect(h.flag).not.toHaveBeenCalled();
+    });
+
+    it('resolves the rollout flag without touching the Redis settings cache (no Redis inside the request transaction)', async () => {
+      await post(baseBody());
+      expect(h.flag).toHaveBeenCalledWith(dev(1), ORG_A, { skipCacheRead: true, skipCacheWrite: true });
+    });
+
+    it('persists the message and every delivery before queueing any command', async () => {
+      h.groups = [group(ORG_A, [1, 2])];
+      h.supports.mockImplementation((v: unknown) => v !== 'old');
+      h.groups[0]!.devices[1]!.agentVersion = 'old';
+      h.queue.mockImplementation(async (deviceId: string) => {
+        h.order.push(`queue:${deviceId}`);
+        return { command: { id: `cmd-${deviceId}`, status: 'sent' } };
+      });
+      const { res, json } = await post(baseBody({ targets: { deviceIds: [dev(1), dev(2)] } }));
+      expect(res.status).toBe(200);
+      expect(h.order).toEqual(['persist', `queue:${dev(1)}`]);
+      const args = h.persist.mock.calls[0]![0];
+      expect(args).toMatchObject({
+        batchId: json.batchId,
+        clientMessageId: MSG,
+        actorId: USER,
+        orgGroups: [{ orgId: ORG_A }],
+      });
+      expect(args.devices).toEqual([
+        { deviceId: dev(1), orgId: ORG_A, status: 'queued' },
+        { deviceId: dev(2), orgId: ORG_A, status: 'failed', errorCode: 'agent_unsupported' },
+      ]);
+      expect(h.attach).toHaveBeenCalledWith(`del-${dev(1)}`, `cmd-${dev(1)}`);
+      expect(h.attach).toHaveBeenCalledTimes(1);
+    });
+
+    it('a retract that landed mid-send withdraws the command just queued and reports the device retracted', async () => {
+      h.attach.mockResolvedValueOnce('retracted');
+      h.withdraw.mockResolvedValue({ kind: 'cancelled' });
+      const { json } = await post(baseBody());
+      expect(h.withdraw).toHaveBeenCalledWith(expect.objectContaining({
+        deviceId: dev(1), orgId: ORG_A, commandId: `cmd-${dev(1)}`, clientMessageId: MSG, agentVersion: '999.0.0', userId: USER,
+      }));
+      expect(json.results[0]).toMatchObject({ deviceId: dev(1), status: 'failed', errorCode: 'retracted' });
+    });
+
+    it('records a queue refusal on the delivery row', async () => {
+      h.queue.mockResolvedValue({ error: 'device offline and policy rejects', command: undefined });
+      const { json } = await post(baseBody());
+      expect(json.results[0]).toMatchObject({ status: 'failed', errorCode: 'offline_rejected' });
+      expect(h.markFailed).toHaveBeenCalledWith(`del-${dev(1)}`, 'offline_rejected');
+    });
+
+    it('fails closed when persistence throws: nothing is queued', async () => {
+      h.persist.mockRejectedValue(new Error('db down'));
+      const { res } = await post(baseBody());
+      expect(res.status).toBe(500);
+      expect(h.queue).not.toHaveBeenCalled();
+      expect(h.releaseIdem).toHaveBeenCalled();
+    });
   });
 });

@@ -235,6 +235,10 @@ There is no downloadable pre-configured installer for Linux, so the **Add Device
 
 The generated command downloads and runs the same `install.sh` used by [Quick Install](#quick-install) above, with `--token` and `--server` filled in for you. Generating a token requires MFA on your account. Behind the scenes, the token is a short-lived **enrollment key** minted specifically for this dialog (`POST /devices/onboarding-token`) — not the same bootstrap-token mechanism the macOS GUI installer uses above — scoped to the site, device count and expiry you chose, up to 1000 devices and 365 days. API callers that omit `siteId` get the organization's oldest site they can access (by creation time).
 
+The same tab also shows a **Windows** command for an elevated PowerShell. It downloads the agent into a private temporary folder, checks its checksum and signature, enrolls the device, then installs the service, which starts it. Since v0.122.1 it enrolls before installing the service and no longer ends with a separate `service start`.
+
+The `--server` address in these commands comes from the API's `PUBLIC_API_URL` setting (or `API_URL` when that is unset). If your dashboard and API are served from different hosts, set `PUBLIC_API_URL` on the API so the command points agents at the API.
+
 ---
 
 ## Pre-Provisioning Devices
@@ -294,6 +298,8 @@ Hosts that ran `--no-watchdog` with an agent version older than this behaviour h
 </Aside>
 
 On macOS the desktop helper is resolved the same way: `breeze-agent service install` uses a `breeze-desktop-helper` binary staged next to the agent if there is one, and otherwise downloads the matching-version signed binary from GitHub releases. If neither is available (for example on an air-gapped host), the install prints a warning and continues -- the agent service is still installed and running, and only the helper's features are unavailable until you place the binary next to `breeze-agent` and re-run `service install`. The agent binary is never installed under the helper's name: doing so would give the helper the agent's code-signing identity, and macOS would drop the Screen Recording and Accessibility grants once a real helper replaced it. The macOS `.pkg` always ships the signed helper, so this only affects raw-binary installs.
+
+When a macOS agent updates itself (v0.122.1+), it downloads the installer package from your own Breeze server first and falls back to the GitHub release only if that fails. Either way, the package must match the signed release checksum before it is installed.
 
 If the watchdog could not be installed during `service install` (for example because the download failed), you no longer need to re-run the command on an enrolled host. The running agent installs the watchdog later by itself when the Breeze server offers a watchdog version for the device. See [Automatic repair of a missing watchdog](/features/watchdog#automatic-repair-of-a-missing-watchdog) for what it does, when it stays off, and the retry schedule.
 

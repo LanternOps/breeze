@@ -7,6 +7,7 @@ import TicketTypeChip from './TicketTypeChip';
 import { statusConfig, priorityConfig, type TicketPriority, type TicketStatus, type TicketSummary } from './ticketConfig';
 import { type TicketConfig } from '../../lib/ticketConfigApi';
 import { formatDateTime } from '@/lib/dateTimeFormat';
+import { EntityLink } from '@/components/shared/EntityLink';
 
 interface Props {
   tickets: TicketSummary[];
@@ -105,14 +106,25 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
               )}
             />
           )}
-          <button
-            type="button"
+          {/* A div (not a <button>) so the org EntityLink inside is never an anchor
+              nested in a button. role="option" + tabIndex + onKeyDown keep the
+              button's focus and Enter/Space activation. */}
+          <div
             role="option"
+            tabIndex={0}
             aria-selected={ticket.id === selectedId}
             onClick={() => onSelect(ticket)}
+            onKeyDown={(e) => {
+              // Ignore keys pressed on the nested link: Enter there follows the link.
+              if (e.target !== e.currentTarget) return;
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelect(ticket);
+              }
+            }}
             data-testid={`ticket-row-${ticket.id}`}
             className={cn(
-              'w-full px-3 py-2.5 text-left hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary',
+              'block w-full cursor-pointer px-3 py-2.5 text-left hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary',
               onToggleSelect && 'pl-8', // reserve the checkbox gutter
               ticket.id === selectedId && 'bg-primary/5 border-l-0' // selection tint; brand color reserved for selection
             )}
@@ -140,13 +152,15 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
                 {translatedStatusLabel(config, ticket.status, ticket.statusName, t)}
               </span>
               <TicketTypeChip type={ticket.ticketType} testId={`ticket-type-chip-${ticket.id}`} />
-              {!hideOrg && <span className="truncate">{ticket.orgName ?? ''}</span>}
+              {!hideOrg && ticket.orgName && (
+                <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName} className="truncate" />
+              )}
               <span className="ml-auto shrink-0 flex items-center gap-2">
                 <SlaChip ticket={ticket} />
                 <span title={formatDateTime(ticket.updatedAt)}>{timeAgo(ticket.updatedAt, t)}</span>
               </span>
             </div>
-          </button>
+          </div>
         </li>
       ))}
     </ul>

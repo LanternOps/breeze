@@ -35,6 +35,7 @@ import {
 } from './alertMlContext';
 import type { AlertAiVerdictSummaryDto } from '@breeze/shared';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
+import { EntityLink } from '@/components/shared/EntityLink';
 
 export type { AlertSeverity, AlertStatus };
 
@@ -541,7 +542,7 @@ export default function AlertList({
                     {showOrgColumn && (
                       <td className="max-w-[140px] px-4 py-3">
                         <span className="block truncate text-sm text-muted-foreground" title={alert.orgName ?? undefined}>
-                          {alert.orgName ?? '—'}
+                          {alert.orgName ? <EntityLink kind="org" id={alert.orgId ?? ''} name={alert.orgName} /> : '—'}
                         </span>
                       </td>
                     )}

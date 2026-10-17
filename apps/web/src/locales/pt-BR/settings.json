@@ -4428,7 +4428,8 @@
     "sessionInvalid": "Sua sessão foi alterada antes que a vinculação pudesse ser concluída. Faça login novamente e tente de novo.",
     "providerInactive": "Esse provedor de logon único não está mais ativo. Entre em contato com o administrador.",
     "configChanged": "A configuração de logon único mudou enquanto você se conectava. Tente novamente.",
-    "emailUnverified": "Seu provedor de identidade não confirmou que seu endereço de e-mail foi verificado. Entre em contato com o administrador."
+    "emailUnverified": "Seu provedor de identidade não confirmou que seu endereço de e-mail foi verificado. Entre em contato com o administrador.",
+    "idpVerifyFailed": "O Breeze não conseguiu verificar o login retornado pelo seu provedor de identidade. Tente novamente."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Carregando aplicativos conectados…",
@@ -4629,6 +4630,7 @@
     "ssoReauthProviderInactive": "O logon único não está mais disponível para esta conta. Fale com o administrador e tente de novo.",
     "ssoReauthConfigChanged": "Suas configurações de logon único mudaram durante a verificação. Inicie a verificação novamente.",
     "ssoReauthEmailUnverified": "Seu provedor de identidade informa que seu endereço de e-mail não foi verificado. Verifique-o lá e tente de novo.",
+    "ssoReauthIdpVerifyFailed": "O Breeze não conseguiu verificar o login retornado pelo seu provedor de identidade. Tente de novo. Se continuar falhando, peça ao administrador para verificar os logs do servidor.",
     "ssoReauthProofExpired": "Sua verificação com o provedor de identidade expirou. Verifique novamente para concluir a configuração da autenticação multifator.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Esta conta faz login por um provedor de identidade e não tem senha. Verifique novamente com o provedor antes de adicionar uma chave de acesso.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Sua identidade foi verificada. Dê um nome a esta chave de acesso e continue.",
@@ -6033,6 +6035,8 @@
     },
     "columns": {
       "timezone": "Fuso horário",
+      "address": "Endereço",
+      "contact": "Contato",
       "devices": "Dispositivos"
     },
     "empty": "Nenhum site encontrado. Adicione um site para começar."

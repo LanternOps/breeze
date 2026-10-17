@@ -297,6 +297,8 @@ const EXPECTED_NAMES = [
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   // Helper-uploaded screenshot retention (per-device storage quota).
   'helperScreenshotRetentionWorker',
+  // Endpoint messaging (#8742 W02): message/delivery row retention.
+  'endpointMessageRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   // #5291 W04 — dispatches `script` monitors' diagnostic probes.
   'monitorScriptWorker',
@@ -345,6 +347,8 @@ const EXPECTED_NAMES = [
   'aiModelDiscoveryWorker',
   // Workload image currency W05 (#8194).
   'imageCurrencyWorker',
+  // Trust Center W1 (#8768).
+  'trustPageSnapshotWorker',
 ];
 
 // ---------------------------------------------------------------------------

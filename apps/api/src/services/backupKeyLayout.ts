@@ -29,10 +29,10 @@ import { classifyBackupObjectKey } from './backupObjectKey';
  *
  * Readers refuse (fail closed, I5) a layout not listed in `BACKUP_KEY_LAYOUTS`,
  * a row whose `(key_layout, key_prefix)` pair is inconsistent, and a physical
- * key that does not map back under the expected root. Storage GC uses the
- * narrower `GC_SUPPORTED_KEY_LAYOUTS`: it skips a whole storage identity while
- * any of its snapshots has a layout outside that set, since a root-blind sweep
- * could otherwise treat that snapshot's objects as unreferenced.
+ * key that does not map back under the expected root. Storage GC uses
+ * `GC_SUPPORTED_KEY_LAYOUTS` (currently equal to `BACKUP_KEY_LAYOUTS`): it
+ * skips a whole storage identity while any of its snapshots has a layout
+ * outside that set, because it could not locate that snapshot's objects.
  */
 export const BACKUP_KEY_LAYOUTS = ['legacy_flat', 'prefixed_flat'] as const;
 
@@ -49,11 +49,13 @@ export function isSupportedKeyLayout(value: unknown): value is BackupKeyLayout {
 }
 
 /**
- * Layouts storage GC may sweep. Kept narrower than `BACKUP_KEY_LAYOUTS` until
- * GC lists and deletes per key root; until then a `prefixed_flat` row makes GC
- * skip its storage identity, exactly like an unknown layout.
+ * Layouts storage GC may sweep. GC lists, marks and deletes per key root
+ * (jobs/backupRetention.ts), so every readable layout is sweepable; the set
+ * stays separate from `BACKUP_KEY_LAYOUTS` so a layout readers learn first is
+ * not swept until GC learns it too (a row in any other layout makes GC skip
+ * its storage identity).
  */
-export const GC_SUPPORTED_KEY_LAYOUTS = ['legacy_flat'] as const satisfies readonly BackupKeyLayout[];
+export const GC_SUPPORTED_KEY_LAYOUTS = ['legacy_flat', 'prefixed_flat'] as const satisfies readonly BackupKeyLayout[];
 
 export function isGcSupportedKeyLayout(value: unknown): boolean {
   return typeof value === 'string' && (GC_SUPPORTED_KEY_LAYOUTS as readonly string[]).includes(value);

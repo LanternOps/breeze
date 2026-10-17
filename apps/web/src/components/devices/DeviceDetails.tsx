@@ -70,6 +70,7 @@ import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
 import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import { EntityLink } from "@/components/shared/EntityLink";
 import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
@@ -827,7 +828,8 @@ export default function DeviceDetails({
                   {t("deviceDetails.agentV")}
                   {device.agentVersion}
                 </span>
-                <span>{device.siteName}</span>
+                <EntityLink kind="org" id={device.orgId} name={device.orgName} />
+                <EntityLink kind="site" id={device.siteId} name={device.siteName} />
               </div>
             </div>
           </div>

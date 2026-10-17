@@ -138,6 +138,18 @@ func handleEndpointMessage(h *Heartbeat, cmd Command, start time.Time) tools.Com
 		return fail(err.Error())
 	}
 	store := h.endpointMessageStore()
+	// retract_message can win the race against this notify_user (commands run
+	// concurrently): never draw or toast a message that was already withdrawn.
+	// Success, not failed: the API treats failed as failed:undelivered.
+	retractedResult := func() tools.CommandResult {
+		return tools.NewSuccessResult(map[string]any{
+			"delivered": false,
+			"retracted": true,
+		}, time.Since(start).Milliseconds())
+	}
+	if store.IsTombstoned(show.MessageID, time.Now()) {
+		return retractedResult()
+	}
 	assistOK, alreadyResolved := false, false
 	var assist *sessionbroker.Session
 	if s := h.messagingAssistSession(); s != nil {
@@ -146,7 +158,9 @@ func handleEndpointMessage(h *Heartbeat, cmd Command, start time.Time) tools.Com
 		// we wait for message_presented must find the message, or it is lost
 		// and the card would be replayed after it was acknowledged.
 		stored := false
-		if err := store.Put(show, time.Now()); err != nil {
+		if err := store.Put(show, time.Now()); errors.Is(err, errMessageRetracted) {
+			return retractedResult()
+		} else if err != nil {
 			log.Warn("endpoint message not kept for replay", "messageId", show.MessageID, "error", err.Error())
 		} else {
 			stored = true

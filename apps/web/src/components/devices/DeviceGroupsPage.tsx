@@ -17,7 +17,8 @@ import { showToast } from "../shared/Toast";
 import type { ScriptAdmissionResult } from "@breeze/shared";
 import type { FilterConditionGroup } from "@breeze/shared";
 import { encodeFilterToHash } from "./filterUrl";
-import { FilterBuilder, DEFAULT_FILTER_FIELDS } from "../filters/FilterBuilder";
+import { FilterBuilder } from "../filters/FilterBuilder";
+import { useDeviceFilterFields } from "../filters/useDeviceFilterFields";
 import { FilterPreview } from "../filters/FilterPreview";
 import { useFilterPreview } from "../../hooks/useFilterPreview";
 import {
@@ -188,6 +189,9 @@ const parseDragPayload = (event: DragEvent): DragPayload | null => {
 
 export default function DeviceGroupsPage() {
   const { t } = useTranslation("devices");
+  // Static catalog + org/partner custom fields (#8843): the rule builder's
+  // field picker and the card's condition chips both draw from it.
+  const filterFields = useDeviceFilterFields();
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
@@ -1162,7 +1166,7 @@ export default function DeviceGroupsPage() {
               // are only shown for rows that have no filter — otherwise a
               // stale stub would misreport the group's membership.
               const membershipChips = group.filterConditions
-                ? describeFilterConditions(group.filterConditions)
+                ? describeFilterConditions(group.filterConditions, filterFields)
                 : (group.rules ?? []).map((rule) =>
                     buildRuleLabel(rule, siteNameById),
                   );
@@ -1473,7 +1477,7 @@ export default function DeviceGroupsPage() {
                         filterConditions: conditions,
                       }))
                     }
-                    filterFields={DEFAULT_FILTER_FIELDS}
+                    filterFields={filterFields}
                     showPreview={false}
                   />
                   <FilterPreview

@@ -31,7 +31,9 @@ until you upgrade.**
 never public while users are unpatched. After that we aim to publish within **72 hours** (Critical)
 or **7 days** (High) of rollout.
 
-**CVEs.** Critical and High advisories get a CVE. Note that because Breeze is distributed as
+**CVEs.** Critical and High advisories published from 2026-10-16 onward get a CVE, requested as soon
+as the fix has shipped. Earlier advisories are identified by their GHSA ID alone, except the two
+Critical ones, which have CVEs requested. Note that because Breeze is distributed as
 container images and binaries rather than through a package ecosystem, automated scanners and
 Dependabot generally will **not** alert you — please watch the advisories directly rather than
 relying on tooling to tell you.

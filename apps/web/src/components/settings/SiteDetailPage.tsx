@@ -23,6 +23,7 @@ import TimezoneSelect from '@/components/shared/TimezoneSelect';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 import { usePermissions } from '@/lib/permissions';
+import { ENABLE_ENDPOINT_MESSAGING } from '@/lib/featureFlags';
 import SendMessageDialog from '../endpointMessages/SendMessageDialog';
 import ContactResponsibilitiesCard from '../shared/ContactResponsibilitiesCard';
 
@@ -111,7 +112,7 @@ const formatTime = (date: Date) =>
 export default function SiteDetailPage({ siteId }: { siteId: string }) {
   const { t } = useTranslation('settings');
   const { can } = usePermissions();
-  const canSendMessage = can('endpoint_messages', 'send');
+  const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can('endpoint_messages', 'send'); // #8968: hidden until the build enables messaging
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
   const [activeTab, setActiveTab] = useHashTab<TabKey>(VALID_TABS, 'details');

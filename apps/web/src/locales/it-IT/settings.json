@@ -4423,7 +4423,8 @@
     "sessionInvalid": "La sessione è cambiata prima del completamento del collegamento. Accedi di nuovo e riprova.",
     "providerInactive": "Quel provider single sign-on non è più attivo. Contatta l'amministratore.",
     "configChanged": "La configurazione single sign-on è cambiata durante la connessione. Riprova.",
-    "emailUnverified": "Il provider di identità non ha confermato che il tuo indirizzo email sia verificato. Contatta l'amministratore."
+    "emailUnverified": "Il provider di identità non ha confermato che il tuo indirizzo email sia verificato. Contatta l'amministratore.",
+    "idpVerifyFailed": "Breeze non è riuscito a verificare l'accesso restituito dal provider di identità. Riprova."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Caricamento app connesse…",
@@ -4624,6 +4625,7 @@
     "ssoReauthProviderInactive": "L'accesso Single Sign-On non è più disponibile per questo account. Rivolgiti all'amministratore e riprova.",
     "ssoReauthConfigChanged": "Le impostazioni di Single Sign-On sono cambiate durante la verifica. Avvia di nuovo la verifica.",
     "ssoReauthEmailUnverified": "Il tuo provider di identità segnala che il tuo indirizzo e-mail non è verificato. Verificalo lì, quindi riprova.",
+    "ssoReauthIdpVerifyFailed": "Breeze non è riuscito a verificare l'accesso restituito dal tuo provider di identità. Riprova. Se il problema persiste, chiedi all'amministratore di controllare i log del server.",
     "ssoReauthProofExpired": "La verifica tramite il provider di identità è scaduta. Eseguila di nuovo per completare la configurazione dell'autenticazione a più fattori.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Questo account accede tramite un provider di identità e non ha una password. Esegui di nuovo la verifica presso il provider prima di aggiungere una passkey.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "La tua identità è stata verificata. Assegna un nome a questa passkey e continua.",
@@ -6028,6 +6030,8 @@
     },
     "columns": {
       "timezone": "Fuso orario",
+      "address": "Indirizzo",
+      "contact": "Contatto",
       "devices": "Dispositivi"
     },
     "empty": "Nessun sito trovato. Aggiungi un sito per iniziare."

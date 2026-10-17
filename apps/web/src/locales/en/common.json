@@ -114,7 +114,8 @@
     "ticketsIncidents": "Incidents",
     "ticketsServiceRequests": "Service Requests",
     "ticketsProblems": "Problems",
-    "ticketsChanges": "Changes"
+    "ticketsChanges": "Changes",
+    "endpointMessages": "Messages"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -314,6 +315,17 @@
       "action": "Action",
       "target": "Target",
       "time": "Time"
+    },
+    "recentlyViewed": {
+      "title": "Pick up where you left off",
+      "kind": {
+        "device": "Device",
+        "org": "Organization",
+        "ticket": "Ticket",
+        "alert": "Alert",
+        "site": "Site",
+        "page": "Page"
+      }
     },
     "alerts": {
       "title": "Recent Alerts",
@@ -688,7 +700,23 @@
       "noSelection": "Select organization",
       "searchOrganizations": "Search organizations…",
       "noMatches": "No organizations match",
-      "legacyFilterNotice": "Organization filtering now follows the header selector."
+      "legacyFilterNotice": "Organization filtering now follows the header selector.",
+      "recent": "Recent",
+      "pane": {
+        "destinations": {
+          "overview": "Overview",
+          "devices": "Devices",
+          "tickets": "Tickets",
+          "alerts": "Alerts",
+          "sites": "Sites",
+          "billing": "Billing"
+        },
+        "offlineCount": "{{count}} offline",
+        "openCount": "{{count}} open",
+        "criticalCount": "{{count}} critical",
+        "noCritical": "none",
+        "hint": "Click a name to switch · click a page to switch and go there"
+      }
     },
     "header": {
       "menu": "Menu",
@@ -805,9 +833,9 @@
       "expand": "Expand sidebar",
       "collapseSections": "Collapse all sections",
       "closeMenu": "Close menu",
-      "recentDevices": "Recent devices",
-      "hideRecentDevices": "Hide recent devices",
-      "showRecentDevices": "Show recent devices"
+      "recent": "Recent",
+      "hideRecent": "Hide recent",
+      "showRecent": "Show recent"
     },
     "orgRequired": {
       "title": "Select an organization",

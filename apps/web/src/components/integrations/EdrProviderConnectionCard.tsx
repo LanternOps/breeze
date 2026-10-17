@@ -21,7 +21,9 @@ import "@/lib/i18n";
 
 export type { EdrConnection, EdrConnectionTestResult };
 
-const INTERVAL_MIN = 1;
+// Matches the edr_connections CHECK (BETWEEN 5 AND 1440) in
+// apps/api/migrations/2026-12-16-100000-edr-provider-framework.sql.
+const INTERVAL_MIN = 5;
 const INTERVAL_MAX = 1440;
 
 /** Blank = provider default (null); otherwise an integer in range, else undefined (invalid). */
@@ -382,6 +384,11 @@ export default function EdrProviderConnectionCard({
             </label>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">{t("edrProviders.intervalHelp")}</p>
+          {(detection === undefined || inventory === undefined) && (
+            <p data-testid="edr-connection-interval-error" role="alert" className="mt-1 text-xs text-destructive">
+              {t("edrProviders.intervalInvalid")}
+            </p>
+          )}
 
           {!editingCredentials && fields.length > 0 && (
             <button

@@ -44,6 +44,7 @@ import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, ALLOWANCE_TYPES, SITE_SCOPED_TYPES, H
 import DeviceCoverageNotice from './DeviceCoverageNotice';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { EntityLink } from '@/components/shared/EntityLink';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
@@ -959,9 +960,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                       {/* orgId can originate in the URL hash (ContractWorkspace's
                           presetOrgId), so it is DOM text flowing into an href —
                           encode the path segment. CodeQL js/xss-through-dom. */}
-                      <a href={`/organizations/${encodeURIComponent(orgId)}`} data-testid="org-record-link" className="hover:underline">
-                        {orgName}
-                      </a>
+                      <EntityLink kind="org" id={orgId} name={orgName} />
                     </span>
                   </div>
                 )}

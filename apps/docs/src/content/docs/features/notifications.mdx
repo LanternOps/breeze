@@ -202,6 +202,20 @@ The Pushover sender delivers alert notifications to a user's phone via the [Push
 
 **Security:** The `token` and `user` values are encrypted at rest, the same as PagerDuty credentials.
 
+#### Ticket assignments over Pushover
+
+Technicians can also get a Pushover push when a ticket is **assigned to them** (v0.122.1). This uses the partner's Pushover application token from **Pushover Defaults**, so that token must be set first.
+
+<Steps>
+
+1. Each technician opens their profile page and finds the **Pushover for ticket assignments** card.
+
+2. They paste their own 30-character Pushover user key and click **Save key**. Only they receive these pushes; the key is stored encrypted and is never shown again (the card only says whether a key is saved). **Remove key** clears it.
+
+</Steps>
+
+By default, a technician without a personal key gets no Pushover push for assignments. To send those assignments to the partner's default user or group key instead, turn on **Send ticket assignments to the default key when the assignee has no Pushover key** under **Pushover Defaults**. It is off by default. A Pushover failure never blocks or fails the assignment email.
+
 ### In-App
 
 In-app notifications are created directly in the `user_notifications` database table and appear in each user's notification center within the Breeze dashboard.
