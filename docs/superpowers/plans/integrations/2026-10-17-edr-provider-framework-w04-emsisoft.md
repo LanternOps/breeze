@@ -37,7 +37,7 @@ Source: `https://api.emsisoft.com/swagger/v1.0/swagger.json` (OpenAPI 3.0.1, "Em
 | Endpoints (list) | `GET /v1/workspaces/{ws}/devices?Skip&Take` | `guid, name, status (Undefined/Idle/Updating/Scanning), lastUpdate, lastScan, lastAlert, protectionPolicyGroup(+Guid), lastUser`. The list has **no domain, OS, online or protection state**. |
 | Endpoint detail | `GET /v1/devices/{dv}/details` | `name, domain, protectionStatus (Offline/Protected/PartiallyProtected/NotProtected/RebootRequired/NotManaged/UnusedSeat/Connecting/NewlyDiscovered), os, version, updateStatus.online (Undefined/Online/Offline), networkAdapters[]: { iPv4Addresses[], iPv6Addresses[] }, settings.networkLockdown { value, enabledOnGroupLevel, groupGuid }`. The detail has **no MAC and no serial**. |
 | Detections | `GET /v1/workspaces/{ws}/incidents?DateFrom&DateTo&Skip&Take` | `DateFrom`/`DateTo` filter on **last detection**. Item: `guid, type (Unknown/File/Host/Payload/ThreatHuntingSnapshot), verdict (New/InInvestigation/ConfirmedMalicious/ConfirmedBenign/Unknown), actionTaken + actionsTaken[] (None/Reported/Remediated/Deleted/Blocked/Allowed/Isolated/PartlyRemediated/RollbackCompleted), highestSeverity (None/FalseAlert/Unwanted/Notable/Suspicious/LikelyMalicious/Malicious), lastDetectionAt, detectionComponent, involvedDevices: string[], involvedDeviceUsers: string[], sha1/md5/sha256, knownFileNames[], hostAddress, detailsPageLink`. There is **no closed/resolved state**. |
-| Incident detail / verdict | `GET` / `PUT /v1/workspaces/{ws}/incidents/{incidentId}(/verdict)` | `incidentId` is documented as "file SHA1 hash, or web host, or IP", **not the guid**. The detail has `verdict, actionTaken(s), severity, detections[]` but **no `involvedDevices`**. The verdict body is `{ verdict }`. |
+| Incident detail / verdict | `GET` / `PUT /v1/workspaces/{ws}/incidents/{incidentId}(/verdict)` | `incidentId` is documented as "file SHA1 hash, or web host, or IP", **not the guid**. The detail has `verdict, actionTaken(s), severity, detections[]` but **no `involvedDevices`**. The verdict body is `{ verdict }`. **No 404 is documented**: a missing incident is a 400 LogicError (`IncidentNotFound` on the PUT, `WorkspaceThreatIncorrectTarget` on the GET). |
 | Scan | `POST /v1/devices/{dv}/scans/start-quick` | Body `{ detectPups, performanceMode, onScanCompletion (ReportOnly/ReportAndComputerShutdown/QuarantineDetections/QuarantineAndComputerShutdown), detectRegistryPoliciesSettings }`, response `{ scanGuid }`. There is **no scan-status read**. |
 | Quarantine | `GET /v1/devices/{dv}/quarantine/info`, `POST …/quarantine/{restore,delete,false-detected-file}` | Lists are **per device**. Items are keyed by a `quarantineFile` string, with no id. |
 | Installer (W06) | `GET /v1/workspaces/{ws}/install?groupGuid` | `installToken (uuid), tokenExpiration, downloadUrl, downloadUrlFull, downloadUrlDirect, downloadUrlDirectFull`. |
@@ -314,7 +314,9 @@ export class EmsisoftClient {
   listDevicesAll(wsGuid: string): Promise<EmsiDevice[]>;
   getDeviceDetails(dvGuid: string): Promise<EmsiDeviceDetails>;
   listIncidentsAll(wsGuid: string, from: Date, to: Date): Promise<EmsiIncident[]>;
-  getIncident(wsGuid: string, incidentRef: string): Promise<EmsiIncidentDetail | null>;   // 404 -> null
+  /** Not found -> null: a 404, OR a 400 whose body code is `IncidentNotFound` / `WorkspaceThreatIncorrectTarget`
+   *  (the OpenAPI documents no 404 for incidents — only these 400 LogicError codes). */
+  getIncident(wsGuid: string, incidentRef: string): Promise<EmsiIncidentDetail | null>;
 }
 ```
 DTO types (`EmsiAccount`, `EmsiWorkspace`, `EmsiDevice`, `EmsiDeviceDetails`, `EmsiIncident`, `EmsiIncidentDetail`) carry exactly the fields in the API table, all optional except the guids. Zod-parse each item with `.passthrough()`. An item failing the parse throws `malformed_response` (scope `tenant`).
@@ -347,7 +349,7 @@ Observed rate-limit headers: per response, collect headers whose name matches `/
   - error messages exclude the key, guids and a body containing `SECRET-SENTINEL`;
   - `onRateHeaders` deduped, and a `<script>` value dropped;
   - non-JSON 200 → retried, then `vendor_error`;
-  - `getIncident` 404 → `null`.
+  - `getIncident`: 404 → `null`; 400 with body code `IncidentNotFound` → `null`; 400 `WorkspaceThreatIncorrectTarget` → `null`; any other 400 → `invalid_params` (fixtures `error-400-incident-not-found.json`, `error-400-incorrect-target.json`).
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/edrProviders/emsisoft/client.test.ts` → FAIL.
 - [ ] **Step 3: Implement**, mirroring `bitdefender/client.ts` structure (fail helper, injected sleep, page-cap constants) over REST + JSON.
 - [ ] **Step 4: Run** → PASS.
@@ -472,10 +474,10 @@ A confirmed-malicious verdict is not a remediation. Incident-level actions also 
 
 `listDetections(ctx, tenant, cursor, now)`:
 1. **Discovery window:** `from = now − firstSyncLookbackDays`, `to = now`, every run. The cursor is written as `{ v: 1, windowEnd }` for observability and never read for the window. Status changes on older rows arrive through the re-read (A5).
-2. If any incident names a device, build the device index from `listDevicesAll(ws)`, memoized per run as `emsi:devices:<ws>`. A run lists a workspace's devices at most once across the detection and inventory streams it shares.
+2. If any incident names a device, build the device index from `listDevicesAll(ws)`, memoized per run as `emsi:devices:<ws>`. `ctx.runCache` is per job run (`context.ts`), so this saves calls within one detection run only. Do not build a cross-job cache.
 3. A `forbidden` on `/incidents` **throws** (tenant failure, D10 keep-and-mark-stale). It is not swallowed into `warnings`: a workspace has only one detection source, and an empty success would read as "no threats".
 
-`rereadDetectionStatus(ctx, tenant, refs)`: group refs by `groupKey`, then make **one** `getIncident(ws, vendorRef)` per group. A ref with a null `vendorRef` is omitted. A `null` (404) result omits the group's refs (never closed). Each fetched detail maps through `toStatusUpdate` to **every** ref in the group. A connection-scope error rethrows; `forbidden` → tenant failure.
+`rereadDetectionStatus(ctx, tenant, refs)`: group refs by `groupKey`, then make **one** `getIncident(ws, vendorRef)` per group. A ref with a null `vendorRef` is omitted. A `null` (404) result omits the group's refs (never closed). Each fetched detail maps through `toStatusUpdate` to **every** ref in the group. Errors per group: a connection-scope error rethrows; `forbidden` (tenant) → tenant failure; **any `operation`-scope error (`invalid_params`, a device-path `not_found`) omits that group's refs and continues**, so the framework still rotates them (A5 bumps `updated_at` on omitted refs). One dead or purged incident must never block a tenant's inventory or the rotation.
 
 - [ ] **Step 1: Failing tests:**
   - `testConnection`:
@@ -496,7 +498,8 @@ A confirmed-malicious verdict is not a remediation. Incident-level actions also 
   - `rereadDetectionStatus`:
     - one vendor call for three sibling refs, applied to all three;
     - a 404 omits them;
-    - a null-`vendorRef` ref is omitted with no call.
+    - a null-`vendorRef` ref is omitted with no call;
+    - a 400 `IncidentNotFound` and an unrelated 400 on one group omit that group only, the other groups still update, and the call resolves (no tenant failure).
   - Rate-header log fires once per run.
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/edrProviders/emsisoft/` → FAIL.
 - [ ] **Step 3: Implement.**
@@ -621,7 +624,7 @@ Offline devices are allowed **[U]**. If B7 shows EMC does not queue commands for
 - `mark_false_positive` → `setIncidentVerdict(ws, vendorRef, 'ConfirmedBenign')` → `{ status: 'succeeded' }`.
 - Any other request throws `unsupported_action`.
 
-`reconcileAction`: scan → `'unknown'` (settles `failed` for a human to re-issue, as GravityZone scan does). `mark_false_positive` → `getIncident(ws, vendorRef)`: verdict `ConfirmedBenign` → `'applied'`; another verdict → `'not_applied'`; a null result or a read failure → `'unknown'`.
+`reconcileAction`: scan → `'unknown'` (settles `failed` for a human to re-issue, as GravityZone scan does). `mark_false_positive` → `getIncident(ws, vendorRef)`: verdict `ConfirmedBenign` → `'applied'`; another verdict → `'not_applied'`; a null result (incl. a 400 `IncidentNotFound`) or a read failure → `'unknown'`.
 
 - [ ] **Tests first:**
   - the `supportsAction` table and its order;
@@ -637,9 +640,9 @@ Offline devices are allowed **[U]**. If B7 shows EMC does not queue commands for
 
 A verdict applies to the whole Emsisoft incident, but W03 dispatch authorizes only the selected row and its device (`actions.ts` site check; `actionTargets.ts:78` in-flight key). For an action in `adapter.capabilities.groupScopedActions`, dispatch adds three steps after target resolution and before the insert:
 
-1. **Load the group under the caller's RLS context:** every live row with the same `connection_id`, `tenant_id` and `details->'_breeze'->>'groupKey'`. Then count the same set under `withSystemDbAccessContext`, keyed by the authorized row's ids only. **If the counts differ, refuse `site_denied` 403**: some sibling is invisible to the caller.
+1. **Load the group under the caller's RLS context:** every live row with the same `connection_id` and `tenant_id` whose `details->'_breeze'->>'groupKey'` **or** `details->'_breeze'->>'vendorRef'` equals the target's. The verdict is written to `vendorRef` (sha1 / host / IP), and two incident guids can share one sha1, so authorizing by guid alone would miss rows the write changes. Then count the same set under `withSystemDbAccessContext`, keyed by the authorized row's ids only. **If the counts differ, refuse `site_denied` 403**: some sibling is invisible to the caller.
 2. **Site rule:** for a site-restricted caller, **every** sibling's `breeze_device_id` must be non-null **and** in `restriction.allowedDeviceIds`. A null (unknown attribution) or an out-of-site device → `site_denied` 403. An unrestricted caller passes step 2.
-3. **Group in-flight / cooldown:** refuse `action_in_progress` 409 if any sibling has a `queued` / `submitted` row for the same action, and `action_recently_requested` 409 if any sibling succeeded inside the W03 60-second cooldown. The re-check inside the insert transaction takes the advisory lock on `(groupKey, action)` instead of `(target, action)`.
+3. **Group in-flight / cooldown:** refuse `action_in_progress` 409 if any sibling has a `queued` / `submitted` row for the same action, and `action_recently_requested` 409 if any sibling succeeded inside the W03 60-second cooldown. The re-check inside the insert transaction takes the advisory lock on `(vendorRef, action)` (the write target) instead of `(target, action)`.
 
 The ledger row and audit name the acted-on row and add `details.groupSize` and `groupKey` to the audit `details`. Reconciliation is by group: once one sibling's action is settled `succeeded`, any other in-flight row for the same group+action is reconciled `applied` by the next status poll (the reconciler's existing `reconcileAction` already reads the incident verdict). No new code path calls `performAction` (`edrActions.chokepoint.contract`).
 
@@ -652,7 +655,8 @@ The ledger row and audit name the acted-on row and add `details.groupSize` and `
   - a sibling in flight → 409;
   - a sibling succeeded 30 s ago → 409;
   - a non-group action (scan) is unaffected;
-  - a GravityZone connection (no `groupScopedActions`) is unaffected.
+  - a GravityZone connection (no `groupScopedActions`) is unaffected;
+  - two incident guids sharing one sha1, with one guid's device out of site → `site_denied` (the group is the union by `vendorRef`).
 
   Plus an `edrActions.integration.test.ts` case on real RLS with a site-restricted technician. Commit `feat(edr): group-scoped EDR actions require authority over every affected device (#8168)`.
 
@@ -719,7 +723,7 @@ Not added to `HELPER_TOOL_SCOPING` or the helper whitelists: Breeze Helper never
 
 Actions ship dark: `edr_connections.actions_enabled` defaults false (W03). Before Todd enables a production connection, record in the PR:
 - [ ] `start-quick` → 200 + `scanGuid`. Whether EMC queues the command for an offline device (decides the B2 offline rule). Whether the `QuarantineDetections` completion quarantines the EICAR file.
-- [ ] `PUT …/incidents/{sha1}/verdict` works (and whether `{guid}` does). After a Breeze mark-FP, the console shows the incident benign, and every sibling row flips on the next detection run.
+- [ ] `PUT …/incidents/{sha1}/verdict` works (and whether `{guid}` does). Whether incident guid ↔ sha1 is 1:1 in a workspace (B3 groups by both either way). After a Breeze mark-FP, the console shows the incident benign, and every sibling row flips on the next detection run.
 - [ ] If the lab can produce a key without the permission: `forbidden` → 422, the tenant denial is recorded, and the button is disabled with its reason.
 - [ ] Before merge, remove any action the lab did not prove. For `mark_false_positive`, that means backing out B3–B5 and B4's registrations.
 
