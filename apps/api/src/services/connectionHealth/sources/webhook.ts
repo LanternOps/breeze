@@ -21,7 +21,7 @@ import { observeRows, toHealthObservation, validUuids } from './observeRows';
 // failure. A webhook whose endpoint died and that receives no more events stays
 // open until a delivery succeeds or the webhook is disabled (retired).
 //
-// Both tables grow with orgs, so both reads are index-backed (2026-12-29-250000):
+// Both tables grow with orgs, so both reads are index-backed (2026-12-30-120100):
 //   broken:  webhook_deliveries_failed_recent_idx (created_at) WHERE status = 'failed'
 //   tracked: webhook_deliveries_failed_webhook_idx (webhook_id, created_at)
 //            WHERE status = 'failed' AND attempts > 0

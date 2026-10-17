@@ -123,7 +123,7 @@ export const webhookDeliveries = pgTable('webhook_deliveries', {
   unresolvedIdx: index('webhook_deliveries_unresolved_idx')
     .on(table.createdAt)
     .where(sql`${table.status} IN ('pending', 'retrying')`),
-  // Connection health W4 webhook source (2026-12-29-250000): failed rows only,
+  // Connection health W4 webhook source (2026-12-30-120100): failed rows only,
   // so both grow with failures, not with traffic.
   failedRecentIdx: index('webhook_deliveries_failed_recent_idx')
     .on(table.createdAt)

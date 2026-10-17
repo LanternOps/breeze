@@ -1,7 +1,7 @@
 -- Connection health W4 (#8848, spec 2026-10-15 §3): the reconciler's Google
 -- Workspace verification probe stores its last result on the connection, so
 -- the google_workspace health source reads a durable, index-backed column
--- (2026-12-29-250000) instead of a Redis value that eviction would erase.
+-- (2026-12-30-120100) instead of a Redis value that eviction would erase.
 --   last_probe_at      when the probe last claimed this row (rate limit: 6 h)
 --   last_probe_status  ok | failed (credentials or delegation rejected)
 --                      | unavailable (rate limit, 5xx, network: no verdict)

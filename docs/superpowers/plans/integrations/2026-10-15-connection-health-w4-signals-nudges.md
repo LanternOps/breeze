@@ -23,8 +23,8 @@ wave: W04 (#8848)
 ## Global Constraints
 
 - **No new table.** Two migrations, both re-checked to sort last at rebase:
-  - `apps/api/migrations/2026-12-29-240000-google-workspace-probe-columns.sql`: three nullable columns on `google_workspace_connections` plus a CHECK. Idempotent, no row writes.
-  - `apps/api/migrations/2026-12-29-250000-connection-health-w4-indexes.sql`: `-- @no-transaction`, `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (both `webhook_deliveries` indexes are on a live, append-only table with no retention), followed by the INVALID-index guard from `2026-12-23-100000-tier1-sweep-indexes.sql`.
+  - `apps/api/migrations/2026-12-30-120000-google-workspace-probe-columns.sql`: three nullable columns on `google_workspace_connections` plus a CHECK. Idempotent, no row writes.
+  - `apps/api/migrations/2026-12-30-120100-connection-health-w4-indexes.sql`: `-- @no-transaction`, `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (both `webhook_deliveries` indexes are on a live, append-only table with no retention), followed by the INVALID-index guard from `2026-12-23-100000-tier1-sweep-indexes.sql`.
 - **Export policy** (`CORE_TENANT_EXPORT_POLICY`): `google_workspace_connections.last_probe_at` and `last_probe_status` → `included`; `last_probe_error` (provider text) → `excludedOpen`. No cascade/merge change (no new table, no new org_id).
 - Partial-index predicates are stated with literal constants (`sql.raw`), as in W1/W2.
 - `detail` is `sanitizeHealthDetail(raw)` or `null`. Google credentials, decrypted keys and token hashes never reach a log line, a detail, or Redis.
@@ -100,7 +100,7 @@ wave: W04 (#8848)
 - [ ] **Green**, commit.
 
 ### Task 2: Webhook source + indexes
-**Files:** `sources/webhook.ts` (+ test), registry, `db/schema/integrations.ts`, migration 250000, integration tests.
+**Files:** `sources/webhook.ts` (+ test), registry, `db/schema/integrations.ts`, migration 2026-12-30-120100, integration tests.
 - [ ] **Red (unit):** mapper → full observation with sanitized detail (URL → host), `HTTP <status>` fallback, grace, retired; broken SQL carries literal `status = 'failed'` and the superseded `NOT LIKE`.
 - [ ] **Red (integration, `connectionHealthSources`):** terminal failure in window → broken; non-terminal (`attempts` 2 of 5) → absent; superseded → absent; recovery-sweep row (`attempts` 0) → absent; failure older than the window untracked → absent; tracked with a later success → healthy; tracked with an old failure and no success → still broken; disabled → retired; deleted → absent; custom `retry_policy.maxRetries = 2` → terminal at 2.
 - [ ] **Red (EXPLAIN):** `webhook` uses `webhook_deliveries_failed_recent_idx`; `webhooks`, `webhook_deliveries` join `PER_ORG_TABLES`.
@@ -112,7 +112,7 @@ wave: W04 (#8848)
 - [ ] Green, commit.
 
 ### Task 4: Google verification probe + source
-**Files:** migration 240000, `db/schema/google.ts`, `tenantExportPolicyRegistry.ts`, `services/connectionHealth/googleProbe.ts` (+ test), `sources/googleWorkspace.ts` (+ test), `types.ts` (`prepare`), `reconcile.ts` (call `prepare` before the transaction), `routes/google.ts` (save resets probe columns), registry (drop the exemption), migration-index for the partial index.
+**Files:** migration 2026-12-30-120000, `db/schema/google.ts`, `tenantExportPolicyRegistry.ts`, `services/connectionHealth/googleProbe.ts` (+ test), `sources/googleWorkspace.ts` (+ test), `types.ts` (`prepare`), `reconcile.ts` (call `prepare` before the transaction), `routes/google.ts` (save resets probe columns), registry (drop the exemption), migration-index for the partial index.
 - [ ] **Red (unit):** `classifyProbeError`: 401/403/404/400/`invalid_service_account`/decrypt failure → `failed`; 429, 5xx, network code, our timeout → `unavailable`; the recorded error never contains the key, the private key, or a token (hostile fixture). `runGoogleProbes` caps at 16, runs ≤ 4 at once, times out at 8 s, and one probe's throw never stops the others. `reconcile` calls `prepare` outside the DB context, before `runKind`, and a `prepare` throw fails the kind like an `observe` throw.
 - [ ] **Red (integration):** claim picks never-probed then oldest, skips rows probed under 6 h ago, and two concurrent claims return disjoint rows; a result whose `updated_at` changed is discarded; source reads `failed` → broken, `unavailable` → unknown.
 - [ ] Green, commit.
