@@ -867,7 +867,8 @@
     "goBack": "Torna indietro",
     "devices": "Dispositivi",
     "devicesCrumbOtherOrg": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro resta {{workingOrg}}",
-    "devicesCrumbOtherOrgUnnamed": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro non cambia"
+    "devicesCrumbOtherOrgUnnamed": "Apre la scheda Dispositivi di {{deviceOrg}}; la tua organizzazione di lavoro non cambia",
+    "switchOrgFailed": "Impossibile cambiare organizzazione. Riprova."
   },
   "deviceDetails": {
     "overview": "Panoramica",

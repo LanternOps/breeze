@@ -867,7 +867,8 @@
     "goBack": "Go back",
     "devices": "Devices",
     "devicesCrumbOtherOrg": "Opens {{deviceOrg}}'s Devices tab; your working org stays {{workingOrg}}",
-    "devicesCrumbOtherOrgUnnamed": "Opens {{deviceOrg}}'s Devices tab; your working organization does not change"
+    "devicesCrumbOtherOrgUnnamed": "Opens {{deviceOrg}}'s Devices tab; your working organization does not change",
+    "switchOrgFailed": "Couldn't switch organization. Try again."
   },
   "deviceDetails": {
     "overview": "Overview",

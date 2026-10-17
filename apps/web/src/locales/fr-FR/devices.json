@@ -867,7 +867,8 @@
     "goBack": "Retourne",
     "devices": "Dispositifs",
     "devicesCrumbOtherOrg": "Ouvre l’onglet Appareils de {{deviceOrg}} ; votre organisation de travail reste {{workingOrg}}",
-    "devicesCrumbOtherOrgUnnamed": "Ouvre l’onglet Appareils de {{deviceOrg}} ; votre organisation de travail ne change pas"
+    "devicesCrumbOtherOrgUnnamed": "Ouvre l’onglet Appareils de {{deviceOrg}} ; votre organisation de travail ne change pas",
+    "switchOrgFailed": "Impossible de changer d’organisation. Réessayez."
   },
   "deviceDetails": {
     "overview": "Aperçu",

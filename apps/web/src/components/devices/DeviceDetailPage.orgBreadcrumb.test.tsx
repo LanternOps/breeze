@@ -7,6 +7,7 @@ import DeviceDetailPage from './DeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { useOrgStore } from '@/stores/orgStore';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../../hooks/useEventStream', () => ({ useEventStream: () => ({ subscribe: vi.fn() }) }));
@@ -172,8 +173,22 @@ describe('Devices crumb (ui-flow A4)', () => {
     useOrgStore.setState({ currentOrgId: 'org-99', allOrgs: false } as never);
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
     expect(await screen.findByTestId('working-org-prop')).toHaveTextContent('org-99');
+    applyOrgSwitchMock.mockReturnValue(new Promise(() => {}));
     fireEvent.click(screen.getByText('switch-scope'));
+    fireEvent.click(screen.getByText('switch-scope'));
+    expect(applyOrgSwitchMock).toHaveBeenCalledTimes(1);
     expect(applyOrgSwitchMock).toHaveBeenCalledWith('org-42', 'Switched to Acme Corp', `/devices/${DEVICE_ID}`);
+  });
+
+  it('surfaces a failed switch instead of swallowing it (#9027)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    useOrgStore.setState({ currentOrgId: 'org-99', allOrgs: false } as never);
+    applyOrgSwitchMock.mockRejectedValue(new Error('refresh failed'));
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    fireEvent.click(await screen.findByText('switch-scope'));
+    await vi.waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
   });
 });
 

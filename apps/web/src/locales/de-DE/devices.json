@@ -867,7 +867,8 @@
     "goBack": "Zurück",
     "devices": "Geräte",
     "devicesCrumbOtherOrg": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation bleibt {{workingOrg}}",
-    "devicesCrumbOtherOrgUnnamed": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation ändert sich nicht"
+    "devicesCrumbOtherOrgUnnamed": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation ändert sich nicht",
+    "switchOrgFailed": "Organisation konnte nicht gewechselt werden. Bitte erneut versuchen."
   },
   "deviceDetails": {
     "overview": "Übersicht",

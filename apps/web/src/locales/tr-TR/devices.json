@@ -867,7 +867,8 @@
     "goBack": "Geri dön",
     "devices": "Cihazlar",
     "devicesCrumbOtherOrg": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz {{workingOrg}} olarak kalır",
-    "devicesCrumbOtherOrgUnnamed": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz değişmez"
+    "devicesCrumbOtherOrgUnnamed": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz değişmez",
+    "switchOrgFailed": "Kuruluş değiştirilemedi. Tekrar deneyin."
   },
   "deviceDetails": {
     "overview": "Genel Bakış",

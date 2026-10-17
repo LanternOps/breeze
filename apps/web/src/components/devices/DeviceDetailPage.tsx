@@ -358,13 +358,22 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   // Switch the working org to the device's org and stay on this record. No
   // hash: a same-path navigation carrying one is a scroll-to-anchor for the
   // router, so the switch (and its toast) would never settle.
+  const switchingOrgRef = useRef(false);
   const handleSwitchToDeviceOrg = () => {
-    if (!device?.orgId) return;
-    void applyOrgSwitch(
+    if (!device?.orgId || switchingOrgRef.current) return;
+    switchingOrgRef.current = true;
+    applyOrgSwitch(
       device.orgId,
       t("common:layout.org.toast.switched", { name: device.orgName }),
       `/devices/${device.id}`,
-    );
+    )
+      .catch((err) => {
+        console.error("[DeviceDetailPage] switching to the device org failed", err);
+        showToast({ type: "error", message: t("deviceDetailPage.switchOrgFailed") });
+      })
+      .finally(() => {
+        switchingOrgRef.current = false;
+      });
   };
   // Back returns to wherever the tech came from (list filters, scroll, org);
   // a fresh tab / deep link has no history to pop, so fall to the org-aware

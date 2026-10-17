@@ -867,7 +867,8 @@
     "goBack": "Voltar",
     "devices": "Dispositivos",
     "devicesCrumbOtherOrg": "Abre a aba Dispositivos de {{deviceOrg}}; sua organização de trabalho continua sendo {{workingOrg}}",
-    "devicesCrumbOtherOrgUnnamed": "Abre a aba Dispositivos de {{deviceOrg}}; sua organização de trabalho não muda"
+    "devicesCrumbOtherOrgUnnamed": "Abre a aba Dispositivos de {{deviceOrg}}; sua organização de trabalho não muda",
+    "switchOrgFailed": "Não foi possível mudar de organização. Tente novamente."
   },
   "deviceDetails": {
     "overview": "Visão geral",

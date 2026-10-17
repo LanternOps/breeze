@@ -244,6 +244,8 @@ describe('OrgSwitcher (unified control)', () => {
     expect(selectAllOrgsMock).not.toHaveBeenCalled();
     expect(reloadMock).not.toHaveBeenCalled();
     expect(hrefSetter).not.toHaveBeenCalled();
+    // #9027: no stay-on-record navigation either — nothing changed.
+    expect(navigateToMock).not.toHaveBeenCalled();
   });
 
   it('renders a pinned "All organizations" fleet row with >1 org', () => {

@@ -9,6 +9,19 @@ describe('recordStayDestination (#9027)', () => {
     expect(recordStayDestination('/tickets/t-9', '?from=queue')).toBe('/tickets/t-9?from=queue');
   });
 
+  it.each(['compare', 'groups', 'network', 'posture', 'time', 'unassigned'])(
+    'treats /devices/%s as a page, not a record',
+    (sibling) => {
+      expect(recordStayDestination(`/devices/${sibling}`)).toBeUndefined();
+    },
+  );
+
+  it('handles a trailing slash, deeper paths and /tickets/new', () => {
+    expect(recordStayDestination('/devices/abc123/')).toBe('/devices/abc123/');
+    expect(recordStayDestination('/devices/abc123/extra')).toBeUndefined();
+    expect(recordStayDestination('/tickets/new')).toBeUndefined();
+  });
+
   it('returns undefined for list routes and static siblings', () => {
     expect(recordStayDestination('/devices')).toBeUndefined();
     expect(recordStayDestination('/devices/compare')).toBeUndefined();
