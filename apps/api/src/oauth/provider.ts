@@ -31,10 +31,12 @@ import {
 import { eq, isNull, lt, or, sql, and as drizzleAnd } from 'drizzle-orm';
 import { ERROR_IDS, logOauthError } from './log';
 import { createGrantErrorLogger, grantErrorContext } from './grantErrorLog';
+import { recordRefreshRetry } from '../services/connectionHealth/oauthRetryCounter';
 import { assertActiveTenantContext } from '../services/tenantStatus';
 
 let providerInstance: Provider | null = null;
-const logProviderGrantError = createGrantErrorLogger();
+// The hook feeds the connection-health "still retrying" detail (W4).
+const logProviderGrantError = createGrantErrorLogger({ onRefreshTokenNotFound: (clientId) => recordRefreshRetry(clientId) });
 
 // Shared AccessToken TTL. Used for the JWT exp AND as the TTL for the
 // grant-revocation cache marker (see revocationCache.revokeGrant) so the

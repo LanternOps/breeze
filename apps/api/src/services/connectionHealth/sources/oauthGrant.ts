@@ -2,7 +2,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../../../db';
 import { PERMISSIONS } from '../../permissions';
 import type { HealthObservation, HealthSource } from '../types';
-import { cleanDisplayName } from '../sanitize';
+import { readRefreshRetryCounts, retryingDetail } from '../oauthRetryCounter';
+import { cleanDisplayName, sanitizeHealthDetail } from '../sanitize';
 
 // Re-exported: W1 callers and tests import it from here.
 export { cleanDisplayName };
@@ -146,6 +147,26 @@ export const oauthGrantSource: HealthSource = {
       // Untracked pairs only matter when broken (spec §1.3: never report the healthy set).
       if (o.state === 'broken' || trackedSet.has(o.sourceId)) out.push(o);
     }
-    return out;
+    return decorateStillRetrying(out, now);
   },
 };
+
+/**
+ * W4: a broken grant whose app keeps presenting its revoked refresh token says
+ * so, from the grant.error counter (oauthRetryCounter.ts). Per client: the
+ * token endpoint cannot tell which account a dead token belonged to. One
+ * bounded Redis read inside the kind's transaction; a Redis failure leaves the
+ * detail null and never fails the kind.
+ */
+export async function decorateStillRetrying(observations: HealthObservation[], now: Date): Promise<HealthObservation[]> {
+  // sourceId is `<account uuid>:<client id>`; a client id may itself contain ':'.
+  const clientOf = (o: HealthObservation) => o.sourceId.slice(o.sourceId.indexOf(':') + 1);
+  const broken = observations.filter((o) => o.state === 'broken');
+  if (broken.length === 0) return observations;
+  const counts = await readRefreshRetryCounts([...new Set(broken.map(clientOf))], now);
+  return observations.map((o) => {
+    if (o.state !== 'broken') return o;
+    const detail = retryingDetail(counts.get(clientOf(o)) ?? 0);
+    return detail ? { ...o, detail: sanitizeHealthDetail(detail) } : o;
+  });
+}
