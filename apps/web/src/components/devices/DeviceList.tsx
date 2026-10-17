@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState, useEffect, useRef } from "react";
 import { usePermissions } from "../../lib/permissions";
+import { ENABLE_ENDPOINT_MESSAGING } from "../../lib/featureFlags";
 import { createPortal } from "react-dom";
 import {
   ChevronLeft,
@@ -840,7 +841,7 @@ export default function DeviceList({
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
-  const canSendMessage = can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send
+  const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send; #8968: hidden until the build enables messaging
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");

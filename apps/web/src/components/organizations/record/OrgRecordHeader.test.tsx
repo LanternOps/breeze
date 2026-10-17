@@ -4,6 +4,11 @@ import userEvent from '@testing-library/user-event';
 import '@/lib/i18n';
 
 const granted = vi.hoisted(() => new Set<string>());
+const flags = vi.hoisted(() => ({ ENABLE_ENDPOINT_MESSAGING: true }));
+vi.mock('@/lib/featureFlags', async (orig) => ({
+  ...(await orig<typeof import('@/lib/featureFlags')>()),
+  get ENABLE_ENDPOINT_MESSAGING() { return flags.ENABLE_ENDPOINT_MESSAGING; },
+}));
 vi.mock('@/lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
 }));
@@ -115,5 +120,16 @@ describe('OrgRecordHeader - Send message is gated on endpoint_messages:send', ()
     granted.add('endpoint_messages:send');
     renderHeader({ onSendMessage: vi.fn() });
     expect(screen.getByTestId('org-record-send-message')).toBeTruthy();
+  });
+
+  // #8968: the rollout flag cannot be switched on from any UI yet, so the
+  // entry point stays hidden until the build enables endpoint messaging.
+  it('hides the button when the build-time endpoint messaging flag is off', () => {
+    flags.ENABLE_ENDPOINT_MESSAGING = false;
+    granted.clear();
+    granted.add('endpoint_messages:send');
+    renderHeader({ onSendMessage: vi.fn() });
+    expect(screen.queryByTestId('org-record-send-message')).toBeNull();
+    flags.ENABLE_ENDPOINT_MESSAGING = true;
   });
 });
