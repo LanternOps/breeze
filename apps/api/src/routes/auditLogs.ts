@@ -307,13 +307,15 @@ function toFullEntry(row: DbRow, includeDetails = true) {
   return entry;
 }
 
-function parseExcludeActions(raw: string | undefined): string[] {
+function parseCommaList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }
+
+const parseExcludeActions = parseCommaList;
 
 function buildFilterConditions(
   orgCond: SQL | undefined,
@@ -333,16 +335,26 @@ function buildFilterConditions(
     );
   }
 
-  if (filters.action) {
-    conditions.push(ilike(auditLogsTable.action, `%${escapeIlike(filters.action)}%`));
+  // #8975: the UI sends multi-select filters as a comma list; match each term
+  // on its own and OR them rather than as one literal "a,b" substring.
+  const actionTerms = parseCommaList(filters.action);
+  if (actionTerms.length > 0) {
+    conditions.push(
+      or(...actionTerms.map((t) => ilike(auditLogsTable.action, `%${escapeIlike(t)}%`)))!
+    );
   }
 
-  if (filters.resource) {
-    const term = `%${escapeIlike(filters.resource)}%`;
+  const resourceTerms = parseCommaList(filters.resource);
+  if (resourceTerms.length > 0) {
     conditions.push(
       or(
-        ilike(auditLogsTable.resourceType, term),
-        ilike(auditLogsTable.resourceName, term)
+        ...resourceTerms.flatMap((t) => {
+          const term = `%${escapeIlike(t)}%`;
+          return [
+            ilike(auditLogsTable.resourceType, term),
+            ilike(auditLogsTable.resourceName, term)
+          ];
+        })
       )!
     );
   }

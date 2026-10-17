@@ -197,4 +197,15 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     const res = await app.request(`/audit-logs/search?q=x&orgId=${ORG_B}`);
     expect(res.status).toBe(403);
   });
+
+  // #8975: the UI sends multi-select filters as a comma list. Each term must
+  // be matched on its own (OR), never as one literal "a,b" substring.
+  it.each(['/audit-logs', '/audit-logs/export'])('%s splits comma-separated action/resource into OR terms (#8975)', async (path) => {
+    await app.request(`${path}?action=update,create&resource=device,script`);
+    const { sql: text, params } = JSON.parse(render(lastWhere()));
+    for (const p of ['%update%', '%create%', '%device%', '%script%']) expect(params).toContain(p);
+    expect(params).not.toContain('%update,create%');
+    expect(params).not.toContain('%device,script%');
+    expect(text).toContain(' or ');
+  });
 });
