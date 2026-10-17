@@ -151,7 +151,6 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `loaded` only gates the skip above
   }, [supported, selectedId]);
 
   // Poll while the conversation is live; the poller itself honours tab visibility.

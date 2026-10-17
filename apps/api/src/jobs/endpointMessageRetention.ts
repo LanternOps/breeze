@@ -273,7 +273,7 @@ async function scheduleRepeatableJob(): Promise<void> {
     CHAT_JOB_NAME,
     { type: CHAT_JOB_NAME, queuedAt: new Date().toISOString() },
     {
-      jobId: `${ENDPOINT_MESSAGE_RETENTION_QUEUE}:chat`,
+      jobId: `${ENDPOINT_MESSAGE_RETENTION_QUEUE}-chat`,
       repeat: { every: CHAT_RETENTION_EVERY_MS },
       removeOnComplete: { count: 20 },
       removeOnFail: { count: 200 },
