@@ -433,7 +433,7 @@ describe('agent elevation-requests ingestion route', () => {
     expect(body).toEqual({ id: null, status: 'ignored' });
     expect(values).not.toHaveBeenCalled();
     expect(bridgeMocks.resolveElevationApprovers).not.toHaveBeenCalled();
-    expect(pamConfigMocks.buildPamConfigUpdate).toHaveBeenCalledWith('device-1');
+    expect(pamConfigMocks.buildPamConfigUpdate).toHaveBeenCalledWith('device-1', { orgId: 'org-1' });
   });
 
   it('proceeds with normal decisioning when PAM/UAC interception is enabled', async () => {

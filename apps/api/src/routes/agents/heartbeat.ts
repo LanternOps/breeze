@@ -2634,6 +2634,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         ? { orgId: beatHierarchy.orgId, partnerId: beatHierarchy.org.partnerId }
         : undefined;
       const probePartnerOpts = beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined;
+      // #8257: the device-keyed Redis policy caches are bound to the device's
+      // org. With a hierarchy it supplies the org (already checked equal to
+      // scoped.deviceOrgId above); without one this names it. No statement.
+      const cachedPolicyOpts = { ...policyOpts, orgId: scoped.deviceOrgId };
 
       // Helper. Redis first (no statement on a hit). With the set the helper
       // resolves in memory and only the legacy org flag can read (its own
@@ -2642,7 +2646,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // helperEnabled:false to a legacy beat (a retain-state beat retains it),
       // so its SQL error must not abort the context.
       try {
-        const cachedHelper = await readCachedHelperSettings(scoped.deviceId);
+        const cachedHelper = await readCachedHelperSettings(scoped.deviceId, scoped.deviceOrgId);
         if (cachedHelper) {
           helperSettings = cachedHelper;
         } else {
@@ -2682,14 +2686,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
       // Sentry on every feature: losing a policy silently is exactly #2930.
       try {
-        policyConfigs.eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, policyOpts);
+        policyConfigs.eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, cachedPolicyOpts);
       } catch (err) {
         console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        policyConfigs.hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, policyOpts);
+        policyConfigs.hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, cachedPolicyOpts);
       } catch (err) {
         console.error(`[agents] failed to build hardware monitoring config update for ${agentId}:`, err);
         captureException(err);
@@ -2697,7 +2701,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
       try {
         policyConfigs.pamSettings = await buildPamConfigUpdate(scoped.deviceId, {
-          ...policyOpts,
+          ...cachedPolicyOpts,
           // #8616: see the helper read above.
           skipCacheWrite: hierarchyOutcome !== 'loaded',
           loadOrgPamFallback: (orgId) =>
@@ -2759,7 +2763,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // "no policy applies" arrives as { watches: [] } and must be sent (#2949).
       // With the set, a device with no monitors link costs no statement.
       try {
-        policyConfigs.monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, policyOpts) as Record<string, unknown> | null;
+        policyConfigs.monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, cachedPolicyOpts) as Record<string, unknown> | null;
       } catch (err) {
         console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
         captureException(err);

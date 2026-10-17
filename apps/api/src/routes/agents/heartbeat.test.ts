@@ -1015,6 +1015,38 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
       expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });
     });
 
+    it('binds every device-keyed Redis policy cache read to the device org (#8257)', async () => {
+      const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+      const helpers = await import('./helpers');
+      vi.mocked(loadDeviceHierarchy).mockResolvedValueOnce(hierarchy as never);
+      arrangeBeat();
+
+      expect((await beat()).status).toBe(200);
+      expect(vi.mocked(helpers.readCachedHelperSettings)).toHaveBeenCalledWith('device-1', 'org-1');
+      for (const builder of [
+        helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
+        helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
+      ]) {
+        expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ hierarchy, orgId: 'org-1' }));
+      }
+    });
+
+    it('without a hierarchy the cached resolvers still name the device org (#8257)', async () => {
+      const { loadDeviceHierarchy } = await import('../../services/deviceHierarchy');
+      const helpers = await import('./helpers');
+      vi.mocked(loadDeviceHierarchy).mockRejectedValueOnce(new Error('hierarchy read failed'));
+      arrangeBeat();
+
+      expect((await beat()).status).toBe(200);
+      expect(vi.mocked(helpers.readCachedHelperSettings)).toHaveBeenCalledWith('device-1', 'org-1');
+      for (const builder of [
+        helpers.buildEventLogConfigUpdate, helpers.buildHardwareMonitoringConfigUpdate,
+        helpers.buildMonitoringConfigUpdate, helpers.buildPamConfigUpdate,
+      ]) {
+        expect(vi.mocked(builder)).toHaveBeenCalledWith('device-1', expect.objectContaining({ orgId: 'org-1' }));
+      }
+    });
+
     // Each clause of the identity guard (heartbeat.ts, hierarchy load) must be
     // the SOLE difference in at least one case, so deleting any one turns a
     // test red. `deviceRow` overrides the authenticated device row
@@ -1083,7 +1115,7 @@ describe('POST /agents/:id/heartbeat — reachability ownership', () => {
       arrangeBeat();
 
       expect((await beat()).status).toBe(200);
-      expect(vi.mocked(helpers.buildEventLogConfigUpdate)).toHaveBeenCalledWith('device-1', { hierarchy });
+      expect(vi.mocked(helpers.buildEventLogConfigUpdate)).toHaveBeenCalledWith('device-1', { hierarchy, orgId: 'org-1' });
       expect(vi.mocked(helpers.buildPolicyProbeConfigUpdate)).toHaveBeenCalledWith('org-1', { partnerId: 'partner-1' });
     });
   });
