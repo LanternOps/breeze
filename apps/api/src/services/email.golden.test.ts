@@ -62,6 +62,7 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'staff.ai_budget_alert', params: { ...MESSAGE, purpose: 'staff.ai_budget_alert' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.autopay', params: { ...MESSAGE, purpose: 'staff.autopay' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.contract_renewal', params: { ...MESSAGE, purpose: 'staff.contract_renewal' }, expectedFrom: DEFAULT_FROM },
+  { name: 'staff.trust_declaration_reminder', params: { ...MESSAGE, purpose: 'staff.trust_declaration_reminder' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.quote_outcome', params: { ...MESSAGE, purpose: 'staff.quote_outcome' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.alert_notification', params: { ...MESSAGE, purpose: 'staff.alert_notification' }, expectedFrom: DEFAULT_FROM },
   { name: 'staff.workspace_drift_report', params: { ...MESSAGE, purpose: 'staff.workspace_drift_report' }, expectedFrom: DEFAULT_FROM },
