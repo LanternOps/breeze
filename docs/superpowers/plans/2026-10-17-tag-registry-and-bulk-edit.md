@@ -1,7 +1,7 @@
 ---
 title: Tag registry (#8837) + bulk edit tags and custom fields (#8833) — combined implementation plan
 date: 2026-10-17
-status: draft — awaiting owner approval
+status: draft — awaiting owner approval; OPEN-1 (§5) must be answered before W02a starts
 specs:
   - docs/superpowers/specs/devices/2026-10-15-tag-registry-spec.md
   - docs/superpowers/specs/devices/2026-10-15-bulk-edit-tags-custom-fields-spec.md
@@ -68,18 +68,18 @@ Executors read the relevant spec sections before each wave.
 
 1. **Legacy rule values with case or spaces** (`Finance Dept` stored in a dynamic-group rule, AI
    protected list, compliance target or AI-agent trigger) must keep matching the backfilled slug
-   `finance-dept`. Test owner: W02b Task 4.
+   `finance-dept`. Test owner: Task 2.4.
 2. **A legacy asset with more than 50 tags** must stay editable: removing tags works, adding to it
-   fails with a clear per-tag message, nothing truncates silently. Test owners: W02b Task 2 (pure
-   delta), 8833 W1 Task 3 (`TAG_LIMIT_EXCEEDED`).
+   fails with a clear per-tag message, nothing truncates silently. Test owners: Task 2.2 (pure
+   delta), Task 6.3 (`TAG_LIMIT_EXCEEDED`).
 3. **A partner technician with `org_access = 'selected'`** tagging a device must never create a
-   partner-wide definition (it would publish into orgs they cannot see). Test owner: W02b Task 2.
+   partner-wide definition (it would publish into orgs they cannot see). Test owner: Task 2.2.
 4. **Slug owned by org A, partner admin tags a device in org B with the same slug** must succeed with
-   an org-owned row in B — not a P0001 from the no-shadow trigger and not a 500. Test owner: W02b Task 2.
+   an org-owned row in B — not a P0001 from the no-shadow trigger and not a 500. Test owner: Task 2.2.
 5. **A configured tag value that normalises to nothing** (`***` in a policy target, `hasAll` rule or AI
    trigger) must match **no** device. Today an empty tag list can fall back to "all devices"
    (`policyEvaluationService.ts:416-420`) and `hasAll([])` matches everything (Codex). Test owner:
-   W02b Task 2.4.
+   Task 2.4.
 
 ---
 
@@ -131,6 +131,13 @@ they still **merge** in the order above. Waves 7, 9 and 10 each touch `DeviceLis
    `breeze_partner_export_site_child_update()` for `discovered_assets`. The configuration-family trigger
    on `devices` (`breeze_partner_export_z_custom_values_update`) fires only when `custom_fields` or
    `org_id` changes, never on a tags-only update. `manual_assets` has no partner-export trigger.
+   **A transaction that may also write custom-field values or `org_id`** (mixed `PATCH /devices/:id`, the
+   bulk custom-field route, device move) fires the configuration-family trigger, which wants partners
+   **exclusive**. Such a transaction takes the configuration-family prelock (partners exclusive, then
+   orgs under exclusive partners) **first**, before any tag write: a held exclusive partner lock
+   satisfies the later shared request, but a held shared lock cannot be upgraded without risking a
+   deadlock between two such transactions. The rule is one-directional — never take shared first and
+   exclusive later.
    **Migrations:** `migrationPartnerExportLocks.test.ts:191-260` classifies `devices` as
    configuration-family, so a migration writing `devices` must prelock partners **exclusive** then orgs
    under exclusive partners (the configuration helpers in
@@ -139,7 +146,9 @@ they still **merge** in the order above. Waves 7, 9 and 10 each touch `DeviceLis
    tags-only trigger accepts the exclusive prelock (an already-held exclusive partner lock satisfies a
    later shared request in the same transaction); if the hierarchy guard rejects it, use the reviewed
    `-- @partner-export-locks: pre-acquired <reason>` line and record why in the PR.
-4. Row locks (`SELECT … FOR UPDATE`), then writes.
+4. Row locks via `SELECT … ORDER BY id FOR UPDATE` (always ordered by id, so overlapping writers lock
+   rows in the same order), then writes. Merge and delete take their row locks through the same
+   ordered select before their UPDATEs, never implicitly through `UPDATE … WHERE tags @> …`.
 
 Every tag writer takes steps 1–3 explicitly before its first row lock — including single-org writers
 (PATCH, bulk per-org transaction, MCP), so a row lock is never held while waiting for an export
@@ -231,7 +240,10 @@ apps/api/src/routes/devices/bulkAttributes.ts      (8833 W1)
   not (`routes/tags.ts:77-130`, org-scoped). W02a therefore registers one **org-owned** row per
   `(org, slug)`; the same slug may be org-owned in several orgs (no-shadow forbids only org + partner
   for one slug). W04's settings page flags slugs owned by ≥ 2 orgs with a one-click **Promote to all
-  organizations** (W03a `POST /tags/:tagId/promote`), which collapses them.
+  organizations** (W03a `POST /tags/:tagId/promote`), which collapses them. Consequence: until a slug is
+  promoted, a partner admin cannot `POST /tags` a partner-wide row for it (409 `TAG_SHADOWED`), and
+  PD-4 auto-registers new uses of it org-owned — promote is the only path to partner-wide for legacy
+  vocabulary. **OPEN-1 blocks W02a**: Tasks 1.3, 2.5 and the W04 promote UI all assume answer (a).
 - **PD-4 — Auto-registration owner.** R-OD-3(a) as approved, with two guards. A missing slug is
   registered **partner-wide** only when the writer is partner or system scope **and**
   `canManagePartnerWidePolicies(auth)` **and** no org-owned row with that slug exists under the
@@ -252,8 +264,8 @@ apps/api/src/routes/devices/bulkAttributes.ts      (8833 W1)
   every input `normalizeTagList` accepts, both produce the same slug.
 - **PD-7 — Delta computed in TypeScript under the row lock.** B§4.2's single CTE is illustrative
   ("the plan pins the per-device site check exactly"). `applyTagDelta` runs two statements inside the
-  caller's transaction: `SELECT id, tags FROM <table> WHERE (id, site_id) IN (verified pairs) AND
-  org_id = $org FOR UPDATE`, then one `UPDATE … FROM jsonb_to_recordset($1::jsonb) AS v(id uuid, tags text[])`
+  caller's transaction: an ordered `SELECT … FOR UPDATE` of the rows pinned to the verified
+  `(id, org_id, site_id)` (exact form in Task 2.2), then one `UPDATE … FROM jsonb_to_recordset($1::jsonb) AS v(id uuid, tags text[])`
   for the changed rows. The delta lives in the pure `computeTagDelta`, which carries the cap rule and
   is unit-tested without a database.
 - **PD-8 — Removal rule after W02b.** B§3 D12 / B-OD-6 (exact-match removal) was written for a world
@@ -270,6 +282,16 @@ apps/api/src/routes/devices/bulkAttributes.ts      (8833 W1)
 - **PD-11 — AI protected-resource tags refuse both delete modes.** Definition-only delete leaves the
   slug matching, but a deleted definition disappears from the picker and invites re-creation with a
   different meaning; R-OD-6(a) says "always refuse".
+- **PD-13 — `contains` is not an execution-safe tag operator (W05b).** Stricter than R-OD-4(b), which
+  listed `hasAny`/`hasAll`/`contains`: on `tags`, `contains` reaches a scalar `ILIKE` today
+  (`filterEngine.ts:~689`), not array membership, so a restricted value would match unrestricted tags
+  that contain it as a substring. `hasAny`/`hasAll` express every exact-membership rule.
+- **PD-14 — Restricted-tag permission and actors (W05a).** Pinned as `{ resource: 'devices', action:
+  'tags_restricted' }`, seeded on built-in admin roles only; AI tools and MCP are refused even with a
+  user session (R-OD-4(b) says "never grantable to API keys or the device-script surface"; an agent
+  acting on a prompt is the same risk class).
+- **PD-15 — `force` on delete overrides only group-rule references** (R§6.3). Every other refusing
+  reference, and AI protected resources always, stay refused.
 - **PD-12 — Manual assets in the bulk response.** 8833 W4 adds an optional `manualAssetIds` and a
   separate `manualAssets: { succeeded, failed }` block, so the W1/W2 response shape never changes.
 
@@ -317,7 +339,7 @@ approved text, and the owner decides whether to amend the spec.
 
 ## 5. Open Decisions (owner)
 
-- **OPEN-1 — Backfilled and auto-registered vocabulary ownership (PD-3).** The approved spec (R§13)
+- **OPEN-1 — Backfilled and auto-registered vocabulary ownership (PD-3). Blocks W02a.** The approved spec (R§13)
   backfills every legacy slug as partner-wide, which publishes each customer org's legacy tag names to
   every sibling customer org's users through the SELECT branch.
   - (a) **Org-owned backfill + promote** (this plan; Codex agrees). No new cross-org visibility; partner
@@ -388,7 +410,7 @@ it('breeze_legacy_tag_slug matches the shared fixture table')   // PD-6 parity, 
   the template. Every statement idempotent (`IF NOT EXISTS`, `CREATE OR REPLACE`, guarded `DO` blocks).
 
   `breeze_legacy_tag_slug` (lenient transform, PD-6):
-  `left(regexp_replace(regexp_replace(regexp_replace(lower(normalize(btrim(input), NFKC)), '\s+', '-', 'g'), '[^a-z0-9._:-]', '', 'g'), '^[^a-z0-9]+', ''), 50)`, then strip trailing nothing; `''` when nothing survives.
+  `left(regexp_replace(regexp_replace(regexp_replace(lower(normalize(btrim(input), NFKC)), '\s+', '-', 'g'), '[^a-z0-9._:-]', '', 'g'), '^[^a-z0-9]+', ''), 50)`; `''` when nothing survives.
 
   No-shadow function: copy `2026-10-11-141000-custom-field-no-cross-axis-shadowing.sql:230-300`,
   substituting `device_tags`/`slug`; take `pg_advisory_xact_lock(1000258, hashtext(<partner>::text || ':' || NEW.slug))`
@@ -406,7 +428,8 @@ it('breeze_legacy_tag_slug matches the shared fixture table')   // PD-6 parity, 
 ### Task 1.2: Registrations
 
 **Files:**
-- Modify: `apps/api/src/services/tenantCascade.ts` (`CORE_ORG_CASCADE_DELETE_ORDER`, alphabetical)
+- Modify: `apps/api/src/services/tenantCascade.ts` (`CORE_ORG_CASCADE_DELETE_ORDER`; follow the file's own ordering comment, including its `localeCompare`
+  underscore note for prefix-extended names, rather than eyeballing alphabetical)
 - Modify: `apps/api/src/services/orgMergeRegistry.ts`
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts` (`CORE_TENANT_EXPORT_POLICY`)
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (`DUAL_AXIS_TENANT_TABLES`,
@@ -462,14 +485,14 @@ it('breeze_legacy_tag_slug matches the shared fixture table')   // PD-6 parity, 
 ```ts
 it('registers one org-owned row per (org, slug) across devices, manual and discovered assets')
 it('picks the most frequent spelling as name: ["Finance","Finance","finance"] → name "Finance"')
-it('falls back to name = slug when characters were stripped: "Café Ops!" → slug "cafe-ops"... name "cafe-ops"')
+it('falls back to name = slug when characters were stripped (fixture "Café Ops!")')
 it('does not create a partner-wide row')
 it('is idempotent: running the backfill block twice registers nothing new')
 it('leaves devices.tags byte-identical')
 ```
 
-  Note on the third case: NFKC keeps `é`; the strip removes it, so the slug is `caf-ops` — write
-  the assertion from `legacyTagSlug` on the fixture, not by hand.
+  The third case asserts `name === slug === fixture.slug` (from `TAG_SLUG_FIXTURES`), never a
+  hand-written slug: NFKC keeps `é` and the strip then removes it.
 - [ ] **Step 2: Run — expect FAIL.**
 - [ ] **Step 3: Append the backfill block** (system scope is already set at the top of the file).
 - [ ] **Step 4: Run — expect PASS.** Re-run `migrationRlsScope.test.ts` and `scripts/check-migration-naming.sh`.
@@ -593,6 +616,8 @@ expect(computeTagDelta(['a','b'], ['c','a'], ['b'])).toEqual({ after: ['a','c'],
 expect(computeTagDelta(fifty, ['new'], []).overCap).toBe(true);
 expect(computeTagDelta(sixty, [], ['t1']).overCap).toBe(false);                  // Review Focus 2
 expect(computeTagDelta(sixty, ['t1'], []).overCap).toBe(false);                  // no growth: already present
+expect(computeTagDelta(sixty, ['new'], ['t1']).overCap).toBe(false);              // swap on an over-cap array
+// rule: overCap = after.length > MAX_TAGS_PER_ASSET && after.length > before.length
 // applyTags.test.ts (Drizzle mocks)
 it('prepareTagReplace throws TagValidationError(INVALID_TAG) naming the tag and suggestedSlug')
 it('prepareTagReplace throws TAG_LIMIT_EXCEEDED only when the final array grows past 50')
@@ -614,12 +639,15 @@ it('registration and the array write roll back together when the UPDATE fails')
   explicit `breeze_partner_export_lock_orgs_exclusive(ARRAY[orgId])` for `devices` and
   `discovered_assets` (none for `manual_assets`, which has no partner-export trigger);
   locked read via
-  `WHERE (id, site_id) IN (SELECT * FROM unnest(${sqlUuidArray(ids)}, ${sqlUuidArray(siteIds)}))` (a
-  `null` siteId — manual assets without a site — compares with `IS NOT DISTINCT FROM`);
+  `FROM <table> t JOIN unnest(${sqlUuidArray(ids)}, ${sqlUuidArray(siteIds)}) v(id, site_id) ON t.id = v.id
+  AND t.site_id IS NOT DISTINCT FROM v.site_id WHERE t.org_id = $org ORDER BY t.id FOR UPDATE OF t` (tuple
+  `IN` never matches a `null` site — manual assets without a site; check `sqlUuidArray` accepts null
+  elements or add `sqlNullableUuidArray` in `db/sqlValues.ts` with a test);
   `computeTagDelta` per row; `registerMissingTags` for the slugs **actually added** to at least one row
   (nothing is registered for a row refused by the cap, Codex P6); one
   `UPDATE … FROM jsonb_to_recordset(...)` setting `tags` and `updated_at` for `changed` rows only.
-  `prepareTagReplace` takes the same steps for one asset.
+  `prepareTagReplace` takes the same steps for one asset and reads `previous` **under its row lock**
+  (it does not trust a value read before the locks); the cap rule is the same formula.
   Add to the integration test: `it('a cap-refused add registers no definition')` and
   `it('concurrent PATCH (tags + custom field) and bulk add in one org complete without deadlock over 50 iterations')`.
 - [ ] **Step 5: Run — expect PASS.** Commit `feat(tags): tag write service with locks, auto-registration and deltas`.
@@ -668,7 +696,8 @@ it('registration and the array write roll back together when the UPDATE fails')
 **Files:**
 - Create: `apps/api/src/services/deviceTags/match.ts` (+ `match.test.ts`)
 - Modify (each reader that compares a configured tag value with the arrays — the Explore sweep in
-  this wave confirms the list): `services/filterEngine.ts` (tag conditions), `routes/tags.ts`
+  the Explore verification of 2026-10-17 closed this list; the contract test below keeps it closed):
+  `services/filterEngine.ts` (tag conditions), `routes/tags.ts`
   (`GET /tags/devices?tag=`), `services/policyEvaluationService.ts` (`targets.tags`, ~1374-1385),
   `routes/tags.ts:~212` (manual assets), `services/aiAgents/runService.ts` (trigger tags, ~643 and
   ~736), `services/aiAgents/effectivePolicy.ts` (union ~238, intersection ~252),
@@ -704,6 +733,12 @@ wrongly empty (Codex P2).
   `targets.tags: ['***']` evaluates **zero** devices (not all); a group rule `hasAll ['***']` matches
   zero devices; an AI policy whose partner list has `Finance` and org list has `finance` intersects to
   `['finance']`.
+- [ ] **Step 1b: Write the failing reader contract test** `apps/api/src/__tests__/deviceTagReaders.contract.test.ts`:
+  a file under `src/routes/**` or `src/services/**` that reads `devices.tags` / `manualAssets.tags` /
+  `discoveredAssets.tags` (Drizzle column or raw `tags` beside `&&`, `@>`, `= ANY`, `includes(`) must
+  import `tagMatchValues` or be in `TAG_READER_ALLOWLIST` with a reason. Seed the allowlist with the
+  projection-only readers: `routes/reports/data.ts`, `routes/partnerApi/devices.ts`,
+  `services/scriptProposals/reviewer.ts`, the AI-agent subscribers, `aiToolsDevice.ts` (list).
 - [ ] **Step 2: Run — expect FAIL.**
 - [ ] **Step 3: Apply `tagMatchValues` to the configured side** in each reader. Do not lowercase the
   array side in SQL (keeps the `&&`/`@>` shape; the arrays are slugs after Task 2.5).
@@ -765,19 +800,35 @@ export type TagListItem = {
   id: string;            // = slug, kept for compatibility: PolicyEditPage.tsx:~107 prefers record.id over record.tag (Codex)
   tagId: string | null;  // device_tags.id; null when unregistered. Registry routes take :tagId
   tag: string; name: string; slug: string; color: string | null; description: string | null;
+  definitions: Array<{ tagId: string; owner: 'partner' | 'organization'; orgId: string | null; name: string; color: string | null }>;
   owner: 'partner' | 'organization' | null; registered: boolean; deviceCount: number;
   counts: { devices: number; manualAssets: number; discoveredAssets: number };
 };
 export async function listVisibleTagDefinitions(auth: AuthContext, opts: { search?: string; orgId?: string }): Promise<TagListItem[]>;
 ```
 
-`tag` and `deviceCount` keep their current meaning (compat, R§5.4). Counts keep today's
-ephemeral/parked/retired/linked exclusions and site narrowing (`routes/tags.ts:94-130`); discovered
-assets are counted for the first time.
+**One item per slug** (review finding): a partner caller can see several org-owned rows with one slug
+(PD-3), so the list aggregates by slug — `id` = `slug` stays unique for the policy editor, `counts`
+and `deviceCount` are per slug across the caller's visible scope, and `definitions` lists every
+visible row. The top-level `tagId`/`owner`/`name`/`color` are the definition that applies in
+`opts.orgId` when given (org-owned → partner-wide), else the partner-wide row, else the single
+definition when there is exactly one, else `null` with `name = slug`. `tag` and `deviceCount` keep
+their current meaning (compat, R§5.4). Counts keep today's ephemeral/parked/retired/linked
+exclusions and site narrowing (`routes/tags.ts:94-130`); discovered assets are counted for the first
+time.
+
+Tenancy playbook items (`docs/agents/tenancy-rls.md` partner-wide steps 3 and 7):
+the app-layer read includes the partner-wide branch only when `auth.scope === 'partner'` or the
+caller is an org token reading its own partner's rows through RLS — never by escalating to system
+scope; and every consumer of `deviceTags.orgId` added by these waves tolerates `NULL` (grep
+`deviceTags.orgId` in the PR and list each site).
 
 - [ ] **Step 1: Failing tests:** a registered tag with zero uses is listed; an in-use unregistered slug
-  is listed with `registered: false, tagId: null`; `id` equals `slug` for every item; org token sees its own + partner-wide rows, not a
-  sibling org's; site-restricted caller's counts exclude other sites; `?search=` matches name and slug.
+  is listed with `registered: false, tagId: null`; `id` equals `slug` and is unique in every response;
+  a partner caller with `finance` org-owned in two orgs gets one item with two `definitions`; org
+  token sees its own + partner-wide rows, not a sibling org's, and `listVisibleTagDefinitions` never
+  calls `withSystemDbAccessContext` for an org token; site-restricted caller's counts exclude other
+  sites; `?search=` matches name and slug.
 - [ ] **Step 2–4:** run (FAIL) → implement → run (PASS). **Step 5:** commit.
 
 ### Task 3.2: `POST /tags`, `PATCH /tags/:tagId`, `POST /tags/:tagId/promote`
@@ -799,6 +850,10 @@ assets are counted for the first time.
   under `lockTagSlugs`, delete every org-owned row with that slug across the partner's orgs and
   insert one partner-wide row (label/color from the promoted row). Audit carries dropped metadata.
 - All four: `devices:write`, `canMutateOrgWideGovernance(auth)` (PD-10), audit `device_tag.*`.
+- Slug locks (§2.1 step 1), taken explicitly before the insert/update so the trigger's lock is a
+  re-entry: create locks the new slug; rename locks nothing (slug immutable); promote locks the slug
+  (the destination partner-wide row has the same slug). W03b: merge locks A's and B's slugs; delete
+  locks the slug.
 
 - [ ] **Step 1: Failing tests** for each status code above, including: `orgAccess: 'selected'` partner
   user → 403 on partner-wide create/patch/promote; site-restricted caller → 403 on all four; PATCH
@@ -846,7 +901,7 @@ delete), `automation_policies.targets` when tag-targeted (refuse), `ai_agents.tr
 `automations.conditions` legacy `{ type: 'tag', value }` (refuse; Codex), tag conditions nested in
 deployment target filters (refuse; Codex), `BACKUP_CRITICAL_DEVICE_TAGS` (report only,
 `rewritable: false`). Matching inside each rewriter canonicalises the **stored** value with
-`tagMatchValues`, so `Finance Dept` stored in a rule counts as a reference to `finance-dept`.
+`tagMatchValues(...).slugs`, so `Finance Dept` stored in a rule counts as a reference to `finance-dept`.
 
 **Owner-aware rewrite (Codex).** The same slug can be org-owned in several orgs, and a partner-wide
 reference (a partner-wide AI policy, partner-wide group, partner-wide automation) can name it. A merge
@@ -882,7 +937,9 @@ export class TagReferencedError extends Error { readonly references: TagReferenc
 export class TagScopeNarrowingError extends Error {}                                  // → 409
 ```
 
-Routes: `POST /tags/:tagId/merge { intoTagId }`, `DELETE /tags/:tagId?removeFromAssets=true|false`, both
+Routes: `POST /tags/:tagId/merge { intoTagId }`, `DELETE /tags/:tagId?removeFromAssets=true|false&force=true|false`
+(R§6.3: `force` overrides **only** the dynamic-group-rule refusal — the rule's value is dropped and the
+group no longer matches on it; every other `refuse` and every `refuse_always` stays refused), both
 `devices:write` + `canMutateOrgWideGovernance` + the capability for any partner-wide row involved + MFA
 step-up (`requireMfa()` plus a `validateStepUpGrant` grant from `services/mfaStepUpGrant.ts` bound to a
 resource digest, the pattern `routes/devices/moveOrg.ts:13,220` uses) for merge and for delete with
@@ -1175,7 +1232,8 @@ refused like the HTTP route. Audit and re-evaluation as the bulk route with `rea
   `apps/web/src/components/devices/TagChip.tsx` (+ tests)
 - Modify: `DeviceList.tsx` chips (~2349-2375; §2.2 rule), device detail and asset modals' chip rendering
 
-**Interfaces — Produces:** `useTagRegistry(): { bySlug: Map<string, TagListItem>; loading: boolean; invalidate(): void }`
+**Interfaces — Produces:** `useTagRegistry(): { resolve(orgId: string, slug: string): { name: string; color: string | null } | null; loading: boolean; invalidate(): void }`
+(resolution order: the org-owned definition in that org → the partner-wide definition → `null`, which renders neutral)
 (cached per org context; invalidated by every tag mutation); `TagChip({ slug })` renders the registry
 color, neutral when unregistered.
 
@@ -1218,7 +1276,10 @@ places before, 1 after.
 
 **Files:**
 - Modify: `apps/api/src/routes/devices/schemas.ts` (`bulkTagsSchema`: `manualAssetIds: z.array(z.string().uuid()).max(500).default([])`;
-  refine `deviceIds.length + manualAssetIds.length` in 1..500; `deviceIds` becomes `.default([])`)
+  refine `deviceIds.length + manualAssetIds.length` in 1..500; `deviceIds` becomes `.default([])`;
+  update `BulkTagsRequest` in `packages/shared/src/types/bulkDeviceAttributes.ts` to
+  `deviceIds?: string[]; manualAssetIds?: string[]` in the same commit, with a test that a body with
+  neither list is 400 and the W2 dialog tests still pass)
 - Modify: `apps/api/src/services/devices/bulkAttributeWrite.ts` (`authorizeBulkManualAssets(c, ids, auth)` using
   `manualAssetConditions` (`routes/tags.ts:42`, moved to `routes/tags/list.ts` in W03a) + site check)
 - Modify: `apps/api/src/routes/devices/bulkAttributes.ts`; `packages/shared/src/types/bulkDeviceAttributes.ts`
@@ -1257,7 +1318,16 @@ spelling follows the file's convention); `apps/api/src/db/seed.ts:~122` (`DEFAUL
 `ADMIN_ALL` wildcard does not satisfy it for an API key (the restricted check requires a session
 user, not just the permission).
 
-**Interfaces — Produces:** `export async function assertRestrictedTagChange(input: { actor: TagWriteActor & { isApiKey: boolean }; orgId: string; partnerId: string; before: readonly string[]; after: readonly string[] }): Promise<void>`
+**Permission (pinned):** `DEVICES_TAGS_RESTRICTED = { resource: 'devices', action: 'tags_restricted' }`
+(rendered `devices:tags_restricted`; the spec's `devices:tags:restricted` is the same permission —
+the grants file uses one `resource`/`action` pair, PD-14). Seeded on the built-in partner-admin and
+org-admin system roles only, in `DEFAULT_PERMISSIONS` and in the migration for existing installs;
+custom roles get it by explicit grant.
+
+**Interfaces — Produces:** `export async function assertRestrictedTagChange(input: { actor: TagWriteActor & { kind: 'session' | 'api_key' | 'ai_tool' | 'mcp' }; orgId: string; partnerId: string; before: readonly string[]; after: readonly string[] }): Promise<void>`
+— only `kind: 'session'` with the permission may add or remove a restricted tag. AI chat tools and
+MCP run with a user's session but are refused (`ai_tool`/`mcp`), so a prompt-injected agent cannot
+change a restricted tag.
 (throws `TagValidationError` code `RESTRICTED_TAG`). Called by `prepareTagReplace` and `applyTagDelta`
 for every add or remove of a restricted slug, by merge/delete when either side is restricted, by
 `PATCH /tags/:tagId` when `restricted` flips true→false (downgrade), and by move reconcile (a restricted
@@ -1289,7 +1359,7 @@ of the agent's owner), tests for both.
 tests, `executionTargetGating*` tests.
 
 Rule: a `tags` condition is execution-safe only when its operator is `hasAny` or `hasAll`, its value
-list is non-empty after `tagMatchValues`, and every value is a restricted tag owned by the group's
+list has `tagMatchValues(values).slugs.length > 0` and `matchNothing === false`, and every value is a restricted tag owned by the group's
 owner (org group: that org's or its partner's partner-wide restricted tags). `isEmpty`/`isNotEmpty`,
 `contains` (it reaches a scalar `ILIKE` today, `filterEngine.ts:~689`, not array membership — Codex;
 stricter than R-OD-4(b)'s list) and any unrestricted value stay refused. Re-checked at dispatch, not
