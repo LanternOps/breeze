@@ -60,6 +60,8 @@ const TARGET_GLOBS = [
   'src/components/backup/VaultDashboard.tsx',
   'src/components/backup/VaultConfigDialog.tsx',
   'src/components/settings/TicketPushoverSettings.tsx',
+  // #8330: saved-filter create/edit/delete surface the API's error text.
+  'src/components/filters/SavedFilterList.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
   'src/lib/endpointMessages.ts',
   'src/components/endpointMessages/SendMessageDialog.tsx',
@@ -947,7 +949,8 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center W1 (#8768) adds TrustCenterTab, TrustStatusCard, TrustPublishDialog: 231 → 234.
     // Trust Center sections (Task 16) add Controls/Content/Documents sections: 234 → 237.
     // Trust Center W2 (#8770 W02a) pre-lists six W2 sections, TrustTemplateSettings and OrganizationForm: 237 → 245.
-    expect(absoluteFiles.length).toBe(245);
+    // #8330 adds filters/SavedFilterList.tsx: 245 → 246.
+    expect(absoluteFiles.length).toBe(246);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -494,7 +494,10 @@
       "createFirst": "Create your first filter",
       "created": "Created {{date}}",
       "deleteConfirm": "Delete this filter?",
-      "duplicate": "Duplicate"
+      "duplicate": "Duplicate",
+      "saveFailed": "Couldn't save the filter",
+      "deleteFailed": "Couldn't delete the filter",
+      "ownerOrgHint": "Saved filters belong to one organization. Choose which one owns this filter."
     },
     "targets": {
       "modes": {
