@@ -816,9 +816,6 @@
       "expand": "Expand sidebar",
       "collapseSections": "Collapse all sections",
       "closeMenu": "Close menu",
-      "recentDevices": "Recent devices",
-      "hideRecentDevices": "Hide recent devices",
-      "showRecentDevices": "Show recent devices",
       "recent": "Recent",
       "hideRecent": "Hide recent",
       "showRecent": "Show recent"
