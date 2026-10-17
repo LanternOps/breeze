@@ -161,3 +161,15 @@ describe('EntityLink', () => {
     expect(screen.getByText('Unknown Site')).toHaveClass('text-muted-foreground');
   });
 });
+
+describe('EntityLink tabIndex (#9037)', () => {
+  it('passes tabIndex through so a focusable row can own the tab stop', () => {
+    render(<EntityLink kind="device" id="d1" name="web-01" tabIndex={-1} />);
+    expect(screen.getByTestId('device-record-link')).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('leaves the anchor in the tab order by default', () => {
+    render(<EntityLink kind="device" id="d1" name="web-01" />);
+    expect(screen.getByTestId('device-record-link')).not.toHaveAttribute('tabindex');
+  });
+});

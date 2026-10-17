@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState, useEffect, useRef } from "react";
+import { Fragment, useMemo, useState, useEffect, useLayoutEffect, useRef } from "react";
 import { usePermissions } from "../../lib/permissions";
 import { ENABLE_ENDPOINT_MESSAGING } from "../../lib/featureFlags";
 import { createPortal } from "react-dom";
@@ -118,6 +118,7 @@ import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
 import { getAgentVersionRelation } from "./agentVersionRelation";
 import { EntityLink } from "@/components/shared/EntityLink";
 import { ColumnChooser, type ColumnGateReason } from "./ColumnChooser";
+import { readSortFromHash, writeSortToHash } from "./deviceListSort";
 import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -571,6 +572,10 @@ type DeviceListProps = {
   // #9036: resets every filter the page owns (advanced group, search, VPN,
   // removed-devices toggle). When given, the no-match row offers "Clear filters".
   onClearFilters?: () => void;
+  // #9037: mirror the sort into the URL hash (`sort=<column>.<dir>`) so a
+  // sorted view survives reload. Off by default: the organization record's
+  // Devices tab owns its hash for tab state.
+  sortInHash?: boolean;
 };
 
 // Agent Version column tint (#5285). No new colours: reuses the same
@@ -675,8 +680,23 @@ const osLabels: Record<OSType, string> = {
   linux: "Linux",
 };
 
+// SSR-safe layout effect for post-mount hash adoption (lib/useHashState.ts pattern).
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 type SortField = ColumnId | null;
 type SortDirection = "asc" | "desc";
+
+// Short headers that wrapped to two lines at their natural width (#9037).
+const NOWRAP_HEADERS: ReadonlySet<ColumnId> = new Set<ColumnId>(["cpu", "ram"]);
+
+// The chip bar renders a flat AND group as chips; only an OR or nested group
+// (the Advanced builder's territory) is invisible there and earns the
+// "Advanced filter active" pill (#9037). With no group to inspect (standalone
+// renders) the pill keeps its old meaning.
+function filterNeedsBuilder(group: FilterConditionGroup | null | undefined): boolean {
+  if (!group) return true;
+  return group.operator !== "AND" || group.conditions.some((c) => "conditions" in c);
+}
 
 // Meaningful ordering for the Status sort. Raw enum alphabetics would put
 // "decommissioned" before "online"; rank by operational severity instead.
@@ -861,6 +881,7 @@ export default function DeviceList({
   effectiveAgentVersionByOrgId,
   headerActions,
   onClearFilters,
+  sortInHash = false,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
@@ -962,6 +983,19 @@ export default function DeviceList({
   // expanded, guests visible) — deliberately NOT persisted/hash-encoded.
   const [collapsedVmGroups, setCollapsedVmGroups] = useState<Set<string>>(new Set());
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
+  const bulkMenuRootRef = useRef<HTMLDivElement>(null);
+  const bulkTriggerRef = useRef<HTMLButtonElement>(null);
+  // #9037: the Bulk Actions popover closes on an outside click like the other
+  // list menus (Escape is handled on the menu itself, which returns focus).
+  useEffect(() => {
+    if (!bulkMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (bulkMenuRootRef.current?.contains(e.target as Node)) return;
+      setBulkMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, [bulkMenuOpen]);
   const [rowMenuOpenId, setRowMenuOpenId] = useState<string | null>(null);
   // Flip the row dropdown direction when the click happens close to the
   // viewport bottom — the menu has ~7 items × ~36px, so any row whose
@@ -980,6 +1014,16 @@ export default function DeviceList({
   const rowMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  // #9037: adopt a hash-carried sort post-mount but pre-paint, so the first
+  // client render still matches SSR (#2421; same pattern as useDeviceClassFilter).
+  useIsomorphicLayoutEffect(() => {
+    if (!sortInHash) return;
+    const fromHash = readSortFromHash(window.location.hash);
+    if (!fromHash) return;
+    setSortField(fromHash.field);
+    setSortDirection(fromHash.direction);
+    // Mount-only: later sorts are written by handleSort, not read back.
+  }, []);
 
   // Close row action menu on outside click
   useEffect(() => {
@@ -1158,12 +1202,11 @@ export default function DeviceList({
   }, [vpnFilter, availableVpnProviders]);
 
   const handleSort = (field: ColumnId) => {
-    if (sortField === field) {
-      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortField(field);
-      setSortDirection("asc");
-    }
+    const direction: SortDirection =
+      sortField === field ? (sortDirection === "asc" ? "desc" : "asc") : "asc";
+    setSortField(field);
+    setSortDirection(direction);
+    if (sortInHash) writeSortToHash({ field, direction });
   };
 
   const sortedDevices = useMemo(() => {
@@ -1454,7 +1497,7 @@ export default function DeviceList({
     <th
       key={id}
       scope="col"
-      className={`px-3 py-3 select-none${alignRight ? " text-right" : ""}`}
+      className={`px-3 py-3 select-none${alignRight ? " text-right" : ""}${NOWRAP_HEADERS.has(id) ? " whitespace-nowrap" : ""}`}
       aria-sort={
         sortField === id
           ? sortDirection === "asc"
@@ -1628,7 +1671,7 @@ export default function DeviceList({
             <div className="min-w-0">
               <span className="block truncate font-medium" title={primaryName}>
                 {(device.deviceClass ?? "agent") === "agent" ? (
-                  <EntityLink kind="device" id={device.id} name={primaryName} />
+                  <EntityLink kind="device" id={device.id} name={primaryName} tabIndex={-1} />
                 ) : (
                   primaryName
                 )}
@@ -1668,7 +1711,7 @@ export default function DeviceList({
             <span
               data-testid={`device-${device.id}-class-badge`}
               title={title}
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${badgeClass}`}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${badgeClass}`}
             >
               {isManual ? (
                 <Package className="h-3 w-3" />
@@ -1738,7 +1781,7 @@ export default function DeviceList({
             data-testid={`device-${device.id}-source`}
           >
             {device.source === "manual" ? (
-              <span className="inline-flex items-center rounded-full border border-info/30 bg-info/15 px-2 py-0.5 text-[10px] font-medium text-info">
+              <span className="inline-flex items-center rounded-full border border-info/30 bg-info/15 px-2 py-0.5 text-[11px] font-medium text-info">
                 {sourceLabel}
               </span>
             ) : (
@@ -1754,10 +1797,12 @@ export default function DeviceList({
       cell: (device) => (
         <td
           key="organization"
-          className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
+          // #9037: grows into spare width (up to a quarter of the viewport)
+          // instead of truncating at a fixed 160px.
+          className="min-w-0 max-w-[min(20rem,25vw)] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.orgName}>
-            <EntityLink kind="org" id={device.orgId} name={device.orgName} tone="muted" />
+            <EntityLink kind="org" id={device.orgId} name={device.orgName} tone="muted" tabIndex={-1} />
           </span>
         </td>
       ),
@@ -1770,7 +1815,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.siteName}>
-            <EntityLink kind="site" id={device.siteId} name={device.siteName} tone="muted" />
+            <EntityLink kind="site" id={device.siteId} name={device.siteName} tone="muted" tabIndex={-1} />
           </span>
         </td>
       ),
@@ -1877,7 +1922,7 @@ export default function DeviceList({
         // Rule for new conditions: a list pill is only for something a tech
         // must act on for this device — diagnostics go on the detail page.
         const pillClass =
-          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30";
+          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium bg-warning/15 text-warning border-warning/30";
         const secondary: Array<{ key: string; node: React.ReactNode }> = [];
         if (
           isAgentUpdateStuck({
@@ -2011,7 +2056,7 @@ export default function DeviceList({
               <span
                 data-testid={`device-${device.id}-status-overflow`}
                 title={restSecondary.map((s) => secondaryLabels[s.key]).join(", ")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground bg-muted/40 cursor-default"
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground bg-muted/40 cursor-default"
               >
                 <span aria-hidden="true">+{restSecondary.length}</span>
                 <span className="sr-only">
@@ -2068,7 +2113,7 @@ export default function DeviceList({
       cell: (device) => (
         <td key="pendingReboot" className="px-3 py-3 text-sm whitespace-nowrap">
           {device.pendingReboot ? (
-            <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30">
+            <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium bg-warning/15 text-warning border-warning/30">
               {t("deviceList.rebootPending")}{" "}
             </span>
           ) : (
@@ -2767,7 +2812,7 @@ export default function DeviceList({
                 {onRetryServerFilter && <button type="button" onClick={onRetryServerFilter}>{t('common:actions.retry')}</button>}
               </span>
             ) : (
-              serverFilterIds !== null && (
+              serverFilterIds !== null && filterNeedsBuilder(advancedFilter) && (
                 <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
                   <Filter className="h-3 w-3" />
                   {t("deviceList.advancedFilterActive")}{" "}
@@ -2900,10 +2945,14 @@ export default function DeviceList({
               </span>
             )}
           </span>
-          <div className="relative">
+          <div className="relative" ref={bulkMenuRootRef}>
             <button
+              ref={bulkTriggerRef}
               type="button"
+              data-testid="bulk-actions-trigger"
               disabled={filterBlocked}
+              aria-haspopup="menu"
+              aria-expanded={bulkMenuOpen && !filterBlocked}
               onClick={() => setBulkMenuOpen(!bulkMenuOpen)}
               className="flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
@@ -2913,6 +2962,12 @@ export default function DeviceList({
             {bulkMenuOpen && !filterBlocked && (
               <div
                 data-testid="bulk-actions-menu"
+                onKeyDown={(e) => {
+                  if (e.key !== "Escape") return;
+                  e.stopPropagation();
+                  setBulkMenuOpen(false);
+                  bulkTriggerRef.current?.focus();
+                }}
                 className="absolute left-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
               >
                 {selectionKind !== "removed" && (
@@ -3086,7 +3141,7 @@ export default function DeviceList({
 
       <div className="overflow-x-auto rounded-b-md">
         <table className={`w-full divide-y ${densityTableClasses(density)}`}>
-          <thead className="bg-muted/40">
+          <thead className="bg-muted/30">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <th className="px-3 py-3">
                 <input
@@ -3145,14 +3200,24 @@ export default function DeviceList({
                 <Fragment key={device.id}>
                   <tr
                     onClick={() => onSelect?.(device)}
+                    // #9037: the row is the one keyboard stop for the record
+                    // (its cell links are tabIndex -1); the checkbox and the
+                    // row actions keep their own stops.
                     tabIndex={0}
+                    aria-label={[
+                      device.displayName || device.hostname,
+                      t(/* i18n-dynamic */ statusFullLabelKeys[device.status]),
+                    ].join(t("common:lists.separator"))}
                     onKeyDown={(e) => {
+                      // Keys typed on the checkbox or a button inside the row
+                      // are theirs, not an "open the device" gesture.
+                      if (e.target !== e.currentTarget) return;
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         onSelect?.(device);
                       }
                     }}
-                    className="cursor-pointer transition hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    className="cursor-pointer transition hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
                     <td
                       className={`px-3 py-3 ${offlineGroup || vmRole ? "border-l-2 border-l-primary/40" : ""}`}
@@ -3640,7 +3705,7 @@ export default function DeviceList({
                             </span>
                             <span>{t("deviceList.inactive")}</span>
                           </span>
-                          <span className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-px text-[10px] font-medium">
+                          <span className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-px text-[11px] font-medium">
                             {t("deviceList.expectedOffline")}{" "}
                           </span>
                           <span>
@@ -3682,6 +3747,7 @@ export default function DeviceList({
               type="button"
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               disabled={currentPage === 1}
+              aria-label={t("common:actions.previousPage")}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -3696,6 +3762,7 @@ export default function DeviceList({
                 setCurrentPage((p) => Math.min(totalPages, p + 1))
               }
               disabled={currentPage === totalPages}
+              aria-label={t("common:actions.nextPage")}
               className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               <ChevronRight className="h-4 w-4" />

@@ -1460,7 +1460,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     // 2; a prefix-only match would never notice.
     expect(
       screen.getByText(
-        /1 of 3 selected devices are removed and will be skipped.*Continue with the remaining 2 device\(s\)\?/i,
+        /1 of 3 selected devices are removed and will be skipped.*Continue with the remaining 2 devices\?/i,
       ),
     ).toBeTruthy();
 
@@ -1686,7 +1686,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     await waitFor(() => {
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-      expect(messages.some(m => /all 2 selected device\(s\) are already removed/i.test(m))).toBe(true);
+      expect(messages.some(m => /all 2 selected devices are already removed/i.test(m))).toBe(true);
     });
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
     expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
@@ -1765,7 +1765,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
 
     await waitFor(() => {
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
-      expect(messages.some(m => /all 2 selected device\(s\) are already removed/i.test(m))).toBe(true);
+      expect(messages.some(m => /all 2 selected devices are already removed/i.test(m))).toBe(true);
     });
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
     expect(vi.mocked(bulkDecommissionDevices)).not.toHaveBeenCalled();
@@ -2860,7 +2860,7 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
     expect(vi.mocked(bulkRestoreDevices).mock.calls[0]![0]).toEqual([DEV_1, DEV_2]);
     await waitFor(() =>
       expect(vi.mocked(showToast)).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'success', message: '2 device(s) restored' }),
+        expect.objectContaining({ type: 'success', message: '2 devices restored' }),
       ),
     );
   });
@@ -2903,7 +2903,7 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
       expect(vi.mocked(showToast)).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'error',
-          message: '1 device(s) restored; 1 failed',
+          message: '1 device restored; 1 failed',
           detail: 'Device limit reached',
         }),
       ),
@@ -2923,7 +2923,7 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
 
     await waitFor(() =>
       expect(vi.mocked(showToast)).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'error', message: '1 device(s) restored; 1 failed' }),
+        expect.objectContaining({ type: 'error', message: '1 device restored; 1 failed' }),
       ),
     );
   });
@@ -2980,7 +2980,7 @@ describe('DevicesPage — bulk restore and bulk permanent delete (#2787)', () =>
 
     await waitFor(() =>
       expect(vi.mocked(showToast)).toHaveBeenCalledWith(
-        expect.objectContaining({ type: 'success', message: '2 device(s) permanently deleted' }),
+        expect.objectContaining({ type: 'success', message: '2 devices permanently deleted' }),
       ),
     );
     // The purged rows must leave the list; without a refetch they linger and

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useEventStream } from '../../hooks/useEventStream';
 import { useAdvancedFilterIds } from '../../hooks/useAdvancedFilterIds';
-import { List, Grid, Plus, AlertCircle, ChevronDown, RefreshCw } from 'lucide-react';
+import { List, Grid, Plus, AlertCircle, ChevronDown, RefreshCw, Upload } from 'lucide-react';
 import { showToast } from '../shared/Toast';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { usePermissions } from '@/lib/permissions';
@@ -1473,7 +1473,7 @@ export default function DevicesPage() {
         showToast({
           type: 'error',
           message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', {
-            succeeded: bulk.succeeded.length,
+            count: bulk.succeeded.length,
             verb,
             failed: failedNames.length,
             devices: summarizeFailedDevices(failedNames),
@@ -1592,7 +1592,7 @@ export default function DevicesPage() {
       if (eligibleDevices.length === 0) {
         showToast({
           type: 'error',
-          message: t('devicesPage.toasts.bulkAllDecommissioned', { total: selectedDevices.length }),
+          message: t('devicesPage.toasts.bulkAllDecommissioned', { count: selectedDevices.length }),
         });
         return;
       }
@@ -1756,7 +1756,7 @@ export default function DevicesPage() {
           } else if (mSucceeded === 0) {
             showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceAllFailed', { count: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
           } else {
-            showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', { succeeded: mSucceeded, verb: mVerb, failed: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkMaintenanceSomeFailed', { count: mSucceeded, verb: mVerb, failed: mFailed.length, devices: summarizeFailedDevices(mFailed) }) });
           }
           await refreshDevices();
           break;
@@ -1786,7 +1786,7 @@ export default function DevicesPage() {
           } else if (result.succeeded.length === 0) {
             showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreAllFailed', { count: result.failed.length }), ...failureDetail });
           } else {
-            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { succeeded: result.succeeded.length, failed: result.failed.length }), ...failureDetail });
+            showToast({ type: 'error', message: t('devicesPage.toasts.bulkRestoreSomeFailed', { count: result.succeeded.length, failed: result.failed.length }), ...failureDetail });
           }
           // A SEPARATE toast, deliberately: the device row came back, but those
           // machines had already been handed the uninstall and may be gone.
@@ -1907,7 +1907,7 @@ export default function DevicesPage() {
             type: 'warning',
             message: purged === 0
               ? t('devicesPage.toasts.bulkPurgeNoneDeleted', { reasons })
-              : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged, skipped: skipped.length, reasons }),
+              : t('devicesPage.toasts.bulkPurgeDoneWithSkips', { count: purged, skipped: skipped.length, reasons }),
           });
         }
         await refreshDevices();
@@ -1947,7 +1947,7 @@ export default function DevicesPage() {
         const byCode: Record<string, number> = {};
         for (const r of started.rejected) byCode[r.code] = (byCode[r.code] ?? 0) + 1;
         const reasons = Object.entries(byCode).map(([code, n]) => `${n} ${code}`).join('; ');
-        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { purged: started.accepted, skipped: started.rejected.length, reasons }) });
+        showToast({ type: 'warning', message: t('devicesPage.toasts.bulkPurgeDoneWithSkips', { count: started.accepted, skipped: started.rejected.length, reasons }) });
       }
       stopPurgePolling(); // drop anything from a previous run
       const token = purgePollTokenRef.current;
@@ -1991,7 +1991,7 @@ export default function DevicesPage() {
         showToast({
           type: 'error',
           message: t('devicesPage.toasts.bulkDecommissionFailed', {
-            succeeded: result.succeeded,
+            count: result.succeeded,
             failed: result.failed.length,
             devices: summarizeFailedDevices(result.failed.map(f => f.hostname)),
           }),
@@ -2275,9 +2275,14 @@ export default function DevicesPage() {
               window.location.hash = 'import-definitions';
               setShowRmmImport(true);
             }}
-            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+            title={t('devicesPage.importFromRmm')}
+            aria-label={t('devicesPage.importFromRmm')}
+            className="flex items-center gap-2 whitespace-nowrap rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted sm:px-4"
           >
-            {t('devicesPage.importFromRmm')}
+            {/* #9037: at phone width the full label wrapped to four lines. */}
+            <Upload className="h-4 w-4 sm:hidden" aria-hidden="true" />
+            <span className="sm:hidden">{t('devicesPage.importFromRmmShort')}</span>
+            <span className="hidden sm:inline">{t('devicesPage.importFromRmm')}</span>
           </button>
           <AddAssetMenu
             variant="primary"
@@ -2440,6 +2445,7 @@ export default function DevicesPage() {
           effectiveAgentVersionByOrgId={effectiveAgentVersionByOrgId}
           headerActions={viewToggle}
           onClearFilters={handleClearFilters}
+          sortInHash
         />
       ) : (
         <div className="space-y-3">
@@ -2700,7 +2706,7 @@ export default function DevicesPage() {
           message={t('devicesPage.confirmDecommissionedSkip.message', {
             skipped: pendingDecommissionedSkip.skippedCount,
             total: pendingDecommissionedSkip.totalCount,
-            eligible: pendingDecommissionedSkip.devices.length,
+            count: pendingDecommissionedSkip.devices.length,
           })}
         />
       )}

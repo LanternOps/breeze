@@ -49,6 +49,11 @@ export interface EntityLinkProps {
   name: string;
   hash?: string;
   tone?: EntityLinkTone;
+  /**
+   * -1 inside a focusable row that already opens the record on Enter (#9037),
+   * so each row costs one tab stop; the anchor stays real for middle-click.
+   */
+  tabIndex?: number;
   className?: string;
 }
 
@@ -63,7 +68,7 @@ export interface EntityLinkProps {
  *
  * An empty `id` (the '' sentinel for "no site/org") renders the name as text.
  */
-export function EntityLink({ kind, id, name, hash, tone = 'primary', className }: EntityLinkProps): JSX.Element {
+export function EntityLink({ kind, id, name, hash, tone = 'primary', tabIndex, className }: EntityLinkProps): JSX.Element {
   // No id, or no name to show: plain text, never an empty/dead tab stop.
   if (id === '' || name === '') {
     return <span className={cn(TONE_CLASS[tone], className)}>{name}</span>;
@@ -82,6 +87,7 @@ export function EntityLink({ kind, id, name, hash, tone = 'primary', className }
     <a
       href={href}
       data-testid={`${kind}-record-link`}
+      tabIndex={tabIndex}
       className={cn(LINK_CLASS, TONE_CLASS[tone], className)}
       onClick={handleClick}
     >
