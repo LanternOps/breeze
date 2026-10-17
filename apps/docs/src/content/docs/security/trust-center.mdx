@@ -80,6 +80,14 @@ Access links are single-purpose and only ever appear after the `#` in the addres
 
 {/* W02e: framework view */}
 
+## Framework view
+
+A trust page can map its controls to one or more security frameworks and show how many of each framework's safeguards have evidence behind them. For example: "Evidence shown for 12 of 106 safeguards (9 verified by Breeze telemetry · 3 declared by the provider)." A safeguard counts when a shown control that references it was assessed from telemetry, or when a current declared control references it. Expired declarations and controls that are not assessed are listed but not counted. This is a summary of evidence, not a statement of compliance, and the page never says a business is compliant with, certified to, or meets a framework.
+
+Choose frameworks in the **Framework view** section of the Trust Center tab. **Use default** clears the page's own choice and falls back to the partner template, then the built-in default. The editor suggests Essential Eight for partners in Australia and Cyber Essentials for partners in the United Kingdom. The default is NIST CSF 2.0.
+
+The CIS Controls v8 view requires `BREEZE_TRUST_CIS_FRAMEWORK_VIEW` (default off). Enabling it is an operator decision after CIS licensing is confirmed. While it is off, CIS cannot be selected and the framework view omits it; control cards still show their CIS references. See the [environment reference](/deploy/environment/).
+
 {/* W02f: subprocessors, FAQ, history */}
 
 {/* W02g: partner template */}
