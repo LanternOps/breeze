@@ -1191,7 +1191,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       </nav>
 
       {showLabels && (
-        <div className="border-t px-4 py-2 text-[10px] text-muted-foreground/50">
+        <div className="border-t px-4 py-2 text-[11px] text-muted-foreground">
           <p>
             Web <VersionSpan version={WEB_VERSION} latest={latestVersion} component="Web" />
             {apiVersion && apiVersion !== 'unavailable' && (
@@ -1204,7 +1204,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           <button
             type="button"
             onClick={() => window.dispatchEvent(new Event(REOPEN_EVENT))}
-            className="hover:text-muted-foreground hover:underline"
+            className="hover:text-foreground hover:underline"
           >
             {t('whatsNew.link')}
           </button>

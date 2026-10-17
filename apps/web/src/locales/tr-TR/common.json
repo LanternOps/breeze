@@ -2656,7 +2656,8 @@
     "dismiss": "İki faktörlü kimlik doğrulama hatırlatıcısını kapat"
   },
   "mfaPolicyOffBanner": {
-    "message": "Ekibiniz için çok faktörlü kimlik doğrulama zorunlu değil. Yalnızca parola ile açılan oturumlar betik çalıştırabilir, cihazları taşıyabilir ve ilkeleri değiştirebilir.",
+    "label": "MFA hatırlatması",
+    "message": "Ekibiniz için MFA zorunlu değil. Yalnızca parolalı oturumlar betik çalıştırabilir.",
     "cta": "MFA'yı zorunlu kıl",
     "dismiss": "MFA ilkesi hatırlatmasını bugünlük kapat"
   },
