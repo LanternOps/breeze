@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Dispositivi",
-        "devicesSub": "{{online}} di {{total}} online",
         "alerts": "Avvisi aperti",
-        "alertsSub": "{{critical}} critici · {{high}} alti",
         "tickets": "Ticket aperti",
-        "ticketsSub": "{{count}} in attesa del cliente",
         "contracts": "Contratti attivi",
         "contractsSub": "Prossimo rinnovo {{date}}",
         "contractsNoRenewal": "Nessun rinnovo in arrivo",
-        "invoices": "In sospeso",
         "invoicesSub": "Prossima scadenza {{date}}",
         "invoicesOverdue_one": "{{count}} scaduta",
         "invoicesOverdue_other": "{{count}} scadute",
@@ -94,7 +90,22 @@
       },
       "lastActivity": "Ultima attività {{date}}",
       "noSummary": "I totali di riepilogo non sono al momento disponibili.",
-      "archivedNotice": "I dati di riepilogo non vengono mostrati per le organizzazioni archiviate."
+      "archivedNotice": "I dati di riepilogo non vengono mostrati per le organizzazioni archiviate.",
+      "fleet": {
+        "title": "Stato della flotta",
+        "total": "Totale",
+        "allOnline": "Tutti online",
+        "noDevices": "Nessun dispositivo",
+        "critical": "Critici",
+        "high": "Alti",
+        "otherAlerts": "Altri",
+        "noAlerts": "Nessun avviso aperto",
+        "awaitingCustomer": "In attesa del cliente",
+        "noTickets": "Nessun ticket aperto"
+      },
+      "account": {
+        "invoices": "Fatture in sospeso"
+      }
     },
     "archived": {
       "banner": "Questa organizzazione è archiviata ed è di sola lettura. Ripristinala per apportare modifiche.",

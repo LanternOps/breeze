@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Devices",
-        "devicesSub": "{{online}} of {{total}} online",
         "alerts": "Open alerts",
-        "alertsSub": "{{critical}} critical · {{high}} high",
         "tickets": "Open tickets",
-        "ticketsSub": "{{count}} awaiting customer",
         "contracts": "Active contracts",
         "contractsSub": "Next renewal {{date}}",
         "contractsNoRenewal": "No upcoming renewal",
-        "invoices": "Outstanding",
         "invoicesSub": "Next due {{date}}",
         "invoicesOverdue_one": "{{count}} overdue",
         "invoicesOverdue_other": "{{count}} overdue",
@@ -94,7 +90,22 @@
       },
       "lastActivity": "Last activity {{date}}",
       "noSummary": "Summary counts are unavailable right now.",
-      "archivedNotice": "Overview data isn't shown for archived organizations."
+      "archivedNotice": "Overview data isn't shown for archived organizations.",
+      "fleet": {
+        "title": "Fleet health",
+        "total": "Total",
+        "allOnline": "All online",
+        "noDevices": "No devices",
+        "critical": "Critical",
+        "high": "High",
+        "otherAlerts": "Other",
+        "noAlerts": "No open alerts",
+        "awaitingCustomer": "Awaiting customer",
+        "noTickets": "No open tickets"
+      },
+      "account": {
+        "invoices": "Outstanding invoices"
+      }
     },
     "archived": {
       "banner": "This organization is archived and read only. Restore it to make changes.",

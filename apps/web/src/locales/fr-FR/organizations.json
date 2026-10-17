@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Appareils",
-        "devicesSub": "{{online}} sur {{total}} en ligne",
         "alerts": "Alertes ouvertes",
-        "alertsSub": "{{critical}} critiques · {{high}} élevées",
         "tickets": "Tickets ouverts",
-        "ticketsSub": "{{count}} en attente du client",
         "contracts": "Contrats actifs",
         "contractsSub": "Prochain renouvellement {{date}}",
         "contractsNoRenewal": "Aucun renouvellement à venir",
-        "invoices": "Impayé",
         "invoicesSub": "Prochaine échéance {{date}}",
         "invoicesOverdue_one": "{{count}} en retard",
         "invoicesOverdue_other": "{{count}} en retard",
@@ -94,7 +90,22 @@
       },
       "lastActivity": "Dernière activité {{date}}",
       "noSummary": "Les totaux récapitulatifs ne sont pas disponibles pour le moment.",
-      "archivedNotice": "Les données de synthèse ne sont pas affichées pour les organisations archivées."
+      "archivedNotice": "Les données de synthèse ne sont pas affichées pour les organisations archivées.",
+      "fleet": {
+        "title": "État du parc",
+        "total": "Au total",
+        "allOnline": "Tous en ligne",
+        "noDevices": "Aucun appareil",
+        "critical": "Critiques",
+        "high": "Élevées",
+        "otherAlerts": "Autres",
+        "noAlerts": "Aucune alerte ouverte",
+        "awaitingCustomer": "En attente du client",
+        "noTickets": "Aucun ticket ouvert"
+      },
+      "account": {
+        "invoices": "Factures impayées"
+      }
     },
     "archived": {
       "banner": "Cette organisation est archivée et en lecture seule. Restaurez-la pour apporter des modifications.",

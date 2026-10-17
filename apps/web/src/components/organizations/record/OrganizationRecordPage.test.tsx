@@ -191,13 +191,24 @@ describe('OrganizationRecordPage — happy path', () => {
     expect(screen.queryByTestId('org-record-scope-chip')).toBeNull();
   });
 
-  it('renders overview tiles only for the summary sections the caller can read', async () => {
+  it('renders overview stats only for the summary sections the caller can read', async () => {
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
-    await waitFor(() => expect(screen.getByTestId('org-overview-tile-devices')).toBeTruthy());
-    expect(screen.getByTestId('org-overview-tile-alerts')).toBeTruthy();
-    // The summary omitted tickets/invoices — a 0 tile there would be a lie.
-    expect(screen.queryByTestId('org-overview-tile-tickets')).toBeNull();
-    expect(screen.queryByTestId('org-overview-tile-invoices')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('org-overview-stat-devices')).toBeTruthy());
+    expect(screen.getByTestId('org-overview-stat-alerts')).toBeTruthy();
+    // The summary omitted tickets/invoices — a 0 stat there would be a lie.
+    expect(screen.queryByTestId('org-overview-stat-tickets')).toBeNull();
+    expect(screen.queryByTestId('org-overview-stat-invoices')).toBeNull();
+  });
+
+  it('links the Devices stat to the Devices tab, and following it opens that tab (#9020)', async () => {
+    const user = userEvent.setup();
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-overview-stat-devices')).toBeTruthy());
+    const stat = screen.getByTestId('org-overview-stat-devices');
+    expect(stat.tagName).toBe('A');
+    expect(stat).toHaveAttribute('href', '#devices');
+    await user.click(stat);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Devices' })).toHaveAttribute('aria-selected', 'true'));
   });
 
   it('opens the Tickets tab named in the URL hash, pinned to the record org', async () => {
@@ -436,7 +447,7 @@ describe('OrganizationRecordPage — lifecycle states', () => {
     render(<OrganizationRecordPage orgId={RECORD_ORG} />);
     await waitFor(() => expect(screen.getByTestId('org-overview-summary-error')).toBeTruthy());
     expect(screen.getByTestId('org-record-header')).toBeTruthy();
-    expect(screen.queryByTestId('org-overview-tile-devices')).toBeNull();
+    expect(screen.queryByTestId('org-overview-stat-devices')).toBeNull();
   });
 });
 
@@ -455,6 +466,19 @@ describe('OrganizationRecordPage — permission gating', () => {
     // assertion below vacuous as well as breaking the positive one.
     expect(screen.queryByRole('tab', { name: 'Devices' })).toBeNull();
     expect(screen.getByRole('tab', { name: 'Overview' })).toBeTruthy();
+  });
+
+  it('does not link an Overview stat to a tab this user cannot open (#9020)', async () => {
+    // The summary still carries devices here (route stub), so the stat renders —
+    // but a link to #devices would bounce straight back to Overview.
+    seedAuth(PARTNER_TOKEN, [{ resource: 'organizations', action: 'read' }] as Permission[]);
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json(ORG_BODY),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-overview-stat-devices')).toBeTruthy());
+    expect(screen.getByTestId('org-overview-stat-devices').tagName).not.toBe('A');
   });
 
   it('falls back to Overview when the hash names a tab this user cannot see', async () => {

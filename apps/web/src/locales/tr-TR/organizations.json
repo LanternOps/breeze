@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Cihazlar",
-        "devicesSub": "{{total}} cihazdan {{online}} çevrimiçi",
         "alerts": "Açık uyarılar",
-        "alertsSub": "{{critical}} kritik · {{high}} yüksek",
         "tickets": "Açık biletler",
-        "ticketsSub": "{{count}} müşteri yanıtı bekliyor",
         "contracts": "Aktif sözleşmeler",
         "contractsSub": "Sonraki yenileme {{date}}",
         "contractsNoRenewal": "Yaklaşan yenileme yok",
-        "invoices": "Bekleyen tutar",
         "invoicesSub": "Sonraki vade {{date}}",
         "invoicesOverdue_one": "{{count}} gecikmiş",
         "invoicesOverdue_other": "{{count}} gecikmiş",
@@ -94,7 +90,22 @@
       },
       "lastActivity": "Son etkinlik {{date}}",
       "noSummary": "Özet sayılar şu anda kullanılamıyor.",
-      "archivedNotice": "Arşivlenmiş kuruluşlar için genel bakış verileri gösterilmez."
+      "archivedNotice": "Arşivlenmiş kuruluşlar için genel bakış verileri gösterilmez.",
+      "fleet": {
+        "title": "Filo durumu",
+        "total": "Toplam",
+        "allOnline": "Tümü çevrimiçi",
+        "noDevices": "Cihaz yok",
+        "critical": "Kritik",
+        "high": "Yüksek",
+        "otherAlerts": "Diğer",
+        "noAlerts": "Açık uyarı yok",
+        "awaitingCustomer": "Müşteri yanıtı bekliyor",
+        "noTickets": "Açık bilet yok"
+      },
+      "account": {
+        "invoices": "Ödenmemiş faturalar"
+      }
     },
     "archived": {
       "banner": "Bu kuruluş arşivlendi ve salt okunur. Değişiklik yapmak için geri yükleyin.",

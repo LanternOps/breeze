@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Dispositivos",
-        "devicesSub": "{{online}} de {{total}} online",
         "alerts": "Alertas abertos",
-        "alertsSub": "{{critical}} críticos · {{high}} altos",
         "tickets": "Chamados abertos",
-        "ticketsSub": "{{count}} aguardando o cliente",
         "contracts": "Contratos ativos",
         "contractsSub": "Próxima renovação {{date}}",
         "contractsNoRenewal": "Sem renovação futura",
-        "invoices": "Em aberto",
         "invoicesSub": "Próximo vencimento {{date}}",
         "invoicesOverdue_one": "{{count}} vencida",
         "invoicesOverdue_other": "{{count}} vencidas",
@@ -94,7 +90,22 @@
       },
       "lastActivity": "Última atividade {{date}}",
       "noSummary": "Os totais de resumo não estão disponíveis no momento.",
-      "archivedNotice": "Os dados de visão geral não são exibidos para organizações arquivadas."
+      "archivedNotice": "Os dados de visão geral não são exibidos para organizações arquivadas.",
+      "fleet": {
+        "title": "Saúde da frota",
+        "total": "No total",
+        "allOnline": "Todos online",
+        "noDevices": "Nenhum dispositivo",
+        "critical": "Críticos",
+        "high": "Altos",
+        "otherAlerts": "Outros",
+        "noAlerts": "Nenhum alerta aberto",
+        "awaitingCustomer": "Aguardando o cliente",
+        "noTickets": "Nenhum chamado aberto"
+      },
+      "account": {
+        "invoices": "Faturas em aberto"
+      }
     },
     "archived": {
       "banner": "Esta organização está arquivada e é somente leitura. Restaure-a para fazer alterações.",

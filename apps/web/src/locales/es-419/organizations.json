@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Dispositivos",
-        "devicesSub": "{{online}} de {{total}} en línea",
         "alerts": "Alertas abiertas",
-        "alertsSub": "{{critical}} críticas · {{high}} altas",
         "tickets": "Tickets abiertos",
-        "ticketsSub": "{{count}} en espera del cliente",
         "contracts": "Contratos activos",
         "contractsSub": "Próxima renovación {{date}}",
         "contractsNoRenewal": "Sin próxima renovación",
-        "invoices": "Pendiente",
         "invoicesSub": "Próximo vencimiento {{date}}",
         "invoicesOverdue_one": "{{count}} vencida",
         "invoicesOverdue_other": "{{count}} vencidas",
@@ -94,7 +90,22 @@
       },
       "lastActivity": "Última actividad {{date}}",
       "noSummary": "Los totales de resumen no están disponibles en este momento.",
-      "archivedNotice": "Los datos de resumen no se muestran para organizaciones archivadas."
+      "archivedNotice": "Los datos de resumen no se muestran para organizaciones archivadas.",
+      "fleet": {
+        "title": "Estado de la flota",
+        "total": "En total",
+        "allOnline": "Todos en línea",
+        "noDevices": "Sin dispositivos",
+        "critical": "Críticas",
+        "high": "Altas",
+        "otherAlerts": "Otras",
+        "noAlerts": "No hay alertas abiertas",
+        "awaitingCustomer": "En espera del cliente",
+        "noTickets": "No hay tickets abiertos"
+      },
+      "account": {
+        "invoices": "Facturas pendientes"
+      }
     },
     "archived": {
       "banner": "Esta organización está archivada y es de solo lectura. Restáurela para realizar cambios.",

@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Geräte",
-        "devicesSub": "{{online}} von {{total}} online",
         "alerts": "Offene Warnungen",
-        "alertsSub": "{{critical}} kritisch · {{high}} hoch",
         "tickets": "Offene Tickets",
-        "ticketsSub": "{{count}} wartet auf Kunde",
         "contracts": "Aktive Verträge",
         "contractsSub": "Nächste Verlängerung {{date}}",
         "contractsNoRenewal": "Keine bevorstehende Verlängerung",
-        "invoices": "Ausstehend",
         "invoicesSub": "Nächste Fälligkeit {{date}}",
         "invoicesOverdue_one": "{{count}} überfällig",
         "invoicesOverdue_other": "{{count}} überfällig",
@@ -94,7 +90,22 @@
       },
       "lastActivity": "Letzte Aktivität {{date}}",
       "noSummary": "Zusammenfassende Zahlen sind derzeit nicht verfügbar.",
-      "archivedNotice": "Übersichtsdaten werden für archivierte Organisationen nicht angezeigt."
+      "archivedNotice": "Übersichtsdaten werden für archivierte Organisationen nicht angezeigt.",
+      "fleet": {
+        "title": "Flottenzustand",
+        "total": "Gesamt",
+        "allOnline": "Alle online",
+        "noDevices": "Keine Geräte",
+        "critical": "Kritisch",
+        "high": "Hoch",
+        "otherAlerts": "Sonstige",
+        "noAlerts": "Keine offenen Warnungen",
+        "awaitingCustomer": "Wartet auf Kunde",
+        "noTickets": "Keine offenen Tickets"
+      },
+      "account": {
+        "invoices": "Offene Rechnungen"
+      }
     },
     "archived": {
       "banner": "Diese Organisation ist archiviert und schreibgeschützt. Stellen Sie sie wieder her, um Änderungen vorzunehmen.",

@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Monitor, Receipt, ScrollText, Ticket, Users } from 'lucide-react';
+import { useCallback, useEffect, useId, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { resolveAlertTitle } from '@breeze/shared';
 import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
@@ -7,9 +6,10 @@ import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { useAuditActionFormatter } from '@/lib/auditFormat';
 import type { AlertRow, AuditLogEntry } from '@/components/dashboard/types';
 import { EntityLink } from '@/components/shared/EntityLink';
+import HashLink from '@/components/shared/HashLink';
 import OrgKeyDatesCard from './OrgKeyDatesCard';
 import { useLatest, type OrgFetch, type OrgSummary } from './orgRecordFetch';
-import type { ServiceManagementMode } from './orgRecordTabs';
+import { ORG_RECORD_TABS, type OrgRecordTab, type ServiceManagementMode } from './orgRecordTabs';
 
 export interface OrgOverviewTabProps {
   orgId: string;
@@ -18,7 +18,7 @@ export interface OrgOverviewTabProps {
   summaryFailed: boolean;
   /**
    * The partner's Service Management mode (#5075 W04). Anything but `native`
-   * withdraws the three tiles the module owns.
+   * withdraws the three stats the module owns.
    *
    * Deliberately COARSER than the tab gate in `orgRecordTabs.ts`, which keeps
    * the Tickets tab under `external` because it lists the shadow rows Breeze
@@ -33,9 +33,16 @@ export interface OrgOverviewTabProps {
    */
   mode?: ServiceManagementMode;
   /**
+   * The record tabs this user can open (`visibleTabs`). A stat links to its
+   * tab only when the tab is in this list: a link to a hidden tab would bounce
+   * straight back to Overview, which reads as a broken link. Defaults to every
+   * tab for callers that do not gate.
+   */
+  tabs?: readonly OrgRecordTab[];
+  /**
    * An archived org's summary, alerts and activity reads all 404 by design
    * (sweep B3): the API scopes those endpoints to accessible orgs, and
-   * archived is deliberately outside that set. Rendering the tiles and the
+   * archived is deliberately outside that set. Rendering the stats and the
    * two feeds anyway produced a wall of "Couldn't load…" error panels
    * instead of the read-only state the banner above already announces. When
    * true, skip the fetches entirely and show one quiet notice instead.
@@ -43,19 +50,51 @@ export interface OrgOverviewTabProps {
   archived?: boolean;
 }
 
-/** Tiles owned by the Service Management module; hidden unless mode is `native`. */
-const SERVICE_MANAGEMENT_TILE_KEYS: ReadonlySet<string> = new Set(['tickets', 'contracts', 'invoices']);
+/** Stats owned by the Service Management module; hidden unless mode is `native`. */
+const SERVICE_MANAGEMENT_STAT_KEYS: ReadonlySet<string> = new Set(['tickets', 'contracts', 'invoices']);
 
-interface Tile {
+/** Where a stat leads: a record tab (hash), or a page outside the record. */
+type StatTarget = { tab: OrgRecordTab } | { href: string };
+
+/** One number inside a fleet stat. Zero-valued metrics are never built. */
+interface Metric {
   key: string;
-  icon: React.ReactNode;
+  value: number;
   label: string;
+  /** Colour only for a non-zero severe count. */
+  tone?: 'critical' | 'high';
+}
+
+interface FleetStat {
+  key: 'devices' | 'alerts' | 'tickets';
+  label: string;
+  target: StatTarget;
+  metrics: Metric[];
+  /** Muted copy shown in place of (or after) the numbers: "All online". */
+  note?: string;
+}
+
+interface AccountStat {
+  key: 'contracts' | 'invoices' | 'contacts' | 'portalUsers';
+  label: string;
+  target: StatTarget;
   value: string;
   sub?: string;
+  subTone?: 'critical';
 }
+
+const TONE_CLASS: Record<NonNullable<Metric['tone']>, string> = {
+  critical: 'text-destructive',
+  // The bright --warning is ~2.3:1 on a light card; the strong variant clears
+  // 4.5:1 as text.
+  high: 'text-warning-strong',
+};
 
 const CRITICAL_ALERTS_PATH = '/alerts?status=active&severity=critical&limit=10';
 const RECENT_ACTIVITY_PATH = '/audit-logs/logs?limit=20&skipCount=true';
+
+/** Feed timestamps: minute precision is what triage needs; seconds are noise. */
+const FEED_TIME_FORMAT = { dateStyle: 'medium', timeStyle: 'short' } as const;
 
 /** `null` = still loading; `'failed'` = we could not find out; otherwise rows. */
 type FeedState<T> = T[] | 'failed' | null;
@@ -68,7 +107,7 @@ type FeedState<T> = T[] | 'failed' | null;
  * `alerts:read`) or a 500 into `[]` renders "No open critical alerts" — a
  * confident false negative in a monitoring tool, which a tech triaging a
  * customer could reasonably act on by not escalating. It is the same lie the
- * summary tiles deliberately avoid by omitting a section rather than showing a
+ * summary stats deliberately avoid by omitting a section rather than showing a
  * zero; the feeds have to hold the same line.
  */
 async function loadFeed<T>(
@@ -89,15 +128,61 @@ async function loadFeed<T>(
   }
 }
 
+const STAT_LINK_CLASS =
+  'transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring';
+
 /**
- * The record's landing tab: the counts an MSP tech needs before opening a
- * customer's ticket, plus the two feeds that answer "what has been happening
- * here".
+ * A stat's container: a link when it has somewhere the user can go, a plain
+ * block otherwise. The test id stays on whichever element renders, so callers
+ * can assert "linked" vs "not linked" on the same id.
+ */
+function StatContainer({
+  target,
+  testId,
+  className,
+  children,
+}: {
+  target: StatTarget | null;
+  testId: string;
+  className: string;
+  children: ReactNode;
+}) {
+  if (!target) {
+    return (
+      <div data-testid={testId} className={className}>
+        {children}
+      </div>
+    );
+  }
+  if ('tab' in target) {
+    return (
+      <HashLink hash={target.tab} data-testid={testId} className={`${className} ${STAT_LINK_CLASS}`}>
+        {children}
+      </HashLink>
+    );
+  }
+  return (
+    <a href={target.href} data-testid={testId} className={`${className} ${STAT_LINK_CLASS}`}>
+      {children}
+    </a>
+  );
+}
+
+/**
+ * The record's landing tab, in two tiers.
  *
- * A tile whose summary section is ABSENT is not rendered at all — the section
+ * Tier 1, the fleet strip, answers "is this customer OK": devices online and
+ * offline, open alerts by severity, open tickets. Tier 2, the account row, is
+ * the money-and-people context (contracts, outstanding invoices, contacts,
+ * portal users) beside the key dates card. Every stat links to where its
+ * detail lives.
+ *
+ * A stat whose summary section is ABSENT is not rendered at all — the section
  * is missing because the caller lacks the read permission, and a "0" there
- * would be a confident lie about a customer's fleet. The two feeds below hold
- * the same line: a failed load says so, rather than rendering the empty state.
+ * would be a confident lie about a customer's fleet. Within a present section a
+ * zero reads as muted words ("All online", "No open alerts"), never as a big 0.
+ * The two feeds below hold the same line: a failed load says so, rather than
+ * rendering the empty state.
  */
 export default function OrgOverviewTab({
   orgId,
@@ -105,10 +190,13 @@ export default function OrgOverviewTab({
   summary,
   summaryFailed,
   mode = 'native',
+  tabs = ORG_RECORD_TABS,
   archived = false,
 }: OrgOverviewTabProps) {
   const { t } = useTranslation('organizations');
   const formatAuditAction = useAuditActionFormatter();
+  const fleetHeadingId = useId();
+  const accountHeadingId = useId();
   const [activity, setActivity] = useState<FeedState<AuditLogEntry>>(null);
   const [alerts, setAlerts] = useState<FeedState<AlertRow>>(null);
   const activityLatest = useLatest<AuditLogEntry[] | 'failed'>();
@@ -116,7 +204,7 @@ export default function OrgOverviewTab({
 
   const loadFeeds = useCallback(async () => {
     // The two feeds are independent: one failing (a tech without audit:read
-    // gets a 403 on activity) must leave the other, and the tiles, intact.
+    // gets a 403 on activity) must leave the other, and the stats, intact.
     const activityRun = activityLatest
       .run(
         loadFeed<AuditLogEntry>(
@@ -141,45 +229,65 @@ export default function OrgOverviewTab({
     void loadFeeds();
   }, [loadFeeds, orgId, archived]);
 
-  const tiles: Tile[] = [];
+  /** A tab target survives only if this user can open that tab. */
+  const resolveTarget = (target: StatTarget): StatTarget | null =>
+    'tab' in target && !tabs.includes(target.tab) ? null : target;
+
+  const fleet: FleetStat[] = [];
   if (summary?.devices) {
-    tiles.push({
-      key: 'devices',
-      icon: <Monitor className="h-4 w-4" aria-hidden="true" />,
-      label: t('orgRecord.overview.tiles.devices'),
-      value: formatNumber(summary.devices.total),
-      sub: t('orgRecord.overview.tiles.devicesSub', {
-        online: formatNumber(summary.devices.online),
-        total: formatNumber(summary.devices.total),
-      }),
-    });
+    const { total, online, offline } = summary.devices;
+    const metrics: Metric[] = [];
+    let note: string | undefined;
+    if (total === 0) {
+      note = t('orgRecord.overview.fleet.noDevices');
+    } else if (offline === 0) {
+      metrics.push({ key: 'total', value: total, label: t('orgRecord.overview.fleet.total') });
+      note = t('orgRecord.overview.fleet.allOnline');
+    } else {
+      if (online > 0) metrics.push({ key: 'online', value: online, label: t('orgRecord.devices.status.online') });
+      metrics.push({ key: 'offline', value: offline, label: t('orgRecord.devices.status.offline') });
+      metrics.push({ key: 'total', value: total, label: t('orgRecord.overview.fleet.total') });
+    }
+    fleet.push({ key: 'devices', label: t('orgRecord.overview.tiles.devices'), target: { tab: 'devices' }, metrics, note });
   }
   if (summary?.alerts) {
-    tiles.push({
+    const { open, critical, high } = summary.alerts;
+    const other = Math.max(0, open - critical - high);
+    const metrics: Metric[] = [];
+    if (critical > 0) metrics.push({ key: 'critical', value: critical, label: t('orgRecord.overview.fleet.critical'), tone: 'critical' });
+    if (high > 0) metrics.push({ key: 'high', value: high, label: t('orgRecord.overview.fleet.high'), tone: 'high' });
+    if (other > 0) metrics.push({ key: 'other', value: other, label: t('orgRecord.overview.fleet.otherAlerts') });
+    fleet.push({
       key: 'alerts',
-      icon: <AlertTriangle className="h-4 w-4" aria-hidden="true" />,
       label: t('orgRecord.overview.tiles.alerts'),
-      value: formatNumber(summary.alerts.open),
-      sub: t('orgRecord.overview.tiles.alertsSub', {
-        critical: formatNumber(summary.alerts.critical),
-        high: formatNumber(summary.alerts.high),
-      }),
+      // No alerts tab on the record — the org-filtered alert list is the detail.
+      target: { href: `/alerts?orgId=${encodeURIComponent(orgId)}` },
+      metrics,
+      note: metrics.length === 0 ? t('orgRecord.overview.fleet.noAlerts') : undefined,
     });
   }
   if (summary?.tickets) {
-    tiles.push({
+    const { open, awaitingCustomer } = summary.tickets;
+    const metrics: Metric[] = [];
+    if (open > 0) metrics.push({ key: 'open', value: open, label: t('orgRecord.tickets.tabs.open') });
+    if (awaitingCustomer > 0) {
+      metrics.push({ key: 'awaiting', value: awaitingCustomer, label: t('orgRecord.overview.fleet.awaitingCustomer') });
+    }
+    fleet.push({
       key: 'tickets',
-      icon: <Ticket className="h-4 w-4" aria-hidden="true" />,
       label: t('orgRecord.overview.tiles.tickets'),
-      value: formatNumber(summary.tickets.open),
-      sub: t('orgRecord.overview.tiles.ticketsSub', { count: summary.tickets.awaitingCustomer }),
+      target: { tab: 'tickets' },
+      metrics,
+      note: metrics.length === 0 ? t('orgRecord.overview.fleet.noTickets') : undefined,
     });
   }
+
+  const account: AccountStat[] = [];
   if (summary?.contracts) {
-    tiles.push({
+    account.push({
       key: 'contracts',
-      icon: <ScrollText className="h-4 w-4" aria-hidden="true" />,
       label: t('orgRecord.overview.tiles.contracts'),
+      target: { tab: 'billing' },
       value: formatNumber(summary.contracts.active),
       sub: summary.contracts.nextRenewalAt
         ? t('orgRecord.overview.tiles.contractsSub', { date: formatDate(summary.contracts.nextRenewalAt) })
@@ -188,45 +296,50 @@ export default function OrgOverviewTab({
   }
   if (summary?.invoices) {
     const outstanding = Number(summary.invoices.outstanding);
-    tiles.push({
+    const overdue = summary.invoices.overdueCount > 0;
+    account.push({
       key: 'invoices',
-      icon: <Receipt className="h-4 w-4" aria-hidden="true" />,
-      label: t('orgRecord.overview.tiles.invoices'),
+      label: t('orgRecord.overview.account.invoices'),
+      target: { tab: 'billing' },
       // The API sends a decimal STRING so cents survive the wire; only the
       // display crosses into float, and a malformed value degrades to the raw
       // string rather than rendering "NaN".
       value: Number.isFinite(outstanding)
         ? formatCurrency(outstanding, summary.invoices.currencyCode ?? 'USD')
         : summary.invoices.outstanding,
-      sub:
-        summary.invoices.overdueCount > 0
-          ? t('orgRecord.overview.tiles.invoicesOverdue', { count: summary.invoices.overdueCount })
-          : summary.invoices.nextDueAt
-            ? t('orgRecord.overview.tiles.invoicesSub', { date: formatDate(summary.invoices.nextDueAt) })
-            : t('orgRecord.overview.tiles.invoicesNothingDue'),
+      sub: overdue
+        ? t('orgRecord.overview.tiles.invoicesOverdue', { count: summary.invoices.overdueCount })
+        : summary.invoices.nextDueAt
+          ? t('orgRecord.overview.tiles.invoicesSub', { date: formatDate(summary.invoices.nextDueAt) })
+          : t('orgRecord.overview.tiles.invoicesNothingDue'),
+      subTone: overdue ? 'critical' : undefined,
     });
   }
   if (summary?.contacts) {
-    tiles.push({
+    account.push({
       key: 'contacts',
-      icon: <Users className="h-4 w-4" aria-hidden="true" />,
       label: t('orgRecord.overview.tiles.contacts'),
+      target: { tab: 'contacts' },
       value: formatNumber(summary.contacts.count),
     });
   }
   if (summary?.portalUsers) {
-    tiles.push({
+    account.push({
       key: 'portalUsers',
-      icon: <Users className="h-4 w-4" aria-hidden="true" />,
       label: t('orgRecord.overview.tiles.portalUsers'),
+      // Portal users are managed on the org's settings page, not a record tab.
+      target: { href: `/settings/organizations/${encodeURIComponent(orgId)}#portal` },
       value: formatNumber(summary.portalUsers.count),
     });
   }
 
-  // Filtered once, after every push, rather than guarding each push: a tile
+  // Filtered once, after every push, rather than guarding each push: a stat
   // added later cannot slip past the module gate by forgetting the condition —
-  // it only has to be named in SERVICE_MANAGEMENT_TILE_KEYS to be covered.
-  const visibleTiles = mode === 'native' ? tiles : tiles.filter((tile) => !SERVICE_MANAGEMENT_TILE_KEYS.has(tile.key));
+  // it only has to be named in SERVICE_MANAGEMENT_STAT_KEYS to be covered.
+  const moduleGate = <T extends { key: string }>(stats: T[]): T[] =>
+    mode === 'native' ? stats : stats.filter((stat) => !SERVICE_MANAGEMENT_STAT_KEYS.has(stat.key));
+  const visibleFleet = moduleGate(fleet);
+  const visibleAccount = moduleGate(account);
 
   if (archived) {
     return (
@@ -246,24 +359,79 @@ export default function OrgOverviewTab({
         </p>
       )}
 
-      {visibleTiles.length > 0 && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {visibleTiles.map((tile) => (
-            <div
-              key={tile.key}
-              data-testid={`org-overview-tile-${tile.key}`}
-              className="rounded-lg border bg-card px-4 py-3"
-            >
-              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {tile.icon}
-                {tile.label}
-              </div>
-              <p className="mt-1 text-2xl font-semibold tabular-nums">{tile.value}</p>
-              {tile.sub && <p className="mt-0.5 text-xs text-muted-foreground">{tile.sub}</p>}
-            </div>
-          ))}
-        </div>
+      {visibleFleet.length > 0 && (
+        <section data-testid="org-overview-fleet" aria-labelledby={fleetHeadingId} className="space-y-2">
+          <h2 id={fleetHeadingId} className="text-sm font-semibold">
+            {t('orgRecord.overview.fleet.title')}
+          </h2>
+          <div className="flex flex-col divide-y overflow-hidden rounded-lg border bg-card md:flex-row md:divide-x md:divide-y-0">
+            {visibleFleet.map((stat) => (
+              <StatContainer
+                key={stat.key}
+                target={resolveTarget(stat.target)}
+                testId={`org-overview-stat-${stat.key}`}
+                className="block flex-1 px-4 py-3"
+              >
+                <span className="block text-xs font-medium text-muted-foreground">{stat.label}</span>
+                <span className="mt-1 flex flex-wrap items-end gap-x-5 gap-y-1">
+                  {stat.metrics.map((metric) => (
+                    <span
+                      key={metric.key}
+                      data-testid={`org-overview-stat-${stat.key}-${metric.key}`}
+                      className="flex flex-col"
+                    >
+                      <span
+                        className={`text-lg font-semibold leading-tight tabular-nums ${metric.tone ? TONE_CLASS[metric.tone] : ''}`}
+                      >
+                        {formatNumber(metric.value)}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{metric.label}</span>
+                    </span>
+                  ))}
+                  {stat.note && <span className="pb-px text-sm text-muted-foreground">{stat.note}</span>}
+                </span>
+              </StatContainer>
+            ))}
+          </div>
+        </section>
       )}
+
+      <div data-testid="org-overview-account-tier" className="grid items-start gap-4 lg:grid-cols-3">
+        {visibleAccount.length > 0 && (
+          <section
+            data-testid="org-overview-account"
+            aria-labelledby={accountHeadingId}
+            className="space-y-2 lg:col-span-2"
+          >
+            <h2 id={accountHeadingId} className="text-sm font-semibold">
+              {t('orgBoard.lens.account')}
+            </h2>
+            <div className="grid grid-cols-1 gap-1 rounded-lg border bg-card p-1 sm:grid-cols-2 xl:grid-cols-4">
+              {visibleAccount.map((stat) => (
+                <StatContainer
+                  key={stat.key}
+                  target={resolveTarget(stat.target)}
+                  testId={`org-overview-stat-${stat.key}`}
+                  className="block rounded-md px-3 py-2"
+                >
+                  <span className="block text-xs text-muted-foreground">{stat.label}</span>
+                  <span className="block text-sm font-semibold tabular-nums">{stat.value}</span>
+                  {stat.sub && (
+                    <span
+                      className={`block text-xs ${stat.subTone ? TONE_CLASS[stat.subTone] : 'text-muted-foreground'}`}
+                    >
+                      {stat.sub}
+                    </span>
+                  )}
+                </StatContainer>
+              ))}
+            </div>
+          </section>
+        )}
+        <div className={visibleAccount.length > 0 ? undefined : 'lg:col-span-3'}>
+          <OrgKeyDatesCard orgId={orgId} orgFetch={orgFetch} />
+        </div>
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <section data-testid="org-overview-critical-alerts" className="rounded-lg border bg-card">
@@ -301,7 +469,7 @@ export default function OrgOverviewTab({
                         {' · '}
                       </>
                     )}
-                    {formatDateTime(alert.triggeredAt ?? alert.createdAt)}
+                    {formatDateTime(alert.triggeredAt ?? alert.createdAt, FEED_TIME_FORMAT)}
                   </p>
                 </li>
               ))}
@@ -310,13 +478,26 @@ export default function OrgOverviewTab({
         </section>
 
         <section data-testid="org-overview-activity" className="rounded-lg border bg-card">
-          <header className="flex items-center justify-between border-b px-4 py-2.5">
+          <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b px-4 py-2.5">
             <h2 className="text-sm font-semibold">{t('orgRecord.overview.activity.title')}</h2>
-            {summary?.lastActivityAt && (
-              <span className="text-xs text-muted-foreground">
-                {t('orgRecord.overview.lastActivity', { date: formatDateTime(summary.lastActivityAt) })}
-              </span>
-            )}
+            <div className="flex items-center gap-3">
+              {summary?.lastActivityAt && (
+                <span className="text-xs text-muted-foreground">
+                  {t('orgRecord.overview.lastActivity', {
+                    date: formatDateTime(summary.lastActivityAt, FEED_TIME_FORMAT),
+                  })}
+                </span>
+              )}
+              {tabs.includes('activity') && (
+                <HashLink
+                  hash="activity"
+                  data-testid="org-overview-activity-view-all"
+                  className="text-xs text-primary hover:underline"
+                >
+                  {t('orgRecord.overview.activity.viewAll')}
+                </HashLink>
+              )}
+            </div>
           </header>
           {activity === null ? (
             <div className="space-y-2 px-4 py-3">
@@ -338,7 +519,10 @@ export default function OrgOverviewTab({
                 <li key={row.id} className="px-4 py-2 text-sm">
                   <span className="font-medium">{formatAuditAction(row.action)}</span>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    {[row.userName ?? row.user?.name, formatDateTime(row.timestamp ?? row.createdAt ?? '')]
+                    {[
+                      row.userName ?? row.user?.name,
+                      formatDateTime(row.timestamp ?? row.createdAt ?? '', FEED_TIME_FORMAT),
+                    ]
                       .filter(Boolean)
                       .join(' · ')}
                   </p>
@@ -347,7 +531,6 @@ export default function OrgOverviewTab({
             </ul>
           )}
         </section>
-        <OrgKeyDatesCard orgId={orgId} orgFetch={orgFetch} />
       </div>
     </div>
   );
