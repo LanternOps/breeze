@@ -277,6 +277,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // attached unconditionally under CONNECTION_HEALTH_QUEUE, which differs from
   // the registry key.
   consumers('connectionHealthReconcileWorker', ['connection-health-reconcile']),
+  consumers('connectionHealthDigestWorker', ['connection-health-digest']),
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),

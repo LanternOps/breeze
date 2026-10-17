@@ -74,6 +74,9 @@ export const MAIL_PURPOSES = {
   'staff.report_failure': { lane: 'platform' },
   // Settings → Access Reviews: "Email reviewers" to the assigned reviewer (MSP staff).
   'staff.access_review_notice': { lane: 'platform' },
+  // Connection health daily digest to MSP staff and grant owners (spec 2026-10-15 §4).
+  // Send site: services/connectionHealth/digest.ts.
+  'staff.connection_health_digest': { lane: 'platform' },
   'deployment.invite': { lane: 'platform' },
   'ticket.staff_notification': { lane: 'platform' },
 

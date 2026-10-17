@@ -242,6 +242,10 @@ export const JOB_SCHEDULES = {
   'parked-device-expiry': '21 * * * *',
   // Autopay collection: :26 is free in every hour; the mod-5 sub-daily lane is full.
   'autopay-collection-run': '26 * * * *',
+  // Connection health W3 (#8847) — hourly daily-digest pass; each partner is due
+  // while its local hour is 08–11. The spec asked for the ≡2 (mod 5) lane, which
+  // is full; :09 is free in every hour and outside the ≡0 (mod 5) ticks.
+  'connection-health-digest': '9 * * * *',
   // Helper screenshot cleanup — sweeps ai_screenshots rows (and their files)
   // past their 24h retention. 4x/day is plenty against a 24h TTL; minute 27
   // on hours 1,7,13,19 is unused by any existing hour/minute combination in

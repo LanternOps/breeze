@@ -92,6 +92,7 @@ import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { edrRoutes } from './routes/edr';
 import { connectionHealthRoutes } from './routes/connectionHealth';
+import { emailUnsubscribeRoutes } from './routes/emailUnsubscribe';
 import { reportRoutes } from './routes/reports';
 import { incidentRoutes } from './routes/incidents';
 import { searchRoutes } from './routes/search';
@@ -869,6 +870,8 @@ api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/edr', edrRoutes); // EDR provider framework (#8164 W01b)
 api.route('/connection-health', connectionHealthRoutes);
+// Unauthenticated RFC 8058 one-click unsubscribe (signed token; per-IP rate limited in the router).
+api.route('/email', emailUnsubscribeRoutes);
 api.route('/reports', reportRoutes);
 api.route('/incidents', incidentRoutes);
 api.route('/search', searchRoutes);

@@ -58,6 +58,7 @@ import {
 import { previewMfaEnrollmentGrace, resolveMfaGraceDays } from '../services/mfaEnrollmentGrace';
 import { requestPendingEmailChange } from '../services/pendingEmail';
 import { resolveDelegatedSiteIds } from '../services/organizationMembershipDelegation';
+import { clearEmailOptOut, isOptedOut, setEmailOptOut } from '../services/emailOptouts';
 
 export const userRoutes = new Hono();
 const supportedLocales = SUPPORTED_LOCALES;
@@ -76,7 +77,8 @@ userRoutes.use('*', async (c, next) => {
   // without this exemption a 'selected'/'none' partner admin would be 403'd on
   // GET/PATCH /me, the top-bar avatar (GET /:id/avatar runs its own scope check
   // in the handler), and (W07, #3901) their own ticket push preferences, which
-  // is the field technician this feature exists for.
+  // is the field technician this feature exists for. /me/email-preferences
+  // (connection health W3, #8847) is the same shape: subject auth.user.id, .strict() body.
   //
   // A route may be added here ONLY if its subject is derived from auth.user.id
   // and never from a path param or request body. The /me/ticket-push-preferences
@@ -86,7 +88,7 @@ userRoutes.use('*', async (c, next) => {
   // including ones whose subject is not auth.user.id. The allowlist is the point.
   const path = c.req.path;
   const isSelfServiceRoute =
-    /\/me(\/avatar|\/ticket-push-preferences|\/ticket-pushover)?$/.test(path) ||
+    /\/me(\/avatar|\/ticket-push-preferences|\/ticket-pushover|\/email-preferences)?$/.test(path) ||
     (c.req.method === 'GET' && /\/avatar$/.test(path));
   if (isSelfServiceRoute) {
     await next();
@@ -735,6 +737,39 @@ userRoutes.patch(
 const setTicketPushoverSchema = z.object({
   userKey: z.string().trim().regex(PUSHOVER_USER_KEY_PATTERN, 'Pushover user key must be 30 letters or digits'),
 }).strict();
+
+// Connection health W3 (#8847, spec 2026-10-15 §6): the user's own email
+// subscriptions, today just the daily connection health digest. Subject is always
+// auth.user.id (self-service exemption above); the body is .strict(). Missing
+// opt-out row = subscribed. Shape 6 RLS keeps the request context on the user's
+// own row.
+const updateEmailPreferencesSchema = z.object({
+  connectionHealthDigest: z.boolean(),
+}).strict();
+
+userRoutes.get('/me/email-preferences', async (c) => {
+  const auth = c.get('auth');
+  const optedOut = await isOptedOut(auth.user.id, 'connection_health_digest');
+  return c.json({ connectionHealthDigest: !optedOut });
+});
+
+userRoutes.patch('/me/email-preferences', zValidator('json', updateEmailPreferencesSchema), async (c) => {
+  const auth = c.get('auth');
+  const { connectionHealthDigest } = c.req.valid('json');
+  if (connectionHealthDigest) {
+    await clearEmailOptOut(auth.user.id, 'connection_health_digest');
+  } else {
+    await setEmailOptOut(auth.user.id, 'connection_health_digest', 'settings');
+  }
+  writeRouteAudit(c, {
+    orgId: auth.orgId ?? null,
+    action: 'user.email_preferences.update',
+    resourceType: 'user',
+    resourceId: auth.user.id,
+    details: { connectionHealthDigest },
+  });
+  return c.json({ connectionHealthDigest });
+});
 
 userRoutes.get('/me/ticket-pushover', async (c) => {
   const auth = c.get('auth');
