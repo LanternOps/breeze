@@ -594,6 +594,38 @@ describe('DeviceActions — phone width (#9028)', () => {
     }
   });
 
+  it('an unavailable primary shows its reason as visible text (no hover on touch)', () => {
+    render(<DeviceActions device={maintenanceDevice} />);
+    expect(headerButtons().map((b) => b.textContent?.trim())).toEqual(['Run Script', 'Actions']);
+    expect(screen.getByTestId('device-phone-primary-reason')).toHaveTextContent('Device is in maintenance mode');
+  });
+
+  it('shows no reason line when the primary is available', () => {
+    render(<DeviceActions device={onlineDevice} />);
+    expect(screen.queryByTestId('device-phone-primary-reason')).toBeNull();
+  });
+
+  it('sheet items run their action when enabled and do nothing when disabled', async () => {
+    const onAction = vi.fn();
+    const { unmount } = render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+    await userEvent.click(screen.getByTestId('device-actions-sheet-trigger'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /remote tools/i }));
+    expect(onAction).toHaveBeenCalledWith('remote-tools', onlineDevice);
+    expect(screen.queryByTestId('device-actions-sheet')).toBeNull();
+    // Reboot confirms first, from the sheet too.
+    await userEvent.click(screen.getByTestId('device-actions-sheet-trigger'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /^reboot$/i }));
+    expect(screen.getByRole('heading', { name: /reboot/i })).toBeInTheDocument();
+    unmount();
+
+    onAction.mockClear();
+    render(<DeviceActions device={offlineDevice} onAction={onAction} />);
+    await userEvent.click(screen.getByTestId('device-actions-sheet-trigger'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /run script/i }));
+    expect(onAction).not.toHaveBeenCalled();
+    expect(screen.getByTestId('device-actions-sheet')).toBeInTheDocument();
+  });
+
   it('the sheet closes on Escape and returns focus to the Actions button', async () => {
     render(<DeviceActions device={onlineDevice} />);
     const trigger = screen.getByTestId('device-actions-sheet-trigger');

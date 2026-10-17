@@ -777,7 +777,7 @@ export default function DeviceActions({
     );
     const queuedReason = online ? undefined : offlineTitle;
     return (
-      <div data-testid="device-header-actions" className="flex w-full items-center gap-2">
+      <div data-testid="device-header-actions" className="flex w-full flex-wrap items-center gap-2">
         {reasonSpans}
         {showWake ? (
           <button
@@ -942,6 +942,13 @@ export default function DeviceActions({
             {removeOrRestoreMenuItems}
           </DropdownPopup>
         </DropdownRoot>
+        {/* Touch has no hover: when the primary itself is unavailable, say why
+            in plain sight instead of leaving a tap that does nothing. */}
+        {!showWake && offlineTitle && (
+          <p data-testid="device-phone-primary-reason" className="w-full text-xs text-muted-foreground">
+            {offlineTitle}
+          </p>
+        )}
       </div>
     );
   };
