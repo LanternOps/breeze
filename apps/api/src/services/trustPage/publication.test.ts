@@ -3,6 +3,8 @@ vi.mock('../postureEvidence', () => ({ loadPostureEvidence: vi.fn(), TRUST_PAGE_
 vi.mock('./trustOnlyEvidence', () => ({ loadTrustOnlyEvidence: vi.fn(async () => ({})) }));
 vi.mock('./servingSet', () => ({ addServing: vi.fn(), removeServing: vi.fn(), cacheSnapshotPayload: vi.fn(), trustServingMember: (p: string, o?: string) => (o ? `${p}/${o}` : p) }));
 vi.mock('../portal/edrVisibility', () => ({ isEdrVisibilityEnabled: vi.fn(async () => false) }));
+// W02b: the declarations section reads its own table; this suite scripts the builder's selects in order (sections/declarations.test.ts covers it).
+vi.mock('./sections/declarations', () => ({ freezeDeclarationIds: vi.fn(async () => []), buildDeclaredControls: vi.fn(async () => []) }));
 vi.mock('./template', () => ({ loadPartnerTemplate: vi.fn(async () => null) }));
 const trustMode = vi.hoisted(() => ({ value: 'enforce' as 'off' | 'shadow' | 'enforce' }));
 vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode: () => trustMode.value }));

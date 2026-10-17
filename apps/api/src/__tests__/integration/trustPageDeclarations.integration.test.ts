@@ -4,23 +4,27 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { getTestDb } from './setup';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { trustPageDeclarations, trustPages } from '../../db/schema';
+import { trustPageDeclarations, trustPages, trustPageSnapshots } from '../../db/schema';
 import type { TrustPageRow } from '../../db/schema/trustPages';
-import { ensureTrustPage } from '../../services/trustPage/publication';
+import { ensureTrustPage, publishTrustPage, refreshPublishedPage } from '../../services/trustPage/publication';
+import { and } from 'drizzle-orm';
+import type { TrustPagePublicPayload } from '@breeze/shared';
 import { declareTrustControl, listTrustDeclarations, withdrawTrustDeclaration } from '../../services/trustPage/declarations';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
 const DAY_MS = 86_400_000;
 
-interface Seeded { orgId: string; userId: string }
+interface Seeded { orgId: string; userId: string; partnerSlug: string; orgSlug: string }
 
 /** Superuser seed (no RLS): one partner, one org, one user. */
 async function seed(): Promise<Seeded> {
   const testDb = getTestDb();
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const partnerSlug = `nw-decl-${suffix}`;
+  const orgSlug = `acme-decl-${suffix}`;
   const [partner] = (await testDb.execute(sql`
     INSERT INTO partners (name, slug, status, trust_state, created_at, updated_at)
-    VALUES ('Northwind IT', ${`nw-decl-${suffix}`}, 'active', 'trusted', now(), now()) RETURNING id
+    VALUES ('Northwind IT', ${partnerSlug}, 'active', 'trusted', now(), now()) RETURNING id
   `)) as unknown as Array<{ id: string }>;
   const [user] = (await testDb.execute(sql`
     INSERT INTO users (partner_id, email, name, status, created_at, updated_at)
@@ -28,9 +32,9 @@ async function seed(): Promise<Seeded> {
   `)) as unknown as Array<{ id: string }>;
   const [org] = (await testDb.execute(sql`
     INSERT INTO organizations (partner_id, name, slug, status, currency_code, created_at, updated_at)
-    VALUES (${partner!.id}, 'Acme Dental', ${`acme-decl-${suffix}`}, 'active', 'USD', now(), now()) RETURNING id
+    VALUES (${partner!.id}, 'Acme Dental', ${orgSlug}, 'active', 'USD', now(), now()) RETURNING id
   `)) as unknown as Array<{ id: string }>;
-  return { orgId: org!.id, userId: user!.id };
+  return { orgId: org!.id, userId: user!.id, partnerSlug, orgSlug };
 }
 
 async function seedDocument(orgId: string, sha: string): Promise<string> {
@@ -133,4 +137,38 @@ describe('trust page declarations (real DB)', () => {
     // The 404 rolled its revision bump back.
     expect((await freshPage(s)).publicationRevision).toBe(page.publicationRevision);
   });
+
+  it('publish freezes the declaration; the refresh flips it to expired, then a withdrawal drops it (Review Focus 4)', async () => {
+    const page = await freshPage(s);
+    // Superuser insert: declared 365 days minus 3 s ago, so it is current at publish and expires seconds later.
+    const [inserted] = (await getTestDb().execute(sql`
+      INSERT INTO trust_page_declarations (trust_page_id, org_id, control_id, statement, declared_by_partner_name, declared_by_user_id, declared_at, expires_at)
+      SELECT ${page.id}, ${s.orgId}, 'cyber_insurance', 'We hold an active cyber insurance policy.', 'Northwind IT', ${s.userId},
+             d, d + interval '8760 hours' FROM (SELECT now() - interval '8760 hours' + interval '3 seconds' AS d) t
+      RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    await sys(() => publishTrustPage({
+      orgId: s.orgId, expectedRevision: page.publicationRevision, actorUserId: s.userId, authorization: { authorizedBy: 'Jane Doe, COO' },
+      partnerTrustState: 'trusted', partnerSlug: s.partnerSlug, orgSlug: s.orgSlug,
+    }));
+    const current = async () => {
+      const [snap] = await sys(() => db.select().from(trustPageSnapshots)
+        .where(and(eq(trustPageSnapshots.trustPageId, page.id), eq(trustPageSnapshots.isCurrent, true))));
+      return snap!.payload as TrustPagePublicPayload;
+    };
+    const published = (await freshPage(s)).publishedConfig as { declarationIds: string[] };
+    expect(published.declarationIds).toEqual([inserted!.id]);
+    const first = await current();
+    expect(first.declaredControls).toEqual([expect.objectContaining({ id: 'cyber_insurance', status: 'current', declaredBy: 'Northwind IT' })]);
+    expect(first.summary.controlsMet).toBe(first.controls.filter((c) => c.status === 'met').length);
+
+    await new Promise((r) => setTimeout(r, 3500));
+    expect((await refreshPublishedPage(page.id)).rebuilt).toBe(true);
+    expect((await current()).declaredControls).toEqual([expect.objectContaining({ id: 'cyber_insurance', status: 'expired' })]);
+
+    const live = await freshPage(s);
+    await sys(() => withdrawTrustDeclaration({ page: live, declarationId: inserted!.id, actorUserId: s.userId, expectedRevision: live.publicationRevision }));
+    expect((await refreshPublishedPage(page.id)).rebuilt).toBe(true);
+    expect((await current()).declaredControls).toEqual([]);
+  }, 20_000);
 });
