@@ -29,6 +29,7 @@ import { decryptForColumn, encryptSecret } from '../secretCrypto';
 import { HotPathTtlCache } from '../hotPathCache';
 import { getClusterCacheBus, type PublishOutcome } from '../clusterCacheBus';
 import { getRedis } from '../redis';
+import { isPgUniqueViolation } from '../../utils/pgErrors';
 
 export type TrustKeyStatus = 'pending' | 'active' | 'verify_only' | 'revoked';
 
@@ -303,11 +304,6 @@ export async function listTrustSigningKeys(): Promise<TrustKeyInfo[]> {
 // Operator commands (scripts/trust-signing-key.ts)
 // ---------------------------------------------------------------------------
 
-const isUniqueViolation = (err: unknown): boolean => {
-  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
-  return e?.code === '23505' || e?.cause?.code === '23505';
-};
-
 /**
  * One operator transaction. Two operators racing (two `prepare`s, two `activate`s) collide on the one-pending /
  * one-active partial unique indexes; the loser rolls back and gets a readable refusal instead of a raw SQL error.
@@ -316,7 +312,7 @@ async function operatorRun<T>(fn: (tx: TrustKeyTx) => Promise<T>): Promise<T> {
   try {
     return await store.run(fn);
   } catch (err) {
-    if (isUniqueViolation(err)) {
+    if (isPgUniqueViolation(err)) {
       throw new TrustSigningKeyError('another trust signing key change ran at the same time and won; run `list` and retry');
     }
     throw err;
