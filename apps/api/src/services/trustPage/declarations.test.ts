@@ -76,7 +76,7 @@ describe('declareTrustControl', () => {
     const out = await declareTrustControl(declareArgs());
     expect(out.superseded).toBe('old-1');
     expect(ops.map((o) => o.kind)).toEqual(['select', 'select', 'update', 'insert', 'update']);
-    expect((ops[2].payload!.supersededAt as Date).toISOString()).toBe('2026-10-17T12:00:00.000Z');
+    expect((ops[2]!.payload!.supersededAt as Date).toISOString()).toBe('2026-10-17T12:00:00.000Z');
   });
 
   it('a stale revision is 409 and writes nothing', async () => {
@@ -115,9 +115,9 @@ describe('withdrawTrustDeclaration', () => {
     const out = await withdrawTrustDeclaration({ page, declarationId: 'd-1', actorUserId: 'user-1', expectedRevision: 3 });
     expect(out).toEqual({ publicationRevision: 4, controlId: 'incident_response_plan' });
     expect(ops.map((o) => o.kind)).toEqual(['select', 'update', 'update', 'update']);
-    expect(ops[1].payload).toMatchObject({ withdrawnByUserId: 'user-1' });
-    expect(ops[1].payload!.withdrawnAt).toBeInstanceOf(Date);
-    expect(ops[2].payload).toMatchObject({ withdrawnByUserId: 'user-1' });
+    expect(ops[1]!.payload).toMatchObject({ withdrawnByUserId: 'user-1' });
+    expect(ops[1]!.payload!.withdrawnAt).toBeInstanceOf(Date);
+    expect(ops[2]!.payload).toMatchObject({ withdrawnByUserId: 'user-1' });
   });
 
   it('an already-withdrawn (or superseded, or unknown) id is 404 and the revision is not bumped', async () => {
