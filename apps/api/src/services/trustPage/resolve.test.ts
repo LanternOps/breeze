@@ -8,7 +8,7 @@ vi.mock('../../db', () => {
     q[m] = (...a: unknown[]) => { (dbMock.args[m] ??= []).push(a); return q; };
   }
   q.limit = async () => { dbMock.calls += 1; return dbMock.row ? [dbMock.row] : []; };
-  return { db: { select: () => q } };
+  return { db: { select: (...a: unknown[]) => { (dbMock.args.select ??= []).push(a); return q; } } };
 });
 import { parseTrustSlugs, livePublicationPredicate, resolvePublishedTrustPage } from './resolve';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
@@ -25,6 +25,10 @@ describe('parseTrustSlugs', () => {
     expect(parseTrustSlugs('x'.repeat(64), 'acme')).toBeNull();
     expect(parseTrustSlugs('preview', 'acme')).toBeNull();       // reserved: collides with /public/preview/:token
     expect(parseTrustSlugs('preview')).toBeNull();
+    // W03a: the portal's /trust/embed/* route shadows a partner slug 'embed'.
+    expect(parseTrustSlugs('embed')).toBeNull();
+    expect(parseTrustSlugs('embed', 'acme')).toBeNull();
+    expect(parseTrustSlugs('nw', 'embed')).toEqual({ partnerSlug: 'nw', orgSlug: 'embed' }); // org slugs are not reserved
     expect(parseTrustSlugs('nw', '')).toBeNull();
     expect(parseTrustSlugs('../etc', 'acme')).toBeNull();
   });
@@ -48,6 +52,14 @@ describe('resolvePublishedTrustPage', () => {
   it('issues exactly one query and returns null when nothing matches', async () => {
     expect(await resolvePublishedTrustPage('nw', 'acme')).toBeNull();
     expect(dbMock.calls).toBe(1);
+  });
+  it('W03a: selects the live embed allowlist (embed_allowed_origins) and returns it', async () => {
+    const publishedAt = new Date();
+    dbMock.row = { pageId: 'pg', orgId: 'o', partnerId: 'p', publishedAt, searchIndexable: false, lastEvaluatedAt: null, snapshotId: null, payload: null, embedAllowedOrigins: ['https://example.com'] };
+    const r = await resolvePublishedTrustPage('nw', 'acme');
+    const fields = (dbMock.args.select?.[0]?.[0] ?? {}) as Record<string, { name?: string }>;
+    expect(fields.embedAllowedOrigins?.name).toBe('embed_allowed_origins');
+    expect(r?.embedAllowedOrigins).toEqual(['https://example.com']);
   });
   it('maps the row, defaulting a missing snapshot payload to null', async () => {
     const publishedAt = new Date();
