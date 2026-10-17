@@ -1,0 +1,10 @@
+{
+  "export": {
+    "title": "Exportar respostas do questionário",
+    "csv": "Baixar CSV",
+    "json": "Baixar JSON",
+    "unpublishedNote": "Publique a página para ativar a exportação.",
+    "failed": "Não foi possível baixar a exportação. Tente novamente.",
+    "publishedOnlyNote": "Exporta o que a sua página pública exibe."
+  }
+}

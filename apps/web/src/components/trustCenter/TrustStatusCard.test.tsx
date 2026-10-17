@@ -49,6 +49,20 @@ describe('TrustStatusCard gate reason', () => {
   });
 });
 
+describe('TrustStatusCard export menu', () => {
+  it('renders the export menu enabled for a published page and disabled when unpublished', () => {
+    const published = stateWith(null);
+    (published.page as { publishedAt: string | null }).publishedAt = '2026-10-11T12:00:00.000Z';
+    const { unmount } = render(
+      <TrustStatusCard orgId="o1" orgFetch={vi.fn() as never} state={published} canWrite onPageChange={vi.fn()} onReload={vi.fn()} />,
+    );
+    expect((screen.getByTestId('trust-export-csv') as HTMLButtonElement).disabled).toBe(false);
+    unmount();
+    renderCard(null);
+    expect((screen.getByTestId('trust-export-csv') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe('TrustStatusCard partner-home errors (Ruling 25)', () => {
   it.each([
     ['PARTNER_HOME_INTERNAL_ONLY', /internal|own organization/i],
