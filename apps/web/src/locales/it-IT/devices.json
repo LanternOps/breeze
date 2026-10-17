@@ -4414,6 +4414,9 @@
       "open_failed": "Impossibile avviare la chat. Riprova.",
       "send_failed": "Impossibile inviare il messaggio. Riprova.",
       "close_failed": "Impossibile terminare la chat. Riprova."
-    }
+    },
+    "updatesPaused": "Aggiornamenti in tempo reale in pausa — nuovo tentativo in corso",
+    "closeNotAnnounced": "La chat è chiusa qui. La finestra di chat dell'utente potrebbe restare aperta finché il suo dispositivo non si riconnette o finché non risponde.",
+    "unavailable": "Questa chat non è più disponibile"
   }
 }

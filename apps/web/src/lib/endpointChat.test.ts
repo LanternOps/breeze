@@ -9,7 +9,9 @@ vi.mock('./runAction', async (orig) => ({
 
 import { fetchWithAuth } from '../stores/auth';
 import {
+  ChatReadError,
   closeConversation,
+  latestMessageStamp,
   createConversationPoller,
   deviceChatCapability,
   getConversation,
@@ -74,6 +76,9 @@ describe('API client', () => {
     expect(authMock.mock.calls[0]![0]).toBe('/endpoint-messages/conversations?deviceId=d%201');
     authMock.mockResolvedValue(res(200, { conversation: conv(), messages: [] }));
     await getConversation('c1', '2026-10-17T10:00:00.000Z');
+    authMock.mockResolvedValue(res(404, {}));
+    await expect(getConversation('c1')).rejects.toMatchObject({ status: 404 });
+    authMock.mockResolvedValue(res(200, { conversation: conv(), messages: [] }));
     expect(authMock.mock.calls[1]![0]).toBe('/endpoint-messages/conversations/c1?since=2026-10-17T10%3A00%3A00.000Z');
   });
 
@@ -187,6 +192,43 @@ describe('createConversationPoller', () => {
     poller.start();
     await vi.advanceTimersByTimeAsync(6000);
     expect(onError).toHaveBeenCalledTimes(1);
+    expect(fetchOnce).toHaveBeenCalledTimes(2);
+    poller.stop();
+  });
+  it('advances the cursor by updatedAt (falling back to createdAt), not createdAt alone (W1)', async () => {
+    const fetchOnce = vi.fn(async (_id: string, _since?: string) => ({
+      conversation: conv(),
+      messages: [msg('a', '2026-10-17T10:00:01.000Z', { updatedAt: '2026-10-17T10:00:09.000Z' }), msg('b', '2026-10-17T10:00:05.000Z')],
+    }));
+    const poller = createConversationPoller({ conversationId: 'c1', initialStatus: 'open', fetchConversation: fetchOnce, onUpdate: vi.fn() });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(fetchOnce.mock.calls[1]![1]).toBe('2026-10-17T10:00:09.000Z');
+    poller.stop();
+  });
+
+  it('latestMessageStamp is the max of updatedAt ?? createdAt', () => {
+    expect(latestMessageStamp([])).toBeUndefined();
+    expect(latestMessageStamp([msg('a', '2026-10-17T10:00:01.000Z', { updatedAt: '2026-10-17T10:00:07.000Z' }), msg('b', '2026-10-17T10:00:05.000Z')])).toBe('2026-10-17T10:00:07.000Z');
+  });
+
+  it.each([403, 404])('stops for good on a terminal %s and reports it as terminal (W3)', async (status) => {
+    const onError = vi.fn();
+    const fetchOnce = vi.fn().mockRejectedValue(new ChatReadError(status));
+    const poller = createConversationPoller({ conversationId: 'c1', initialStatus: 'open', fetchConversation: fetchOnce, onUpdate: vi.fn(), onError });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(fetchOnce).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.any(ChatReadError), true);
+  });
+
+  it('reports a transient error as non-terminal (W3)', async () => {
+    const onError = vi.fn();
+    const fetchOnce = vi.fn().mockRejectedValue(new ChatReadError(503));
+    const poller = createConversationPoller({ conversationId: 'c1', initialStatus: 'open', fetchConversation: fetchOnce, onUpdate: vi.fn(), onError });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(onError).toHaveBeenCalledWith(expect.any(ChatReadError), false);
     expect(fetchOnce).toHaveBeenCalledTimes(2);
     poller.stop();
   });

@@ -32,6 +32,8 @@ export interface ChatMessage {
   /** Attested Windows username for user replies. */
   senderUsername: string | null;
   createdAt: string;
+  /** Bumped when deliveredAt or errorCode changes; the poll cursor follows it. */
+  updatedAt?: string;
   deliveredAt: string | null;
   errorCode: string | null;
 }
@@ -39,6 +41,13 @@ export interface ChatMessage {
 export interface ChatSnapshot {
   conversation: ChatConversation;
   messages: ChatMessage[];
+}
+
+export interface ChatCloseResponse {
+  conversation: ChatConversation;
+  alreadyClosed?: boolean;
+  /** False when the agent could not be told, so the user's window may linger. */
+  agentNotified?: boolean;
 }
 
 export type ChatCapability = { supported: true } | { supported: false; reason: 'platform' | 'agent_version' };
@@ -54,6 +63,30 @@ export function deviceChatCapability(device: {
   if (device.osType !== 'windows') return { supported: false, reason: 'platform' };
   if (!agentSupportsEndpointChat(device.agentVersion)) return { supported: false, reason: 'agent_version' };
   return { supported: true };
+}
+
+/** Newest `updatedAt ?? createdAt` over the messages, or undefined for none. */
+export function latestMessageStamp(messages: ChatMessage[]): string | undefined {
+  let newest: string | undefined;
+  for (const m of messages) {
+    const stamp = m.updatedAt ?? m.createdAt;
+    if (!newest || stamp > newest) newest = stamp;
+  }
+  return newest;
+}
+
+/** A failed conversation read; `status` drives terminal-vs-transient handling. */
+export class ChatReadError extends Error {
+  status: number;
+  constructor(status: number) {
+    super(`chat_read_failed_${status}`);
+    this.name = 'ChatReadError';
+    this.status = status;
+  }
+}
+
+export function isTerminalReadError(err: unknown): boolean {
+  return err instanceof ChatReadError && (err.status === 403 || err.status === 404);
 }
 
 export function isLiveStatus(status: ChatStatus): boolean {
@@ -83,7 +116,7 @@ export async function listConversations(deviceId: string): Promise<ChatConversat
 export async function getConversation(id: string, since?: string): Promise<ChatSnapshot> {
   const qs = since ? `?since=${encodeURIComponent(since)}` : '';
   const response = await fetchWithAuth(`${BASE}/${encodeURIComponent(id)}${qs}`);
-  if (!response.ok) throw new Error(`chat_read_failed_${response.status}`);
+  if (!response.ok) throw new ChatReadError(response.status);
   return (await response.json()) as ChatSnapshot;
 }
 
@@ -131,9 +164,9 @@ export function sendChatMessage(
 /** POST /conversations/:id/close (idempotent). */
 export function closeConversation(
   conversationId: string,
-  opts: MutationOptions<{ conversation: ChatConversation }>,
-): Promise<{ conversation: ChatConversation }> {
-  return runAction<{ conversation: ChatConversation }>({
+  opts: MutationOptions<ChatCloseResponse>,
+): Promise<ChatCloseResponse> {
+  return runAction<ChatCloseResponse>({
     ...opts,
     request: () => fetchWithAuth(`${BASE}/${encodeURIComponent(conversationId)}/close`, { method: 'POST' }),
   });
@@ -149,7 +182,8 @@ export interface ConversationPollerOptions {
   intervalMs?: number;
   fetchConversation?: (id: string, since?: string) => Promise<ChatSnapshot>;
   onUpdate: (snapshot: ChatSnapshot) => void;
-  onError?: (err: unknown) => void;
+  /** `terminal` is true for 403/404: the poller has stopped for good. */
+  onError?: (err: unknown, terminal: boolean) => void;
 }
 
 export interface ConversationPoller {
@@ -190,10 +224,19 @@ export function createConversationPoller(opts: ConversationPollerOptions): Conve
       const snapshot = await fetchOnce(opts.conversationId, since);
       if (stopped) return;
       status = snapshot.conversation.status;
-      for (const m of snapshot.messages) if (!since || m.createdAt > since) since = m.createdAt;
+      const stamp = latestMessageStamp(snapshot.messages);
+      if (stamp && (!since || stamp > since)) since = stamp;
       opts.onUpdate(snapshot);
     } catch (err) {
-      if (!stopped) opts.onError?.(err);
+      if (!stopped) {
+        const terminal = isTerminalReadError(err);
+        if (terminal) {
+          stopped = true;
+          clear();
+          document.removeEventListener('visibilitychange', onVisibility);
+        }
+        opts.onError?.(err, terminal);
+      }
     } finally {
       inFlight = false;
       schedule(interval);

@@ -4414,6 +4414,9 @@
       "open_failed": "The chat could not be started. Try again.",
       "send_failed": "The message could not be sent. Try again.",
       "close_failed": "The chat could not be ended. Try again."
-    }
+    },
+    "updatesPaused": "Live updates paused — retrying",
+    "closeNotAnnounced": "The chat is closed here. The user's chat window may stay open until their device reconnects or they reply.",
+    "unavailable": "This chat is no longer available"
   }
 }

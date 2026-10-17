@@ -4414,6 +4414,9 @@
       "open_failed": "Le chat n'a pas pu être démarré. Réessayez.",
       "send_failed": "Le message n'a pas pu être envoyé. Réessayez.",
       "close_failed": "Le chat n'a pas pu être terminé. Réessayez."
-    }
+    },
+    "updatesPaused": "Mises à jour en direct suspendues — nouvelle tentative en cours",
+    "closeNotAnnounced": "Le chat est fermé ici. La fenêtre de chat de l'utilisateur peut rester ouverte jusqu'à la reconnexion de son appareil ou jusqu'à sa réponse.",
+    "unavailable": "Ce chat n'est plus disponible"
   }
 }

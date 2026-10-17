@@ -11,6 +11,7 @@ import {
   deviceChatCapability,
   getConversation,
   isLiveStatus,
+  latestMessageStamp,
   listConversations,
   mergeMessages,
   openConversation,
@@ -89,6 +90,9 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
+  const [closeNotice, setCloseNotice] = useState(false);
+  // 'paused' = a poll failed and will be retried; 'gone' = 403/404, polling stopped for good.
+  const [pollState, setPollState] = useState<'ok' | 'paused' | 'gone'>('ok');
 
   // One id per compose: a retry of the same content replays instead of duplicating.
   const startIdRef = useRef<string | null>(null);
@@ -108,6 +112,7 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
   const select = useCallback(
     (id: string | null) => {
       window.location.hash = chatHash(id);
+      setCloseNotice(false);
       setSelectedId(id ?? undefined);
     },
     [setSelectedId],
@@ -154,20 +159,21 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
   const live = loaded ? isLiveStatus(loaded.conversation.status) : false;
   useEffect(() => {
     if (!loadedId || !live) return;
-    const newest = messagesRef.current.reduce<string | undefined>(
-      (acc, m) => (!acc || m.createdAt > acc ? m.createdAt : acc),
-      undefined,
-    );
+    const newest = latestMessageStamp(messagesRef.current);
+    setPollState('ok');
     const poller = createConversationPoller({
       conversationId: loadedId,
       initialStatus: 'open',
       initialSince: newest,
-      onUpdate: (snap) =>
+      onError: (_err, terminal) => setPollState(terminal ? 'gone' : 'paused'),
+      onUpdate: (snap) => {
+        setPollState('ok');
         setLoaded((prev) =>
           prev && prev.conversation.id === snap.conversation.id
             ? { conversation: snap.conversation, messages: mergeMessages(prev.messages, snap.messages) }
             : prev,
-        ),
+        );
+      },
     });
     poller.start();
     return () => poller.stop();
@@ -200,8 +206,6 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
     showToast({ type: 'error', message: t('endpointChat.errors.generic') });
   };
 
-  const inlineOutcome = (status: number) => status === 409 || status === 429;
-
   const start = async () => {
     const trimmed = startBody.trim();
     if (!trimmed || startIssues.length > 0 || starting) return;
@@ -213,7 +217,8 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
         { conversationId: startIdRef.current, deviceId, body: trimmed },
         {
           errorFallback: t('endpointChat.errors.open_failed'),
-          suppressErrorToast: (status) => inlineOutcome(status),
+          // every failure is rendered inline below, so runAction must not toast it too
+          suppressErrorToast: () => true,
         },
       );
       startIdRef.current = null;
@@ -244,7 +249,8 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
         { messageId: messageIdRef.current, body: trimmed },
         {
           errorFallback: t('endpointChat.errors.send_failed'),
-          suppressErrorToast: (status) => inlineOutcome(status),
+          // every failure is rendered inline below, so runAction must not toast it too
+          suppressErrorToast: () => true,
         },
       );
       messageIdRef.current = null;
@@ -273,11 +279,13 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
     const current = loaded?.conversation;
     if (!current || ending) return;
     setEnding(true);
+    setCloseNotice(false);
     try {
       const res = await closeConversation(current.id, {
         errorFallback: t('endpointChat.errors.close_failed'),
       });
       setLoaded((prev) => (prev && prev.conversation.id === current.id ? { ...prev, conversation: res.conversation } : prev));
+      setCloseNotice(res.agentNotified === false);
       void refreshList();
     } catch (err) {
       handleActionFailure(err, () => undefined);
@@ -325,7 +333,12 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
         </button>
         {loadFailed && <p className="text-sm text-destructive">{t('endpointChat.loadFailed')}</p>}
         {!current && !loadFailed && <p className="text-sm text-muted-foreground">{t('endpointChat.loading')}</p>}
-        {current && (
+        {current && pollState === 'gone' && (
+          <p data-testid="chat-unavailable" className="text-sm text-destructive">
+            {t('endpointChat.unavailable')}
+          </p>
+        )}
+        {current && pollState !== 'gone' && (
           <>
             <div className="flex items-center justify-between gap-3">
               <p data-testid="chat-status" data-status={current.status} className="text-sm font-medium">
@@ -343,6 +356,16 @@ export default function DeviceChatPanel({ deviceId, osType, agentVersion }: Devi
                 </button>
               )}
             </div>
+            {pollState === 'paused' && (
+              <p data-testid="chat-updates-paused" role="status" className="text-xs text-warning">
+                {t('endpointChat.updatesPaused')}
+              </p>
+            )}
+            {closeNotice && (
+              <p data-testid="chat-close-notice" role="status" className="text-xs text-muted-foreground">
+                {t('endpointChat.closeNotAnnounced')}
+              </p>
+            )}
             <ul data-testid="chat-transcript" className="space-y-2" aria-live="polite">
               {loaded!.messages.map((m) => {
                 const fromUser = m.direction === 'from_user';

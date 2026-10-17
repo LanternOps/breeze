@@ -245,4 +245,87 @@ describe('DeviceChatPanel — supported', () => {
     fireEvent.click(await screen.findByTestId('chat-back'));
     await waitFor(() => expect(window.location.hash).toBe('#chat'));
   });
+  it('seeds the poller cursor from updatedAt and shows the undelivered marker when a later poll flags a message (W1)', async () => {
+    window.location.hash = `#chat/${CID}`;
+    api.getConversation.mockResolvedValue({
+      conversation: conv(),
+      messages: [m('m1', 'to_user', 'hi', { updatedAt: '2026-10-17T10:00:09.000Z' })],
+    });
+    render(<DeviceChatPanel {...supportedProps} />);
+    await screen.findByText('hi');
+    await waitFor(() => expect(pollers.length).toBeGreaterThan(0));
+    const poller = pollers.at(-1)!;
+    expect(poller.opts.initialSince).toBe('2026-10-17T10:00:09.000Z');
+    expect(screen.queryByTestId('chat-undelivered-m1')).toBeNull();
+    act(() => {
+      poller.opts.onUpdate({
+        conversation: conv(),
+        messages: [m('m1', 'to_user', 'hi', { errorCode: 'chat_window_failed', updatedAt: '2026-10-17T10:00:12.000Z' })],
+      });
+    });
+    expect(await screen.findByTestId('chat-undelivered-m1')).toBeTruthy();
+  });
+
+  it('shows a notice when close reports agentNotified:false, none when true (W2)', async () => {
+    window.location.hash = `#chat/${CID}`;
+    api.getConversation.mockResolvedValue({ conversation: conv(), messages: [] });
+    api.closeConversation.mockResolvedValue({ conversation: conv({ status: 'closed' }), alreadyClosed: false, agentNotified: false });
+    const { unmount } = render(<DeviceChatPanel {...supportedProps} />);
+    fireEvent.click(await screen.findByTestId('chat-end'));
+    expect((await screen.findByTestId('chat-close-notice')).textContent).toBe(
+      "The chat is closed here. The user's chat window may stay open until their device reconnects or they reply.",
+    );
+    unmount();
+    api.closeConversation.mockResolvedValue({ conversation: conv({ status: 'closed' }), alreadyClosed: false, agentNotified: true });
+    render(<DeviceChatPanel {...supportedProps} />);
+    fireEvent.click(await screen.findByTestId('chat-end'));
+    await waitFor(() => expect(screen.getByTestId('chat-status').textContent).toContain('ended'));
+    expect(screen.queryByTestId('chat-close-notice')).toBeNull();
+  });
+
+  it('shows a paused banner after a poll failure and clears it on the next success (W3)', async () => {
+    window.location.hash = `#chat/${CID}`;
+    api.getConversation.mockResolvedValue({ conversation: conv(), messages: [] });
+    render(<DeviceChatPanel {...supportedProps} />);
+    await waitFor(() => expect(pollers.length).toBeGreaterThan(0));
+    const poller = pollers.at(-1)!;
+    expect(screen.queryByTestId('chat-updates-paused')).toBeNull();
+    act(() => poller.opts.onError(new Error('net'), false));
+    expect((await screen.findByTestId('chat-updates-paused')).textContent).toBe('Live updates paused — retrying');
+    act(() => poller.opts.onUpdate({ conversation: conv(), messages: [] }));
+    await waitFor(() => expect(screen.queryByTestId('chat-updates-paused')).toBeNull());
+  });
+
+  it('treats a terminal poll error as "no longer available" with no retry banner (W3)', async () => {
+    window.location.hash = `#chat/${CID}`;
+    api.getConversation.mockResolvedValue({ conversation: conv(), messages: [] });
+    render(<DeviceChatPanel {...supportedProps} />);
+    await waitFor(() => expect(pollers.length).toBeGreaterThan(0));
+    act(() => pollers.at(-1)!.opts.onError(new Error('gone'), true));
+    expect((await screen.findByTestId('chat-unavailable')).textContent).toBe('This chat is no longer available');
+    expect(screen.queryByTestId('chat-updates-paused')).toBeNull();
+    expect(screen.queryByTestId('chat-message-body')).toBeNull();
+  });
+
+  it('suppresses the runAction toast for every status rendered inline, start and send (W4)', async () => {
+    api.openConversation.mockRejectedValue(new ActionError('x', 500, undefined, { error: 'whatever' }));
+    const { unmount } = render(<DeviceChatPanel {...supportedProps} />);
+    fireEvent.change(await screen.findByTestId('chat-start-body'), { target: { value: 'hello' } });
+    fireEvent.click(screen.getByTestId('chat-start-submit'));
+    await screen.findByTestId('chat-start-error');
+    const startOpts = api.openConversation.mock.calls[0]![1];
+    expect([400, 403, 404, 409, 429, 500, 503].every((st) => startOpts.suppressErrorToast(st, undefined))).toBe(true);
+    unmount();
+
+    window.location.hash = `#chat/${CID}`;
+    api.getConversation.mockResolvedValue({ conversation: conv(), messages: [] });
+    api.sendChatMessage.mockRejectedValue(new ActionError('x', 500, undefined, { error: 'whatever' }));
+    render(<DeviceChatPanel {...supportedProps} />);
+    fireEvent.change(await screen.findByTestId('chat-message-body'), { target: { value: 'yo' } });
+    fireEvent.click(screen.getByTestId('chat-message-send'));
+    await screen.findByTestId('chat-message-error');
+    const sendOpts = api.sendChatMessage.mock.calls[0]![2];
+    expect([400, 403, 404, 409, 429, 500, 503].every((st) => sendOpts.suppressErrorToast(st, undefined))).toBe(true);
+    expect(toast).not.toHaveBeenCalled();
+  });
 });
