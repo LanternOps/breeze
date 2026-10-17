@@ -343,6 +343,42 @@ Removes all notifications for the current user.
 
 ---
 
+## Connection Health Digest Email
+
+When an integration, sync or OAuth grant breaks, the people who can fix it get an
+in-app notice. They also get a **daily digest email** at 08:00 in the partner's
+timezone. The digest lists the connections that are still broken, grouped by
+organization with partner-wide connections first. It also lists the ones that
+recovered since that person's last digest.
+
+- **One email a day at most**, however many organizations are affected. If there
+  is nothing to report, no email is sent.
+- **Long-running problems fade.** A connection appears every day for its first
+  seven days broken, and after that only in the Monday digest.
+- **Recipients are checked when the email is sent.** Someone who has lost the
+  permission to view or fix a connection, or access to its organization, drops
+  out of the digest straight away.
+- **Unsubscribing takes one click.** Every digest carries `List-Unsubscribe` and
+  `List-Unsubscribe-Post` headers (RFC 8058), so mail clients show their own
+  unsubscribe button. The link in the footer opens a confirmation page first.
+  People can turn the digest back on, or off, under **My Account → Email
+  notifications**. In-app notices are not affected by either choice.
+
+<Aside type="caution" title="SMTP relays: sign the unsubscribe headers">
+  Gmail and Yahoo only honour one-click unsubscribe when DKIM signs both
+  `List-Unsubscribe` and `List-Unsubscribe-Post`. Resend and Mailgun sign every
+  header by default. On an SMTP relay, check that the relay's DKIM signer
+  includes those two headers.
+</Aside>
+
+The unsubscribe link is built from `PUBLIC_API_URL`, falling back to
+`DASHBOARD_URL`, so set one of them to the public address of your server. The
+link is signed with a key derived from `APP_ENCRYPTION_KEY`. Rotating that key
+invalidates the links in emails already sent. People can still unsubscribe from
+My Account, and the next digest carries a fresh link.
+
+---
+
 ## Mobile Push Notifications
 
 Breeze also supports push notifications to registered mobile devices via Firebase Cloud Messaging (FCM) for Android and Apple Push Notification Service (APNS) for iOS.
