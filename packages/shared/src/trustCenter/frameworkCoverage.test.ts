@@ -32,6 +32,26 @@ describe('summarizeFrameworkCoverage', () => {
     ]);
   });
 
+  it('a safeguard evidenced only via hardening safeguards counts once (W3e); not_assessed ones do not', () => {
+    const hardening: Ctl = {
+      ...tele('hardening_baseline', 'met', [['cis_v8', '4.1']]),
+      safeguards: [
+        { framework: 'cis_v8', ref: '4.8', status: 'met', reason: null, percent: null, assessed: null, eligible: null },
+        { framework: 'cis_v8', ref: '4.5', status: 'attention', reason: null, percent: null, assessed: null, eligible: null },
+        { framework: 'cis_v8', ref: '8.5', status: 'not_assessed', reason: 'no_data', percent: null, assessed: null, eligible: null },
+      ],
+    };
+    // host_firewall also references 4.5: the ref is evidenced once, by two controls.
+    const p = payload([hardening, tele('host_firewall', 'met', [['cis_v8', '4.5']])], []);
+    const c = summarizeFrameworkCoverage(p, 'cis_v8');
+    expect(c).toMatchObject({ evidenced: 3, verified: 3, declaredOnly: 0 }); // 4.1, 4.5, 4.8 — not 8.5
+    expect(c.safeguards.map((s) => s.ref)).toEqual(['4.1', '4.5', '4.8', '8.5']);
+    expect(c.safeguards.find((s) => s.ref === '4.5')!.controls.map((x) => x.id)).toEqual(['hardening_baseline', 'host_firewall']);
+    expect(c.safeguards.find((s) => s.ref === '8.5')!.controls[0]).toMatchObject({ counts: false });
+    // Another framework's view ignores them.
+    expect(summarizeFrameworkCoverage(p, 'nist_csf_2').safeguards).toEqual([]);
+  });
+
   it('a not-assessed control does not count', () => {
     const c = summarizeFrameworkCoverage(payload([tele('mfa_registered_m365', 'not_assessed', [['cis_v8', '6.3']])], []), 'cis_v8');
     expect(c.evidenced).toBe(0);

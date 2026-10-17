@@ -101,3 +101,52 @@ describe('trustStatusPillRole', () => {
     expect(trustStatusPillRole('not_assessed')).toBe('neutral');
   });
 });
+
+describe('hardening safeguards (W3e)', () => {
+  const p = DEFAULT_TRUST_EVALUATION_POLICY;
+  const hardening = (safeguards?: ControlEvidence['safeguards']) =>
+    byId(
+      evaluateTrustControls(TRUST_CONTROL_CATALOG, evidence({ hardening_baseline: { eligible: 12, assessed: 12, passing: 12, aggregatePct: 99, newestEvidenceAt: fresh, safeguards } }), p, AS_OF),
+      'hardening_baseline',
+    );
+
+  it('safeguards are evaluated as coverage_pct with the page thresholds and the coverage floor', () => {
+    const a = hardening({
+      '4.5': { eligible: 12, assessed: 12, passing: 12, newestEvidenceAt: fresh },
+      '4.7': { eligible: 12, assessed: 12, passing: 11, newestEvidenceAt: fresh },   // 92% → attention
+      '4.8': { eligible: 12, assessed: 12, passing: 8, newestEvidenceAt: fresh },    // 67% → not_met
+      '3.6': { eligible: 12, assessed: 9, passing: 9, newestEvidenceAt: fresh },     // 75% assessed < floor
+      '8.5': { eligible: 0, assessed: 0, passing: 0, newestEvidenceAt: null },
+    });
+    const by = Object.fromEntries((a.safeguards ?? []).map((s) => [s.ref, s]));
+    expect(by['4.5']).toEqual({ framework: 'cis_v8', ref: '4.5', status: 'met', reason: null, percent: 100, assessed: 12, eligible: 12 });
+    expect(by['4.7']).toMatchObject({ status: 'attention', percent: 92 });
+    expect(by['4.8']).toMatchObject({ status: 'not_met', percent: 67 });
+    expect(by['3.6']).toMatchObject({ status: 'not_assessed', reason: 'insufficient_telemetry', percent: null, assessed: 9, eligible: 12 });
+    expect(by['8.5']).toMatchObject({ status: 'not_assessed', reason: 'no_data', percent: null });
+  });
+
+  it('a safeguard whose newest evidence is older than the window is not assessed', () => {
+    const a = hardening({ '4.5': { eligible: 12, assessed: 12, passing: 12, newestEvidenceAt: '2026-08-01T00:00:00.000Z' } });
+    expect(a.safeguards?.[0]).toMatchObject({ status: 'not_assessed', reason: 'insufficient_telemetry' });
+  });
+
+  it('sorted by ref numerically ("4.5" before "10.5")', () => {
+    const e = { eligible: 1, assessed: 1, passing: 1, newestEvidenceAt: fresh };
+    const a = hardening({ '10.5': e, '4.5': e, '3.3': e, '4.10': e });
+    expect(a.safeguards?.map((s) => s.ref)).toEqual(['3.3', '4.5', '4.10', '10.5']);
+  });
+
+  it('absent when evidence has no safeguards', () => {
+    expect(hardening(undefined)).not.toHaveProperty('safeguards');
+  });
+
+  it('only hardening_baseline carries safeguards', () => {
+    const out = evaluateTrustControls(
+      TRUST_CONTROL_CATALOG,
+      evidence({ host_firewall: { eligible: 1, assessed: 1, passing: 1, newestEvidenceAt: fresh, safeguards: { '4.5': { eligible: 1, assessed: 1, passing: 1, newestEvidenceAt: fresh } } } }),
+      p, AS_OF,
+    );
+    expect(byId(out, 'host_firewall')).not.toHaveProperty('safeguards');
+  });
+});
