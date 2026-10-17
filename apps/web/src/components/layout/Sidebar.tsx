@@ -1040,7 +1040,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     ));
 
   // --- Render a collapsible section ----------------------------------------
-  const renderCollapsibleSection =(section: NavSection, forMobileOverlay = false) => {
+  const renderCollapsibleSection = (section: NavSection, forMobileOverlay = false) => {
     // Hide the whole section (header + divider) when every item is filtered out
     // by permissions/scope/flags — otherwise a permission-limited user sees an
     // empty group header that expands to nothing (#1629 follow-up).
