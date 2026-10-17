@@ -1,4 +1,4 @@
--- apps/api/migrations/2026-12-29-210000-connection-health-digest.sql
+-- apps/api/migrations/2026-12-29-233000-connection-health-digest.sql
 -- Connection health W3 (#8847, spec 2026-10-15 §2.2, §2.3): the per-user email
 -- opt-out table and the daily digest delivery ledger.
 --

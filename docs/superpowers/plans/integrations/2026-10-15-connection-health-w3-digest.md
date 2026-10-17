@@ -25,7 +25,7 @@ wave: W03 (#8847)
 
 ## Global Constraints
 
-- **Migration:** `apps/api/migrations/2026-12-29-210000-connection-health-digest.sql` (`200000` is reserved for another wave). Idempotent, no inner `BEGIN/COMMIT`, RLS in the same file, starts with `SELECT set_config('breeze.scope', 'system', true);`. Re-check it still sorts last at rebase.
+- **Migration:** `apps/api/migrations/2026-12-29-233000-connection-health-digest.sql` (`200000` is reserved for another wave). Idempotent, no inner `BEGIN/COMMIT`, RLS in the same file, starts with `SELECT set_config('breeze.scope', 'system', true);`. Re-check it still sorts last at rebase.
 - **Tenancy:** both tables are Shape 6, `user_id` only, no `org_id` / `partner_id`. Registrations: `USER_ID_SCOPED_TABLES` and `USER_OWNED_CHILD_TABLES` (rls-coverage). No cascade, merge or export entries: there is no org column, and the user FK cascades on delete. The ledger's `incident_ids` is a bare `uuid[]` with no FK, so an org delete that cascades incidents leaves harmless dangling ids that join to nothing.
 - **At most once:** a ledger row is claimed with `INSERT … ON CONFLICT (user_id, digest_date) DO NOTHING RETURNING` before the send. A row still `claimed` an hour later is marked `failed`, never resent. No retry path reads `failed`.
 - **Authorization at send time:** recipients are recomputed per incident at send time: partner-scope users holding `repairPermission` **and** `viewPermission` for the incident's org (or partner-wide = `orgAccess = all`), plus the active owner. Customer org admins stay off (W5). An incident leaves a user's digest the moment they lose either permission.
@@ -72,7 +72,7 @@ wave: W03 (#8847)
 
 | File | Responsibility |
 |---|---|
-| `apps/api/migrations/2026-12-29-210000-connection-health-digest.sql` | both tables, indexes, RLS, grants |
+| `apps/api/migrations/2026-12-29-233000-connection-health-digest.sql` | both tables, indexes, RLS, grants |
 | `apps/api/src/db/schema/emailOptouts.ts` (+ `index.ts` export) | Drizzle definitions for both tables |
 | `apps/api/src/services/emailOptouts.ts` (+ test) | topics + resolver |
 | `apps/api/src/services/emailUnsubscribeToken.ts` (+ test) | HKDF key, sign, verify, unsubscribe URL |
