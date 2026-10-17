@@ -55,6 +55,34 @@ describe('DeviceOverviewState (#9029)', () => {
     expect(ticketsLink).toHaveAttribute('href', '#tickets');
   });
 
+  it('never claims "No open alerts" when the read failed and no count is known', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ error: 'down' }, false));
+    render(<DeviceOverviewState deviceId="dev-1" status="online" lastSeen={minutesAgo(1)} onOpenTab={vi.fn()} />);
+    const link = await screen.findByTestId('device-overview-open-alerts');
+    expect(link).toHaveTextContent("Couldn't load open alerts");
+    expect(link).toHaveAttribute('href', '#alerts');
+    expect(screen.queryByText('No open alerts')).toBeNull();
+  });
+
+  it('keeps the authoritative count when the preview read fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(fetchWithAuth).mockRejectedValue(new Error('network'));
+    render(<DeviceOverviewState deviceId="dev-1" status="online" lastSeen={minutesAgo(1)} alertCount={2} onOpenTab={vi.fn()} />);
+    expect(screen.getByTestId('device-overview-open-alerts')).toHaveTextContent('2 open alerts');
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled());
+    expect(screen.queryByText('No open alerts')).toBeNull();
+  });
+
+  it('without a count, links to the tab instead of printing the capped preview length', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(
+      jsonResponse({ data: [1, 2, 3].map((n) => ({ id: `a${n}`, title: `Alert ${n}`, severity: 'low' })) }),
+    );
+    render(<DeviceOverviewState deviceId="dev-1" status="online" lastSeen={minutesAgo(1)} onOpenTab={vi.fn()} />);
+    await screen.findByTestId('device-overview-alert-a3');
+    expect(screen.getByTestId('device-overview-open-alerts')).toHaveTextContent('View alerts');
+  });
+
   it('collapses to one muted line when nothing is open', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ data: [] }));
     render(

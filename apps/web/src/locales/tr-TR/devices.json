@@ -4455,6 +4455,8 @@
     "openTickets_one": "{{count}} açık talep",
     "openTickets_other": "{{count}} açık talep",
     "noOpenAlerts": "Açık uyarı yok",
-    "untitledAlert": "Uyarı bildirildi"
+    "untitledAlert": "Uyarı bildirildi",
+    "alertsUnavailable": "Açık uyarılar yüklenemedi",
+    "viewAlerts": "Uyarıları görüntüle"
   }
 }

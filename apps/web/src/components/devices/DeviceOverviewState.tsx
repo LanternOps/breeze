@@ -43,13 +43,15 @@ export default function DeviceOverviewState({
 }: Props) {
   const { t } = useTranslation("devices");
   const [alerts, setAlerts] = useState<OpenAlert[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setAlerts(null);
+    setLoadFailed(false);
     fetchWithAuth(`/devices/${deviceId}/alerts?status=active&limit=${OPEN_ALERT_PREVIEW}`)
       .then(async (res) => {
-        if (!res.ok) return [];
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const raw: any[] = asList(await res.json(), "data");
         return raw
           .filter((a) => typeof a?.id === "string")
@@ -59,10 +61,14 @@ export default function DeviceOverviewState({
             severity: String(a.severity || a.level || "info").toLowerCase(),
           }));
       })
-      // Best-effort preview: the Alerts tab and its count stay authoritative.
-      .catch(() => [] as OpenAlert[])
       .then((list) => {
         if (!cancelled) setAlerts(list.slice(0, OPEN_ALERT_PREVIEW));
+      })
+      .catch((err) => {
+        // Never fall through to "No open alerts" on a failed read: on a triage
+        // card a false all-clear is the worst wrong answer.
+        console.error(`[DeviceOverviewState] open alerts for ${deviceId} failed`, err);
+        if (!cancelled) setLoadFailed(true);
       });
     return () => {
       cancelled = true;
@@ -76,7 +82,13 @@ export default function DeviceOverviewState({
       ? t("deviceDetails.offlineLastSeen", { ago: formatTimeAgo(lastSeen) })
       : t("deviceOverviewState.lastCheckIn", { ago: formatTimeAgo(lastSeen) });
 
-  const openAlerts = alertCount ?? alerts?.length ?? 0;
+  // The tab-counts number is authoritative; the preview is capped at three, so
+  // without a count we link to the tab instead of printing a number that
+  // would undercount.
+  const openAlerts = alertCount ?? 0;
+  const previewHasAlerts = alerts !== null && alerts.length > 0;
+  const noAlertsKnown =
+    alertCount === 0 || (alertCount === undefined && alerts !== null && alerts.length === 0);
   const openTickets = ticketCount ?? 0;
   const goTo = (tab: "alerts" | "tickets") => (e: MouseEvent<HTMLAnchorElement>) => {
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -113,8 +125,18 @@ export default function DeviceOverviewState({
             <AlertTriangle className="h-4 w-4 text-warning-strong" aria-hidden="true" />
             {t("deviceOverviewState.openAlerts", { count: openAlerts })}
           </a>
+        ) : previewHasAlerts || (loadFailed && alertCount === undefined) ? (
+          <a
+            href="#alerts"
+            data-testid="device-overview-open-alerts"
+            onClick={goTo("alerts")}
+            className={linkClass}
+          >
+            <AlertTriangle className="h-4 w-4 text-warning-strong" aria-hidden="true" />
+            {loadFailed ? t("deviceOverviewState.alertsUnavailable") : t("deviceOverviewState.viewAlerts")}
+          </a>
         ) : (
-          alerts !== null && (
+          noAlertsKnown && (
             <span className="text-muted-foreground">{t("deviceOverviewState.noOpenAlerts")}</span>
           )
         )}

@@ -4455,6 +4455,8 @@
     "openTickets_one": "{{count}} ticket aperto",
     "openTickets_other": "{{count}} ticket aperti",
     "noOpenAlerts": "Nessun avviso aperto",
-    "untitledAlert": "Avviso segnalato"
+    "untitledAlert": "Avviso segnalato",
+    "alertsUnavailable": "Impossibile caricare gli avvisi aperti",
+    "viewAlerts": "Vedi avvisi"
   }
 }

@@ -4455,6 +4455,8 @@
     "openTickets_one": "{{count}} offenes Ticket",
     "openTickets_other": "{{count}} offene Tickets",
     "noOpenAlerts": "Keine offenen Warnungen",
-    "untitledAlert": "Warnung gemeldet"
+    "untitledAlert": "Warnung gemeldet",
+    "alertsUnavailable": "Offene Warnungen konnten nicht geladen werden",
+    "viewAlerts": "Warnungen anzeigen"
   }
 }

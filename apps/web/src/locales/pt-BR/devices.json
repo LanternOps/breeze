@@ -4455,6 +4455,8 @@
     "openTickets_one": "{{count}} chamado aberto",
     "openTickets_other": "{{count}} chamados abertos",
     "noOpenAlerts": "Nenhum alerta aberto",
-    "untitledAlert": "Alerta registrado"
+    "untitledAlert": "Alerta registrado",
+    "alertsUnavailable": "Não foi possível carregar os alertas abertos",
+    "viewAlerts": "Ver alertas"
   }
 }
