@@ -657,6 +657,12 @@ describe('scrubEvent', () => {
       expect(out?.tags).toEqual({ pg_code: '42501' });
     },
   );
+
+  it('keeps the fixed tunnel-host route_template tag (#8158)', async () => {
+    const { scrubEvent } = await import('./sentry');
+    const out = scrubEvent({ tags: { route_template: 'tunnel-host', pg_code: '42501' } }) as Record<string, any>;
+    expect(out?.tags).toEqual({ route_template: 'tunnel-host', pg_code: '42501' });
+  });
 });
 
 describe('scrubTransactionEvent (#3077)', () => {

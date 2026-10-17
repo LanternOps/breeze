@@ -13,6 +13,8 @@
  */
 import type { Context, MiddlewareHandler } from 'hono';
 import { getTunnelOriginConfig, isTunnelDomainHost, type TunnelOriginConfig } from '../config/tunnelOrigin';
+import { TUNNEL_HOST_ROUTE_LABEL, requestCorrelationId } from '../services/safeRequestLabel';
+import { recordTunnelHttpOutcome } from '../services/tunnelHttpMetrics';
 
 export const TUNNEL_SITE_ASSERTION_HEADER = 'x-breeze-tunnel-site';
 export const TUNNEL_SITE_ASSERTION_VALUE = '1';
@@ -59,9 +61,15 @@ export function tunnelHostClassifier(getConfig: () => TunnelOriginConfig | null 
     const decision = decideTunnelHost(c.req.header('host'), c.req.header(TUNNEL_SITE_ASSERTION_HEADER), getConfig());
     if (decision.kind === 'reject') {
       c.set('rejectReason', decision.reason);
+      recordTunnelHttpOutcome('host', 'host_rejected');
       return c.text('Misdirected request', 421);
     }
-    if (decision.kind === 'tunnel') c.set('tunnelSurface', true);
+    if (decision.kind === 'tunnel') {
+      c.set('tunnelSurface', true);
+      // The sub-app's matched route is invisible out here, and its paths are
+      // device paths: log the whole surface under one fixed label.
+      c.set('routeLabelOverride', TUNNEL_HOST_ROUTE_LABEL);
+    }
     return next();
   };
 }
@@ -81,6 +89,19 @@ export function tunnelHostDispatch(
 ): MiddlewareHandler {
   return async (c, next) => {
     if (!isTunnelSurface(c)) return next();
-    return tunnelApp.fetch(c.req.raw, c.env);
+    const res = await tunnelApp.fetch(c.req.raw, c.env);
+    // The sub-app's Response is returned as-is, so headers the outer chain set
+    // with c.header() (X-Request-Id from requestPathLogger) never reach it.
+    // Copy the correlation id on; a device-supplied X-Request-Id never wins.
+    const requestId = requestCorrelationId(c);
+    if (requestId === 'unknown') return res;
+    try {
+      res.headers.set('X-Request-Id', requestId);
+      return res;
+    } catch {
+      const copy = new Response(res.body, res);
+      copy.headers.set('X-Request-Id', requestId);
+      return copy;
+    }
   };
 }

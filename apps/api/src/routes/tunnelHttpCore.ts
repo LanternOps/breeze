@@ -313,6 +313,17 @@ export async function dispatchTunnelHttpRequest(
     getActiveAllowlistPatterns(session.orgId, session.deviceSiteId)
   );
 
+  // Replica-safe Close (plan amendment 2026-10-12b item 4): the gates read the
+  // row before the body read and the allowlist lookup, and Close may have been
+  // served by ANOTHER api replica since — its in-flight cancel
+  // (cancelPendingAgentCommandsByPrefix) is process-local and cannot reach this
+  // request. Re-read the row immediately before contacting the agent so a
+  // closed tunnel never sees another request, whichever replica closed it.
+  const current = await loadTunnelRow(tunnelId);
+  if (!current || !(CONNECTABLE_TUNNEL_STATUSES as readonly string[]).includes(current.session.status)) {
+    return { ok: false, status: 502, message: 'Tunnel closed', reason: 'tunnel_closed' };
+  }
+
   const awaitResult = await sendCommandToAgentAwaitResult(
     session.agentId,
     {
