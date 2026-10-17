@@ -480,6 +480,16 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // includes DELETE for that sweep.
   // Functional cross-partner forge proof: partnerSendingDailyStats.integration.test.ts.
   ['partner_sending_daily_stats', 'partner_id'],
+  // trust_page_templates (Trust Center W2 W02g, #8770, spec §19 item 33): the
+  // partner's own default for its customers' trust pages. Shape 3, flat
+  // breeze_has_partner_access(partner_id), partner_id NOT NULL UNIQUE — a
+  // product-owner decision (spec §18.8), not an org-owned policy, so
+  // Partner-Wide First's org-XOR-partner shape does not apply and it is
+  // deliberately NOT in DUAL_AXIS_TENANT_TABLES or
+  // PARTNER_WIDE_SELECT_BRANCH_EXEMPT. No org_id, so no org cascade / export /
+  // merge registration; cascadeDeletePartner's partner_id sweep erases it.
+  // Functional forge proof: trustPageTemplatesPartnerRls.integration.test.ts.
+  ['trust_page_templates', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
