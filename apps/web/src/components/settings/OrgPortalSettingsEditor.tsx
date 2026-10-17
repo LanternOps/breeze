@@ -36,6 +36,7 @@ type PortalSettings = {
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
   enableVulnerabilityDetail: boolean;
+  enableTrustPageEditing: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -43,7 +44,7 @@ type PortalSettings = {
   chromeAccent: PortalChromeAccent;
 };
 
-type ToggleKey = 'enableTickets' | 'enableAssetCheckout' | 'enableSelfService' | 'enablePasswordReset';
+type ToggleKey = 'enableTickets' | 'enableAssetCheckout' | 'enableSelfService' | 'enablePasswordReset' | 'enableTrustPageEditing';
 
 const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string }> = [
   {
@@ -65,6 +66,13 @@ const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string 
     key: 'enablePasswordReset',
     labelKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.label',
     descriptionKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.description',
+  },
+  // Trust Center W3d: a permission flag (PORTAL_PERMISSION_FLAG_KEYS), not a
+  // visibility tier, so it lives with the features and "Enable all" never sets it.
+  {
+    key: 'enableTrustPageEditing',
+    labelKey: 'orgPortalSettingsEditor.features.toggles.enableTrustPageEditing.label',
+    descriptionKey: 'orgPortalSettingsEditor.features.toggles.enableTrustPageEditing.description',
   },
 ];
 
@@ -305,6 +313,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
             enablePatchDetail: draft.enablePatchDetail,
             enableVulnerabilityDetail: draft.enableVulnerabilityDetail,
+            enableTrustPageEditing: draft.enableTrustPageEditing,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,

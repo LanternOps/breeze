@@ -14,6 +14,7 @@ export const M365_INTERACTIVE_READ_ACTION_IDS = [
   'm365.user.list', 'm365.user.get', 'm365.user.mailboxes', 'm365.signins.list',
   'm365.intune.device.list', 'm365.intune.device.get',
   'm365.group.list', 'm365.group.get', 'm365.group.members.list',
+  'm365.group.member.get',
   'm365.org.get', 'm365.org.skus.list',
   'm365.sites.list', 'm365.site.get',
 ] as const;
@@ -54,16 +55,23 @@ export const M365_SYNC_CONTINUATION_MAX_CHARS = 4096;
  *  object through these; they are the only fields that ever leave it. */
 export const M365_READ_ACTION_FIELDS: Record<M365ReadActionId, readonly string[]> = {
   'm365.user.list': ['id', 'userPrincipalName', 'displayName', 'mail', 'accountEnabled', 'jobTitle', 'department', 'createdDateTime'],
-  'm365.user.get': ['id', 'userPrincipalName', 'displayName', 'mail', 'accountEnabled', 'jobTitle', 'department', 'createdDateTime', 'assignedLicenses', 'usageLocation', 'onPremisesSyncEnabled'],
+  'm365.user.get': ['id', 'userPrincipalName', 'displayName', 'mail', 'accountEnabled', 'jobTitle', 'department', 'createdDateTime', 'assignedLicenses', 'usageLocation', 'onPremisesSyncEnabled',
+    // The only observable evidence that a session revoke landed: Graph exposes
+    // no "sessions are gone" fact, only the instant before which tokens are
+    // invalid (spec §6.6).
+    'signInSessionsValidFromDateTime'],
   // Caller verification (#6354 W03): the target's canonical mailbox set, by
   // object id only. Not exposed as an AI tool; read by the release gate.
   'm365.user.mailboxes': ['id', 'userPrincipalName', 'mail', 'proxyAddresses'],
   'm365.signins.list': ['id', 'createdDateTime', 'userPrincipalName', 'userId', 'appDisplayName', 'ipAddress', 'clientAppUsed', 'conditionalAccessStatus', 'isInteractive', 'status', 'location', 'deviceDetail'],
   'm365.intune.device.list': ['id', 'deviceName', 'operatingSystem', 'osVersion', 'complianceState', 'lastSyncDateTime', 'userPrincipalName', 'managedDeviceOwnerType', 'enrolledDateTime'],
-  'm365.intune.device.get': ['id', 'deviceName', 'operatingSystem', 'osVersion', 'complianceState', 'lastSyncDateTime', 'userPrincipalName', 'managedDeviceOwnerType', 'enrolledDateTime', 'model', 'manufacturer', 'serialNumber', 'azureADDeviceId', 'jailBroken', 'managementAgent'],
+  'm365.intune.device.get': ['id', 'deviceName', 'operatingSystem', 'osVersion', 'complianceState', 'lastSyncDateTime', 'userPrincipalName', 'managedDeviceOwnerType', 'enrolledDateTime', 'model', 'manufacturer', 'serialNumber', 'azureADDeviceId', 'jailBroken', 'managementAgent',
+    // Evidence for the Intune retire effect probe (retirePending / retireIssued).
+    'managementState'],
   'm365.group.list': ['id', 'displayName', 'mail', 'groupTypes', 'securityEnabled', 'membershipRule', 'createdDateTime'],
   'm365.group.get': ['id', 'displayName', 'mail', 'groupTypes', 'securityEnabled', 'membershipRule', 'createdDateTime', 'description'],
   'm365.group.members.list': ['id', 'displayName', 'userPrincipalName', 'mail'],
+  'm365.group.member.get': ['id', 'displayName', 'userPrincipalName', 'mail'],
   'm365.org.get': ['id', 'displayName', 'verifiedDomains', 'countryLetterCode', 'createdDateTime'],
   'm365.org.skus.list': ['id', 'skuId', 'skuPartNumber', 'consumedUnits', 'prepaidUnits', 'appliesTo', 'capabilityStatus'],
   'm365.sites.list': ['id', 'name', 'displayName', 'webUrl', 'createdDateTime', 'lastModifiedDateTime'],
@@ -172,6 +180,13 @@ const INTERACTIVE_BRANCHES = [
     type: z.literal('m365.group.members.list'),
     groupId: guidSchema,
     pageSize: pageSize(100),
+  }).strict(),
+  z.object({
+    type: z.literal('m365.group.member.get'),
+    groupId: guidSchema,
+    // Always a canonical object id (never a UPN): a probe addresses the
+    // immutable id the effect was dispatched against.
+    userId: guidSchema,
   }).strict(),
   z.object({ type: z.literal('m365.org.get') }).strict(),
   z.object({ type: z.literal('m365.org.skus.list') }).strict(),

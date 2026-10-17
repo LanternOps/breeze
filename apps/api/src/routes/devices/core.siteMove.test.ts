@@ -39,6 +39,7 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
 vi.mock('../../jobs/peripheralJobs', () => ({ schedulePeripheralPolicyDevice: vi.fn().mockResolvedValue('job-id') }));
+vi.mock('../../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
 vi.mock('../../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../../services/remoteAccessPolicy', () => ({ resolveRemoteAccessForDevice: vi.fn().mockResolvedValue({ policyId: null, settings: {} }) }));
 vi.mock('../../services/remoteAccessLauncher', () => ({ resolveRemoteAccessLaunch: vi.fn().mockReturnValue({ launchUrl: null, skipReason: 'no_provider_configured' }) }));
@@ -56,6 +57,7 @@ import { coreRoutes, DEVICE_SITE_DENORMALIZED_TABLES } from './core';
 import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { persistDeviceCustomFieldValues } from '../../services/customFields/queries';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const SITE_A = '77777777-7777-4777-8777-777777777777';
@@ -156,6 +158,19 @@ describe('PATCH /devices/:id site-move guard', () => {
     expect(lock.args[lock.methods.indexOf('for')]![0]).toBe('update');
     expect(db.transaction).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
+  });
+
+  // #8832: a site move can change which dynamic groups the device belongs in
+  // (`siteId` rules, and a site-scoped group's own boundary). `siteId` is the
+  // field updateDeviceMemberships treats as "re-evaluate every dynamic group".
+  it('a successful move requests a dynamic-group re-evaluation on siteId', async () => {
+    moveSelects();
+    const res = await patch({ siteId: SITE_B });
+    expect(res.status).toBe(200);
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith({
+      deviceId: DEVICE_ID, orgId: 'org-123', eventType: 'device.updated', changedFields: ['siteId'], reason: 'device_patch',
+    });
   });
 
   it('writes nothing of the request — custom fields included — when the lock read finds the device moved', async () => {

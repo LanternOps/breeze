@@ -118,6 +118,73 @@ describe('HelperTab', () => {
     expect('lifecycleMode' in call[1].inlineSettings).toBe(false);
   });
 
+  it('has an Endpoint messaging toggle that defaults off and saves endpointMessaging.enabled', async () => {
+    saveMock.mockClear();
+    render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+    const toggle = screen.getByTestId('helper-endpoint-messaging');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByText('Endpoint messaging')).toBeTruthy();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
+    expect(call[1].inlineSettings.endpointMessaging).toEqual({ enabled: true, allowUserReply: true });
+  });
+
+  it('saves endpointMessaging.enabled false by default and reads a stored true', async () => {
+    saveMock.mockClear();
+    const { unmount } = render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
+    expect(call[1].inlineSettings.endpointMessaging).toEqual({ enabled: false, allowUserReply: true });
+    unmount();
+
+    render(
+      <HelperTab
+        {...baseProps}
+        existingLink={{ ...helperLink(true), inlineSettings: { enabled: true, endpointMessaging: { enabled: true } } }}
+      />,
+    );
+    expect(screen.getByTestId('helper-endpoint-messaging').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('has an "Allow replies from the user" switch that defaults on and saves with enabled (#8743)', async () => {
+    saveMock.mockClear();
+    render(<HelperTab {...baseProps} existingLink={helperLink(true)} />);
+    const toggle = screen.getByTestId('helper-allow-user-reply');
+    expect(screen.getByText('Allow replies from the user')).toBeTruthy();
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(screen.getByTestId('helper-endpoint-messaging'));
+    fireEvent.click(screen.getByText('Save'));
+    await vi.waitFor(() => expect(saveMock).toHaveBeenCalled());
+    const call = saveMock.mock.calls[0] as unknown as [unknown, { inlineSettings: Record<string, unknown> }];
+    expect(call[1].inlineSettings.endpointMessaging).toEqual({ enabled: true, allowUserReply: false });
+  });
+
+  it('reads a stored allowUserReply:false and treats an absent value as on (#8743)', () => {
+    const { unmount } = render(
+      <HelperTab
+        {...baseProps}
+        existingLink={{ ...helperLink(true), inlineSettings: { enabled: true, endpointMessaging: { enabled: true, allowUserReply: false } } }}
+      />,
+    );
+    expect(screen.getByTestId('helper-allow-user-reply').getAttribute('aria-checked')).toBe('false');
+    unmount();
+    render(
+      <HelperTab
+        {...baseProps}
+        existingLink={{ ...helperLink(true), inlineSettings: { enabled: true, endpointMessaging: { enabled: true } } }}
+      />,
+    );
+    expect(screen.getByTestId('helper-allow-user-reply').getAttribute('aria-checked')).toBe('true');
+  });
+
   // #5080: `featurePolicyId` means a standalone entity id — Breeze Assist is
   // inline settings, so it must never carry the parent CONFIG policy's id.
   it('sends featurePolicyId: null even when a parent config policy is linked', async () => {

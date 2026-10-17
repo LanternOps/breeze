@@ -169,6 +169,18 @@ export const CommandTypes = {
   // while; registering it here is what makes it queueable. Partner-trust gated
   // (GATED_COMMAND_TYPES), never a lifecycle type: it carries operator content.
   NOTIFY_USER: 'notify_user',
+  // Endpoint messaging W02 (#8742): withdraw a message already on screen.
+  // Carries no operator content (only the message id), so it is a lifecycle
+  // type: a restricted partner can still take a message down.
+  RETRACT_MESSAGE: 'retract_message',
+  // Endpoint live chat W03 (#8743). Technician -> device-user chat over the
+  // Assist helper (Windows console session only). All three are `live`
+  // (commandOfflinePolicy: refused offline, never queued). open/message carry
+  // operator content and are partner-trust gated; close carries none and is a
+  // lifecycle type.
+  CHAT_OPEN: 'chat_open',
+  CHAT_MESSAGE: 'chat_message',
+  CHAT_CLOSE: 'chat_close',
   // Backup
   BACKUP_RUN: 'backup_run',
   BACKUP_STOP: 'backup_stop',

@@ -18,7 +18,7 @@ import {
   type M365SyncQueueJobData,
 } from './m365SyncQueue';
 import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
-import { isFinalSyncAttempt } from './syncAttempt';
+import { isFinalSyncAttempt, reportTerminalSyncFailure } from './syncAttempt';
 
 export const M365_SYNC_WORKER_NAME = 'm365SyncWorker';
 
@@ -126,6 +126,10 @@ export async function processSyncDomain(job: Job<M365SyncQueueJobData>): Promise
     throw new M365SyncRetryableError(
       `[M365Sync] throttled or at executor capacity for org=${parsed.data.orgId} domain=${parsed.data.domain}`,
     );
+  }
+  if (outcome === 'error' || outcome === 'needs_consent') {
+    // Connection health (W4): observe this kind soon instead of at its next poll.
+    reportTerminalSyncFailure('m365_sync');
   }
   // Everything else — including a dead credential — returns normally. It is
   // already recorded terminally on m365_sync_state, and capturing it once per

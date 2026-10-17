@@ -155,6 +155,14 @@ const KNOWN_RAW_TEXT_TOOLS_BY_FAMILY: Readonly<Record<string, readonly string[]>
   'aiToolsAgentLogs.ts': ['search_agent_logs'],
   'aiToolsAlerts.ts': ['manage_alerts'],
   'aiToolsDevice.ts': ['query_devices', 'get_device_details', 'get_device_context'],
+  // #8852 W04 — device file contents, command/script output, registry values.
+  // The exhaustive per-file classification lives in
+  // aiTools.deviceTextFence.contract.test.ts; these are the named anchors.
+  'aiToolsFilesystem.ts': ['file_operations'],
+  'aiToolsScripts.ts': ['execute_command', 'registry_operations', 'run_script', 'get_script_execution', 'get_script_execution_history'],
+  'aiToolsDiagnosticAccess.ts': ['diagnostic_read_file', 'diagnostic_list_directory'],
+  'aiToolsSecurity.ts': ['security_scan', 'remediate_sensitive_data'],
+  'aiToolsArtifacts.ts': ['read_artifact'],
 };
 
 describe('RAW_TEXT_FIELDS_BY_TOOL family coverage (contract)', () => {

@@ -259,6 +259,16 @@ export function aiScriptAuthoringEnabled(): boolean {
   return envFlag('BREEZE_AI_SCRIPT_AUTHORING_ENABLED', true);
 }
 
+/**
+ * Trust Center CIS v8 framework view (spec §18.13, plan amendment 25). A deployment switch, default OFF:
+ * while off, CIS is neither selectable in the publisher's picker nor rendered, and the default framework
+ * is NIST CSF 2.0. It does not replace the written CIS confirmation; the operator sets it afterwards.
+ * Read at call time so tests (and operators) can flip it without a module reload.
+ */
+export function trustCisFrameworkViewEnabled(): boolean {
+  return envFlag('BREEZE_TRUST_CIS_FRAMEWORK_VIEW', false);
+}
+
 // AI Operator durable tasks (#5205 W06, spec §11.2 "Feature controls").
 //
 // Two INDEPENDENT flags, both default OFF, both read at CALL time so a test
@@ -305,6 +315,21 @@ export function aiWorkspaceEnabled(): boolean {
     && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
     && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false)
   );
+}
+
+/**
+ * EDR response actions (#8167 W03) — the SERVER-WIDE kill switch. Default ON:
+ * the per-connection `edr_connections.actions_enabled` opt-in (default OFF,
+ * partner admin + MFA) is the real gate, and an env default of OFF would make
+ * every self-hoster set a variable AND flip the switch for no added safety.
+ * Read at CALL time, so `BREEZE_EDR_ACTIONS_ENABLED=false` + restart stops new
+ * actions without a deploy. Empty = unset = ON; a recognized false value =
+ * OFF; an UNRECOGNIZED value fails closed (whoever set it meant to change it).
+ */
+export function edrActionsEnabled(): boolean {
+  const raw = (process.env.BREEZE_EDR_ACTIONS_ENABLED ?? '').trim().toLowerCase();
+  if (!raw) return true;
+  return RECOGNIZED_TRUE_FLAG_VALUES.has(raw);
 }
 
 /**

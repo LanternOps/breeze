@@ -32,13 +32,15 @@ function notOpen(reason: string): MigrationWindowError {
 }
 
 /**
- * The window's partner, principal, throughput and orgs, read by id. A
- * one-row, id-keyed read in system scope: the writer needs the partner and
- * the org list to build the narrowed context every import write runs in
- * (`windowWriteContext`), and has no other way to learn them. It decides
- * nothing; the locked re-read inside each write transaction does.
+ * The window's principal, throughput and orgs, read by id and the caller's
+ * partner. A one-row read in system scope: the writer needs the org list to
+ * build the narrowed context every import write runs in
+ * (`windowWriteContext`), and has no other way to learn it. The partner is
+ * part of the query, so another partner's window is `not_found` whatever its
+ * state, and its status never leaks. It decides nothing else; the locked
+ * re-read inside each write transaction does.
  */
-export async function readWindowDescriptor(windowId: string): Promise<WindowDescriptor> {
+export async function readWindowDescriptor(windowId: string, partnerId: string): Promise<WindowDescriptor> {
   return withSystemDbAccessContext(async () => {
     const [row] = await db
       .select({
@@ -49,13 +51,14 @@ export async function readWindowDescriptor(windowId: string): Promise<WindowDesc
         status: migrationWindows.status,
       })
       .from(migrationWindows)
-      .where(eq(migrationWindows.id, windowId))
+      .where(and(eq(migrationWindows.id, windowId), eq(migrationWindows.partnerId, partnerId)))
       .limit(1);
-    if (!row || row.status !== 'open') throw notOpen(row ? 'closed' : 'not_found');
+    if (!row) throw notOpen('not_found');
+    if (row.status !== 'open') throw notOpen('closed');
     const orgRows = await db
       .select({ orgId: migrationWindowOrgs.orgId })
       .from(migrationWindowOrgs)
-      .where(eq(migrationWindowOrgs.windowId, windowId));
+      .where(and(eq(migrationWindowOrgs.windowId, row.id), eq(migrationWindowOrgs.partnerId, row.partnerId)));
     return {
       id: row.id,
       partnerId: row.partnerId,

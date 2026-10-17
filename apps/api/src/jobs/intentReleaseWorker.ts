@@ -900,6 +900,14 @@ const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
   's1_threat_action:kill',
   's1_threat_action:quarantine',
   's1_threat_action:rollback',
+  // edr_actions.requested_by (db/schema/edrProviders.ts) — one dispatch site
+  // (dispatchEdrAction) serves every action, so every key the agent lane can
+  // mint is listed, Tier-2 scan included (the agentTier2 lane mints a
+  // supervised intent). Only the actions the tool's schema accepts can be
+  // minted; a new action joins this list with its adapter. #8167 W03.
+  'edr_endpoint_action:isolate',
+  'edr_endpoint_action:unisolate',
+  'edr_endpoint_action:scan',
 ]);
 
 function userOwnedReleaseKey(intent: ActionIntent): string | null {
@@ -1303,7 +1311,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // Phase-1 deferral: the headless worker still cannot run session-aware M365
   // Delegant/inline tools. Google Tier-3 tools ARE headless-executable
   // (org-keyed connection, resolved by intent.orgId) as of Phase 2, and M365
-  // Tier-3 tools (m365_disable_user, m365_reset_password) ARE ALSO
+  // Tier-3 tools (the ten in M365_HEADLESS_ACTIONS, m365ToolsHeadless.ts) ARE ALSO
   // headless-executable as of Phase 2 via the control-plane
   // customer-graph-actions executor (executeM365ToolHeadless) — so gate the
   // session_required fail on "not a headless Google tool AND not a headless

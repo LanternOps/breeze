@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 
 const addTicketComment = vi.fn();
 // The real module pulls in astro-only imports through @/lib/navigation, so it
@@ -56,8 +57,79 @@ describe('TicketDetails — statuses', () => {
 });
 
 describe('TicketDetails — pending approval banner (#8200)', () => {
+  const budgetApproval = {
+    trigger: 'budget' as const,
+    ticketNumber: 'T-1',
+    ask: { minutes: 60, amount: null, currencyCode: null, coverageStartsAt: null, coverageEndsAt: null },
+  };
+
+  it('server-renders no ask sentence, so no server-zone time reaches the HTML', () => {
+    // RTL runs effects, so only a server render shows what the `mounted` gate
+    // keeps out of the SSR HTML (the sentence formats times in the runtime zone).
+    const html = renderToString(
+      <TicketDetails
+        ticket={ticket()}
+        pendingApproval={{
+          id: 'req-9',
+          approval: {
+            trigger: 'after_hours',
+            ticketNumber: 'T-1',
+            ask: { minutes: null, amount: null, currencyCode: null, coverageStartsAt: '2026-12-02T00:25:00.000Z', coverageEndsAt: '2026-12-02T02:25:00.000Z' },
+          },
+        }}
+      />
+    );
+    expect(html).toContain('This ticket has work waiting for your approval');
+    expect(html).not.toContain('Approve after-hours work');
+  });
+
+  it('renders the after-hours window in the viewer local time, not the server UTC', () => {
+    const startIso = '2026-12-02T00:25:00.000Z';
+    const endIso = '2026-12-02T02:25:00.000Z';
+    // Assigning process.env.TZ in-test is best-effort only: measured here, it
+    // took effect under vitest's default (forks) pool but not under
+    // --pool=threads, and ci.yml warns it may not apply at all. So derive the
+    // expected clock times from whichever zone is actually in effect.
+    const prevTz = process.env.TZ;
+    process.env.TZ = 'America/Chicago'; // UTC-6 in December, when it applies
+    const clock = (iso: string, timeZone?: string) =>
+      new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone });
+    try {
+      render(
+        <TicketDetails
+          ticket={ticket()}
+          pendingApproval={{
+            id: 'req-9',
+            approval: {
+              trigger: 'after_hours',
+              ticketNumber: 'T-1',
+              ask: {
+                minutes: null,
+                amount: null,
+                currencyCode: null,
+                coverageStartsAt: startIso,
+                coverageEndsAt: endIso,
+              },
+            },
+          }}
+        />
+      );
+      const text = screen.getByTestId('ticket-pending-approval').textContent ?? '';
+      expect(text).toContain(clock(startIso));
+      expect(text).toContain(clock(endIso));
+      // Discriminates only where the effective zone is not UTC (when the TZ
+      // above applied, or on any non-UTC host).
+      if (clock(startIso) !== clock(startIso, 'UTC')) {
+        expect(text).not.toContain(clock(startIso, 'UTC'));
+      }
+    } finally {
+      if (prevTz === undefined) delete process.env.TZ;
+      else process.env.TZ = prevTz;
+    }
+  });
+
   it('shows a banner linking to the request when work awaits approval', () => {
-    render(<TicketDetails ticket={ticket()} pendingApproval={{ id: 'req-9', askSentence: 'Approve up to 1 h more on ticket #T-1' }} />);
+    render(<TicketDetails ticket={ticket()} pendingApproval={{ id: 'req-9', approval: budgetApproval }} />);
     const banner = screen.getByTestId('ticket-pending-approval');
     expect(banner.textContent).toContain('This ticket has work waiting for your approval');
     expect(banner.textContent).toContain('Approve up to 1 h more on ticket #T-1');

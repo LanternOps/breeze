@@ -803,7 +803,7 @@ const envObjectSchema = z
     // with 3.5d once the split is actually exercised in prod topology).
     BREEZE_ROLE: z.string().optional(),
 
-    // M365 Tier-3 write-action AI tools (m365_disable_user, m365_reset_password)
+    // M365 Tier-3 write-action AI tools (the ten M365_HEADLESS_ACTIONS tools, e.g. m365_disable_user)
     // and the action-intents release worker's headless dispatch. Dark by
     // default. Read at runtime by writeActionRuntimeConfig.ts; declared here so
     // the format is guarded (a typo reads as OFF at the runtime flag parser,
@@ -1035,6 +1035,7 @@ const envObjectSchema = z
     // with the legacy payload, as an older API would. Strict enum so a typo
     // boot-refuses instead of silently staying on.
     HEARTBEAT_RETAIN_STATE_ENABLED: z.enum(['true', 'false']).default('true'),
+    AGENT_ECH_ENABLED: z.enum(['true', 'false']).default('true'),
 
     // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
     // routing (partner_ai_connections.catalog_entry_id). Off by default so a

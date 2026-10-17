@@ -35,6 +35,23 @@ describe('buildM365RiskSummary', () => {
   });
 });
 
+describe('buildM365RiskSummary — M1 identity write tools', () => {
+  const names = [
+    'm365_revoke_sessions', 'm365_remove_license', 'm365_assign_license', 'm365_remove_from_group',
+    'm365_add_to_group', 'm365_retire_intune_device', 'm365_create_user', 'm365_set_auto_reply',
+  ];
+  it.each(names)('%s has an M365_VERB entry (non-null summary)', (name) => {
+    const s = buildM365RiskSummary(name,
+      { userIdentifier: 'bob@acme.co', reason: 'offboarding' },
+      { customerDisplayName: 'Acme' } as any);
+    expect(typeof s).toBe('string');
+    expect(s).toContain('Acme');
+  });
+  it.each(names)('%s is tier 3 in TOOL_TIERS', (name) => {
+    expect(TOOL_TIERS[name]).toBe(3);
+  });
+});
+
 describe('TOOL_TIERS — M365 helpdesk tools', () => {
   it('registers M365 tool tiers 1/1/1/3/3', () => {
     expect(TOOL_TIERS['m365_lookup_user']).toBe(1);

@@ -139,3 +139,12 @@ it('shows an inherited parent setting read-only until overridden', () => {
   expect(checked('workload-inventory-enabled')).toBe(true);
   expect(screen.getByTestId('workload-inventory-enabled')).toBeDisabled();
 });
+it('does not claim Hyper-V/Proxmox listing is a later release (#8519)', () => {
+  render(<WorkloadInventoryTab {...props} />);
+  expect(screen.queryByText(/later agent release/i)).toBeNull();
+  expect(
+    screen.getByText(
+      'Hyper-V and Proxmox VE toggles only take effect on agents that include these drivers; older agents ignore them.',
+    ),
+  ).toBeTruthy();
+});

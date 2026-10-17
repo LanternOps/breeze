@@ -201,6 +201,34 @@
       "revoke": "Per revocare l'accesso in seguito, disconnetti qui o rimuovi l'applicazione aziendale Breeze in Microsoft Entra.",
       "continue": "Continua su Microsoft",
       "defaultTarget": "il tenant Microsoft 365 di questa organizzazione"
+    },
+    "v2": {
+      "title": "È necessario un nuovo consenso per le azioni sulle identità",
+      "intro": "Questo tenant ha acconsentito a un set di autorizzazioni precedente. Un nuovo consenso mantiene tutto ciò che funziona oggi e aggiunge le autorizzazioni elencate di seguito. Per il cliente non cambia nulla finché un amministratore non approva il nuovo consenso.",
+      "keepsWorking": "Disabilitare un utente e reimpostare una password continuano a funzionare con il consenso attuale.",
+      "upgradeAction": "Esamina e approva le nuove autorizzazioni",
+      "upgradeFailed": "Non è stato possibile avviare l'approvazione delle nuove autorizzazioni.",
+      "revokedGrant": "Microsoft 365 non mostra più un'autorizzazione che questa connessione aveva già: {{grants}}. Ripeti il test e, se continua a mancare, fornisci di nuovo il consenso.",
+      "purpose": {
+        "userReadWrite": "Leggere e aggiornare gli account utente: serve per bloccare l'accesso, modificare le licenze e creare un utente.",
+        "userPasswordProfile": "Impostare la password di un utente: serve per emettere una password temporanea in una reimpostazione o per un nuovo account.",
+        "userRevokeSessions": "Disconnettere un utente da tutte le sessioni: serve per revocare le sessioni di accesso quando un account è compromesso o un dipendente lascia l'azienda.",
+        "groupMember": "Leggere i gruppi e modificarne i membri: serve per aggiungere e rimuovere le appartenenze. Non consente di creare o eliminare un gruppo.",
+        "intunePrivileged": "Ritirare un dispositivo gestito da Intune: rimuove i dati aziendali e annulla la registrazione. Breeze non esegue mai una cancellazione completa.",
+        "mailboxSettings": "Leggere e impostare le impostazioni della cassetta postale: serve per attivare o disattivare una risposta automatica e verificarne l'effetto.",
+        "organizationRead": "Leggere l'inventario delle sottoscrizioni del tenant: serve per verificare che una postazione di licenza sia libera prima di assegnarla.",
+        "unknown": "Usato da un'azione Microsoft 365 in Breeze."
+      }
+    },
+    "staleManifest": {
+      "title": "Organizzazioni che richiedono un nuovo consenso Microsoft 365",
+      "description": "Questi clienti usano ancora un set di autorizzazioni precedente. Apri l'organizzazione per avviare il nuovo consenso.",
+      "empty": "Nessuna organizzazione richiede un nuovo consenso.",
+      "columnOrganization": "Organizzazione",
+      "columnTenant": "Tenant",
+      "columnVersion": "Set di autorizzazioni",
+      "columnLastVerified": "Ultima verifica",
+      "loadFailed": "Non è stato possibile caricare l'elenco dei nuovi consensi."
     }
   },
   "m365ConfirmTenant": {
@@ -295,29 +323,41 @@
     "saving": "Salvataggio...",
     "saveSettings": "Salva impostazioni"
   },
-  "connectorStatusPanel": {
-    "healthy": "Integro",
-    "degraded": "Degradato",
-    "paused": "In pausa",
-    "connectorStatus": "Stato connettori",
-    "trackIntegrationHealthAndRecentActivityAtA": "Monitora a colpo d'occhio integrità delle integrazioni e attività recente. ",
-    "refreshAll": "Aggiorna tutto ",
-    "integration": "Integrazione",
-    "health": "Integrità",
-    "lastActivity": "Ultima attività",
-    "errors": "Errori",
-    "syncNow": "Sincronizza ora ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Monitoraggio",
-      "webhooks": "Webhooks",
-      "backup": "Backup"
+  "connectionHealthPanel": {
+    "title": "Stato delle connessioni",
+    "allHealthy": "Tutte le connessioni funzionano correttamente",
+    "loadError": "Impossibile caricare lo stato delle connessioni.",
+    "retry": "Riprova",
+    "since": "da {{time}}",
+    "fix": "Risolvi",
+    "truncated": "Vengono mostrati i primi {{count}}",
+    "recentlyResolved": "Risolti di recente ({{count}})",
+    "resolution": {
+      "recovered": "Ripristinata",
+      "retired": "Ritirata"
     },
-    "activity": {
-      "threeMinutesAgo": "3 min fa",
-      "elevenMinutesAgo": "11 min fa",
-      "fiveMinutesAgo": "5 min fa",
-      "oneDayAgo": "1 g fa"
+    "condition": {
+      "sync_failed": "Sincronizzazione non riuscita",
+      "reauth_required": "Riautorizzazione necessaria",
+      "disconnected": "Disconnessa",
+      "error": "Errore",
+      "mailbox_error": "Errore della casella di posta",
+      "poll_failing": "Polling non riuscito",
+      "needs_consent": "Consenso necessario",
+      "degraded": "Prestazioni ridotte",
+      "suspended": "Sospesa",
+      "grant_missing": "Concessione mancante",
+      "grant_unexpected": "Concessione imprevista",
+      "manifest_stale": "Manifest obsoleto",
+      "application_token_invalid": "Token dell'applicazione non valido",
+      "tenant_mismatch": "Tenant non corrispondente",
+      "grant_reconciliation_unavailable": "Verifica della concessione non disponibile",
+      "grant_revoked_reuse": "Concessione revocata (riutilizzo del token)",
+      "grant_revoked": "Concessione revocata",
+      "delivery_failed": "Consegne non riuscite",
+      "sync_stale": "Sincronizzazione bloccata",
+      "verification_failed": "Verifica non riuscita",
+      "unknown": "Richiede attenzione"
     }
   },
   "googleWorkspaceIntegration": {
@@ -1305,7 +1345,8 @@
     "accessUrlHintPath": "L'indirizzo dell'API del provider per il tuo account, incluso il percorso {{path}}.",
     "detectionIntervalLabel": "Intervallo di sincronizzazione dei rilevamenti (minuti)",
     "inventoryIntervalLabel": "Intervallo di sincronizzazione dell'inventario (minuti)",
-    "intervalHelp": "Lascia vuoto per usare il valore predefinito del provider. Intervallo consentito: da 1 a 1440 minuti.",
+    "intervalHelp": "Lascia vuoto per usare il valore predefinito del provider. Intervallo consentito: da 5 a 1440 minuti.",
+    "intervalInvalid": "Inserisci un numero intero da 5 a 1440 minuti, oppure lascia vuoto per il valore predefinito.",
     "noProviders": "Nessun provider EDR è disponibile su questo server.",
     "partnerOnly": "I provider EDR sono gestiti a livello di partner. Passa a un account partner per gestirli.",
     "readOnly": "Solo gli amministratori partner con accesso a tutte le organizzazioni possono modificare le connessioni EDR.",
@@ -1399,6 +1440,34 @@
       "degraded": "Degradato",
       "unhealthy": "Non integro",
       "unknown": "Sconosciuto"
-    }
+    },
+    "actionsLabel": "Consenti azioni di risposta",
+    "actionsHelp": "Consente ai tecnici di isolare i dispositivi e avviare scansioni tramite questa connessione.",
+    "actionsConfirmTitle": "Consentire le azioni di risposta?",
+    "actionsConfirmMessage": "I tecnici con il permesso di esecuzione sui dispositivi potranno isolare e rilasciare i dispositivi e avviare scansioni sugli endpoint gestiti tramite “{{name}}”.",
+    "actionsConfirmLabel": "Consenti",
+    "actionsOnToast": "Azioni di risposta consentite",
+    "actionsOffToast": "Azioni di risposta disattivate",
+    "actionsError": "Impossibile aggiornare le azioni di risposta.",
+    "pushLabel": "Eventi push",
+    "pushHelp": "{{provider}} avvisa Breeze dei nuovi eventi, il che avvia una sincronizzazione prima della pianificazione regolare. Le sincronizzazioni pianificate continuano.",
+    "pushOnToast": "Eventi push attivati",
+    "pushOffToast": "Eventi push disattivati",
+    "pushReplaceTitle": "Sostituire la destinazione push esistente?",
+    "pushReplaceMessage": "{{provider}} invia già gli eventi push a un’altra destinazione (ad esempio un SIEM). Sostituirla con Breeze interrompe quel flusso.",
+    "pushReplaceConfirm": "Sostituisci e attiva",
+    "pushError": "Impossibile modificare gli eventi push.",
+    "pushErrors": {
+      "public_url_unset": "Imposta l’URL pubblico del server prima di attivare gli eventi push.",
+      "public_url_not_https": "Gli eventi push richiedono un URL pubblico HTTPS.",
+      "connection_inactive": "Attiva la connessione prima di attivare gli eventi push.",
+      "push_state_changed": "Le impostazioni push sono cambiate durante l’attivazione. Aggiorna e riprova."
+    },
+    "pushTest": "Invia evento di prova",
+    "pushTestQueuedToast": "Evento di prova richiesto",
+    "pushTestError": "Impossibile inviare l’evento di prova.",
+    "pushTestNote": "L’evento di prova può impiegare alcuni minuti per arrivare.",
+    "pushLast": "Ultimo evento push: {{relative}}",
+    "pushNone": "Nessun evento push ricevuto finora"
   }
 }

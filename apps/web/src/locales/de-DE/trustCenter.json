@@ -1,0 +1,10 @@
+{
+  "export": {
+    "title": "Fragebogenantworten exportieren",
+    "csv": "CSV herunterladen",
+    "json": "JSON herunterladen",
+    "unpublishedNote": "Veröffentlichen Sie Ihre Seite, um den Export zu aktivieren.",
+    "failed": "Der Export konnte nicht heruntergeladen werden. Bitte erneut versuchen.",
+    "publishedOnlyNote": "Exportiert, was Ihre öffentliche Seite zeigt."
+  }
+}

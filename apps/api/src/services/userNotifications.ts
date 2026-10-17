@@ -1,8 +1,9 @@
-import { sql } from 'drizzle-orm';
+import { and, eq, inArray, like, notInArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { userNotifications } from '../db/schema';
 import { getEventBus } from './eventBus';
 import { captureException } from './sentry';
+import { escapeLike } from '../utils/sql';
 
 type NotificationType = typeof userNotifications.$inferInsert['type'];
 type NotificationPriority = typeof userNotifications.$inferInsert['priority'];
@@ -10,16 +11,17 @@ type NotificationPriority = typeof userNotifications.$inferInsert['priority'];
 export interface CreateNotificationInput {
   userId: string;
   /**
-   * REQUIRED, and not merely for tenancy bookkeeping. `user_notifications` RLS
+   * The org the notification is ABOUT, or NULL for partner-wide notices
+   * (connection health for partner-owned connectors). `user_notifications` RLS
    * reads `org_id IS NULL OR breeze_has_org_access(org_id)`, and
-   * `breeze_has_org_access(NULL)` is FALSE outside system scope — so while a
-   * null-org row IS visible to its recipient under the wave-2 policy, it is
-   * invisible to any session that has narrowed to a specific org, which is what
-   * the web client does on every request (fetchWithAuth injects orgId).
-   * Passing the org the notification is ABOUT keeps it visible where the user
-   * will actually be looking.
+   * `breeze_has_org_access(NULL)` is FALSE outside system scope — so a null-org
+   * row is visible to its own recipient (user branch) but a concrete org keeps
+   * the row visible in an org-narrowed session, which is what the web client
+   * uses on every request (fetchWithAuth injects orgId). Prefer a concrete org
+   * whenever the notice has one. A null-org notice gets no live WS nudge (the
+   * transport fans out per org); the bell's 30s poll surfaces it.
    */
-  orgId: string;
+  orgId: string | null;
   type: NotificationType;
   title: string;
   message?: string | null;
@@ -119,6 +121,7 @@ export async function createNotification(
   // The payload is CONTENT-FREE: the WS transport fans out per ORG, so the id is
   // all that crosses it and the client refetches through RLS-protected routes. A
   // filter bug therefore leaks an opaque uuid, not somebody's approval request.
+  if (input.orgId === null) return created;
   void getEventBus()
     .publishUserEvent(
       'notification.created',
@@ -138,4 +141,53 @@ export async function createNotification(
     });
 
   return created;
+}
+
+/**
+ * Mark specific (user, dedupe key) notices read. Index-backed by
+ * user_notifications_user_dedupe_key_uq; never scans by key alone. Caller
+ * supplies a system context (same contract as createNotification).
+ */
+export async function markNotificationsReadByDedupeKeys(
+  userIds: readonly string[],
+  dedupeKeys: readonly string[],
+): Promise<number> {
+  if (userIds.length === 0 || dedupeKeys.length === 0) return 0;
+  const rows = await db
+    .update(userNotifications)
+    .set({ read: true, readAt: new Date() })
+    .where(and(
+      inArray(userNotifications.userId, [...userIds]),
+      inArray(userNotifications.dedupeKey, [...dedupeKeys]),
+      eq(userNotifications.read, false),
+    ))
+    .returning({ id: userNotifications.id });
+  return rows.length;
+}
+
+/**
+ * Mark the listed users' unread notices whose dedupe key starts with `prefix`
+ * read, except the keys in `exceptKeys`. Used for notices whose exact key is no
+ * longer known (connection health: an episode's opened_at was overwritten
+ * before its notices were retired). Bounded by `user_id IN (userIds)` via the
+ * (user_id, read) index; the prefix is LIKE-escaped. Caller supplies a system
+ * context (same contract as createNotification).
+ */
+export async function markNotificationsReadByDedupeKeyPrefix(
+  userIds: readonly string[],
+  prefix: string,
+  exceptKeys: readonly string[],
+): Promise<number> {
+  if (userIds.length === 0 || prefix.length === 0) return 0;
+  const rows = await db
+    .update(userNotifications)
+    .set({ read: true, readAt: new Date() })
+    .where(and(
+      inArray(userNotifications.userId, [...userIds]),
+      eq(userNotifications.read, false),
+      like(userNotifications.dedupeKey, `${escapeLike(prefix)}%`),
+      exceptKeys.length > 0 ? notInArray(userNotifications.dedupeKey, [...exceptKeys]) : undefined,
+    ))
+    .returning({ id: userNotifications.id });
+  return rows.length;
 }

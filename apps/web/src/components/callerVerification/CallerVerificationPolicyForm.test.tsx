@@ -63,9 +63,23 @@ it('resets a field to inherit', async () => {
   vi.mocked(getPolicy).mockResolvedValue(response({ row }));
   vi.mocked(putPolicy).mockResolvedValue(response());
   render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
-  fireEvent.click(await screen.findByTestId('cv-policy-maxAttemptsPerHour-inherit'));
+  const attempts = await screen.findByTestId('cv-policy-maxAttemptsPerHour');
+  expect(attempts).toHaveValue(2);
+  fireEvent.click(screen.getByTestId('cv-policy-maxAttemptsPerHour-inherit'));
+  expect(attempts).toHaveValue(policyValues.maxAttemptsPerHour);
   await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
   expect(putPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, inheritedDraft());
+});
+
+it('shows the value the server saved, not the one that was typed', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response());
+  vi.mocked(putPolicy).mockResolvedValue(response({ row: { ...inheritedDraft(), verificationTtlMinutes: 60 } as unknown as PolicyResponse['row'] }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  const ttl = await screen.findByTestId('cv-policy-verificationTtlMinutes');
+  fireEvent.change(ttl, { target: { value: '45' } });
+  fireEvent.blur(ttl);
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
+  expect(ttl).toHaveValue(60);
 });
 
 it('labels the partner baseline as applying to all organizations', async () => {

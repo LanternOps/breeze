@@ -1,6 +1,9 @@
 import TopologyEntry from '../topology/TopologyEntry';
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useHashState } from "@/lib/useHashState";
+import { usePermissions } from "@/lib/permissions";
+import { ENABLE_ENDPOINT_MESSAGING } from "@/lib/featureFlags";
+import DeviceChatPanel from "../endpointMessages/DeviceChatPanel";
 import { fetchWithAuth } from "../../stores/auth";
 import { asList } from "@/lib/asList";
 import {
@@ -35,6 +38,7 @@ import {
   Cloud,
   History,
   Bot,
+  MessageSquare,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
@@ -70,6 +74,7 @@ import DevicePeripheralsTab from "./DevicePeripheralsTab";
 import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
 import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import { EntityLink } from "@/components/shared/EntityLink";
 import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
@@ -128,7 +133,8 @@ type CoreTab =
   | "backup"
   | "linked-profiles"
   | "tickets"
-  | "operator-tasks";
+  | "operator-tasks"
+  | "chat";
 
 /**
  * Extension-contributed `device.detail.tabs` tab id:
@@ -230,6 +236,7 @@ const VALID_TABS: CoreTab[] = [
   "linked-profiles",
   "tickets",
   "operator-tasks",
+  "chat",
 ];
 
 // Mirrors the character set an `ExtensionSlotDescriptor.key` can contain:
@@ -413,8 +420,15 @@ export default function DeviceDetails({
   // about linkage, so a `#linked-profiles` deep link on an unlinked device
   // would otherwise select a tab that has no button and no panel — a blank
   // content area. Resolve it back to Overview here, where linkage is known.
+  // Chat (#8743) is hidden unless the build enables endpoint messaging AND the
+  // user may send (UX gate; every chat route re-checks server-side). A
+  // `#chat/<conversationId>` deep link without access falls back to Overview.
+  const { can } = usePermissions();
+  const canChat = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send");
   const activeTab: Tab =
-    hashTab === "linked-profiles" && !isLinked ? "overview" : hashTab;
+    (hashTab === "linked-profiles" && !isLinked) || (hashTab === "chat" && !canChat)
+      ? "overview"
+      : hashTab;
 
   // "Needs attention" counts per signal tab (GET /devices/:id/tab-counts).
   // Drives the badges and the promotion of by-default-empty tabs (Anomalies,
@@ -684,6 +698,17 @@ export default function DeviceDetails({
       label: t("deviceDetails.security"),
       icon: <Shield className="h-4 w-4" />,
     },
+    ...(canChat
+      ? [
+          {
+            id: "chat" as Tab,
+            group: groups.management,
+            label: t("endpointChat.tabLabel"),
+            icon: <MessageSquare className="h-4 w-4" />,
+            title: t("endpointChat.tabTitle"),
+          },
+        ]
+      : []),
     {
       id: "playbooks",
       group: groups.management,
@@ -827,7 +852,8 @@ export default function DeviceDetails({
                   {t("deviceDetails.agentV")}
                   {device.agentVersion}
                 </span>
-                <span>{device.siteName}</span>
+                <EntityLink kind="org" id={device.orgId} name={device.orgName} />
+                <EntityLink kind="site" id={device.siteId} name={device.siteName} />
               </div>
             </div>
           </div>
@@ -1067,6 +1093,14 @@ export default function DeviceDetails({
       )}
 
       {activeTab === "tickets" && <DeviceTicketsTab deviceId={device.id} />}
+
+      {activeTab === "chat" && (
+        <DeviceChatPanel
+          deviceId={device.id}
+          osType={device.os}
+          agentVersion={device.agentVersion}
+        />
+      )}
 
       {activeTab === "operator-tasks" && (
         <OperatorTaskActivityFeed deviceId={device.id} />

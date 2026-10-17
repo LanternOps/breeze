@@ -25,9 +25,11 @@ import { portalBackupRoutes } from './backups';
 import { portalReportRoutes } from './reports';
 import { portalServiceRoutes } from './service';
 import { portalDocumentRoutes } from './documents';
+import { portalTrustPageRoutes } from './trustPage';
 import { portalNetworkRoutes } from './network';
 import { portalHourBlockRoutes } from './hourBlock';
 import { portalApprovalRoutes } from './approvals';
+import { portalTrustPageLinkRoutes } from './trustPageLink';
 
 export const portalRoutes = new Hono();
 
@@ -97,6 +99,11 @@ portalRoutes.use('/network/*', portalAuthMiddleware);
 portalRoutes.use('/documents/*', portalAuthMiddleware);
 portalRoutes.use('/documents/*', async (c, next) =>
   isDocumentContentPath(c) ? documentBytesGate(c, next) : documentsLibraryGate(c, next));
+// Trust Center W3d: auth here, before the '/' mounts below whose router-wide
+// middleware (portalFinancialMutationGuard) reads portalAuth on every POST.
+// The editor permission gate lives in the trust-page router itself.
+portalRoutes.use('/trust-page', portalAuthMiddleware);
+portalRoutes.use('/trust-page/*', portalAuthMiddleware);
 
 // `/tickets/usage` (Part B adds the handler to ticketRoutes) is gated on
 // enableSupportUsage, not enableTickets — it must not inherit the general
@@ -146,6 +153,7 @@ portalRoutes.route('/', profileRoutes);
 portalRoutes.route('/', portalInvoiceRoutes);
 portalRoutes.route('/', portalQuoteRoutes);
 portalRoutes.route('/', portalDashboardRoutes);
+portalRoutes.route('/dashboard', portalTrustPageLinkRoutes); // under the /dashboard/* auth + enableDashboard gate
 portalRoutes.route('/', portalSecurityRoutes);
 portalRoutes.route('/', portalHardwareHealthRoutes);
 portalRoutes.route('/', portalHardwareInventoryRoutes);
@@ -157,6 +165,8 @@ portalRoutes.route('/', portalBackupRoutes);
 portalRoutes.route('/', portalReportRoutes);
 portalRoutes.route('/', portalServiceRoutes);
 portalRoutes.route('/', portalDocumentRoutes);
+// Trust Center W3d: auth is mounted above; the router carries the editor gate.
+portalRoutes.route('/trust-page', portalTrustPageRoutes);
 portalRoutes.route('/', portalNetworkRoutes);
 portalRoutes.route('/', portalHourBlockRoutes);
 portalRoutes.route('/', portalApprovalRoutes);

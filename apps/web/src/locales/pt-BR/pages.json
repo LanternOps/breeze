@@ -175,7 +175,8 @@
     "securityScans": "Varreduras de IOC",
     "devicesTime": "Sincronização de horário",
     "adminAiModels": "Modelos de IA",
-    "billingAutopay": "Automatic payments"
+    "billingAutopay": "Automatic payments",
+    "endpointMessages": "Mensagens para dispositivos"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

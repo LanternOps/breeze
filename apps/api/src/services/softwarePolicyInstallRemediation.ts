@@ -34,7 +34,13 @@ export type PolicyInstallSkipReason =
    * rather than dropped: the audit row is the only durable place a technician
    * can see that a requested install was not attempted, and why.
    */
-  | 'not_currently_missing';
+  | 'not_currently_missing'
+  /**
+   * #6960, generated (security agents) policies only: the installer-readiness
+   * preflight says the vendor cannot serve this device (org not mapped, keys
+   * missing, platform unsupported, ...). No deployment is created.
+   */
+  | 'installer_not_ready';
 
 export type PolicyInstallTarget =
   | { kind: 'install_method'; catalogId: string; installMethodId: string }

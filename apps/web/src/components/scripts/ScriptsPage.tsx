@@ -196,7 +196,9 @@ export default function ScriptsPage() {
 
     const admittedTargets = data.targets.filter(target => target.admission === 'admitted');
     if (admittedTargets.length > 0) {
-      await fetchScripts();
+      // silent: a loading swap would remount the execution modal and discard
+      // its per-device admission result (#8670 sweep, same failure as #6005).
+      await fetchScripts({ silent: true });
       // #4886 — a library run left the operator stranded on this (now stale)
       // list with no way to see the result land. A single-device run goes to
       // that device's Scripts tab (same hash-highlight convention DeviceDetails
@@ -290,7 +292,8 @@ export default function ScriptsPage() {
           ? t('scriptsPage.library.partnerPermission') : undefined,
       });
       setCompletedImports(prev => new Set(prev).add(`${targetKey}:${systemScript.name}`));
-      await fetchScripts();
+      // silent: the library modal stays open for further imports.
+      await fetchScripts({ silent: true });
     } catch (err) {
       handleActionError(err, t('scriptsPage.errors.import'));
     } finally {

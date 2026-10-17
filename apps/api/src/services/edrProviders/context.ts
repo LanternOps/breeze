@@ -21,6 +21,12 @@ export function buildEdrAdapterContext(
     /** Accepted for caller compatibility; deliberately NOT part of the budget identity (see below). */
     vendorRootId?: string | null;
     redis?: Redis | null;
+    /**
+     * Cap on how long the limiter may sleep for budget. Request-path callers
+     * (response actions) pass a few seconds so a busy budget fails fast with
+     * `rate_budget_exhausted` instead of holding the request for a minute.
+     */
+    maxWaitMs?: number;
   },
 ): EdrAdapterContext {
   return {
@@ -35,6 +41,7 @@ export function buildEdrAdapterContext(
       fingerprint: credentialFingerprint(adapter.key, null, o.creds),
       budget: adapter.capabilities.requestBudget,
       operationBudgets: adapter.capabilities.operationBudgets,
+      ...(o.maxWaitMs !== undefined ? { maxWaitMs: o.maxWaitMs } : {}),
     }),
     runCache: new Map(),
   };

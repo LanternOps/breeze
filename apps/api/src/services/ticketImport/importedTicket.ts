@@ -63,6 +63,11 @@ export const importedTicketSchema = z.object({
   resolvedAt: instant.optional(),
   closedAt: instant.optional(),
   resolutionNote: text(50_000).optional(),
+  // No count ceiling, on purpose: the writer bounds each transaction
+  // (IMPORT_COMMENT_CHUNK_SIZE comments, IMPORT_COMMENT_CHUNK_BYTES of
+  // content), the window's bucket paces them, and a ticket that outruns the
+  // bucket resumes where it stopped. A ceiling would make a long source
+  // ticket (an alert thread with thousands of articles) impossible to import.
   comments: z.array(importedCommentSchema),
 }).strict();
 

@@ -343,6 +343,27 @@ describe('automation-policy alerts close when the policy stops applying', () => 
     expectClosedBecause(await alertRow(s.alertId), `this device is no longer targeted by automation policy "${s.policyName}"`);
   });
 
+  runDb('a policy retargeted to a tag the device carries (#8857)', async () => {
+    // Tag-targeted policies are observe-only: they publish no policy.compliant,
+    // so nothing else would ever close the alert raised under the old target,
+    // and the device is still targeted, so the "no longer targeted" rule above
+    // does not fire either.
+    const s = await seedAutomationPolicyAlert();
+    await withSystemDbAccessContext(async () => {
+      await db.update(devices).set({ tags: ['finance'] }).where(eq(devices.id, s.device.id));
+      await db
+        .update(automationPolicies)
+        .set({ targets: { targetType: 'tags', targetIds: ['finance'] } })
+        .where(eq(automationPolicies.id, s.policyId));
+    });
+
+    expect((await reconcile({ orgId: s.orgId })).alertsResolved).toBe(1);
+    expectClosedBecause(
+      await alertRow(s.alertId),
+      `automation policy "${s.policyName}" targets tags, so its results raise no alerts`,
+    );
+  });
+
   runDb('a policy that still targets the failing device stays open', async () => {
     const s = await seedAutomationPolicyAlert();
 

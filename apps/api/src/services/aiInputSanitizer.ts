@@ -36,7 +36,12 @@ const HWS = String.raw`[^\S\r\n  ]*`;
  */
 function structuralTagPattern(tag: string): RegExp {
   const t = String.raw`<\/?${tag}>`;
-  return new RegExp(String.raw`(?<=^)${t}|(?<=^${HWS})${t}(?=${HWS}$)`, 'gimu');
+  // `(?=<)` before the variable-length lookbehind: without it the lookbehind
+  // runs at EVERY position and rescans the whitespace run behind it, which is
+  // quadratic on a long run of spaces (200 KB of them took ~40 s). Device text
+  // reaches this filter uncapped (sanitizeUntrustedToolText), so every pattern
+  // here must stay linear — see the timing case in aiInputSanitizer.test.ts.
+  return new RegExp(String.raw`(?<=^)${t}|(?=<)(?<=^${HWS})${t}(?=${HWS}$)`, 'gimu');
 }
 
 // Prompt injection patterns (use `u` for Unicode-aware matching; `m` where a
@@ -49,9 +54,13 @@ const INJECTION_PATTERNS: Array<{ pattern: RegExp; flag: string }> = [
   // reboots" — is not a transcript turn (#6695). Also skipped: a label whose
   // line goes on to name a Windows event provider/channel ("System:
   // Microsoft-Windows-Kernel-Power/…"), which is a pasted log header.
+  // Linear-time shape (#8852 W04): `(?=[has])` gates the variable-length
+  // lookbehind to label starts, and the provider look-ahead is bounded to 512
+  // chars — unbounded, a long line of repeated labels rescanned to end of line
+  // once per label (~9 s on 200 KB).
   {
     pattern: new RegExp(
-      String.raw`(?<=^${HWS}|[.!?][^\S\r\n  ]+)\b(Human|Assistant|System)${HWS}:(?![^\r\n  ]*\bMicrosoft-Windows-)`,
+      String.raw`(?=[has])(?<=^${HWS}|[.!?][^\S\r\n  ]+)\b(Human|Assistant|System)${HWS}:(?![^\r\n  ]{0,512}\bMicrosoft-Windows-)`,
       'gimu',
     ),
     flag: 'role_impersonation',
@@ -199,6 +208,70 @@ export function sanitizeUntrustedText(
   // Mark the cut inline, matching `wrapUntrustedData`'s convention, so a field
   // that was clipped is not mistaken for source data that simply ended there.
   return truncated ? `${sanitized}${UNTRUSTED_TRUNCATION_MARKER}` : sanitized;
+}
+
+/**
+ * Neutralize one field of tool output that originated on a device (file
+ * contents, command/script output, registry data, log text) before it enters
+ * model context (#8852 W04, the per-field fence in `aiToolOutput.ts`).
+ *
+ * Same filter as `sanitizeUntrustedText` plus forged fence markers, but it
+ * NEVER clips: size belongs to the output compactor, which marks its cuts and
+ * honours character windows (`stdoutNextOffset`/`nextOffset`). A cap here
+ * would silently drop text the model was told it had already seen.
+ */
+export function sanitizeUntrustedToolText(value: string, flags?: string[]): string {
+  const sink = flags ?? [];
+  const unfenced = value.replace(UNTRUSTED_FENCE, '[filtered]').replace(TOOL_OUTPUT_FENCE, '[filtered]');
+  if (unfenced !== value) addFlag(sink, 'fence_forgery');
+  return sanitizeField(unfenced, unfenced.length, sink);
+}
+
+// The handoff read-back (aiToolHandoff.ts) wraps spliced device output in
+// `<tool_output untrusted>…</tool_output>`; device text must not close it.
+const TOOL_OUTPUT_FENCE = /<\/?tool_output\b[^>]*>/giu;
+
+/** `sanitizeUntrustedToolText` over every string in a JSON-shaped value (keys are left alone). */
+export function sanitizeUntrustedToolValue(value: unknown, flags?: string[]): unknown {
+  const sink = flags ?? [];
+  if (typeof value === 'string') return value.length > 0 ? sanitizeUntrustedToolText(value, sink) : value;
+  if (Array.isArray(value)) return value.map((entry) => sanitizeUntrustedToolValue(entry, sink));
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      // defineProperty, not assignment: a JSON `__proto__` key stays an own
+      // data property instead of re-pointing `out`'s prototype.
+      Object.defineProperty(out, key, {
+        value: sanitizeUntrustedToolValue(entry, sink), enumerable: true, writable: true, configurable: true,
+      });
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Fence an agent command's `stdout`. A structured command's payload arrives
+ * JSON-encoded by the Go agent, which HTML-escapes `<`/`>`/`&` (`<`…)
+ * and turns line breaks into `\n` escapes — so a regex over the encoded string
+ * misses `<system>` and every line-anchored pattern. Decode, fence every
+ * string, and re-encode only when something changed, so a clean stdout comes
+ * back byte-identical. Non-JSON (raw script/command output) is fenced as text.
+ */
+export function sanitizeUntrustedToolStdout(stdout: string, flags?: string[]): string {
+  const sink = flags ?? [];
+  let decoded: unknown = null;
+  try {
+    decoded = JSON.parse(stdout);
+  } catch {
+    decoded = null;
+  }
+  if (decoded === null || typeof decoded !== 'object') {
+    return stdout.length > 0 ? sanitizeUntrustedToolText(stdout, sink) : stdout;
+  }
+  const fenced = sanitizeUntrustedToolValue(decoded, sink);
+  const reencoded = JSON.stringify(fenced);
+  return reencoded === JSON.stringify(decoded) ? stdout : reencoded;
 }
 
 /**

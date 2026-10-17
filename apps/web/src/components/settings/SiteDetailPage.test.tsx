@@ -8,6 +8,11 @@ import { showToast } from '../shared/Toast';
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
 const granted = vi.hoisted(() => new Set<string>());
+const flags = vi.hoisted(() => ({ ENABLE_ENDPOINT_MESSAGING: true }));
+vi.mock('../../lib/featureFlags', async (orig) => ({
+  ...(await orig<typeof import('../../lib/featureFlags')>()),
+  get ENABLE_ENDPOINT_MESSAGING() { return flags.ENABLE_ENDPOINT_MESSAGING; },
+}));
 vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
 }));
@@ -224,5 +229,20 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     granted.add('endpoint_messages:send');
     render(<SiteDetailPage siteId={SITE_ID} />);
     expect(await screen.findByTestId('site-send-message')).toBeTruthy();
+  });
+
+  // #8968: hidden until the build enables endpoint messaging.
+  it('hides Send message when the build-time endpoint messaging flag is off', async () => {
+    flags.ENABLE_ENDPOINT_MESSAGING = false;
+    try {
+      mockApi();
+      granted.clear();
+      granted.add('endpoint_messages:send');
+      render(<SiteDetailPage siteId={SITE_ID} />);
+      await screen.findByPlaceholderText('123 Market Street');
+      expect(screen.queryByTestId('site-send-message')).toBeNull();
+    } finally {
+      flags.ENABLE_ENDPOINT_MESSAGING = true;
+    }
   });
 });

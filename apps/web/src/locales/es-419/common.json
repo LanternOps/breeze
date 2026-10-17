@@ -114,7 +114,8 @@
     "ticketsIncidents": "Incidentes",
     "ticketsServiceRequests": "Solicitudes de servicio",
     "ticketsProblems": "Problemas",
-    "ticketsChanges": "Cambios"
+    "ticketsChanges": "Cambios",
+    "endpointMessages": "Mensajes"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -314,6 +315,17 @@
       "action": "Acción",
       "target": "Objetivo",
       "time": "Tiempo"
+    },
+    "recentlyViewed": {
+      "title": "Continúa donde lo dejaste",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organización",
+        "ticket": "Ticket",
+        "alert": "Alerta",
+        "site": "Sitio",
+        "page": "Página"
+      }
     },
     "alerts": {
       "title": "Alertas recientes",
@@ -688,7 +700,23 @@
       "noSelection": "Seleccionar organización",
       "searchOrganizations": "Buscar organizaciones…",
       "noMatches": "Ninguna organización coincide",
-      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado."
+      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado.",
+      "recent": "Recientes",
+      "pane": {
+        "destinations": {
+          "overview": "Resumen",
+          "devices": "Dispositivos",
+          "tickets": "Tickets",
+          "alerts": "Alertas",
+          "sites": "Sitios",
+          "billing": "Facturación"
+        },
+        "offlineCount": "{{count}} sin conexión",
+        "openCount": "{{count}} abiertos",
+        "criticalCount": "{{count}} críticas",
+        "noCritical": "ninguna",
+        "hint": "Haz clic en un nombre para cambiar · haz clic en una página para cambiar e ir"
+      }
     },
     "header": {
       "menu": "Menú",
@@ -805,9 +833,9 @@
       "expand": "Expandir barra lateral",
       "collapseSections": "Contraer todas las secciones",
       "closeMenu": "Cerrar menú",
-      "recentDevices": "Dispositivos recientes",
-      "hideRecentDevices": "Ocultar dispositivos recientes",
-      "showRecentDevices": "Mostrar dispositivos recientes"
+      "recent": "Recientes",
+      "hideRecent": "Ocultar recientes",
+      "showRecent": "Mostrar recientes"
     },
     "orgRequired": {
       "title": "Selecciona una organización",

@@ -194,7 +194,7 @@ Authorization: Bearer <token>
 | `snmpCommunities` | string[] | No | SNMPv1/v2c community strings (legacy `v3:<user>` prefix = noAuthNoPriv v3 user) |
 | `snmpCredentials` | object | No | Structured SNMP settings: `version` (`v1`/`v2c`/`v3`), `username`, `authProtocol`, `authPassphrase`, `privacyProtocol`, `privacyPassphrase`, `port`, `timeout` (ms), `retries` |
 | `schedule` | object | Yes | Schedule configuration (see below) |
-| `deepScan` | boolean | No | Allow subnets larger than /16 (65,536+ hosts). Default `false` |
+| `deepScan` | boolean | No | Allow subnets larger than /16 (65,536+ hosts). Without it, a profile with such a subnet is refused on save. Default `false` |
 | `identifyOS` | boolean | No | Attempt OS fingerprinting from SNMP and port data. Default `false` |
 | `resolveHostnames` | boolean | No | Perform reverse DNS lookups. Default `false` |
 | `timeout` | integer | No | Per-probe timeout in seconds. Default `2` |
@@ -211,7 +211,7 @@ Authorization: Bearer <token>
 In the profile form, the **Schedule** cadence dropdown offers **Manual**, **Hourly**, **Custom interval**, **Daily**, **Weekly**, and **Monthly**. Daily, Weekly, and Monthly (which compile to a `cron` schedule) show a **Timezone** field alongside the time picker; Hourly and Custom interval don't need one since they aren't clock-aligned. A new profile's **Custom interval** cadence defaults to running every 60 minutes until you change it.
 
 <Aside>
-  Subnets larger than a /16 (65,536 hosts) are skipped unless `deepScan` is set to `true`. This prevents accidental full-class-B scans that could take a long time and generate significant network traffic.
+  A profile with a subnet larger than a /16 (65,536 hosts) is refused on save with `400` (*Subnet "…" is too large: the agent skips subnets over 65,536 addresses (larger than a /16). Split it into smaller ranges.*) unless `deepScan` is `true`. The check runs when a profile is created and whenever an update changes its subnets or `deepScan`. This prevents accidental full-class-B scans that could take a long time and generate significant network traffic. `deepScan` is set through the API.
 </Aside>
 
 ### Updating a Profile
@@ -685,8 +685,8 @@ ARP scanning requires root/Administrator privileges and the libpcap library. ICM
 **Scan job stays in `scheduled` status.**
 The discovery worker requires Redis and the background queue to dispatch scan commands. Verify Redis is running and accessible. If Redis is unavailable, the job is immediately marked as `failed` with the message "Background job service unavailable." Also confirm at least one agent at the profile's site is online — the worker selects an online agent from the same site to execute the scan.
 
-**Large subnets are skipped.**
-Subnets larger than /16 (65,536+ hosts) are skipped by default to prevent excessive scan times and network traffic. Set `deepScan: true` on the profile to allow scanning of large subnets. Monitor the agent's resource usage when scanning large address ranges.
+**A profile with a large subnet won't save.**
+Subnets larger than /16 (65,536+ hosts) are refused on save (the error names the subnet) to prevent excessive scan times and network traffic. Split the range into /16 or smaller subnets, or set `deepScan: true` on the profile through the API to allow it. Profiles saved with an oversized subnet before v0.122.1 still have it skipped by the agent until `deepScan` is set. Monitor the agent's resource usage when scanning large address ranges.
 
 **Discovered assets are not auto-linking to enrolled devices.**
 Auto-linking matches assets to enrolled devices by MAC address or IP address within the same organization using the `device_network` table. If the enrolled device has a different IP than what discovery sees (e.g., the device is behind NAT or uses a VPN), auto-linking will not find a match. Use `POST /discovery/assets/:id/link` (or the network device detail page) to manually link the asset to the correct device. Also note that if an asset was manually unlinked, auto-linking is suppressed for it by design until you re-link it.

@@ -617,6 +617,37 @@
           "security-abuse": "Security and abuse",
           "integrations": "Integrations"
         }
+      },
+      "connectionHealthJobs": {
+        "title": "Connection health background jobs",
+        "description": "Shows whether the jobs that watch connection health are running. Checked from Redis heartbeats.",
+        "jobs": {
+          "reconcile": {
+            "label": "Incident reconciler",
+            "description": "Opens and resolves connection health incidents every 15 minutes."
+          },
+          "digest": {
+            "label": "Daily digest email",
+            "description": "Sends the connection health digest; runs hourly."
+          }
+        },
+        "state": {
+          "ok": "OK",
+          "stale": "Stale",
+          "missing": "No heartbeat",
+          "failing": "Failing"
+        },
+        "lastRun": "Last run {{relative}}",
+        "neverRun": "No heartbeat recorded",
+        "kindsHeading": "Health sources",
+        "lastOk": "Last OK {{relative}}",
+        "neverOk": "Never succeeded",
+        "failureStreak": "Consecutive failures: {{count}}",
+        "redisUnavailable": "Job status can't be read because Redis is unavailable. This does not mean the jobs have stopped.",
+        "errors": {
+          "load": "Could not load job status."
+        },
+        "retry": "Retry"
       }
     },
     "aiModels": {

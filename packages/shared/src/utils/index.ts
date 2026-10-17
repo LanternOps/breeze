@@ -28,6 +28,7 @@ export * from './agentOutcome';
 export * from './agentUpdateAttempt';
 export * from './deviceLogSilence';
 export * from './aiToolHandoff';
+export * from './aiToolOutputTombstone';
 export * from './aiToolLabels';
 export * from './scriptSecurityPatterns';
 export * from './scriptLaneGrant';

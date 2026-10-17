@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceDetailPage from './DeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../../hooks/useEventStream', () => ({ useEventStream: () => ({ subscribe: vi.fn() }) }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: () => vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));

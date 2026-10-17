@@ -6,3 +6,4 @@ export * from './m365';
 export * from './reportTypes';
 export * from './types/remediationTrigger';
 export * from './validators/remediationTrigger';
+export * from './trustCenter';

@@ -175,7 +175,8 @@
     "securityScans": "IOC Scans",
     "devicesTime": "Time synchronization",
     "adminAiModels": "AI Models",
-    "billingAutopay": "Automatic payments"
+    "billingAutopay": "Automatic payments",
+    "endpointMessages": "Endpoint Messages"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",

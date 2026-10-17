@@ -5,6 +5,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { portalBranding } from '../../db/schema';
 import { brandingParamSchema } from './schemas';
 import { applyPortalCacheHeaders, buildWeakEtag, isEtagFresh } from './helpers';
+import { resolvePortalCapabilities } from './featureFlags';
 import { ERROR_CODES } from '@breeze/shared';
 
 export const brandingRoutes = new Hono();
@@ -140,7 +141,10 @@ brandingRoutes.get('/branding', async (c) => {
     return c.json({ error: 'Branding not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
 
-  const payload = { branding };
+  // Trust Center W3d: a per-USER capability (org flag + org-scoped admin contact), read fresh like the
+  // flags; the trust-page routes re-check it on every request. Part of the ETag, so a change is never a 304.
+  const { canEditTrustPage } = await resolvePortalCapabilities({ id: auth.user.id, orgId: auth.user.orgId });
+  const payload = { branding: { ...branding, canEditTrustPage } };
   applyPortalCacheHeaders(c, {
     scope: 'private',
     browserMaxAgeSeconds: 30,
