@@ -6,6 +6,8 @@ import { and, eq, sql } from 'drizzle-orm';
 import { TELEMETRY_CONTROL_IDS, TRUST_FRAMEWORKS, type TelemetryControlId, type TrustFramework, type TrustTemplateSettings } from '@breeze/shared';
 import { db } from '../../db';
 import { trustPageTemplates, type TrustPageTemplateRow } from '../../db/schema';
+import type { AuthContext } from '../../middleware/auth';
+import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from '../partnerWideAccess';
 
 const KNOWN_CONTROL_IDS = new Set<string>(TELEMETRY_CONTROL_IDS);
 const KNOWN_FRAMEWORKS = new Set<string>(TRUST_FRAMEWORKS);
@@ -44,10 +46,15 @@ export type SavePartnerTemplateResult = ({ ok: true } & PartnerTemplate) | { ok:
  *   ON CONFLICT update only fires while it is still at revision 0 (never, once anyone saved), else mismatch.
  * - otherwise: UPDATE … WHERE revision = expectedRevision; zero rows back = someone saved first (or the row is gone).
  * Every successful write bumps `revision`, which the org editor echoes on publish (409 TEMPLATE_CHANGED).
+ *
+ * The template reaches every org under the partner (including future ones), so the mutator itself refuses a
+ * caller without the partner-wide capability (PartnerWideWriteDeniedError) — the route's 403 is not the only gate.
  */
 export async function savePartnerTemplate(args: {
   partnerId: string; expectedRevision: number; patch: PartnerTemplatePatch; actorUserId: string;
+  actor: Pick<AuthContext, 'scope' | 'partnerOrgAccess'>;
 }): Promise<SavePartnerTemplateResult> {
+  if (!canManagePartnerWidePolicies(args.actor)) throw new PartnerWideWriteDeniedError();
   const now = new Date();
   const set = { ...args.patch, revision: sql`${trustPageTemplates.revision} + 1`, updatedAt: now, updatedByUserId: args.actorUserId };
   const rows = args.expectedRevision === 0

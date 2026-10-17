@@ -102,7 +102,7 @@ describe('trust page template routes (W02g)', () => {
       const res = await put({ expectedRevision: 0, showManagedBy: false });
       expect(res.status).toBe(200);
       expect((await res.json()).data).toMatchObject({ template: SETTINGS, revision: 1 });
-      expect(svc.savePartnerTemplate).toHaveBeenCalledWith({ partnerId: PARTNER, expectedRevision: 0, patch: { showManagedBy: false }, actorUserId: 'u1' });
+      expect(svc.savePartnerTemplate).toHaveBeenCalledWith({ partnerId: PARTNER, expectedRevision: 0, patch: { showManagedBy: false }, actorUserId: 'u1', actor: expect.objectContaining({ scope: 'partner', partnerOrgAccess: 'all' }) });
       expect(auditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         orgId: null, action: 'trust_page_template.update', resourceType: 'trust_page_template', resourceId: PARTNER,
         details: expect.objectContaining({ fields: ['showManagedBy'], revision: 1 }),

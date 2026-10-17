@@ -81,7 +81,7 @@ trustPageTemplateRoutes.put('/', scopes, orgWrite, requireMfa(), zValidator('que
     if (body[k] !== undefined) (patch as Record<string, unknown>)[k] = body[k];
   }
 
-  const saved = await savePartnerTemplate({ partnerId: resolved.partnerId, expectedRevision, patch, actorUserId: auth.user.id });
+  const saved = await savePartnerTemplate({ partnerId: resolved.partnerId, expectedRevision, patch, actorUserId: auth.user.id, actor: auth });
   if (!saved.ok) return c.json({ error: TEMPLATE_REVISION_MISMATCH_MESSAGE, code: 'REVISION_MISMATCH' }, 409);
 
   writeRouteAudit(c, {

@@ -22,6 +22,8 @@ const row = (over: Record<string, unknown> = {}) => ({
   revision: 3, updatedByUserId: 'u', createdAt: new Date(), updatedAt: new Date(), ...over,
 });
 
+const FULL = { scope: 'partner' as const, partnerOrgAccess: 'all' as const };
+
 beforeEach(() => { dbm.select.mockReset(); dbm.insert.mockReset(); dbm.update.mockReset(); });
 
 describe('templateRowToSettings', () => {
@@ -52,11 +54,20 @@ describe('loadPartnerTemplate', () => {
 });
 
 describe('savePartnerTemplate', () => {
+  it('refuses a caller without the partner-wide capability before touching the db', async () => {
+    await expect(savePartnerTemplate({ partnerId: 'p1', expectedRevision: 0, patch: {}, actorUserId: 'u', actor: { scope: 'partner', partnerOrgAccess: 'selected' } }))
+      .rejects.toMatchObject({ name: 'PartnerWideWriteDeniedError' });
+    await expect(savePartnerTemplate({ partnerId: 'p1', expectedRevision: 0, patch: {}, actorUserId: 'u', actor: { scope: 'organization' } as never }))
+      .rejects.toMatchObject({ name: 'PartnerWideWriteDeniedError' });
+    expect(dbm.insert).not.toHaveBeenCalled();
+    expect(dbm.update).not.toHaveBeenCalled();
+  });
+
   it('expectedRevision 0 upserts (first save creates revision 1) guarded on revision = 0', async () => {
     const calls: Array<[string, unknown[]]> = [];
     let inserted: Record<string, unknown> | undefined;
     dbm.insert.mockReturnValueOnce({ values: (v: Record<string, unknown>) => { inserted = v; return chain([row({ revision: 1, showManagedBy: false })], calls); } });
-    const out = await savePartnerTemplate({ partnerId: 'p1', expectedRevision: 0, patch: { showManagedBy: false }, actorUserId: 'u' });
+    const out = await savePartnerTemplate({ partnerId: 'p1', expectedRevision: 0, patch: { showManagedBy: false }, actorUserId: 'u', actor: FULL });
     expect(out).toMatchObject({ ok: true, revision: 1 });
     expect(inserted).toMatchObject({ partnerId: 'p1', showManagedBy: false, revision: 1, updatedByUserId: 'u' });
     const conflict = calls.find(([m]) => m === 'onConflictDoUpdate')?.[1][0] as { setWhere?: unknown; set: Record<string, unknown> };
@@ -68,14 +79,14 @@ describe('savePartnerTemplate', () => {
 
   it('expectedRevision 0 against an existing row (revision ≥ 1) is a mismatch', async () => {
     dbm.insert.mockReturnValueOnce({ values: () => chain([]) });
-    await expect(savePartnerTemplate({ partnerId: 'p1', expectedRevision: 0, patch: {}, actorUserId: 'u' }))
+    await expect(savePartnerTemplate({ partnerId: 'p1', expectedRevision: 0, patch: {}, actorUserId: 'u', actor: FULL }))
       .resolves.toEqual({ ok: false, reason: 'REVISION_MISMATCH' });
   });
 
   it('a later save is a conditional UPDATE; zero rows back = stale revision', async () => {
     let set: Record<string, unknown> | undefined;
     dbm.update.mockReturnValueOnce({ set: (v: Record<string, unknown>) => { set = v; return chain([]); } });
-    await expect(savePartnerTemplate({ partnerId: 'p1', expectedRevision: 2, patch: { introHtml: '' }, actorUserId: 'u' }))
+    await expect(savePartnerTemplate({ partnerId: 'p1', expectedRevision: 2, patch: { introHtml: '' }, actorUserId: 'u', actor: FULL }))
       .resolves.toEqual({ ok: false, reason: 'REVISION_MISMATCH' });
     expect(set).toMatchObject({ introHtml: '', updatedByUserId: 'u' });
     expect(set?.revision).toBeDefined();
@@ -84,7 +95,7 @@ describe('savePartnerTemplate', () => {
 
   it('a matching later save returns the bumped revision', async () => {
     dbm.update.mockReturnValueOnce({ set: () => chain([row({ revision: 4 })]) });
-    await expect(savePartnerTemplate({ partnerId: 'p1', expectedRevision: 3, patch: { showHistory: null }, actorUserId: 'u' }))
+    await expect(savePartnerTemplate({ partnerId: 'p1', expectedRevision: 3, patch: { showHistory: null }, actorUserId: 'u', actor: FULL }))
       .resolves.toMatchObject({ ok: true, revision: 4 });
   });
 });

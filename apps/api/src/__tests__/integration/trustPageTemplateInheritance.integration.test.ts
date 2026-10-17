@@ -41,7 +41,7 @@ async function seed(): Promise<Seeded> {
 }
 
 async function saveTemplate(s: Seeded, expectedRevision: number, patch: Parameters<typeof savePartnerTemplate>[0]['patch']) {
-  const out = await sys(() => savePartnerTemplate({ partnerId: s.partnerId, expectedRevision, patch, actorUserId: s.userId }));
+  const out = await sys(() => savePartnerTemplate({ partnerId: s.partnerId, expectedRevision, patch, actorUserId: s.userId, actor: { scope: 'system' } }));
   if (!out.ok) throw new Error('template save unexpectedly hit a revision mismatch');
   return out.revision;
 }
