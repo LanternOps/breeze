@@ -352,10 +352,12 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
     }
     const snapshot = proposalDispatchSnapshot(runnable.proposal, proposalDeviceIds);
     // AI data policy (spec 2026-10-15 §2, best effort): an AI-authored
-    // proposal whose content names a user-profile path is refused unless every
-    // target device's org allows any_with_approval. Resolved from the DEVICE
-    // orgs with the executeTool gate's own resolver, so an unestablished
-    // partner refuses here too. Library scripts (scriptId) are human-authored
+    // proposal whose content names a user-profile path is refused unless the
+    // org of every target device that passes verifyDeviceAccess allows
+    // any_with_approval (a device that fails it is never dispatched below; none
+    // verified resolves as unresolved and refuses). Resolved with the
+    // executeTool gate's own resolver, so an unestablished partner refuses here
+    // too. Library scripts (scriptId) are human-authored
     // and exempt; proposals take no parameters (runnable.ts), so the content
     // is all there is to scan. Literal spellings only: a constructed path is
     // not caught, and `off` does not make arbitrary scripts document-proof.
@@ -373,7 +375,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
         const level = policy.deviceFileReadLevel;
         const source = policy.source.deviceFileReadLevel;
         return JSON.stringify({
-          error: `This script proposal reads a user profile path (${profileHit}), which the AI data policy refuses (level: ${level}, set by: ${source}). Rewrite the script without it, or ask an administrator for a diagnostic access grant and read the file with diagnostic_read_file.`,
+          error: `This script proposal reads a user profile path (${profileHit}), which the AI data policy refuses (level: ${level}, set by: ${source}). Rewrite the script without it${level === 'no_user_profiles' ? ', or ask an administrator for a diagnostic access grant and read the file with diagnostic_read_file' : ''}.`,
           condition: 'policy_denied',
           policy: { level, source },
           proposalId: input.proposalId,

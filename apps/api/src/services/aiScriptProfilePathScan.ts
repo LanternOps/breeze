@@ -7,8 +7,8 @@
  * profile environment variables — so a `no_user_profiles` / `off` tenant gets
  * a policy refusal instead of a script that quietly reads documents. It does
  * NOT make arbitrary scripts document-proof: a constructed or
- * environment-derived path it does not know is not caught. The run_script
- * tool description says so.
+ * environment-derived path it does not know is not caught. The refusal
+ * message names the spelling it found.
  *
  * Spellings are normalised exactly like the path restriction does
  * (`candidateForms`), so `D:\Users`, drive-less `\Users`, macOS `/Users` and

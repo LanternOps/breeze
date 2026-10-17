@@ -237,7 +237,7 @@ export async function verifyDeviceAccess(
 }
 
 /** Decision returned by {@link enforceDeviceArgs}: allow (with the device rows
- *  it verified, in input order), or deny with a reason. The caller
+ *  it verified, in `deviceArgs` order then array order), or deny with a reason. The caller
  *  (`executeTool`) owns serialization to the wire format. */
 export type DeviceGateResult =
   | { ok: true; devices: Array<typeof devices.$inferSelect> }
@@ -694,7 +694,11 @@ export async function executeTool(
   // session org — and refused closed when that org's partner cannot be
   // established. Here, so it holds for every principal (chat, agent runs, MCP,
   // helper, script builder, durable approval releases re-entering this
-  // function). Same dispatch context as the device gate: no extra connection.
+  // function). Same dispatch context as the device gate. Cost: a context that
+  // cannot see its partner's ceiling row in place (an organization session,
+  // currentPartnerId null) reads it through the pinned system escape in
+  // readOwnPartnerAxisRows, a short second connection; only policy-relevant
+  // calls pay it.
   const gate = await inDispatchContext(async () => {
     const devices = await enforceDeviceArgs(tool, effectiveInput, auth);
     if (!devices.ok) return devices;

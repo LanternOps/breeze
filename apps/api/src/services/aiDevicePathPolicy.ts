@@ -3,8 +3,7 @@
  *
  * `executeTool` (aiTools.ts) calls {@link applyDevicePathPolicy} right after
  * `enforceDeviceArgs` has verified the device rows, for every principal that
- * dispatches through it (chat, agent runs, MCP, the helper, the script
- * builder, durable approval releases). The level comes from the DEVICE's org
+ * dispatches through it (every caller of executeTool). The level comes from the DEVICE's org
  * — the data owner — never from the session org: a partner-scope login's
  * session org is just its first accessible org.
  *
@@ -49,17 +48,27 @@ const ACTION_KEY: Readonly<Record<string, string>> = { execute_command: 'command
 
 export type GatePolicySource = AiDataPolicySource | 'unresolved';
 
+/** Why the owning partner could not be established (logged; never sent to the model). */
+export type UnresolvedCause = 'no_verified_device' | 'no_db_context' | 'org_unresolved' | 'partner_mismatch' | 'partner_not_granted';
+
 /** What the gate judges a call by: the strictest level across its device orgs. */
 export type GatePolicy = {
   deviceFileReadLevel: AiDeviceFileReadLevel;
   source: { deviceFileReadLevel: GatePolicySource };
+  /** Set only when `source` is `unresolved`. */
+  unresolvedCause?: UnresolvedCause;
 };
 
-const UNRESOLVED: GatePolicy = { deviceFileReadLevel: 'off', source: { deviceFileReadLevel: 'unresolved' } };
+function unresolved(cause: UnresolvedCause, orgId?: string): GatePolicy {
+  console.warn('[aiDevicePathPolicy] AI data policy unresolved; judging the call under off', { cause, orgId });
+  return { deviceFileReadLevel: 'off', source: { deviceFileReadLevel: 'unresolved' }, unresolvedCause: cause };
+}
 
 const OFF_MESSAGE = 'AI device file access is turned off by the AI data policy for this organization';
 const UNRESOLVED_MESSAGE =
   "AI device file access is refused: the AI data policy for this device's organization could not be established";
+const NO_DEVICE_MESSAGE =
+  'AI device file access is refused: this tool call does not name a device, so the AI data policy of the data owner cannot be checked';
 const PROFILE_POINTER =
   ' For read-only troubleshooting of a profile path, ask an administrator to approve it with request_diagnostic_access, then use diagnostic_list_directory / diagnostic_read_file.';
 
@@ -106,13 +115,14 @@ export function enforceDevicePathPolicy(toolName: string, input: Record<string, 
   const level = policy.deviceFileReadLevel;
   const source = policy.source.deviceFileReadLevel;
   const deny = (error: string): DevicePathPolicyResult => ({ ok: false, error, condition: 'policy_denied', policy: { level, source } });
+  const unresolvedMessage = policy.unresolvedCause === 'no_verified_device' ? NO_DEVICE_MESSAGE : UNRESOLVED_MESSAGE;
   if (level === 'off' && isOffDenied(toolName, input)) {
-    return deny(source === 'unresolved' ? UNRESOLVED_MESSAGE : OFF_MESSAGE);
+    return deny(source === 'unresolved' ? unresolvedMessage : OFF_MESSAGE);
   }
   if (level === 'any_with_approval') return { ok: true };
   for (const value of pathValues(toolName, input)) {
     if (aiPathRefusal(value, { level }) !== USER_PROFILE_BLOCKED_MESSAGE) continue;
-    if (source === 'unresolved') return deny(`${UNRESOLVED_MESSAGE}, so user profile folders are refused.`);
+    if (source === 'unresolved') return deny(`${unresolvedMessage}, so user profile folders are refused.`);
     // Under off the diagnostic tools are refused too, so the pointer would mislead.
     return deny(`${USER_PROFILE_BLOCKED_MESSAGE} (level: ${level}, set by: ${source}).${level === 'no_user_profiles' ? PROFILE_POINTER : ''}`);
   }
@@ -120,38 +130,38 @@ export function enforceDevicePathPolicy(toolName: string, input: Record<string, 
 }
 
 /**
- * The device org's owning partner, or null when it cannot be established:
- * no ambient DB context, the org row is invisible to the caller, or the
+ * The device org's owning partner, or why it cannot be established: no
+ * ambient DB context, the org row is invisible to the caller, or the
  * context's own partner (or partner grant) names a different partner.
  */
-async function establishDevicePartner(orgId: string): Promise<string | null> {
+async function establishDevicePartner(orgId: string): Promise<{ partnerId: string } | { cause: UnresolvedCause }> {
   const ctx = getCurrentDbAccessContext();
-  if (!ctx) return null;
+  if (!ctx) return { cause: 'no_db_context' };
   const partnerId = await readOrgPartnerId(orgId);
-  if (!partnerId) return null;
-  if (ctx.scope === 'system') return partnerId;
-  if (ctx.currentPartnerId != null && ctx.currentPartnerId !== partnerId) return null;
-  if (ctx.scope === 'partner' && !(ctx.accessiblePartnerIds ?? []).includes(partnerId)) return null;
-  return partnerId;
+  if (!partnerId) return { cause: 'org_unresolved' };
+  if (ctx.scope === 'system') return { partnerId };
+  if (ctx.currentPartnerId != null && ctx.currentPartnerId !== partnerId) return { cause: 'partner_mismatch' };
+  if (ctx.scope === 'partner' && !(ctx.accessiblePartnerIds ?? []).includes(partnerId)) return { cause: 'partner_not_granted' };
+  return { partnerId };
 }
 
 /**
  * Strictest policy across the verified devices' orgs. Any org whose partner
  * cannot be established — or an empty device list, where there is no data
- * owner to resolve from — makes the whole call {@link UNRESOLVED}.
+ * owner to resolve from — makes the whole call unresolved (`off`, logged).
  */
 export async function resolveDevicePolicyForGate(devices: ReadonlyArray<{ orgId: string }>): Promise<GatePolicy> {
-  if (devices.length === 0) return UNRESOLVED;
+  if (devices.length === 0) return unresolved('no_verified_device');
   let strictest: GatePolicy | null = null;
   for (const orgId of new Set(devices.map((d) => d.orgId))) {
-    const partnerId = await establishDevicePartner(orgId);
-    if (!partnerId) return UNRESOLVED;
-    const policy = await resolveAiDataPolicyForEstablishedPartner(orgId, partnerId);
+    const established = await establishDevicePartner(orgId);
+    if ('cause' in established) return unresolved(established.cause, orgId);
+    const policy = await resolveAiDataPolicyForEstablishedPartner(orgId, established.partnerId);
     if (!strictest || levelRank(policy.deviceFileReadLevel) < levelRank(strictest.deviceFileReadLevel)) {
       strictest = { deviceFileReadLevel: policy.deviceFileReadLevel, source: { deviceFileReadLevel: policy.source.deviceFileReadLevel } };
     }
   }
-  return strictest ?? UNRESOLVED;
+  return strictest ?? unresolved('no_verified_device');
 }
 
 /**

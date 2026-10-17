@@ -73,7 +73,11 @@ export const PATH_BLOCKED_MESSAGE = 'Access to this path is blocked';
  */
 const USER_PROFILE_PATH_PREFIXES = ['c:/users', '/home', '/root'];
 
-/** Whether a NORMALIZED candidate form lies in a user-profile root (component-anchored). */
+/**
+ * Whether a NORMALIZED candidate form lies in a user-profile root
+ * (component-anchored). `UNRESOLVED_FORM` counts as inside, like every other
+ * deny rule (devicePathForms.ts).
+ */
 export function isUserProfilePath(normalizedForm: string): boolean {
   if (normalizedForm === UNRESOLVED_FORM) return true;
   return USER_PROFILE_PATH_PREFIXES.some((p) => normalizedForm === p || normalizedForm.startsWith(p + '/'));

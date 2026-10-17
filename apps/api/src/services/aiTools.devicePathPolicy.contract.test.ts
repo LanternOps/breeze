@@ -298,14 +298,36 @@ describe('partner establishment (fail closed, never the built-in default)', () =
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  it('every fail-closed cause is logged by name (operators can tell why the AI refuses)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    spyHandler('file_operations');
+    const cases: Array<[() => void, string]> = [
+      [() => { state.ctx = undefined; }, 'no_db_context'],
+      [() => { state.ctx = ORG_SESSION_CTX; state.orgPartners = {}; }, 'org_unresolved'],
+      [() => { state.ctx = { ...PARTNER_CTX, currentPartnerId: 'partner-other' }; }, 'partner_mismatch'],
+      [() => { state.ctx = { ...PARTNER_CTX, accessiblePartnerIds: ['partner-other'] }; }, 'partner_not_granted'],
+    ];
+    for (const [arrange, cause] of cases) {
+      state.ctx = PARTNER_CTX;
+      state.orgPartners = { 'org-dev': PARTNER };
+      arrange();
+      warn.mockClear();
+      await call('file_operations', inputFor('file_operations', SYSTEM));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('AI data policy unresolved'), expect.objectContaining({ cause, orgId: 'org-dev' }));
+    }
+  });
+
   it('a path tool that verifies no device cannot establish the owner: profile path refused at every level', async () => {
     // remediate_sensitive_data reaches devices through finding ids, not
     // deviceArgs, so the gate has no verified device org to resolve from.
+    // Fail closed by design: no data owner to resolve from, so even a tenant at
+    // any_with_approval cannot quarantine INTO a profile folder via this tool.
     const handler = spyHandler('remediate_sensitive_data');
     for (const level of ['off', 'no_user_profiles', 'any_with_approval'] as const) {
       state.levels['org-dev'] = level;
       const out = await call('remediate_sensitive_data', inputFor('remediate_sensitive_data', PROFILE));
       expect(out.policy).toEqual({ level: 'off', source: 'unresolved' });
+      expect(out.error).toMatch(/does not name a device/);
     }
     expect(handler).not.toHaveBeenCalled();
     await call('remediate_sensitive_data', inputFor('remediate_sensitive_data', SYSTEM));

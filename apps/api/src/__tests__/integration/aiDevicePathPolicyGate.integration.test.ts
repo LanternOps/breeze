@@ -82,23 +82,23 @@ describe('executeTool AI data policy gate under RLS', () => {
     const settings = await withDbAccessContext(ctx, () => resolveAiDataPolicy(b.orgId));
     expect(settings.source.deviceFileReadLevel).toBe('default');
     const policy = await withDbAccessContext(ctx, () => resolveDevicePolicyForGate([{ orgId: b.orgId }]));
-    expect(policy).toEqual({ deviceFileReadLevel: 'off', source: { deviceFileReadLevel: 'unresolved' } });
+    expect(policy).toEqual({ deviceFileReadLevel: 'off', source: { deviceFileReadLevel: 'unresolved' }, unresolvedCause: 'org_unresolved' });
   });
 
   it("a context partner that is not the device org's partner is unresolved", async () => {
     await seedCeiling(a.partnerId, 'any_with_approval');
     const mismatched: DbAccessContext = { ...orgSessionCtx(a.orgId), currentPartnerId: b.partnerId };
     const policy = await withDbAccessContext(mismatched, () => resolveDevicePolicyForGate([{ orgId: a.orgId }]));
-    expect(policy.source.deviceFileReadLevel).toBe('unresolved');
+    expect(policy).toMatchObject({ source: { deviceFileReadLevel: 'unresolved' }, unresolvedCause: 'partner_mismatch' });
     const wrongGrant = partnerCtx(b.partnerId, [a.orgId]);
     const viaGrant = await withDbAccessContext(wrongGrant, () => resolveDevicePolicyForGate([{ orgId: a.orgId }]));
-    expect(viaGrant.source.deviceFileReadLevel).toBe('unresolved');
+    expect(viaGrant).toMatchObject({ source: { deviceFileReadLevel: 'unresolved' }, unresolvedCause: 'partner_mismatch' });
   });
 
   it('no DB context at all is unresolved', async () => {
     await seedCeiling(a.partnerId, 'any_with_approval');
     const policy = await resolveDevicePolicyForGate([{ orgId: a.orgId }]);
-    expect(policy).toEqual({ deviceFileReadLevel: 'off', source: { deviceFileReadLevel: 'unresolved' } });
+    expect(policy).toEqual({ deviceFileReadLevel: 'off', source: { deviceFileReadLevel: 'unresolved' }, unresolvedCause: 'no_db_context' });
   });
 
   it('the partner scope and system scope resolve the real ceiling', async () => {
