@@ -950,7 +950,7 @@
       "Check what an upgrade retires",
       "In the web UI",
       "Compose file changes",
-      "v0.123.0 — ECH and retain-state switches, admission control, about 25 newly passed API settings",
+      "v0.123.0 — ECH and retain-state switches, admission control, 25 newly passed API settings",
       "v0.122.1 — installer token default, 63 newly passed API settings, Partner API ticket settings",
       "v0.121.0 — new optional AI and enrollment settings; production Compose catches up",
       "v0.120.0 — start fence default and newly mapped API settings",

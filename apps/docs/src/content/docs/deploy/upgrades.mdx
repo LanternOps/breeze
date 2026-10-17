@@ -149,7 +149,7 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
-### v0.123.0 — ECH and retain-state switches, admission control, about 25 newly passed API settings
+### v0.123.0 — ECH and retain-state switches, admission control, 25 newly passed API settings
 
 The [v0.123.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.123.0/docker-compose.yml) change the `api` environment:
 
@@ -157,7 +157,7 @@ The [v0.123.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.123.0/
 |---|---|
 | `AGENT_ECH_ENABLED` and `HEARTBEAT_RETAIN_STATE_ENABLED` are mapped in both files as `${VAR:-true}`. Both accept only `true` or `false`; any other value stops the API from booting. | Nothing for the defaults. Never set `AGENT_ECH_ENABLED=false` casually; see [Agent connection switches](/deploy/environment/#agent-connection-switches). |
 | `BREEZE_ADMISSION_MODE` and its seven `BREEZE_ADMISSION_*` tuning knobs, `AGENT_BODY_RECEIVE_TIMEOUT_MS`, `AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS`, `BREEZE_EDR_ACTIONS_ENABLED`, `TUNNEL_ORIGIN_TEMPLATE`, `TUNNEL_FRAME_ANCESTOR` and the three `LLM_EGRESS_EVENTS_RETENTION_*` settings are mapped in both files as `${VAR:-}`, so unset keeps the built-in default. | Copy the lines into your own Compose file if you want to set any of them. See [Environment Variables](/deploy/environment/). |
-| Both files pass about 25 existing variables that Compose used to ignore: `CF_ACCESS_TRUST_ENABLED`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`, `CF_ACCESS_TRUSTS_MFA`, `CSP_REPORT_URI`, `EMAIL_SUPPORT_ADDRESS`, `GOOGLE_WORKSPACE_ENABLED`, `M365_ENABLED`, `HP_WARRANTY_ENABLED`, `IP_CLASSIFY_PROVIDER`, `IP_CLASSIFY_API_KEY`, the six `MCP_LLM_*` settings, `NVD_API_KEY`, `PARTNER_MEETING_URL`, `PARTNER_TRUST_MODE`, `SENTRY_PROFILES_SAMPLE_RATE` and `STRIPE_ACCOUNT_CACHE_REFRESH_ENABLED`. The root `docker-compose.yml` also gains `APPLE_APP_ATTEST_APP_ID`, `APPLE_APP_ATTEST_ENVIRONMENT` and `PARTNER_HOOKS_URL`. | **A value already in your `.env` now takes effect.** Check `.env` for stale entries before upgrading: a leftover `CF_ACCESS_TRUST_ENABLED=true` without its team domain and AUD, or a malformed `MCP_LLM_*` value, stops the API from booting. `PARTNER_TRUST_MODE` has no effect unless `IS_HOSTED=true`. |
+| Both files pass 22 existing variables that Compose used to ignore (25 in the root file): `CF_ACCESS_TRUST_ENABLED`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`, `CF_ACCESS_TRUSTS_MFA`, `CSP_REPORT_URI`, `EMAIL_SUPPORT_ADDRESS`, `GOOGLE_WORKSPACE_ENABLED`, `M365_ENABLED`, `HP_WARRANTY_ENABLED`, `IP_CLASSIFY_PROVIDER`, `IP_CLASSIFY_API_KEY`, the six `MCP_LLM_*` settings, `NVD_API_KEY`, `PARTNER_MEETING_URL`, `PARTNER_TRUST_MODE`, `SENTRY_PROFILES_SAMPLE_RATE` and `STRIPE_ACCOUNT_CACHE_REFRESH_ENABLED`. The root `docker-compose.yml` also gains `APPLE_APP_ATTEST_APP_ID`, `APPLE_APP_ATTEST_ENVIRONMENT` and `PARTNER_HOOKS_URL`. | **A value already in your `.env` now takes effect.** Check `.env` for stale entries before upgrading: a leftover `CF_ACCESS_TRUST_ENABLED=true` without its team domain and AUD, or a malformed `MCP_LLM_*` value, stops the API from booting. `PARTNER_TRUST_MODE` has no effect unless `IS_HOSTED=true`. |
 | `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` is mapped in both files, and `deploy/docker-compose.prod.yml` gains the four `PARTNER_API_*` ticket and idempotency settings from v0.122.1. | Nothing, unless you added your own mapping for them on v0.122.1; keep one. |
 | `MIGRATION_WINDOW_MAX_DAYS`, `MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR` and `MIGRATION_WINDOW_MAX_WRITES_PER_HOUR` are mapped in the root `docker-compose.yml` only. | With `deploy/docker-compose.prod.yml`, add them to the `api` service's `environment:` block if you need them. The defaults apply without them. |
 | `PUBLIC_ENABLE_ENDPOINT_MESSAGING` is a web **build-time** flag, default off. | Only takes effect in a web image you build yourself. The published web image is built with it off. |
@@ -254,12 +254,12 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 <Steps>
 1. Back up the database.
-2. Check `.env` for stale entries that Compose used to ignore and now passes to the API, especially `CF_ACCESS_*` and `MCP_LLM_*` (see [Compose file changes](#v01230--ech-and-retain-state-switches-admission-control-about-25-newly-passed-api-settings)).
+2. Check `.env` for stale entries that Compose used to ignore and now passes to the API, especially `CF_ACCESS_*` and `MCP_LLM_*` (see [Compose file changes](#v01230--ech-and-retain-state-switches-admission-control-25-newly-passed-api-settings)).
 3. Upgrade the server. Check how your install pins its images with `grep '^BREEZE_API_IMAGE_REF=' .env`:
    - **Digest-pinned** (the value ends in `@sha256:…`; every `guided-setup.sh` install since v0.112.0): fetch the current `guided-setup.sh` from `main`, then run `bash guided-setup.sh --upgrade 0.123.0`. It verifies the signed image inventory, updates `BREEZE_VERSION` and all four image digests, then pulls and restarts. Don't edit only `BREEZE_VERSION` on a digest-pinned install; that re-pulls the images you already run.
    - **Tag-form** (the value ends in `:${BREEZE_VERSION}`): set `BREEZE_VERSION=0.123.0`, then run `docker compose pull api web portal && docker compose up -d`.
 4. `--upgrade` does not change your `docker-compose.yml`. To set any of this release's new optional variables, add them to the `api` service's `environment:` block, or take the v0.123.0 Compose file, which already maps them. A value only in `.env` does not reach the API.
-5. Watch the API start log for `ring_app_rules_backfill <metric>=<n>` lines and `[auto-migrate] Applied 51 migration(s)`.
+5. Watch the API start log for warnings containing `ring_app_rules_backfill <metric>=<n>` and for `[auto-migrate] Applied 51 migration(s)` (from v0.122.1; an older install applies more).
 6. Let agents, Breeze Assist and Breeze Viewer update to 0.123.0. Encrypted Client Hello, heartbeat retain-state, the watchdog install retry, workload inventory and the viewer's **Physical keys** mode need this release's agent.
 </Steps>
 
@@ -301,7 +301,7 @@ No default was flipped for existing installs, but four changes can surface on an
 
 #### Migrations
 
-51 idempotent migrations apply on boot (`[auto-migrate] Applied 51 migration(s)`); none of the earlier files were modified or removed. Most DDL is additive: new tables for restore-point attempts, operator plan approvals, caller verification links, migration windows, topology presence, ticket links, LLM egress rollups, connection health incidents, EDR actions, trust pages, the service catalog and org evidence holds. No migration adds a `NOT NULL` column without a constant default.
+51 idempotent migrations apply on boot when upgrading from v0.122.1 (`[auto-migrate] Applied 51 migration(s)`); none of the earlier files were modified or removed. Most DDL is additive: new tables for restore-point attempts, operator plan approvals, caller verification links, migration windows, topology presence, ticket links, LLM egress rollups, connection health incidents, EDR actions, trust pages, the service catalog and org evidence holds. No migration adds a `NOT NULL` column without a constant default.
 
 ##### Update Ring app-rules backfill
 
@@ -310,14 +310,14 @@ No default was flipped for existing installs, but four changes can surface on an
 - A link with no ring that carries rules gets a **new ring** named `<policy> — app rules`, which approves nothing.
 - Where the policies sharing one ring disagree, the ring keeps one set, and each other set gets a **clone** named `<ring> — <policy>` with that ring's patch approvals copied. These rings appear in the Update Rings list.
 - Links to an invalid ring are skipped and counted; those policies now fail closed (`ring_reference_invalid`).
-- It **aborts the migration, and the API does not boot,** if a rule it would move has a package id with non-ASCII characters, or if a ring already carries different non-empty rules. The error names the policy feature link or the ring: edit that rule, or make the ring's rules match, then restart (see [Migration Failure Recovery](#migration-failure-recovery)). On a successful run the API start log has `ring_app_rules_backfill <metric>=<n>` lines with the counts.
+- It **aborts the migration, and the API does not boot,** if a rule it would move has a package id with non-ASCII characters, or if a ring already carries different non-empty rules. The error names the policy feature link or the ring: edit that rule, or make the ring's rules match, then restart (see [Migration Failure Recovery](#migration-failure-recovery)). On a successful run the API start log has warnings containing `ring_app_rules_backfill <metric>=<n>` with the counts.
 - Policy-level auto-approve is not converted. While it relinks, it briefly locks the affected partners and their organizations.
 
 ##### Other migrations worth knowing about
 
 - **PAM org-move trigger** (`2026-12-27-170000`). Restamps only un-actuated elevation requests when a device moves organization. Fixes org moves that aborted with error 42501.
 - **Backfills over existing rows:** `device_epoch` is set on existing elevation requests and PAM actuations, then three foreign keys are validated (a scan of those tables); every time-entry line on a **draft** invoice is marked as hand-edited, so **Refresh from time entries** never overwrites a description that existed before the upgrade (issued and void invoices are untouched); the endpoint messaging permissions are granted as described above.
-- **Concurrent index builds** on `discovery_jobs`, `organization_users`, `tickets`, `ticket_comments`, `ticket_external_refs` and `device_commands` wait for long-running transactions and don't block writes. If one of the `discovery_jobs`, `organization_users` or ticket builds is interrupted, the next start refuses with an "INVALID index" message naming the index: run `DROP INDEX CONCURRENTLY <name>;` and restart. The `device_commands` build has no such check: after an interrupted start, check `idx_device_commands_set_log_level_device_completed` for `indisvalid = false` and drop it if so.
+- **Concurrent index builds** on `discovery_jobs`, `organization_users`, `automations`, `tickets`, `ticket_comments`, `ticket_external_refs` and `device_commands` wait for long-running transactions and don't block writes. If one of the `discovery_jobs`, `organization_users`, `automations` or ticket builds is interrupted, the next start refuses with an "INVALID index" message naming the index: run `DROP INDEX CONCURRENTLY <name>;` and restart. The `device_commands` build has no such check: after an interrupted start, check `idx_device_commands_set_log_level_device_completed` for `indisvalid = false` and drop it if so.
 - **`metric_rollups` partitions** get tighter autovacuum-analyze settings (does not block reads or writes), and the audit-chain verify functions are replaced in place.
 - **One-way enum additions** (Postgres cannot drop an enum value): `config_feature_type` `system_protection` and `security_agents`, `security_provider` `unknown`, `monitor_kind` `container_image_currency`, `notification_type` `integration`, and the new ticket type enum.
 

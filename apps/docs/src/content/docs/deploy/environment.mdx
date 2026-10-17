@@ -1141,7 +1141,7 @@ The warranty worker looks each physical device's serial number up against its ma
 | `HP_WARRANTY_ENABLED` | — | `true` or `1` enables HP lookups through HP's public support warranty endpoint, one serial at a time and rate limited. It is not an official API and may stop working without notice. |
 
 <Aside>
-  When both Lenovo settings are present the official API is authoritative: a definite "no warranty found" from it is final, and the public endpoint is only consulted when the official call itself fails (bad key, outage). HP has no lookup yet — HP's Warranty API is not available to MSP or RMM vendors, so HP devices stay `unknown`.
+  When both Lenovo settings are present the official API is authoritative: a definite "no warranty found" from it is final, and the public endpoint is only consulted when the official call itself fails (bad key, outage). HP's official Warranty API is not available to MSP or RMM vendors, so HP devices stay `unknown` unless you turn on `HP_WARRANTY_ENABLED`, which uses HP's public support endpoint instead.
 </Aside>
 
 ## Breeze AI for Office (add-ins, optional)

@@ -225,8 +225,8 @@ From v0.123.0 the agent reports in each heartbeat whether its log uploads are wo
 | State | Meaning |
 |---|---|
 | **Healthy** | The agent is uploading its logs normally. |
-| **Quiet** | The agent has made no upload attempts in the last 10 minutes, so there is nothing to report. This is not a fault. |
-| **Failing** | Uploads have been failing. The tooltip gives the time it started and the reason, for example *The server returned HTTP 503*, *The request timed out*, *The secure connection failed* or *The server rejected the agent credentials*. |
+| **Quiet** | The agent has no recent upload attempt to report (an attempt's result is reported for 15 minutes). This is not a fault. |
+| **Failing** | The last upload failed, logs were dropped since the last good report, or the agent's upload queue is nearly full. The tooltip gives the time it started and the reason, for example *The server returned HTTP 503*, *The request timed out*, *The secure connection failed* or *The server rejected the agent credentials*. |
 
 **After raising the log level.** If you raised a device's log level to `debug` or `info` more than five minutes ago and no logs have arrived since, the Info tab adds *No logs received since the log level was raised (…)*. It is shown only while the device is online and the raised level is still in effect.
 
