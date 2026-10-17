@@ -38,6 +38,12 @@ import { SecurityAgentsLinkWriteError } from './securityAgentsLinkWrite';
  *    jobs queued under the old shape are refused at dispatch.
  *  - Only vendors that are enableable in the registry get a rule, so a stored
  *    blob can never arm a vendor whose install path is not wired.
+ *
+ * Authorization lives with the callers, not here: this file is allowlisted in
+ * the partner-wide and site-ceiling write-coverage contract tests on the
+ * grounds that its only request-path callers (the feature-link route and the
+ * config-policy AI tool) run both capability gates before the link write. A new
+ * caller must gate the same way, or the allowlist reasons become false.
  */
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];

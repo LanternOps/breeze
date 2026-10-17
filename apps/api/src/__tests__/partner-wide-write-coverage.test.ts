@@ -240,6 +240,21 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/quickSupportOrg.ts': 'quick-support provisioning creates an org-axis container',
   'services/softwareDownloadPolicy.ts': 'writes one org\'s encrypted settings by org id',
   'services/softwarePolicyService.ts': 'flagged table is append-only policy audit evidence, not config',
+  // #6960 / #8736. The generated software policy of a `security_agents` feature
+  // link. Its owner axis is never caller-chosen: it is COPIED from the config
+  // policy the link hangs off (partner-wide config policy → partner-owned row),
+  // inside the link-write transaction. The only request-path callers are
+  // services/configurationPolicy.ts addFeatureLink/updateFeatureLink, reached
+  // for a security_agents link only from routes/configurationPolicies/
+  // featureLinks.ts (POST + PATCH) and services/aiToolsConfigPolicy.ts
+  // (manage feature link), which each refuse a partner-wide config policy
+  // without canManagePartnerWidePolicies BEFORE calling them. The monitor-family
+  // callers of add/updateFeatureLink only ever touch `monitors` links. The other
+  // caller, repairManagedSoftwarePolicies (softwareComplianceWorker), runs in
+  // system context and only re-derives rows for links that already exist,
+  // again copying the config policy's own axis.
+  'services/securityAgents/managedPolicyGenerator.ts':
+    'derived write: owner axis copied from the security_agents link\'s config policy, never caller-chosen; request-path callers (routes/configurationPolicies/featureLinks.ts POST/PATCH, services/aiToolsConfigPolicy.ts) gate partner-wide config policies on canManagePartnerWidePolicies before addFeatureLink/updateFeatureLink reach it; the repair sweep runs in system context over existing links — verify those callers still gate when editing this file',
   'services/timeEntryService.ts': 'technician time/billing records, org/user-axis authority',
   // #4617 W02 customer approval: the gate holds/releases a ticket's own time
   // entries (awaiting_approval <-> not_billed/no_charge) under that ticket's
