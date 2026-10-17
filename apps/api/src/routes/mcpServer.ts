@@ -65,6 +65,8 @@ import {
   parseStoredMcpDomains,
   type McpDomainGrant,
 } from '../services/mcpDomains';
+import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
+import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
 import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
@@ -1421,6 +1423,11 @@ async function handleToolsList(
     };
   });
 
+  // B-W02 (#6156, #2550): `whoami` is server-intrinsic, tier 1 and domain
+  // `core` — listed for every principal (including a core-only grant) and
+  // sorted with the registry tools below.
+  result.push({ ...MCP_WHOAMI_TOOL_LIST_ENTRY });
+
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
   // outside the main registry and carry a FIXED Tier 3 classification, so
   // `isMcpApprovalRequired(name, 3)` is unconditionally true for every one of
@@ -1583,6 +1590,13 @@ async function handleToolsCall(
     console.warn(
       `[MCP] Deprecated tool name "${requestedToolName}" called; dispatching as "${toolName}". Re-run tools/list — the old name is removed next release.`,
     );
+  }
+
+  // B-W02 (#6156, #2550): `whoami` is core (always domain-granted) and tier 1
+  // (any principal that got past the ai:read preflight may call it). Pure:
+  // it reports what the gates below would decide, it does not bypass them.
+  if (toolName === MCP_WHOAMI_TOOL_NAME) {
+    return handleWhoamiCall(id, auth, scopes, domainGrant, apiKey);
   }
 
   // Bootstrap auth tools (send_deployment_invites, configure_defaults) live
@@ -1897,6 +1911,38 @@ async function handleToolsCall(
  * (`isMcpApprovalRequired`) — this transport has no interactive approval
  * surface; PR B's action-intents flow does not extend to MCP.
  */
+function handleWhoamiCall(
+  id: string | number,
+  auth: AuthContext,
+  scopes: string[],
+  domainGrant: McpDomainGrant,
+  apiKey?: McpApiKeyContext,
+): JsonRpcResponse {
+  const name = (apiKey as { name?: unknown } | undefined)?.name;
+  const principal = apiKey?.oauthGrantId
+    ? { kind: 'oauth' as const, id: apiKey.oauthGrantId, clientId: apiKey.oauthClientId ?? null }
+    : apiKey?.partnerServicePrincipalId
+      ? { kind: 'partner_service_principal' as const, id: apiKey.partnerServicePrincipalId, clientId: null }
+      : { kind: 'api_key' as const, id: apiKey?.id ?? 'unknown', clientId: null };
+  const unattendedPrincipal = isUnattendedTier3PrincipalOverMcp(apiKey);
+  const result = buildWhoamiResult({
+    principal: { ...principal, name: typeof name === 'string' ? name : null },
+    tenant: {
+      scope: auth.scope === 'partner' ? 'partner' : 'organization',
+      partnerId: auth.partnerId ?? apiKey?.partnerId ?? null,
+      orgId: auth.orgId ?? apiKey?.orgId ?? null,
+    },
+    scopes: scopes.filter((scope) => scope.startsWith('ai:')),
+    domainGrant,
+    approvalGate: { tier3RequiresWebApp: !unattendedPrincipal, unattendedPrincipal },
+    mfaGatedActionsUnavailable: mfaGateRefusesCaller(auth),
+  });
+  return jsonRpcResult(id, {
+    content: [{ type: 'text', text: JSON.stringify(result) }],
+    structuredContent: result,
+  });
+}
+
 async function handleTenantToolCall(
   id: string | number,
   toolName: string,

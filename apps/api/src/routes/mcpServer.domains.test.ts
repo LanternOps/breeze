@@ -206,21 +206,47 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 const domainOf = (name: string): string | undefined =>
-  name.includes('__') ? 'integrations' : DOMAIN_TEST_DOMAINS[name];
+  name === 'whoami' ? 'core' : name.includes('__') ? 'integrations' : DOMAIN_TEST_DOMAINS[name];
+
+// The ONE intended difference from main's unrestricted tools/list: B-W02 adds
+// the server-intrinsic `whoami` tool (tier 1, core) for every principal.
+// Hand-written, not built with the production presentation helper.
+const WHOAMI_LIST_ENTRY = {
+  title: 'Whoami',
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  _meta: { 'app.breeze/domain': 'core' },
+  name: 'whoami',
+  description: "Describe this connection's Breeze access: who it acts as, tenant scope, granted scopes and tool domains, and which actions need the Breeze web app. Call it before assuming a tool is missing.",
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+};
+
+/** main's golden with whoami inserted in the sorted core block (tenant tools stay last). */
+function expectedUnrestrictedList() {
+  const golden = structuredClone(mainUnrestrictedToolsList) as { result: { tools: Array<{ name: string }> } };
+  const tools = golden.result.tools;
+  const firstTenant = tools.findIndex((t) => t.name.includes('__'));
+  const core = [...tools.slice(0, firstTenant), WHOAMI_LIST_ENTRY].sort((a, b) => a.name.localeCompare(b.name, 'en'));
+  golden.result.tools = [...core, ...tools.slice(firstTenant)];
+  return golden;
+}
 
 describe('B-W02 domain gate — tools/list', () => {
-  it('unrestricted principal lists exactly what main lists', async () => {
+  it('unrestricted principal lists exactly what main lists (plus whoami)', async () => {
     const { body } = await rpc('tools/list');
-    expect(body).toEqual(mainUnrestrictedToolsList);
-    // Byte-identical, not just deep-equal: key order and every field.
-    expect(JSON.stringify(body)).toBe(JSON.stringify(mainUnrestrictedToolsList));
+    const expected = expectedUnrestrictedList();
+    expect(body).toEqual(expected);
+    // Byte-identical, not just deep-equal: key order and every field of every
+    // tool main already listed.
+    expect(JSON.stringify(body)).toBe(JSON.stringify(expected));
+    const withoutWhoami = { ...body, result: { tools: body.result.tools.filter((t: { name: string }) => t.name !== 'whoami') } };
+    expect(JSON.stringify(withoutWhoami)).toBe(JSON.stringify(mainUnrestrictedToolsList));
   });
 
   it('missing mcpDomains on the context fails closed to core', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     setKey();
     delete testState.apiKey!.mcpDomains;
-    expect(await listNames()).toEqual(['query_devices']);
+    expect(await listNames()).toEqual(['query_devices', 'whoami']);
     const { body } = await rpc('tools/call', { name: 'list_tickets', arguments: {} });
     expect(body.error).toMatchObject({ code: -32003, data: { reason: 'domain_not_granted', domain: 'tickets' } });
     expect(err).toHaveBeenCalledWith('[MCP] principal context missing mcpDomains');
@@ -230,7 +256,7 @@ describe('B-W02 domain gate — tools/list', () => {
   it('restricted principal lists only granted domains plus core', async () => {
     setKey({ mcpDomains: ['tickets'] });
     const names = await listNames();
-    expect(names).toEqual(['create_ticket', 'list_tickets', 'query_devices']);
+    expect(names).toEqual(['create_ticket', 'list_tickets', 'query_devices', 'whoami']);
     for (const name of names) expect(['core', 'tickets']).toContain(domainOf(name));
     expect(names).not.toContain('get_device_details');
   });
@@ -248,7 +274,7 @@ describe('B-W02 domain gate — tools/list', () => {
 
   it('domain gate never loosens the tier gate', async () => {
     setKey({ mcpDomains: ['devices'], scopes: ['ai:read'] });
-    expect(await listNames()).toEqual(['get_device_details', 'query_devices']);
+    expect(await listNames()).toEqual(['get_device_details', 'query_devices', 'whoami']);
     const { body } = await rpc('tools/call', { name: 'manage_services', arguments: { action: 'list' } });
     expect(body.error).toMatchObject({ code: -32603, message: 'Tool "manage_services" requires ai:write scope' });
     expect(mocks.executeTool).not.toHaveBeenCalled();
@@ -261,6 +287,7 @@ describe('B-W02 domain gate — tools/call', () => {
       ...DOMAIN_TEST_TOOLS.map((t) => t.name),
       'hudu__get_asset',
       'send_deployment_invites',
+      'whoami',
     ];
     for (const d of MCP_GRANTABLE_DOMAINS) {
       setKey({ mcpDomains: [d], scopes: ALL_AI_SCOPES });
@@ -367,5 +394,50 @@ describe('B-W02 domain gate — resources', () => {
     setKey({ mcpDomains: ['tickets'] });
     const { body } = await rpc('resources/read', { uri: 'breeze://secrets' });
     expect(body.error).toMatchObject({ code: -32602, message: 'Unknown resource URI: breeze://secrets' });
+  });
+});
+
+describe('B-W02 whoami', () => {
+  const callWhoami = async () => {
+    const { body } = await rpc('tools/call', { name: 'whoami', arguments: {} });
+    expect(body.error).toBeUndefined();
+    expect(body.result.structuredContent).toEqual(JSON.parse(body.result.content[0].text));
+    return body.result.structuredContent;
+  };
+
+  it('whoami is listed and callable for every principal kind, including a core-only grant', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const principals: Array<[Record<string, unknown>, string, string]> = [
+      [{ mcpDomains: null }, 'api_key', 'key-1'],
+      [{ mcpDomains: ['tickets'] }, 'api_key', 'key-1'],
+      [{ id: 'oauth:jti-1', oauthGrantId: 'grant-9', oauthClientId: 'client-9', name: 'OAuth bearer' }, 'oauth', 'grant-9'],
+      [{ id: 'psp-key-1', orgId: null, partnerServicePrincipalId: 'psp-1' }, 'partner_service_principal', 'psp-1'],
+    ];
+    for (const [overrides, kind, id] of principals) {
+      setKey(overrides);
+      expect(await listNames()).toContain('whoami');
+      expect(await callWhoami()).toMatchObject({ kind, id });
+    }
+    // A context that lost mcpDomains (core-only) still gets whoami.
+    setKey();
+    delete testState.apiKey!.mcpDomains;
+    expect(await listNames()).toContain('whoami');
+    expect((await callWhoami()).domains).toMatchObject({ restricted: true, granted: ['core'] });
+    err.mockRestore();
+  });
+
+  it('whoami result matches the live gate', async () => {
+    setKey({ mcpDomains: ['tickets'], scopes: ['ai:read', 'ai:write'] });
+    const listed = (await rpc('tools/list')).body.result.tools as Array<{ _meta: Record<string, string> }>;
+    const listedDomains = new Set(listed.map((t) => t._meta['app.breeze/domain']));
+    const who = await callWhoami();
+    expect(new Set(who.domains.granted)).toEqual(listedDomains);
+    expect(who).toMatchObject({ capability: 'write', scopes: ['ai:read', 'ai:write'], tenant: { orgId: 'org-1' } });
+  });
+
+  it('whoami never dispatches to the registry or the tier-3 ledger', async () => {
+    await callWhoami();
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+    expect(mocks.ledgerBegin).not.toHaveBeenCalled();
   });
 });
