@@ -52,8 +52,8 @@ export default function OrgSwitcher() {
   const searchRef = useRef<HTMLInputElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   // The org whose pane is showing. Follows hover and keyboard focus; the pane
-  // is skipped below 768px, where the panel stays a single column.
-  const isWide = useMediaQuery('(min-width: 768px)');
+  // is skipped below 1024px (the 36rem panel would overflow next to the sidebar below that), where the panel stays a single column.
+  const isWide = useMediaQuery('(min-width: 1024px)');
   const [highlightedOrgId, setHighlightedOrgId] = useState<string | null>(null);
 
   const {
@@ -252,7 +252,8 @@ export default function OrgSwitcher() {
   // fetch) follows either input the same way.
   const renderRow = (org: Organization, isRecent: boolean) => {
     const isSelected = org.id === currentOrgId;
-    const highlighted = org.id === effectiveHighlightId;
+    // Only the main-list row carries the highlight; the Recent copy of the same org stays plain.
+    const highlighted = !isRecent && org.id === effectiveHighlightId;
     return (
       <button
         key={org.id}
@@ -336,7 +337,7 @@ export default function OrgSwitcher() {
         <div
           ref={panelRef}
           data-testid="org-switcher-panel"
-          className="absolute left-0 top-full z-50 mt-1 w-80 md:w-[36rem] rounded-md border bg-popover p-2 shadow-lg"
+          className="absolute left-0 top-full z-50 mt-1 w-80 lg:w-[36rem] rounded-md border bg-popover p-2 shadow-lg"
         >
           {showFleetOption && (
             <>

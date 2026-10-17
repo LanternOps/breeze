@@ -50,7 +50,14 @@ export function useOrgSummaryCache(orgId: string | null, active: boolean): OrgSu
       let result: OrgSummary | 'error' = 'error';
       try {
         const res = await makeOrgFetch(orgId)(`/orgs/organizations/${orgId}/summary`);
-        if (res.ok) result = (await res.json()) as OrgSummary;
+        if (res.ok) {
+          const body = (await res.json()) as unknown;
+          // A 200 that is not a summary (null, {success:false}, …) is an error,
+          // not a pane that skeletons forever or throws on `sites.count`.
+          const valid =
+            typeof body === 'object' && body !== null && typeof (body as OrgSummary).sites?.count === 'number';
+          if (valid) result = body as OrgSummary;
+        }
         else if (res.status === 403) forbiddenRef.current = true;
       } catch {
         result = 'error';

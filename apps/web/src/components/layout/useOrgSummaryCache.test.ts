@@ -139,6 +139,38 @@ describe('useOrgSummaryCache', () => {
     expect(result.current.status).toBe('idle');
   });
 
+  it('a 200 whose body is not a summary reports error instead of loading forever', async () => {
+    for (const body of [null, { success: false }]) {
+      fetchMock.mockReset().mockResolvedValueOnce({ ok: true, status: 200, json: async () => body });
+      const { result, unmount } = renderHook(() => useOrgSummaryCache('org-a', true));
+      await advance(SUMMARY_INTENT_DELAY_MS);
+      expect(result.current.status).toBe('error');
+      unmount();
+    }
+  });
+
+  it('a response that lands after close and reopen is discarded (epoch guard)', async () => {
+    let resolveFirst: (v: unknown) => void = () => {};
+    fetchMock.mockReset().mockImplementationOnce(
+      () => new Promise((resolve) => { resolveFirst = resolve; }),
+    );
+    const { result, rerender } = renderHook(({ active }) => useOrgSummaryCache('org-a', active), {
+      initialProps: { active: true },
+    });
+    await advance(SUMMARY_INTENT_DELAY_MS);
+    rerender({ active: false });
+    rerender({ active: true });
+    await act(async () => {
+      resolveFirst({ ok: true, status: 200, json: async () => summaryFor('org-a') });
+      await Promise.resolve();
+    });
+    expect(result.current.status).toBe('loading');
+    fetchMock.mockImplementation(okFor);
+    await advance(SUMMARY_INTENT_DELAY_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.status).toBe('ready');
+  });
+
   it('a 500 reports error without throwing', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
     const { result } = renderHook(() => useOrgSummaryCache('org-a', true));

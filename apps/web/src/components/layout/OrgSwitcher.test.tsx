@@ -546,6 +546,17 @@ describe('OrgSwitcher (unified control)', () => {
       expect(screen.queryByTestId('org-recent-org-a')).toBeNull();
     });
 
+    it('an org listed in Recent and in the main list is highlighted once (main row only)', () => {
+      stubLocation('/devices');
+      mockStoreState.recentOrgIds = ['org-b'];
+      render(<OrgSwitcher />);
+      openDropdown();
+      fireEvent.mouseEnter(screen.getByTestId('org-recent-org-b'));
+      expect(document.querySelectorAll('[data-highlighted="true"]')).toHaveLength(1);
+      expect(screen.getByTestId('org-option-org-b').getAttribute('data-highlighted')).toBe('true');
+      expect(screen.getByTestId('org-recent-org-b').getAttribute('data-highlighted')).toBeNull();
+    });
+
     it('Recent skips ids no longer in the list and hides while searching or empty', () => {
       stubLocation('/devices');
       mockStoreState.recentOrgIds = ['org-zzz', 'org-b'];

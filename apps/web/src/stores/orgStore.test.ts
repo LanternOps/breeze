@@ -418,6 +418,14 @@ describe('org store', () => {
       );
       useOrgStore.persist.rehydrate();
       expect(useOrgStore.getState().recentOrgIds).toEqual(['a', 'b', 'c']);
+
+      // Duplicates and empty ids would render duplicate keys / blank rows.
+      localStorage.setItem(
+        'breeze-org',
+        JSON.stringify({ state: { recentOrgIds: ['a', 'a', '', 'b'] }, version: 0 })
+      );
+      useOrgStore.persist.rehydrate();
+      expect(useOrgStore.getState().recentOrgIds).toEqual(['a', 'b']);
     });
 
     it('clearOrgContext and setPartner reset recentOrgIds', () => {

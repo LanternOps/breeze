@@ -63,10 +63,10 @@ export interface Site {
  */
 export type ServiceManagementMode = 'native' | 'external' | 'off';
 
-/** Mirrors the CHECK constraint. Used to sanitise a persisted value on rehydrate. */
 /** How many switched-to orgs the switcher's Recent group remembers. */
 export const MAX_RECENT_ORGS = 3;
 
+/** Mirrors the CHECK constraint. Used to sanitise a persisted value on rehydrate. */
 export const SERVICE_MANAGEMENT_MODES: readonly ServiceManagementMode[] = ['native', 'external', 'off'];
 
 interface OrgState {
@@ -448,7 +448,7 @@ export const useOrgStore = create<OrgState>()(
         }
         // Tampered / legacy value: coerce to a clean, capped array of strings.
         merged.recentOrgIds = Array.isArray(merged.recentOrgIds)
-          ? merged.recentOrgIds.filter((x): x is string => typeof x === 'string').slice(0, MAX_RECENT_ORGS)
+          ? [...new Set(merged.recentOrgIds.filter((x): x is string => typeof x === 'string' && x !== ''))].slice(0, MAX_RECENT_ORGS)
           : [];
         return merged;
       }
