@@ -18,6 +18,7 @@ const CATEGORY_LABELS: Record<TrustControlCategory, string> = {
   identity_access: 'Identity & access',
   data_protection: 'Data protection',
   monitoring: 'Monitoring',
+  governance: 'Governance and response',
 };
 
 export function groupControlsByCategory(

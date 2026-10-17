@@ -20,6 +20,7 @@ const CATEGORY_LABEL: Record<TrustControlCategory, string> = {
   identity_access: 'Identity and access',
   data_protection: 'Data protection',
   monitoring: 'Monitoring',
+  governance: 'Governance and response',
 };
 
 type ToggleKey = 'showPercentages' | 'showDeviceCount' | 'showManagedBy' | 'searchIndexable';
