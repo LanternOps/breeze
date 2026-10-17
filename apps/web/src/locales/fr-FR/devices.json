@@ -2612,6 +2612,21 @@
       "installAgent": "Installer l'agent…",
       "addNetworkAsset": "Ajouter un actif réseau…",
       "addManualAsset": "Ajouter un actif manuellement…"
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} sera envoyé à {{count}} appareil(s) {{scope}}.",
+      "messageSplit": "{{action}} sera envoyé à {{count}} appareil(s) {{scope}} : {{online}} en ligne maintenant · {{queued}} en file d'attente jusqu'au prochain check-in.",
+      "scopeMulti": "dans {{count}} organisations ({{orgs}})",
+      "scopeSingle": "dans {{org}}",
+      "title": "{{action}} : {{count}} appareil(s) ?",
+      "verbs": {
+        "lock": "Verrouiller",
+        "maintenanceOff": "Terminer la maintenance",
+        "reboot": "Redémarrer",
+        "reboot_safe_mode": "Redémarrer en mode sans échec",
+        "shutdown": "Arrêter",
+        "wake": "Réveiller"
+      }
     }
   },
   "filterAddDropdown": {

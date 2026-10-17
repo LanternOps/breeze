@@ -2612,6 +2612,21 @@
       "installAgent": "Agent installieren…",
       "addNetworkAsset": "Netzwerk-Asset hinzufügen…",
       "addManualAsset": "Asset manuell hinzufügen…"
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} wird an {{count}} Gerät(e) {{scope}} gesendet.",
+      "messageSplit": "{{action}} wird an {{count}} Gerät(e) {{scope}} gesendet: {{online}} jetzt online · {{queued}} für den nächsten Check-in vorgemerkt.",
+      "scopeMulti": "in {{count}} Organisationen ({{orgs}})",
+      "scopeSingle": "bei {{org}}",
+      "title": "{{action}}: {{count}} Gerät(e)?",
+      "verbs": {
+        "lock": "Sperren",
+        "maintenanceOff": "Wartung beenden",
+        "reboot": "Neustart",
+        "reboot_safe_mode": "Neustart im abgesicherten Modus",
+        "shutdown": "Herunterfahren",
+        "wake": "Aufwecken"
+      }
     }
   },
   "filterAddDropdown": {
