@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceCard from './DeviceCard';
@@ -8,6 +8,8 @@ import { fetchWithAuth } from '../../stores/auth';
 vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
 }));
+
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -329,5 +331,18 @@ describe('DeviceCard shared metrics requests (#6044)', () => {
     expect(requests[0].signal?.aborted).toBe(false);
     await act(async () => { requests[0].resolve(makeJsonResponse({ metrics: [{ cpu: 1, ram: 2 }, { cpu: 3, ram: 4 }] })); });
     expect(screen.getByTestId('cpu-sparkline-shared')).toBeInTheDocument();
+  });
+});
+
+describe('DeviceCard site link (ui-flow W03)', () => {
+  it('links the site name and does not trigger the card click', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ metrics: [] }));
+    const onClick = vi.fn();
+    render(<DeviceCard device={baseDevice} onClick={onClick} />);
+    await act(async () => {});
+    const link = screen.getByTestId('site-record-link');
+    expect(link).toHaveAttribute('href', '/settings/sites/site-1');
+    fireEvent.click(link);
+    expect(onClick).not.toHaveBeenCalled();
   });
 });
