@@ -21,10 +21,19 @@ const SCOPES: readonly TunnelBudgetScope[] = ['tunnel', 'user', 'agent'];
 const idFor = (keys: TunnelBudgetKeys, scope: TunnelBudgetScope) =>
   scope === 'user' ? keys.userId : scope === 'tunnel' ? keys.tunnelId : keys.agentId;
 
-export async function checkTunnelHttpRate(
-  keys: TunnelBudgetKeys,
-): Promise<{ ok: true } | { ok: false; scope: TunnelBudgetScope; retryAfterSeconds: number }> {
+/** Retry hint when the budget store itself is down (not a budget being spent). */
+const BUDGET_UNAVAILABLE_RETRY_SECONDS = 5;
+
+export type TunnelRateResult =
+  | { ok: true }
+  | { ok: false; scope: TunnelBudgetScope; retryAfterSeconds: number }
+  // Redis unavailable: still refused (fail closed), but reported as an outage,
+  // not as this user/tunnel/agent exhausting a budget.
+  | { ok: false; scope: 'unavailable'; retryAfterSeconds: number };
+
+export async function checkTunnelHttpRate(keys: TunnelBudgetKeys): Promise<TunnelRateResult> {
   const redis = getRedis();
+  if (!redis) return { ok: false, scope: 'unavailable', retryAfterSeconds: BUDGET_UNAVAILABLE_RETRY_SECONDS };
   for (const scope of SCOPES) {
     const result = await rateLimiter(
       redis,

@@ -217,6 +217,23 @@ describe('/__bz/enter', () => {
     expectBaseHeaders(res);
   });
 
+  it('fails closed when the opt-in lookup throws: 500, no cookie, no activation', async () => {
+    optInMock.mockRejectedValueOnce(new Error('db down'));
+    ticketOk();
+    const res = await req('/__bz/enter?t=TKT', { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-dest': 'iframe' } });
+    expect(res.status).toBe(500);
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(capturedUpdates).toEqual([]);
+    expectBaseHeaders(res);
+  });
+
+  it('binds the cookie context to the navigation: iframe ⇒ frame cookie, document ⇒ tab cookie', async () => {
+    expect((await req('/__bz/enter?t=TKT&mode=tab', { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-dest': 'iframe' } })).status).toBe(403);
+    expect((await req('/__bz/enter?t=TKT', { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-dest': 'document' } })).status).toBe(403);
+    expect(consumeWsTicketMock).not.toHaveBeenCalled();
+    expect(metricMock).toHaveBeenCalledWith('host', 'admission_refused');
+  });
+
   it('refuses a subresource or non-GET request to /__bz/enter before spending the ticket', async () => {
     expect((await req('/__bz/enter?t=TKT', { headers: { 'sec-fetch-site': 'cross-site', 'sec-fetch-dest': 'image' } })).status).toBe(403);
     expect((await req('/__bz/enter?t=TKT', { method: 'POST', headers: { 'sec-fetch-site': 'cross-site' } })).status).toBe(403);
@@ -233,13 +250,34 @@ describe('/__bz/ping and reserved paths', () => {
     expectBaseHeaders(denied);
   });
 
-  it('never forwards /__bz/* (plain, cased, percent-encoded or dot-segment) to the device', async () => {
+  const RESERVED_VARIANTS = [
+    '/__bz/other', '/__bz', '/__bz/', '/__BZ/ping', '/%5F%5Fbz/enter?t=x', '/%5f%5fBZ/x', '/__bz%2Fenter?t=x',
+    '/a/..%2F__bz/x', '/%2e%2e/__bz/x', '/./__bz/x', '//__bz/x', '///__bz/enter?t=x', '/%5C__bz/x', '/%255F%255Fbz/x',
+  ];
+
+  it('never forwards /__bz/* (plain, cased, percent-encoded, dot-segment, slash variants) to the device', async () => {
     const cookie = await enter();
-    for (const p of ['/__bz/other', '/__bz', '/__BZ/ping', '/%5F%5Fbz/enter?t=x', '/%5f%5fBZ/x', '/a/..%2F__bz/x', '/%255F%255Fbz/x', '/%E0%A4%A']) {
+    for (const p of RESERVED_VARIANTS) {
       const res = await req(p, sameOrigin(cookie));
       expect(res.status, p).toBe(404);
     }
     expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('404s reserved paths without a cookie too (never a 401 that hints at auth)', async () => {
+    for (const p of RESERVED_VARIANTS) {
+      expect((await req(p, { headers: { 'sec-fetch-site': 'same-origin' } })).status, p).toBe(404);
+    }
+  });
+
+  it('forwards device paths with stray or non-ASCII percent sequences unchanged', async () => {
+    const cookie = await enter();
+    for (const p of ['/100%', '/a%zz', '/%E0%A4%A', '/caf%C3%A9']) {
+      sendCommandMock.mockResolvedValueOnce(agentOk());
+      const res = await req(p, sameOrigin(cookie));
+      expect(res.status, p).toBe(200);
+    }
+    expect(sendCommandMock.mock.calls.map((c) => c[1].payload.path)).toEqual(['/100%', '/a%zz', '/%E0%A4%A', '/caf%C3%A9']);
   });
 });
 
@@ -307,6 +345,15 @@ describe('proxied requests', () => {
     expect(noOrigin.status).toBe(403);
     expect(sendCommandMock).not.toHaveBeenCalled();
     expect(metricMock).toHaveBeenCalledWith('host', 'admission_refused');
+  });
+
+  it('runs admission before auth: no cookie still gets 404 (SW) / 403 (cross-site, foreign Origin), never 401', async () => {
+    expect((await req('/sw.js', { headers: { 'sec-fetch-site': 'cross-site', 'service-worker': 'script' } })).status).toBe(404);
+    expect((await req('/sw.js', { headers: { 'sec-fetch-dest': 'serviceworker' } })).status).toBe(404);
+    expect((await req('/x', { headers: { 'sec-fetch-site': 'cross-site' } })).status).toBe(403);
+    expect((await req('/x', { method: 'POST', headers: { origin: 'https://us.breeze-app.test' } })).status).toBe(403);
+    expect((await req('/x', { method: 'POST' })).status).toBe(403);
+    expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
   it('404s a service-worker script fetch', async () => {
@@ -435,6 +482,17 @@ describe('proxied requests', () => {
 });
 
 describe('budgets and metrics', () => {
+  it('503s (not 429) when the rate budget store is unavailable, before dispatch', async () => {
+    const cookie = await enter();
+    rateMock.mockResolvedValueOnce({ ok: false, scope: 'unavailable', retryAfterSeconds: 5 });
+    const res = await req('/', sameOrigin(cookie));
+    expect(res.status).toBe(503);
+    expect(res.headers.get('retry-after')).toBe('5');
+    expect(sendCommandMock).not.toHaveBeenCalled();
+    expect(metricMock).toHaveBeenCalledWith('host', 'budget_unavailable');
+    expect(metricMock).not.toHaveBeenCalledWith('host', 'rate_limited');
+  });
+
   it('429s with Retry-After when a rate budget is exhausted, before dispatch', async () => {
     const cookie = await enter();
     rateMock.mockResolvedValueOnce({ ok: false, scope: 'tunnel', retryAfterSeconds: 17 });

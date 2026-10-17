@@ -15,6 +15,7 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { getTunnelOriginConfig, isTunnelDomainHost, type TunnelOriginConfig } from '../config/tunnelOrigin';
 import { TUNNEL_HOST_ROUTE_LABEL, requestCorrelationId } from '../services/safeRequestLabel';
 import { recordTunnelHttpOutcome } from '../services/tunnelHttpMetrics';
+import { withHostModeBaseHeaders } from '../services/tunnelHostBaseHeaders';
 
 export const TUNNEL_SITE_ASSERTION_HEADER = 'x-breeze-tunnel-site';
 export const TUNNEL_SITE_ASSERTION_VALUE = '1';
@@ -56,21 +57,34 @@ export function decideTunnelHost(
   return asserted ? { kind: 'reject', reason: 'tunnel_assertion_on_app_host' } : { kind: 'app' };
 }
 
+/** The correlation id for a response header, or undefined when none was stamped. */
+function correlationIdFor(c: Context): string | undefined {
+  const id = requestCorrelationId(c);
+  return id === 'unknown' ? undefined : id;
+}
+
 export function tunnelHostClassifier(getConfig: () => TunnelOriginConfig | null = getTunnelOriginConfig): MiddlewareHandler {
   return async (c, next) => {
-    const decision = decideTunnelHost(c.req.header('host'), c.req.header(TUNNEL_SITE_ASSERTION_HEADER), getConfig());
+    const config = getConfig();
+    const decision = decideTunnelHost(c.req.header('host'), c.req.header(TUNNEL_SITE_ASSERTION_HEADER), config);
     if (decision.kind === 'reject') {
       c.set('rejectReason', decision.reason);
       recordTunnelHttpOutcome('host', 'host_rejected');
-      return c.text('Misdirected request', 421);
+      return withHostModeBaseHeaders(c.text('Misdirected request', 421), config?.frameAncestor ?? null, correlationIdFor(c));
     }
-    if (decision.kind === 'tunnel') {
-      c.set('tunnelSurface', true);
-      // The sub-app's matched route is invisible out here, and its paths are
-      // device paths: log the whole surface under one fixed label.
-      c.set('routeLabelOverride', TUNNEL_HOST_ROUTE_LABEL);
-    }
-    return next();
+    if (decision.kind !== 'tunnel') return next();
+    c.set('tunnelSurface', true);
+    // The sub-app's matched route is invisible out here, and its paths are
+    // device paths: log the whole surface under one fixed label.
+    c.set('routeLabelOverride', TUNNEL_HOST_ROUTE_LABEL);
+    await next();
+    // Every response leaving the tunnel surface — the tunnel app's, or one an
+    // outer gate (global rate limit, body limit, FORCE_HTTPS) produced after
+    // this classifier — gets the host-mode headers. X-Request-Id is copied on
+    // here because c.header() values set before a returned Response existed
+    // never reach it; a device-supplied X-Request-Id never wins.
+    const res = withHostModeBaseHeaders(c.res, config?.frameAncestor ?? null, correlationIdFor(c));
+    if (res !== c.res) c.res = res;
   };
 }
 
@@ -89,19 +103,8 @@ export function tunnelHostDispatch(
 ): MiddlewareHandler {
   return async (c, next) => {
     if (!isTunnelSurface(c)) return next();
-    const res = await tunnelApp.fetch(c.req.raw, c.env);
-    // The sub-app's Response is returned as-is, so headers the outer chain set
-    // with c.header() (X-Request-Id from requestPathLogger) never reach it.
-    // Copy the correlation id on; a device-supplied X-Request-Id never wins.
-    const requestId = requestCorrelationId(c);
-    if (requestId === 'unknown') return res;
-    try {
-      res.headers.set('X-Request-Id', requestId);
-      return res;
-    } catch {
-      const copy = new Response(res.body, res);
-      copy.headers.set('X-Request-Id', requestId);
-      return copy;
-    }
+    // Returned as-is; the classifier stamps the host-mode headers and
+    // X-Request-Id on the way out.
+    return tunnelApp.fetch(c.req.raw, c.env);
   };
 }

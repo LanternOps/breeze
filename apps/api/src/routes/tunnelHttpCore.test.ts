@@ -1,16 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { gzipSync } from 'node:zlib';
 
-const { whereMock, rereadRows } = vi.hoisted(() => ({
+const { whereMock, rereadRows, selectWhereMock } = vi.hoisted(() => ({
   whereMock: vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'x' }]) })),
   rereadRows: { value: [] as unknown[] },
+  selectWhereMock: vi.fn(),
 }));
 vi.mock('../db', () => ({
   db: {
     update: vi.fn(() => ({ set: vi.fn(() => ({ where: whereMock })) })),
-    select: vi.fn(() => ({ from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn(() => ({
-      limit: vi.fn(async () => rereadRows.value),
-    })) })) })) })),
+    select: vi.fn(() => ({ from: vi.fn(() => ({ innerJoin: vi.fn(() => ({ where: vi.fn((cond: unknown) => {
+      selectWhereMock(cond);
+      return { limit: vi.fn(async () => rereadRows.value) };
+    }) })) })) })),
   },
   withSystemDbAccessContext: vi.fn(async (fn: () => unknown) => fn()),
 }));
@@ -118,6 +120,14 @@ describe('tunnelHttpCore', () => {
         await expect(dispatchTunnelHttpRequest(TUNNEL_ID, session, request)).resolves.toMatchObject({ ok: true });
       }
       expect(sendCommandMock).toHaveBeenCalledTimes(CONNECTABLE_TUNNEL_STATUSES.length);
+    });
+
+    it('re-reads THIS tunnel’s row by primary key', async () => {
+      selectWhereMock.mockClear();
+      rereadRows.value = rowWithStatus('active');
+      sendCommandMock.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ status: 200, headers: {}, bodyB64: '' }) });
+      await dispatchTunnelHttpRequest(TUNNEL_ID, session, request);
+      expect(selectWhereMock).toHaveBeenCalledWith({ op: 'eq', a: ['ts.id', TUNNEL_ID] });
     });
   });
 });

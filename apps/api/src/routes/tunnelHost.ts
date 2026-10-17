@@ -18,6 +18,8 @@ import { getTrustedClientIp } from '../services/clientIp';
 import { isTunnelOriginEnabledForOrg } from '../services/tunnelOriginOptIn';
 import { acquireTunnelHttpSlot, checkTunnelHttpRate } from '../services/tunnelHttpBudget';
 import { recordTunnelHttpOutcome } from '../services/tunnelHttpMetrics';
+import { withHostModeBaseHeaders } from '../services/tunnelHostBaseHeaders';
+import { captureException } from '../services/sentry';
 import {
   buildTunnelOrigin, getTunnelOriginConfig, matchTunnelHost, type TunnelCookieContext,
 } from '../config/tunnelOrigin';
@@ -29,8 +31,7 @@ import {
 } from './tunnelHttpCore';
 import { TUNNEL_ENTER_PATH, admitTunnelHostRequest } from './tunnelHostAdmission';
 import {
-  TUNNEL_FRAME_COOKIE, TUNNEL_TAB_COOKIE, applyHostModeBaseHeaders, buildHostModeResponseHeaders,
-  buildHostModeUpstreamHeaders, hostModeCsp,
+  TUNNEL_FRAME_COOKIE, TUNNEL_TAB_COOKIE, buildHostModeResponseHeaders, buildHostModeUpstreamHeaders, hostModeCsp,
 } from './tunnelHostHeaders';
 import { rewriteTunnelCss, rewriteTunnelHtml } from './tunnelHttpRewrite';
 
@@ -43,22 +44,21 @@ export const tunnelHostRoutes = new Hono();
 // Every response — including 401/403/404/429/5xx and onError — gets the
 // host-mode security headers. A handler-set CSP (the enter page's nonce CSP,
 // which carries its own frame-ancestors) wins.
+// (The tunnel-host classifier applies the same headers again to whatever
+// leaves the tunnel surface, including responses from outer gates.)
 tunnelHostRoutes.use('*', async (c, next) => {
   await next();
-  const frameAncestor = getTunnelOriginConfig()?.frameAncestor ?? null;
-  try {
-    applyHostModeBaseHeaders(c.res.headers, frameAncestor);
-  } catch {
-    // Immutable headers (a Response we did not construct): clone, then apply.
-    const res = new Response(c.res.body, c.res);
-    applyHostModeBaseHeaders(res.headers, frameAncestor);
-    c.res = res;
-  }
+  const res = withHostModeBaseHeaders(c.res, getTunnelOriginConfig()?.frameAncestor ?? null);
+  if (res !== c.res) c.res = res;
 });
 
-// Never echo an internal error to the device page; count it.
+// Never echo an internal error to the device page; count it and report it
+// (the sub-app's Response is returned as-is, so the app-level onError and its
+// Sentry capture never see these). The error name only in the console: a
+// message can carry a device path.
 tunnelHostRoutes.onError((err, c) => {
-  console.error('[tunnel-host] unhandled error:', err);
+  console.error(`[tunnel-host] unhandled ${err instanceof Error ? err.name : typeof err}`);
+  captureException(err, c);
   recordTunnelHttpOutcome('host', 'internal_error');
   return c.text('Internal error', 500);
 });
@@ -89,26 +89,27 @@ async function authenticate(c: Context, tunnelId: string): Promise<{ userId: str
 }
 
 /**
- * `/__bz` and everything under it, however it is spelled: case, percent
- * encoding (repeatedly decoded) and dot segments. Undecodable or still
- * changing after a few rounds → treated as reserved (never forwarded).
+ * `/__bz` and everything under it, however it is spelled: case, ASCII
+ * percent-escapes (decoded repeatedly — `_`, `b`, `z` and `/` are all ASCII),
+ * backslashes, repeated slashes and dot segments. Non-ASCII or stray `%`
+ * sequences are left alone so a device path like `/100%` still works. A path
+ * that keeps changing after a few rounds is treated as reserved.
  */
+const ASCII_ESCAPE = /%([0-7][0-9a-f])/gi;
 function isReservedPath(rawPathname: string): boolean {
   let current = rawPathname;
   for (let round = 0; round < 4; round += 1) {
+    // Collapse `\` and `//` first: `new URL('//__bz/x', base)` would read
+    // `__bz` as a HOST, not a path segment.
+    const flattened = current.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
     let normalized: string;
     try {
-      normalized = new URL(current, 'http://tunnel.invalid').pathname.toLowerCase();
+      normalized = new URL(`http://tunnel.invalid${flattened.startsWith('/') ? '' : '/'}${flattened}`).pathname.toLowerCase();
     } catch {
       return true;
     }
     if (normalized === '/__bz' || normalized.startsWith('/__bz/')) return true;
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(current);
-    } catch {
-      return true;
-    }
+    const decoded = current.replace(ASCII_ESCAPE, (_m, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
     if (decoded === current) return false;
     current = decoded;
   }
@@ -156,6 +157,14 @@ async function handleEnter(c: Context, tunnelId: string, frameAncestor: string):
   // Validated before the one-time ticket is spent.
   if (!ticket || (mode !== undefined && mode !== 'tab')) return authFailed(c);
   const context: TunnelCookieContext = mode === 'tab' ? 'tab' : 'frame';
+  // The cookie context must match the navigation: the partitioned frame cookie
+  // only for an iframe, the unpartitioned Lax tab cookie only top-level.
+  // (Absent Sec-Fetch-Dest — older browsers — falls back to the ticket alone.)
+  const dest = c.req.header('sec-fetch-dest')?.trim().toLowerCase();
+  if (dest !== undefined && dest !== (context === 'tab' ? 'document' : 'iframe')) {
+    recordTunnelHttpOutcome('host', 'admission_refused');
+    return c.text('Cross-site request blocked', 403);
+  }
 
   const consumed = await consumeWsTicket(ticket, { ip: getTrustedClientIp(c), userAgent: c.req.header('user-agent') ?? '' });
   if (!consumed.ok || consumed.sessionId !== tunnelId || consumed.sessionType !== 'tunnel-http') return authFailed(c);
@@ -223,6 +232,12 @@ tunnelHostRoutes.all('*', async (c) => {
 
   const budgetKeys = { userId: auth.userId, tunnelId, agentId: session.agentId };
   const rate = await checkTunnelHttpRate(budgetKeys);
+  if (!rate.ok && rate.scope === 'unavailable') {
+    // The budget store (Redis) is down: fail closed, but say what it is.
+    recordTunnelHttpOutcome('host', 'budget_unavailable');
+    c.header('retry-after', String(rate.retryAfterSeconds));
+    return c.text('Service unavailable', 503);
+  }
   if (!rate.ok) {
     recordTunnelHttpOutcome('host', 'rate_limited');
     c.header('retry-after', String(rate.retryAfterSeconds));
@@ -251,12 +266,14 @@ tunnelHostRoutes.all('*', async (c) => {
   }
   if (!outcome.ok) {
     recordTunnelHttpOutcome('host', 'dispatch_failed');
+    console.warn(`[tunnel-host] dispatch failed tunnel=${tunnelId} reason=${outcome.reason}`);
     return c.text(outcome.message, outcome.status);
   }
 
   const { upstream } = outcome;
   if (!isServableStatus(upstream.status)) {
     recordTunnelHttpOutcome('host', 'dispatch_failed');
+    console.warn(`[tunnel-host] dispatch failed tunnel=${tunnelId} reason=unservable_status status=${String(upstream.status).slice(0, 16)}`);
     return c.text('Malformed upstream response', 502);
   }
   const { headers, contentType } = buildHostModeResponseHeaders(upstream.headers ?? {}, {
@@ -278,6 +295,7 @@ tunnelHostRoutes.all('*', async (c) => {
     const decoded = await decodeUpstreamBody(body, headers.get('content-encoding'));
     if (!decoded.ok) {
       recordTunnelHttpOutcome('host', 'dispatch_failed');
+      console.warn(`[tunnel-host] dispatch failed tunnel=${tunnelId} reason=content_encoding`);
       return c.text('Malformed upstream content encoding', 502);
     }
     if (decoded.decoded) {

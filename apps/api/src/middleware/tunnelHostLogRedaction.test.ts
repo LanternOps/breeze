@@ -19,11 +19,15 @@ const CONFIG = parsed.config;
 
 function makeApp(lines: string[]) {
   const tunnelApp = new Hono();
+  tunnelApp.get('/ok', (c) => c.text('device-ok', 200, { 'x-request-id': 'device-chosen' }));
   // A device-controlled X-Request-Id must never win over the correlation id.
   tunnelApp.all('*', (c) => c.text('x', 401, { 'x-request-id': 'device-chosen' }));
   const app = new Hono();
   app.use('*', requestPathLogger((m) => lines.push(m)));
   app.use('*', tunnelHostClassifier(() => CONFIG));
+  // Stands in for the global rate limit / body limit / FORCE_HTTPS gates that
+  // answer between the classifier and the dispatch.
+  app.use('*', async (c, next) => (c.req.path === '/limited' ? c.text('Too many requests', 429) : next()));
   app.use('*', tunnelHostDispatch(tunnelApp));
   app.get('/api/v1/health', (c) => c.text('ok'));
   return app;
@@ -50,10 +54,34 @@ describe('tunnel host request logging', () => {
     expect(joined).toContain(`request_id=${requestId}`);
   });
 
+  it('labels a successful tunnel response too, and the device X-Request-Id never wins', async () => {
+    const lines: string[] = [];
+    const res = await makeApp(lines).request('/ok', { headers: { host: TUNNEL_HOST, 'x-breeze-tunnel-site': '1' } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-request-id')).toMatch(UUID);
+    expect(lines.join('\n')).toContain('route=tunnel-host status=200');
+  });
+
+  it('a response produced by an outer gate on a tunnel host still gets the host-mode headers and X-Request-Id', async () => {
+    const lines: string[] = [];
+    const res = await makeApp(lines).request('/limited', { headers: { host: TUNNEL_HOST, 'x-breeze-tunnel-site': '1' } });
+    expect(res.status).toBe(429);
+    expect(res.headers.get('content-security-policy')).toBe("frame-ancestors https://us.breeze-app.test 'self'");
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('x-request-id')).toMatch(UUID);
+    expect(lines.join('\n')).toContain('route=tunnel-host status=429');
+  });
+
   it('a host rejected at the classifier keeps its reject reason and counts as host_rejected', async () => {
     const lines: string[] = [];
     const res = await makeApp(lines).request('/api/v1/health', { headers: { host: TUNNEL_HOST } });
     expect(res.status).toBe(421);
+    expect(res.headers.get('content-security-policy')).toBe("frame-ancestors https://us.breeze-app.test 'self'");
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('x-request-id')).toMatch(UUID);
     expect(lines.join('\n')).toContain('reason=tunnel_host_without_assertion');
     expect(metricMock).toHaveBeenCalledWith('host', 'host_rejected');
   });

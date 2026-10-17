@@ -113,6 +113,11 @@ describe('response headers (spec §6)', () => {
       'X-Content-Type-Options': ['bogus'],
       'Service-Worker-Allowed': ['/'],
       'Alt-Svc': ['h3=":443"'],
+      'Clear-Site-Data': ['"cookies"'],
+      'Report-To': ['{"group":"x"}'],
+      'Reporting-Endpoints': ['x="https://evil.example/r"'],
+      NEL: ['{"report_to":"x","max_age":31536000}'],
+      'Strict-Transport-Security': ['max-age=1'],
       'Transfer-Encoding': ['chunked'],
       'Content-Length': ['999'],
       'X-Device': ['kept'],
@@ -129,6 +134,9 @@ describe('response headers (spec §6)', () => {
     expect(headers.get('x-frame-options')).toBeNull();
     expect(headers.get('service-worker-allowed')).toBeNull();
     expect(headers.get('alt-svc')).toBeNull();
+    for (const name of ['clear-site-data', 'report-to', 'reporting-endpoints', 'nel', 'strict-transport-security']) {
+      expect(headers.get(name), name).toBeNull();
+    }
     expect(headers.get('transfer-encoding')).toBeNull();
     expect(headers.get('content-length')).toBeNull();
     expect(headers.get('x-device')).toBe('kept');

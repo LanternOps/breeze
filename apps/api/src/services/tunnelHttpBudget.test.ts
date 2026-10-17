@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { rateLimiterMock } = vi.hoisted(() => ({ rateLimiterMock: vi.fn() }));
 vi.mock('./rate-limit', () => ({ rateLimiter: rateLimiterMock }));
-vi.mock('./redis', () => ({ getRedis: vi.fn(() => ({})) }));
+const { getRedisMock } = vi.hoisted(() => ({ getRedisMock: vi.fn((): unknown => ({})) }));
+vi.mock('./redis', () => ({ getRedis: getRedisMock }));
 
 import {
   TUNNEL_HTTP_CONCURRENCY_LIMITS, TUNNEL_HTTP_RATE_LIMITS, __resetTunnelHttpBudgetForTests, acquireTunnelHttpSlot, checkTunnelHttpRate,
@@ -29,6 +30,12 @@ describe('tunnel http rate budgets', () => {
     const limited = await checkTunnelHttpRate(keys);
     expect(limited).toMatchObject({ ok: false, scope: 'user' });
     expect(limited.ok === false && limited.retryAfterSeconds).toBeGreaterThanOrEqual(29);
+  });
+
+  it('reports the budget store as unavailable (not a user/tunnel limit) when Redis is down', async () => {
+    getRedisMock.mockReturnValueOnce(null);
+    expect(await checkTunnelHttpRate(keys)).toEqual({ ok: false, scope: 'unavailable', retryAfterSeconds: 5 });
+    expect(rateLimiterMock).not.toHaveBeenCalled();
   });
 
   it('never reports a Retry-After below one second', async () => {

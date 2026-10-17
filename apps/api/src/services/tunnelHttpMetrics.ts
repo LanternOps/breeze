@@ -17,6 +17,7 @@ export const TUNNEL_HTTP_OUTCOMES = [
   'admission_refused',
   'gate_denied',
   'rate_limited',
+  'budget_unavailable',
   'dispatch_failed',
   'host_rejected',
   'internal_error',

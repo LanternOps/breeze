@@ -9,6 +9,7 @@
 import type { TunnelCookieContext } from '../config/tunnelOrigin';
 import { HOP_BY_HOP, collectForwardableHeaders } from './tunnelHttpCore';
 import { rewriteTunnelUrl } from './tunnelHttpRewrite';
+import { applyHostModeBaseHeaders, hostModeCsp } from '../services/tunnelHostBaseHeaders';
 
 /** Iframe context: `SameSite=None; Partitioned` (CHIPS, keyed to the app's top-level site). */
 export const TUNNEL_FRAME_COOKIE = '__Host-bzt';
@@ -76,26 +77,15 @@ export function buildHostModeUpstreamHeaders(
   return headers;
 }
 
-/** `frame-ancestors` only: the app origin plus `'self'`; `'none'` when the config is missing (fail closed). */
-export function hostModeCsp(frameAncestor: string | null): string {
-  return frameAncestor ? `frame-ancestors ${frameAncestor} 'self'` : "frame-ancestors 'none'";
-}
-
-/**
- * Applied to EVERY tunnel-host response, including 401/403/404/429/5xx.
- * Keeps a CSP the handler already set (the enter page's nonce CSP carries its
- * own frame-ancestors); everything else is forced.
- */
-export function applyHostModeBaseHeaders(headers: Headers, frameAncestor: string | null): void {
-  if (!headers.has('content-security-policy')) headers.set('content-security-policy', hostModeCsp(frameAncestor));
-  headers.set('cache-control', 'no-store');
-  headers.set('x-content-type-options', 'nosniff');
-  headers.set('referrer-policy', 'no-referrer');
-}
+export { applyHostModeBaseHeaders, hostModeCsp } from '../services/tunnelHostBaseHeaders';
 
 // Device response headers the proxy never passes on. `access-control-*` and
-// hop-by-hop headers are dropped separately. `alt-svc` would let a device
-// advertise an alternative endpoint for the tunnel origin.
+// hop-by-hop headers are dropped separately. Beyond the policy headers the
+// proxy owns: `alt-svc` would advertise an alternative endpoint for the
+// tunnel origin; `clear-site-data` would wipe the proxy's own cookie;
+// `report-to` / `reporting-endpoints` / `nel` would register origin-scoped
+// reporting that outlives the session; HSTS on the tunnel origin is the
+// edge's call (Caddy sets it), not the device's.
 const DROPPED_RESPONSE_HEADERS = new Set([
   'content-length',
   'content-security-policy',
@@ -106,6 +96,11 @@ const DROPPED_RESPONSE_HEADERS = new Set([
   'x-content-type-options',
   'service-worker-allowed',
   'alt-svc',
+  'clear-site-data',
+  'report-to',
+  'reporting-endpoints',
+  'nel',
+  'strict-transport-security',
 ]);
 
 export function buildHostModeResponseHeaders(
