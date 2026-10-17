@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/ech"
 )
 
 // ErrHTTPStatus is returned by the api client when an HTTP request
@@ -289,31 +291,26 @@ func RefuseUntrustedRedirect(req *http.Request, via []*http.Request) error {
 
 func NewClient(baseURL, authToken, agentID string) *Client {
 	return &Client{
-		baseURL:   baseURL,
-		authToken: authToken,
-		agentID:   agentID,
-		httpClient: &http.Client{
-			Timeout:       30 * time.Second,
-			CheckRedirect: RefuseUntrustedRedirect,
-		},
+		baseURL:    baseURL,
+		authToken:  authToken,
+		agentID:    agentID,
+		httpClient: newControlPlaneClient(nil, 30*time.Second),
 	}
+}
+
+// newControlPlaneClient builds the control-plane HTTP client: ECH-capable
+// dialer, redirect policy applied. tlsCfg may be nil.
+func newControlPlaneClient(tlsCfg *tls.Config, timeout time.Duration) *http.Client {
+	return ech.NewClient(tlsCfg, timeout, RefuseUntrustedRedirect)
 }
 
 // NewClientWithTLS creates a client that presents a client certificate in TLS handshakes.
 func NewClientWithTLS(baseURL, authToken, agentID string, tlsCfg *tls.Config) *Client {
-	transport := &http.Transport{}
-	if tlsCfg != nil {
-		transport.TLSClientConfig = tlsCfg
-	}
 	return &Client{
-		baseURL:   baseURL,
-		authToken: authToken,
-		agentID:   agentID,
-		httpClient: &http.Client{
-			Timeout:       30 * time.Second,
-			Transport:     transport,
-			CheckRedirect: RefuseUntrustedRedirect,
-		},
+		baseURL:    baseURL,
+		authToken:  authToken,
+		agentID:    agentID,
+		httpClient: newControlPlaneClient(tlsCfg, 30*time.Second),
 	}
 }
 
@@ -400,7 +397,7 @@ func CancelBootstrap(serverURL, childEnrollmentKey string) (*CancelBootstrapResp
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: RefuseUntrustedRedirect}
+	client := newControlPlaneClient(nil, 5*time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send cancel-bootstrap request: %w", err)
@@ -476,7 +473,7 @@ func RedeemSupportCode(server, code, hostname, osType string) (*SupportRedeemRes
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: RefuseUntrustedRedirect}
+	client := newControlPlaneClient(nil, 30*time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send support redeem request: %w", err)
@@ -523,7 +520,7 @@ func (c *Client) UninstallIntent() (*UninstallIntentResponse, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+c.authToken)
 
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: RefuseUntrustedRedirect}
+	client := newControlPlaneClient(nil, 5*time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send uninstall-intent request: %w", err)

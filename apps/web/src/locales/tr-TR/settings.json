@@ -4389,7 +4389,8 @@
     "sessionInvalid": "Bağlantı tamamlanmadan oturumunuz değiştirildi. Lütfen tekrar oturum açın ve tekrar deneyin.",
     "providerInactive": "Bu tek oturum açma sağlayıcısı artık etkin değil. Yöneticinizle iletişime geçin.",
     "configChanged": "Bağlanırken tek oturum açma yapılandırması değişti. Lütfen tekrar deneyin.",
-    "emailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulandığını onaylamadı. Yöneticinizle iletişime geçin."
+    "emailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulandığını onaylamadı. Yöneticinizle iletişime geçin.",
+    "idpVerifyFailed": "Breeze, kimlik sağlayıcınızın döndürdüğü oturum açmayı doğrulayamadı. Lütfen tekrar deneyin."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Bağlı uygulamalar yükleniyor…",
@@ -4590,6 +4591,7 @@
     "ssoReauthProviderInactive": "Çoklu oturum açma bu hesap için artık kullanılamıyor. Yöneticinize danışın, sonra tekrar deneyin.",
     "ssoReauthConfigChanged": "Doğrulama sırasında çoklu oturum açma ayarlarınız değişti. Doğrulamayı yeniden başlatın.",
     "ssoReauthEmailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulanmadığını bildiriyor. Adresi orada doğrulayıp tekrar deneyin.",
+    "ssoReauthIdpVerifyFailed": "Breeze, kimlik sağlayıcınızın döndürdüğü oturum açmayı doğrulayamadı. Tekrar deneyin. Sorun devam ederse yöneticinizden sunucu günlüklerini kontrol etmesini isteyin.",
     "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Çok faktörlü kimlik doğrulama kurulumunu tamamlamak için yeniden doğrulayın.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Bu hesap bir kimlik sağlayıcı üzerinden oturum açıyor ve parolası yok. Geçiş anahtarı eklemeden önce sağlayıcınızda yeniden doğrulayın.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Kimliğiniz doğrulandı. Bu geçiş anahtarına bir ad verin ve devam edin.",
@@ -5994,6 +5996,8 @@
     },
     "columns": {
       "timezone": "Saat Dilimi",
+      "address": "Adres",
+      "contact": "Kişi",
       "devices": "Cihazlar"
     },
     "empty": "Hiçbir site bulunamadı. Başlamak için bir site ekleyin."

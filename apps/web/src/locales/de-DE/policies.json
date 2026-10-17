@@ -701,7 +701,9 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "PortalURL"
+        "portalUrl": "PortalURL",
+        "endpointMessaging": "Endpunkt-Nachrichten",
+        "endpointMessagingHelp": "Ermöglicht Technikern, Nachrichten an die Person am Gerät zu senden."
       },
       "inlineEntityPicker": {
         "search": "Suchen...",

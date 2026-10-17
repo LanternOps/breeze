@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
+import { formatAddress } from '@/lib/formatAddress';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 
 export type Site = {
@@ -8,7 +9,26 @@ export type Site = {
   name: string;
   timezone: string;
   deviceCount: number;
+  // jsonb on the wire (untyped); every value is checked before display.
+  address?: {
+    line1?: unknown;
+    line2?: unknown;
+    city?: unknown;
+    state?: unknown;
+    postalCode?: unknown;
+    country?: unknown;
+  } | null;
+  contact?: { name?: unknown; email?: unknown; phone?: unknown } | null;
 };
+
+const str = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+
+const siteAddressText = (site: Site): string =>
+  formatAddress({
+    line1: str(site.address?.line1),
+    city: str(site.address?.city),
+    region: str(site.address?.state),
+  });
 
 /**
  * Below this many sites the list needs neither a count nor a search box: the
@@ -53,6 +73,28 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
     ) : (
       site.name
     );
+
+  const renderAddress = (site: Site) => siteAddressText(site) || '—';
+
+  const renderContact = (site: Site) => {
+    const name = str(site.contact?.name)?.trim();
+    const phone = str(site.contact?.phone)?.trim();
+    if (!name && !phone) return '—';
+    return (
+      <span className="flex flex-col">
+        {name && <span>{name}</span>}
+        {phone && (
+          <a
+            href={`tel:${phone}`}
+            data-testid={`site-${site.id}-contact-phone`}
+            className="text-primary hover:underline"
+          >
+            {phone}
+          </a>
+        )}
+      </span>
+    );
+  };
 
   const renderActions = (site: Site) => (
     <div className="flex justify-end gap-2">
@@ -112,6 +154,8 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <th className="px-4 py-3">{t('common:labels.name')}</th>
+                <th className="px-4 py-3">{t('siteList.columns.address')}</th>
+                <th className="px-4 py-3">{t('siteList.columns.contact')}</th>
                 <th className="px-4 py-3">{t('siteList.columns.timezone')}</th>
                 <th className="px-4 py-3">{t('siteList.columns.devices')}</th>
                 <th className="px-4 py-3 text-right">{t('common:labels.actions')}</th>
@@ -120,7 +164,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
             <tbody className="divide-y">
               {filteredSites.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
                     {t('siteList.empty')}
                   </td>
                 </tr>
@@ -128,6 +172,8 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
                 filteredSites.map(site => (
                   <tr key={site.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3 text-sm font-medium">{renderSiteName(site)}</td>
+                    <td className="px-4 py-3 text-sm">{renderAddress(site)}</td>
+                    <td className="px-4 py-3 text-sm">{renderContact(site)}</td>
                     <td className="px-4 py-3 text-sm">{site.timezone}</td>
                     <td className="px-4 py-3 text-sm tabular-nums">{site.deviceCount}</td>
                     <td className="px-4 py-3 text-right">{renderActions(site)}</td>
@@ -149,6 +195,12 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
               <DataCard key={site.id}>
                 <div className="text-sm font-semibold">{renderSiteName(site)}</div>
                 <div className="mt-3 space-y-2 border-t pt-3">
+                  <CardField label={t('siteList.columns.address')}>
+                    <span className="text-sm">{renderAddress(site)}</span>
+                  </CardField>
+                  <CardField label={t('siteList.columns.contact')}>
+                    <span className="text-sm">{renderContact(site)}</span>
+                  </CardField>
                   <CardField label={t('siteList.columns.timezone')}>
                     <span className="text-sm">{site.timezone}</span>
                   </CardField>

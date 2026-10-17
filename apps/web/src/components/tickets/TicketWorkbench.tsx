@@ -1165,7 +1165,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 initialContactId={ticket.requesterContactId}
                 lockContact
                 ticketId={ticket.id}
-                hash="caller-verification"
+                // Deep-linkable on the full page only: in the /tickets split
+                // pane the queue owns the hash (selected ticket, sort, type),
+                // and writing ours there made it jump to the first row.
+                hash={expanded ? 'caller-verification' : undefined}
                 onChanged={() => { setCallerRevision((r) => r + 1); void load({ background: true }); }}
               />
             </>

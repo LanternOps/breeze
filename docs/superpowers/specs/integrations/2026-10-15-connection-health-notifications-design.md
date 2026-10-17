@@ -120,8 +120,8 @@ Each run, for each source **due** this run (its `intervalMinutes` has elapsed si
 | `retired`, or a tracked id missing from the result | clear pending | resolve as `retired` |
 | not returned and not tracked | — (healthy; never read) | — |
 
-- **Reopen window.** If a connection breaks again within 60 minutes of resolving, the reconciler reopens the same incident: it clears `resolved_at` and increments `flap_count`. It does not create a new episode. [Q]
-- **First run per kind.** The first successful `observe()` of a newly registered kind seeds incidents but creates no notices, so an existing backlog doesn't arrive as a burst. Seeded incidents appear in the next digest. A run seeds only when Redis has no seeded flag for the kind **and** the incidents table has no rows for it (checked inside the kind's transaction), so a lost Redis key cannot make a run silent. When Redis is unavailable, no run seeds.
+- **Reopen window.** If a connection breaks again within the reopen window of resolving, the reconciler reopens the same incident: it clears `resolved_at` and increments `flap_count`. It does not create a new episode: `opened_at` is kept and no new notice is sent, unless the severity escalates from transient to permanent (goal 3). The window is `max(60 minutes, 2 × the source's intervalMinutes)`, so a flap on an hourly source still counts. [Q] (Amended in W2.)
+- **First run per kind.** The first successful `observe()` of a newly registered kind seeds incidents but creates no notices, so an existing backlog doesn't arrive as a burst. Seeded incidents appear in the next digest. A run seeds only when Redis has no seeded flag for the kind **and** the incidents table has no rows for it (checked inside the kind's transaction), so a lost Redis key with rows present cannot make a run silent. Retention always keeps each kind's newest resolved row, so retention alone never empties a kind. When Redis is unavailable, a kind with rows runs normally (never seeding) and a kind with no rows is deferred to the next run with Redis: a silent seed could swallow a real first break, and a notifying run could send a first-deploy backlog as a burst. (Amended in W2.)
 - **Onboarding grace.** A connection created in the last 2 hours that has never succeeded is `unknown`, not `broken`, unless the failure is permanent. This covers onboarding.
 
 ### 1.3 Load and scaling
@@ -278,12 +278,20 @@ A row left in `claimed` for over an hour is marked `failed`, not resent. The mod
 
 **Grounding.** The W2 adapters reuse the per-kind state functions in `services/orgAccountReadinessIntegrations.ts`. They do not reuse its output: the aggregator collapses connections into worst-state badges (`:209`), and the reconciler needs one observation per connection. [Q] Extract the pure mapping functions so both consumers share them.
 
+**W2 amendments (as built; see the W2 plan's Sources table).**
+- `m365_connection`: `revoked` is written only by a deliberate disconnect, so it is `retired`, not broken. User-axis rows (`communications-delegated`) have no writer and are excluded.
+- `m365_sync`: one observation per connection (worst domain), and `unknown` while the parent connection is not `active`, so a degraded connection produces one incident rather than one per domain.
+- `backup_provider`: `partial` counts as healthy. It is written only when alert evaluation fails after a successful vendor sync.
+- `accounting`: `pending_tenant` is `unknown` (a connect in progress). `disconnected` is never stored, because a disconnect deletes the row.
+- `ticket_mailbox`: `detail` is always null. `last_error` holds raw upstream text that the API deliberately never exposes.
+- Partner-axis connection tables are exempt from the partial-index rule (§1.3). The org-scoped sources (`dns_filter`, `m365_connection`, `m365_sync`) each have a partial index on their broken predicate.
+
 **Backup recovery trap.** `jobs/backupProviderSync.ts:229` clears the error when a retry starts. The backup adapter therefore reports `unknown` while a sync is running, and `healthy` only after `last_sync_status = 'success'`.
 
 **OAuth detail.** Deliberate revocations are `retired`, never `broken`: they set `revoked_by_user_id`, or come from a partner disconnect or the tenant lifecycle. Only `refresh-token-reuse` counts as automatic. `provider-revoke-grant` does not, because oidc-provider's default `revokeGrantPolicy` also writes it for deliberate RP-initiated revocation and `end_session`, so it cannot tell a logout from a break.
 
 Classification runs per (account, client) pair, over grants with `partner_id IS NOT NULL` only. Let E be the pair's latest automatic revoke (reason `refresh-token-reuse`, `revoked_by_user_id IS NULL`, `revoked_at` within 30 days), ordered by `revoked_at`, then `created_at`, then `id`, so ties are deterministic.
-- E exists and the client is disabled → `retired`.
+- A disabled client is always `retired`, whether or not E exists.
 - E exists → look only at grants created after `E.revoked_at`. If any is active (`revoked_at IS NULL AND expires_at > now`), the pair is `healthy`. If some exist but none is active (re-consent, then a deliberate revoke or expiry), it is `retired`. If none exists, it is `broken` / permanent, condition `grant_revoked_reuse`.
 - No E → an active grant means `healthy`, otherwise `retired`.
 

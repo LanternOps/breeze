@@ -38,3 +38,22 @@ it('opens directly from a deep-linked hash when enabled', () => {
   render(<CallerVerificationEntry orgId={ORG} hash="caller-verification" />);
   expect(screen.getByTestId('modal')).toHaveAttribute('data-org', ORG);
 });
+
+it('without a hash prop opens from local state and never touches a hash it does not own (#8576 sweep)', async () => {
+  enabled.value = true;
+  window.location.hash = 'T-2026-0002&sort=newest';
+  render(<CallerVerificationEntry orgId={ORG} />);
+  fireEvent.click(screen.getByTestId('cv-entry'));
+  expect(screen.getByTestId('modal')).toHaveAttribute('data-org', ORG);
+  expect(window.location.hash).toBe('#T-2026-0002&sort=newest');
+  await act(async () => { fireEvent.click(screen.getByText('x')); });
+  expect(screen.queryByTestId('modal')).toBeNull();
+  expect(window.location.hash).toBe('#T-2026-0002&sort=newest');
+});
+
+it('without a hash prop ignores a forged caller-verification hash', () => {
+  enabled.value = true;
+  window.location.hash = 'caller-verification';
+  render(<CallerVerificationEntry orgId={ORG} />);
+  expect(screen.queryByTestId('modal')).toBeNull();
+});

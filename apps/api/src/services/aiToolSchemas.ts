@@ -27,6 +27,7 @@ import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
+import { messagingToolSchemas } from './aiToolSchemasMessaging';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
@@ -309,6 +310,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
   // Topology AI tools (M3-D12 + M4 #6000) — strict, extracted to aiToolSchemasTopology.ts
   ...topologyToolSchemas,
+  ...messagingToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),

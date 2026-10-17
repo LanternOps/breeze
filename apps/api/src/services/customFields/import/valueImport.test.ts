@@ -123,6 +123,10 @@ vi.mock('../../../db', () => {
   };
 });
 
+// The value writer requests a dynamic-group re-evaluation after commit (#8832);
+// the db mock has no runAfterDbContextCommit, so stub the producer.
+vi.mock('../../../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
+
 vi.mock('./warrantyTarget', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./warrantyTarget')>();
   return { ...actual, applyWarrantyImport: applyWarrantyImportMock };
@@ -133,6 +137,7 @@ import {
   previewDeviceCustomFieldImport,
   type ValueImportContext,
 } from './valueImport';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../../jobs/deviceGroupJobs';
 import type { CommitValueRowInput, DeviceCustomFieldImportRow, MappingTarget } from './types';
 
 const ctx: ValueImportContext = { partnerId: PARTNER, accessibleOrgIds: [ORG], allowedSiteIds: null };
@@ -436,6 +441,7 @@ describe('previewDeviceCustomFieldImport', () => {
 describe('commitDeviceCustomFieldImport', () => {
   it('applies the good values on a mixed row and reports the rest, in ONE transaction', async () => {
     seed();
+    vi.mocked(requestDeviceGroupReevaluationAfterCommit).mockClear();
 
     const summary = await commit([{
       deviceId: D1,
@@ -447,6 +453,13 @@ describe('commitDeviceCustomFieldImport', () => {
     expect(summary.failedValues).toBe(2);
     expect(txCount.current).toBe(1);
     expect(txInserts.filter((i) => i.table === 'device_custom_field_values')).toHaveLength(1);
+    // #8832: only the applied key is requested, tagged with the import source.
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledTimes(1);
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: D1,
+      changedFields: ['custom.asset_tag'],
+      reason: 'custom_field_write:import',
+    }));
   });
 
   it('a row that fails to write does not poison its neighbours', async () => {

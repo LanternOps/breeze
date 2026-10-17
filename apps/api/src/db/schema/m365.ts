@@ -93,6 +93,10 @@ export const m365Connections = pgTable(
     // session needs its own target index rather than reusing the org-axis one.
     userAttemptIdentityUniq: uniqueIndex('m365_connections_id_user_profile_attempt_uniq')
       .on(t.id, t.userId, t.profile, t.consentAttemptId),
+    // Connection health broken set (migration 2026-12-29-190000).
+    unhealthyIdx: index('m365_connections_unhealthy_idx')
+      .on(t.id)
+      .where(sql`${t.orgId} IS NOT NULL AND ${t.status} IN ('degraded', 'suspended')`),
   }),
 );
 

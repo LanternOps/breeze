@@ -295,29 +295,38 @@
     "saving": "Guardando...",
     "saveSettings": "Guardar configuración"
   },
-  "connectorStatusPanel": {
-    "healthy": "Saludable",
-    "degraded": "Degradado",
-    "paused": "En pausa",
-    "connectorStatus": "Estado del conector",
-    "trackIntegrationHealthAndRecentActivityAtA": "Realice un seguimiento del estado de la integración y de la actividad reciente de un vistazo.",
-    "refreshAll": "Actualizar todo",
-    "integration": "Integración",
-    "health": "Salud",
-    "lastActivity": "Última actividad",
-    "errors": "Errores",
-    "syncNow": "Sincronizar ahora",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Monitoreo",
-      "webhooks": "Webhooks",
-      "backup": "Respaldo"
+  "connectionHealthPanel": {
+    "title": "Estado de las conexiones",
+    "allHealthy": "Todas las conexiones funcionan correctamente",
+    "loadError": "No se pudo cargar el estado de las conexiones.",
+    "retry": "Reintentar",
+    "since": "desde {{time}}",
+    "fix": "Corregir",
+    "truncated": "Se muestran los primeros {{count}}",
+    "recentlyResolved": "Resueltas recientemente ({{count}})",
+    "resolution": {
+      "recovered": "Recuperada",
+      "retired": "Retirada"
     },
-    "activity": {
-      "threeMinutesAgo": "hace 3m",
-      "elevenMinutesAgo": "hace 11m",
-      "fiveMinutesAgo": "hace 5m",
-      "oneDayAgo": "Hace 1d"
+    "condition": {
+      "sync_failed": "Falló la sincronización",
+      "reauth_required": "Se requiere reautorización",
+      "disconnected": "Desconectada",
+      "error": "Error",
+      "mailbox_error": "Error de buzón",
+      "poll_failing": "Falla la consulta periódica",
+      "needs_consent": "Se requiere consentimiento",
+      "degraded": "Degradada",
+      "suspended": "Suspendida",
+      "grant_missing": "Falta la concesión",
+      "grant_unexpected": "Concesión inesperada",
+      "manifest_stale": "Manifiesto desactualizado",
+      "application_token_invalid": "Token de aplicación no válido",
+      "tenant_mismatch": "El inquilino no coincide",
+      "grant_reconciliation_unavailable": "Verificación de concesión no disponible",
+      "grant_revoked_reuse": "Concesión revocada (reutilización de token)",
+      "grant_revoked": "Concesión revocada",
+      "unknown": "Requiere atención"
     }
   },
   "googleWorkspaceIntegration": {
@@ -1305,7 +1314,8 @@
     "accessUrlHintPath": "La dirección de la API del proveedor para su cuenta, incluida la ruta {{path}}.",
     "detectionIntervalLabel": "Intervalo de sincronización de detecciones (minutos)",
     "inventoryIntervalLabel": "Intervalo de sincronización del inventario (minutos)",
-    "intervalHelp": "Déjelo en blanco para usar el valor predeterminado del proveedor. El rango permitido es de 1 a 1440 minutos.",
+    "intervalHelp": "Déjelo en blanco para usar el valor predeterminado del proveedor. El rango permitido es de 5 a 1440 minutos.",
+    "intervalInvalid": "Ingrese un número entero de 5 a 1440 minutos, o déjelo en blanco para el valor predeterminado.",
     "noProviders": "No hay proveedores de EDR disponibles en este servidor.",
     "partnerOnly": "Los proveedores de EDR se administran a nivel de socio. Cambie a una cuenta de socio para administrarlos.",
     "readOnly": "Solo los administradores de socio con acceso a todas las organizaciones pueden cambiar las conexiones de EDR.",

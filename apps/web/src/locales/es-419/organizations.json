@@ -8,6 +8,9 @@
       },
       "primaryContact": "Contacto principal",
       "noPrimaryContact": "Sin contacto principal",
+      "billingAddress": "Dirección de facturación",
+      "noBillingAddress": "Sin dirección de facturación",
+      "billingSettingsLink": "Agregar en la configuración de facturación",
       "sites_one": "{{count}} sitio",
       "sites_other": "{{count}} sitios",
       "scopeChip": "Espacio de trabajo: {{orgName}}",
@@ -34,6 +37,7 @@
       "billing": "Contratos y facturación",
       "service": "Servicio",
       "documents": "Documentos",
+      "trust": "Centro de confianza",
       "activity": "Actividad"
     },
     "comingSoon": {
@@ -151,6 +155,164 @@
         "invoices": "Facturas",
         "quotes": "Cotizaciones",
         "agreements": "Acuerdos"
+      }
+    },
+    "trust": {
+      "title": "Centro de confianza",
+      "subtitle": "Una página pública con la postura de seguridad de esta organización, generada a partir de la telemetría en vivo de Breeze.",
+      "loading": "Cargando el Centro de confianza…",
+      "loadFailed": "No se pudo cargar la página del Centro de confianza.",
+      "retry": "Intentar de nuevo",
+      "status": {
+        "unpublished": "Sin publicar",
+        "published": "Publicada el {{date}}",
+        "publicUrl": "Página pública",
+        "copy": "Copiar enlace",
+        "copied": "Enlace copiado",
+        "copyFailed": "No se pudo copiar el enlace.",
+        "lastEvaluated": "Controles evaluados por última vez el {{date}}",
+        "gate": {
+          "probation_default_deny": "Su cuenta aún está en período de prueba. La publicación se habilita cuando su cuenta pasa a ser de confianza.",
+          "probation_enrollment_cap": "Su cuenta alcanzó el límite del período de prueba. La publicación se habilita cuando su cuenta pasa a ser de confianza.",
+          "restricted": "Su cuenta está restringida, por lo que la publicación está desactivada.",
+          "partner_unresolved": "No pudimos determinar la cuenta de socio de esta organización.",
+          "generic": "La publicación está desactivada para esta cuenta por ahora."
+        }
+      },
+      "publish": {
+        "button": "Publicar",
+        "republish": "Publicar actualización",
+        "title": "Publicar página del Centro de confianza",
+        "intro": "Esto hace que la página sea visible para cualquier persona con el enlace{{indexable}}. Los controles se evalúan de nuevo al publicar.",
+        "indexableSuffix": ", y los motores de búsqueda pueden indexarla",
+        "attestationCheckbox": "El cliente autorizó la publicación de esta página",
+        "authorizedBy": "Autorizado por (nombre, cargo)",
+        "authorizedByPlaceholder": "María Pérez, directora de operaciones",
+        "recorded": "Autorizado por {{name}} el {{date}}",
+        "change": "Cambiar",
+        "partnerHomeNote": "Esta es la página del propio socio, por lo que no se necesita autorización del cliente.",
+        "confirm": "Publicar",
+        "publishing": "Publicando…",
+        "cancel": "Cancelar",
+        "success": "Página del Centro de confianza publicada.",
+        "failed": "No se pudo publicar la página del Centro de confianza.",
+        "disabledNoWrite": "Necesita permiso para editar organizaciones para publicar.",
+        "disabledSlug": "Corrija la dirección de la página antes de publicar."
+      },
+      "unpublish": {
+        "button": "Anular publicación",
+        "title": "Anular la publicación de la página del Centro de confianza",
+        "message": "El enlace público dejará de funcionar de inmediato y la insignia se apagará. Puede volver a publicar en cualquier momento.",
+        "confirm": "Anular publicación",
+        "success": "Publicación de la página del Centro de confianza anulada.",
+        "failed": "No se pudo anular la publicación de la página del Centro de confianza."
+      },
+      "preview": {
+        "button": "Vista previa",
+        "failed": "No se pudo abrir la vista previa.",
+        "popupBlocked": "Su navegador bloqueó la ventana de vista previa. Permita las ventanas emergentes en este sitio e inténtelo de nuevo."
+      },
+      "partnerHome": {
+        "label": "Usar como la página propia del Centro de confianza del socio",
+        "description": "Muestra esta página en la dirección del socio en lugar de una dirección de cliente. No requiere autorización del cliente.",
+        "success": "Configuración de la página del socio guardada.",
+        "failed": "No se pudo cambiar la configuración de la página del socio."
+      },
+      "slug": {
+        "warningTitle": "La dirección de esta página aún no es válida",
+        "openSettings": "Editar en la configuración de la organización",
+        "partner_slug": "El slug del socio no es válido para una dirección pública.",
+        "org_slug": "El slug de la organización no es válido para una dirección pública.",
+        "unknown": "La dirección de la página tiene un problema ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "La publicación aún no está disponible. {{reason}}",
+        "readOnly": "Puede ver esta página, pero necesita permiso para editar organizaciones para cambiarla o publicarla."
+      },
+      "errors": {
+        "revisionMismatch": "Esta página cambió desde que la cargó. Vuelva a cargarla e inténtelo de nuevo.",
+        "authorizationRequired": "Registre quién autorizó la publicación.",
+        "mfaRequired": "Publicar requiere autenticación multifactor. Active MFA en la configuración de seguridad de su perfil e inténtelo de nuevo.",
+        "trustProbation": "La publicación se habilita cuando su cuenta pasa a ser de confianza.",
+        "trustRestricted": "La publicación se habilita cuando su cuenta pasa a ser de confianza.",
+        "slugInvalid": "La dirección de la página no es válida. Corrija el slug en la configuración de la organización.",
+        "introTooLong": "La introducción es demasiado larga.",
+        "partnerWideRequired": "Solo los administradores de todo el socio pueden cambiar la página del socio.",
+        "partnerHomeInternalOnly": "Solo tu propia organización (interna) puede ser la página del socio.",
+        "partnerHomeUnpublishFirst": "Esta página está publicada sin una autorización del cliente registrada. Anula la publicación antes de desactivar la página del socio."
+      },
+      "controls": {
+        "republishBanner": "Los cambios se aplican a la página pública cuando vuelva a publicar.",
+        "saveFailed": "No se pudo guardar el cambio.",
+        "unavailable": "Los resultados de los controles no están disponibles por ahora.",
+        "assessedCount": "{{assessed}} de {{eligible}} evaluados",
+        "shown": "Visible",
+        "hidden": "Oculto",
+        "toggles": {
+          "showPercentages": {
+            "label": "Mostrar porcentajes",
+            "description": "Muestra el porcentaje de cada control en la página pública."
+          },
+          "showDeviceCount": {
+            "label": "Mostrar cantidad de dispositivos",
+            "description": "Muestra cuántos dispositivos están cubiertos."
+          },
+          "showManagedBy": {
+            "label": "Mostrar “Administrado por”",
+            "description": "Nombra a su empresa como el proveedor que administra."
+          },
+          "searchIndexable": {
+            "label": "Permitir motores de búsqueda",
+            "description": "Permite que los motores de búsqueda indexen la página pública."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Introducción",
+        "contactLabel": "Correo electrónico de contacto de seguridad",
+        "contactInvalid": "Introduzca una dirección de correo electrónico válida.",
+        "websiteLabel": "Sitio web",
+        "websiteInvalid": "Introduzca una dirección completa con https://.",
+        "save": "Guardar contenido",
+        "saved": "Contenido guardado.",
+        "saveFailed": "No se pudo guardar el contenido."
+      },
+      "documents": {
+        "description": "Documentos que usted elige compartir en la página pública. Solo se muestran los documentos que aprueba de forma explícita.",
+        "upload": "Subir un documento",
+        "library": "Biblioteca de documentos",
+        "libraryEmpty": "No hay más documentos disponibles.",
+        "libraryFailed": "No se pudo cargar la biblioteca de documentos.",
+        "add": "Añadir",
+        "linked": "En la página pública ({{count}} de {{max}})",
+        "linkedEmpty": "Ningún documento seleccionado.",
+        "remove": "Quitar",
+        "moveUp": "Subir",
+        "moveDown": "Bajar",
+        "superseded": "Reemplazado — vuelva a vincular la versión más reciente",
+        "save": "Guardar documentos",
+        "saved": "Documentos guardados.",
+        "saveFailed": "No se pudieron guardar los documentos.",
+        "unavailable": "Estos documentos ya no están disponibles: {{titles}}. Quítelos o vuelva a vincularlos.",
+        "disclosureTitle": "¿Publicar este documento?",
+        "disclosureMessage": "“{{title}}” será visible para cualquier persona con el enlace de la página pública.",
+        "disclosureCheckbox": "Confirmo que este documento está aprobado para su divulgación pública",
+        "disclosureConfirm": "Añadir documento"
+      },
+      "sections": {
+        "controlsHeading": "Controles de seguridad",
+        "contentHeading": "Contenido de la página",
+        "documentsHeading": "Documentos"
+      },
+      "badge": {
+        "title": "Insignia",
+        "description": "Inserte una insignia de estado en vivo en su sitio web. Enlaza con la página pública.",
+        "unpublishedNote": "La insignia aparece cuando se publica la página.",
+        "snippet": "HTML de la insignia",
+        "alt": "Insignia de postura de seguridad",
+        "copy": "Copiar fragmento",
+        "copied": "Fragmento copiado",
+        "copyFailed": "No se pudo copiar el fragmento."
       }
     },
     "documents": {

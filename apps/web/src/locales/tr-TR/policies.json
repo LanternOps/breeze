@@ -701,7 +701,9 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl'si"
+        "portalUrl": "portalUrl'si",
+        "endpointMessaging": "Uç nokta mesajları",
+        "endpointMessagingHelp": "Teknisyenlerin cihazdaki kişiye mesaj göndermesini sağlar."
       },
       "inlineEntityPicker": {
         "search": "Ara...",

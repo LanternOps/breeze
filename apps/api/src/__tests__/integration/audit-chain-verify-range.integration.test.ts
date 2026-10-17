@@ -3,8 +3,8 @@
  * (migration 2026-10-03-audit-chain-verify-range.sql).
  *
  * audit_log_verify_chain(org) walks the org's whole chain every night, which
- * is O(total rows) and was measured at ~13h/day of random reads on the US
- * production primary. The bounded plan verifies (a) everything after the org's
+ * is O(total rows) and on a large deployment cost hours per day of random
+ * reads. The bounded plan verifies (a) everything after the org's
  * latest anchor and (b) one rolling slice of the historical chain, and must
  * detect the same tamper classes within the slice window.
  *
@@ -269,6 +269,68 @@ describe('audit_log_verify_chain_incremental / _range', () => {
     expect(sweep).toEqual([{ broken_id: victim.audit_id, expected: 'sealed', actual: null }]);
     expect(await verifyIncremental(orgId, 3, 1, 1000)).toEqual([]);
     expect(await verifyIncremental(orgId, 3, 2, 1000)).toEqual([]);
+  });
+
+  // 2026-12-29-140000 migration: `org_id IS NOT DISTINCT FROM p_org_id` cannot use the
+  // (org_id, …) btree indexes, so each nightly per-org call walked the whole
+  // chain pkey instead of seeking by org. The functions must branch on NULL
+  // (like audit_log_seal_one) instead.
+  it('verify functions carry no IS NOT DISTINCT FROM predicate (index-defeating)', async () => {
+    const rows = (await getTestDb().execute(sql`
+      SELECT p.proname, pg_get_functiondef(p.oid) AS def
+      FROM pg_proc p
+      WHERE p.proname IN (
+        'audit_log_verify_chain',
+        'audit_log_verify_chain_range',
+        'audit_log_verify_chain_incremental'
+      )
+    `)) as unknown as Array<{ proname: string; def: string }>;
+    expect(rows.map((r) => r.proname).sort()).toEqual([
+      'audit_log_verify_chain',
+      'audit_log_verify_chain_incremental',
+      'audit_log_verify_chain_range',
+    ]);
+    for (const r of rows) {
+      expect(r.def, r.proname).not.toMatch(/IS\s+NOT\s+DISTINCT\s+FROM/i);
+    }
+  });
+
+  it('verifies the system chain (NULL org) and catches a tamper there', async () => {
+    // cleanupDatabase truncates audit_logs before each test, so the system
+    // chain starts empty here; it must verify clean and a forged content
+    // edit above the anchor must surface on every slice.
+    const seedSystem = async (n: number) =>
+      withSystemDbAccessContext(async () => {
+        for (let i = 0; i < n; i++) {
+          await db.execute(sql`
+            INSERT INTO audit_logs (org_id, actor_type, actor_id, action, resource_type, result)
+            VALUES (NULL, 'system', gen_random_uuid(), ${'verify.system.' + i}, 'test', 'success')
+          `);
+        }
+      });
+    const verifySystem = (slices: number, slice: number) =>
+      withSystemDbAccessContext(async () => {
+        return (await db.execute(sql`
+          SELECT broken_id, expected, actual
+          FROM audit_log_verify_chain_incremental(NULL::uuid, ${slices}::int, ${slice}::int, 1::bigint)
+        `)) as unknown as BreakRow[];
+      });
+
+    await seedSystem(2);
+    await withSystemDbAccessContext(async () => {
+      await db.execute(sql`SELECT anchor_seq FROM audit_chain_anchor_head(NULL::uuid)`);
+    });
+    await seedSystem(2);
+    const systemRows = (await getTestDb().execute(sql`
+      SELECT chain_seq, audit_id FROM audit_log_chain WHERE org_id IS NULL ORDER BY chain_seq
+    `)) as unknown as ChainRow[];
+    expect(systemRows.length).toBeGreaterThanOrEqual(4);
+
+    expect(await verifySystem(3, 0)).toEqual([]);
+    const victim = systemRows[systemRows.length - 1]!; // above the anchor → every slice
+    await tamperAuditContent(victim.audit_id);
+    const breaks = await verifySystem(3, 1);
+    expect(breaks.map((b) => b.broken_id)).toContain(victim.audit_id);
   });
 
   it('returns nothing for an inverted or empty range', async () => {

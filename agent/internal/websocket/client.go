@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
@@ -383,13 +384,7 @@ func (c *Client) connect() error {
 		return fmt.Errorf("auth token is nil or zeroed — cannot connect")
 	}
 
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig:  c.currentTLSConfig(),
-		// Last-known-good DNS cache (#2288) — TCP dial layer only; the TLS
-		// handshake above still verifies the URL hostname.
-		NetDialContext: netcache.Shared().DialContext,
-	}
+	dialer := c.newDialer()
 	headers := http.Header{
 		"Authorization": {"Bearer " + c.config.AuthToken.Reveal()},
 	}
@@ -1344,5 +1339,28 @@ func (c *Client) SendRevocationLeaseRenewWithNonce(sessionID, nonce string) erro
 		return fmt.Errorf("client is stopped")
 	default:
 		return fmt.Errorf("send channel full, dropping revocation_lease_renew")
+	}
+}
+
+// newDialer builds the WebSocket dialer. The TLS handshake goes through the
+// shared ECH dialer (plain-first; ECH only after the filter signature, with
+// plain as the in-dial fallback); gorilla passes
+// no NextProtos and the dialer sets ServerName itself. gorilla v1.5.3 uses
+// NetDialTLSContext for every wss dial, even when a Proxy is configured, so it
+// never handshakes with TLSClientConfig; the field is kept only for parity
+// with the HTTP clients and as documentation. No Proxy is set here: one would
+// wrap NetDialTLSContext, and the ECH dialer would then run its TLS handshake
+// with the proxy rather than the control plane. HandshakeTimeout bounds TCP +
+// TLS + upgrade, and the ECH dialer caps its attempt so the plain fallback
+// fits in the budget.
+func (c *Client) newDialer() websocket.Dialer {
+	tlsCfg := c.currentTLSConfig()
+	return websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:  tlsCfg,
+		// Last-known-good DNS cache (#2288) — TCP dial layer only; the TLS
+		// handshake still verifies the URL hostname.
+		NetDialContext:    netcache.Shared().DialContext,
+		NetDialTLSContext: ech.Shared().DialTLS(tlsCfg, nil),
 	}
 }

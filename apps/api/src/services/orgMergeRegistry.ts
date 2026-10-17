@@ -704,6 +704,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
+  trust_pages: { kind: 'custom', note: 'public identity — loser page always retired (children cascade); never repointed' },
   audit_baselines: { kind: 'custom', note: 'deactivate (is_active=false) colliding active baselines; NEVER DELETE — audit_baseline_results and audit_baseline_apply_approvals are ON DELETE CASCADE' },
   pax8_orders: { kind: 'custom', note: 'delete loser direct draft/awaiting orders colliding with survivor partial unique, repoint rest' },
   // CORRECTED (review): repoint-dedupe would DELETE colliding loser
@@ -979,6 +980,14 @@ const REPOINT_TABLES: readonly string[] = [
   "edr_tenants",
   "elevation_audit",
   "elevation_requests",
+  // Endpoint messaging (#8742 W02): plain repoints under SET CONSTRAINTS ALL
+  // DEFERRED, so the (x, org_id) composite FKs between them re-resolve at
+  // commit. No org-scoped unique key: endpoint_messages is deliberately not
+  // unique on (org_id, batch_id), because a cross-org send's two rows would
+  // collide in the survivor.
+  "endpoint_message_deliveries",
+  "endpoint_message_receipts",
+  "endpoint_messages",
   "escalation_policies",
   // event_delivery_receipts (durable dispatch bookkeeping, #4117, landed on
   // main 2026-08-27 — the same PR dropped event_bus_events, which used to be
@@ -1239,6 +1248,9 @@ const REPOINT_TABLES: readonly string[] = [
   "topology_site_template_bindings",
   "topology_telemetry_arms",
   "topology_view_exclusions",
+  // Children of trust_pages: ON DELETE CASCADE removes them with the loser's page in the custom executor; a plain repoint here only ever sees zero rows and keeps the registry total.
+  "trust_page_documents",
+  "trust_page_snapshots",
   "tunnel_sessions",
   "unifi_clients",
   "unifi_collectors",

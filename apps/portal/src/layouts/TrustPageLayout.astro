@@ -1,0 +1,50 @@
+---
+// Public shell for trust pages (spec trust-center §8). Unlike PublicDocumentLayout
+// the metadata is parameterized: title/description/OG for link previews, robots
+// from the page's search_indexable flag, canonical for the hosted URL. English
+// only in W1 (spec §19.4). Branding comes exclusively from the published subject.
+import '../styles/globals.css';
+import { ClientRouter } from 'astro:transitions';
+import { withBase } from '../lib/basePath';
+import { buildDocAccentCss } from '../lib/docAccent';
+import { publicOriginFor } from '../lib/publicOrigin';
+
+interface Props {
+  title: string;
+  description: string;
+  canonicalPath: string;          // base-relative, e.g. /trust/nw/acme
+  indexable: boolean;
+  accent?: string | null;
+  imageUrl?: string | null;       // https logo for og:image, optional
+}
+const { title, description, canonicalPath, indexable, accent, imageUrl } = Astro.props;
+const accentCss = buildDocAccentCss(accent);
+const cspNonce = Astro.locals.cspNonce;
+const robots = indexable ? 'index,follow' : 'noindex,nofollow';
+const canonical = new URL(withBase(canonicalPath), publicOriginFor(Astro.request, Astro.url)).toString();
+---
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content={robots} />
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    {imageUrl && imageUrl.startsWith('https://') && <meta property="og:image" content={imageUrl} />}
+    <meta name="twitter:card" content="summary" />
+    <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
+    <title>{title}</title>
+    {accentCss && <style nonce={cspNonce} set:html={accentCss}></style>}
+    <ClientRouter />
+  </head>
+  <body class="min-h-dvh bg-background antialiased">
+    <main class="mx-auto w-full max-w-5xl px-4 py-10 sm:py-14">
+      <slot />
+    </main>
+  </body>
+</html>

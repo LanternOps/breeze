@@ -211,6 +211,9 @@ export const JOB_SCHEDULES = {
   // it, or the two co-fire once a day (that was the #3793 128-second pool hold).
   'vulnerability-risk-score-refresh': '0 * * * *',
   'security-posture-scan': '7 * * * *',
+  // Runs 4 minutes after `security-posture-scan` (:07) so the hourly trust-page
+  // refresh sees the posture evidence that scan just wrote.
+  'trust-page-snapshot': '11 * * * *',
   // Share the :12 lane on alternate six-hour slots; no coarse collision.
   'script-verify-reconcile': '12 0,6,12,18 * * *',
   'snmp-retention': '12 1,7,13,19 * * *',
@@ -244,6 +247,10 @@ export const JOB_SCHEDULES = {
   // on hours 1,7,13,19 is unused by any existing hour/minute combination in
   // this lane.
   'helper-screenshot-retention': '27 1,7,13,19 * * *',
+  // Endpoint messaging W02 (#8742) — body purge (90 d), past-expiry delivery
+  // close-out and 13-month history delete. 4x/day keeps the expiry view within
+  // ~6 h; minute 29 on hours 2,8,14,20 is unused in this lane.
+  'endpoint-message-retention': '29 2,8,14,20 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

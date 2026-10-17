@@ -16,7 +16,11 @@
  *   - search finds a ticket by its whole source number;
  *   - the throughput bucket refuses past writes_per_hour and refunds;
  *   - (deviation from §4.6) a resume re-applies header fields changed in the
- *     source, but never one a Breeze user set since.
+ *     source, but never one a Breeze user set since; the final status follows
+ *     the same rule, keyed on the latest status_change row;
+ *   - a comment already imported under a ticket the window cannot see is
+ *     skipped on its unique-index conflict, and the rest of its chunk commits;
+ *   - another partner's window is not found, whatever its state.
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -73,7 +77,7 @@ import type { ImportedTicket } from '../../services/ticketImport/importedTicket'
 import { migrationWindowRateKey } from '../../services/ticketImport/throughput';
 import { windowWriteContext } from '../../services/ticketImport/windowLock';
 import { ticketSearchCondition } from '../../services/ticketSearch';
-import { assignTicket, createTicket, updateTicketFields } from '../../services/ticketService';
+import { assignTicket, changeTicketStatus, createTicket, updateTicketFields } from '../../services/ticketService';
 import type { OpenWindow } from '../../services/ticketWriteMode';
 import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
@@ -201,7 +205,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const ticket = source(fx);
 
     const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
-    expect(result).toEqual({ ticketId: expect.any(String), outcome: 'created', commentsWritten: 3, commentsSkipped: 0, fieldsUpdated: 0 });
+    expect(result).toEqual({ ticketId: expect.any(String), outcome: 'created', commentsWritten: 3, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false });
 
     const [row] = await getTestDb().select().from(tickets).where(eq(tickets.id, result.ticketId));
     expect(row).toMatchObject({
@@ -263,7 +267,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
 
     // A second run resumes and finds nothing to do: no write, no charge.
     const again = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
-    expect(again).toEqual({ ticketId: result.ticketId, outcome: 'resumed', commentsWritten: 0, commentsSkipped: 3, fieldsUpdated: 0 });
+    expect(again).toEqual({ ticketId: result.ticketId, outcome: 'resumed', commentsWritten: 0, commentsSkipped: 3, fieldsUpdated: 0, statusSkipped: false });
     expect(await bucketSize(window.id)).toBe(8);
     expect(await getTestDb().select().from(ticketComments).where(eq(ticketComments.ticketId, result.ticketId))).toHaveLength(rows.length);
 
@@ -302,13 +306,14 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
 
     const second = await openWindow(fx);
     const resumed = await importTicket(second.id, ticket, { chunkSize: 2, partnerId: fx.partner.id });
-    expect(resumed).toEqual({ ticketId: partial!.id, outcome: 'resumed', commentsWritten: 3, commentsSkipped: 2, fieldsUpdated: 0 });
+    expect(resumed).toEqual({ ticketId: partial!.id, outcome: 'resumed', commentsWritten: 3, commentsSkipped: 2, fieldsUpdated: 0, statusSkipped: false });
     const all = await getTestDb().select().from(ticketComments)
       .where(and(eq(ticketComments.ticketId, partial!.id), sql`${ticketComments.importSourceId} IS NOT NULL`));
     expect(all).toHaveLength(5);
     // The ticket keeps the window that created it; the new comments carry the new one.
     expect(all.filter((c) => c.migrationWindowId === second.id).map((c) => c.importSourceId).sort())
       .toEqual(comments.slice(2).map((c) => c.sourceId).sort());
+    // No status_change row yet, so the resume still applies the final status.
     const [done] = await getTestDb().select().from(tickets).where(eq(tickets.id, partial!.id));
     expect(done).toMatchObject({ migrationWindowId: first.id, status: 'closed', closedAt: minutes(260) });
     expect(await outboxFor(partial!.id)).toEqual([]);
@@ -449,6 +454,148 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(queued).toEqual([]);
     expect(audited).toEqual([]);
   });
+
+  runDb('a re-import applies the source status only while the import set it last: a Breeze status change wins', async () => {
+    const fx = await seed();
+    const first = await openWindow(fx);
+    const open = { comments: [], assigneeUserId: undefined, finalStatus: 'open' as const, resolvedAt: undefined, closedAt: undefined, resolutionNote: undefined };
+    const techChanged = source(fx, open);
+    const untouched = source(fx, open);
+    const requesterReopened = source(fx, { comments: [], assigneeUserId: undefined, finalStatus: 'resolved', resolvedAt: minutes(200), closedAt: undefined });
+    const raced = source(fx, open);
+    const a = await importTicket(first.id, techChanged, { partnerId: fx.partner.id });
+    const b = await importTicket(first.id, untouched, { partnerId: fx.partner.id });
+    const c = await importTicket(first.id, requesterReopened, { partnerId: fx.partner.id });
+    const d = await importTicket(first.id, raced, { partnerId: fx.partner.id });
+    await closeWindow(fx, first.id);
+
+    // Between the passes: a technician puts A on pending; the requester's
+    // email reopens the resolved C (the inbound pipeline's system actor).
+    const tech = { kind: 'user' as const, userId: fx.owner.id, name: 'Owner' };
+    await withDbAccessContext(fx.ownerContext(), () => changeTicketStatus(a.ticketId, { status: 'pending' }, {}, tech));
+    await withSystemDbAccessContext(() => changeTicketStatus(
+      c.ticketId, { status: 'open' }, {}, { kind: 'system', source: 'inbound_email', name: 'Inbound Email' },
+    ));
+    const outboxBefore = (await outboxFor(a.ticketId)).length + (await outboxFor(c.ticketId)).length;
+    queued.length = 0;
+    audited.length = 0;
+
+    // The delta pass: the source closed every ticket, and added a note to A,
+    // so A's status is decided again under the lock in its comment chunk.
+    const second = await openWindow(fx);
+    const closed = { finalStatus: 'closed' as const, resolvedAt: minutes(400), closedAt: minutes(450), resolutionNote: 'Closed in the source.', updatedAt: minutes(450) };
+    const note = { sourceId: uniq('article'), createdAt: minutes(420), isPublic: false, author: { kind: 'staff' as const, name: 'Former Agent' }, content: 'Closing.' };
+    const ra = await importTicket(second.id, { ...techChanged, ...closed, comments: [note] }, { partnerId: fx.partner.id });
+    const rb = await importTicket(second.id, { ...untouched, ...closed }, { partnerId: fx.partner.id });
+    const rc = await importTicket(second.id, { ...requesterReopened, ...closed }, { partnerId: fx.partner.id });
+
+    // A and C keep the Breeze status, and the result says so; B, whose
+    // status only the import ever set, converges on the source.
+    expect(ra).toMatchObject({ outcome: 'resumed', commentsWritten: 1, statusSkipped: true });
+    expect(rc).toMatchObject({ outcome: 'resumed', statusSkipped: true });
+    expect(rb).toMatchObject({ outcome: 'resumed', statusSkipped: false });
+    const statusOf = async (id: string) => (await getTestDb().select().from(tickets).where(eq(tickets.id, id)))[0]!;
+    expect(await statusOf(a.ticketId)).toMatchObject({ status: 'pending', closedAt: null });
+    expect(await statusOf(c.ticketId)).toMatchObject({ status: 'open', closedAt: null });
+    expect(await statusOf(b.ticketId)).toMatchObject({ status: 'closed', resolvedAt: minutes(400), closedAt: minutes(450), resolutionNote: 'Closed in the source.' });
+
+    // Through the second window, A got its note and nothing else, C got
+    // nothing, and nothing left the import: no outbox row, no event, no audit.
+    const viaSecond = async (ids: string[]) => (await getTestDb().select().from(ticketComments)
+      .where(and(inArray(ticketComments.ticketId, ids), eq(ticketComments.migrationWindowId, second.id))))
+      .map((r) => [r.ticketId, r.importSourceId]);
+    expect(await viaSecond([a.ticketId, c.ticketId])).toEqual([[a.ticketId, note.sourceId]]);
+    expect((await outboxFor(a.ticketId)).length + (await outboxFor(c.ticketId)).length).toBe(outboxBefore);
+    expect(await outboxFor(b.ticketId)).toEqual([]);
+    expect(queued).toEqual([]);
+    expect(audited).toEqual([]);
+    // Charged: A's note, B's two status writes; nothing for C.
+    expect(await bucketSize(second.id)).toBe(3);
+
+    // A technician changes D's status after the plan, just before its status
+    // transaction: decided again under the lock, the Breeze status is kept.
+    chargeHook.calls = 0;
+    chargeHook.before = async (call) => {
+      if (call === 1) await withDbAccessContext(fx.ownerContext(), () => changeTicketStatus(d.ticketId, { status: 'on_hold' }, {}, tech));
+    };
+    const rd = await importTicket(second.id, { ...raced, ...closed }, { partnerId: fx.partner.id });
+    chargeHook.before = null;
+    expect(rd).toMatchObject({ outcome: 'resumed', statusSkipped: true });
+    expect(await statusOf(d.ticketId)).toMatchObject({ status: 'on_hold', closedAt: null });
+    expect(await viaSecond([d.ticketId])).toEqual([]);
+    // Charged as planned: a status kept under the lock overcharges, never undercharges.
+    expect(await bucketSize(second.id)).toBe(5);
+  });
+
+  runDb('a comment another ticket already holds is skipped mid-chunk on resume, and the rest of the chunk commits', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const article = (i: number, extra: Partial<ImportedTicket['comments'][number]> = {}) => ({
+      sourceId: uniq(`article-${i}`), createdAt: minutes(10 + i), isPublic: false,
+      author: { kind: 'staff' as const, name: 'Former Agent' }, content: `Article ${i}`, ...extra,
+    });
+    const held = article(2);
+    // The source merged ticket X's article into Y. X was imported with it and
+    // has since moved to an org outside the window, so the window's RLS hides
+    // the article from the writer's presence checks: only the unique index
+    // ticket_comments_import_source_uq sees it, inside the chunk transaction.
+    const x = await importTicket(window.id, source(fx, { comments: [held], assigneeUserId: undefined }), { partnerId: fx.partner.id });
+    await getTestDb().transaction(async (tx) => {
+      await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+      await tx.update(tickets).set({ orgId: fx.orgOutside.id }).where(eq(tickets.id, x.ticketId));
+      await tx.update(ticketExternalRefs).set({ orgId: fx.orgOutside.id }).where(eq(ticketExternalRefs.ticketId, x.ticketId));
+    });
+
+    // Precondition: the window's own context cannot see the held article, so
+    // only the unique index can stop it.
+    const descriptor = { id: window.id, partnerId: fx.partner.id, principalId: fx.principal.id, writesPerHour: 6000, orgIds: [fx.orgA.id, fx.orgB.id] };
+    expect(await withDbAccessContext(windowWriteContext(descriptor), () => db.select({ id: ticketComments.id }).from(ticketComments)
+      .where(eq(ticketComments.importSourceId, held.sourceId)))).toEqual([]);
+
+    const open = { assigneeUserId: undefined, finalStatus: 'open' as const, resolvedAt: undefined, closedAt: undefined, resolutionNote: undefined };
+    const c0 = article(0);
+    const y = source(fx, { ...open, comments: [c0] });
+    const created = await importTicket(window.id, y, { partnerId: fx.partner.id });
+
+    // The delta pass brings two new articles around the held one, all in one
+    // chunk, and the final status rides on that chunk's transaction.
+    const c1 = article(1, { isPublic: true });
+    const c3 = article(3);
+    const resumed = await importTicket(window.id, {
+      ...y, comments: [c0, c1, held, c3], finalStatus: 'resolved', resolvedAt: minutes(100), resolutionNote: 'Fixed.',
+    }, { partnerId: fx.partner.id });
+
+    expect(resumed).toMatchObject({ ticketId: created.ticketId, outcome: 'resumed', commentsWritten: 2, commentsSkipped: 2 });
+    const yComments = await getTestDb().select().from(ticketComments)
+      .where(and(eq(ticketComments.ticketId, created.ticketId), sql`${ticketComments.importSourceId} IS NOT NULL`));
+    expect(yComments.map((r) => r.importSourceId).sort()).toEqual([c0.sourceId, c1.sourceId, c3.sourceId].sort());
+    // The held article stays where it was, once.
+    const heldRows = await getTestDb().select().from(ticketComments)
+      .where(and(eq(ticketComments.originPrincipalId, fx.principal.id), eq(ticketComments.importSourceId, held.sourceId)));
+    expect(heldRows.map((r) => r.ticketId)).toEqual([x.ticketId]);
+    // The statements after the conflict ran in the same transaction: the
+    // public staff reply stamped the first response, and the status applied.
+    expect((await getTestDb().select().from(tickets).where(eq(tickets.id, created.ticketId)))[0])
+      .toMatchObject({ status: 'resolved', resolvedAt: minutes(100), resolutionNote: 'Fixed.', firstResponseAt: minutes(11) });
+    expect(await outboxFor(created.ticketId)).toEqual([]);
+  });
+
+  runDb("another partner's window is not found, whether it is open or closed", async () => {
+    const fx = await seed();
+    const other = await seed();
+    const closed = await openWindow(fx);
+    await closeWindow(fx, closed.id);
+    const open = await openWindow(fx);
+    for (const windowId of [open.id, closed.id]) {
+      await expect(importTicket(windowId, source(other), { partnerId: other.partner.id }))
+        .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_NOT_OPEN', status: 409, details: { reason: 'not_found' } });
+    }
+    // Its own partner still learns that the window is closed.
+    await expect(importTicket(closed.id, source(fx), { partnerId: fx.partner.id }))
+      .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_NOT_OPEN', details: { reason: 'closed' } });
+    expect(await getTestDb().select().from(tickets).where(inArray(tickets.orgId, [other.orgA.id, fx.orgA.id]))).toEqual([]);
+  });
+
   runDb('a ticket deleted between two of its transactions stops the import; a close-only source ticket keeps its note', async () => {
     const fx = await seed();
     const window = await openWindow(fx);

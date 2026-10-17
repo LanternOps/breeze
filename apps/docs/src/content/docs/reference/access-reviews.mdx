@@ -32,7 +32,7 @@ Access reviews are scoped to either a **partner** (MSP) or an **organisation** (
 | Operation | Permission |
 |-----------|------------|
 | List reviews, view review details | `users:read` |
-| Create reviews, update item decisions, complete reviews | `users:write` |
+| Create reviews, update item decisions, complete reviews, notify the reviewer | `users:write` |
 
 ---
 
@@ -68,6 +68,7 @@ Access reviews are stored across two tables.
 | `notes` | `text` | Optional reviewer notes |
 | `reviewed_at` | `timestamp` | When the decision was made |
 | `reviewed_by` | `uuid` | References `users.id` -- who made the decision |
+| `self_decided` | `boolean` | `true` when the decision was made by the user the item is about, under the single-admin exception (see [Deciding your own access](#deciding-your-own-access)) |
 | `created_at` | `timestamp` | Row creation time |
 
 ### Status Enums
@@ -270,6 +271,16 @@ The API records the authenticated user as `reviewedBy` and sets `reviewedAt` to 
   Items belonging to a `completed` review cannot be modified. The API returns `400 Cannot modify completed review`.
 </Aside>
 
+### Deciding your own access
+
+A reviewer cannot decide the item about their **own** access -- approving, revoking, or resetting it to `pending`. The API returns `403` with code `ACCESS_REVIEW_SELF_DECISION` ("You cannot decide on your own access. Another administrator must review this item.") and another administrator has to decide it.
+
+The one exception is a **single-admin setup**: when no other active user in the review's scope could decide the item (holds `users:write`, and for a partner review has access to every organisation), the self-decision is allowed and the item is flagged **Self-decided** in the review and its record, so the evidence shows that the control was not separated. A later decision by someone else replaces the self-decision and clears the flag.
+
+### Notifying the reviewer
+
+**Notify Reviewers** on a review emails the assigned reviewer from the Breeze server (`POST /access-reviews/:id/notify`, `users:write`). The email names the review and its due date and links to it. If the reviewer has no email address, email is not configured on the server, or sending fails, the response says so (`emailed: false` with a `reason`) and the dashboard falls back to opening a pre-filled message in your own mail client. Completed reviews cannot be notified.
+
 ---
 
 ## Completing a Review
@@ -351,6 +362,7 @@ All endpoints are mounted under `/api/v1/access-reviews`. Authentication via JWT
 | `GET` | `/access-reviews/:id` | Get a review with all items, roles, and permissions |
 | `PATCH` | `/access-reviews/:id/items/:itemId` | Update the decision on a single item |
 | `POST` | `/access-reviews/:id/complete` | Finalise the review and apply revocations |
+| `POST` | `/access-reviews/:id/notify` | Email the assigned reviewer |
 
 ### Error Responses
 
@@ -359,11 +371,13 @@ All endpoints may return the following common errors:
 | Status | Meaning |
 |--------|---------|
 | `400` | Validation error, cannot modify completed review, or pending items remain |
-| `403` | Missing partner/organisation context or insufficient organisation access |
+| `403` | Missing partner/organisation context, insufficient organisation access, or a reviewer deciding their own item (`ACCESS_REVIEW_SELF_DECISION`) |
 | `404` | Review or review item not found |
 | `500` | Internal server error (e.g. transaction failure) |
 
 ---
+
+Deleting a role that a review covered returns `409 Role is referenced by access reviews` (earlier versions failed with a server error). The role is kept so the review's evidence stays intact.
 
 ## Troubleshooting
 

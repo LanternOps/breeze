@@ -167,6 +167,10 @@ export const partners = pgTable('partners', {
   // surface gate on this; it is NOT in settings JSONB because that is
   // partner-writable and the partner must not be able to self-enable.
   aiForOfficeEnabled: boolean('ai_for_office_enabled').notNull().default(false),
+  // Trust Center footer removal — operator-granted (spec trust-center §9, §18.3).
+  // Dedicated column for the same reason as aiForOfficeEnabled: settings JSONB is
+  // partner-writable and the partner must not self-enable.
+  trustPageUnbranded: boolean('trust_page_unbranded').notNull().default(false),
   // #5075 W04 — which service-desk/billing module this partner runs.
   // 'native' = Breeze's own service desk & billing (default, and what every
   // partner ran before this column existed); 'external' = the partner's PSA is

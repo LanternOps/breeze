@@ -42,6 +42,18 @@ ignore = [
   # it is unfixable from this crate's perspective.
   "RUSTSEC-2026-0194",
   "RUSTSEC-2026-0195",
+  # zip 4.6.1 extraction advisories (2026-10-09/10): SUID/SGID bits preserved
+  # (0367), symlink targets outside the destination (0368), permissions applied
+  # through symlinks (0369). All fixed only in zip >= 9.0.0; the sole consumer is
+  # tauri-plugin-updater (`zip = "^4"` through stable 2.14.0; 3.x is alpha-only),
+  # so `cargo update` cannot reach a patched zip. Risk assessment (2026-10-16):
+  # the updater only extracts bundles it downloaded from our own update endpoint
+  # AFTER minisign signature verification, so archive contents are first-party,
+  # not attacker-controlled. Remove these three ids once a stable
+  # tauri-plugin-updater release depends on zip >= 9.0.0 (tracked in #8910).
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
 ]
 
 # zip 4.6.1 is flagged "yanked" (no RUSTSEC id, so it cannot go in `ignore`

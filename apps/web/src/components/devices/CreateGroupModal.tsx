@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
 import type { FilterConditionGroup } from "@breeze/shared";
 import { Dialog } from "../shared/Dialog";
-import { FilterBuilder, DEFAULT_FILTER_FIELDS } from "../filters/FilterBuilder";
+import { FilterBuilder } from "../filters/FilterBuilder";
+import { useDeviceFilterFields } from "../filters/useDeviceFilterFields";
 import { fetchWithAuth } from "../../stores/auth";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -31,6 +32,8 @@ export default function CreateGroupModal({
     useState<FilterConditionGroup>(makeEmptyFilter());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Static catalog + org/partner custom fields (#8843).
+  const filterFields = useDeviceFilterFields();
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -164,7 +167,7 @@ export default function CreateGroupModal({
               <FilterBuilder
                 value={filterConditions}
                 onChange={setFilterConditions}
-                filterFields={DEFAULT_FILTER_FIELDS}
+                filterFields={filterFields}
                 showPreview={false}
               />
             </div>

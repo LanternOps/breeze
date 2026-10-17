@@ -2050,7 +2050,10 @@
       "syncingToProvider": "Eşitleniyor…",
       "providerSyncFailed": "{{provider}} eşitlemesi başarısız oldu",
       "reverseInProviderToo": "Bu ödemeyi {{provider}} tarafında da iptal edin",
-      "overpayment": "Tutar, ödenmesi gereken bakiyeden ({{balance}}) fazla."
+      "overpayment": "Tutar, ödenmesi gereken bakiyeden ({{balance}}) fazla.",
+      "fillLabel": "Tutarı doldur",
+      "fillDeposit": "Depozito ({{amount}})",
+      "fillBalance": "Tüm bakiye ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fatura gönderildi",
@@ -2065,7 +2068,8 @@
       "paid": "Ücretli",
       "subtotal": "Ara Toplam",
       "tax": "Vergi",
-      "total": "Toplam"
+      "total": "Toplam",
+      "depositDueNow": "Şimdi ödenecek depozito"
     },
     "terms": "Şartlar ve Koşullar",
     "void": {

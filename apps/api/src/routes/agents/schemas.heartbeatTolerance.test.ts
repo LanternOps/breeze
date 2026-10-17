@@ -1051,3 +1051,47 @@ describe('heartbeatSchema — watchdogInstall tolerance (#8620)', () => {
     expect(heartbeatSchema.safeParse({ ...minimal, watchdogInstall: bad }).success).toBe(true);
   });
 });
+
+describe('heartbeatSchema — ECH keys (#8869)', () => {
+  const base = { status: 'ok' as const, agentVersion: '0.65.15' };
+
+  it('keeps echActive and a well-formed RFC 3339 filterSignatureSeenAt', () => {
+    const r = heartbeatSchema.safeParse({ ...base, echActive: true, filterSignatureSeenAt: '2026-10-16T02:00:00.000Z' });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.echActive).toBe(true);
+      expect(r.data.filterSignatureSeenAt).toBe('2026-10-16T02:00:00.000Z');
+    }
+  });
+
+  it('accepts an offset timestamp', () => {
+    const r = heartbeatSchema.safeParse({ ...base, filterSignatureSeenAt: '2026-10-16T02:00:00+02:00' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.filterSignatureSeenAt).toBe('2026-10-16T02:00:00+02:00');
+  });
+
+  it('drops garbage filterSignatureSeenAt without rejecting the heartbeat', () => {
+    for (const bad of ['garbage', 42, '', null, '2026-10-16']) {
+      const r = heartbeatSchema.safeParse({ ...base, filterSignatureSeenAt: bad });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.filterSignatureSeenAt).toBeUndefined();
+    }
+  });
+
+  it('drops a non-boolean echActive without rejecting the heartbeat', () => {
+    for (const bad of ['yes', 1, null, {}]) {
+      const r = heartbeatSchema.safeParse({ ...base, echActive: bad });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data.echActive).toBeUndefined();
+    }
+  });
+
+  it('is absent when not sent', () => {
+    const r = heartbeatSchema.safeParse(base);
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.echActive).toBeUndefined();
+      expect(r.data.filterSignatureSeenAt).toBeUndefined();
+    }
+  });
+});

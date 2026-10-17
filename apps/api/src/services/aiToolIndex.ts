@@ -14,7 +14,7 @@ export interface ToolIndexEntry { name: string; domain: AiToolDomain; searchHint
  */
 export const DOMAIN_NOTES: Readonly<Partial<Record<AiToolDomain, string>>> = {
   patching: 'CVEs need vulnerability tools; get_security_posture scores controls, manage_patches lists KBs. Empty reports: no correlated findings, not no vulnerabilities. Create manage_update_rings; link featurePolicyId via manage_policy_feature_link for schedules/auto-approval. manage_update_rings third-party auto-approval needs third-party patch sources.',
-  scripts: 'For compacted output (stdoutTruncation/_chat), page or narrow filters, do not repeat the call. File listings do not page: narrow the path. get_script_execution covers external runs (editor Test Run, history) and expired run waits; a timeout alone is no reason to change a script.',
+  scripts: 'For compacted output (stdoutTruncation/_chat), page or narrow filters; don\'t repeat the call. File listings don\'t page: narrow the path. get_script_execution covers external runs (editor Test Run, history) and expired run waits; a timeout alone doesn\'t justify changing a script.',
 };
 
 const MAX_INLINE_ACTIONS = 8;
