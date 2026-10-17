@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ListChecks, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
@@ -140,8 +140,8 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
     }
   };
 
-  const fetchRules = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
+  const fetchRules = useCallback(async (signal?: AbortSignal, { silent = false }: { silent?: boolean } = {}) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const res = await fetchWithAuth('/pam/rules', { signal });
@@ -173,9 +173,12 @@ export default function PamRulesTab({ liveTick = 0 }: { liveTick?: number }) {
     }
   }, [stableT]);
 
+  const lastTickRef = useRef(liveTick);
   useEffect(() => {
+    const silent = liveTick !== lastTickRef.current;
+    lastTickRef.current = liveTick;
     const controller = new AbortController();
-    void fetchRules(controller.signal);
+    void fetchRules(controller.signal, { silent });
     return () => controller.abort();
   }, [fetchRules, liveTick]);
 

@@ -1,5 +1,5 @@
 import '@/lib/i18n';
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Plus, ShieldCheck, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
@@ -49,8 +49,8 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
   const [deleteTarget, setDeleteTarget] = useState<PamSignerGroup | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const fetchGroups = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
+  const fetchGroups = useCallback(async (signal?: AbortSignal, { silent = false }: { silent?: boolean } = {}) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const res = await fetchWithAuth('/pam/signer-groups', { signal });
@@ -82,9 +82,12 @@ export default function PamSignerGroupsTab({ liveTick = 0 }: { liveTick?: number
     }
   }, [stableT]);
 
+  const lastTickRef = useRef(liveTick);
   useEffect(() => {
+    const silent = liveTick !== lastTickRef.current;
+    lastTickRef.current = liveTick;
     const controller = new AbortController();
-    void fetchGroups(controller.signal);
+    void fetchGroups(controller.signal, { silent });
     return () => controller.abort();
   }, [fetchGroups, liveTick]);
 

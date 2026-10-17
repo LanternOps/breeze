@@ -23,6 +23,9 @@ const ELEVATION_EVENTS = [
   'elevation.revoked',
 ];
 
+const DISCONNECTED_REFRESH_MS = 10_000;
+const CONNECTED_REFRESH_MS = 30_000;
+
 export default function PamPage() {
   const { t } = useTranslation('security');
   // SSR-safe hash tab (#2421): starts at the default, adopts the hash post-mount.
@@ -31,17 +34,27 @@ export default function PamPage() {
   const [liveTick, setLiveTick] = useState(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const refresh = useCallback(() => {
+    if (document.visibilityState === 'hidden') return;
+    setLiveTick((tick) => tick + 1);
+  }, []);
+
   const switchTab = useCallback((tab: Tab) => {
     window.location.hash = tab;
     setActiveTab(tab);
   }, [setActiveTab]);
 
   const { connected, subscribe, unsubscribe } = useEventStream({
+    // The stream does not replay events missed while disconnected.
+    onConnected: refresh,
     onEvent: (event) => {
       if (!event.type.startsWith('elevation.')) return;
-      // Debounce bursty event storms into a single refetch.
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => setLiveTick((t) => t + 1), 750);
+      // Coalesce bursts without postponing refresh indefinitely during a storm.
+      if (debounceRef.current) return;
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null;
+        refresh();
+      }, 750);
     },
   });
 
@@ -52,6 +65,19 @@ export default function PamPage() {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [subscribe, unsubscribe]);
+
+  useEffect(() => {
+    // Some deployments or scopes cannot establish the event stream. Keep the
+    // visible page current there, and periodically reconcile missed live events.
+    const timer = setInterval(refresh, connected ? CONNECTED_REFRESH_MS : DISCONNECTED_REFRESH_MS);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [connected, refresh]);
 
   return (
     <div className="space-y-6">
