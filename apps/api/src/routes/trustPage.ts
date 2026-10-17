@@ -217,8 +217,19 @@ trustPageRoutes.post('/:orgId/trust-page/partner-home', scopes, orgWrite, requir
       return c.json({ error: 'This page is live without a recorded customer authorization. Unpublish it before removing the partner-home flag.', code: 'PARTNER_HOME_UNPUBLISH_FIRST' }, 422);
     }
     const previous = await db.transaction(async (tx) => {
-      const [prev] = await tx.select({ id: trustPages.id, orgId: trustPages.orgId }).from(trustPages).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true))).limit(1);
-      if (isPartnerHome) await tx.update(trustPages).set({ isPartnerHome: false, updatedAt: new Date() }).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true)));
+      // Locked so a concurrent publish/unpublish of the current home cannot change the answer under us.
+      const [prev] = await tx.select({ id: trustPages.id, orgId: trustPages.orgId, publishedAt: trustPages.publishedAt, publicationAuthorizedBy: trustPages.publicationAuthorizedBy })
+        .from(trustPages).where(and(eq(trustPages.partnerId, ctx.partnerId), eq(trustPages.isPartnerHome, true))).limit(1).for('update');
+      if (isPartnerHome && prev && prev.id !== page.id) {
+        // Ruling 28: losing the flag turns the previous home into a customer-shaped page. If it is live without a
+        // recorded authorization, that page would be serving unattested — refuse (the throw rolls everything back).
+        if (prev.publishedAt && !prev.publicationAuthorizedBy) {
+          throw new TrustPageError('The current partner home page is live without a recorded customer authorization. Unpublish it before moving the partner home.', 422, 'PARTNER_HOME_UNPUBLISH_FIRST');
+        }
+        // Bump its revision: a publish of the previous page that started under the old flag 409s instead of
+        // freezing a stale partner-home path.
+        await tx.update(trustPages).set({ isPartnerHome: false, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date() }).where(eq(trustPages.id, prev.id));
+      }
       await tx.update(trustPages).set({ isPartnerHome, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: auth.user.id }).where(eq(trustPages.id, page.id));
       return prev ?? null;
     });
