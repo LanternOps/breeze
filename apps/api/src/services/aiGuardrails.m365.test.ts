@@ -20,7 +20,7 @@ vi.mock(import('./permissions'), async (importOriginal) => {
   };
 });
 
-import { checkGuardrails, checkToolPermission } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, TOOL_PERMISSIONS } from './aiGuardrails';
 import { getUserPermissions, hasPermission } from './permissions';
 
 const auth = {
@@ -111,6 +111,25 @@ describe('m365 guardrail tiers', () => {
       expect(check.allowed).toBe(true);
       expect(check.tier).toBe(3);
       expect(check.requiresApproval).toBe(true);
+    }
+  });
+
+  const NEW_TOOLS = [
+    'm365_revoke_sessions', 'm365_remove_license', 'm365_assign_license', 'm365_remove_from_group',
+    'm365_add_to_group', 'm365_retire_intune_device', 'm365_create_user', 'm365_set_auto_reply',
+  ];
+
+  it('treats each M1 identity write tool as tier 3 + four-eyes', () => {
+    for (const name of NEW_TOOLS) {
+      const check = checkGuardrails(name, {});
+      expect(check.tier, name).toBe(3);
+      expect(check.approvalScope, name).toBe('four_eyes');
+    }
+  });
+
+  it('maps each M1 identity write tool to organizations:write like the existing pair (m365:execute is not in the permission catalog)', () => {
+    for (const name of NEW_TOOLS) {
+      expect(TOOL_PERMISSIONS[name], name).toEqual({ resource: 'organizations', action: 'write' });
     }
   });
 

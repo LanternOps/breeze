@@ -92,6 +92,24 @@ describe('sealActionResultSecrets', () => {
     });
   });
 
+  it('seals an m365.user.create result exactly like a reset', () => {
+    const created = {
+      success: true,
+      action: 'm365.user.create',
+      userId: 'new-user-1',
+      userPrincipalName: 'n@b.com',
+      temporaryPassword: 'Tmp-Pass-1234!',
+      forceChangeNextSignIn: true,
+    };
+    const sealed = sealActionResultSecrets(created);
+    expect(sealed.temporaryPasswordEnc).toBe(
+      `enc:v3:test:${ACTION_INTENT_RESULT_AAD}:VG1wLVBhc3MtMTIzNCE=`,
+    );
+    expect(sealed).not.toHaveProperty('temporaryPassword');
+    expect(JSON.stringify(sealed)).not.toContain('Tmp-Pass-1234!');
+    expect(sealed.userPrincipalName).toBe('n@b.com');
+  });
+
   it('passes non-reset results through unchanged', () => {
     const other = { success: true, action: 'm365.user.disable', userId: 'u' };
     expect(sealActionResultSecrets(other)).toBe(other);

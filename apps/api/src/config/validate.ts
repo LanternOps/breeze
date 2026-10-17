@@ -803,7 +803,7 @@ const envObjectSchema = z
     // with 3.5d once the split is actually exercised in prod topology).
     BREEZE_ROLE: z.string().optional(),
 
-    // M365 Tier-3 write-action AI tools (m365_disable_user, m365_reset_password)
+    // M365 Tier-3 write-action AI tools (the ten M365_HEADLESS_ACTIONS tools, e.g. m365_disable_user)
     // and the action-intents release worker's headless dispatch. Dark by
     // default. Read at runtime by writeActionRuntimeConfig.ts; declared here so
     // the format is guarded (a typo reads as OFF at the runtime flag parser,

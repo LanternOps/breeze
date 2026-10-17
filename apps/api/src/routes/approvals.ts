@@ -1533,10 +1533,14 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
 });
 
 
-// The two M365 mutation tools (tier 3) that create an approval card. Read-only
+// The ten M365 mutation tools (tier 3) that create an approval card. Read-only
 // M365 tools are tier 1 and never reach this surface. Only these get a customer
 // tenant lookup so a technician sees the blast radius at a glance.
-const M365_MUTATION_TOOLS = new Set(['m365_reset_password', 'm365_disable_user']);
+const M365_MUTATION_TOOLS = new Set([
+  'm365_reset_password', 'm365_disable_user',
+  'm365_revoke_sessions', 'm365_remove_license', 'm365_assign_license', 'm365_remove_from_group',
+  'm365_add_to_group', 'm365_retire_intune_device', 'm365_create_user', 'm365_set_auto_reply',
+]);
 
 /**
  * Resolve the customer tenant display name for a set of approval rows whose
