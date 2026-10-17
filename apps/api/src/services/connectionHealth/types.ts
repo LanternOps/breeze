@@ -17,6 +17,7 @@ export const CONNECTION_SOURCE_KINDS = [
   'ticket_mailbox',
   // W4: connections that fail without writing a failure (spec §3).
   'webhook',
+  'google_workspace',
 ] as const;
 export type ConnectionSourceKind = (typeof CONNECTION_SOURCE_KINDS)[number];
 export type HealthState = 'healthy' | 'broken' | 'unknown' | 'retired';
@@ -50,6 +51,12 @@ export interface HealthSource {
   fixHrefs: readonly string[];
   /** The broken-set query observe() runs; the index contract EXPLAINs it (spec §1.3). */
   brokenQuery(now: Date): SQL | SQLWrapper;
+  /**
+   * Optional work the source needs before observing (W4: the Google probe
+   * refreshes its stored result). The reconciler runs it outside any DB
+   * context, before the kind's transaction; a throw fails the kind.
+   */
+  prepare?(now: Date): Promise<void>;
   observe(now: Date, trackedSourceIds: readonly string[]): Promise<HealthObservation[]>;
 }
 

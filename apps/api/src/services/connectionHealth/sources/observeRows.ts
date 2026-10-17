@@ -110,6 +110,8 @@ export function defineRowSource<Row>(def: {
   trackedWhere: (ids: string[]) => SQL;
   sourceIdOf: (row: Row) => string;
   toObservation: (row: Row, now: Date) => HealthObservation;
+  /** Passed through to HealthSource.prepare (runs before the kind's transaction). */
+  prepare?: (now: Date) => Promise<void>;
 }): HealthSource {
   const brokenWhere = (now: Date): SQL => (typeof def.brokenWhere === 'function' ? def.brokenWhere(now) : def.brokenWhere);
   return {
@@ -117,6 +119,7 @@ export function defineRowSource<Row>(def: {
     intervalMinutes: def.intervalMinutes,
     tables: def.tables,
     fixHrefs: def.fixHrefs,
+    ...(def.prepare ? { prepare: def.prepare } : {}),
     brokenQuery: (now) => def.select(brokenWhere(now), now),
     observe: (now, trackedSourceIds) => observeRows<Row>({
       now,

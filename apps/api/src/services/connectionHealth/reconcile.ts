@@ -88,6 +88,10 @@ export async function runKindInSystemScope(
   now: Date,
   seedCandidate: SeedMode,
 ): Promise<KindCounts | typeof KIND_LOCKED | typeof KIND_DEFERRED> {
+  // Network work (W4: the Google probe) runs first, outside any DB context, so
+  // it never holds the kind's transaction open. A throw fails the kind exactly
+  // like an observe() failure: its incidents stay untouched.
+  if (source.prepare) await runOutsideDbContext(() => source.prepare!(now));
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     if (!(await tryLockKind(source.kind))) return KIND_LOCKED;
     await tightenStatementTimeout(db, KIND_STATEMENT_TIMEOUT_MS);

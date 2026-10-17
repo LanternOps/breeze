@@ -286,6 +286,38 @@ describe('runKindInSystemScope', () => {
     expect(applyActionsMock).toHaveBeenCalledWith([{ type: 'deletePending', incidentId: 'i1' }], T0);
   });
 
+  it('runs prepare() first, outside any DB context, before the kind transaction opens (W4)', async () => {
+    const source: HealthSource = {
+      kind: 'google_workspace',
+      intervalMinutes: 30,
+      ...CONTRACT_STUB,
+      prepare: vi.fn(async () => { calls.push('prepare'); }),
+      observe: vi.fn(async () => { calls.push('observe'); return []; }),
+    };
+    loadTrackedMock.mockResolvedValue([]);
+    planMock.mockReturnValue([]);
+    applyActionsMock.mockResolvedValue({ opened: 0, resolved: 0, pending: 0 });
+
+    await runKindInSystemScope(source, T0, false);
+
+    expect(calls.slice(0, 3)).toEqual(['outside', 'prepare', 'outside']);
+    expect(calls[3]).toBe('system:connectionHealth.reconcile.google_workspace');
+    expect(source.prepare).toHaveBeenCalledWith(T0);
+  });
+
+  it('a prepare() failure fails the kind before its transaction opens', async () => {
+    const source: HealthSource = {
+      kind: 'google_workspace',
+      intervalMinutes: 30,
+      ...CONTRACT_STUB,
+      prepare: vi.fn(async () => { throw new Error('claim failed'); }),
+      observe: vi.fn(async () => []),
+    };
+    await expect(runKindInSystemScope(source, T0, false)).rejects.toThrow('claim failed');
+    expect(calls.some((c) => c.startsWith('system:'))).toBe(false);
+    expect(source.observe).not.toHaveBeenCalled();
+  });
+
   it('a seed candidate does not seed when the kind already has incident rows (lost Redis key)', async () => {
     loadTrackedMock.mockResolvedValue(tracked);
     hasIncidentsMock.mockResolvedValueOnce(true);
