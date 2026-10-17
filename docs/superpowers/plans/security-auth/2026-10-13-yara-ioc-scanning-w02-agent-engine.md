@@ -441,9 +441,16 @@ git add agent/go.mod agent/go.sum agent/internal/yarascan/yarac/spike_test.go ag
 git commit -m "test(agent): pin yaraxwasm and assert engine capabilities (#6265)"
 ```
 
-**Spike outcomes (implementer fills in, committed with Step 6):** version `____`; pe `_` elf `_`
-hash `_` math `_`; console bannable `_`; serialized bytes `____`; NewScanner B/op `____`;
-WriteTo arch-specific `_`.
+**Spike outcomes (recorded 2026-10-17, darwin/arm64, `spike_test.go`):** version `v1.1.0`
+(wazero `v1.12.0`, both MIT/Apache-2.0); pe `Y` elf `Y` hash `Y` math `Y`; console bannable `Y`;
+`EnableIncludes(false)` effective `Y` (control: default-on resolves the same include); serialized
+bytes `3844` (one-rule marker set); NewScanner `~3.9 ms/op, ~10.7 MB/op, ~36k allocs/op`;
+WriteTo arch-specific `N` for unsigned output (`CompiledArch` / `ErrSignedRulesArchMismatch` are
+checked only by the signed-rules container, `signed_rules_x509.go:241`); first engine use pays a
+one-time guest compile (~6.6 s on an M5, ~75 s under `-race`). `Rules.Slice()` exposes compiled
+patterns (strings cap counts them) and match offset/length. Step 4's cross-arch Rosetta comparison
+is owner-only and still owed. Also found: yaraxwasm honours a `YARAX_GUEST_WASM` env var that
+loads an arbitrary guest; `yarac.EnsureEngine` clears it before first load.
 
 ---
 
