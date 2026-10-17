@@ -63,6 +63,7 @@ export const MAIL_PURPOSES = {
   'staff.ai_budget_alert': { lane: 'platform' },
   'staff.autopay': { lane: 'platform' },
   'staff.contract_renewal': { lane: 'platform' },
+  'staff.trust_declaration_reminder': { lane: 'platform' },
   'staff.quote_outcome': { lane: 'platform' },
   // W03. The notice that a partner's own sending domain is verified / at risk
   // / failed / suspended / auto-removed. PLATFORM on purpose: a mail saying

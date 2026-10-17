@@ -10,6 +10,7 @@ import { ensureTrustPage, publishTrustPage, refreshPublishedPage } from '../../s
 import { and } from 'drizzle-orm';
 import type { TrustPagePublicPayload } from '@breeze/shared';
 import { declareTrustControl, listTrustDeclarations, withdrawTrustDeclaration } from '../../services/trustPage/declarations';
+import { runDeclarationReminders } from '../../services/trustPage/declarationReminders';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
 const DAY_MS = 86_400_000;
@@ -171,4 +172,33 @@ describe('trust page declarations (real DB)', () => {
     expect((await refreshPublishedPage(page.id)).rebuilt).toBe(true);
     expect((await current()).declaredControls).toEqual([]);
   }, 20_000);
+
+  it('reminders: 29 days out is reminded once; 31 days out, expired and withdrawn rows are not', async () => {
+    const page = await freshPage(s);
+    /** Superuser insert of a row expiring `days` from now (fractional allowed); returns its id. */
+    const insertExpiringIn = async (controlId: string, days: number, withdrawn = false) => {
+      const [r] = (await getTestDb().execute(sql`
+        INSERT INTO trust_page_declarations (trust_page_id, org_id, control_id, statement, declared_by_partner_name, declared_at, expires_at, withdrawn_at)
+        SELECT ${page.id}, ${s.orgId}, ${controlId}, 'A statement long enough.', 'Northwind IT', d, d + interval '8760 hours', ${withdrawn ? sql`now()` : sql`NULL`}
+        FROM (SELECT now() + make_interval(secs => ${days} * 86400) - interval '8760 hours' AS d) t
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>;
+      return r!.id;
+    };
+    const due = await insertExpiringIn('incident_response_plan', 29);
+    const notYet = await insertExpiringIn('cyber_insurance', 31);
+    const expired = await insertExpiringIn('access_review', -1);
+    const withdrawn = await insertExpiringIn('data_inventory', 10, true);
+
+    const first = await runDeclarationReminders(new Date());
+    expect(first.reminded).toBeGreaterThanOrEqual(1);
+    const sentAt = async (id: string) => (await sys(() => db.select({ r: trustPageDeclarations.reminderSentAt }).from(trustPageDeclarations).where(eq(trustPageDeclarations.id, id))))[0]!.r;
+    expect(await sentAt(due)).toBeInstanceOf(Date);
+    for (const id of [notYet, expired, withdrawn]) expect(await sentAt(id)).toBeNull();
+
+    // At-most-once: the claim stands, so a second sweep finds nothing to remind.
+    const stamp = await sentAt(due);
+    expect((await runDeclarationReminders(new Date())).reminded).toBe(0);
+    expect(await sentAt(due)).toEqual(stamp);
+  });
 });

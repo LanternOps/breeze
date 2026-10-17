@@ -51,6 +51,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'staff.ai_budget_alert': { lane: 'platform' },
       'staff.autopay': { lane: 'platform' },
       'staff.contract_renewal': { lane: 'platform' },
+      'staff.trust_declaration_reminder': { lane: 'platform' },
       'staff.quote_outcome': { lane: 'platform' },
       'staff.sending_domain_status': { lane: 'platform' },
       'staff.alert_notification': { lane: 'platform' },
