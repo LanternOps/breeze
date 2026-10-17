@@ -69,7 +69,7 @@ const TAB_ICONS: Record<OrgRecordTab, React.ReactNode> = {
  * Its org comes from the URL, never from the OrgSwitcher: every request goes
  * through `makeOrgFetch(orgId)`, so a tech reading a customer's record while
  * their workspace points at another customer sees this customer's data (and a
- * chip saying so), not a silent mix.
+ * line in the header saying so), not a silent mix.
  *
  * Three states are load-bearing and each has its own card rather than a generic
  * error, because they mean genuinely different things to the operator:
@@ -236,9 +236,10 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   const handleWorkHere = () => {
     if (!org) return;
     // Switch and STAY (#9019): the record's own URL, tab hash included. Every
-    // read on this page is pinned to `orgId` via `orgFetch`, so nothing here
-    // needs a remount — the store update alone turns the button into the
-    // "Working here" state and drops the mismatch line.
+    // read on this page is pinned to `orgId` (via `orgFetch`, or the tab's own
+    // `orgId` override), so nothing here needs a remount — the store update
+    // alone turns the button into the "Working here" state and drops the
+    // mismatch line.
     const { pathname, search, hash } = window.location;
     void applyOrgSwitch(orgId, t('orgRecord.actions.workHereToast', { orgName: org.name }), `${pathname}${search}${hash}`);
   };

@@ -340,6 +340,34 @@ describe('OrganizationRecordPage — billing address country (#9024)', () => {
     expect(screen.getByTestId('org-record-billing-address').textContent).toContain('Springfield');
   });
 
+  it('keeps the full address (and says why in the console) when the partner read fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      '/orgs/partners/me': () => json({ error: 'boom' }, 500),
+      [`/orgs/organizations/${RECORD_ORG}`]: () =>
+        json({ ...ORG_BODY, billingAddressCity: 'Springfield', billingAddressCountry: 'US' }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() =>
+      expect(warn.mock.calls.some(([msg]) => String(msg).includes('partner country unavailable'))).toBe(true),
+    );
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain('Springfield · US');
+  });
+
+  it('never asks a system-scope session for /orgs/partners/me (the route is partner-only)', async () => {
+    seedAuth(`h.${btoa(JSON.stringify({ scope: 'system' }))}.s`);
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      [`/orgs/organizations/${RECORD_ORG}`]: () =>
+        json({ ...ORG_BODY, billingAddressCity: 'Springfield', billingAddressCountry: 'US' }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-billing-address')).toBeTruthy());
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain('US');
+    expect(requestedUrls.some((u) => u.includes('/orgs/partners/me'))).toBe(false);
+  });
+
   it('does not ask for the partner at all when the org has no billing country', async () => {
     routeFetch({
       '/summary': () => json(SUMMARY_BODY),

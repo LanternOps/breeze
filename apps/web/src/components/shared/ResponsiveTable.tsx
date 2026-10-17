@@ -39,9 +39,10 @@ export function ResponsiveTable({
 }) {
   return (
     <div className={className} data-testid="responsive-table">
-      {/* Card chrome matches the app's other card-wrapped tables
-          (rounded border + bg-card + shadow-xs, e.g. security pages, invoices)
-          and the mobile DataCard below, so the two surfaces read as one. */}
+      {/* Default `card` variant: chrome matches the app's other card-wrapped
+          tables (rounded border + bg-card + shadow-xs, e.g. security pages,
+          invoices) and the mobile DataCard below, so the two surfaces read as
+          one. `flat` omits it for a table that already sits inside a card. */}
       <div
         className={cn('hidden overflow-x-auto sm:block', variant === 'card' && 'rounded-md border bg-card shadow-xs')}
         data-testid="responsive-table-desktop"

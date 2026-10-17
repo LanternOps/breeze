@@ -6,6 +6,7 @@ import { ORG_TAB_COLUMN_PRESET } from '@/components/devices/columnVisibility';
 import { navigateTo } from '@/lib/navigation';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { usePermissions } from '@/lib/permissions';
+import { useOrgStore } from '@/stores/orgStore';
 import { toDeviceListRow, type ApiDeviceRow } from '@/components/devices/deviceRowTransform';
 import type { OrgFetch } from './orgRecordFetch';
 
@@ -137,9 +138,16 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
     setSiteFilter('');
   };
   // Leaving the record is the point of both hand-offs below; the fleet page
-  // (and its enrol modal) work in the ambient org, so switch to this one.
-  const switchTo = (destination: string) =>
+  // (and its enrol modal) work in the ambient org, so switch to this one —
+  // or, when the workspace already is this org, just go (no "Switched to"
+  // toast for a switch that did not happen).
+  const switchTo = (destination: string) => {
+    if (useOrgStore.getState().currentOrgId === orgId) {
+      void navigateTo(destination);
+      return;
+    }
     void applyOrgSwitch(orgId, t('orgRecord.actions.workHereToast', { orgName }), destination);
+  };
 
   if (devices === null) {
     return (

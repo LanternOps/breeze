@@ -32,8 +32,9 @@ export interface OrgRecordHeaderProps {
 
 /**
  * Identity header for the organization record: who this customer is, what
- * state they are in, and the three things you do from here (work in their
- * context, open their settings, run a lifecycle action).
+ * state they are in, and what you do from here (work in their context —
+ * shown as a quiet "Working here" state once you already are — open their
+ * settings, message their devices, run a lifecycle action).
  *
  * The status pill is ALWAYS rendered here, unlike the organizations list where
  * it is exception-only: the list uses absence to mean "nothing to see", which

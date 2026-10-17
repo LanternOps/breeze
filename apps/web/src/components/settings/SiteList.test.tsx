@@ -61,6 +61,30 @@ describe('SiteList', () => {
     expect(onSiteClick).toHaveBeenCalledTimes(1);
   });
 
+  it('stops filtering by a leftover query once the list drops below the threshold', () => {
+    const { rerender } = render(<SiteList sites={many} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search sites' }), { target: { value: 'Site 2' } });
+    expect(screen.queryByTestId('site-row-s1')).toBeNull();
+
+    rerender(<SiteList sites={few} />);
+    expect(screen.queryByRole('searchbox', { name: 'Search sites' })).toBeNull();
+    expect(screen.getByTestId('site-row-s1')).toBeInTheDocument();
+  });
+
+  it('the tel: link and the mobile card behave: a call never opens the site, a card tap opens it once', () => {
+    const onSiteClick = vi.fn();
+    render(<SiteList sites={[{ ...site(1), contact: { phone: '+1 555 0100' } }]} onSiteClick={onSiteClick} />);
+
+    for (const phone of screen.getAllByTestId('site-s1-contact-phone')) fireEvent.click(phone);
+    expect(onSiteClick).not.toHaveBeenCalled();
+
+    const cards = screen.getByTestId('responsive-table-cards');
+    fireEvent.click(within(cards).getByText('Site 1'));
+    expect(onSiteClick).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(cards).getByRole('button', { name: 'Open Site 1' }));
+    expect(onSiteClick).toHaveBeenCalledTimes(2);
+  });
+
   it('moves Delete off the row into a destructive overflow menu item (#9022)', () => {
     const onDelete = vi.fn();
     render(<SiteList sites={few} onSiteClick={vi.fn()} onEdit={vi.fn()} onDelete={onDelete} />);

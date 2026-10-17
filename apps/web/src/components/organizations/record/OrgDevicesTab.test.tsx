@@ -59,6 +59,7 @@ describe('OrgDevicesTab', () => {
     window.localStorage.clear();
     vi.mocked(navigateTo).mockClear();
     applyOrgSwitchMock.mockReset();
+    useOrgStore.setState({ currentOrgId: OTHER_ORG, allOrgs: false } as never);
     granted.clear();
     granted.add('organizations:write');
   });
@@ -247,6 +248,43 @@ describe('OrgDevicesTab', () => {
 
     fireEvent.click(screen.getByTestId('org-devices-open-in-devices'));
     expect(applyOrgSwitchMock).toHaveBeenCalledWith(RECORD_ORG, 'Switched to Acme Dental', '/devices');
+  });
+
+  it('reads truncation from a `total` above the row count too, and not at equality', async () => {
+    const { orgFetch } = makeRecordingOrgFetch({
+      '/devices': () => jsonResponse({ data: [DEVICE], pagination: { total: 450 } }),
+    });
+    const { unmount } = render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
+    await screen.findByTestId('org-devices-cap-notice');
+    unmount();
+
+    const exact = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [DEVICE], pagination: { total: 1 } }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={exact.orgFetch} />);
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    expect(screen.queryByTestId('org-devices-cap-notice')).toBeNull();
+  });
+
+  it('shows no cap notice for a bare-array body, and clears a previous org\'s notice', async () => {
+    const truncated = makeRecordingOrgFetch({
+      '/devices': () => jsonResponse({ data: [DEVICE], pagination: { nextCursor: 'more' } }),
+    });
+    const { rerender } = render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={truncated.orgFetch} />);
+    await screen.findByTestId('org-devices-cap-notice');
+
+    const bare = makeRecordingOrgFetch({ '/devices': () => jsonResponse([{ ...DEVICE, orgId: OTHER_ORG }]) });
+    rerender(<OrgDevicesTab orgId={OTHER_ORG} orgName="Beta Legal" orgFetch={bare.orgFetch} />);
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    expect(screen.queryByTestId('org-devices-cap-notice')).toBeNull();
+  });
+
+  it('just navigates (no switch, no "Switched to" toast) when the workspace already is this org', async () => {
+    useOrgStore.setState({ currentOrgId: RECORD_ORG, allOrgs: false } as never);
+    const { orgFetch } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
+
+    fireEvent.click(await screen.findByTestId('org-devices-add'));
+    expect(applyOrgSwitchMock).not.toHaveBeenCalled();
+    expect(navigateTo).toHaveBeenCalledWith('/devices#add-device');
   });
 
   it('shows no cap notice when the whole org fit in one request', async () => {

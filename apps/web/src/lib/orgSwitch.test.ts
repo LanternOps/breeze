@@ -162,4 +162,14 @@ describe('applyOrgSwitch — soft navigation instead of a full reload', () => {
     expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Switched to B' });
     expect(consumeSwitchToast()).toBeNull();
   });
+
+  it('still navigates when only the path matches (another tab hash, or another query)', async () => {
+    stubLocation('/organizations/org-b', '', '#devices');
+    await applyOrgSwitch('org-b', 'x', '/organizations/org-b#sites');
+    expect(navigateToMock).toHaveBeenLastCalledWith('/organizations/org-b#sites', { replace: false });
+
+    stubLocation('/x', '?a=1');
+    await applyOrgSwitch('org-b', 'x', '/x');
+    expect(navigateToMock).toHaveBeenLastCalledWith('/x', { replace: false });
+  });
 });

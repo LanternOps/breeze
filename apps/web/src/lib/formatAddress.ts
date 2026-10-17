@@ -20,7 +20,9 @@ export interface FormatAddressOptions {
 
 /**
  * One-line address: `line1, line2 · city, region postalCode · country`.
- * Empty (or non-string) parts are skipped without leaving separators.
+ * Empty (or non-string) parts are skipped without leaving separators. The
+ * country is left off when it equals `options.homeCountry` and at least one
+ * other segment remains.
  */
 export function formatAddress(parts: AddressParts | null | undefined, options: FormatAddressOptions = {}): string {
   if (!parts) return '';

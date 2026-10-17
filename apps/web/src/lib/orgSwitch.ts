@@ -89,6 +89,10 @@ export async function applyOrgSwitch(
   toastMessage: string,
   destination?: string,
 ): Promise<void> {
+  // Read before the await: the caller built `destination` from the URL at
+  // click time, and a tab change during the refresh must not turn "stay"
+  // into a navigation back to the old hash.
+  const here = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const store = useOrgStore.getState();
   if (orgId) {
     store.selectOrganization(orgId);
@@ -100,8 +104,7 @@ export async function applyOrgSwitch(
   // router treats a same-page URL with a hash as an anchor move and never
   // swaps, so navigating would report 'hard' and strand the toast. The caller
   // owns re-rendering here — its view must already be independent of the
-  // ambient org, as the org record's pinned fetches are.
-  const here = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  // ambient org, as the org record's (every read pinned to the URL's org) is.
   if (destination !== undefined && destination === here) {
     const message = consumeSwitchToast();
     if (message) showToast({ type: 'success', message });
