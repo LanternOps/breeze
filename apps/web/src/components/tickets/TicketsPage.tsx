@@ -153,6 +153,18 @@ function parseHash(hash: string): { selection: string | null; sort: TicketSort; 
   return { selection, sort, type: ticketTypeFromHash(hash) };
 }
 
+// The whole queue hash as ONE piece of state (#8682 sweep). Selection, sort and
+// type must move together: with one `useHashState` per field, each field had
+// its own hashchange listener, and a browser commits (and runs effects) after
+// every listener — so the auto-select effect saw e.g. the new selection with
+// the OLD type and wrote that stale mix straight back over the new URL.
+type QueueHash = { selection: string | null; sort: TicketSort; type: TicketType | '' };
+const DEFAULT_QUEUE_HASH: QueueHash = { selection: null, sort: 'triage', type: '' };
+function parseQueueHash(hash: string): QueueHash {
+  const { selection, sort, type } = parseHash(hash);
+  return { selection, sort, type: type ?? '' };
+}
+
 function hashFor(selection: string | null, sort: TicketSort, type: TicketType | null = null): string {
   const parts: string[] = [];
   if (selection) parts.push(selection);
@@ -177,12 +189,11 @@ export default function TicketsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   // SSR-safe hash adoption + hashchange subscription live in the hook (#2421).
-  // parse → undefined falls back to the null default, preserving "no selection".
-  const [selectedNumber, setSelectedNumber] = useHashState<string | null>(null, (h) => parseHash(h).selection ?? undefined);
-  const [sort, setSort] = useHashState<TicketSort>('triage', (h) => parseHash(h).sort);
-  // Ticket-type filter (#7900): '' = All. Hash-backed so the Service Desk nav
-  // entries (`/tickets#type=<type>`) and bookmarks deep-link into it.
-  const [typeFilter, setTypeFilter] = useHashState<TicketType | ''>('', (h) => parseHash(h).type ?? '');
+  // One hook for the whole hash so an external change lands atomically (see
+  // QueueHash). Ticket-type filter (#7900): '' = All. Hash-backed so the
+  // Service Desk nav entries (`/tickets#type=<type>`) and bookmarks deep-link in.
+  const [queueHash, setQueueHash] = useHashState<QueueHash>(DEFAULT_QUEUE_HASH, parseQueueHash);
+  const { selection: selectedNumber, sort, type: typeFilter } = queueHash;
   const [search, setSearch] = useState('');
   // Debounced twin of `search` — only this drives the list fetch, so typing
   // doesn't fire a 100-row query per keystroke (the input itself stays instant).
@@ -217,20 +228,19 @@ export default function TicketsPage() {
   const assigneeLocked = tab === 'mine' || tab === 'unassigned';
   const filtersActive = Boolean(priorityFilter || categoryFilter || assigneeFilter || typeFilter);
 
-  // Single writer for the hash so selection, sort and type never clobber each
-  // other. Declared before clearFilters, which rewrites it.
+  // Single writer for the hash: state and URL always move together, so
+  // selection, sort and type never clobber each other. Declared before
+  // clearFilters, which rewrites it.
   const writeHash = useCallback((selection: string | null, sortValue: TicketSort, typeValue: TicketType | '') => {
+    setQueueHash({ selection, sort: sortValue, type: typeValue });
     replaceUrl(hashFor(selection, sortValue, typeValue || null) || window.location.pathname + window.location.search);
-  }, []);
+  }, [setQueueHash]);
 
   const clearFilters = useCallback(() => {
     setPriorityFilter('');
     setCategoryFilter('');
     setAssigneeFilter('');
-    if (typeFilter) {
-      setTypeFilter('');
-      writeHash(selectedNumber, sort, '');
-    }
+    if (typeFilter) writeHash(selectedNumber, sort, '');
   }, [typeFilter, selectedNumber, sort, writeHash]);
 
   // Filter options load once; failures degrade per-select (these are filters, not critical path).
@@ -257,31 +267,40 @@ export default function TicketsPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // The /tickets query string for the current tab + filters; null on the
+  // review tab, which isn't a ticket query (InboundReviewQueue loads its own
+  // data, so tabQuery never sees 'review').
+  const ticketQuery = useMemo(() => {
+    if (tab === 'review') return null;
+    // The archived tab is a normal ticket query with deleted=only (the server
+    // gates it on tickets:manage and stamps each row with deletedAt).
+    const params = tab === 'archived'
+      ? new URLSearchParams({ deleted: 'only' })
+      : new URLSearchParams(tabQuery(tab));
+    if (debouncedSearch) params.set('search', debouncedSearch);
+    if (priorityFilter) params.set('priority', priorityFilter);
+    if (categoryFilter) params.set('categoryId', categoryFilter);
+    // Omit for "All": the API rejects a blank ticketType= with 400.
+    if (typeFilter) params.set('ticketType', typeFilter);
+    // The 'mine'/'unassigned' tabs already set assignee; the filter applies only on the other tabs.
+    if (assigneeFilter && tab !== 'mine' && tab !== 'unassigned') params.set('assignee', assigneeFilter);
+    // 'triage' is the server default, so it's omitted — which also lets the
+    // closed tab keep its tabQuery() sort=newest until the user picks a sort.
+    if (sort !== 'triage') params.set('sort', sort);
+    params.set('limit', '100');
+    return params.toString();
+  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort]);
+  // The query the rows in `tickets` were fetched for (null until the first load).
+  const [loadedQuery, setLoadedQuery] = useState<string | null>(null);
+  const listIsCurrent = ticketQuery !== null && loadedQuery === ticketQuery;
+
   const fetchTickets = useCallback(async () => {
-    // The review tab isn't a ticket query — it renders InboundReviewQueue, which
-    // loads its own data. Skip the /tickets fetch so tabQuery never sees 'review'.
-    if (tab === 'review') { setLoading(false); return; }
+    if (ticketQuery === null) { setLoading(false); return; }
     const seq = ++fetchSeq.current;
     setLoading(true);
     setError(undefined);
     try {
-      // The archived tab is a normal ticket query with deleted=only (the server
-      // gates it on tickets:manage and stamps each row with deletedAt).
-      const params = tab === 'archived'
-        ? new URLSearchParams({ deleted: 'only' })
-        : new URLSearchParams(tabQuery(tab));
-      if (debouncedSearch) params.set('search', debouncedSearch);
-      if (priorityFilter) params.set('priority', priorityFilter);
-      if (categoryFilter) params.set('categoryId', categoryFilter);
-      // Omit for "All": the API rejects a blank ticketType= with 400.
-      if (typeFilter) params.set('ticketType', typeFilter);
-      // The 'mine'/'unassigned' tabs already set assignee; the filter applies only on the other tabs.
-      if (assigneeFilter && tab !== 'mine' && tab !== 'unassigned') params.set('assignee', assigneeFilter);
-      // 'triage' is the server default, so it's omitted — which also lets the
-      // closed tab keep its tabQuery() sort=newest until the user picks a sort.
-      if (sort !== 'triage') params.set('sort', sort);
-      params.set('limit', '100');
-      const res = await fetchWithAuth(`/tickets?${params.toString()}`);
+      const res = await fetchWithAuth(`/tickets?${ticketQuery}`);
       if (!res.ok) {
         if (res.status === 401) { void navigateTo(loginPathWithNext(), { replace: true }); return; }
         throw new Error(stableT('ticketsPage.loadFailed'));
@@ -289,13 +308,14 @@ export default function TicketsPage() {
       const body = await res.json();
       if (seq !== fetchSeq.current) return;
       setTickets(body.data ?? []);
+      setLoadedQuery(ticketQuery);
     } catch (e) {
       if (seq !== fetchSeq.current) return;
       setError(e instanceof Error ? e.message : stableT('ticketsPage.loadFailed'));
     } finally {
       if (seq === fetchSeq.current) setLoading(false);
     }
-  }, [tab, debouncedSearch, priorityFilter, categoryFilter, assigneeFilter, typeFilter, sort, stableT]);
+  }, [ticketQuery, stableT]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -381,13 +401,16 @@ export default function TicketsPage() {
   useEffect(() => {
     // The review + archived tabs have no ticket selection / workbench pane.
     if (tab === 'review' || tab === 'archived') return;
-    if (!loading && tickets.length > 0 && !selected) {
+    // `listIsCurrent`: never auto-select out of a list fetched for other
+    // filters — after an external hash change (sidebar entry, back/forward,
+    // bookmark) the old rows are still on screen until the refetch lands, and
+    // picking one would overwrite the selection the new URL asked for.
+    if (!loading && listIsCurrent && tickets.length > 0 && !selected) {
       const first = tickets[0];
       const key = first.internalNumber ?? first.id;
       writeHash(key, sort, typeFilter);
-      setSelectedNumber(key);
     }
-  }, [tab, loading, tickets, selected, sort, typeFilter, writeHash]);
+  }, [tab, loading, listIsCurrent, tickets, selected, sort, typeFilter, writeHash]);
 
   const select = useCallback((t: TicketSummary) => {
     // Below the split-pane breakpoint the workbench pane is hidden; navigate
@@ -398,7 +421,6 @@ export default function TicketsPage() {
     }
     const key = t.internalNumber ?? t.id;
     writeHash(key, sort, typeFilter);
-    setSelectedNumber(key);
   }, [sort, typeFilter, writeHash]);
 
   const move = useCallback((delta: 1 | -1) => {
@@ -640,7 +662,6 @@ export default function TicketsPage() {
           onChange={(e) => {
             const value = e.target.value;
             const next: TicketType | '' = isTicketType(value) ? value : '';
-            setTypeFilter(next);
             writeHash(selectedNumber, sort, next);
           }}
           aria-label={t('ticketsPage.filterByType')}
@@ -673,7 +694,6 @@ export default function TicketsPage() {
           onChange={(e) => {
             const value = e.target.value;
             if (!isTicketSort(value)) return;
-            setSort(value);
             writeHash(selectedNumber, value, typeFilter);
           }}
           aria-label={t('ticketsPage.sortTickets')}
