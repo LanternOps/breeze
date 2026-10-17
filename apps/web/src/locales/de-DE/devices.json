@@ -2617,7 +2617,7 @@
       "message": "{{action}} wird an {{count}} Gerät(e) {{scope}} gesendet.",
       "messageSplit": "{{action}} wird an {{count}} Gerät(e) {{scope}} gesendet: {{online}} jetzt online · {{queued}} für den nächsten Check-in vorgemerkt.",
       "scopeMulti": "in {{count}} Organisationen ({{orgs}})",
-      "scopeSingle": "in {{org}}",
+      "scopeSingle": "bei {{org}}",
       "title": "{{action}}: {{count}} Gerät(e)?",
       "verbs": {
         "lock": "Sperren",

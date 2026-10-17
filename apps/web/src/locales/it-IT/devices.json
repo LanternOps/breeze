@@ -2617,7 +2617,7 @@
       "message": "{{action}} verrà inviato a {{count}} dispositivo/i {{scope}}.",
       "messageSplit": "{{action}} verrà inviato a {{count}} dispositivo/i {{scope}}: {{online}} online ora · {{queued}} in coda fino al prossimo check-in.",
       "scopeMulti": "in {{count}} organizzazioni ({{orgs}})",
-      "scopeSingle": "in {{org}}",
+      "scopeSingle": "presso {{org}}",
       "title": "{{action}} su {{count}} dispositivo/i?",
       "verbs": {
         "lock": "Blocca",
