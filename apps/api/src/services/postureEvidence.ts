@@ -546,11 +546,21 @@ export async function loadPostureEvidence(
       .select({ deviceId: cisBaselineResults.deviceId, findings: cisBaselineResults.findings })
       .from(cisBaselineResults)
       .where(and(eq(cisBaselineResults.orgId, orgId), inArray(cisBaselineResults.id, cisFreshResultIds)));
+    // Only checkId + status matter here, so unrelated fields (title, severity enum drift) cannot invalidate a
+    // finding. A device with ANY unreadable element is left unassessed for every safeguard: skipping just that
+    // element could turn a failing check into a pass.
+    const minimal = cisFindingSchema.pick({ checkId: true, status: true });
     for (const r of findingRows) {
+      const els = Array.isArray(r.findings) ? r.findings : null;
       const parsed: Array<{ checkId: string; status: string }> = [];
-      for (const el of Array.isArray(r.findings) ? r.findings : []) {
-        const p = cisFindingSchema.safeParse(el);
-        if (p.success) parsed.push({ checkId: p.data.checkId, status: p.data.status });
+      let readable = els !== null;
+      for (const el of els ?? []) {
+        const p = minimal.safeParse(el);
+        if (p.success) parsed.push(p.data); else readable = false;
+      }
+      if (!readable) {
+        console.warn('[postureEvidence] unreadable CIS findings; device not assessed for safeguards', { deviceId: r.deviceId });
+        continue;
       }
       safeguardFindings.set(r.deviceId, parsed);
     }

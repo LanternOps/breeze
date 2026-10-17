@@ -313,11 +313,22 @@ describe('loadPostureEvidence', () => {
       expect(ev.controls.hardening_baseline.safeguards!['4.5']).toMatchObject({ assessed: 0, passing: 0 });
     });
 
-    it('a check the mapping does not know, and a malformed finding, assess nothing and do not throw', async () => {
-      const ev = await run([scan('d1')], [{ deviceId: 'd1', findings: [f('99.9.9', 'pass'), f('2.3.7', 'pass'), { checkId: 5 }, null, f('9.1.1', 'pass')] }]);
+    it('a check the mapping does not know assesses nothing; extra/odd non-key fields do not invalidate a finding', async () => {
+      const odd = { checkId: '9.1.1', status: 'pass', severity: 'new-level', title: undefined };
+      const ev = await run([scan('d1')], [{ deviceId: 'd1', findings: [f('99.9.9', 'pass'), f('2.3.7', 'pass'), odd] }]);
       const sg = ev.controls.hardening_baseline.safeguards!;
       expect(sg['4.5']).toMatchObject({ assessed: 1, passing: 1 });
       expect(sg['4.7']).toMatchObject({ assessed: 0 });
+    });
+
+    it('any unreadable finding leaves the device unassessed for every safeguard (a dropped fail must not read as a pass)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ev = await run([scan('d1')], [{ deviceId: 'd1', findings: [f('9.1.1', 'pass'), { checkId: 5 }, f('2.3.1', 'fail')] }]);
+      const sg = ev.controls.hardening_baseline.safeguards!;
+      expect(sg['4.5']).toMatchObject({ assessed: 0, passing: 0 });
+      expect(sg['4.7']).toMatchObject({ assessed: 0, passing: 0 });
+      expect(warn).toHaveBeenCalledOnce();
+      warn.mockRestore();
     });
 
     it('includeCisSafeguards = false issues no findings query and leaves safeguards undefined', async () => {
@@ -331,6 +342,23 @@ describe('loadPostureEvidence', () => {
       mockQueries();
       const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, { ...withSafeguards, includeCis: false }, AS_OF);
       expect(ev.controls.hardening_baseline.safeguards).toBeUndefined();
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(18); // no cis read, no findings read
+    });
+
+    it('the loader reads the live getter when handed TRUST_PAGE_EVIDENCE_POLICY itself (no spread freezing it)', async () => {
+      const prev = process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+      try {
+        process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'true';
+        mockQueries({ 16: [scan('d1')] }, { cisFindings: [{ deviceId: 'd1', findings: [f('9.1.1', 'pass')] }] });
+        const on = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+        expect(on.controls.hardening_baseline.safeguards?.['4.5']).toMatchObject({ assessed: 1, passing: 1 });
+        process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'false';
+        mockQueries();
+        const off = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+        expect(off.controls.hardening_baseline.safeguards).toBeUndefined();
+      } finally {
+        if (prev === undefined) delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW; else process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = prev;
+      }
     });
 
     it('the report path leaves the flag off; the trust policy follows the CIS gate at call time', () => {

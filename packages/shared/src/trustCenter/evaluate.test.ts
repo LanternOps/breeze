@@ -131,6 +131,11 @@ describe('hardening safeguards (W3e)', () => {
     expect(a.safeguards?.[0]).toMatchObject({ status: 'not_assessed', reason: 'insufficient_telemetry' });
   });
 
+  it('eligible devices but nothing assessed → no_data', () => {
+    const a = hardening({ '4.5': { eligible: 12, assessed: 0, passing: 0, newestEvidenceAt: null } });
+    expect(a.safeguards?.[0]).toMatchObject({ status: 'not_assessed', reason: 'no_data', assessed: 0, eligible: 12 });
+  });
+
   it('sorted by ref numerically ("4.5" before "10.5")', () => {
     const e = { eligible: 1, assessed: 1, passing: 1, newestEvidenceAt: fresh };
     const a = hardening({ '10.5': e, '4.5': e, '3.3': e, '4.10': e });
