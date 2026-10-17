@@ -2612,6 +2612,21 @@
       "installAgent": "Instalar agente…",
       "addNetworkAsset": "Adicionar ativo de rede…",
       "addManualAsset": "Adicionar ativo manualmente…"
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} será enviado a {{count}} dispositivo(s) {{scope}}.",
+      "messageSplit": "{{action}} será enviado a {{count}} dispositivo(s) {{scope}}: {{online}} online agora · {{queued}} na fila para o próximo check-in.",
+      "scopeMulti": "em {{count}} organizações ({{orgs}})",
+      "scopeSingle": "em {{org}}",
+      "title": "{{action}} em {{count}} dispositivo(s)?",
+      "verbs": {
+        "lock": "Bloquear",
+        "maintenanceOff": "Encerrar manutenção em",
+        "reboot": "Reiniciar",
+        "reboot_safe_mode": "Reiniciar em modo de segurança",
+        "shutdown": "Desligar",
+        "wake": "Ativar (Wake)"
+      }
     }
   },
   "filterAddDropdown": {

@@ -2612,6 +2612,21 @@
       "installAgent": "Install agent…",
       "addNetworkAsset": "Add network asset…",
       "addManualAsset": "Add asset manually…"
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} will be sent to {{count}} device(s) {{scope}}.",
+      "messageSplit": "{{action}} will be sent to {{count}} device(s) {{scope}}: {{online}} online now · {{queued}} queued for next check-in.",
+      "scopeMulti": "across {{count}} organizations ({{orgs}})",
+      "scopeSingle": "in {{org}}",
+      "title": "{{action}} {{count}} device(s)?",
+      "verbs": {
+        "lock": "Lock",
+        "maintenanceOff": "End maintenance on",
+        "reboot": "Reboot",
+        "reboot_safe_mode": "Reboot into safe mode",
+        "shutdown": "Shut down",
+        "wake": "Wake"
+      }
     }
   },
   "filterAddDropdown": {

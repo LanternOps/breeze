@@ -2612,6 +2612,21 @@
       "installAgent": "Aracı yükle…",
       "addNetworkAsset": "Ağ varlığı ekle…",
       "addManualAsset": "Varlığı manuel olarak ekle…"
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} komutu {{count}} cihaza {{scope}} gönderilecek.",
+      "messageSplit": "{{action}} komutu {{count}} cihaza {{scope}} gönderilecek: {{online}} şu an çevrimiçi · {{queued}} sonraki check-in için sırada.",
+      "scopeMulti": "{{count}} kuruluş genelinde ({{orgs}})",
+      "scopeSingle": "{{org}} içinde",
+      "title": "{{action}}: {{count}} cihaz?",
+      "verbs": {
+        "lock": "Kilitle",
+        "maintenanceOff": "Bakım modunu bitir:",
+        "reboot": "Yeniden başlat",
+        "reboot_safe_mode": "Güvenli modda yeniden başlat",
+        "shutdown": "Kapat",
+        "wake": "Uyandır"
+      }
     }
   },
   "filterAddDropdown": {

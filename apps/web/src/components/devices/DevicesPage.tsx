@@ -54,7 +54,7 @@ import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
-import { DECOMMISSION_BLOCKED_BULK_ACTIONS, isCommandQueueable } from './bulkActionGating';
+import { CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, isCommandQueueable } from './bulkActionGating';
 import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNonAgentDevices, VPN_FACET_FIELD } from './mergedListFilter';
 import { COLUMN_LABELS } from './columnVisibility';
 import { FILTER_FIELDS } from '../filters/filterFields';
@@ -357,6 +357,9 @@ export default function DevicesPage() {
   // silently discarded.
   type PendingDecommissionedSkip = { action: string; devices: Device[]; skippedCount: number; totalCount: number };
   const [pendingDecommissionedSkip, setPendingDecommissionedSkip] = useState<PendingDecommissionedSkip | null>(null);
+  // #9032: bulk agent commands that fire immediately (reboot/shutdown/lock/
+  // wake/maintenance-off) ask once, naming verb, online/queued split and org(s).
+  const [pendingBulkCommand, setPendingBulkCommand] = useState<{ action: string; devices: Device[] } | null>(null);
   // #3698: single-device destructive actions from the row kebab. The device
   // DETAIL page has always confirmed these (DeviceActions.tsx); the list did
   // not, so whether rebooting a production box asked "are you sure?" depended
@@ -1586,6 +1589,11 @@ export default function DevicesPage() {
       }
     }
 
+    if (CONFIRM_REQUIRED_BULK_COMMANDS.has(action)) {
+      setPendingBulkCommand({ action, devices: selectedDevices });
+      return;
+    }
+
     await runBulkAction(action, selectedDevices);
   };
 
@@ -2484,6 +2492,43 @@ export default function DevicesPage() {
               action: t('devicesPage.confirmRunAction', { script: pendingScriptRun.script.name }),
               deviceCount: pendingScriptRun.devices.length,
               orgNames: scriptOrgNames,
+            })}
+            isLoading={actionInProgress}
+          />
+        );
+      })()}
+
+      {pendingBulkCommand && (() => {
+        const { action, devices: targets } = pendingBulkCommand;
+        const orgIds = [...new Set(targets.map(d => d.orgId).filter(Boolean))];
+        const orgNames = orgIds.length > 0
+          ? orgIds.map(id => orgStoreOrgs.find(o => o.id === id)?.name ?? id)
+          : [t('devicesPage.selectedOrganization')];
+        const scope = orgNames.length <= 1
+          ? t('devicesPage.confirmBulkCommand.scopeSingle', { org: orgNames[0] })
+          : t('devicesPage.confirmBulkCommand.scopeMulti', { count: orgNames.length, orgs: orgNames.join(', ') });
+        const verb = t(/* i18n-dynamic */ `devicesPage.confirmBulkCommand.verbs.${action === 'maintenance-off' ? 'maintenanceOff' : action}`);
+        const online = targets.filter(d => d.status === 'online').length;
+        const split = QUEUEING_BULK_COMMANDS.has(action);
+        return (
+          <ConfirmDialog
+            open={true}
+            onClose={() => setPendingBulkCommand(null)}
+            onConfirm={() => {
+              const p = pendingBulkCommand;
+              setPendingBulkCommand(null);
+              void runBulkAction(p.action, p.devices);
+            }}
+            title={t('devicesPage.confirmBulkCommand.title', { action: verb, count: targets.length })}
+            variant="warning"
+            confirmLabel={verb}
+            confirmTestId="confirm-bulk-command"
+            message={t(split ? 'devicesPage.confirmBulkCommand.messageSplit' : 'devicesPage.confirmBulkCommand.message', {
+              action: verb,
+              count: targets.length,
+              scope,
+              online,
+              queued: targets.length - online,
             })}
             isLoading={actionInProgress}
           />

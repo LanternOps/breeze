@@ -1474,6 +1474,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     await renderMixedFleet([DEV_1, DEV_2]);
 
     fireEvent.click(screen.getByTestId('bulk-reboot'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command')); // #9032
 
     await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
@@ -1519,6 +1520,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     render(<DevicesPage />);
     await screen.findByTestId('device-list');
     fireEvent.click(screen.getByTestId('bulk-reboot'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command')); // #9032
 
     await waitFor(() => {
       const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
@@ -1543,10 +1545,71 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     render(<DevicesPage />);
     await screen.findByTestId('device-list');
     fireEvent.click(screen.getByTestId('bulk-reboot'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command')); // #9032
 
     await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
     const messages = vi.mocked(showToast).mock.calls.map(c => c[0].message ?? '');
     expect(messages.some(m => /queued for offline devices/i.test(m))).toBe(false);
+  });
+
+  // #9032: every bulk agent command asks first, with the verb, the count split
+  // by online/queued, and the org(s) it will hit.
+  describe('bulk command confirm (#9032)', () => {
+    async function selectFleet() {
+      const { sendBulkCommand, sendBulkWakeCommand } = await import('../../services/deviceActions');
+      vi.mocked(sendBulkCommand).mockResolvedValue({ commands: [{}, {}], failed: [], skipped: [] } as never);
+      vi.mocked(sendBulkWakeCommand).mockResolvedValue({ succeeded: [], failed: [] } as never);
+      vi.mocked(fetchAllDevices).mockResolvedValue({
+        data: [
+          rawDevice(DEV_1, 'host-alpha'),
+          { ...rawDevice(DEV_2, 'host-beta'), status: 'offline' },
+        ],
+      } as never);
+      await renderMixedFleet([DEV_1, DEV_2]);
+      return { sendBulkCommand, sendBulkWakeCommand };
+    }
+
+    it('reboot asks first, names verb + online/queued split, and sends nothing until confirmed', async () => {
+      const { sendBulkCommand } = await selectFleet();
+      fireEvent.click(screen.getByTestId('bulk-reboot'));
+      const confirm = await screen.findByTestId('confirm-bulk-command');
+      expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+      const dialog = screen.getByRole('dialog');
+      expect(dialog.textContent).toMatch(/Reboot/);
+      expect(dialog.textContent).toMatch(/2 device/);
+      expect(dialog.textContent).toMatch(/1 online now/);
+      expect(dialog.textContent).toMatch(/1 queued for next check-in/);
+      fireEvent.click(confirm);
+      await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
+    });
+
+    it('cancel sends nothing', async () => {
+      const { sendBulkCommand } = await selectFleet();
+      fireEvent.click(screen.getByTestId('bulk-reboot'));
+      await screen.findByTestId('confirm-bulk-command');
+      fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+      await waitFor(() => expect(screen.queryByTestId('confirm-bulk-command')).toBeNull());
+      expect(vi.mocked(sendBulkCommand)).not.toHaveBeenCalled();
+    });
+
+    it('wake asks first', async () => {
+      const { sendBulkWakeCommand } = await selectFleet();
+      fireEvent.click(screen.getByTestId('bulk-wake'));
+      const confirm = await screen.findByTestId('confirm-bulk-command');
+      expect(vi.mocked(sendBulkWakeCommand)).not.toHaveBeenCalled();
+      fireEvent.click(confirm);
+      await waitFor(() => expect(vi.mocked(sendBulkWakeCommand)).toHaveBeenCalledTimes(1));
+    });
+
+    it('maintenance-off asks first', async () => {
+      const { exitMaintenanceMode } = await import('../../services/deviceActions');
+      await selectFleet();
+      fireEvent.click(screen.getByTestId('bulk-maintenance-off'));
+      const confirm = await screen.findByTestId('confirm-bulk-command');
+      expect(vi.mocked(exitMaintenanceMode)).not.toHaveBeenCalled();
+      fireEvent.click(confirm);
+      await waitFor(() => expect(vi.mocked(exitMaintenanceMode)).toHaveBeenCalled());
+    });
   });
 
   it('refuses outright when EVERY selected device is decommissioned', async () => {
@@ -1851,6 +1914,7 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
       await renderMixedFleet([DEV_1, DEV_2]);
 
       fireEvent.click(screen.getByTestId('bulk-reboot'));
+      fireEvent.click(await screen.findByTestId('confirm-bulk-command')); // #9032
 
       // No confirm — nothing here is decommissioned, so nothing is being skipped.
       await waitFor(() => expect(vi.mocked(sendBulkCommand)).toHaveBeenCalledTimes(1));
@@ -1861,13 +1925,14 @@ describe('DevicesPage — bulk agent commands gated on decommissioned only (#246
     },
   );
 
-  it('leaves bulk Wake UNGATED — it exists precisely to reach devices that are not running', async () => {
+  it('does not skip or gate bulk Wake on device status — it exists precisely to reach devices that are not running (confirm only, #9032)', async () => {
     const { sendBulkWakeCommand } = await import('../../services/deviceActions');
     vi.mocked(sendBulkWakeCommand).mockResolvedValue({ sent: [], failed: [] } as never);
 
     boundaryFleet();
     await renderMixedFleet();
     fireEvent.click(screen.getByTestId('bulk-wake'));
+    fireEvent.click(await screen.findByTestId('confirm-bulk-command')); // #9032
 
     await waitFor(() => expect(vi.mocked(sendBulkWakeCommand)).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId('confirm-decommissioned-skip')).toBeNull();
