@@ -9,7 +9,6 @@ import { applyTrustPageDraftPatch, trustPagePortalDraftPatchSchema } from '../..
 import { createTrustPreviewToken, TRUST_PREVIEW_TTL_SECONDS } from '../../services/trustPage/previewToken';
 import { scheduleServingRefreshForPartner } from '../../services/trustPage/servingSet';
 import { captureException } from '../../services/sentry';
-import { portalAuthMiddleware } from './auth';
 import { requirePortalTrustPageEditor } from './featureFlags';
 import { validatePortalCookieCsrfRequest, writePortalAudit } from './helpers';
 
@@ -17,10 +16,11 @@ import { validatePortalCookieCsrfRequest, writePortalAudit } from './helpers';
  * Customer portal: the org's own trust page draft (Trust Center W3d, #8771;
  * spec §18.9, plan Open Decisions 1–2).
  *
- * Mounted at /portal/trust-page. The router carries portal auth and the editor
- * gate itself (requirePortalTrustPageEditor: portal_branding flag + an
- * org-scoped admin contact, re-checked on every request), so the mount in
- * routes/portal/index.ts is a single line.
+ * Mounted at /portal/trust-page. Portal auth is applied in routes/portal/index.ts
+ * (it must run before the router-wide POST guard of the earlier '/' mounts);
+ * this router carries the editor gate (requirePortalTrustPageEditor:
+ * portal_branding flag + an org-scoped admin contact, re-checked on every
+ * request), and answers 401 itself if ever mounted without auth.
  *
  * What a customer admin can do: edit five draft fields, mint a W1 preview
  * token, and unpublish (withdraw consent). Never publish: publishing needs MFA,
@@ -35,7 +35,7 @@ import { validatePortalCookieCsrfRequest, writePortalAudit } from './helpers';
  * published config, the publication authorization, user ids or the page id.
  */
 export const portalTrustPageRoutes = new Hono();
-portalTrustPageRoutes.use('*', portalAuthMiddleware, requirePortalTrustPageEditor);
+portalTrustPageRoutes.use('*', requirePortalTrustPageEditor);
 
 const NOT_FOUND = { error: 'Not found', code: 'NOT_FOUND' } as const;
 const PARTNER_HOME_REFUSED = { error: 'Only your provider can edit this page.', code: 'PORTAL_TRUST_EDITOR_REQUIRED' } as const;

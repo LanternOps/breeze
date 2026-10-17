@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // Trust Center W3d: customer org-admin edits of the org's trust page draft.
-// The router carries portal auth and the editor gate itself; services are mocked,
-// the gate middleware, CSRF check and the strict patch schema stay real.
+// The router carries the editor gate; services are mocked, the gate middleware,
+// CSRF check and the strict patch schema stay real.
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const PAGE_ID = '33333333-3333-4333-8333-333333333333';
@@ -66,20 +66,6 @@ vi.mock('../../db', () => ({
   runOutsideDbContext: <T,>(fn: () => T): T => fn(),
 }));
 
-// Portal auth: a test header stands in for a validated session; without it the real
-// middleware runs (and answers 401 for a request with no session).
-vi.mock('./auth', async (orig) => {
-  const actual = await orig<typeof import('./auth')>();
-  return {
-    ...actual,
-    portalAuthMiddleware: async (c: any, next: () => Promise<void>) => {
-      const raw = c.req.header('x-test-portal-auth');
-      if (!raw) return actual.portalAuthMiddleware(c, next);
-      c.set('portalAuth', JSON.parse(raw));
-      return next();
-    },
-  };
-});
 vi.mock('./helpers', async (orig) => ({
   ...(await orig<typeof import('./helpers')>()),
   writePortalAudit: m.audit,
@@ -102,8 +88,15 @@ const PAGE = {
   publicationAuthorizedByUserId: 'msp-user-1', publishedConfig: { secret: true }, createdByUserId: 'msp-user-1', updatedByUserId: 'msp-user-2',
 };
 
+// Portal auth is mounted in routes/portal/index.ts (trustPage.gate.test.ts covers that wiring); here a
+// test header stands in for a validated session, and without it no portalAuth is set at all.
 function app() {
   const a = new Hono();
+  a.use('/portal/trust-page/*', async (c, next) => {
+    const raw = c.req.header('x-test-portal-auth');
+    if (raw) c.set('portalAuth', JSON.parse(raw));
+    await next();
+  });
   a.route('/portal/trust-page', portalTrustPageRoutes);
   return a;
 }
