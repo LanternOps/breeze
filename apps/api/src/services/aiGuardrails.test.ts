@@ -920,7 +920,7 @@ describe('buildApprovalDescription — manage_tickets copy (P2-4, #4191)', () =>
       ticketId: TICKET_ID,
       content: 'the secret triage note body',
     });
-    expect(result.description).toBe(`Post private AI triage note on ticket #${TICKET_ID.slice(0, 8)}...`);
+    expect(result.description).toBe(`Post internal note on ticket #${TICKET_ID.slice(0, 8)}...`);
     expect(result.description).not.toContain('secret triage note body');
   });
 

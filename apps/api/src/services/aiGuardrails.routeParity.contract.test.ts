@@ -271,6 +271,15 @@ describe('manage_catalog archive_item requires catalog:delete, like POST /catalo
   });
 });
 
+describe('manage_catalog set_price/remove_price require catalog:write, like PUT/DELETE /catalog/items/:id/prices/:currencyCode (W02-D5, #6756)', () => {
+  it.each(['set_price', 'remove_price'])('%s: catalog:read alone is refused', (action) => {
+    expect(allows(parseGrants(['catalog:read']), 'manage_catalog', { action })).toBe(false);
+  });
+  it.each(['set_price', 'remove_price'])('%s: catalog:write is allowed (was unmapped: nobody could call it)', (action) => {
+    expect(allows(parseGrants(['catalog:write']), 'manage_catalog', { action })).toBe(true);
+  });
+});
+
 describe('query_webhooks requires webhooks:read, like GET /webhooks', () => {
   it('organizations:read without webhooks:read loses the AI webhook read', () => {
     expect(allows(parseGrants(['organizations:read']), 'query_webhooks')).toBe(false);

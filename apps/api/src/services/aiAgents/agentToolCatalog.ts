@@ -18,7 +18,7 @@ import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { m365ToolTiers } from '../aiToolsM365';
 import { googleToolTiers } from '../aiToolsGoogle';
 import {
-  TOOL_ACTION_INPUT_KEYS,
+  AGENT_HUMAN_ONLY_ACTIONS, TOOL_ACTION_INPUT_KEYS,
   checkGuardrails, isReadOnlyResolution, isNeverAgentTool,
 } from '../aiGuardrails';
 import { toolActionEnum } from '../aiToolActions';
@@ -532,7 +532,11 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
   if (memo) return memo;
   const tools: AgentToolCatalogToolDto[] = listAgentReachableTools().map((name) => {
     const actions = toolActionEnum(name);
-    const operations = actions ? actions.sort().map((a) => resolveOperation(name, a)) : [resolveOperation(name, null)];
+    // W02-D2 (#6756): a human-only ACTION is never offered as a picker
+    // operation, so it can never be written to an agent's allowlist.
+    const operations = actions
+      ? actions.sort().filter((a) => !AGENT_HUMAN_ONLY_ACTIONS.has(`${name}:${a}`)).map((a) => resolveOperation(name, a))
+      : [resolveOperation(name, null)];
     const baseTier = aiTools.get(name)!.tier;
     // Same reachability invariant as resolveOperation's tier check above —
     // throw rather than silently clamp a tier-4 tool into a false tier 3.

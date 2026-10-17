@@ -499,3 +499,114 @@ describe('tier-3 approval scope classification', () => {
     expect(TIER3_SUPERVISED_TOOLS.has('test_webhook')).toBe(true);
   });
 });
+
+// ── W02 (#6756): PSA + billing write classes ───────────────────────────────
+// Class table: docs/superpowers/plans/ai-mcp/2026-09-23-ai-full-control-w02-
+// psa-billing-writes.md, "Quorum amendments" → "Final per-action classes".
+describe('manage_tickets input-aware escalation (W02, #6756)', () => {
+  const T = '11111111-1111-4111-8111-111111111111';
+  const tier = (input: Record<string, unknown>) => checkGuardrails('manage_tickets', input);
+  it.each([
+    [{ action: 'comment', ticketId: T, content: 'x', isPublic: true }, 3, 'supervised'],
+    [{ action: 'comment', ticketId: T, content: 'x' }, 2, undefined],              // handler default is private
+    [{ action: 'comment', ticketId: T, content: 'x', isPublic: false }, 2, undefined],
+    [{ action: 'comment', ticketId: T, content: 'x', isPublic: 'true' }, 2, undefined], // handler writes private for a non-boolean
+    [{ action: 'update_status', ticketId: T, status: 'resolved' }, 3, 'supervised'],
+    [{ action: 'update_status', ticketId: T, statusName: 'Done' }, 3, 'supervised'],   // custom status: DB-resolved, fail safe
+    [{ action: 'update_status', ticketId: T, status: 'in_progress' }, 2, undefined],
+    [{ action: 'update_status', ticketId: T, status: 'closed' }, 2, undefined],
+    [{ action: 'update_fields', ticketId: T, fields: { submitterEmail: 'a@b.c' } }, 3, 'supervised'],
+    [{ action: 'update_fields', ticketId: T, fields: { submitterName: 'Pat' } }, 3, 'supervised'],
+    [{ action: 'update_fields', ticketId: T, fields: { submittedBy: null } }, 3, 'supervised'],
+    [{ action: 'update_fields', ticketId: T, fields: { priority: 'high' } }, 2, undefined],
+    [{ action: 'update_fields', ticketId: T }, 2, undefined],
+    [{ action: 'list', isPublic: true, status: 'resolved' }, 1, undefined],           // a read is never escalated
+  ])('%j → tier %i (%s)', (input, t, scope) => {
+    const r = tier(input);
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it('the three pairs are input-aware and absent from the static scope tables', () => {
+    for (const a of ['comment', 'update_status', 'update_fields']) {
+      expect(TIER3_INPUT_AWARE_ACTIONS.has(`manage_tickets:${a}`)).toBe(true);
+      expect(TIER3_ACTIONS.manage_tickets ?? []).not.toContain(a);
+      expect(TIER3_SUPERVISED_ACTIONS.manage_tickets ?? []).not.toContain(a);
+      expect(TIER3_FOUR_EYES_ACTIONS.manage_tickets ?? []).not.toContain(a);
+    }
+  });
+
+  it('approval descriptions say what reaches the customer and never echo content', () => {
+    const pub = tier({ action: 'comment', ticketId: T, content: 'SECRET-BODY', isPublic: true }).description ?? '';
+    expect(pub).toMatch(/public.*emails the requester/i);
+    expect(pub).not.toContain('SECRET-BODY');
+    expect(tier({ action: 'comment', ticketId: T, content: 'x' }).description).toMatch(/internal note/i);
+    expect(tier({ action: 'update_status', ticketId: T, status: 'resolved', resolutionNote: 'SECRET' }).description)
+      .toMatch(/resolved.*emails the requester/i);
+    expect(tier({ action: 'update_fields', ticketId: T, fields: { submitterEmail: 'x@y.z' } }).description)
+      .toMatch(/requester/i);
+  });
+});
+
+describe('W02 approval descriptions name what leaves the tenant (#6756)', () => {
+  it('channel create/update names the destination HOST, never the URL path (webhook paths carry tokens)', () => {
+    const d = checkGuardrails('manage_notification_channels', {
+      action: 'update', channelId: '22222222-2222-4222-8222-222222222222',
+      config: { webhookUrl: 'https://hooks.example.com/services/T000/B000/SECRETTOKEN' },
+    }).description ?? '';
+    expect(d).toContain('hooks.example.com');
+    expect(d).not.toContain('SECRETTOKEN');
+    expect(checkGuardrails('manage_notification_channels', {
+      action: 'create', type: 'email', name: 'Ops', config: { recipients: ['a@x.test', 'b@x.test'] },
+    }).description).toMatch(/email notification channel "Ops".*2 recipient/);
+  });
+  it('quote decline and catalog set_price say what they do', () => {
+    expect(checkGuardrails('manage_quotes', { action: 'decline', quoteId: '33333333-3333-4333-8333-333333333333', method: 'phone' }).description)
+      .toMatch(/DECLINED by the customer \(via phone\)/);
+    expect(checkGuardrails('manage_catalog', { action: 'set_price', catalogId: '44444444-4444-4444-8444-444444444444', currencyCode: 'usd', price: { unitPrice: 65 } }).description)
+      .toMatch(/Set the USD price of catalog item 44444444\.\.\. to 65/);
+  });
+});
+
+describe('W02 static classes (#6756)', () => {
+  it.each([
+    ['manage_tickets', 'edit_comment', 3, 'supervised'],
+    ['manage_tickets', 'delete_comment', 3, 'supervised'],
+    ['manage_tickets', 'move_org', 3, 'four_eyes'],
+    ['manage_tickets', 'create', 2, undefined],
+    ['manage_tickets', 'assign', 2, undefined],
+    ['manage_tickets', 'log_time_entry', 2, undefined],
+    ['manage_tickets', 'update_time_entry', 2, undefined],
+    ['manage_tickets', 'link_ticket', 2, undefined],
+    ['manage_tickets', 'link_device', 2, undefined],
+    ['manage_tickets', 'draft', 2, undefined],
+    ['manage_quotes', 'decline', 3, 'supervised'],
+    ['manage_quotes', 'create_pay_link', 3, 'supervised'],
+    ['manage_quotes', 'send', 3, 'four_eyes'],
+    ['manage_quotes', 'create_draft', 2, undefined],
+    ['manage_quotes', 'delete_draft', 2, undefined],
+    ['manage_quotes', 'add_catalog_line', 2, undefined],
+    ['manage_catalog', 'create_item', 2, undefined],
+    ['manage_catalog', 'update_item', 3, 'supervised'],
+    ['manage_catalog', 'archive_item', 3, 'supervised'],
+    ['manage_catalog', 'set_price', 3, 'supervised'],
+    ['manage_catalog', 'remove_price', 3, 'supervised'],
+    ['manage_catalog', 'set_org_price', 3, 'supervised'],
+    ['manage_catalog', 'remove_org_price', 3, 'supervised'],
+    ['manage_catalog', 'set_bundle_components', 3, 'supervised'],
+    ['manage_notification_channels', 'create', 3, 'supervised'],
+    ['manage_notification_channels', 'update', 3, 'supervised'],
+    ['manage_notification_channels', 'delete', 3, 'four_eyes'],
+    ['manage_notification_channels', 'test', 2, undefined],
+    ['manage_notification_channels', 'list', 1, undefined],
+    ['manage_saved_filters', 'create', 2, undefined],
+    ['manage_saved_filters', 'delete', 2, undefined],
+    ['manage_tags', 'add', 2, undefined],
+    ['manage_tags', 'remove', 2, undefined],
+    ['manage_tags', 'list', 1, undefined],
+  ])('%s:%s → tier %i (%s)', (tool, action, t, scope) => {
+    const r = checkGuardrails(tool, { action });
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+});
