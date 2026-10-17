@@ -572,7 +572,14 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     // click-actually-reorders behavior is covered by the row-order tests.)
     const dataHeaders = headers.slice(1, -1);
     expect(dataHeaders.length).toBe(COLUMN_IDS.length);
-    for (const th of dataHeaders) {
+    // #9038: Attention is deliberately unsortable until the counts are part of
+    // the list query (a client sort would only reorder one page). Pin that it
+    // is the ONLY exception and is still a proper column header.
+    const unsortable = dataHeaders.filter((th) => th.getAttribute('data-testid') === 'device-list-header-attention');
+    expect(unsortable).toHaveLength(1);
+    expect(unsortable[0]!.querySelector('button')).toBeNull();
+    expect(unsortable[0]!.getAttribute('scope')).toBe('col');
+    for (const th of dataHeaders.filter((h) => !unsortable.includes(h))) {
       // The hint lives on a real <button> inside the cell so sorting is
       // reachable by keyboard; the cell itself carries scope + aria-sort.
       const button = th.querySelector('button');

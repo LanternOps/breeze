@@ -1591,6 +1591,7 @@
       "os": "İşletim Sistemi",
       "role": "Rol",
       "status": "Durum",
+      "attention": "Dikkat",
       "cpu": "CPU %'si",
       "ram": "RAM %'si",
       "lastSeen": "Son Görülme",
@@ -1766,6 +1767,26 @@
       "equalTooltip": "Etkin sürümle eşleşiyor: {{version}}",
       "aheadTooltip": "{{version}} sabitlemesinin ilerisinde",
       "behindTooltip": "{{version}} sabitlemesinin gerisinde"
+    },
+    "attention": {
+      "alerts": {
+        "critical_one": "{{count}} kritik",
+        "critical_other": "{{count}} kritik",
+        "high_one": "{{count}} yüksek",
+        "high_other": "{{count}} yüksek",
+        "medium_one": "{{count}} orta",
+        "medium_other": "{{count}} orta",
+        "low_one": "{{count}} düşük",
+        "low_other": "{{count}} düşük",
+        "info_one": "{{count}} bilgi",
+        "info_other": "{{count}} bilgi"
+      },
+      "tickets_one": "{{count}} açık bilet",
+      "tickets_other": "{{count}} açık bilet",
+      "alertsTitle": "Açık uyarılar: {{breakdown}}",
+      "none": "Açık öğe yok",
+      "unavailable": "Uyarı ve bilet sayıları kullanılamıyor",
+      "loading": "Uyarı ve bilet sayıları yükleniyor"
     }
   },
   "deviceLogsTab": {

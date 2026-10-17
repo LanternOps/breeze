@@ -1591,6 +1591,7 @@
       "os": "Betriebssystem",
       "role": "Rolle",
       "status": "Status",
+      "attention": "Handlungsbedarf",
       "cpu": "CPU %",
       "ram": "RAM %",
       "lastSeen": "Zuletzt gesehen",
@@ -1766,6 +1767,26 @@
       "equalTooltip": "Entspricht der effektiven Version {{version}}",
       "aheadTooltip": "Vor dem Pin {{version}}",
       "behindTooltip": "Hinter dem Pin {{version}}"
+    },
+    "attention": {
+      "alerts": {
+        "critical_one": "{{count}} kritisch",
+        "critical_other": "{{count}} kritisch",
+        "high_one": "{{count}} hoch",
+        "high_other": "{{count}} hoch",
+        "medium_one": "{{count}} mittel",
+        "medium_other": "{{count}} mittel",
+        "low_one": "{{count}} niedrig",
+        "low_other": "{{count}} niedrig",
+        "info_one": "{{count}} Info",
+        "info_other": "{{count}} Infos"
+      },
+      "tickets_one": "{{count}} offenes Ticket",
+      "tickets_other": "{{count}} offene Tickets",
+      "alertsTitle": "Offene Warnungen: {{breakdown}}",
+      "none": "Nichts offen",
+      "unavailable": "Anzahl der Warnungen und Tickets nicht verfügbar",
+      "loading": "Anzahl der Warnungen und Tickets wird geladen"
     }
   },
   "deviceLogsTab": {

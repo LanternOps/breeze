@@ -1591,6 +1591,7 @@
       "os": "OS",
       "role": "Rol",
       "status": "Estado",
+      "attention": "Atención",
       "cpu": "CPU %",
       "ram": "RAM %",
       "lastSeen": "Visto por última vez",
@@ -1766,6 +1767,26 @@
       "equalTooltip": "Coincide con la versión efectiva {{version}}",
       "aheadTooltip": "Por delante del pin {{version}}",
       "behindTooltip": "Por detrás del pin {{version}}"
+    },
+    "attention": {
+      "alerts": {
+        "critical_one": "{{count}} crítica",
+        "critical_other": "{{count}} críticas",
+        "high_one": "{{count}} alta",
+        "high_other": "{{count}} altas",
+        "medium_one": "{{count}} media",
+        "medium_other": "{{count}} medias",
+        "low_one": "{{count}} baja",
+        "low_other": "{{count}} bajas",
+        "info_one": "{{count}} informativa",
+        "info_other": "{{count}} informativas"
+      },
+      "tickets_one": "{{count}} ticket abierto",
+      "tickets_other": "{{count}} tickets abiertos",
+      "alertsTitle": "Alertas abiertas: {{breakdown}}",
+      "none": "Nada pendiente",
+      "unavailable": "Recuentos de alertas y tickets no disponibles",
+      "loading": "Cargando recuentos de alertas y tickets"
     }
   },
   "deviceLogsTab": {
