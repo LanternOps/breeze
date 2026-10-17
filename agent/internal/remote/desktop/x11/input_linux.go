@@ -149,6 +149,50 @@ func (in *Injector) resolveKeycode(name string) (xproto.Keycode, error) {
 	return kc, nil
 }
 
+// LockStates reads the current Caps Lock and Num Lock states from the
+// server's modifier state. Num Lock's modifier bit is looked up from the
+// modifier mapping; numOK is false when Num_Lock is not bound to one.
+func (in *Injector) LockStates() (caps, num, numOK bool, err error) {
+	ptr, err := xproto.QueryPointer(in.conn.x, in.root).Reply()
+	if err != nil {
+		return false, false, false, fmt.Errorf("query pointer: %w", err)
+	}
+	caps = ptr.Mask&LockMask != 0
+	kc, _, ok := in.keymap.Resolve(0xFF7F) // Num_Lock
+	if !ok {
+		return caps, false, false, nil
+	}
+	mm, err := xproto.GetModifierMapping(in.conn.x).Reply()
+	if err != nil {
+		return caps, false, false, nil
+	}
+	codes := make([]byte, len(mm.Keycodes))
+	for i, c := range mm.Keycodes {
+		codes[i] = byte(c)
+	}
+	bit := modifierMaskForKeycode(int(mm.KeycodesPerModifier), codes, byte(kc))
+	if bit == 0 {
+		return caps, false, false, nil
+	}
+	return caps, ptr.Mask&bit != 0, true, nil
+}
+
+// TapKeyByName presses and releases a named key with no Shift handling. The
+// release is attempted even when the press failed, so the key is never left
+// down.
+func (in *Injector) TapKeyByName(name string) error {
+	kc, err := in.resolveKeycode(name)
+	if err != nil {
+		return err
+	}
+	downErr := in.key(kc, true)
+	upErr := in.key(kc, false)
+	if downErr != nil {
+		return downErr
+	}
+	return upErr
+}
+
 // Close releases the underlying X connection. Safe to call more than once.
 func (in *Injector) Close() {
 	if in == nil {

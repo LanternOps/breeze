@@ -87,6 +87,96 @@ groups:
           summary: "Abandoned DB transactions are holding pool permits on {{ $labels.instance }}"
           description: "Abandoned pool permits (transactions abandoned at their RLS prologue deadline or after the pool-acquire budget expired) continuously present for 3m; currently {{ $value }}. Check [db-pool-acquire], [db-wedged-backend] and [db-pool-admission] logs."
 
+      # #8840 (G): API saturation. On 2026-10-15 one tenant's stalled uploads
+      # held the request pool, requests queued for the full acquire budget, the
+      # acquire-timeout counter ticked and the fleet's sockets closed — and no
+      # rule below existed, so nobody was paged. Each of these reads a series the
+      # API already publishes; the unit tests are
+      # monitoring/rules/tests/breeze-saturation-alerts.test.yml.
+      #
+      # The pool and event-loop series are role-agnostic (the worker runs the
+      # same db module and lag monitor), so those rules include breeze-worker.
+      # `breeze_db_pool_admission_waiting` reads -1 in a process with no request
+      # pool; the thresholds are positive, so that never matches.
+      - alert: ApiDbPoolWaitersHigh
+        expr: max by (job, instance) (breeze_db_pool_admission_waiting{job=~"breeze-(api|worker).*"}) > 20
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB pool admission queue is backing up on {{ $labels.instance }}"
+          description: "{{ $value }} requests have been waiting for a transaction permit for 1m on {{ $labels.job }}. Requests are queueing toward DB_POOL_ACQUIRE_TIMEOUT_MS; check breeze_admission_level and the [db-pool-admission] logs for the tenant or route holding the pool."
+
+      - alert: ApiDbPoolWaitersHigh
+        expr: max by (job, instance) (breeze_db_pool_admission_waiting{job=~"breeze-(api|worker).*"}) > 100
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DB pool admission queue is saturated on {{ $labels.instance }}"
+          description: "{{ $value }} requests waiting for a transaction permit for 1m on {{ $labels.job }}. This is the 2026-10-15 stall shape: expect acquire timeouts, agent WS closes and web 500s next. Shed the offending ingest (admission controller / Caddy) and find the tenant holding the pool."
+
+      # The counter that ticked on 2026-10-15. Any acquire timeout means a
+      # request waited the whole DB_POOL_ACQUIRE_TIMEOUT_MS budget and was
+      # answered 503; that is already an outage for that caller, so there is no
+      # `for:` grace. `timer` (on-time vs late, i.e. event-loop stall) is summed
+      # away here; split on it when investigating.
+      - alert: ApiDbPoolAcquireTimeouts
+        expr: sum by (job, instance) (increase(breeze_db_pool_acquire_timeouts_total{job=~"breeze-(api|worker).*"}[5m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB pool acquire timeouts on {{ $labels.instance }}"
+          description: "{{ $value | humanize }} request(s) on {{ $labels.job }} exhausted DB_POOL_ACQUIRE_TIMEOUT_MS waiting for a pool permit in the last 5m and were answered 503. Check breeze_db_pool_admission_waiting and the [db-pool-acquire] logs."
+
+      # `_window_max_seconds` is a high-water mark over the monitor's retention
+      # window (DEFAULT_RETENTION_MS, 2m), so one stall keeps it raised for 2m
+      # on its own. `for: 3m` therefore requires stalls to recur beyond a single
+      # window before this fires; a one-off GC pause or a single large JSON parse
+      # stays silent. 500ms is half the API's own starvation threshold
+      # (EVENT_LOOP_STARVATION_WARN_MS, default 1s).
+      - alert: ApiEventLoopLagHigh
+        expr: max by (job, instance) (breeze_nodejs_eventloop_lag_window_max_seconds{job=~"breeze-(api|worker).*"}) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Event-loop lag is sustained on {{ $labels.instance }}"
+          description: "Worst event-loop delay on {{ $labels.job }} has stayed above 500ms (currently {{ $value | humanizeDuration }}) for 3m. Timers fire late, pool-acquire deadlines slip and WS pings time out; look for a hot synchronous path or a stalled upload parse."
+
+      # W08 admission controller. Level 2 sheds standard-class agent traffic;
+      # level 3 is critical. The controller moves levels on its own, so this is
+      # the "the API is defending itself" page: find out what it is defending
+      # against. The level gauge is API-only (the worker has no controller).
+      - alert: ApiAdmissionDegraded
+        expr: max by (job, instance) (breeze_admission_level{job=~"breeze-api.*"}) >= 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Admission controller is at a degraded level on {{ $labels.instance }}"
+          description: "{{ $labels.job }} has been at admission level {{ $value }} (2 = degraded, 3 = critical) for 2m. Standard traffic is refused only when BREEZE_ADMISSION_MODE=enforce (ApiAdmissionShedding fires on actual refusals); in observe mode this is saturation only. Check breeze_admission_signal_db_wait_seconds and breeze_admission_signal_lag_seconds for which signal drove it."
+
+      # Only `outcome="shed"` (the request was actually refused) counts;
+      # `would_shed` is observe mode and is informational.
+      - alert: ApiAdmissionShedding
+        expr: sum by (job, instance) (increase(breeze_admission_decisions_total{job=~"breeze-api.*", outcome="shed"}[5m])) > 50
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Admission control refused {{ $value | humanize }} agent requests in 5m on {{ $labels.instance }}"
+          description: "More than 50 agent requests were shed by admission control on {{ $labels.job }} in the last 5m. Agents are backing off (Retry-After); split breeze_admission_decisions_total by class, route and reason to see what is being refused."
+
+      # TODO(#8838): AgentWsMassClose. A WS close-by-reason counter does not
+      # exist on main yet; #8838 plans `breeze_agent_ws_closed_total{reason}`.
+      # When it lands, the rule is roughly:
+      #   sum by (job, instance) (increase(breeze_agent_ws_closed_total{job=~"breeze-api.*", reason="4001"}[5m])) > <N>
+      # with a `for: 1m` and a fires/silent pair in the saturation test file.
+      # Until then, mass closes are only visible as a drop in
+      # breeze_agent_ws_connections.
+
   - name: breeze-infrastructure-alerts
     interval: 30s
     rules:
@@ -400,3 +490,56 @@ groups:
       # to) false, so the blast radius of the flag stays visible either way.
       - record: breeze:authenticator_l4_basis:rate15m
         expr: sum(rate(breeze_authenticator_l4_basis_total[15m])) by (basis, outcome)
+
+  # Scaling W07 (#8146): the spec §3 capacity KPIs per instance and per region.
+  # Recording rules only; no alert reads them. The dashboard is
+  # monitoring/grafana/dashboards/breeze-agent-capacity.json and the arithmetic
+  # is pinned by monitoring/rules/tests/breeze-capacity-kpis.test.yml.
+  #
+  # `region` comes from the scrape config (deploy/prometheus-remote-scrape.example.yml);
+  # a single-host stack without it still gets the per-instance rules. The
+  # db_tx rule joins postgres-exporter to API series `by (region)`, so the
+  # exporter job needs the same `region` label. Edit `datname="breeze"` if the
+  # deployment renamed the database (compose default POSTGRES_DB=breeze).
+  #
+  # The `> 0` guards turn an empty fleet into "no data", never +Inf. With more
+  # than one API instance per region the per-instance cost is approximate (HTTP
+  # spreads across instances, sockets do not); the region figure is authoritative.
+  - name: breeze-capacity-kpis
+    interval: 30s
+    rules:
+      - record: breeze:agent_ws_connections:instance
+        expr: sum by (region, instance) (breeze_agent_ws_connections{job=~"breeze-api.*"})
+
+      - record: breeze:agent_ws_connections:region
+        expr: sum by (region) (breeze_agent_ws_connections{job=~"breeze-api.*"})
+
+      - record: breeze:api_cpu_ms_per_minute:instance
+        expr: 60000 * sum by (region, instance) (rate(breeze_process_cpu_seconds_total{job=~"breeze-api.*"}[5m]))
+
+      - record: breeze:agent_cost_cpu_ms_per_agent_minute:instance
+        expr: breeze:api_cpu_ms_per_minute:instance / (breeze:agent_ws_connections:instance > 0)
+
+      - record: breeze:agent_cost_cpu_ms_per_agent_minute:region
+        expr: sum by (region) (breeze:api_cpu_ms_per_minute:instance) / (breeze:agent_ws_connections:region > 0)
+
+      - record: breeze:heartbeat_latency_seconds:p50_region
+        expr: histogram_quantile(0.50, sum by (region, le) (rate(http_request_duration_seconds_bucket{job=~"breeze-api.*", route="/api/v1/agents/:id/heartbeat"}[5m])))
+
+      - record: breeze:heartbeat_latency_seconds:p95_region
+        expr: histogram_quantile(0.95, sum by (region, le) (rate(http_request_duration_seconds_bucket{job=~"breeze-api.*", route="/api/v1/agents/:id/heartbeat"}[5m])))
+
+      - record: breeze:heartbeat_latency_seconds:p99_region
+        expr: histogram_quantile(0.99, sum by (region, le) (rate(http_request_duration_seconds_bucket{job=~"breeze-api.*", route="/api/v1/agents/:id/heartbeat"}[5m])))
+
+      - record: breeze:heartbeat_latency_seconds:p95_instance
+        expr: histogram_quantile(0.95, sum by (region, instance, le) (rate(http_request_duration_seconds_bucket{job=~"breeze-api.*", route="/api/v1/agents/:id/heartbeat"}[5m])))
+
+      - record: breeze:db_tx_per_agent_minute:region
+        expr: 60 * sum by (region) (rate(pg_stat_database_xact_commit{datname="breeze"}[5m])) / (breeze:agent_ws_connections:region > 0)
+
+      # The W0a hand-off (G2): production requests per agent-minute, comparable
+      # with the simulator's requestsPerAgentMinute (agent routes plus the
+      # workspace crawl-config poll the simulator also models).
+      - record: breeze:agent_requests_per_agent_minute:region
+        expr: 60 * sum by (region) (rate(http_requests_total{job=~"breeze-api.*", route=~"/api/v1/agents/.*|/api/v1/workspace/agent/.*"}[5m])) / (breeze:agent_ws_connections:region > 0)

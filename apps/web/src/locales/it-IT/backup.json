@@ -1000,6 +1000,8 @@
     "codeExpires": "Scade alle {{time}}",
     "overdueNotice": "Nessun check-in ancora — controlla la console di ripristino.",
     "fileIndexPreparing": "Preparazione dell'indice dei file per i riferimenti tra snapshot…",
+    "snapshotsLoadFailed": "Impossibile caricare gli snapshot. Ricarica la pagina per riprovare.",
+    "noSnapshots": "Nessuno snapshot ripristinabile bare-metal per ora. È necessario un backup completo della macchina contrassegnato come ripristinabile bare-metal.",
     "statusFailed": "Ripristino non riuscito",
     "statusRefused": "Ripristino rifiutato",
     "status": {
@@ -1009,7 +1011,8 @@
       "restoring": "Ripristino in corso",
       "validated": "Convalidato",
       "rebooted": "Riavviato",
-      "checked_in": "Check-in effettuato"
+      "checked_in": "Check-in effettuato",
+      "completed": "Completato"
     }
   },
   "backupHealth": {

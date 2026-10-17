@@ -137,7 +137,8 @@
     "approvedCompleted": "Aprobado · completado",
     "input": "Entrada:",
     "error": "Error:",
-    "output": "Salida:"
+    "output": "Salida:",
+    "outputExpired": "La salida expiró según la política de retención"
   },
   "aiForOfficePage": {
     "title": "AI para Office",

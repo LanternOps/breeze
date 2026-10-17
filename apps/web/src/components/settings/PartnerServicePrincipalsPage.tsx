@@ -5,24 +5,17 @@ import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { handleActionError, runAction } from '../../lib/runAction';
+import {
+  PARTNER_SERVICE_PRINCIPAL_READ_SCOPES,
+  PARTNER_SERVICE_PRINCIPAL_SCOPES,
+  PARTNER_SERVICE_PRINCIPAL_SCOPE_PRESETS,
+  partnerServicePrincipalScopeI18nKey,
+} from '@breeze/shared';
 
-const READ_SCOPES = [
-  'organizations:read', 'sites:read', 'devices:read', 'inventory:read',
-  'configuration:read', 'scripts:read', 'backup-configuration:read', 'custom-fields:read',
-] as const;
-// Provisioning write scopes (#3243): opt-in per principal, NEVER part of the
-// default selection — a default-scoped principal must stay read-only.
-const WRITE_SCOPES = ['organizations:write', 'sites:write', 'enrollment-keys:write', 'contracts:write', 'tickets:write'] as const;
-// Opt-in read scopes: offered, never pre-selected (alerts:read exposes alert
-// titles/messages, tickets:read exposes ticket bodies/comments, across every
-// org the principal reaches).
-// device-status:read (#7577) exposes live online/last-seen/agent-version state
-// and is not implied by devices:read.
-const OPT_IN_READ_SCOPES = ['alerts:read', 'tickets:read', 'device-status:read'] as const;
-// MCP scopes: opt-in, never pre-selected. They admit the principal's key to
-// the MCP endpoint across every org of the partner; nothing on the Partner API.
-const MCP_SCOPES = ['ai:read', 'ai:write', 'ai:execute', 'ai:execute_admin'] as const;
-const AVAILABLE_SCOPES = [...READ_SCOPES, ...OPT_IN_READ_SCOPES, ...WRITE_SCOPES, ...MCP_SCOPES] as const;
+// The scope registry, task-named presets and scope ordering live in
+// @breeze/shared (#8173) so this dialog cannot drift from the API's allowlist.
+const READ_SCOPES = PARTNER_SERVICE_PRINCIPAL_READ_SCOPES;
+const AVAILABLE_SCOPES = PARTNER_SERVICE_PRINCIPAL_SCOPES;
 
 type PrincipalKey = {
   id: string;
@@ -324,19 +317,24 @@ export default function PartnerServicePrincipalsPage() {
       </tbody></table></div>
     </section>)}
 
-    {editing && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-lg space-y-4 rounded-lg border bg-card p-6 shadow-lg">
+    {editing && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div data-testid="principal-dialog" className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col gap-4 rounded-lg border bg-card p-6 shadow-lg">
+      <div data-testid="principal-dialog-body" className="min-h-0 flex-1 space-y-4 overflow-y-auto">
       <h2 className="font-semibold">{editing === 'new' ? t('partnerServicePrincipals.create') : t('partnerServicePrincipals.edit')}</h2>
       <label className="block text-sm">{t('partnerServicePrincipals.name')}<input className="mt-1 w-full rounded border bg-background p-2" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
       <label className="block text-sm">{t('partnerServicePrincipals.principalDescription')}<textarea className="mt-1 w-full rounded border bg-background p-2" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
-      <fieldset><legend className="text-sm">{t('partnerServicePrincipals.scopes')}</legend>{editingNonOwner && <p data-testid="owner-only-edit-notice" className="mt-1 text-xs text-muted-foreground">{t('partnerServicePrincipals.ownerOnlyEditNotice', { owner: ownerName(editingNonOwner) })}</p>}<div className="mt-1 grid grid-cols-2 gap-1">{AVAILABLE_SCOPES.map((scope) => {
+      <fieldset><legend className="text-sm">{t('partnerServicePrincipals.scopes')}</legend>{editingNonOwner && <p data-testid="owner-only-edit-notice" className="mt-1 text-xs text-muted-foreground">{t('partnerServicePrincipals.ownerOnlyEditNotice', { owner: ownerName(editingNonOwner) })}</p>}{editing === 'new' && <div className="mt-2" data-testid="scope-presets">
+        <p className="text-xs text-muted-foreground">{t('partnerServicePrincipals.presetsHint')}</p>
+        <div className="mt-1 flex flex-wrap gap-1">{PARTNER_SERVICE_PRINCIPAL_SCOPE_PRESETS.map((preset) => <button key={preset.id} type="button" data-testid={`scope-preset-${preset.id}`} title={t(/* i18n-dynamic */ `partnerServicePrincipals.presets.${preset.id}.description`)} className="rounded border px-2 py-1 text-xs hover:bg-muted" onClick={() => setDraft({ ...draft, scopes: [...preset.scopes] })}>{t(/* i18n-dynamic */ `partnerServicePrincipals.presets.${preset.id}.label`)}</button>)}</div>
+      </div>}<div className="mt-2 grid gap-2 max-h-72 overflow-y-auto">{AVAILABLE_SCOPES.map((scope) => {
         // A non-owner may remove a scope the principal holds but not add one.
         const addBlocked = editingNonOwner !== null && !editingNonOwner.scopes.includes(scope);
-        return <label key={scope} className={`text-xs${addBlocked ? ' cursor-not-allowed opacity-50' : ''}`} title={addBlocked && editingNonOwner ? t('partnerServicePrincipals.ownerOnlyScopeTooltip', { owner: ownerName(editingNonOwner) }) : undefined}><input type="checkbox" data-testid={`scope-checkbox-${scope}`} disabled={addBlocked} checked={draft.scopes.includes(scope)} onChange={(event) => setDraft({ ...draft, scopes: event.target.checked ? [...draft.scopes, scope] : draft.scopes.filter((item) => item !== scope) })} /> {scope}</label>;
+        return <label key={scope} className={`block text-xs${addBlocked ? ' cursor-not-allowed opacity-50' : ''}`} title={addBlocked && editingNonOwner ? t('partnerServicePrincipals.ownerOnlyScopeTooltip', { owner: ownerName(editingNonOwner) }) : undefined}><input type="checkbox" data-testid={`scope-checkbox-${scope}`} disabled={addBlocked} checked={draft.scopes.includes(scope)} onChange={(event) => setDraft({ ...draft, scopes: event.target.checked ? [...draft.scopes, scope] : draft.scopes.filter((item) => item !== scope) })} /> <span className="font-mono">{scope}</span><span data-testid={`scope-description-${scope}`} className="block pl-5 text-muted-foreground">{t(/* i18n-dynamic */ `partnerServicePrincipals.scopeDescriptions.${partnerServicePrincipalScopeI18nKey(scope)}`)}</span></label>;
       })}</div>{writeScopeMissingRestrictions && <p data-testid="write-scope-restrictions-required" className="mt-1 text-xs text-destructive">{t('partnerServicePrincipals.writeScopeRestrictionsRequired')}</p>}</fieldset>
       <label className="block text-sm">{t('partnerServicePrincipals.sourceCidrs')}<textarea className="mt-1 w-full rounded border bg-background p-2 font-mono" value={draft.sourceCidrs} onChange={(event) => setDraft({ ...draft, sourceCidrs: event.target.value })} /></label>
       <label className="block text-sm">{t('partnerServicePrincipals.expiresAt')}<input type="datetime-local" className="mt-1 w-full rounded border bg-background p-2" value={draft.expiresAt} onChange={(event) => setDraft({ ...draft, expiresAt: event.target.value })} /></label>
       {nonOwnerLoosens && editingNonOwner && <p data-testid="owner-only-widening" className="text-xs text-destructive">{t('partnerServicePrincipals.ownerOnlyWidening', { owner: ownerName(editingNonOwner) })}</p>}
-      <div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => setEditing(null)}>{t('partnerServicePrincipals.cancel')}</button><button data-testid="save-principal" disabled={writeScopeMissingRestrictions || nonOwnerLoosens} className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void savePrincipal()}>{t('partnerServicePrincipals.save')}</button></div>
+      </div>
+      <div className="flex shrink-0 justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => setEditing(null)}>{t('partnerServicePrincipals.cancel')}</button><button data-testid="save-principal" disabled={writeScopeMissingRestrictions || nonOwnerLoosens} className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void savePrincipal()}>{t('partnerServicePrincipals.save')}</button></div>
     </div></div>}
 
     {issueTarget && <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-4"><div className="w-full max-w-md space-y-4 rounded-lg border bg-card p-6 shadow-lg"><h2 className="font-semibold">{t('partnerServicePrincipals.issueKey')}</h2><label className="block text-sm">{t('partnerServicePrincipals.keyName')}<input aria-label={t('partnerServicePrincipals.keyName')} className="mt-1 w-full rounded border bg-background p-2" value={keyName} onChange={(event) => setKeyName(event.target.value)} /></label><div className="flex justify-end gap-2"><button className="rounded border px-3 py-2" onClick={() => { setIssueTarget(null); setKeyName(''); }}>{t('partnerServicePrincipals.cancel')}</button><button data-testid="confirm-issue-key" disabled={issuing} className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" onClick={() => void issueKey()}>{t('partnerServicePrincipals.issue')}</button></div></div></div>}

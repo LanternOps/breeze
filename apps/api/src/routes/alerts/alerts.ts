@@ -790,6 +790,7 @@ alertsRoutes.post(
               status: 'resolved',
               resolvedAt: now,
               resolvedBy: auth.user.id,
+              resolutionReason: 'manual',
             })
             .where(and(eq(alerts.id, alert.id), eq(alerts.status, alert.status)))
             .returning({ id: alerts.id });
@@ -1049,6 +1050,7 @@ alertsRoutes.post(
         status: 'resolved',
         resolvedAt,
         resolvedBy: auth.user.id,
+        resolutionReason: 'manual',
         resolutionNote: data.note
       })
       .where(buildResolveAlertCas(alertId))

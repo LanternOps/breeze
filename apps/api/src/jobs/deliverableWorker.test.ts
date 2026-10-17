@@ -155,7 +155,7 @@ describe('handleContractEvent (contract-events consumer, spec §5.4)', () => {
   });
 
   it('ignores every other contract event type', async () => {
-    for (const type of ['contract.activated', 'contract.invoiced', 'contract.paused', 'contract.expired', 'contract.auto_renewed', 'contract.renewal_notice'] as const) {
+    for (const type of ['contract.activated', 'contract.invoiced', 'contract.paused', 'contract.expired', 'contract.auto_renewed', 'contract.renewal_notice', 'contract.hour_block_threshold'] as const) {
       await handleContractEvent({ type, contractId: 'c1', orgId: 'org1', partnerId: 'p1' }, AS_OF);
     }
     expect(cancelMock).not.toHaveBeenCalled();

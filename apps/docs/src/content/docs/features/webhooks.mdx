@@ -138,6 +138,14 @@ Ticket events are published from the ticketing transactional outbox with **id-on
 | `ticket.assigned` | `assigneeId` (`null` when unassigned), `actorPrincipalId` | The assignee changed. `actorPrincipalId` is the service principal that made the change (`null` for people and the system), so a mirroring integration can skip its own assignments |
 | `ticket.sla_breached` | `assigneeId` | A response or resolution SLA target was missed |
 
+### Migration Window Events
+
+A ticket migration window lets a partner admin import ticket history from another system without notifying anyone or firing per-ticket events. Nothing the import writes produces a ticket event. When the window closes, each organization in it gets one summary event.
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
+
 ### Other Events
 
 | Event | Description |
@@ -534,6 +542,10 @@ All webhook routes require authentication and are scoped to `organization`, `par
 - **Managing** (create, update, delete, test, retry) requires `organizations:write`.
 
 `webhooks:read` is granted by default to Org Admin, Org Technician and Partner Technician; Partner Admin holds it through `*:*`. In the dashboard, a user without `webhooks:read` does not see the Webhooks tab under Integrations, and a user without `organizations:write` sees webhooks and their delivery history without the create, edit, delete, test, pause/resume or retry controls. See [Users & Roles](/reference/users-and-roles/#permission-model) to grant either permission to a role.
+
+<Aside type="caution" title="Upgrading to v0.122.1: some roles lose webhook visibility">
+  Before v0.122.1, `organizations:read` was enough to view webhooks. The upgrade grants `webhooks:read` to the built-in roles above and to every custom role that holds `organizations:write`, but not to viewer, billing or security-approver roles. **Partner Viewer** and **Partner Security Approver** no longer see webhooks, and a **custom role with `organizations:read` but not `organizations:write` loses access to webhooks and their delivery history until an administrator adds `webhooks:read` to it** under **Settings → Roles**. Self-hosters can find those roles in the upgrade log: the migration logs a `webhooks-read-permission:` warning with their count and up to 20 names.
+</Aside>
 
 ---
 

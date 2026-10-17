@@ -73,7 +73,13 @@ type FakeState = {
   snapshots: StorageSnapshotRow[];
   config: { provider: string; providerConfig: Record<string, unknown> } | null;
   indexed: Map<string, string[]>;
-  origins: Array<{ originSnapshotId: string; originOrgId: string; originDeviceId: string; originStorageIdentity: string }>;
+  origins: Array<{
+    originSnapshotId: string;
+    originOrgId: string;
+    originDeviceId: string;
+    originStorageIdentity: string;
+    originKeyRoot?: { keyLayout: string; keyPrefix: string | null };
+  }>;
   sessions: Map<string, StorageSessionRow>;
   command: { status: string; deviceId: string } | null;
   revoked: Array<{ id: string; reason: string }>;
@@ -114,6 +120,7 @@ function baseSnapshot(overrides: Partial<StorageSnapshotRow> = {}): StorageSnaps
     snapshotId: SNAP,
     storageIdentity: IDENTITY,
     keyLayout: 'legacy_flat',
+    keyPrefix: null,
     fileIndexStatus: 'complete',
     fileIndexManifestSha256: MANIFEST_SHA,
     fileIndexError: null,
@@ -1692,5 +1699,92 @@ describe('restore integrity enforcement at delivery', () => {
     const outcome = deliverBrokeredReadCommand(shape(restorePayload()), ctx({ type }), deps);
     await expect(outcome).rejects.toThrow('statement timeout');
     await expect(outcome).rejects.not.toBeInstanceOf(CommandDeliveryRefusedError);
+  });
+});
+
+// #7081: a read session composes physical keys from the snapshot's recorded
+// key root; external refs must resolve under the same root (I4).
+describe('snapshot key root (#7081)', () => {
+  const PREFIX = 'msp/acme';
+  const P_PAIR = { keyLayout: 'prefixed_flat', keyPrefix: PREFIX };
+  const LEGACY_PAIR = { keyLayout: 'legacy_flat', keyPrefix: null };
+
+  function prefixedState(): FakeState {
+    const state = makeState();
+    // The helper's attestation describes the logical layout (I6).
+    state.snapshots = [makeSnapshot({
+      keyLayout: 'prefixed_flat',
+      keyPrefix: PREFIX,
+      integrityStatus: 'attested',
+      attestation: makeAttestation({ keyLayout: 'legacy_flat' }),
+    })];
+    return state;
+  }
+
+  const presigned = (deps: { presignGet: { mock: { calls: unknown[][] } } }) =>
+    deps.presignGet.mock.calls.map((c) => (c[0] as { key: string }).key);
+
+  it('presigns a prefixed snapshot\'s own keys under its root and answers logical keys', async () => {
+    const state = prefixedState();
+    const { deps, row } = await mintSession(state);
+    const keys = [`snapshots/${SNAP}/manifest.json`, `snapshots/${SNAP}/files/a.txt`];
+    const result = await resolveStorageSessionObjects(row, keys, deps);
+    expect(result).toMatchObject({ status: 200, body: { denied: [] } });
+    if (result.status !== 200) return;
+    expect(result.body.objects.map((o) => o.key)).toEqual(keys);
+    expect(presigned(deps)).toEqual(keys.map((k) => `${PREFIX}/${k}`));
+  });
+
+  it('grants an external ref of a prefixed snapshot only when its origin has the same root', async () => {
+    const external = 'snapshots/snap-older/files/c.txt';
+    for (const [originKeyRoot, granted] of [[P_PAIR, true], [LEGACY_PAIR, false], [{ keyLayout: 'prefixed_flat', keyPrefix: 'msp/other' }, false], [undefined, false]] as const) {
+      const state = prefixedState();
+      state.origins[0]!.originKeyRoot = originKeyRoot;
+      const { deps, row } = await mintSession(state);
+      const result = await resolveStorageSessionObjects(row, [external], deps);
+      expect(result.status).toBe(200);
+      if (result.status !== 200) continue;
+      expect(result.body.objects.map((o) => o.key)).toEqual(granted ? [external] : []);
+      expect(presigned(deps)).toEqual(granted ? [`${PREFIX}/${external}`] : []);
+    }
+  });
+
+  it('denies an external ref of a legacy snapshot whose recorded origin root differs, and keeps granting one with no row left', async () => {
+    const external = 'snapshots/snap-older/files/c.txt';
+    const state = makeState();
+    state.origins[0]!.originKeyRoot = P_PAIR;
+    const { deps, row } = await mintSession(state);
+    expect(await resolveStorageSessionObjects(row, [external], deps))
+      .toMatchObject({ status: 200, body: { objects: [], denied: [external] } });
+
+    const unchanged = makeState();
+    const second = await mintSession(unchanged);
+    const result = await resolveStorageSessionObjects(second.row, [external], second.deps);
+    expect(result).toMatchObject({ status: 200, body: { denied: [] } });
+    expect(presigned(second.deps)).toEqual([external]);
+  });
+
+  it.each([
+    ['a prefixed row without a prefix', { keyLayout: 'prefixed_flat', keyPrefix: null }],
+    ['a prefix that is not in normalized form', { keyLayout: 'prefixed_flat', keyPrefix: '/msp/acme/' }],
+    ['a reserved prefix segment', { keyLayout: 'prefixed_flat', keyPrefix: 'x/snapshots' }],
+  ])('refuses delivery for %s (key_layout_unsupported)', async (_name, pair) => {
+    const state = makeState();
+    state.snapshots = [makeSnapshot({ ...pair, attestation: makeAttestation({ keyLayout: 'legacy_flat' }), integrityStatus: 'attested' })];
+    const deps = makeDeps(state);
+    await expect(deliverBrokeredReadCommand(restorePayload(), ctx(), deps))
+      .rejects.toThrow('This backup was written in a storage format this server version cannot read.');
+    expect(deps.recordDispatch).toHaveBeenCalledWith('backup_restore', 'refused', 'key_layout_unsupported');
+    expect(state.sessions.size).toBe(0);
+  });
+
+  it('ends a session whose snapshot root became unreadable', async () => {
+    const state = prefixedState();
+    const { deps, row } = await mintSession(state);
+    state.snapshots = [{ ...state.snapshots[0]!, keyPrefix: 'x/snapshots' }];
+    const result = await resolveStorageSessionObjects(row, [`snapshots/${SNAP}/manifest.json`], deps);
+    expect(result).toMatchObject({ status: 410 });
+    expect(state.revoked).toEqual([{ id: row.id, reason: 'storage_changed' }]);
+    expect(deps.presignGet).not.toHaveBeenCalled();
   });
 });

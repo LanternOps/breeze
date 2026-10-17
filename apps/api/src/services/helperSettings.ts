@@ -60,6 +60,16 @@ export interface HelperSettings {
    * the helper settings (120s) — mode changes land within TTL + heartbeat.
    */
   lifecycleMode?: 'auto' | 'always-on' | 'on-demand';
+  /**
+   * Endpoint messaging rollout flag (#8741), resolved per device. Absent on
+   * entries cached before this field existed; consumers treat absent as off.
+   *
+   * `allowUserReply` (#8743 W03): whether the person at the device may answer
+   * in a technician-opened live chat. Default ON when the policy is silent
+   * (owner decision); a present non-boolean reads as off (fail closed).
+   * Snapshotted on each conversation at open.
+   */
+  endpointMessaging?: { enabled: boolean; allowUserReply: boolean };
 }
 
 const HELPER_DEFAULTS: HelperSettings = {
@@ -67,7 +77,15 @@ const HELPER_DEFAULTS: HelperSettings = {
   showOpenPortal: true,
   showDeviceInfo: true,
   showRequestSupport: true,
+  endpointMessaging: { enabled: false, allowUserReply: true },
 };
+
+/** Absent => true (default on); boolean => itself; anything else => false. */
+function allowUserReplyFrom(raw: unknown): boolean {
+  const v = (raw as { allowUserReply?: unknown } | null | undefined)?.allowUserReply;
+  if (v === undefined) return true;
+  return v === true;
+}
 
 /** #8142: helper's own rules, as the policy set must apply them (raw partner, no role/OS filter). */
 const HELPER_APPLICABILITY: ApplicabilityRule = { ownership: 'orgOrPartner', partnerTarget: 'partner', roleOs: 'none' };
@@ -99,6 +117,10 @@ export function helperSettingsFromRows(rows: readonly HelperRankRow[]): HelperSe
     lifecycleMode: s.lifecycleMode === 'auto' || s.lifecycleMode === 'always-on' || s.lifecycleMode === 'on-demand'
       ? s.lifecycleMode
       : undefined,
+    endpointMessaging: {
+      enabled: (s.endpointMessaging as { enabled?: unknown } | null | undefined)?.enabled === true,
+      allowUserReply: allowUserReplyFrom(s.endpointMessaging),
+    },
   };
 }
 
@@ -203,6 +225,11 @@ export interface HelperConfigUpdateOptions extends DevicePolicySetOpts {
   skipCacheRead?: boolean;
   /** Source of the legacy organizations.settings.helper flag; defaults to getOrgHelperSettings. */
   loadOrgHelperSettings?: (orgId: string) => Promise<{ enabled: boolean }>;
+  /**
+   * #8616: resolve without writing the per-device Redis entry (the heartbeat
+   * sets it when its own hierarchy load failed; see PamConfigUpdateOptions).
+   */
+  skipCacheWrite?: boolean;
 }
 
 function helperCacheKey(deviceId: string): string {
@@ -256,7 +283,7 @@ export async function buildHelperConfigUpdate(
     settings = { ...HELPER_DEFAULTS, enabled: orgEnabled };
   }
 
-  const redis = getRedis();
+  const redis = opts?.skipCacheWrite ? null : getRedis();
   if (redis) {
     try {
       await redis.set(helperCacheKey(deviceId), JSON.stringify(settings), 'EX', HELPER_CACHE_TTL_SECONDS);

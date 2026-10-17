@@ -4,6 +4,10 @@ import { requestCorrelationId } from '../services/safeRequestLabel';
 import { captureMessage } from '../services/sentry';
 import { createReportThrottle } from '../utils/reportThrottle';
 import { bodyLimitForPath, type BodyLimitRule } from './bodyLimit';
+import './tunnelHostDispatch'; // ContextVariableMap augmentation for `tunnelSurface`
+
+/** Representative path whose policy tunnel-host requests get (same as path mode). */
+const TUNNEL_HOST_POLICY_PATH = '/api/v1/tunnel-http/x';
 
 /**
  * Telemetry for every 413 the API raises on a body-size limit.
@@ -131,12 +135,17 @@ export function createGlobalBodyLimitMiddleware(
   telemetry: BodyLimitTelemetry = {}
 ): MiddlewareHandler {
   return async (c, next) => {
+    // Tunnel hosts pick their own path, so the path-keyed policy (and the
+    // /oauth skip) would let a device choose its cap. They get exactly the
+    // policy path mode gets today.
+    const tunnel = c.get('tunnelSurface') === true;
+
     // oidc-provider reads the raw Node IncomingMessage stream itself.
-    if (c.req.path === '/oauth' || c.req.path.startsWith('/oauth/')) {
+    if (!tunnel && (c.req.path === '/oauth' || c.req.path.startsWith('/oauth/'))) {
       return next();
     }
 
-    const policy = bodyLimitForPath(c.req.path);
+    const policy = bodyLimitForPath(tunnel ? TUNNEL_HOST_POLICY_PATH : c.req.path);
     return bodyLimit({
       maxSize: policy.maxSize,
       onError: (ctx) => {

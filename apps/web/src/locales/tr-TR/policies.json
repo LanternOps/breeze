@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl'si"
+        "portalUrl": "portalUrl'si",
+        "endpointMessaging": "Uç nokta mesajları",
+        "endpointMessagingHelp": "Teknisyenlerin cihazdaki kişiye mesaj göndermesini sağlar.",
+        "allowUserReply": "Kullanıcının yanıtlarına izin ver",
+        "allowUserReplyHelp": "Cihazdaki kişinin, teknisyenin başlattığı bir sohbette yanıt vermesine izin verir. Kapalıyken sohbetler tek yönlüdür."
       },
       "inlineEntityPicker": {
         "search": "Ara...",
@@ -793,25 +797,6 @@
         "thisPolicyOnlyControlsWhetherDevicesCapture": "Bu politika yalnızca cihazların yükseltme istemlerini yakalayıp yakalamadığını kontrol eder. Kararlar (otomatik onaylama, reddetme, onay gerektir), istek kuyruğu ve denetim geçmişi,",
         "privilegedAccessConsole": "Ayrıcalıklı Erişim konsolu"
       },
-      "patchAppRulesSection": {
-        "applicationRules": "Başvuru Kuralları",
-        "blockSpecificApplicationsFromAutomatedPatchingOr": "Belirli uygulamaların otomatik yama uygulanmasını engelleyin veya bunları maksimum sürüme sabitleyin.",
-        "blocked": "Engellendi",
-        "pinned": "Sabitlendi",
-        "maxVersion": "Maksimum sürüm",
-        "pinnedApplicationsNeedAVersion": "Sabitlenen uygulamaların bir sürümü olması gerekir.",
-        "addApplication": "Uygulama ekle",
-        "searchCatalogAndDetectedApplications": "Katalogda ve algılanan uygulamalarda arama yapın...",
-        "searching": "Aranıyor...",
-        "catalog": "katalog",
-        "couldnTLoadApplicationsYouCanStill": "Uygulamalar yüklenemedi — hâlâ aşağıdaki paket kimliğine göre ekleyebilirsiniz.",
-        "noMatches": "Eşleşme yok.",
-        "orEnterAPackageIDManually": "Veya manuel olarak bir paket kimliği girin",
-        "block": "blok",
-        "pin": "pini",
-        "thirdParty": "third_party",
-        "removeRuleFor": "{{application}} kuralını kaldır"
-      },
       "patchTab": {
         "daily": "Günlük",
         "weekly": "Haftalık",
@@ -897,7 +882,14 @@
         "text2xl": "2xl",
         "saveChanges": "Değişiklikleri Kaydet",
         "createRing": "Yüzük Oluştur",
-        "thirdPartyRingHint": "Üçüncü taraf güncellemeleri için otomatik onay kuralları, bağlantılı Güncelleme Halkasında yapılandırılır."
+        "thirdPartyRingHint": "Üçüncü taraf güncellemeleri için otomatik onay kuralları, bağlantılı Güncelleme Halkasında yapılandırılır.",
+        "ringOwnsApprovalHint": "Otomatik onay ve uygulama kuralları, bağlantılı Güncelleme Halkasında ayarlanır.",
+        "noRingManualApprovalHint": "Bağlı halka yok — yamalar yalnızca elle onaydan sonra kurulur.",
+        "unavailableRingOption": "Kullanılamayan halka",
+        "ringInvalidTitle": "Bağlantılı Güncelleme Halkası artık kullanılamıyor.",
+        "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir.",
+        "ringInvalidLegacyRules": "Bu ilke, kurallar halkalara taşınmadan önceki uygulama kurallarını hâlâ taşıyor ({{rules}}). Seçtiğiniz halkada bu kuralların tam olarak aynısı zaten bulunmalı — önce onları halkaya ekleyin.",
+        "approvalRulesMovedToRing": "Otomatik onay ve uygulama kuralları artık Güncelleme Halkasında ayarlanıyor. Bunları bağlantılı halkada düzenleyin. Bu sayfa güncellemeden önce açıksa yeniden yükleyip tekrar kaydedin."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Bağlantı Çevre Birimi Politikası",
@@ -1116,6 +1108,22 @@
         "findingsAppearInTheVulnerabilitiesDashboard": "Bulgular Güvenlik Açıkları kontrol panelinde görünüyor",
         "thisPolicyOnlyControlsWhetherDevicesAre": "Bu politika yalnızca cihazların taranıp taranmadığını kontrol eder. Tespit edilen CVE'ler, risk puanları ve iyileştirme eylemleri şu şekilde yönetilir:",
         "vulnerabilitiesConsole": "Güvenlik açıkları konsolu"
+      },
+      "systemProtectionTab": {
+        "title": "Sistem Koruması",
+        "description": "Yama, betik ve yazılım yüklemelerinden önce bir Windows Sistem Geri Yükleme noktası oluşturmayı dene",
+        "beforePatching": "Yama yüklemelerinden önce",
+        "beforePatchingHelp": "İşletim sistemi güncellemelerini yüklemeden önce bir geri yükleme noktası oluşturmayı dene.",
+        "beforeScripts": "Betiklerden önce",
+        "beforeScriptsHelp": "Cihazda bir betik çalıştırmadan önce bir geri yükleme noktası oluşturmayı dene.",
+        "beforeSoftwareInstall": "Yazılım yüklemelerinden önce",
+        "beforeSoftwareInstallHelp": "Yazılım yüklemeden veya güncellemeden önce bir geri yükleme noktası oluşturmayı dene.",
+        "labelPrefix": "Etiket öneki",
+        "labelPrefixHelp": "Windows’ta her geri yükleme noktası açıklamasının başında gösterilir. En fazla 64 karakter.",
+        "platformDefaultNote": "Atanmış ilke yok. Platform varsayılanı: yalnızca yama yüklemelerinden önce bir geri yükleme noktası denenir.",
+        "legacyAgentWarning": "Bunu kapatmak yalnızca Sistem Geri Yükleme desteği bildiren aracılarda etkili olur. Eski aracılar yama yüklemelerinden önce geri yükleme noktası denemeye devam eder.",
+        "aboutTitle": "Sistem Geri Yükleme hakkında",
+        "aboutBody": "Yalnızca Windows cihazlar için geçerlidir. Sistem Geri Yükleme sistem dosyalarını, kayıt defterini, yüklü programları ve ayarları kapsar. Bir yedekleme değildir ve kişisel dosyaları kapsamaz. Windows varsayılan olarak 24 saatte en fazla bir geri yükleme noktası oluşturulmasına izin verir; oluşturulan bir nokta daha sonra Windows tarafından kaldırılabilir veya kullanılamaz hale gelebilir."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Garanti uyarısı isteğe bağlıdır: herhangi bir garanti politikası atanmamış cihazlar asla uyarı vermez. Aşağıdaki eşikler yalnızca sabit vadeli kapsam için geçerlidir; aktif AppleCare abonelikler sona ermek yerine yenilenir, dolayısıyla sona erme uyarıları her zaman bastırılır.",

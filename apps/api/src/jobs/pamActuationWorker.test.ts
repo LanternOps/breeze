@@ -36,6 +36,9 @@ const current = {
   desired_state: 'active',
   current_command_id: null,
   pam_lifetime_protocol_version: 2,
+  // #8206 — a never-moved device whose agent has not reported an epoch.
+  ownership_epoch: 1,
+  agent_identity_epoch_ack: null as number | null,
   target_executable_path: canonical.apply.targetPath,
   target_executable_hash: null,
   subject_username: canonical.apply.subjectUsername,
@@ -166,6 +169,59 @@ describe('processPamActuationEvent', () => {
     const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
     expect(sqlText).toContain('expired_before_dispatch');
     expect(sqlText).not.toContain('INSERT INTO device_commands');
+  });
+
+  // PAM ownership epochs W4 (#8206): dispatch waits until the agent has
+  // acknowledged the identity of the device's current ownership epoch.
+  describe('identity epoch ack gate (#8206)', () => {
+    it('reads the ownership epoch and the ack with the actuation row', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      await processPamActuationEvent({ actuationId: current.id, generation: 4 });
+      const firstQuery = JSON.stringify(executeMock.mock.calls[0]?.[0]);
+      expect(firstQuery).toContain('ownership_epoch');
+      expect(firstQuery).toContain('agent_identity_epoch_ack');
+    });
+
+    it.each([
+      { epoch: 1, ack: null },
+      { epoch: 1, ack: 1 },
+      { epoch: 3, ack: 3 },
+    ])('dispatches at epoch $epoch with ack $ack', async ({ epoch, ack }) => {
+      executeMock
+        .mockResolvedValueOnce({ rows: [{ ...current, ownership_epoch: epoch, agent_identity_epoch_ack: ack }] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+      await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+        .resolves.toBe('dispatched');
+    });
+
+    it.each([
+      { epoch: 2, ack: null },
+      { epoch: 3, ack: 2 },
+      { epoch: 2, ack: 1 },
+    ])('fails closed without a command at epoch $epoch with ack $ack', async ({ epoch, ack }) => {
+      executeMock
+        .mockResolvedValueOnce({ rows: [{ ...current, ownership_epoch: epoch, agent_identity_epoch_ack: ack }] })
+        .mockResolvedValueOnce({ rows: [] });
+      await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+        .resolves.toBe('blocked');
+      expect(executeMock).toHaveBeenCalledTimes(2);
+      const sqlText = executeMock.mock.calls.map(([query]) => JSON.stringify(query)).join('\n');
+      expect(sqlText).toContain('agent_identity_epoch_unacknowledged');
+      expect(sqlText).not.toContain('INSERT INTO device_commands');
+      expect(assertDeviceExecuteAllowedMock).not.toHaveBeenCalled();
+    });
+
+    it('still dispatches cleanup to a device whose ack lags (de-escalation is never held back)', async () => {
+      executeMock
+        .mockResolvedValueOnce({
+          rows: [{ ...current, desired_state: 'cleanup', ownership_epoch: 2, agent_identity_epoch_ack: null }],
+        })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+      await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+        .resolves.toBe('dispatched');
+    });
   });
 
   it.each([undefined, 0])('fails closed when PAM capability is %s', async (version) => {

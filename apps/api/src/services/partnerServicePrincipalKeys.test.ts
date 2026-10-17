@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { migrationWindows } from '../db/schema';
 import {
   PartnerServicePrincipalKeyError,
   issuePartnerServicePrincipalKey,
@@ -15,13 +16,28 @@ const SESSION = { authEpoch: 4, mfaEpoch: 2 };
 const OWNER_EPOCHS = { credentialEpoch: 7, mfaEpoch: 2 };
 const ACTIVE_PRINCIPAL = { id: PRINCIPAL_ID, status: 'active', expiresAt: null, createdBy: USER_ID };
 
-function makeTx(selectRows: unknown[][]) {
+function makeTx(selectRows: unknown[][], opts: { openWindow?: boolean } = {}) {
   const inserted: Record<string, unknown>[] = [];
   const updated: Record<string, unknown>[] = [];
+  const lockModes: string[] = [];
+  // The open-migration-window probe (#8313) is answered by table, so the
+  // positional queue below stays the principal / key / owner-epoch reads.
   const select = vi.fn(() => ({
-    from: vi.fn(() => ({
+    from: vi.fn((table: unknown) => ({
       where: vi.fn(() => ({
-        limit: vi.fn(async () => selectRows.shift() ?? []),
+        limit: vi.fn(() => {
+          const rows = () => (table === migrationWindows
+            ? (opts.openWindow ? [{ id: 'window-1' }] : [])
+            : (selectRows.shift() ?? []));
+          return {
+            then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
+              Promise.resolve(rows()).then(resolve, reject),
+            for: vi.fn((mode: string) => {
+              lockModes.push(mode);
+              return Promise.resolve(rows());
+            }),
+          };
+        }),
       })),
     })),
   }));
@@ -41,7 +57,7 @@ function makeTx(selectRows: unknown[][]) {
       };
     }),
   }));
-  return { tx: { select, insert, update } as any, inserted, updated };
+  return { tx: { select, insert, update } as any, inserted, updated, lockModes };
 }
 
 describe('service principal key lifecycle', () => {
@@ -208,7 +224,14 @@ describe('service principal key lifecycle', () => {
         [OWNER_EPOCHS],
       ];
       const tx = {
-        select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => selectRows.shift() ?? []) })) })) })),
+        select: vi.fn(() => ({ from: vi.fn((table: unknown) => ({ where: vi.fn(() => ({ limit: vi.fn(() => {
+          // No open migration window (#8313); the queue stays positional.
+          const rows = () => (table === migrationWindows ? [] : (selectRows.shift() ?? []));
+          return {
+            then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(rows()).then(resolve, reject),
+            for: vi.fn(() => Promise.resolve(rows())),
+          };
+        }) })) })) })),
         insert: vi.fn(() => ({ values: vi.fn((value: Record<string, unknown>) => ({
           returning: vi.fn(async () => { attempted.push(value); staged.push(value); return [{ id: 'successor-id' }]; }),
         })) })),
@@ -232,5 +255,45 @@ describe('service principal key lifecycle', () => {
     }))).rejects.toMatchObject({ code: 'conflict' });
     expect(attempted).toHaveLength(1);
     expect(committed).toEqual([]);
+  });
+
+  // #8313: no key can be issued or rotated while a migration window is open
+  // for the principal, and the principal row is locked FOR UPDATE so opening
+  // a window (which locks the same row) and minting a key never both pass.
+  it('locks the principal row FOR UPDATE before issuing', async () => {
+    const { tx, lockModes } = makeTx([[ACTIVE_PRINCIPAL], [OWNER_EPOCHS]]);
+    await issuePartnerServicePrincipalKey(tx, {
+      partnerServicePrincipalId: PRINCIPAL_ID,
+      partnerId: PARTNER_ID,
+      name: 'Production',
+      actorId: USER_ID,
+      actorSessionEpochs: SESSION,
+    });
+    expect(lockModes).toEqual(['update']);
+  });
+
+  it('refuses to issue a key while a migration window is open for the principal', async () => {
+    const { tx, inserted } = makeTx([[ACTIVE_PRINCIPAL], [OWNER_EPOCHS]], { openWindow: true });
+    await expect(issuePartnerServicePrincipalKey(tx, {
+      partnerServicePrincipalId: PRINCIPAL_ID,
+      partnerId: PARTNER_ID,
+      name: 'Production',
+      actorId: USER_ID,
+      actorSessionEpochs: SESSION,
+    })).rejects.toMatchObject({ code: 'MIGRATION_WINDOW_ACTIVE', status: 409 });
+    expect(inserted).toEqual([]);
+  });
+
+  it('refuses to rotate a key while a migration window is open for the principal', async () => {
+    const { tx, inserted, updated } = makeTx([[ACTIVE_PRINCIPAL]], { openWindow: true });
+    await expect(rotatePartnerServicePrincipalKey(tx, {
+      partnerServicePrincipalId: PRINCIPAL_ID,
+      keyId: KEY_ID,
+      partnerId: PARTNER_ID,
+      actorId: USER_ID,
+      actorSessionEpochs: SESSION,
+    })).rejects.toBeInstanceOf(PartnerServicePrincipalKeyError);
+    expect(inserted).toEqual([]);
+    expect(updated).toEqual([]);
   });
 });

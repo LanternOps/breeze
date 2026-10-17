@@ -17,18 +17,18 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
-    "@playwright/test": "^1.63.0",
-    "@types/node": "^26.6.4",
+    "@playwright/test": "^1.64.0",
+    "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "@types/pngjs": "^6.0.5",
     "pg": "^8.23.1",
-    "pixelmatch": "^7.2.0",
+    "pixelmatch": "^8.0.0",
     "playwright": "^1.63.0",
     "pngjs": "^7.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3",
-    "werift": "^0.24.4"
+    "werift": "^0.25.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

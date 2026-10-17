@@ -94,6 +94,7 @@
     "policies": "Políticas",
     "policiesNew": "Nueva política",
     "quick": "Soporte rápido",
+    "verify": "Revisa una solicitud de soporte",
     "registerPartner": "Registra tu empresa",
     "remoteFilesDevice": "Administrador de archivos remoto",
     "remoteFiles": "Iniciar transferencia de archivos",
@@ -174,7 +175,8 @@
     "securityScans": "Escaneos de IOC",
     "devicesTime": "Sincronización de hora",
     "adminAiModels": "Modelos de IA",
-    "billingAutopay": "Automatic payments"
+    "billingAutopay": "Automatic payments",
+    "endpointMessages": "Mensajes al equipo"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",

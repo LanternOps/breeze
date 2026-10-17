@@ -36,3 +36,48 @@ describe('executeScriptSchema targetSessionId', () => {
     expect(executeScriptSchema.safeParse(base).success).toBe(true);
   });
 });
+
+describe('executeScriptSchema group target (#8598)', () => {
+  const G = '11111111-1111-4111-8111-111111111111';
+  const D = base.deviceIds[0];
+  const groupTarget = { type: 'groups', groupIds: [G] };
+
+  it('accepts a groups target in place of deviceIds', () => {
+    const parsed = executeScriptSchema.safeParse({ target: groupTarget });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.target).toEqual(groupTarget);
+      expect(parsed.data.deviceIds).toBeUndefined();
+    }
+  });
+
+  it('rejects both deviceIds and target, and neither', () => {
+    expect(executeScriptSchema.safeParse({ deviceIds: [D], target: groupTarget }).success).toBe(false);
+    expect(executeScriptSchema.safeParse({}).success).toBe(false);
+    expect(executeScriptSchema.safeParse({ runAs: 'system' }).success).toBe(false);
+  });
+
+  it('rejects targetSessionId with a group target', () => {
+    expect(
+      executeScriptSchema.safeParse({ target: groupTarget, runAs: 'user', targetSessionId: 2 }).success,
+    ).toBe(false);
+  });
+
+  it('rejects non-groups target types and an empty group list', () => {
+    expect(executeScriptSchema.safeParse({ target: { type: 'all' } }).success).toBe(false);
+    expect(executeScriptSchema.safeParse({ target: { type: 'devices', deviceIds: [D] } }).success).toBe(false);
+    expect(executeScriptSchema.safeParse({ target: { type: 'groups', groupIds: [] } }).success).toBe(false);
+  });
+
+  it('still caps explicit deviceIds at 500 and leaves a deviceIds parse without a target key', () => {
+    const ids = Array.from({ length: 501 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    expect(executeScriptSchema.safeParse({ deviceIds: ids }).success).toBe(false);
+    const parsed = executeScriptSchema.safeParse(base);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect('target' in parsed.data).toBe(false);
+  });
+
+  it('rejects an empty deviceIds list', () => {
+    expect(executeScriptSchema.safeParse({ deviceIds: [] }).success).toBe(false);
+  });
+});

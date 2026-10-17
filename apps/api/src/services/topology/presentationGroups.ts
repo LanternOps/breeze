@@ -4,6 +4,7 @@ import { topologyInterfaceKindEvidence, topologyIpSchema, topologyNetworkClass, 
 import type { db } from '../../db';
 import { assetScanPresenceSql, nodeFilter, observedFreshUntilSql, relationshipExposure, relationshipFilter, scoped, type ReadExposure } from './graphRead';
 import { cidrContains, parseIpAddress, parsePrefix, type Family } from './ipAddress';
+import { normalizeDeclaredPrefix, readSiteNetworkDeclarations, type DeclarationKind } from './siteNetworkDeclarations';
 import { addressKey, buildNeighborEvidenceIndex, canonicalMac, readNeighborEvidence, type NeighborEvidenceIndex, type NeighborEvidenceRead, type NeighborTuple } from './neighborEvidence';
 
 export { cidrContains, parseIpAddress } from './ipAddress';
@@ -57,6 +58,14 @@ export type PresentationGroupInput = {
    */
   retired?: string[];
   decommissioned?: string[];
+  /**
+   * Site location W1 (site-location spec S§9): the prefixes an administrator declared for this site
+   * (enabled discovery profiles, network baselines; siteNetworkDeclarations.ts), already normalized.
+   * Absent = not consulted: no card carries `declaration`. Present (even empty) = every IPv4 `lan` card
+   * is marked declared or undeclared by EXACT prefix equality, and a declared prefix no card reports
+   * gets an empty declared card.
+   */
+  declarations?: { prefix: string; sources: DeclarationKind[] }[];
 };
 export type PresentationGroupOptions = {
   view: GraphQuery['view'];
@@ -88,6 +97,8 @@ type Candidate = {
   /** Unplaced endpoints corroborated by an in-candidate observer's neighbour cache (#7816). */
   neighborSeen: Map<string, NeighborTuple>;
 };
+type Declaration = { state: 'declared' | 'undeclared'; sources: DeclarationKind[] };
+const DECLARED_KEY_PREFIX = 'declared|';
 /** `overlay`: a VPN tunnel's gateway (step 3b), shown only with the hidden networks; never a LAN card's gateway. */
 type GatewayGroup = { key: string; candidateKey: string; address: string; routes: Route[]; overlay: boolean };
 
@@ -433,7 +444,25 @@ function analysePresentationGroups(raw: PresentationGroupInput, now?: Date) {
   const primary = new Map<string, string>();
   for (const [endpointId, keys] of endpointCandidates) primary.set(endpointId, [...keys].sort((a, b) => bySmallest(rank(a), rank(b)))[0]!);
   const orphans = placeOrphans(raw, candidates, gatewayGroups);
-  return { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage, orphans };
+
+  // 6. Site declarations (site location W1, S§6.2): exact normalized IPv4 prefix equality, never
+  //    containment. Only IPv4 `lan` cards are marked (v1 is IPv4 only, S§3 D10). A declared prefix no
+  //    card reports at all (any class) becomes an empty declared card, keyed `declared|<prefix>`.
+  const declared = new Map<string, DeclarationKind[]>();
+  for (const entry of raw.declarations ?? []) {
+    const prefix = normalizeDeclaredPrefix(entry.prefix);
+    if (prefix) declared.set(prefix, sorted(new Set([...(declared.get(prefix) ?? []), ...entry.sources])));
+  }
+  const declaration = (candidate: Candidate): Declaration | undefined => {
+    if (!raw.declarations || candidate.networkClass !== 'lan' || candidate.family !== 4) return undefined;
+    const prefix = normalizeDeclaredPrefix(candidate.prefix);
+    const sources = prefix ? declared.get(prefix) : undefined;
+    return sources ? { state: 'declared', sources } : { state: 'undeclared', sources: [] };
+  };
+  const reported = new Set([...candidates.values()].map((candidate) => normalizeDeclaredPrefix(candidate.prefix)));
+  const declaredEmpty = new Map(sorted(declared.keys()).filter((prefix) => !reported.has(prefix))
+    .map((prefix) => [`${DECLARED_KEY_PREFIX}${prefix}`, { prefix, sources: declared.get(prefix)! }]));
+  return { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage, orphans, declaration, declaredEmpty };
 }
 type SiteGrouping = ReturnType<typeof analysePresentationGroups>;
 
@@ -464,6 +493,8 @@ export function presentationGroupMembers(input: PresentationGroupInput, ref: Pre
     if (group) members = [...group.routes.map((route) => route.gatewayId), ...(site.orphans.folds.get(group.key) ?? [])];
   } else {
     const candidate = [...site.candidates.values()].find((entry) => named(entry.key));
+    // An empty declared card (site location W1) stands for no canonical node: an empty group, not a changed one.
+    if (!candidate && [...site.declaredEmpty.keys()].some(named)) return [];
     if (candidate) {
       members = [...candidate.memberships.flatMap((m) => [m.networkId, m.endpointId]), ...candidate.addressMatches, ...candidate.neighborSeen.keys(),
         ...(site.orphans.folds.get(candidate.key) ?? [])];
@@ -488,7 +519,7 @@ export function buildPresentationGroups(input: PresentationGroupInput, options: 
 
 function buildCardGroups(site: SiteGrouping, options: PresentationGroupOptions): PresentationGroups {
   const { view, scopeHash, visibleNodeIds, tokenFor } = options;
-  const { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage } = site;
+  const { memberships, membershipCandidate, candidates, gatewayGroups, unidentified, primary, evidence, neighborCoverage, declaration, declaredEmpty } = site;
   const visible = (ids: Iterable<string>) => sorted(new Set(ids)).filter((nodeId) => visibleNodeIds.has(nodeId));
   const canonicalNetworks = (candidate: Candidate) => sorted(new Set(candidate.memberships.map((m) => m.networkId)));
   const nodeIds = new Map<string, string>();
@@ -510,6 +541,7 @@ function buildCardGroups(site: SiteGrouping, options: PresentationGroupOptions):
     for (const group of gatewayGroups.values()) if (group.candidateKey === candidate.key) listed.add(group.address);
     const id = presentationId(view, scopeHash, 'net', candidate.key);
     nodeIds.set(candidate.key, id);
+    const declared = declaration(candidate);
     return { id, view, role: 'network_group', label: candidate.prefix.slice(0, 255),
       memberCount: new Set([...observed.keys(), ...candidate.addressMatches, ...candidate.neighborSeen.keys()]).size,
       frontierToken: tokenFor(groupRef('network', candidate.key)), authority: false,
@@ -517,7 +549,16 @@ function buildCardGroups(site: SiteGrouping, options: PresentationGroupOptions):
         gatewayAddresses: sorted(listed).slice(0, GATEWAY_ADDRESS_CAP), conflict: candidate.conflict, observerCount: observed.size,
         members, canonicalNodeIds,
         ...(candidate.conflict && candidate.conflictBasis.size ? { conflictBasis: sorted(candidate.conflictBasis) } : {}),
-        ...(neighborCoverage && candidate.networkClass === 'lan' ? { neighborCoverage } : {}) } };
+        ...(neighborCoverage && candidate.networkClass === 'lan' ? { neighborCoverage } : {}),
+        ...(declared ? { declaration: declared } : {}) } };
+  };
+  /** A declared prefix no observer reports (site location W1, S§9; C §6 "a configured but empty network gets its tile"). */
+  const declaredEmptyNode = (key: string): PresentationNode => {
+    const { prefix, sources } = declaredEmpty.get(key)!;
+    return { id: presentationId(view, scopeHash, 'net', key), view, role: 'network_group', label: prefix, memberCount: 0,
+      frontierToken: tokenFor(groupRef('network', key)), authority: false,
+      group: { kind: 'network', basis: 'declared_site_network', networkClass: 'lan', prefix, address: null, gatewayAddresses: [], conflict: false,
+        observerCount: 0, members: [], canonicalNodeIds: [], declaration: { state: 'declared', sources } } };
   };
   const gatewayNode = (group: GatewayGroup): PresentationNode | null => {
     const canonical = sorted(new Set(group.routes.map((route) => route.gatewayId)));
@@ -555,8 +596,13 @@ function buildCardGroups(site: SiteGrouping, options: PresentationGroupOptions):
   };
 
   const ordered = sorted(candidates.keys()).map((key) => candidates.get(key)!);
+  // Declared LAN cards (observed, then empty) before undeclared ones (site location W1); unmarked cards keep their order.
+  const lanCards = ordered.filter((candidate) => candidate.networkClass === 'lan');
+  const isDeclared = (candidate: Candidate) => declaration(candidate)?.state === 'declared';
   const nodes = [
-    ...ordered.filter((candidate) => candidate.networkClass === 'lan').map(networkNode),
+    ...lanCards.filter(isDeclared).map(networkNode),
+    ...sorted(declaredEmpty.keys()).map(declaredEmptyNode),
+    ...lanCards.filter((candidate) => !isDeclared(candidate)).map(networkNode),
     ...sorted(gatewayGroups.keys()).map((key) => gatewayNode(gatewayGroups.get(key)!)),
     unidentifiedNode(),
     ...ordered.filter((candidate) => candidate.networkClass !== 'lan').map(networkNode),
@@ -741,5 +787,8 @@ export async function readPresentationGroupInput(
   for (const pair of input.inventoryPairs) if (unplaced.has(pair.endpointId)) ask(pair.ip);
   for (const route of input.routes) ask(route.address);
   input.neighbors = await readNeighborEvidence(tx, scope, view, exposure, requested);
+  // Site location W1: this site's declared networks, so cards can say declared/undeclared (S§9).
+  const declarations = await readSiteNetworkDeclarations(tx, scope);
+  input.declarations = [...declarations.prefixes].map(([prefix, sources]) => ({ prefix, sources: sorted(new Set(sources.map((source) => source.kind))) }));
   return input;
 }

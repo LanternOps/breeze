@@ -94,6 +94,7 @@
     "policies": "Policies",
     "policiesNew": "New Policy",
     "quick": "Quick Support",
+    "verify": "Review a support request",
     "registerPartner": "Register Your Company",
     "remoteFilesDevice": "Remote File Manager",
     "remoteFiles": "Start File Transfer",
@@ -174,7 +175,8 @@
     "securityScans": "IOC Scans",
     "devicesTime": "Time synchronization",
     "adminAiModels": "AI Models",
-    "billingAutopay": "Automatic payments"
+    "billingAutopay": "Automatic payments",
+    "endpointMessages": "Endpoint Messages"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",

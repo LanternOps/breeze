@@ -46,6 +46,7 @@ import {
   evaluateFilterWithPreview,
   deviceMatchesFilter,
   FilterQueryTimeoutError,
+  FilterValueError,
   isAgentReportedFilterField,
   getAgentReportedFieldsUsed,
   isExecutionRefusedFilterField,
@@ -238,7 +239,7 @@ describe('filterEngine field provenance (server-controlled vs. agent-reported)',
   });
 
   it('treats every agent-reported device attribute as agent-reported, default-deny', () => {
-    for (const key of ['hostname', 'displayName', 'agentVersion', 'helperVersion', 'tags', 'deviceRole', 'deviceFunction', 'lastUser', 'isHeadless', 'osType', 'osVersion', 'osBuild', 'architecture', 'hardware.model', 'network.ipAddress', 'metrics.cpuPercent', 'software.installed']) {
+    for (const key of ['hostname', 'displayName', 'agentVersion', 'helperVersion', 'tags', 'deviceRole', 'deviceFunction', 'lastUser', 'isHeadless', 'hostsWorkloads', 'workloadRuntimes', 'osType', 'osVersion', 'osBuild', 'architecture', 'hardware.model', 'network.ipAddress', 'metrics.cpuPercent', 'software.installed']) {
       expect(isAgentReportedFilterField(key), key).toBe(true);
     }
   });
@@ -260,6 +261,12 @@ describe('filterEngine field provenance (server-controlled vs. agent-reported)',
 describe('filterEngine execution-target field tiering (denylist option)', () => {
   it('refuses high-targeting-value agent-reported fields', () => {
     for (const key of ['hostname', 'displayName', 'tags', 'deviceRole', 'lastUser', 'helperVersion', 'agentVersion']) {
+      expect(isExecutionRefusedFilterField(key), key).toBe(true);
+    }
+  });
+
+  it('refuses workload inventory fields — agent-reported container-host claims', () => {
+    for (const key of ['hostsWorkloads', 'workloadRuntimes']) {
       expect(isExecutionRefusedFilterField(key), key).toBe(true);
     }
   });
@@ -397,15 +404,90 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
     expect(sql).toMatch(/> \$\d/);
   });
 
+  const G1 = '4d68e998-1048-48d6-a267-e1aacf2f556e';
+  const G2 = '0b2f6c1e-5d7a-4c3b-9e8f-1a2b3c4d5e6f';
+
   it('groupId equals → EXISTS membership', () => {
-    const sql = render({ field: 'groupId', operator: 'equals', value: 'g1' });
+    const sql = render({ field: 'groupId', operator: 'equals', value: G1 });
     expect(sql).toMatch(/exists \(select 1 from "device_group_memberships"/i);
-    expect(sql).toMatch(/"group_id" = \$\d/i);
+    expect(sql).toMatch(/"group_id" in \(\$\d\)/i);
   });
 
-  it('groupId in → EXISTS membership ANY', () => {
-    const sql = render({ field: 'groupId', operator: 'in', value: ['g1', 'g2'] });
-    expect(sql).toMatch(/"group_id" = any\(/i);
+  // #8760: `= ANY(${array})` bound a one-element list as a bare string and
+  // Postgres 500'd with "malformed array literal". Explicit IN list instead.
+  it('groupId in → EXISTS membership with an explicit IN list, never = ANY(array)', () => {
+    const sql = render({ field: 'groupId', operator: 'in', value: [G1, G2] });
+    expect(sql).toMatch(/"group_id" in \(\$\d, \$\d\)/i);
+    expect(sql).not.toMatch(/any\s*\(/i);
+  });
+
+  // #8760: a group NAME where an id belongs raised 22P02 and failed the whole
+  // filter. A non-UUID value can match no membership, so it is dropped.
+  it('groupId drops non-UUID values instead of sending them to a uuid column', () => {
+    expect(render({ field: 'groupId', operator: 'equals', value: 'Cash Registers' })).toMatch(/false/i);
+    expect(render({ field: 'groupId', operator: 'in', value: ['Cash Registers'] })).toMatch(/false/i);
+    const mixed = dialect.sqlToQuery(buildConditionSQL({ field: 'groupId', operator: 'in', value: ['Cash Registers', G1] }));
+    expect(mixed.params).toEqual([G1]);
+  });
+
+  // #8773 sweep: an enum-typed column rejects a value outside the enum with
+  // 22P02 ("invalid input value for enum os_type"), failing the whole filter as
+  // an opaque 500. Unlike the non-UUID group id above, an unknown enum value is
+  // NOT dropped: dropping it would turn `osType notEquals "Windows"` (a case
+  // slip) into match-everything and silently widen a script/deployment target.
+  // It is refused instead — a clean 400 from validateFilter on the write and
+  // preview paths, and a typed FilterValueError (never a pg 22P02) on paths
+  // that evaluate without validating (group membership → engine_error).
+  describe('unknown enum values are refused, never dropped', () => {
+    const params = (c: FilterCondition) => dialect.sqlToQuery(buildConditionSQL(c)).params;
+
+    it.each([
+      ['osType', 'equals', '2026'],
+      ['osType', 'in', ['2026']],
+      ['status', 'notEquals', 'Online'],
+      ['watchdogStatus', 'notIn', ['gone']],
+      ['osType', 'notEquals', 'Windows'],
+    ] as const)('%s %s %j throws FilterValueError naming the value and the allowed set', (field, operator, value) => {
+      expect(() => buildConditionSQL({ field, operator, value } as FilterCondition)).toThrow(FilterValueError);
+    });
+
+    it('a mixed list is refused whole rather than narrowed to its known values', () => {
+      expect(() => buildConditionSQL({ field: 'osType', operator: 'notIn', value: ['Windows', 'linux'] } as FilterCondition))
+        .toThrow(/Unknown value "Windows" for osType.*windows, macos, linux/);
+    });
+
+    // Deployment targets (deploymentTargetResolver) and dynamic-group membership
+    // evaluate saved filters WITHOUT validateFilter in front, so the refusal
+    // must happen in the engine itself, before any query runs — otherwise a
+    // `notEquals "Windows"` target would resolve to every device.
+    it.each([
+      ['evaluateFilter', () => evaluateFilter({ operator: 'AND', conditions: [{ field: 'osType', operator: 'notEquals', value: 'Windows' }] } as FilterConditionGroup, { orgId: 'org-1' })],
+      ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', { operator: 'AND', conditions: [{ field: 'osType', operator: 'notEquals', value: 'Windows' }] } as FilterConditionGroup)],
+    ] as const)('%s rejects with FilterValueError before querying', async (_name, run) => {
+      dbMock.events.length = 0;
+      await expect(run()).rejects.toThrow(FilterValueError);
+      expect(dbMock.events).not.toContain('query');
+    });
+
+    it('validateFilter reports the unknown value so routes answer 400', () => {
+      const res = validateFilter({ field: 'osType', operator: 'notEquals', value: 'Windows' } as FilterCondition);
+      expect(res.valid).toBe(false);
+      expect(res.errors.join(' ')).toMatch(/Unknown value "Windows" for osType/);
+      const nested = validateFilter({ operator: 'AND', conditions: [{ field: 'status', operator: 'in', value: ['online', 'Online'] }] } as FilterConditionGroup);
+      expect(nested.valid).toBe(false);
+    });
+
+    it('known enum values are untouched', () => {
+      expect(params({ field: 'osType', operator: 'equals', value: 'linux' })).toEqual(['linux']);
+      expect(params({ field: 'osType', operator: 'notIn', value: ['linux', 'macos'] })).toEqual(['linux', 'macos']);
+      expect(render({ field: 'osType', operator: 'notEquals', value: 'linux' })).toMatch(/!=/);
+      expect(validateFilter({ field: 'osType', operator: 'in', value: ['windows', 'linux'] } as FilterCondition).valid).toBe(true);
+    });
+
+    it('non-enum varchar columns still pass any value through', () => {
+      expect(params({ field: 'deviceRole', operator: 'equals', value: 'whatever' })).toEqual(['whatever']);
+      expect(validateFilter({ field: 'deviceRole', operator: 'equals', value: 'whatever' } as FilterCondition).valid).toBe(true);
+    });
   });
 
   it('device-column fields still compare directly (no subquery)', () => {
@@ -661,7 +743,6 @@ describe('filterEngine datetime binding (#3369)', () => {
       { field: 'hostname', operator: 'matches', value: at as unknown as string },
       { field: 'lastSeenAt', operator: 'in', value: [at] as unknown as string[] },
       { field: 'lastSeenAt', operator: 'notIn', value: [at] as unknown as string[] },
-      { field: 'groupId', operator: 'equals', value: at },
     ];
 
     for (const condition of cases) {
@@ -671,6 +752,15 @@ describe('filterEngine datetime binding (#3369)', () => {
       }
       expect(params).toContain(at.toISOString());
     }
+  });
+
+  it('a Date on the group membership path never reaches the driver (#8760)', () => {
+    // group_id is a uuid column; a non-UUID value (here a Date) is dropped and
+    // the condition matches nothing, so no param is bound at all.
+    const at = new Date('2026-01-01T00:00:00.000Z');
+    const { sql, params } = render({ field: 'groupId', operator: 'equals', value: at });
+    expect(sql).toMatch(/false/i);
+    expect(params.some((p) => p instanceof Date)).toBe(false);
   });
 
   it('still binds ordinary scalars unchanged', () => {
@@ -690,5 +780,116 @@ describe('filterEngine datetime binding (#3369)', () => {
     });
 
     expect(params).toEqual([10, 90]);
+  });
+});
+
+describe('filterEngine workload inventory fields (W04)', () => {
+  it('registers hostsWorkloads as boolean and workloadRuntimes as array', () => {
+    expect(getFieldDefinition('hostsWorkloads')?.type).toBe('boolean');
+    expect(getFieldDefinition('workloadRuntimes')?.type).toBe('array');
+    expect(getFieldDefinition('workloadRuntimes')?.operators).toEqual(expect.arrayContaining(['hasAny', 'hasAll', 'isEmpty', 'isNotEmpty']));
+  });
+
+  it('hostsWorkloads compiles to a direct boolean column comparison', () => {
+    const q = dialect.sqlToQuery(buildConditionSQL({ field: 'hostsWorkloads', operator: 'equals', value: true }));
+    expect(q.sql).toMatch(/"hosts_workloads" = \$/i);
+    expect(q.sql).not.toMatch(/exists/i);
+  });
+
+  // #8760 review: a bare `${value}` bound the JS array as a row tuple and
+  // Postgres 500'd with "text[] && record". Bind a real text[] instead.
+  it('tags hasAny/hasAll bind an ARRAY[...]::text[] of one param per element', () => {
+    const any = dialect.sqlToQuery(buildConditionSQL({ field: 'tags', operator: 'hasAny', value: ['a', 'b'] }));
+    expect(any.sql).toMatch(/"tags" && ARRAY\[\$\d::text, \$\d::text\]::text\[\]/);
+    expect(any.params).toEqual(['a', 'b']);
+    const all = dialect.sqlToQuery(buildConditionSQL({ field: 'tags', operator: 'hasAll', value: ['a'] }));
+    expect(all.sql).toMatch(/"tags" @> ARRAY\[\$\d::text\]::text\[\]/);
+  });
+
+  it('workloadRuntimes hasAny/hasAll compile to array overlap/containment on the column', () => {
+    const any = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'hasAny', value: ['docker', 'podman'] }));
+    expect(any.sql).toMatch(/"workload_runtimes"(::text\[\])? && /i);
+    expect(any.params).toEqual(expect.arrayContaining(['docker', 'podman']));
+    const all = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'hasAll', value: ['docker'] }));
+    expect(all.sql).toMatch(/"workload_runtimes"(::text\[\])? @> /i);
+  });
+
+  it('workloadRuntimes contains matches a single runtime by array containment (not ILIKE)', () => {
+    const q = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'contains', value: 'docker' }));
+    expect(q.sql).toMatch(/"workload_runtimes"(::text\[\])? @> /i);
+    expect(q.sql).not.toMatch(/ilike/i);
+    expect(q.params).toContain('docker');
+  });
+
+  it('workloadRuntimes with an empty selection is no constraint (matches the software.installed hasAny convention)', () => {
+    // A freshly added "has any of" chip has no values yet; it must not hide the whole fleet.
+    for (const operator of ['hasAny', 'hasAll'] as const) {
+      const q = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator, value: [] }));
+      expect(q.sql).toBe('TRUE');
+    }
+  });
+
+  it('workloadRuntimes isEmpty/isNotEmpty use cardinality, not a text[] literal compare', () => {
+    // varchar[] = '{}'::text[] has no operator in Postgres (42883) — found by
+    // running the filter preview against a real database.
+    const empty = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'isEmpty', value: [] }));
+    expect(empty.sql).toMatch(/cardinality\("devices"\."workload_runtimes"\) = 0/i);
+    expect(empty.sql).not.toMatch(/text\[\]/i);
+    const nonEmpty = dialect.sqlToQuery(buildConditionSQL({ field: 'workloadRuntimes', operator: 'isNotEmpty', value: [] }));
+    expect(nonEmpty.sql).toMatch(/cardinality\("devices"\."workload_runtimes"\) > 0/i);
+  });
+});
+
+// Log-shipping health W04 (#8611, feature #8607): a fleet filter for devices
+// whose log shipping has been failing for a sustained episode. The predicate
+// must agree with deriveLogShipping (services/logShippingHealth.ts); the
+// row-level agreement table runs against real Postgres in
+// __tests__/integration/logShippingFailingFilter.integration.test.ts.
+describe('filterEngine logShippingFailing (#8611)', () => {
+  const norm = (s: string) => s.replace(/"/g, '');
+
+  it('registers logShippingFailing as a yes/no boolean field with equals/notEquals', () => {
+    const def = getFieldDefinition('logShippingFailing');
+    expect(def).toBeDefined();
+    expect(def?.type).toBe('boolean');
+    expect(def?.operators).toEqual(['equals', 'notEquals']);
+    expect(validateFilter({ field: 'logShippingFailing', operator: 'equals', value: 'yes' } as FilterCondition).valid).toBe(true);
+    expect(validateFilter({ field: 'logShippingFailing', operator: 'contains', value: 'x' } as FilterCondition).valid).toBe(false);
+  });
+
+  it('equals yes emits the full predicate, with IS NOT NULL literally so the partial index is usable', () => {
+    const q = dialect.sqlToQuery(buildConditionSQL({ field: 'logShippingFailing', operator: 'equals', value: 'yes' }));
+    const s = norm(q.sql);
+    expect(s).toContain("devices.status = 'online'");
+    expect(s).toContain("devices.log_shipping_state = 'failing'");
+    expect(s).toContain('devices.log_shipping_failure_started_at IS NOT NULL');
+    // The window comes from LOG_SHIPPING_SUSTAINED_MS (30 min), not a re-typed literal.
+    expect(s).toContain("devices.log_shipping_failure_started_at <= NOW() - (1800000 * interval '1 millisecond')");
+    expect(s).not.toMatch(/^not /i);
+    // No user value is bound: the predicate is entirely server-defined.
+    expect(q.params).toEqual([]);
+  });
+
+  it.each([
+    ['equals', 'no'],
+    ['equals', false],
+    ['equals', 'false'],
+    ['notEquals', 'yes'],
+  ] as const)('%s %s → negated, NULL-safe (COALESCE) so unknown devices read "not failing"', (operator, value) => {
+    const s = norm(render({ field: 'logShippingFailing', operator, value } as FilterCondition));
+    expect(s).toMatch(/^NOT COALESCE\(/);
+    expect(s).toContain('log_shipping_failure_started_at IS NOT NULL');
+  });
+
+  it('notEquals no → double negative resolves positive', () => {
+    const s = render({ field: 'logShippingFailing', operator: 'notEquals', value: 'no' });
+    expect(s).not.toMatch(/^not /i);
+    expect(norm(s)).toContain("devices.log_shipping_state = 'failing'");
+  });
+
+  it('is refused as an execution-target field (derived from agent-reported data)', () => {
+    expect(isAgentReportedFilterField('logShippingFailing')).toBe(true);
+    expect(isExecutionRefusedFilterField('logShippingFailing')).toBe(true);
+    expect(getExecutionRefusedFieldsUsed(['osType', 'logShippingFailing'])).toEqual(['logShippingFailing']);
   });
 });

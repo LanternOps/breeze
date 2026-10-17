@@ -86,7 +86,9 @@
       "failedInstalls_one": "{{count}} instalación fallida",
       "failedInstalls_other": "{{count}} instalaciones fallidas",
       "critical": "{{count}} crítico",
-      "reboot": "reiniciar {{count}}"
+      "reboot": "reiniciar {{count}}",
+      "imagesNotChecked_one": "{{count}} imagen de contenedor sin verificar",
+      "imagesNotChecked_other": "{{count}} imágenes de contenedor sin verificar"
     },
     "filters": {
       "allDevices": "Todos los dispositivos ({{count}})",
@@ -568,7 +570,26 @@
     "badges": {
       "manual": "Manual",
       "os": "SO: {{severities}}",
-      "thirdParty": "Apps de terceros"
+      "thirdParty": "Apps de terceros",
+      "appRules_one": "{{count}} regla de aplicación",
+      "appRules_other": "{{count}} reglas de aplicación"
     }
+  },
+  "ringAppRules": {
+    "applicationRules": "Reglas de aplicación",
+    "blockSpecificApplicationsFromAutomatedPatchingOr": "Bloquee aplicaciones específicas para que no se apliquen parches automatizados o fíjelas a una versión máxima.",
+    "blocked": "Bloqueado",
+    "pinned": "Fijado",
+    "maxVersion": "versión máxima",
+    "pinnedApplicationsNeedAVersion": "Las aplicaciones fijadas necesitan una versión.",
+    "addApplication": "Agregar aplicación",
+    "searchCatalogAndDetectedApplications": "Buscar catálogo y aplicaciones detectadas...",
+    "searching": "Buscando...",
+    "catalog": "catálogo",
+    "couldnTLoadApplicationsYouCanStill": "No se pudieron cargar las aplicaciones; aún puede agregarlas mediante el paquete ID a continuación.",
+    "noMatches": "Sin coincidencias.",
+    "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
+    "removeRuleFor": "Eliminar regla para {{application}}",
+    "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo."
   }
 }

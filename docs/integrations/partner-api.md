@@ -588,7 +588,12 @@ Each feed item is one of two shapes:
   (`requester.contactId` / `requester.portalUserId`, plus the name/email
   snapshot taken at creation), `tags`, `externalTicketId` /
   `externalTicketUrl` (this principal's ref), SLA targets and stamps,
-  `source`, `workKind`, `changeVersion` and `revision`. Free text
+  `source`, `workKind`, `ticketType` (`incident` | `service_request` |
+  `problem` | `change`), `migrationWindowId`, `changeVersion` and
+  `revision`. `migrationWindowId` is the migration window that imported the
+  ticket from another helpdesk, and null for a ticket created in Breeze: a
+  mirror that feeds a helpdesk skips imported rows with it, so an import is
+  never pushed back into its own source. Free text
   (`description`, `resolutionNote`, `pendingReason`) is capped at 12,000
   characters with a trailing `…`. Raw `custom_fields`, `field_provenance`,
   attachments and time entries are not exported.
@@ -619,7 +624,11 @@ Guarantees and limits, in addition to the alerts feed's:
 - Comments carry `originPrincipalKind` (`user`, `ai_agent`, `system`,
   `service_principal`) and `originPrincipalId`: compare the latter to your
   own principal id to skip exactly the comments your integration wrote, even
-  when several integrations share one partner. An edited comment carries
+  when several integrations share one partner. An imported comment also
+  carries `migrationWindowId` and `originalAuthor` (`{ name, email, kind }`,
+  `kind` being `staff` or `requester`): who wrote it in the source helpdesk,
+  for display only. It keeps the source's `createdAt`, so it can appear
+  before comments you already hold; the re-read below picks it up. An edited comment carries
   `editedAt` and a changed `revision`; a deleted one is returned in its
   creation-order slot as `{ id, ticketId, orgId, removed: true, deletedAt,
   createdAt }` with no content. Re-read the (bounded) list **without `since`**
@@ -705,8 +714,8 @@ partner, Service Management must be on, and the status FSM is enforced.
 
 | Route | Body | Notes |
 |---|---|---|
-| `POST /tickets` | `orgId`, `subject`, `description?`, `priority?`, `dueDate?`, `deviceId?`, `categoryId?`, `assigneeId?`, `requesterContactId?`, `submitterName?`, `submitterEmail?`, `externalTicketId?`, `externalTicketUrl?` | `source` is always `api`. `orgId` outside the principal's organizations → `403 partner_tickets_org_access_denied`. Supports `X-Idempotency-Key`. Returns `201` with the record. |
-| `PATCH /tickets/<id>` | any of `subject`, `description`, `priority`, `dueDate`, `deviceId`, `categoryId`, `tags`, `requesterContactId`, `submitterName`, `submitterEmail`, `externalTicketId`, `externalTicketUrl` (`null` clears a nullable field) | Not `status` or `assigneeId` (use the dedicated routes), never SLA targets or the portal login. Unknown keys are a `400`. |
+| `POST /tickets` | `orgId`, `subject`, `description?`, `priority?`, `ticketType?`, `dueDate?`, `deviceId?`, `categoryId?`, `assigneeId?`, `requesterContactId?`, `submitterName?`, `submitterEmail?`, `externalTicketId?`, `externalTicketUrl?` | `source` is always `api`. `ticketType` defaults to `incident`. `orgId` outside the principal's organizations → `403 partner_tickets_org_access_denied`. Supports `X-Idempotency-Key`. Returns `201` with the record. |
+| `PATCH /tickets/<id>` | any of `subject`, `description`, `priority`, `ticketType`, `dueDate`, `deviceId`, `categoryId`, `tags`, `requesterContactId`, `submitterName`, `submitterEmail`, `externalTicketId`, `externalTicketUrl` (`null` clears a nullable field) | Not `status` or `assigneeId` (use the dedicated routes), never SLA targets or the portal login. Unknown keys are a `400`. |
 | `POST /tickets/<id>/status` | exactly one of `status` (core value) or `statusId` (a custom status of the partner); `resolutionNote` (required when resolving), `pendingReason?` | Same coherence rules as the staff route, without AI drafts. Invalid transitions → `400 INVALID_TRANSITION`. |
 | `POST /tickets/<id>/assign` | `assigneeId` (a technician of the partner, or `null` to unassign) | Assigning a `new` ticket opens it. |
 | `POST /tickets/<id>/comments` | `content`, `isPublic` (**required**, no default) | `isPublic: true` is a customer-visible reply and emails the requester; `false` is an internal note. Supports `X-Idempotency-Key`. Returns `201` with the comment. |

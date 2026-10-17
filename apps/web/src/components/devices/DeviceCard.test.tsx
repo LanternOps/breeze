@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceCard from './DeviceCard';
@@ -8,6 +8,8 @@ import { fetchWithAuth } from '../../stores/auth';
 vi.mock('../../lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: () => true }),
 }));
+
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
@@ -65,6 +67,16 @@ describe('DeviceCard sparkline history', () => {
     await screen.findByTestId('ram-sparkline-device-1');
 
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices/device-1/metrics?range=1h', { signal: expect.any(AbortSignal) });
+  });
+
+  it('rounds a raw float percent before printing it', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ metrics: [] }));
+
+    render(<DeviceCard device={{ ...baseDevice, cpuPercent: 37.456789012 }} />);
+
+    expect(screen.getByText('37.5%')).toBeTruthy();
+    expect(screen.queryByText('37.456789012%')).toBeNull();
+    await screen.findAllByText('No trend data');
   });
 
   it('shows an explicit empty state when no metric history exists', async () => {
@@ -319,5 +331,18 @@ describe('DeviceCard shared metrics requests (#6044)', () => {
     expect(requests[0].signal?.aborted).toBe(false);
     await act(async () => { requests[0].resolve(makeJsonResponse({ metrics: [{ cpu: 1, ram: 2 }, { cpu: 3, ram: 4 }] })); });
     expect(screen.getByTestId('cpu-sparkline-shared')).toBeInTheDocument();
+  });
+});
+
+describe('DeviceCard site link (ui-flow W03)', () => {
+  it('links the site name and does not trigger the card click', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ metrics: [] }));
+    const onClick = vi.fn();
+    render(<DeviceCard device={baseDevice} onClick={onClick} />);
+    await act(async () => {});
+    const link = screen.getByTestId('site-record-link');
+    expect(link).toHaveAttribute('href', '/settings/sites/site-1');
+    fireEvent.click(link);
+    expect(onClick).not.toHaveBeenCalled();
   });
 });

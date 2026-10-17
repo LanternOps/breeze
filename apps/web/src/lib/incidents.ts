@@ -1,5 +1,6 @@
 import { fetchWithAuth } from '../stores/auth';
 import { runAction } from './runAction';
+import type { EdrDetectionDto } from '@breeze/shared';
 import type { S1Threat, HuntressIncident } from './edr';
 
 export type IncidentSeverity = 'p1' | 'p2' | 'p3' | 'p4';
@@ -12,7 +13,7 @@ export interface CreateIncidentInput {
   summary?: string;
   affectedDevices?: string[];
   detectedAt?: string;
-  sourceType?: 'huntress_incident' | 's1_threat';
+  sourceType?: 'huntress_incident' | 's1_threat' | 'edr_detection';
   sourceRef?: string;
 }
 
@@ -62,8 +63,30 @@ export function huntressIncidentToIncident(i: HuntressIncident): CreateIncidentI
   };
 }
 
-export async function promoteToIncident(input: CreateIncidentInput): Promise<{ id: string }> {
+/** EDR-framework detection -> incident (#8166). `sourceRef` is the detection id; the API verifies it. */
+export function edrDetectionToIncident(d: EdrDetectionDto): CreateIncidentInput {
+  const label = d.providerLabel || d.provider;
+  const name = d.threatName ?? d.title ?? 'Detection';
+  const device = d.deviceName ?? d.breezeDeviceId ?? 'an unknown device';
+  return {
+    orgId: d.orgId,
+    title: clampTitle(`${label}: ${name}`),
+    classification: 'edr-detection',
+    severity: mapEdrSeverity(d.severity),
+    summary: `Promoted from ${label} detection "${name}" on ${device}.`.slice(0, 10000),
+    affectedDevices: d.breezeDeviceId ? [d.breezeDeviceId] : [],
+    detectedAt: d.detectedAt ?? undefined,
+    sourceType: 'edr_detection',
+    sourceRef: d.id,
+  };
+}
+
+export async function promoteToIncident(
+  input: CreateIncidentInput,
+  opts: { suppressErrorToast?: (status: number, code: string | undefined) => boolean } = {},
+): Promise<{ id: string }> {
   return runAction<{ id: string }>({
+    suppressErrorToast: opts.suppressErrorToast,
     request: () =>
       fetchWithAuth('/incidents', {
         method: 'POST',

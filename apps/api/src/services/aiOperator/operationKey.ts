@@ -69,3 +69,17 @@ export function buildTaskOperationKey(parts: TaskOperationKeyParts): string {
   }
   return key;
 }
+
+/**
+ * The ordinal segment of a key `buildTaskOperationKey` built — its ONE parser
+ * (Recipe Library E4, #6169). The release-time plan-membership check reads the
+ * ordinal off the child intent's immutable `operation_key`. Anything that does
+ * not end in `:n<digits>` returns -1, which can never be a member: fail closed.
+ */
+export function planOrdinalFromOperationKey(operationKey: string | null | undefined): number {
+  if (typeof operationKey !== 'string') return -1;
+  const m = /:n(\d{1,6})$/.exec(operationKey);
+  if (!m) return -1;
+  const n = Number.parseInt(m[1]!, 10);
+  return Number.isSafeInteger(n) ? n : -1;
+}

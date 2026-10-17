@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { graphNodeSchema, graphRelationshipSchema, graphResponseSchema, relationshipDetailResponseSchema, relationshipEvidenceResponseSchema, topologyViewSchema } from '@breeze/shared/validators/topology';
 import { topologyInterfaceHistoryResponseSchema, topologyLinkHealthResponseSchema } from '@breeze/shared/validators/topologyTelemetry';
 import type { TopologyInterfaceHistoryQuery } from '@breeze/shared';
+import { presenceResponseSchema } from '@breeze/shared/validators/topologyPresence';
 import { fetchWithAuth } from '../../stores/auth';
 const capability = z.object({ available: z.boolean(), reason: z.string().nullable() });
 export const topologySettingsSchema = z.object({
@@ -67,6 +68,8 @@ export const topologyApi = {
   exclusions: (siteId: string, view: string, cursor?: string, signal?: AbortSignal) =>
     topologyRead(`${site(siteId)}/exclusions?${new URLSearchParams({ view, limit: '100', ...(cursor ? { cursor } : {}) })}`, topologyExclusionListSchema, signal),
   graph: (siteId: string, query: URLSearchParams, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/graph?${query}`, graphResponseSchema, signal),
+  /** Cross-site presence of this site's assigned devices and its visitors (site location W2). Optional enrichment: callers must not fail the map on an error. */
+  presence: (siteId: string, signal?: AbortSignal) => topologyRead(`${site(siteId)}/presence`, presenceResponseSchema, signal),
   settings: (siteId: string, signal?: AbortSignal) => topologyRead(`/topology/sites/${encodeURIComponent(siteId)}/settings`, topologySettingsSchema, signal),
   /** Which organization owns a site (GET /orgs/sites/:id, org-access checked server-side): resolves a deep link to another org's site (#7880). */
   siteOwner: (siteId: string, signal?: AbortSignal) => topologyRead(`/orgs/sites/${encodeURIComponent(siteId)}`, siteOwnerSchema, signal),

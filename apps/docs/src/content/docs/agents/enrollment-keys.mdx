@@ -142,7 +142,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
 | `siteId` | `uuid` | No | `null` | Pin enrolled agents to a specific site. The enrollment endpoint will reject keys without a `siteId`. |
 | `name` | `string` | Yes | -- | Human-readable label (1--255 characters). |
 | `maxUsage` | `integer` | No | `1` | Maximum enrollments allowed (1--100,000). |
-| `expiresAt` | `datetime` | No | Now + TTL | ISO 8601 absolute expiration. Mutually exclusive with `ttlMinutes`. |
+| `expiresAt` | `datetime` | No | Now + TTL | ISO 8601 absolute expiration. Must be in the future; a past value is rejected with `400` (`Expiry must be in the future`). Mutually exclusive with `ttlMinutes`. |
 | `ttlMinutes` | `integer` | No | Now + TTL | Lifetime in minutes from creation (1 to 525600, i.e. up to 365 days). Mutually exclusive with `expiresAt`. |
 
 When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 43200 — 30 days). Supplying both is rejected so the resolved expiry is unambiguous.
@@ -156,7 +156,7 @@ When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `EN
 </Aside>
 
 <Aside type="tip">
-  In the dashboard, the **Add Device** modal has a **Link expires in** picker that sets the per-link lifetime without changing the server's environment default. The picker sends `ttlMinutes`. On the **Installer** tab it offers up to 30 days, the most a downloaded installer can carry; on the **CLI** tab, which creates an enrollment key, it offers up to 1 year. Both are further limited by the partner cap.
+  In the dashboard, the **Add Device** modal has a **Link expires in** picker that sets the per-link lifetime without changing the server's environment default. The picker sends `ttlMinutes`. On the **Installer** tab it offers up to 30 days, the most a downloaded installer can carry (earlier releases also offered 90 days and 1 year there); if your partner or organization default is longer, the Installer tab preselects 30 days. On the **CLI** tab, which creates an enrollment key, it offers up to 1 year. Both are further limited by the partner cap.
 </Aside>
 
 <Aside type="note">
@@ -228,7 +228,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys/KEY_UUID/rotat
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `maxUsage` | `integer` or `null` | No | New limit. Pass `null` for unlimited. Omit to keep the current value. |
-| `expiresAt` | `datetime` | No | New expiration. Omit to keep the current value. |
+| `expiresAt` | `datetime` | No | New expiration. Must be in the future (a past value is rejected with `400`). Omit to keep the current value. |
 
 The old key value is immediately invalidated. The response includes the new `key` field.
 

@@ -659,3 +659,22 @@ it('only opts the network-bearing charge POST out of ambient context', () => {
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/invoices/abc/autopay/charge-now')).toBe(true);
   expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/invoices/abc/autopay')).toBe(false);
 });
+
+it('#8167 self-manages POST /edr/actions (commit before the vendor call) and no sibling EDR read', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/actions')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/actions/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/edr/actions')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/actions/abc-123')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/edr/endpoints')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/sync')).toBe(false);
+});
+
+it('#8167 PR-B self-manages the three push routes (vendor push-settings calls) and nothing nearby', () => {
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push')).toBe(true);
+  expect(isSelfManagedDbContextRoute('DELETE', '/api/v1/edr/connections/abc-123/push')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push/test')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/edr/connections/abc-123/push')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/edr/connections/abc-123/push/other')).toBe(false);
+  // The public webhook has no ambient auth transaction to opt out of.
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/webhooks/edr/abc-123')).toBe(false);
+});

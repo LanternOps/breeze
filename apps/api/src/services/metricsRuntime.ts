@@ -46,6 +46,8 @@ import {
 import { ABANDONED_RETURN_KINDS, getRequestPoolAdmission } from '../db/poolAdmission';
 import { getDeadlineExpiryTotals } from '../db/prologueDeadline';
 import { TIMER_LATENESS_VALUES } from '../db/lagTolerantTimeout';
+// W07: process CPU + owned agent sockets (spec §3 agent-cost KPI)
+import './capacityMetrics';
 
 const register = metricsRegistry;
 

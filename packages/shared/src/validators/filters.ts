@@ -68,13 +68,19 @@ const relativeTimeValueSchema = z.object({
 // leading means an ISO date string stays a string (harmless — Postgres coerces
 // it against the column), while `z.coerce.date()` only ever fires for a real
 // `Date` instance or inside the range schemas.
+//
+// The arrays MUST come before `z.coerce.date()`: coercion calls `new Date(v)`,
+// and `new Date(['server-1'])` stringifies the one-element array and parses it
+// as 2001-01-01. A single "is any of" / "has" selection such as `['Floor 2']`
+// was turned into a Date, and the filter engine then failed with "Value must
+// be array" (#8760 review).
 export const filterValueSchema = z.union([
   z.string(),
   z.number(),
   z.boolean(),
-  z.coerce.date(),
   z.array(z.string()),
   z.array(z.number()),
+  z.coerce.date(),
   numberRangeValueSchema,
   dateRangeValueSchema,
   relativeTimeValueSchema
@@ -259,6 +265,38 @@ export const deploymentTargetConfigSchema = z.object({
   deviceIds: z.array(z.string().guid()).optional(),
   groupIds: z.array(z.string().guid()).optional(),
   filter: filterConditionGroupSchema.optional()
+});
+
+/**
+ * The `target` of a script run (`POST /scripts/:id/execute`): one or more saved
+ * device groups. A narrowing of `deploymentTargetConfigSchema` to `groups`, not
+ * a new target vocabulary. The server resolves it to concrete device ids at
+ * execution time (materialized membership); nothing stores the group id.
+ */
+export const scriptRunGroupTargetSchema = z.object({
+  type: z.literal('groups'),
+  groupIds: z.array(z.string().guid()).min(1).max(100)
+});
+
+/**
+ * `deploymentTargetConfigSchema` with the member lists made mandatory for the
+ * types that need them. Used to validate an automation's `conditions` when it is
+ * a target config: without it an empty `groupIds` or a missing `filter` persists
+ * and the run quietly targets nothing.
+ */
+export const automationTargetConfigSchema = deploymentTargetConfigSchema.superRefine((target, ctx) => {
+  const need = (ok: boolean, path: string, message: string) => {
+    if (!ok) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+  };
+  if (target.type === 'groups') {
+    need((target.groupIds?.length ?? 0) > 0, 'groupIds', 'A groups target requires at least one group');
+  }
+  if (target.type === 'devices') {
+    need((target.deviceIds?.length ?? 0) > 0, 'deviceIds', 'A devices target requires at least one device');
+  }
+  if (target.type === 'filter') {
+    need(target.filter !== undefined, 'filter', 'A filter target requires a filter');
+  }
 });
 
 export const deploymentScheduleSchema = z.object({

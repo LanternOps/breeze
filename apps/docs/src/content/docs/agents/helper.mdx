@@ -303,11 +303,11 @@ All self-service actions are scoped to the single device where the Helper is run
 
 ## Organization Controls
 
-Organizations can enable or disable the Helper chat feature on a per-org basis. The toggle is delivered to agents through the heartbeat response, so changes take effect within 60 seconds without requiring an agent restart.
+Organizations can enable or disable the Helper on a per-org basis. The toggle is delivered to agents through the heartbeat response, so changes take effect within 60 seconds without requiring an agent restart.
 
 ### Enabling / Disabling Helper Chat
 
-The Helper chat toggle is managed through organization settings. When disabled, the Helper tray icon remains visible but the chat interface is hidden.
+The Helper toggle is managed through organization settings or the **Deploy Breeze Assist to devices** toggle on a configuration policy's **Breeze Helper** feature (the policy takes precedence when one applies). When a device's effective Helper setting is off, the agent stops and removes the Helper on its next heartbeat, and the Helper API refuses every request from that device with `403` and code `helper_disabled` ("Breeze Helper is disabled for this device by policy"), so a client can tell it apart from a credential failure.
 
 ```bash
 # Check current helper settings (returned in heartbeat response)
@@ -317,7 +317,7 @@ The Helper chat toggle is managed through organization settings. When disabled, 
 }
 ```
 
-The agent reads `helperEnabled` from each heartbeat response and stores it as an atomic boolean. When the value changes, the Helper is notified to show or hide its chat UI.
+The agent reads `helperEnabled` from each heartbeat response. When the effective setting turns off, the agent stops the Helper in every user session and uninstalls it.
 
 ### Window and Tray Behavior
 
@@ -452,7 +452,7 @@ Some tools run on the end-user's machine rather than the server -- for example, 
 | POST | `/helper/screenshots` | Upload a screenshot for AI analysis |
 
 <Aside>
-  All Helper endpoints require a valid helper bearer token (`Authorization: Bearer brz_...`) -- a separate credential from the agent's own token, issued to the device at enrollment time. The token is validated by hashing with SHA-256 and matching against the `helperTokenHash` column in the `devices` table. Decommissioned and quarantined devices are rejected with 403.
+  All Helper endpoints require a valid helper bearer token (`Authorization: Bearer brz_...`) -- a separate credential from the agent's own token, issued to the device at enrollment time. The token is validated by hashing with SHA-256 and matching against the `helperTokenHash` column in the `devices` table. Decommissioned and quarantined devices are rejected with 403, and so is a device whose effective Helper setting is off (`helper_disabled`).
 </Aside>
 
 ### Creating a Session

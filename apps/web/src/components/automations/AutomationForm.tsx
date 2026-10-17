@@ -149,6 +149,12 @@ type AutomationFormProps = {
   softwareCatalog?: SoftwareCatalogItem[];
   /** Show the ownership-scope selector (create-only, partner-scope users). */
   showOwnerScope?: boolean;
+  /**
+   * The org that owns this automation (the org-switcher org on create, the
+   * stored org on edit). Scopes the group picker: an org-owned automation can
+   * only target groups of its own org. Ignored for partner-wide automations.
+   */
+  ownerOrgId?: string;
 };
 
 const getTriggerTypeOptions = (t: ScriptsT): { value: TriggerType; label: string; description: string; icon: typeof Clock }[] => [
@@ -226,7 +232,8 @@ export default function AutomationForm({
   scripts = [],
   notificationChannels = [],
   softwareCatalog = [],
-  showOwnerScope = false
+  showOwnerScope = false,
+  ownerOrgId
 }: AutomationFormProps) {
   const { t } = useTranslation('scripts');
   const [conditionsExpanded, setConditionsExpanded] = useState(true);
@@ -278,11 +285,20 @@ export default function AutomationForm({
     name: 'conditions'
   });
 
+  const watchOwnerScope = watch('ownerScope');
+  const partnerWide = watchOwnerScope === 'partner';
+  // A group or device id belongs to exactly one org, so the server rejects them
+  // on a partner-wide automation (INVALID_TARGET). Offer only the modes that
+  // fan out per org, and block saving a stored/leftover id-based target.
+  const partnerIdTargetBlocked = partnerWide
+    && conditionMode === 'advanced'
+    && (automationTargetConfig.type === 'groups' || automationTargetConfig.type === 'devices');
   const watchTriggerType = watch('triggerType');
   const watchCronExpression = watch('cronExpression');
   const watchOnFailure = watch('onFailure');
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  const submitDisabled = isLoading || partnerIdTargetBlocked;
 
   const cronDescription = useMemo(() => {
     if (!watchCronExpression) return '';
@@ -676,12 +692,30 @@ export default function AutomationForm({
                 </button>
               </div>
             ) : (
-              <DeviceTargetSelector
-                value={automationTargetConfig}
-                onChange={setAutomationTargetConfig}
-                modes={['all', 'filter']}
-                showPreview={true}
-              />
+              <>
+                <DeviceTargetSelector
+                  value={automationTargetConfig}
+                  onChange={setAutomationTargetConfig}
+                  modes={partnerWide ? ['all', 'filter'] : ['all', 'groups', 'filter']}
+                  showPreview={true}
+                  orgId={partnerWide ? undefined : ownerOrgId}
+                  flagRefusedGroups
+                />
+                {partnerWide && (
+                  <p data-testid="automation-target-partner-note" className="text-xs text-muted-foreground">
+                    {t('automationForm.partnerGroupsNote')}
+                  </p>
+                )}
+                {partnerIdTargetBlocked && (
+                  <div
+                    role="alert"
+                    data-testid="automation-target-partner-blocked"
+                    className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+                  >
+                    {t('automationForm.partnerTargetBlocked')}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -759,7 +793,7 @@ export default function AutomationForm({
         </button>
         <button
           type="submit"
-          disabled={isLoading}
+          disabled={submitDisabled}
           className="flex h-11 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-6"
         >
           {isLoading ? t('common:states.saving') : resolvedSubmitLabel}

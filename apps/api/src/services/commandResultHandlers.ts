@@ -69,6 +69,11 @@ import {
 // task exited, so the agent's result must close the device out here rather than
 // through the executor's poll.
 import { handleInstallPatchesResult } from './patchJobFinalizer';
+// #6354 W02: caller verification's workstation tier. Both transports reach
+// this one leaf handler; it decides nothing itself (W01 applyDecision does).
+import { handleCallerVerifyResult } from './callerVerification/workstationResult';
+import { handleNotifyUserResult, handleRetractMessageResult } from './endpointMessaging/commandResults';
+import { handleChatMessageResult, handleChatOpenResult } from './endpointMessaging/chatResults';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -1247,4 +1252,11 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   system_cleanup_run: handleSystemCleanupRunResult,
   filesystem_analysis: handleFilesystemAnalysisResult,
   file_delete: handleFileDeleteResult,
+  caller_verify: handleCallerVerifyResult,
+  // #8742 W02: endpoint-message deliveries follow their notify_user result.
+  notify_user: handleNotifyUserResult,
+  retract_message: handleRetractMessageResult,
+  // #8743 W03: endpoint live chat. chat_close carries no state to record.
+  chat_open: handleChatOpenResult,
+  chat_message: handleChatMessageResult,
 };

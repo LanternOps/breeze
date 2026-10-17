@@ -35,6 +35,51 @@ export interface PermissionPair {
   action: string;
 }
 
+/** Role ids granting `permission`, wildcard-aware ('*' resource/action). Caller owns the DB context. */
+async function grantingRoleIdsFor(permission: PermissionPair): Promise<string[]> {
+  const grantingRoles = await db
+    .select({ roleId: rolePermissions.roleId })
+    .from(rolePermissions)
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(
+      and(
+        inArray(permissions.resource, [permission.resource, '*']),
+        inArray(permissions.action, [permission.action, '*']),
+      ),
+    );
+  return [...new Set(grantingRoles.map((r) => r.roleId))];
+}
+
+/**
+ * Active partner_users of `partnerId` holding one of `roleIds`, filtered by
+ * org access: `all` always; `selected` only when it covers `orgId`. With no
+ * `orgId`, only `all` qualifies. Caller owns the DB context (system scope).
+ */
+async function activePartnerMembersWithRoles(
+  partnerId: string,
+  roleIds: string[],
+  orgId?: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ userId: partnerUsers.userId, orgAccess: partnerUsers.orgAccess, orgIds: partnerUsers.orgIds })
+    .from(partnerUsers)
+    .innerJoin(users, eq(users.id, partnerUsers.userId))
+    .where(
+      and(
+        eq(partnerUsers.partnerId, partnerId),
+        inArray(partnerUsers.roleId, roleIds),
+        eq(users.status, 'active'),
+      ),
+    );
+  const out = new Set<string>();
+  for (const r of rows) {
+    if (r.orgAccess === 'all' || (orgId && r.orgAccess === 'selected' && r.orgIds?.includes(orgId))) {
+      out.add(r.userId);
+    }
+  }
+  return [...out];
+}
+
 /**
  * Distinct active user ids that hold `permission` for `orgId`: org members
  * whose role grants it, plus partner users of the owning partner whose org
@@ -62,18 +107,7 @@ export interface PermissionPair {
  */
 export async function resolveUsersWithPermissionForOrg(orgId: string, permission: PermissionPair): Promise<string[]> {
   const read = async (): Promise<string[]> => {
-    const grantingRoles = await db
-      .select({ roleId: rolePermissions.roleId })
-      .from(rolePermissions)
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(
-        and(
-          inArray(permissions.resource, [permission.resource, '*']),
-          inArray(permissions.action, [permission.action, '*']),
-        ),
-      );
-
-    const grantingRoleIds = [...new Set(grantingRoles.map((r) => r.roleId))];
+    const grantingRoleIds = await grantingRoleIdsFor(permission);
     if (grantingRoleIds.length === 0) return [];
 
     const [org] = await db
@@ -98,26 +132,7 @@ export async function resolveUsersWithPermissionForOrg(orgId: string, permission
     for (const m of orgMembers) out.add(m.userId);
 
     if (org?.partnerId) {
-      const partnerMembers = await db
-        .select({
-          userId: partnerUsers.userId,
-          orgAccess: partnerUsers.orgAccess,
-          orgIds: partnerUsers.orgIds,
-        })
-        .from(partnerUsers)
-        .innerJoin(users, eq(users.id, partnerUsers.userId))
-        .where(
-          and(
-            eq(partnerUsers.partnerId, org.partnerId),
-            inArray(partnerUsers.roleId, grantingRoleIds),
-            eq(users.status, 'active'),
-          ),
-        );
-      for (const m of partnerMembers) {
-        if (m.orgAccess === 'all' || (m.orgAccess === 'selected' && m.orgIds?.includes(orgId))) {
-          out.add(m.userId);
-        }
-      }
+      for (const id of await activePartnerMembersWithRoles(org.partnerId, grantingRoleIds, orgId)) out.add(id);
     }
 
     return [...out];
@@ -129,4 +144,25 @@ export async function resolveUsersWithPermissionForOrg(orgId: string, permission
   const ambientScope = getCurrentDbAccessContext()?.scope;
   if (ambientScope === 'system') return read();
   return runOutsideDbContext(() => withSystemDbAccessContext(read, 'usersWithPermission.resolveForOrg'));
+}
+
+/**
+ * Partner-scope users (never org members) whose role grants `permission`.
+ * Without `orgId`: only full-partner users (`orgAccess = 'all'`) — the audience
+ * for partner-owned connections. With `orgId`: `all` or `selected` covering it.
+ * Same system-scope escape as resolveUsersWithPermissionForOrg.
+ */
+export async function resolvePartnerUsersWithPermission(
+  partnerId: string,
+  permission: PermissionPair,
+  opts: { orgId?: string } = {},
+): Promise<string[]> {
+  const read = async (): Promise<string[]> => {
+    const grantingRoleIds = await grantingRoleIdsFor(permission);
+    if (grantingRoleIds.length === 0) return [];
+    return activePartnerMembersWithRoles(partnerId, grantingRoleIds, opts.orgId);
+  };
+  const ambientScope = getCurrentDbAccessContext()?.scope;
+  if (ambientScope === 'system') return read();
+  return runOutsideDbContext(() => withSystemDbAccessContext(read, 'usersWithPermission.resolvePartnerUsers'));
 }

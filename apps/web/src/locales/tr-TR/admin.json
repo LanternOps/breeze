@@ -617,6 +617,37 @@
           "security-abuse": "Güvenlik ve kötüye kullanım",
           "integrations": "Entegrasyonlar"
         }
+      },
+      "connectionHealthJobs": {
+        "title": "Bağlantı sağlığı arka plan görevleri",
+        "description": "Bağlantı sağlığını izleyen görevlerin çalışıp çalışmadığını gösterir. Redis kalp atışlarıyla kontrol edilir.",
+        "jobs": {
+          "reconcile": {
+            "label": "Olay uzlaştırıcı",
+            "description": "Bağlantı sağlığı olaylarını her 15 dakikada bir açar ve çözer."
+          },
+          "digest": {
+            "label": "Günlük özet e-postası",
+            "description": "Bağlantı sağlığı özetini gönderir; saatlik çalışır."
+          }
+        },
+        "state": {
+          "ok": "Tamam",
+          "stale": "Eski",
+          "missing": "Kalp atışı yok",
+          "failing": "Başarısız"
+        },
+        "lastRun": "Son çalışma {{relative}}",
+        "neverRun": "Kalp atışı kaydedilmedi",
+        "kindsHeading": "İzlenen kaynaklar",
+        "lastOk": "Son başarılı {{relative}}",
+        "neverOk": "Hiç başarılı olmadı",
+        "failureStreak": "Ardışık hata: {{count}}",
+        "redisUnavailable": "Redis kullanılamadığından görev durumu okunamıyor. Bu, görevlerin durduğu anlamına gelmez.",
+        "errors": {
+          "load": "Görev durumu yüklenemedi."
+        },
+        "retry": "Yeniden dene"
       }
     },
     "aiModels": {

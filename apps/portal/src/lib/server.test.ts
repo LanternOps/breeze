@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defaultBranding, loadPortalBranding, loadPortalBrandingWithStatus, loadPortalProfile } from './server';
+import { publicServerApiConfig, defaultBranding, loadPortalBranding, loadPortalBrandingWithStatus, loadPortalProfile } from './server';
 
 // Regression guard for the fix-round-1 finding on Task 3.4: loadPortalBranding
 // is awaited by the middleware on every '/' visit and auth-only-path redirect
@@ -212,5 +212,21 @@ describe('loadPortalProfile — header account context', () => {
       headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
     }));
     expect(profile).toBeNull();
+  });
+});
+
+describe('publicServerApiConfig', () => {
+  it('forwards only host headers, never the visitor cookie', () => {
+    const request = new Request('https://portal.example/trust/nw', {
+      headers: { cookie: 'session=secret', authorization: 'Bearer x', host: 'portal.example', 'x-forwarded-host': 'portal.example', 'x-forwarded-proto': 'https', 'x-other': '1' }
+    });
+    const config = publicServerApiConfig(request);
+    const headers = new Headers(config.headers as HeadersInit);
+    expect(headers.get('cookie')).toBeNull();
+    expect(headers.get('authorization')).toBeNull();
+    expect(headers.get('x-other')).toBeNull();
+    expect(headers.get('host')).toBe('portal.example');
+    expect(headers.get('x-forwarded-proto')).toBe('https');
+    expect(config.redirectOnUnauthorized).toBe(false);
   });
 });

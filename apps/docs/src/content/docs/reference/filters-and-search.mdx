@@ -276,13 +276,14 @@ Groups can be nested to any depth, allowing expressions like `(A AND B) OR (C AN
 | `watchdogStatus` | Watchdog Status | `enum` | `equals`, `notEquals`, `in`, `notIn` -- values: `connected`, `failover`, `offline` |
 | `quarantinedAt` | Quarantined At | `datetime` | same as `enrolledAt` |
 
-Three additional core fields are capability checks -- they don't read a column directly, but test for a related row's existence:
+Four additional core fields are yes/no checks -- they don't read a single column directly, but test a derived condition:
 
 | Field Key | Label | Type | Description |
 |---|---|---|---|
 | `patches.pending` | Has Pending Patches | `boolean` | `equals`/`notEquals` -- true when the device has at least one pending patch |
 | `alerts.critical` | Has Critical Alerts | `boolean` | `equals`/`notEquals` -- true when the device has an active critical alert |
 | `system.rebootRequired` | Reboot Required | `boolean` | `equals`/`notEquals` -- true when the device's OS reports a reboot is pending |
+| `logShippingFailing` | Log Shipping Failing | `boolean` | `equals`/`notEquals` -- true when the device is online and its agent has reported failed log shipping continuously for at least 30 minutes. Derived from the agent's own report, so it cannot be used to target scripts, automations or policies |
 
   </TabItem>
   <TabItem label="OS">
@@ -397,6 +398,10 @@ Custom fields default to `string` type operators. The actual field type is resol
 | `after` | date, datetime | date string | Date is after value |
 | `between` | number, date, datetime | `{ from, to }` | Value is between `from` and `to` (inclusive) |
 | `withinLast` | date, datetime | `{ amount, unit }` | Date is within the last N units. Units: `minutes`, `hours`, `days`, `weeks`, `months` |
+
+<Aside type="caution" title="Enum values must match exactly">
+From v0.123.0, a value outside an enum field's allowed set (for example `osType notEquals "Windows"` instead of `"windows"`) is rejected with `400`, and the error names the allowed values. Earlier releases dropped such a value, which could widen a target to every device. A stored deployment target or dynamic group rule with a bad value now fails visibly instead of matching more devices than intended.
+</Aside>
 | `notWithinLast` | date, datetime | `{ amount, unit }` | Date is **not** within the last N units |
 
 ### Value Types

@@ -1,0 +1,41 @@
+{
+  "badge": {
+    "requested": "Cihaz bekleniyor",
+    "created": "Geri yükleme noktası oluşturulması onaylandı {{time}}",
+    "createdNoTime": "Geri yükleme noktası oluşturulması onaylandı",
+    "existingAccepted": "Mevcut nokta yeniden kullanıldı — {{age}} önce oluşturuldu (Windows sınırı: her {{limit}})",
+    "existingAcceptedAgeOnly": "Mevcut nokta yeniden kullanıldı — {{age}} önce oluşturuldu",
+    "existingAcceptedNoDetail": "Mevcut nokta yeniden kullanıldı",
+    "skippedDisabled": "Atlandı — Sistem Geri Yükleme bu cihazda kapalı",
+    "skippedDefinitionOnly": "Atlandı — yalnızca tanım güncellemesi",
+    "unsupported": "Bu cihazda kullanılamıyor",
+    "busy": "Atlandı — birim gölge kopyası hizmeti kullanımdaydı",
+    "insufficientPrivileges": "Atlandı — yetersiz ayrıcalık",
+    "verificationFailed": "Doğrulanamadı",
+    "failed": "Başarısız — {{message}}",
+    "failedNoMessage": "Başarısız",
+    "unknown": "Sonuç, konsolun bu sürümü tarafından tanınmıyor"
+  },
+  "list": {
+    "title": "Sistem Geri Yükleme",
+    "disclaimer": "Sistem Geri Yükleme bir yedekleme değildir. Bu liste, Breeze'in Windows'tan ne zaman geri yükleme noktası oluşturmasını istediğini ve cihazın ne bildirdiğini kaydeder; bir geri yükleme noktasının var olduğunu veya geri yüklenebileceğini garanti etmez.",
+    "loading": "Sistem Geri Yükleme geçmişi yükleniyor…",
+    "loadError": "Sistem Geri Yükleme geçmişi yüklenemedi.",
+    "retry": "Yeniden dene",
+    "empty": "Bu cihaz için kaydedilmiş Sistem Geri Yükleme isteği yok.",
+    "loadMore": "Daha fazla yükle",
+    "loadingMore": "Yükleniyor…",
+    "loadMoreError": "Daha fazla kayıt yüklenemedi.",
+    "columns": {
+      "requested": "İstenen",
+      "trigger": "Tetikleyen",
+      "outcome": "Sonuç"
+    },
+    "trigger": {
+      "patch": "Yama kurulumu",
+      "script": "Betik çalıştırma",
+      "software_install": "Yazılım kurulumu"
+    },
+    "viewScriptRun": "Betik çalıştırmasını görüntüle"
+  }
+}

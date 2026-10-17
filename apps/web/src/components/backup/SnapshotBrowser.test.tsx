@@ -51,21 +51,15 @@ describe('SnapshotBrowser', () => {
 
       if (url === '/backup/snapshots/snap-1/browse' && method === 'GET') {
         return makeJsonResponse({
-          data: [
-            {
-              name: 'Documents',
-              path: '/Documents',
-              type: 'directory',
-              children: [
-                {
-                  name: 'report.txt',
-                  path: '/Documents/report.txt',
-                  type: 'file',
-                  sizeBytes: 1234,
-                },
-              ],
-            },
-          ],
+          data: [{ name: 'Documents', path: '/Documents', type: 'directory' }],
+          nextCursor: null,
+        });
+      }
+
+      if (url === '/backup/snapshots/snap-1/browse?dir=%2FDocuments' && method === 'GET') {
+        return makeJsonResponse({
+          data: [{ name: 'report.txt', path: '/Documents/report.txt', type: 'file', sizeBytes: 1234 }],
+          nextCursor: null,
         });
       }
 
@@ -99,6 +93,42 @@ describe('SnapshotBrowser', () => {
     expect(screen.getByText(/Protection Controls/i)).toBeTruthy();
     expect(screen.getByText(/Snapshot Details/i)).toBeTruthy();
     expect(screen.getByText(/Use the restore workflow to recover or export files from this snapshot/i)).toBeTruthy();
+  });
+
+  it('loads only the root level up front and fetches a directory when it is selected (#8230)', async () => {
+    render(<SnapshotBrowser />);
+
+    await screen.findByText('Documents');
+    const browseCalls = () => fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/browse'));
+    expect(browseCalls()).toEqual(['/backup/snapshots/snap-1/browse']);
+    expect(screen.queryByText('report.txt')).toBeNull();
+
+    fireEvent.click(screen.getByText('Documents'));
+
+    await screen.findByText('report.txt');
+    expect(browseCalls()).toEqual([
+      '/backup/snapshots/snap-1/browse',
+      '/backup/snapshots/snap-1/browse?dir=%2FDocuments',
+    ]);
+  });
+
+  it('retries a directory whose first load failed when it is selected again (#8230)', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    let failures = 1;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots/snap-1/browse?dir=%2FDocuments' && failures-- > 0) {
+        return makeJsonResponse({ error: 'boom' }, false, 500);
+      }
+      return base(input, init);
+    });
+
+    render(<SnapshotBrowser />);
+    fireEvent.click(await screen.findByText('Documents'));
+    await screen.findByText(/Failed to browse snapshot/i);
+    expect(screen.queryByText('report.txt')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Documents' }));
+    await screen.findByText('report.txt');
   });
 
   it('points the restore-workflow copy at the Restore tab, carrying the active snapshot (#6349, #6456)', async () => {

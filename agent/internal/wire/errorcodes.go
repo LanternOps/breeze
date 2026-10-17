@@ -57,6 +57,10 @@ const (
 	ErrCodeUnsupportedEncoding CommandErrorCode = "unsupported_encoding"
 	// ErrCodeInvalidArgument: a required payload field is missing.
 	ErrCodeInvalidArgument CommandErrorCode = "invalid_argument"
+	// ErrCodeScanInProgress: a filesystem_analysis scan is already running on
+	// this agent; the new one was refused rather than started alongside it
+	// (#8509). Transient — retry once the running scan finishes.
+	ErrCodeScanInProgress CommandErrorCode = "scan_in_progress"
 )
 
 // AllCommandErrorCodes lists every code above. It is what the cross-language
@@ -76,4 +80,5 @@ var AllCommandErrorCodes = []CommandErrorCode{
 	ErrCodeTrashMetadataTooLarge,
 	ErrCodeUnsupportedEncoding,
 	ErrCodeInvalidArgument,
+	ErrCodeScanInProgress,
 }

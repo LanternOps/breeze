@@ -35,7 +35,7 @@ const graph = (nodes: unknown[], rels: unknown[], omitted = { nodes: 0, relation
   schemaVersion: 1, siteId: SITE, view: 'physical', asOf: NOW.toISOString(), revisions: { graph: '7', health: '3', layout: '1' }, nodes, relationships: rels,
   presentation: { nodes: [], edges: [] }, layout: { algorithm: 'x', version: 1, positions: [] },
   counts: { totalNodes: nodes.length, totalRelationships: rels.length, visibleNodes: nodes.length, visibleRelationships: rels.length, omittedNodes: omitted.nodes, omittedRelationships: omitted.relationships },
-  coverage: { state: 'complete', reasons: [] }, frontier: [], permissions: { canEdit: false, canDiagnose: false, canConfigureMonitoring: false },
+  coverage: { state: 'complete', reasons: [] }, frontier: [], permissions: { canEdit: false, canDiagnose: false, canConfigureMonitoring: false, canMoveDevices: false },
 });
 const observation = (i: number) => ({ id: id('80000000', i), method: 'lldp', evidenceClass: 'observed', producerKind: 'snmp', protocol: 'lldp',
   observedAt: '2026-09-26T11:00:00.000Z', effectiveAt: '2026-09-26T11:00:00.000Z', receivedAt: '2026-09-26T11:00:00.000Z', freshUntil: '2026-09-26T13:00:00.000Z', status: 'current' });

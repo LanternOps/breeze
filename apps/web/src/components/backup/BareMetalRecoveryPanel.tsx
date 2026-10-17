@@ -122,6 +122,7 @@ export interface BareMetalRecoveryPanelProps {
 export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanelProps) {
   const { t } = useTranslation('backup');
   const [snapshots, setSnapshots] = useState<RecoverySnapshotOption[]>([]);
+  const [snapshotsState, setSnapshotsState] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [selectedSnapshotId, setSelectedSnapshotId] = useState('');
   const [identity, setIdentity] = useState<RecoveryIdentity>('original');
   const [creating, setCreating] = useState(false);
@@ -138,13 +139,18 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
   }, []);
 
   const loadInitialData = useCallback(async () => {
+    setSnapshotsState('loading');
     try {
       const [snapshotsRes, recoveriesRes] = await Promise.all([
         fetchWithAuth(`/backup/snapshots?${orgQuery}bareMetalRestorable=true`),
         fetchWithAuth(`/backup/bmr/recoveries?${orgQuery}limit=20`),
       ]);
-      if (snapshotsRes.ok) {
-        setSnapshots(parseSnapshotOptions(await snapshotsRes.json().catch(() => null)));
+      const snapshotsBody = snapshotsRes.ok ? await snapshotsRes.json().catch(() => null) : null;
+      if (snapshotsRes.ok && isRecord(snapshotsBody)) {
+        setSnapshots(parseSnapshotOptions(snapshotsBody));
+        setSnapshotsState('loaded');
+      } else {
+        setSnapshotsState('error');
       }
       if (recoveriesRes.ok) {
         const recoveries = parseRecoveryList(await recoveriesRes.json().catch(() => null));
@@ -155,10 +161,12 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
         const mostRecent = recoveries[0];
         if (mostRecent) setActive(mostRecent);
       }
-    } catch {
-      // Best-effort background load — the create form still works even if
-      // the initial snapshot/recovery lists fail to populate; the user just
-      // sees an empty select / no history, not a hard error.
+    } catch (err) {
+      // Best-effort background load — the create form still renders, but the
+      // user is told the snapshot list did not load rather than being left
+      // with an unexplained empty select.
+      console.error('[BareMetalRecoveryPanel] initial load failed', err);
+      setSnapshotsState('error');
     }
   }, [orgQuery]);
 
@@ -305,6 +313,16 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
                 </option>
               ))}
             </select>
+            {snapshotsState === 'error' && (
+              <p className="mt-1 text-xs text-destructive" role="alert" data-testid="bare-metal-recovery-load-error">
+                {t('bareMetalRecovery.snapshotsLoadFailed')}
+              </p>
+            )}
+            {snapshotsState === 'loaded' && snapshots.length === 0 && (
+              <p className="mt-1 text-xs text-muted-foreground" data-testid="bare-metal-recovery-no-snapshots">
+                {t('bareMetalRecovery.noSnapshots')}
+              </p>
+            )}
           </div>
 
           <fieldset className="space-y-1">
@@ -421,7 +439,10 @@ export default function BareMetalRecoveryPanel({ orgId }: BareMetalRecoveryPanel
                     )}
                   >
                     {reached && <CheckCircle2 className="h-3 w-3" />}
-                    {t(/* i18n-dynamic */ `bareMetalRecovery.status.${status}`)}
+                    {/* A new-identity recovery ends at `completed` and never checks in. */}
+                    {status === 'checked_in' && active?.status === 'completed'
+                      ? t('bareMetalRecovery.status.completed')
+                      : t(/* i18n-dynamic */ `bareMetalRecovery.status.${status}`)}
                   </li>
                 );
               })}

@@ -322,7 +322,8 @@
       "automatic": "Bu sitede, alt ağlardan birinde adresi olan çevrimiçi bir ajan tercih edilir.",
       "pinned": "Taramalar yalnızca bu ajandan çalışır. Ajan çevrimdışıysa tarama başka bir ajana geçmek yerine başarısız olur.",
       "loadError": "Bu sitenin ajanları yüklenemedi. Otomatik seçim kullanılabilir durumda."
-    }
+    },
+    "subnetTopologyNote": "Buradaki alt ağlar, topoloji haritasında bu sitenin ağlarını da tanımlar."
   },
   "discoveryProfileList": {
     "actions": {
@@ -436,7 +437,8 @@
       "interval": "Tarama aralığı 1 ila 168 saat arasında olmalıdır.",
       "selectSite": "Kaydetmeden önce bir site seçin."
     },
-    "configuredCount": "{{count}} temeller yapılandırıldı"
+    "configuredCount": "{{count}} temeller yapılandırıldı",
+    "subnetTopologyNote": "Buradaki alt ağlar, topoloji haritasında bu sitenin ağlarını da tanımlar."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Onaylama Etkinliği",

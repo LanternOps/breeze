@@ -8,6 +8,7 @@ import { requireMfa, requirePermission, requireScope } from '../../middleware/au
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { pgErrorCode } from './access';
+import { describeEndpointActionsForRows } from '../../services/edrProviders/actionAvailability';
 
 export const edrEndpointRoutes = new Hono();
 
@@ -16,6 +17,8 @@ const OPEN_STATUSES = ['open', 'in_progress', 'unknown'] as const;
 const listQuerySchema = z.object({
   connectionId: z.string().guid().optional(),
   orgId: z.string().guid().optional(),
+  /** #8166: the device panel's rows — only endpoints linked to this device. */
+  deviceId: z.string().guid().optional(),
   // A malformed value is a 400, never a silently-ignored filter.
   state: z.enum(['unlinked', 'ambiguous', 'linked', 'all']).default('all'),
 });
@@ -47,6 +50,7 @@ edrEndpointRoutes.get(
       if (scoped) conditions.push(scoped);
     }
     if (query.connectionId) conditions.push(eq(edrEndpoints.connectionId, query.connectionId));
+    if (query.deviceId) conditions.push(eq(edrEndpoints.breezeDeviceId, query.deviceId));
 
     if (query.state === 'linked') conditions.push(isNotNull(edrEndpoints.breezeDeviceId));
     if (query.state === 'unlinked' || query.state === 'ambiguous') {
@@ -100,7 +104,10 @@ edrEndpointRoutes.get(
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(edrEndpoints.hostname);
 
-    return c.json({ data: rows });
+    // W03 (#8167): what the caller could do to each endpoint, with reasons. No vendor call.
+    if (rows.length === 0) return c.json({ data: rows });
+    const availability = await describeEndpointActionsForRows(auth, perms, rows);
+    return c.json({ data: rows.map((r) => ({ ...r, actions: availability.get(r.id) ?? [] })) });
   },
 );
 

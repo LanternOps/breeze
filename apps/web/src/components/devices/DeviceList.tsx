@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState, useEffect, useRef } from "react";
 import { usePermissions } from "../../lib/permissions";
+import { ENABLE_ENDPOINT_MESSAGING } from "../../lib/featureFlags";
 import { createPortal } from "react-dom";
 import {
   ChevronLeft,
@@ -58,6 +59,7 @@ import {
 import { widthPercentClass, formatUptime } from "@/lib/utils";
 import { formatLastSeen } from "@/lib/formatTime";
 import { formatNumber } from "@/lib/i18n/format";
+import { toPercent } from "@/lib/deviceUtils";
 import {
   getDeviceRoleLabel,
   getDeviceRoleIcon,
@@ -79,12 +81,14 @@ import {
 import {
   COLUMN_IDS,
   COLUMN_LABELS,
+  DEVICES_PAGE_COLUMN_PRESET,
   readColumnOrder,
   readColumnVisibility,
   resetColumns,
   writeColumnOrder,
   writeColumnVisibility,
   type ColumnId,
+  type ColumnPreset,
 } from "./columnVisibility";
 import {
   readVisibleCustomFieldKeys,
@@ -114,6 +118,7 @@ import { OSIcon } from "./osIcons";
 import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
 import { getAgentVersionRelation } from "./agentVersionRelation";
+import { EntityLink } from "@/components/shared/EntityLink";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -387,6 +392,12 @@ export type Device = {
    */
   linkGroupRole?: 'host' | 'guest' | null;
   /**
+   * Workload host axis (#8193): true once the agent detects any container or
+   * VM runtime (devices.hosts_workloads). Gates the device page Workloads tab.
+   * undefined = not carried by this payload.
+   */
+  hostsWorkloads?: boolean;
+  /**
    * RDS per-session helper mode reported by the agent heartbeat
    * (devices.helper_lifecycle_mode). 'on-demand' gates Tasks 13/14's session
    * pickers (RD connect, script dialog). null/undefined = not reported
@@ -540,6 +551,10 @@ type DeviceListProps = {
   // could be viewing this org's record while the switcher points at "All
   // organizations" or a different org entirely.
   forceSingleOrg?: boolean;
+  // Which persisted column list this instance reads/writes. Read once at mount
+  // (like `pageSize`); the org record's Devices tab passes its own so its
+  // customisation never leaks into the fleet page.
+  columnPreset?: ColumnPreset;
   // Issue #5285: each visible org's effective agent-version target (its
   // agentVersionPins.agent pin, or the globally promoted version when
   // unpinned), resolved ONCE per page load by the caller (DevicesPage) — not
@@ -830,10 +845,12 @@ export default function DeviceList({
   listFilters,
   onListFiltersChange,
   forceSingleOrg = false,
+  columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
+  const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send"); // UX gate; POST /endpoint-messages requires endpoint_messages.send; #8968: hidden until the build enables messaging
   const canWake = can("devices", "execute"); // UX gate; POST /devices/:id/commands requires devices.execute
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const canRemoteTerminal = can("remote", "access");
@@ -871,10 +888,10 @@ export default function DeviceList({
   // Checkbox + Actions are always-on first/last; the rest live in
   // COLUMN_IDS and the order in columnOrder controls render sequence.
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(
-    () => new Set(readColumnVisibility()),
+    () => new Set(readColumnVisibility(columnPreset)),
   );
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
-    readColumnOrder(),
+    readColumnOrder(columnPreset),
   );
   const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
   const columnsMenuRef = useRef<HTMLDivElement>(null);
@@ -998,7 +1015,7 @@ export default function DeviceList({
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
-      writeColumnVisibility(next);
+      writeColumnVisibility(next, columnPreset);
       return next;
     });
   };
@@ -1019,14 +1036,14 @@ export default function DeviceList({
       const next = [...prev];
       next[a] = swapWith;
       next[b] = id;
-      writeColumnOrder(next);
+      writeColumnOrder(next, columnPreset);
       return next;
     });
   };
 
   // Restores both visibility and order to the catalog defaults.
   const resetColumnsToDefault = () => {
-    const cols = resetColumns();
+    const cols = resetColumns(columnPreset);
     setColumnOrder(cols.map((c) => c.id));
     setVisibleColumns(new Set(cols.filter((c) => c.visible).map((c) => c.id)));
   };
@@ -1461,8 +1478,10 @@ export default function DeviceList({
   // We still escalate amber → red at genuine pressure (≥75% / ≥90%) because a
   // pegged box is exactly what a tech must catch at a glance; the bar width
   // and the trailing number carry the exact value at every level.
-  const metricBar = (percent: number, online: boolean) =>
-    online ? (
+  const metricBar = (rawPercent: number, online: boolean) => {
+    // Round defensively: rows from any source may carry a raw float.
+    const percent = toPercent(rawPercent);
+    return online ? (
       <div className="flex items-center gap-2">
         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
           <div
@@ -1474,6 +1493,7 @@ export default function DeviceList({
     ) : (
       <span className="text-muted-foreground">{t("deviceList.text")}</span>
     );
+  };
 
   // Format helpers for hardware columns. RAM is reported in MB; convert
   // to GB rounded to one decimal. Disk is already reported in GB.
@@ -1590,7 +1610,11 @@ export default function DeviceList({
           <td key="hostname" className="max-w-[220px] px-3 py-3 text-sm">
             <div className="min-w-0">
               <span className="block truncate font-medium" title={primaryName}>
-                {primaryName}
+                {(device.deviceClass ?? "agent") === "agent" ? (
+                  <EntityLink kind="device" id={device.id} name={primaryName} />
+                ) : (
+                  primaryName
+                )}
               </span>
               {hasDisplayName && (
                 <span
@@ -1716,7 +1740,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.orgName}>
-            {device.orgName}
+            <EntityLink kind="org" id={device.orgId} name={device.orgName} />
           </span>
         </td>
       ),
@@ -1729,7 +1753,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.siteName}>
-            {device.siteName}
+            <EntityLink kind="site" id={device.siteId} name={device.siteName} />
           </span>
         </td>
       ),
@@ -1828,7 +1852,127 @@ export default function DeviceList({
     },
     status: {
       header: () => sortHeader("status", t("deviceList.tableColumns.status"), t("deviceList.sortBy.status")),
-      cell: (device) => (
+      cell: (device) => {
+        // #8407: primary status + at most ONE secondary pill (most severe
+        // first); the rest fold into a "+N" chip whose popover keeps every
+        // per-condition testid reachable. Order: update stuck > agent silent >
+        // logs silent > collision > Assist install issue > updates withheld.
+        // Rule for new conditions: a list pill is only for something a tech
+        // must act on for this device — diagnostics go on the detail page.
+        const pillClass =
+          "inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30";
+        const secondary: Array<{ key: string; node: React.ReactNode }> = [];
+        if (
+          isAgentUpdateStuck({
+            targetVersion: device.updateAttemptTargetVersion,
+            startedAt: device.updateAttemptStartedAt,
+            lastAttemptAt: device.updateAttemptLastAt,
+          })
+        ) {
+          secondary.push({
+            key: "stuck",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-update-stuck`}
+                title={t("deviceList.updateStuckTooltip", { target: device.updateAttemptTargetVersion })}
+                className={pillClass}
+              >
+                {t("deviceList.updateStuck")}
+              </span>
+            ),
+          });
+        }
+        if (shouldShowAgentSilentBadge(device)) {
+          secondary.push({
+            key: "agent-silent",
+            node: (
+              <span
+                data-testid={`device-${device.id}-agent-silent-badge`}
+                title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
+                className={pillClass}
+              >
+                {t("deviceList.agentSilent")}{" "}
+                {formatSilentDuration(device.mainAgentSilentSince!)}
+              </span>
+            ),
+          });
+        }
+        // #7067: a heartbeating device that has shipped no logs for over 6h —
+        // distinct from agent-silent (dead main agent with a live watchdog).
+        if (
+          isDeviceLogSilent({
+            status: device.status,
+            lastLogAt: device.lastLogAt,
+            enrolledAt: device.enrolledAt,
+          })
+        ) {
+          secondary.push({
+            key: "logs-silent",
+            node: (
+              <span
+                data-testid={`device-${device.id}-logs-silent-badge`}
+                title={t("deviceList.logsSilentTooltip")}
+                className={pillClass}
+              >
+                {t("deviceList.logsSilent")}
+              </span>
+            ),
+          });
+        }
+        // Collision enrollment (#2764): NOT suppressed on an offline row — the
+        // duplicate still needs a human decision.
+        if (device.possibleReplacementOfDeviceId) {
+          secondary.push({
+            key: "duplicate",
+            node: (
+              <span
+                data-testid={`device-${device.id}-possible-duplicate-badge`}
+                title={t("deviceList.possibleDuplicateTitle")}
+                className={pillClass}
+              >
+                {t("deviceList.possibleDuplicate")}
+              </span>
+            ),
+          });
+        }
+        if (device.helperInstallIssue) {
+          secondary.push({
+            key: "helper",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-helper-install-issue`}
+                title={helperInstallIssueTooltip(device.helperInstallIssue)}
+                className={pillClass}
+              >
+                {t("deviceList.helperNotInstalled")}
+              </span>
+            ),
+          });
+        }
+        if (device.updateOfferWithheldReason) {
+          secondary.push({
+            key: "withheld",
+            node: (
+              <span
+                data-testid={`device-${device.id}-status-update-withheld`}
+                title={t("deviceList.updateWithheldTooltip")}
+                className={pillClass}
+              >
+                {t("deviceList.updateWithheld")}
+              </span>
+            ),
+          });
+        }
+        const secondaryLabels: Record<string, string> = {
+          stuck: t("deviceList.updateStuck"),
+          "agent-silent": t("deviceList.agentSilent"),
+          "logs-silent": t("deviceList.logsSilent"),
+          duplicate: t("deviceList.possibleDuplicate"),
+          helper: t("deviceList.helperNotInstalled"),
+          withheld: t("deviceList.updateWithheld"),
+        };
+        const [topSecondary, ...restSecondary] = secondary;
+        return (
         <td key="status" className="px-3 py-3 text-sm">
           <div className="flex items-center gap-1">
             <span
@@ -1837,45 +1981,29 @@ export default function DeviceList({
             >
               {t(/* i18n-dynamic */ statusFullLabelKeys[device.status])}
             </span>
-            {shouldShowAgentSilentBadge(device) && (
-              <span
-                data-testid={`device-${device.id}-agent-silent-badge`}
-                title={`Main agent has been silent for ${formatSilentDuration(device.mainAgentSilentSince!)}. Watchdog is still reporting in, so the box is alive but the agent has wedged.`}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.agentSilent")}{" "}
-                {formatSilentDuration(device.mainAgentSilentSince!)}
+            {topSecondary && (
+              <span key={topSecondary.key} className="contents">
+                {topSecondary.node}
               </span>
             )}
-            {/* #7067: a heartbeating device that has shipped no logs for over 6h —
-                distinct from agent-silent above (which fires on a dead main agent
-                with a live watchdog). This can fire even when the agent process
-                itself is healthy but its log-shipping channel is dead. */}
-            {isDeviceLogSilent({
-              status: device.status,
-              lastLogAt: device.lastLogAt,
-              enrolledAt: device.enrolledAt,
-            }) && (
+            {restSecondary.length > 0 && (
+              // Native title tooltip for sighted users (a positioned popover
+              // would be clipped by the table's overflow-x-auto wrapper); the
+              // folded pills stay in the DOM, visually hidden, so screen
+              // readers and testids still reach every condition.
               <span
-                data-testid={`device-${device.id}-logs-silent-badge`}
-                title={t("deviceList.logsSilentTooltip")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
+                data-testid={`device-${device.id}-status-overflow`}
+                title={restSecondary.map((s) => secondaryLabels[s.key]).join(", ")}
+                className="inline-flex items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground bg-muted/40 cursor-default"
               >
-                {t("deviceList.logsSilent")}
-              </span>
-            )}
-            {/* Collision enrollment (#2764): this row may be replacing an
-                earlier device with the same hostname. Unlike pending-reboot
-                below it is NOT suppressed on an offline row — the duplicate
-                still needs a human decision, and an offline collider is the
-                likeliest one to be the stale record. */}
-            {device.possibleReplacementOfDeviceId && (
-              <span
-                data-testid={`device-${device.id}-possible-duplicate-badge`}
-                title={t("deviceList.possibleDuplicateTitle")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.possibleDuplicate")}
+                <span aria-hidden="true">+{restSecondary.length}</span>
+                <span className="sr-only">
+                  {restSecondary.map((s) => (
+                    <span key={s.key} className="contents">
+                      {s.node}
+                    </span>
+                  ))}
+                </span>
               </span>
             )}
             {/* Pending-reboot is only actionable while the box is reachable. On an
@@ -1890,46 +2018,10 @@ export default function DeviceList({
                 className="inline-block h-2 w-2 shrink-0 rounded-full bg-warning"
               />
             )}
-            {/* #7214 (paper cut #23): the agent-health badges below duplicate
-                the ones in the Agent Version / Helper Version columns, which
-                are opt-in and hidden by default — most users never saw them.
-                Status is default-visible, so mirror the same three badges
-                here as compact pills, matching the agent-silent/logs-silent
-                pattern above. */}
-            {device.updateOfferWithheldReason && (
-              <span
-                data-testid={`device-${device.id}-status-update-withheld`}
-                title={t("deviceList.updateWithheldTooltip")}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.updateWithheld")}
-              </span>
-            )}
-            {isAgentUpdateStuck({
-              targetVersion: device.updateAttemptTargetVersion,
-              startedAt: device.updateAttemptStartedAt,
-              lastAttemptAt: device.updateAttemptLastAt,
-            }) && (
-              <span
-                data-testid={`device-${device.id}-status-update-stuck`}
-                title={t("deviceList.updateStuckTooltip", { target: device.updateAttemptTargetVersion })}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.updateStuck")}
-              </span>
-            )}
-            {device.helperInstallIssue && (
-              <span
-                data-testid={`device-${device.id}-status-helper-install-issue`}
-                title={helperInstallIssueTooltip(device.helperInstallIssue)}
-                className="inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-medium bg-warning/15 text-warning border-warning/30"
-              >
-                {t("deviceList.helperNotInstalled")}
-              </span>
-            )}
           </div>
         </td>
-      ),
+        );
+      },
     },
     pendingReboot: {
       header: () =>
@@ -2871,6 +2963,19 @@ export default function DeviceList({
                   {t("deviceList.rebootSelected")}
                   {agentOnlySuffix}
                 </button>
+                {canSendMessage && (
+                  <button
+                    type="button"
+                    data-testid="bulk-send-message"
+                    onClick={() => handleBulkAction("send-message")}
+                    disabled={agentOnlyDisabled}
+                    title={agentOnlyTitle}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t("endpointMessages.sendAction")}
+                    {agentOnlySuffix}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleBulkAction("run-script")}

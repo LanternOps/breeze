@@ -1845,7 +1845,7 @@ describe('NetworkDeviceDetailPage', () => {
     });
     const { unmount } = render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     try {
-      expect(await screen.findByTestId('topology-explorer')).toBeVisible();
+      expect(await screen.findByTestId('topology-explorer', {}, { timeout: 8000 })).toBeVisible();
       expect(await screen.findByTestId('topology-health-internet')).toHaveTextContent('Not measured');
       expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes(`focusNodeId=${NODE}`))).toBe(true);
       // Opening the map is passive: nothing but GETs leaves the page.

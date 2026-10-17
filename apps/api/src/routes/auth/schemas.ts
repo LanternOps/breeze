@@ -1,3 +1,4 @@
+import { MIGRATION_WINDOW_MAX_ORGS } from '../../services/migrationWindowLimits';
 import { z } from 'zod';
 import { orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
@@ -177,6 +178,7 @@ const STEP_UP_OPERATIONS = [
   'partner_payment_settings_update',
   'autopay_request_recipient',
   'org_payment_settings_update',
+  'migration_window_open',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
@@ -294,6 +296,15 @@ export const partnerPaymentSettingsStepUpResource = z.object({
 export const orgPaymentSettingsStepUpResource = z.object({
   orgId: z.string().guid(),
   settings: orgPaymentSettingsPatchSchema,
+});
+// Opening a ticket migration window (#8313): mirrors the POST
+// /migration-windows body the grant is consumed by (routes/migrationWindows.ts).
+export const migrationWindowOpenStepUpResource = z.object({
+  partnerId: z.string().guid(),
+  principalId: z.string().guid(),
+  orgIds: z.array(z.string().guid()).min(1).max(MIGRATION_WINDOW_MAX_ORGS),
+  endsAt: z.string().datetime(),
+  writesPerHour: z.number().int().optional(),
 });
 // Redirected authorization request: mirrors the request body of
 // POST /billing/autopay/requests when recipientOverride is set.

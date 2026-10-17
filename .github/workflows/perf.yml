@@ -1,0 +1,170 @@
+name: Perf (agent capacity KPI gate)
+
+# Scaling W07 / spec W0c (#8146). Fixed-hardware regression gate on the
+# self-hosted `breeze-perf` runner: one measured simulator run against a lab
+# stack, turned into a breeze.perf.kpi/v1 record and compared against the
+# committed baseline (fails on a >15 % regression of a gated KPI). Operator
+# doc: load-tests/perf/README.md.
+#
+# NEVER on pull_request / pull_request_target / push: this is a public repo and
+# the job runs on a self-hosted runner, so a fork must never be able to run code
+# on it. apps/api/src/config/perfWorkflowContract.test.ts enforces the trigger
+# set, the repository guard, the permissions, the action pins and that no
+# repository secret is referenced. The workflow never commits: a baseline changes only by a human PR.
+on:
+  schedule:
+    # 02:41 UTC, off the hour. Runs only once the repository variable
+    # PERF_NIGHTLY_ENABLED is 'true' (set after the runner exists).
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+    inputs:
+      inject:
+        type: choice
+        options: [none, slow-heartbeat]
+        default: none
+        description: slow-heartbeat runs a same-host clean/injected A/B and passes only if the gate goes red
+
+concurrency:
+  group: perf
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PNPM_VERSION: '10.34.5'
+  OUT: load-tests/perf/out
+
+jobs:
+  gate:
+    name: Perf gate (nightly-200)
+    if: github.repository == 'LanternOps/breeze' && (github.event_name == 'workflow_dispatch' || vars.PERF_NIGHTLY_ENABLED == 'true')
+    runs-on: [self-hosted, breeze-perf]
+    # nightly-200 is ~30 min per run including stack up/down; a confirm run or
+    # the inject A/B makes two.
+    timeout-minutes: 120
+    outputs:
+      summary: ${{ steps.summary.outputs.summary }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ---- Mode none (nightly and plain dispatch): compare against the committed
+      # baseline; on a regression run once more and fail only if the confirm run
+      # regresses on at least one of the same KPIs (D5).
+      - name: Measure and compare against the baseline
+        if: inputs.inject != 'slow-heartbeat'
+        run: |
+          set -uo pipefail
+          baseline=load-tests/perf/baselines/nightly-200.json
+          load-tests/perf/run-perf.sh --profile nightly-200 --out-dir "$OUT/run1" --label clean || exit $?
+          if [ ! -f "$baseline" ]; then
+            echo "::error::no committed baseline for nightly-200 — see load-tests/perf/baselines/README.md (the candidate record is in the artifact: run1/kpi.json)"
+            exit 1
+          fi
+          rc=0
+          GITHUB_STEP_SUMMARY="$OUT/summary.md" node load-tests/perf/cli.mjs compare \
+            --baseline "$baseline" --candidate "$OUT/run1/kpi.json" || rc=$?
+          if [ "$rc" -eq 1 ]; then
+            echo "::warning::first run regressed; running one confirm run (D5)"
+            load-tests/perf/run-perf.sh --profile nightly-200 --out-dir "$OUT/run2" --label clean || exit $?
+            GITHUB_STEP_SUMMARY="$OUT/summary.md" node load-tests/perf/cli.mjs compare \
+              --baseline "$baseline" --candidate "$OUT/run1/kpi.json" --confirm "$OUT/run2/kpi.json"
+            exit $?
+          fi
+          exit "$rc"
+
+      # ---- Mode slow-heartbeat (D11): same-host A/B. Clean run, apply the
+      # deliberate slowdown to this throwaway checkout, injected run; the step
+      # passes only if the comparator reports a regression naming both
+      # agentCostCpuMsPerAgentMin and heartbeatP95Ms. No committed baseline is read.
+      - name: Inject A/B — clean run
+        if: github.event_name == 'workflow_dispatch' && inputs.inject == 'slow-heartbeat'
+        run: load-tests/perf/run-perf.sh --profile nightly-200 --out-dir "$OUT/clean" --label clean
+
+      - name: Inject A/B — apply load-tests/perf/inject/slow-heartbeat.patch
+        if: github.event_name == 'workflow_dispatch' && inputs.inject == 'slow-heartbeat'
+        run: |
+          if ! git apply load-tests/perf/inject/slow-heartbeat.patch; then
+            echo "::error::patch no longer applies — regenerate it, see load-tests/perf/README.md"
+            exit 1
+          fi
+
+      - name: Inject A/B — injected run, expect a regression
+        if: github.event_name == 'workflow_dispatch' && inputs.inject == 'slow-heartbeat'
+        run: |
+          set -uo pipefail
+          load-tests/perf/run-perf.sh --profile nightly-200 --out-dir "$OUT/inject" --label inject || exit $?
+          GITHUB_STEP_SUMMARY="$OUT/summary.md" node load-tests/perf/cli.mjs compare \
+            --baseline "$OUT/clean/kpi.json" --candidate "$OUT/inject/kpi.json" --expect regression
+
+      - name: Publish the comparator summary
+        id: summary
+        if: always()
+        run: |
+          f="$OUT/summary.md"
+          [ -f "$f" ] || exit 0
+          cat "$f" >> "$GITHUB_STEP_SUMMARY"
+          delim="PERF_SUMMARY_$(openssl rand -hex 8)"
+          { echo "summary<<$delim"; cat "$f"; echo "$delim"; } >> "$GITHUB_OUTPUT"
+
+      - name: Upload KPI records and samples
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: perf-${{ github.run_id }}-${{ github.run_attempt }}
+          path: load-tests/perf/out/**
+          retention-days: 30
+          if-no-files-found: warn
+
+  # D13: one rolling `perf-regression` issue for nightly failures. Dispatch runs
+  # never file issues. GitHub-hosted, so the self-hosted runner never holds a
+  # write token.
+  notify:
+    name: File the nightly regression
+    needs: gate
+    if: failure() && github.event_name == 'schedule' && github.repository == 'LanternOps/breeze'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or comment on the perf-regression issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SUMMARY: ${{ needs.gate.outputs.summary }}
+        run: |
+          set -euo pipefail
+          body="$(printf 'Nightly perf gate failed: %s\n\n%s\n\nHow to read a red: load-tests/perf/README.md' "$RUN_URL" "${SUMMARY:-_(no comparator summary: the run was invalid or did not reach the compare step; see the run log)_}")"
+          gh label create perf-regression --color B60205 --description "Nightly perf gate (load-tests/perf)" 2>/dev/null || true
+          n="$(gh issue list --label perf-regression --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --title "Nightly perf gate: regression" --label perf-regression --body "$body"
+          fi

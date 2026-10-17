@@ -10,6 +10,7 @@ import ConnectSsoCard from './ConnectSsoCard';
 import MFASettings from './MFASettings';
 import RemoteToolSettings from './RemoteToolSettings';
 import TicketPushoverSettings from './TicketPushoverSettings';
+import EmailNotificationSettings from './EmailNotificationSettings';
 import ApproverDevicesSection from './ApproverDevicesSection';
 import ThemingSettings from './ThemingSettings';
 import { pickReauthTier, type ReauthTier } from './StepUpPrompt';
@@ -80,6 +81,9 @@ const SSO_REAUTH_ERROR_KEYS: Record<string, string> = {
   provider_inactive: 'profilePage.ssoReauthProviderInactive',
   config_changed: 'profilePage.ssoReauthConfigChanged',
   email_unverified: 'profilePage.ssoReauthEmailUnverified',
+  // #8862: the IdP's id_token failed verification (signature/issuer/expiry).
+  // The API logs the token's timing claims, so the copy points there.
+  idp_verify_failed: 'profilePage.ssoReauthIdpVerifyFailed',
 };
 
 /**
@@ -1864,6 +1868,7 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
         onSaved={(preferences) => setUser(prev => (prev ? { ...prev, preferences } : prev))}
       />
       <TicketPushoverSettings />
+      <EmailNotificationSettings />
 
       {/* Onboarding */}
       <div className="rounded-lg border bg-card p-6 shadow-xs">

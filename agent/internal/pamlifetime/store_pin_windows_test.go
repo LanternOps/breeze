@@ -18,7 +18,7 @@ const fileDeleteChildAccess = 0x00000040
 // TestStorePersistsLedgerWhileParentDirectoryIsPinned is the pamlifetime half of
 // issue #4184. The agent pins its ConfigDir for its whole lifetime; the PAM v2
 // ledger lives in that same tree and is persisted with a temp file plus
-// replaceFile. When the pin withheld FILE_SHARE_WRITE, that rename failed with
+// atomicrename.Replace. When the pin withheld FILE_SHARE_WRITE, that rename failed with
 // ERROR_SHARING_VIOLATION, PrepareApply returned an error, and the manager
 // reported invalid_command for every pam_apply_v2 / pam_cleanup_v2.
 //

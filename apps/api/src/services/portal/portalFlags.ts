@@ -21,7 +21,9 @@ export const PORTAL_VISIBILITY_FLAG_KEYS = [
   'enableHardwareInventory',
   'enablePerformanceMetrics',
   'enableSoftwareInventory',
-  'enableNetworkVisibility'
+  'enableNetworkVisibility',
+  // EDR provider framework W02 (#8166): strict, inside "Enable all".
+  'enableEdrVisibility'
 ] as const;
 
 export type PortalVisibilityFlag = typeof PORTAL_VISIBILITY_FLAG_KEYS[number];
@@ -31,6 +33,11 @@ export type PortalVisibilityFlags = Record<PortalVisibilityFlag, boolean>;
 // Flags kept outside "Enable all" (shared with the web editor test).
 export { PORTAL_SENSITIVE_FLAG_KEYS } from '@breeze/shared';
 export type { PortalSensitiveFlag } from '@breeze/shared';
+
+// Flags that grant a portal write permission (Trust Center W3d); outside
+// "Enable all" and outside the visibility seam below.
+export { PORTAL_PERMISSION_FLAG_KEYS } from '@breeze/shared';
+export type { PortalPermissionFlag } from '@breeze/shared';
 
 // Called by the org portal-settings PATCH route whenever a visibility flag
 // was part of the request body, after the upsert has been persisted. It

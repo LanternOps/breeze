@@ -21,6 +21,10 @@ describe('tabFromHash', () => {
     // #pax8/<id> style deep links belong to the settings page, not the record.
     expect(tabFromHash('#pax8/abc-123')).toBeUndefined();
   });
+
+  it('keeps the owning tab for a nested in-tab deep link', () => {
+    expect(tabFromHash('#contacts/11111111-1111-4111-8111-111111111111/verification')).toBe('contacts');
+  });
 });
 
 describe('visibleTabs — permissions', () => {
@@ -31,7 +35,7 @@ describe('visibleTabs — permissions', () => {
   it('always keeps the org-read tabs, which need no extra grant', () => {
     // A user who can reach the record at all holds organizations:read; overview,
     // contacts and sites are served by that same read.
-    expect(visibleTabs(grants(['organizations', 'read']), 'native')).toEqual(['overview', 'contacts', 'sites']);
+    expect(visibleTabs(grants(['organizations', 'read']), 'native')).toEqual(['overview', 'contacts', 'sites', 'trust']);
   });
 
   it('drops Devices without devices:read', () => {
@@ -55,7 +59,7 @@ describe('visibleTabs — permissions', () => {
   it('hides every gated tab while permissions are still loading (undefined), never flashes them', () => {
     // hasPermission returns false for undefined; the org-read tabs stay because
     // they carry no grant requirement at all.
-    expect(visibleTabs(undefined, 'native')).toEqual(['overview', 'contacts', 'sites']);
+    expect(visibleTabs(undefined, 'native')).toEqual(['overview', 'contacts', 'sites', 'trust']);
   });
 });
 
@@ -133,7 +137,7 @@ describe('Service tab (#5573 W01)', () => {
 describe('Documents tab (#5573 W03)', () => {
   it('declares Documents after Service and before Activity', () => {
     expect([...ORG_RECORD_TABS]).toEqual([
-      'overview', 'contacts', 'sites', 'devices', 'tickets', 'billing', 'service', 'documents', 'activity',
+      'overview', 'contacts', 'sites', 'devices', 'tickets', 'billing', 'service', 'documents', 'trust', 'activity',
     ]);
   });
 
@@ -148,5 +152,12 @@ describe('Documents tab (#5573 W03)', () => {
     for (const mode of ['native', 'off', 'external'] as const) {
       expect(visibleTabs(grants(['documents', 'read']), mode)).toContain('documents');
     }
+  });
+});
+
+describe('Trust Center tab (#8768)', () => {
+  it('sits between Documents and Activity and needs only organizations:read', () => {
+    expect(TAB_PERMISSION.trust).toEqual([]);
+    expect(visibleTabs(grants(['organizations', 'read']), 'native')).toContain('trust');
   });
 });

@@ -7,6 +7,7 @@ vi.mock('./registry', () => ({
 }));
 
 import {
+  clearExpiredTenantDenials,
   isDeadlockError,
   persistDetections,
   persistInventory,
@@ -263,6 +264,31 @@ describe('persistDetections', () => {
     expect(first).toMatchObject({ orgId: ORG, tenantId: T1, endpointId: 'ep-row', breezeDeviceId: 'dev-1', provider: 'bitdefender' });
   });
 
+  // #8166 A6: first-sync back-fill is stamped notified at persist time so the
+  // Phase 4 notifier never pages on a new connection's 30-day history.
+  it('(j) a tenant\'s FIRST detection sync inserts rows already notified; a re-sync never sets/overwrites it', async () => {
+    const firstSync = makeTx({
+      selects: [[{ id: T1, vendorTenantId: 'co1', orgId: ORG, lastDetectionSyncAt: null }], []],
+      returning: [[{ id: 'd1' }, { id: 'd2' }]],
+    });
+    await persistDetections(firstSync.tx, CONN, [
+      { vendorTenantId: 'co1', ok: true, value: page([detection('x1', { severity: 'critical' }), detection('x2', { severity: 'low' })]) },
+    ], NOW);
+    const firstInsert = firstSync.ops.find((o) => o.kind === 'insert')!;
+    expect((firstInsert.values as Array<Record<string, unknown>>).map((v) => v.notifiedSeverity)).toEqual(['critical', 'low']);
+    expect(Object.keys(firstInsert.conflict!.set!)).not.toContain('notifiedSeverity');
+
+    const resync = makeTx({
+      selects: [[{ id: T1, vendorTenantId: 'co1', orgId: ORG, lastDetectionSyncAt: new Date('2026-12-16T11:00:00Z') }], []],
+      returning: [[{ id: 'd1' }]],
+    });
+    await persistDetections(resync.tx, CONN, [
+      { vendorTenantId: 'co1', ok: true, value: page([detection('x1', { severity: 'critical' })]) },
+    ], NOW);
+    const resyncInsert = resync.ops.find((o) => o.kind === 'insert')!;
+    expect((resyncInsert.values as Array<Record<string, unknown>>)[0]).not.toHaveProperty('notifiedSeverity');
+  });
+
   it('counts a conflict row owned by another tenant (filtered by the DO UPDATE WHERE) as skipped', async () => {
     const { tx } = makeTx({ selects: [tenantRows, []], returning: [[{ id: 'd1' }]] });
     const out = await persistDetections(tx, CONN, [
@@ -339,5 +365,19 @@ describe('maintenance statements', () => {
     expect(s).toMatch(/d\.detached_at IS NULL/);
     expect(s).toMatch(/d\.status IN \('open', 'in_progress', 'unknown'\)/);
     expect(s).toMatch(/IS DISTINCT FROM e\.breeze_device_id/);
+  });
+});
+
+describe('clearExpiredTenantDenials (W03, #8167)', () => {
+  it('clears only this connection\'s denials older than 24 h and returns the count', async () => {
+    const { tx, ops } = makeTx({ executes: [[{ id: 'a' }]] });
+    expect(await clearExpiredTenantDenials(tx, CONN.id, NOW)).toBe(1);
+    const q = ops[0]!.sql!;
+    expect(q).toMatch(/UPDATE edr_tenants SET unsupported_actions = '\{\}'/);
+    expect(q).toMatch(/unsupported_actions_at = NULL/);
+    expect(q).toMatch(/connection_id = \$1::uuid/);
+    expect(q).toMatch(/unsupported_actions_at < \$2::timestamptz/);
+    expect(q).toContain(CONN.id);
+    expect(q).toContain('2026-12-15T12:00:00.000Z');
   });
 });

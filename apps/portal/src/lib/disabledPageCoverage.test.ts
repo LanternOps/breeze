@@ -40,11 +40,16 @@ const GATED_API_METHODS: Record<string, string> = {
   getTickets: 'PORTAL_TICKETS_DISABLED',
   getTicket: 'PORTAL_TICKETS_DISABLED',
   getTicketForms: 'PORTAL_TICKETS_DISABLED',
+  getApprovals: 'PORTAL_TICKETS_DISABLED',
   getService: 'PORTAL_SERVICE_DISABLED',
   getServiceOccurrences: 'PORTAL_SERVICE_DISABLED',
   getDocuments: 'PORTAL_DOCUMENTS_DISABLED',
   getSoftwareSummary: 'PORTAL_SOFTWARE_INVENTORY_DISABLED',
   getDeviceSoftware: 'PORTAL_SOFTWARE_INVENTORY_DISABLED',
+  getPatchSummary: 'PORTAL_PATCH_DETAIL_DISABLED',
+  getDevicePatches: 'PORTAL_PATCH_DETAIL_DISABLED',
+  getVulnerabilitySummary: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
+  getVulnerabilityFindings: 'PORTAL_VULNERABILITY_DETAIL_DISABLED',
   getHardwareLifecycleLatest: 'PORTAL_LIFECYCLE_DISABLED',
 };
 
@@ -190,6 +195,13 @@ const UNAUTHENTICATED_PAGES = new Set([
   // Emailed payment capability; GET renders, explicit POST confirms.
   'autopay/[token]/confirm.astro',
   'autopay/return.astro',
+  // Trust pages are public by design (spec trust-center §8); the preview token is the capability.
+  'trust/[partnerSlug]/index.astro',
+  'trust/[partnerSlug]/[orgSlug].astro',
+  'trust/preview/[token].astro',
+  // Gated-document access links: the URL-fragment token is the capability (W02d).
+  'trust/access/verify.astro',
+  'trust/access/download.astro',
 ]);
 
 /** src/pages-relative file → the route the middleware sees (base stripped). */

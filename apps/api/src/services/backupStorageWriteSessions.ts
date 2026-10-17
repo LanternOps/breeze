@@ -36,8 +36,19 @@ import {
   backupStorageSessions,
   devices,
 } from '../db/schema';
-import { normalizeStorageIdentity } from '../jobs/backupRetention';
+import { normalizeStorageIdentity } from './backupStorageIdentity';
 import { effectiveHelperProtocol } from './backupHelperProtocols';
+import { loadOriginKeyRootRows } from './backupOriginKeyRoots';
+import {
+  keyRootId,
+  LEGACY_FLAT_ROOT,
+  logicalKeyFrom,
+  originKeyRootAllows,
+  physicalKeyFits,
+  physicalKeyFor,
+  snapshotKeyRootOf,
+  type SnapshotKeyRoot,
+} from './backupKeyLayout';
 import { recordStorageSessionMint } from './backupMetrics';
 import { parseBackupObjectKey } from './backupObjectKey';
 import { resolveBackupWriteCommandDestination } from './backupProviderConfig';
@@ -180,7 +191,18 @@ export type WriteUnbrokeredReason =
   | 'server_origin_unavailable'
   | 'insecure_server_origin'
   | 'device_org_mismatch'
-  | 'job_not_live';
+  | 'job_not_live'
+  // The destination's key prefix fails validation: a new snapshot id cannot
+  // be given a key root (#7081). Never silently written to the bucket root.
+  | 'invalid_destination_prefix'
+  // The job's existing reservation records a key root this server cannot
+  // read (fail closed).
+  | 'key_root_invalid'
+  // The dispatch base is not recorded under this run's key root (the
+  // destination prefix changed between dispatch and delivery, or the base's
+  // root is unreadable or gone under a prefixed run): a chain never spans
+  // roots (I4), so the next run takes a full backup instead.
+  | 'base_key_root_mismatch';
 
 /**
  * Whether a backup to this destination can be brokered for this device. A
@@ -361,6 +383,29 @@ export interface WriteSessionDeps {
   storage: WriteStorage;
   publicOrigins(): string[];
   scheduleProbe(configId: string, orgId: string): void;
+  /** Key root of a NEW reservation (mint only); defaults to `resolveMintKeyRoot`. */
+  resolveMintKeyRoot?(provider: string, providerConfig: Record<string, unknown>): MintKeyRootResult;
+}
+
+export type MintKeyRootResult =
+  | { ok: true; root: SnapshotKeyRoot }
+  | { ok: false; reason: 'invalid_destination_prefix' };
+
+/**
+ * The key root a NEW snapshot id reserved on this destination is written
+ * under (#7081). The recorded root, not the destination's current settings,
+ * is what every later storage call of the id uses (redelivery, resume,
+ * publication, cleanup).
+ *
+ * Hard-wired to the legacy root as a release gate: storage GC, reconcile and
+ * the cleanup job already handle prefixed roots (#7081), but no row may record
+ * `prefixed_flat` until the release that applies destination prefixes
+ * replaces this body with `keyRootForNewSnapshot(provider, providerConfig)`.
+ * Storage GC and dispatch base selection also read it, as the root each
+ * destination writes now.
+ */
+export function resolveMintKeyRoot(_provider: string, _providerConfig: Record<string, unknown>): MintKeyRootResult {
+  return { ok: true, root: LEGACY_FLAT_ROOT };
 }
 
 export const defaultWriteStorage: WriteStorage = {
@@ -387,6 +432,7 @@ export const defaultWriteSessionDeps: WriteSessionDeps = {
     (v): v is string => typeof v === 'string' && v.trim().length > 0,
   ),
   scheduleProbe: (configId, orgId) => scheduleConditionalWriteProbe(configId, orgId),
+  resolveMintKeyRoot,
 };
 
 // ── Mint ────────────────────────────────────────────────────────────────────
@@ -494,6 +540,23 @@ export async function mintBackupWriteSession(
   const baseManifestKey = input.baseManifestKey && parseBackupObjectKey(input.baseManifestKey)
     ? input.baseManifestKey
     : null;
+  const baseSnapshotId = baseManifestKey ? parseBackupObjectKey(baseManifestKey)?.snapshotId ?? null : null;
+  // I4: the dispatch base must be recorded under the run's key root — the
+  // same rule (originKeyRootAllows) the base GET enforces at read time,
+  // checked here so a mismatched run is refused before anything is reserved.
+  const baseRootRefused = async (root: SnapshotKeyRoot): Promise<boolean> => {
+    if (!baseSnapshotId) return false;
+    const rows = await loadOriginKeyRootRows({ orgId: input.orgId, storageIdentity: identity, originSnapshotIds: [baseSnapshotId] });
+    const baseRow = rows.get(baseSnapshotId);
+    if (originKeyRootAllows(root, baseRow)) return false;
+    console.warn('[backupStorageWriteSessions] refused a write session: its dispatch base is under another or an unreadable key root', {
+      jobId: input.jobId,
+      baseSnapshotId,
+      runKeyRoot: keyRootId(root),
+      baseKeyRoot: baseRow ? `${baseRow.keyLayout}:${baseRow.keyPrefix ?? ''}` : 'no row',
+    });
+    return true;
+  };
   const deadline = new Date(Math.floor((now.getTime() + STORAGE_WRITE_SESSION_DEADLINE_MS) / 1000) * 1000);
   const expiresAt = new Date(Math.min(Math.floor((now.getTime() + STORAGE_SESSION_LEASE_MS) / 1000) * 1000, deadline.getTime()));
   const token = deps.randomToken();
@@ -501,11 +564,22 @@ export async function mintBackupWriteSession(
 
   // One savepoint: a guard refusal or id collision leaves the caller's
   // transaction usable and writes nothing.
-  const minted = await db.transaction(async () => {
+  const minted = await db.transaction(async (): Promise<{ snapshotId: string; sessionId: string } | { refused: WriteUnbrokeredReason }> => {
     const existing = await findReservedForJob(input.jobId);
     let snapshotId: string;
     let generationOfReservation: number;
     if (existing) {
+      // The redelivered session writes under the root recorded at the first
+      // mint, never the destination's current one. One this server cannot
+      // read refuses before anything is written.
+      if (!snapshotKeyRootOf(existing)) {
+        console.error('[backupStorageWriteSessions] refused a redelivery: its reservation records an unreadable key root', {
+          jobId: input.jobId,
+          snapshotId: existing.snapshotId,
+        });
+        return { refused: 'key_root_invalid' };
+      }
+      if (await baseRootRefused(snapshotKeyRootOf(existing)!)) return { refused: 'base_key_root_mismatch' };
       // A redelivery of the same job: the new session writes the same id, and
       // becomes its only writer — every earlier session of the job is revoked
       // and the reservation moves to a new write generation, so an earlier
@@ -525,12 +599,20 @@ export async function mintBackupWriteSession(
       snapshotId = existing.snapshotId;
       generationOfReservation = bumped?.writeGeneration ?? existing.writeGeneration + 1;
     } else {
+      // The only place the destination's key prefix is read for a snapshot:
+      // the new id's key root is fixed here, on its reservation.
+      const rooted = (deps.resolveMintKeyRoot ?? resolveMintKeyRoot)(input.provider, input.providerConfig);
+      if (!rooted.ok) return { refused: rooted.reason };
+      const keyRoot = snapshotKeyRootOf({ keyLayout: rooted.root.layout, keyPrefix: rooted.root.prefix });
+      if (!keyRoot) return { refused: 'invalid_destination_prefix' };
+      if (await baseRootRefused(keyRoot)) return { refused: 'base_key_root_mismatch' };
       snapshotId = await reserveNewSnapshotId({
         orgId: input.orgId,
         deviceId: input.deviceId,
         configId: input.configId,
         storageIdentity: identity,
         jobId: input.jobId,
+        keyRoot,
       }, { now, random: deps.random });
       generationOfReservation = 1;
     }
@@ -568,6 +650,10 @@ export async function mintBackupWriteSession(
     await db.update(backupJobs).set({ snapshotId, updatedAt: now }).where(eq(backupJobs.id, input.jobId));
     return { snapshotId, sessionId };
   });
+  if ('refused' in minted) {
+    recordStorageSessionMint('snapshot_write', 'refused', minted.refused);
+    return { mode: 'unbrokered', reason: minted.refused };
+  }
 
   recordStorageSessionMint('snapshot_write', 'minted', 'ok');
   return {
@@ -634,7 +720,30 @@ export async function ensureWriteSessionLive(
     await revoke(session.id, 'reservation_changed');
     return { ok: false, status: 410, error: 'The snapshot this session was writing is no longer writable' };
   }
+  if (!snapshotKeyRootOf(reservation)) {
+    await revoke(session.id, KEY_ROOT_INVALID);
+    return { ok: false, status: 410, error: 'The snapshot this session was writing has a storage location this server cannot read' };
+  }
   return { ok: true, reservation };
+}
+
+const KEY_ROOT_INVALID = 'key_root_invalid';
+
+/**
+ * The key root every storage call of the session composes physical keys
+ * under: the reservation's recorded root (#7081), never the destination's
+ * current prefix. A root this server cannot read revokes the session (410):
+ * a reader never falls back to the bucket root.
+ */
+async function reservationKeyRoot(
+  session: StorageSessionRow,
+  reservation: SnapshotIdReservation | null,
+): Promise<SnapshotKeyRoot | WriteFailure> {
+  if (!reservation) return { status: 410, code: 'reservation_changed' };
+  const root = snapshotKeyRootOf(reservation);
+  if (root) return root;
+  await revoke(session.id, KEY_ROOT_INVALID);
+  return { status: 410, code: KEY_ROOT_INVALID };
 }
 
 type ResolvedDestination = { providerConfig: StorageProviderConfig; sse: WriteSse };
@@ -756,6 +865,8 @@ export async function resolveWriteSessionObjects(
 ): Promise<WriteResolveResult> {
   const destination = await sessionDestination(session);
   if (!destination) return { status: 410, code: 'storage_changed' };
+  const root = await reservationKeyRoot(session, reservation);
+  if ('status' in root) return root;
   const reservedId = reservation.snapshotId;
   const control = new Set(session.controlKeys);
   const writable = !session.readOnly && reservation.state === 'reserved';
@@ -777,17 +888,21 @@ export async function resolveWriteSessionObjects(
     for (const r of rows) openUploads.add(`${r.objectKey}\u0000${r.uploadId}`);
   }
 
+  // Every key is authorized as a LOGICAL key; the composed physical key must
+  // also fit storage's key limit (a prefix can push a valid key over it).
+  const fits = (key: string) => physicalKeyFits(physicalKeyFor(root, key));
   for (const request of requests) {
     if (request.method === 'GET') {
-      if (control.has(request.key)) decisions.push({ request, code: null });
+      if (control.has(request.key)) decisions.push({ request, code: fits(request.key) ? null : 'key_too_long' });
       else {
         const d = authorizeWriteKey(request.key, reservedId);
-        decisions.push({ request, code: d === 'ok' ? null : d });
+        decisions.push({ request, code: d !== 'ok' ? d : fits(request.key) ? null : 'key_too_long' });
       }
       continue;
     }
     const d = authorizeWriteKey(request.key, reservedId);
     if (d !== 'ok') { decisions.push({ request, code: d }); continue; }
+    if (!fits(request.key)) { decisions.push({ request, code: 'key_too_long' }); continue; }
     if (session.readOnly) { decisions.push({ request, code: 'read_only' }); continue; }
     if (!writable) { decisions.push({ request, code: 'reservation_sealed' }); continue; }
     if (!Number.isSafeInteger(request.size) || request.size < 0 || request.size > MAX_SINGLE_PUT_BYTES) {
@@ -808,6 +923,18 @@ export async function resolveWriteSessionObjects(
   }
 
   const granted = decisions.filter((d) => d.code === null);
+  // A control key (the server-selected base manifest) lives under the base
+  // snapshot's root, which must be this run's root (a dedupe chain never
+  // spans roots). A base row this server cannot read, or one under another
+  // root, refuses the call; a base with no row left resolves under the run's
+  // own root.
+  const baseRootFailure = await checkControlKeyRoots(
+    session,
+    root,
+    granted.filter((d) => d.request.method === 'GET' && control.has(d.request.key)).map((d) => d.request.key),
+    reservedId,
+  );
+  if (baseRootFailure) return baseRootFailure;
   const now = deps.now();
   if (granted.some((d) => d.request.method !== 'GET')) {
     const horizon = await otherWriterHorizon(session, reservedId, now);
@@ -832,19 +959,20 @@ export async function resolveWriteSessionObjects(
       });
       continue;
     }
+    const physicalKey = physicalKeyFor(root, request.key);
     if (request.method === 'GET') {
-      const url = await deps.storage.presignGet(destination.providerConfig, request.key, ttl);
+      const url = await deps.storage.presignGet(destination.providerConfig, physicalKey, ttl);
       const getExpiry = new Date(now.getTime() + ttl * 1000);
       expiries.push(getExpiry);
       objects.push({ key: request.key, method: 'GET', url, headers: {}, expiresAt: rfc3339(getExpiry), expiresIn: 0 });
       continue;
     }
     const signed = request.method === 'PUT'
-      ? await deps.storage.presignPut(destination.providerConfig, request.key, request.size, destination.sse, {
+      ? await deps.storage.presignPut(destination.providerConfig, physicalKey, request.size, destination.sse, {
         expiresInSeconds: ttl,
         ifNoneMatch: session.conditionalWrites === true,
       })
-      : await deps.storage.presignPart(destination.providerConfig, request.key, request.uploadId, request.partNumber, request.size, ttl);
+      : await deps.storage.presignPart(destination.providerConfig, physicalKey, request.uploadId, request.partNumber, request.size, ttl);
     const expiry = new Date(now.getTime() + ttl * 1000);
     if (!horizon || expiry > horizon) horizon = expiry;
     expiries.push(expiry);
@@ -865,6 +993,37 @@ export async function resolveWriteSessionObjects(
   const answeredAt = deps.now();
   objects.forEach((o, i) => { o.expiresIn = urlExpiresIn(expiries[i]!, answeredAt); });
   return { status: 200, body: { objects, denied } };
+}
+
+/** See resolveWriteSessionObjects: base control keys must resolve under the run's own root. */
+async function checkControlKeyRoots(
+  session: StorageSessionRow,
+  root: SnapshotKeyRoot,
+  controlKeys: string[],
+  reservedId: string,
+): Promise<WriteFailure | null> {
+  const baseIds = [...new Set(controlKeys
+    .map((key) => parseBackupObjectKey(key)?.snapshotId)
+    .filter((id): id is string => typeof id === 'string' && id !== reservedId))];
+  if (baseIds.length === 0) return null;
+  // The base's live row, else its retirement row; same rule as external refs
+  // (originKeyRootAllows): with neither left, a legacy run resolves as before
+  // and a prefixed run is refused.
+  const roots = await loadOriginKeyRootRows({
+    orgId: session.orgId,
+    storageIdentity: session.storageIdentity,
+    originSnapshotIds: baseIds,
+  });
+  for (const id of baseIds) {
+    if (!originKeyRootAllows(root, roots.get(id))) {
+      console.warn('[backupStorageWriteSessions] refused a base read under another or unreadable key root', {
+        sessionId: session.id,
+        baseSnapshotId: id,
+      });
+      return { status: 409, code: 'base_key_root_invalid' };
+    }
+  }
+  return null;
 }
 
 // ── Multipart lifecycle, list, delete, resume ───────────────────────────────
@@ -915,13 +1074,17 @@ export async function createWriteSessionMultipart(
   if (keyDecision !== 'ok') return { status: 403, code: keyDecision };
   if (session.readOnly) return { status: 403, code: 'read_only' };
 
-  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string }> => {
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string; physicalKey: string }> => {
     const destination = await sessionDestination(session);
     if (!destination) return { status: 410, code: 'storage_changed' };
     const failure = await consume(session, 0, deps.now());
     if (failure) return failure;
     const reservation = await lockWritableReservation(session);
     if (!reservation) return { status: 409, code: 'reservation_sealed' };
+    const root = await reservationKeyRoot(session, reservation);
+    if ('status' in root) return root;
+    const physicalKey = physicalKeyFor(root, key);
+    if (!physicalKeyFits(physicalKey)) return { status: 400, code: 'key_too_long' };
     const now = deps.now();
     const horizon = await otherWriterHorizon(session, reservation.snapshotId, now);
     if (horizon) return previousWriterActive(horizon, now);
@@ -936,18 +1099,19 @@ export async function createWriteSessionMultipart(
         sessionId: session.id,
         reservationSnapshotId: reservation.snapshotId,
         reservationGeneration: reservation.writeGeneration,
+        // The LOGICAL key: the row is matched against the helper's keys.
         objectKey: key,
         state: 'creating',
       })
       .returning({ id: backupStorageSessionUploads.id });
-    return { destination, rowId: row!.id };
+    return { destination, rowId: row!.id, physicalKey };
   });
   if ('status' in prepared) return prepared;
 
   let uploadId: string;
   let confirmed: ConfirmedSse;
   try {
-    ({ uploadId, encryption: confirmed } = await deps.storage.createMultipart(prepared.destination.providerConfig, key, prepared.destination.sse));
+    ({ uploadId, encryption: confirmed } = await deps.storage.createMultipart(prepared.destination.providerConfig, prepared.physicalKey, prepared.destination.sse));
   } catch (err) {
     logStorageFailure('multipart create failed', session.id, err);
     await run(() => db.update(backupStorageSessionUploads).set({ state: 'aborted', updatedAt: new Date() })
@@ -960,7 +1124,7 @@ export async function createWriteSessionMultipart(
     .returning({ id: backupStorageSessionUploads.id }));
   if (opened.length === 0) {
     // The cleanup job settled the row meanwhile: the upload must not stay open.
-    await deps.storage.abortMultipart(prepared.destination.providerConfig, key, uploadId).catch((err) =>
+    await deps.storage.abortMultipart(prepared.destination.providerConfig, prepared.physicalKey, uploadId).catch((err) =>
       logStorageFailure('abort of an unrecorded multipart upload failed; cleanup will retry', session.id, err));
     return { status: 409, code: 'reservation_sealed' };
   }
@@ -1000,13 +1164,15 @@ export async function completeWriteSessionMultipart(
   // Phase 1, serialized with publication on the reservation row: only a
   // still-writable reservation may start a completion, and the completion is
   // recorded before storage is called.
-  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string }> => {
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string; physicalKey: string }> => {
     const destination = await sessionDestination(session);
     if (!destination) return { status: 410, code: 'storage_changed' };
     const failure = await consume(session, 0, deps.now());
     if (failure) return failure;
     const reservation = await lockWritableReservation(session);
     if (!reservation) return { status: 409, code: 'reservation_sealed' };
+    const root = await reservationKeyRoot(session, reservation);
+    if ('status' in root) return root;
     const [upload] = await db
       .update(backupStorageSessionUploads)
       .set({ state: 'completing', updatedAt: new Date() })
@@ -1019,13 +1185,13 @@ export async function completeWriteSessionMultipart(
       ))
       .returning({ id: backupStorageSessionUploads.id });
     if (!upload) return { status: 403, code: 'unknown_upload' };
-    return { destination, rowId: upload.id };
+    return { destination, rowId: upload.id, physicalKey: physicalKeyFor(root, key) };
   });
   if ('status' in prepared) return prepared;
 
   let outcome: { status: 200; body: Record<string, never> } | WriteFailure = { status: 200, body: {} };
   try {
-    await deps.storage.completeMultipart(prepared.destination.providerConfig, key, uploadId, parts, {
+    await deps.storage.completeMultipart(prepared.destination.providerConfig, prepared.physicalKey, uploadId, parts, {
       ifNoneMatch: session.conditionalWrites === true,
     });
   } catch (err) {
@@ -1050,11 +1216,13 @@ export async function abortWriteSessionMultipart(
 ): Promise<{ status: 200; body: Record<string, never> } | WriteFailure> {
   const keyDecision = authorizeWriteKey(key, session.reservationSnapshotId ?? '');
   if (keyDecision !== 'ok') return { status: 403, code: keyDecision };
-  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string }> => {
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; rowId: string; physicalKey: string }> => {
     const destination = await sessionDestination(session);
     if (!destination) return { status: 410, code: 'storage_changed' };
     const failure = await consume(session, 0, deps.now());
     if (failure) return failure;
+    const root = await reservationKeyRoot(session, await loadReservation(session.reservationSnapshotId!));
+    if ('status' in root) return root;
     const [upload] = await db
       .select({ id: backupStorageSessionUploads.id })
       .from(backupStorageSessionUploads)
@@ -1066,11 +1234,11 @@ export async function abortWriteSessionMultipart(
       ))
       .limit(1);
     if (!upload) return { status: 403, code: 'unknown_upload' };
-    return { destination, rowId: upload.id };
+    return { destination, rowId: upload.id, physicalKey: physicalKeyFor(root, key) };
   });
   if ('status' in prepared) return prepared;
   try {
-    await deps.storage.abortMultipart(prepared.destination.providerConfig, key, uploadId);
+    await deps.storage.abortMultipart(prepared.destination.providerConfig, prepared.physicalKey, uploadId);
   } catch (err) {
     logStorageFailure('multipart abort failed; cleanup will retry', session.id, err);
     return { status: 502, code: 'storage_error' };
@@ -1088,18 +1256,33 @@ export async function listWriteSessionPrefix(
   deps: WriteSessionDeps = defaultWriteSessionDeps,
 ): Promise<{ status: 200; body: { keys: string[]; nextToken: string | null } } | WriteFailure> {
   if (!isAllowedWriteListPrefix(prefix, session.reservationSnapshotId ?? '')) return { status: 403, code: 'outside_reservation' };
-  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination }> => {
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; root: SnapshotKeyRoot }> => {
     const destination = await sessionDestination(session);
     if (!destination) return { status: 410, code: 'storage_changed' };
     const failure = await consume(session, 0, deps.now());
-    return failure ?? { destination };
+    if (failure) return failure;
+    const root = await reservationKeyRoot(session, await loadReservation(session.reservationSnapshotId!));
+    if ('status' in root) return root;
+    return { destination, root };
   });
   if ('status' in prepared) return prepared;
-  const out = await deps.storage.listKeys(prepared.destination.providerConfig, prefix, {
+  const out = await deps.storage.listKeys(prepared.destination.providerConfig, physicalKeyFor(prepared.root, prefix), {
     maxKeys: STORAGE_WRITE_LIST_MAX_KEYS,
     continuationToken,
   });
-  return { status: 200, body: out };
+  // The helper only ever sees logical keys. A listed key that does not map
+  // back under the root cannot be one of this snapshot's objects: dropped.
+  const keys: string[] = [];
+  let dropped = 0;
+  for (const physical of out.keys) {
+    const logical = logicalKeyFrom(prepared.root, physical);
+    if (logical === null) dropped++;
+    else keys.push(logical);
+  }
+  if (dropped > 0) {
+    console.warn('[backupStorageWriteSessions] dropped listed keys outside the snapshot key root', { sessionId: session.id, dropped });
+  }
+  return { status: 200, body: { keys, nextToken: out.nextToken } };
 }
 
 /** A delete marker older than this was left by a call that never finished. */
@@ -1121,27 +1304,28 @@ export async function deleteWriteSessionKeys(
   deps: WriteSessionDeps = defaultWriteSessionDeps,
 ): Promise<{ status: 200; body: { deleted: string[]; denied: Array<{ key: string; code: string }>; failed: Array<{ key: string; code: string }> } } | WriteFailure> {
   if (session.readOnly) return { status: 403, code: 'read_only' };
-  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; allowed: string[]; denied: Array<{ key: string; code: string }> }> => {
+  const prepared = await run(async (): Promise<WriteFailure | { destination: ResolvedDestination; root: SnapshotKeyRoot; allowed: string[]; denied: Array<{ key: string; code: string }> }> => {
     const destination = await sessionDestination(session);
     if (!destination) return { status: 410, code: 'storage_changed' };
     const failure = await consume(session, 0, deps.now());
     if (failure) return failure;
     const reservation = await loadReservation(session.reservationSnapshotId!, { forUpdate: true });
-    if (!reservation) return { status: 410, code: 'reservation_changed' };
+    const root = await reservationKeyRoot(session, reservation);
+    if ('status' in root) return root;
     const unique = [...new Set(keys)];
     const completing = new Set(
       (await db
         .select({ objectKey: backupStorageSessionUploads.objectKey })
         .from(backupStorageSessionUploads)
         .where(and(
-          eq(backupStorageSessionUploads.reservationSnapshotId, reservation.snapshotId),
+          eq(backupStorageSessionUploads.reservationSnapshotId, reservation!.snapshotId),
           eq(backupStorageSessionUploads.state, 'completing'),
         ))).map((r) => r.objectKey),
     );
     const allowed: string[] = [];
     const denied: Array<{ key: string; code: string }> = [];
     for (const key of unique) {
-      const decision = writeDeleteDecision(key, reservation.snapshotId, reservation.state, completing);
+      const decision = writeDeleteDecision(key, reservation!.snapshotId, reservation!.state, completing);
       if (decision === 'ok') allowed.push(key);
       else denied.push({ key, code: decision });
     }
@@ -1150,14 +1334,31 @@ export async function deleteWriteSessionKeys(
         .set({ deletingSince: deps.now() })
         .where(eq(backupStorageSessions.id, session.id));
     }
-    return { destination, allowed, denied };
+    return { destination, root, allowed, denied };
   });
   if ('status' in prepared) return prepared;
   if (prepared.allowed.length === 0) return { status: 200, body: { deleted: [], denied: prepared.denied, failed: [] } };
 
+  // Storage deletes physical keys; the helper is answered in logical keys.
+  const logicalOf = new Map(prepared.allowed.map((key) => [physicalKeyFor(prepared.root, key), key]));
+  // A key storage answers with that this call did not ask for is never
+  // passed on (it could be a physical key under the root): dropped and logged.
+  let unmapped = 0;
+  const toLogical = (physical: string): string[] => {
+    const logical = logicalOf.get(physical);
+    if (logical === undefined) { unmapped++; return []; }
+    return [logical];
+  };
   let result: { deleted: string[]; failed: Array<{ key: string; code: string }> };
   try {
-    result = await deps.storage.deleteKeys(prepared.destination.providerConfig, prepared.allowed);
+    const out = await deps.storage.deleteKeys(prepared.destination.providerConfig, [...logicalOf.keys()]);
+    result = {
+      deleted: out.deleted.flatMap(toLogical),
+      failed: out.failed.flatMap((f) => toLogical(f.key).map((key) => ({ ...f, key }))),
+    };
+    if (unmapped > 0) {
+      console.warn('[backupStorageWriteSessions] dropped delete results for keys that were not requested', { sessionId: session.id, unmapped });
+    }
   } catch (err) {
     logStorageFailure('delete failed', session.id, err);
     result = { deleted: [], failed: prepared.allowed.map((key) => ({ key, code: 'storage_error' })) };
@@ -1179,7 +1380,7 @@ export type ResumeResult =
 
 type ResumePhase =
   | ResumeResult
-  | { abort: Array<{ id: string; objectKey: string; uploadId: string | null }>; destination: ResolvedDestination };
+  | { abort: Array<{ id: string; objectKey: string; uploadId: string | null }>; destination: ResolvedDestination; root: SnapshotKeyRoot };
 
 /** How long a helper is asked to wait before retrying a resume that must wait. */
 const RESUME_WAIT_SECONDS = 60;
@@ -1313,6 +1514,17 @@ async function resumePhase(
     return { status: 409, code: 'previous_writer_active', retryAfterSeconds: decision.retryAfterSeconds };
   }
   const reservation = target!;
+  // The resumed id keeps the key root it was reserved with (it may differ from
+  // the one this session's own id got): a root this server cannot read is
+  // not resumable, and the helper starts fresh under the issued id.
+  const targetRoot = snapshotKeyRootOf(reservation);
+  if (!targetRoot) {
+    console.warn('[backupStorageWriteSessions] refused a resume: the journaled id records an unreadable key root', {
+      sessionId: session.id,
+      snapshotId: reservation.snapshotId,
+    });
+    return { status: 409, code: 'not_resumable' };
+  }
 
   const issuedId = session.reservationSnapshotId!;
   const abandonIssued = async () => {
@@ -1367,7 +1579,7 @@ async function resumePhase(
   if (open.length > 0) {
     const destination = await sessionDestination(session);
     if (!destination) return { status: 410, code: 'storage_changed' };
-    return { abort: open, destination };
+    return { abort: open, destination, root: targetRoot };
   }
 
   // Ownership moves: a new write generation for this job. A taken-over
@@ -1413,6 +1625,12 @@ async function resumePhase(
  *     may publish the id (`takeover: true` in the answer when the id was an
  *     earlier job's).
  * The id this session was issued is abandoned when the resume succeeds.
+ *
+ * Every later storage call of the session uses the RESUMED id's recorded key
+ * root (#7081), not the root its own id was issued with nor the destination's
+ * current prefix. An unfinished backup begun before a prefix edit may
+ * therefore finish under its original root; only a newly reserved id takes
+ * the new one.
  * `previous_writer_active` (with Retry-After) means the id may become
  * continuable shortly; every other refusal is `not_resumable` and the helper
  * starts fresh under the issued id.
@@ -1438,7 +1656,7 @@ export async function resumeWriteSession(
   for (const u of phase.abort) {
     if (u.uploadId) {
       try {
-        await deps.storage.abortMultipart(phase.destination.providerConfig, u.objectKey, u.uploadId);
+        await deps.storage.abortMultipart(phase.destination.providerConfig, physicalKeyFor(phase.root, u.objectKey), u.uploadId);
       } catch (err) {
         logStorageFailure('abort of an earlier writer\'s upload failed; resume refused for now', session.id, err);
         return { status: 409, code: 'previous_writer_active' };

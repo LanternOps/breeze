@@ -1,6 +1,7 @@
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { withDevicePartnerPolicyVisibility } from './configPolicyOwnership';
+import { assertSecurityAgentsLinkWrite } from './securityAgents/securityAgentsLinkWrite';
 import {
   configurationPolicies,
   configPolicyFeatureLinks,
@@ -63,6 +64,7 @@ import {
   monitorsInheritanceSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
+  systemProtectionInlineSettingsSchema,
   timeSyncInlineSettingsSchema,
   workloadInventoryInlineSettingsSchema,
   warrantyInlineSettingsSchema,
@@ -72,7 +74,18 @@ import {
   type WarrantyHpCmslConsent,
 } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
-import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
+import {
+  assertNoPolicyApprovalEdits,
+  withStoredLegacyApprovalKeys,
+  enforcedAppRuleSet,
+  loadConfigPolicyPartnerId,
+  normalizePatchInlineSettings,
+  PolicyApprovalFieldMovedError,
+  resolvePatchPolicyReference,
+  sameAppRuleSet,
+  storedLegacyAppRuleSet,
+  tryNormalizePatchInlineSettings,
+} from './configPolicyPatching';
 import { resolvePartnerIdForOrg } from '../routes/patches/helpers';
 import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
@@ -199,6 +212,13 @@ interface ResolvedFeature {
   // AUTHORED the link, and are non-null only when the link came from a parent.
   inheritedFromPolicyId: string | null;
   inheritedFromPolicyName: string | null;
+  /**
+   * `security_agents` only (#6960): the winning link (the PARENT's id when
+   * inherited) and the software policy generated from it, null until one exists.
+   * Absent on every other feature type and on the Breeze Defaults entry.
+   */
+  featureLinkId?: string;
+  managedSoftwarePolicyId?: string | null;
 }
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -1148,6 +1168,8 @@ async function decomposeInlineSettings(
     case 'pam':
     case 'vulnerability':
     case 'device_lifecycle':
+    case 'system_protection':
+    case 'security_agents':
       // Pure JSONB — no normalized table needed
       break;
 
@@ -1266,6 +1288,8 @@ async function deleteNormalizedRows(
     case 'pam':
     case 'vulnerability':
     case 'device_lifecycle':
+    case 'system_protection':
+    case 'security_agents':
       // Pure JSONB — no normalized table to delete
       break;
     default:
@@ -1573,6 +1597,8 @@ async function assembleInlineSettings(
     case 'pam':
     case 'vulnerability':
     case 'device_lifecycle':
+    case 'system_protection':
+    case 'security_agents':
       // Pure JSONB — settings stored directly on feature link
       return null;
 
@@ -1782,6 +1808,12 @@ async function reloadMonitorsInterval(
  */
 export type FeatureLinkWriteOptions = {
   executionAuthority?: SensitiveDataAuthorityValues | null;
+  /**
+   * `security_agents` links only (#6960): the caller has verified the writer may
+   * arm installs (devices.execute + MFA). Absent means NOT authorized, so a
+   * caller that never checked (the AI tool, a future job) cannot enable a vendor.
+   */
+  securityAgentsArmAuthorized?: boolean;
 };
 
 export async function addFeatureLink(
@@ -1809,6 +1841,14 @@ export async function addFeatureLink(
     inlineSettings = deviceLifecycleInlineSettingsSchema.parse(inlineSettings);
   }
 
+  // Strict parse, and store the PARSED result: unknown keys are rejected rather
+  // than persisted-and-echoed as if they took effect, and defaults are filled so
+  // the stored blob is a complete decision. Service-level backstop for callers
+  // that bypass the HTTP route (the AI manage_policy_feature_link tool).
+  if (featureType === 'system_protection' && inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = systemProtectionInlineSettingsSchema.parse(inlineSettings);
+  }
+
   // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
   // write. There is no stored row yet on this path, so `stored` is null and an
   // enable always stamps fresh.
@@ -1828,6 +1868,27 @@ export async function addFeatureLink(
   }
 
   if (featureType === 'compliance') assertUniqueComplianceItemNames(inlineSettings);
+
+  // #6960: service-level backstop for the route/AI checks (arming authorization,
+  // NULL featurePolicyId, strict settings, enableable vendors). A link without
+  // settings is invalid, so `null` is validated rather than skipped.
+  if (featureType === 'security_agents') {
+    inlineSettings = assertSecurityAgentsLinkWrite({
+      featurePolicyId: featurePolicyId ?? null,
+      inlineSettings: inlineSettings ?? null,
+      armAuthorized: options.securityAgentsArmAuthorized === true,
+    });
+  }
+
+  // #8186: app rules live on the Update Ring. A new link may carry an `apps`
+  // list only when the ring it links already enforces exactly that list: the
+  // Patch tab's Override copies the inherited link (rules + ring) verbatim.
+  // Anything else would be rules the runtime no longer reads. Policy-level
+  // autoApprove is inert (not consulted since 2026-08) and is accepted on add
+  // so that same Override copy still saves; W04 drops it.
+  if (featureType === 'patch' && inlineSettings !== undefined && inlineSettings !== null) {
+    await assertNewPatchLinkAppRulesOnRing(configPolicyId, featurePolicyId, inlineSettings);
+  }
 
   const normalizedAutomation = featureType === 'automation'
     ? await normalizeConfigPolicyAutomationSettings(inlineSettings)
@@ -1904,6 +1965,58 @@ export async function getRetiredFeatureLink(configPolicyId: string, linkId: stri
   return link ?? null;
 }
 
+function nonEmptyAppsList(inline: unknown): boolean {
+  if (!inline || typeof inline !== 'object' || Array.isArray(inline)) return false;
+  const apps = (inline as Record<string, unknown>).apps;
+  return Array.isArray(apps) && apps.length > 0;
+}
+
+/** A new patch link's `apps` must already be enforced by the ring it links (#8186). */
+async function assertNewPatchLinkAppRulesOnRing(
+  configPolicyId: string,
+  featurePolicyId: string | null | undefined,
+  inline: unknown,
+): Promise<void> {
+  if (!nonEmptyAppsList(inline)) return;
+  const incomingSet = enforcedAppRuleSet((inline as Record<string, unknown>).apps);
+  if (incomingSet.length === 0) return;
+  if (!featurePolicyId) throw new PolicyApprovalFieldMovedError();
+  const target = await resolvePatchPolicyReference(await loadConfigPolicyPartnerId(configPolicyId), featurePolicyId);
+  if (!target.valid || !target.ringId || !sameAppRuleSet(enforcedAppRuleSet(target.appRules), incomingSet)) {
+    throw new PolicyApprovalFieldMovedError();
+  }
+}
+
+/**
+ * A patch link's ring is changing (#8186). Two ways that could drop rules:
+ *  - The request re-sends a non-empty `apps` list. Only a client loaded before
+ *    the cutover does that (it sends the list it loaded alongside the ring it
+ *    loaded), so it would relink a migrated policy to its old ring, or to none.
+ *  - The link has legacy inline rules that no ring carries yet: its current
+ *    reference does not resolve to a valid ring (the backfill skips those), so
+ *    the target ring has to enforce exactly those rules.
+ * Moving from a valid ring to another needs nothing: the ring owns the rules.
+ */
+async function assertPatchRingChangeKeepsAppRules(
+  existing: { id: string; configPolicyId: string; featurePolicyId: string | null; inlineSettings: unknown },
+  targetRef: string | null,
+  incomingInline: unknown,
+): Promise<void> {
+  if (nonEmptyAppsList(incomingInline)) throw new PolicyApprovalFieldMovedError();
+  const legacy = storedLegacyAppRuleSet(existing.inlineSettings, {
+    configPolicyId: existing.configPolicyId,
+    featureLinkId: existing.id,
+  });
+  if (legacy.length === 0) return;
+  const partnerId = await loadConfigPolicyPartnerId(existing.configPolicyId);
+  const current = await resolvePatchPolicyReference(partnerId, existing.featurePolicyId);
+  if (current.valid && current.ringId) return;
+  const target = await resolvePatchPolicyReference(partnerId, targetRef);
+  if (!target.valid || !target.ringId || !sameAppRuleSet(enforcedAppRuleSet(target.appRules), legacy)) {
+    throw new PolicyApprovalFieldMovedError();
+  }
+}
+
 export async function updateFeatureLink(
   linkId: string,
   updates: { featurePolicyId?: string | null; inlineSettings?: unknown },
@@ -1937,12 +2050,76 @@ export async function updateFeatureLink(
       pamInlineSettingsSchema.parse(updates.inlineSettings);
     }
 
+    // #8186: before any write — a changed app-rule list or a newly enabled
+    // policy auto-approve belongs on the Update Ring; an unchanged round-trip
+    // from a client that loaded this link passes.
+    if (existing.featureType === 'patch' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      // The read path serves autoApprove from the relational settings row
+      // (assembleInlineSettings), so a stale tab may echo a `true` that the
+      // link JSONB lacks. Treat either source as "already stored".
+      const [relational] = await tx
+        .select({
+          autoApprove: configPolicyPatchSettings.autoApprove,
+          autoApproveSeverities: configPolicyPatchSettings.autoApproveSeverities,
+        })
+        .from(configPolicyPatchSettings)
+        .where(eq(configPolicyPatchSettings.featureLinkId, existing.id))
+        .limit(1);
+      const storedInline = existing.inlineSettings && typeof existing.inlineSettings === 'object' && !Array.isArray(existing.inlineSettings)
+        ? existing.inlineSettings as Record<string, unknown>
+        : null;
+      const relationalSeverities = Array.isArray(relational?.autoApproveSeverities) && relational.autoApproveSeverities.length > 0
+        ? { autoApproveSeverities: relational.autoApproveSeverities }
+        : {};
+      const stored = relational?.autoApprove === true
+        ? { ...(storedInline ?? {}), ...relationalSeverities, autoApprove: true }
+        : existing.inlineSettings;
+      const linkContext = { configPolicyId: existing.configPolicyId, featureLinkId: existing.id };
+      // Only the approval keys the caller sent are judged; an absent key means
+      // "unchanged" (#8671).
+      assertNoPolicyApprovalEdits(stored, updates.inlineSettings, linkContext);
+      if (
+        updates.featurePolicyId !== undefined
+        && (updates.featurePolicyId ?? null) !== (existing.featurePolicyId ?? null)
+      ) {
+        // #8186: a ring change must not drop app rules. See assertPatchRingChangeKeepsAppRules.
+        await assertPatchRingChangeKeepsAppRules(existing, updates.featurePolicyId ?? null, updates.inlineSettings);
+      }
+      // ...and is written back as stored, not reset to schema defaults.
+      updates.inlineSettings = withStoredLegacyApprovalKeys(
+        updates.inlineSettings as Record<string, unknown>,
+        stored,
+        linkContext,
+      );
+    } else if (
+      existing.featureType === 'patch'
+      && updates.featurePolicyId !== undefined
+      && (updates.featurePolicyId ?? null) !== (existing.featurePolicyId ?? null)
+    ) {
+      // #8186: a ring change must not drop app rules. See assertPatchRingChangeKeepsAppRules.
+      await assertPatchRingChangeKeepsAppRules(existing, updates.featurePolicyId ?? null, updates.inlineSettings);
+    }
+
     if (existing.featureType === 'vulnerability' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       vulnerabilityInlineSettingsSchema.parse(updates.inlineSettings);
     }
 
     if (existing.featureType === 'device_lifecycle' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       updates.inlineSettings = deviceLifecycleInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    if (existing.featureType === 'system_protection' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      updates.inlineSettings = systemProtectionInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    // #6960: same backstop as addFeatureLink, on whichever fields are sent.
+    if (existing.featureType === 'security_agents') {
+      const parsed = assertSecurityAgentsLinkWrite({
+        featurePolicyId: updates.featurePolicyId,
+        inlineSettings: updates.inlineSettings,
+        armAuthorized: options.securityAgentsArmAuthorized === true,
+      });
+      if (updates.inlineSettings !== undefined) updates.inlineSettings = parsed;
     }
 
     // #5511 W02: same consent rule as addFeatureLink, but with the row's
@@ -2807,6 +2984,7 @@ async function resolveEffectiveConfigWithExecutor(
         inheritedFromPolicyName: row.inherited
           ? inheritedPolicyNames.get(row.linkSourcePolicyId) ?? null
           : null,
+        ...(ft === 'security_agents' ? { featureLinkId: row.featureLinkId, managedSoftwarePolicyId: null } : {}),
       };
     }
 
@@ -2824,6 +3002,22 @@ async function resolveEffectiveConfigWithExecutor(
         featureTypes: new Set([ft]),
       });
     }
+  }
+
+  // #6960: name the software policy generated from the winning security_agents
+  // link. Same partner-wide visibility as the link query above: the generated
+  // policy is owned on the config policy's axis, which may be the partner.
+  const securityAgents = features.security_agents;
+  if (securityAgents?.featureLinkId) {
+    const linkId = securityAgents.featureLinkId;
+    const [managed] = await withDevicePartnerPolicyVisibility(executor, org?.partnerId ?? null, (ex) =>
+      ex
+        .select({ id: softwarePolicies.id })
+        .from(softwarePolicies)
+        .where(eq(softwarePolicies.managedByLinkId, linkId))
+        .limit(1),
+    );
+    securityAgents.managedSoftwarePolicyId = managed?.id ?? null;
   }
 
   const inheritanceChain: EffectiveConfiguration['inheritanceChain'] = Array.from(chainMap.values()).map((entry) => ({
@@ -2962,6 +3156,11 @@ export const PARTNER_LINKABLE_FEATURE_TYPES: ReadonlySet<ConfigFeatureType> = ne
   // selection profile; partner-wide links resolve each device org's DEFAULT
   // destination at job time (backup_configs stays org-owned — credentials).
   'backup',
+  // security_agents (#6960): inline-only and always partner-wide capable. Its
+  // featurePolicyId must stay NULL (validateFeaturePolicyExists refuses one);
+  // the generated software policy is owned on the config policy's own axis and
+  // found via software_policies.managed_by_link_id.
+  'security_agents',
 ]);
 
 /**
@@ -3002,6 +3201,13 @@ export async function validateFeaturePolicyExists(
   featurePolicyId: string | undefined | null,
   owner: { orgId: string | null; partnerId: string | null }
 ): Promise<{ valid: boolean; error?: string }> {
+  // #6960: inline-only. No linked table, so any featurePolicyId is refused.
+  if (featureType === 'security_agents') {
+    return featurePolicyId
+      ? { valid: false, error: 'A security_agents feature link carries its settings inline; featurePolicyId must not be set.' }
+      : { valid: true };
+  }
+
   if (featureType === 'patch') {
     if (!featurePolicyId) {
       return { valid: true };
@@ -3194,7 +3400,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'vulnerability' ||
     featureType === 'device_lifecycle' ||
     featureType === 'monitors' ||
-    featureType === 'warranty'
+    featureType === 'warranty' ||
+    featureType === 'system_protection'
   ) {
     // These have no policy table — they require inlineSettings.
     //

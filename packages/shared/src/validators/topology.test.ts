@@ -45,6 +45,7 @@ import {
   topologyViewSchema,
 } from './topology';
 import { graphNodeSchema, TOPOLOGY_INTERFACE_KINDS, topologyInterfaceKindEvidence, topologyNetworkClass } from './topology';
+import { TOPOLOGY_CONSUMER_DEFAULT_PREFIXES, isTopologyConsumerDefaultPrefix } from './topology';
 import { topologyInterfaceRowSchema } from './topologyCollection';
 
 const SITE_ID = '11111111-1111-4111-8111-111111111111';
@@ -179,7 +180,7 @@ const graphResponse = {
   },
   coverage: { state: 'limited', reasons: [{ code: 'projection_limit', message: 'Projection is bounded' }] },
   frontier: [{ token: 'opaque-frontier-token', label: 'More gateways', memberCount: 3 }],
-  permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: false },
+  permissions: { canEdit: true, canDiagnose: true, canConfigureMonitoring: false, canMoveDevices: false },
 } as const;
 
 describe('graphQuerySchema', () => {
@@ -449,6 +450,16 @@ describe('grouped overview contract (2026-10-02)', () => {
     expect(presentationNodeSchema.safeParse({ ...groupNode, authority: true }).success).toBe(false);
   });
 
+  it('accepts a declared lan group and an empty declared card; rejects an unknown declaration state (site location W1)', () => {
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'declared', sources: ['discovery_profile'] } } }).success).toBe(true);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'undeclared', sources: [] } } }).success).toBe(true);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, memberCount: 0, group: { ...group, basis: 'declared_site_network', members: [], canonicalNodeIds: [],
+      gatewayAddresses: [], observerCount: 0, declaration: { state: 'declared', sources: ['network_baseline'] } } }).success).toBe(true);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'maybe', sources: [] } } }).success).toBe(false);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'declared', sources: ['dhcp_scope'] } } }).success).toBe(false);
+    expect(presentationNodeSchema.safeParse({ ...groupNode, group: { ...group, declaration: { state: 'declared', sources: [], extra: 1 } } }).success).toBe(false);
+  });
+
   it('labels aggregate edges with a presentation role without inventing authority', () => {
     const edge = { ...graphResponse.presentation.edges[0], role: 'routes_via' };
     expect(presentationEdgeSchema.safeParse(edge).success).toBe(true);
@@ -533,5 +544,30 @@ describe('grouped overview contract (2026-10-02)', () => {
     const row = { rowKey: 'k', interfaceKey: 'k', osIndex: 1, name: 'eth0', adminState: 'up', operState: 'up', mtu: 1500, addresses: [] };
     for (const kind of TOPOLOGY_INTERFACE_KINDS) expect(topologyInterfaceRowSchema.safeParse({ ...row, kind }).success).toBe(true);
     expect(topologyInterfaceRowSchema.safeParse({ ...row, kind: 'wireguard' }).success).toBe(false);
+  });
+});
+
+describe('isTopologyConsumerDefaultPrefix', () => {
+  it('keeps the reviewed list frozen at 19 entries', () => {
+    expect(TOPOLOGY_CONSUMER_DEFAULT_PREFIXES).toHaveLength(19);
+    expect(Object.isFrozen(TOPOLOGY_CONSUMER_DEFAULT_PREFIXES)).toBe(true);
+  });
+  it.each([
+    ['192.168.1.0/24', true],
+    ['192.168.69.0/24', true],
+    ['192.168.68.0/24', true],
+    ['10.1.5.0/24', false],
+    ['10.0.0.0/24', true],
+    ['10.0.0.0/16', true],
+    ['172.16.5.0/24', false],
+    ['not-a-prefix', false],
+    ['', false],
+    ['192.168.1.0/33', false],
+    ['192.168.1.0', false],
+    ['fd00::/64', false],
+    ['fe80::/10', false],
+    ['300.1.1.0/24', false],
+  ])('isTopologyConsumerDefaultPrefix(%s) = %s', (prefix, expected) => {
+    expect(isTopologyConsumerDefaultPrefix(prefix)).toBe(expected);
   });
 });

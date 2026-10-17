@@ -34,6 +34,22 @@ vi.mock('../db', () => ({
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn())
 }));
 
+// #6354 W02: the late caller-rejection branch imports the caller leaf module.
+const { callerReceiptMock, callerLateDecisionMock } = vi.hoisted(() => ({
+  callerReceiptMock: vi.fn(),
+  callerLateDecisionMock: vi.fn(),
+}));
+vi.mock('../services/callerVerification/workstationResult', () => ({
+  isCallerNotMe: (stdout: string | undefined, result: unknown) => {
+    try {
+      const value = stdout !== undefined ? JSON.parse(stdout) : result;
+      return (value as { choice?: string } | null)?.choice === 'not_me';
+    } catch { return false; }
+  },
+  persistCallerNotMeReceipt: (...args: unknown[]) => callerReceiptMock(...args),
+  handleCallerVerifyResult: (...args: unknown[]) => callerLateDecisionMock(...args),
+}));
+
 // #6503: the WS close/error handlers delegate the actual offline transition +
 // transition-effects persistence to offlineDetector.ts's transitionDeviceOffline
 // (which itself opens a BullMQ queue / hits offlineEffectsStore internals this
@@ -393,6 +409,15 @@ vi.mock('../services/remoteRevocationLease', () => ({
   renewRevocationLease: (...a: unknown[]) => renewRevocationLeaseMock(...(a as [])),
 }));
 
+// #4757 W06: the restore-point ledger ingest, mocked at the module boundary
+// (its own behaviour is covered in services/restorePointIngest.test.ts). Never
+// called for a result without a `restorePoint` key.
+const { ingestRestorePointOutcomeMock } = vi.hoisted(() => ({
+  ingestRestorePointOutcomeMock: vi.fn(),
+}));
+vi.mock('../services/restorePointIngest', () => ({
+  ingestRestorePointOutcome: ingestRestorePointOutcomeMock,
+}));
 vi.mock('../services/sentry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/sentry')>();
   // captureException is also stubbed (#5128 review round 2): the generic
@@ -421,8 +446,12 @@ import {
   __resetCrossTenantDropsForTest,
   AGENT_WS_CAPABILITIES,
   AGENT_CREDENTIAL_RECHECK_TTL_MS,
+  AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS,
+  AGENT_CREDENTIAL_RECHECK_GRACE_MS,
+  AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS,
   AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS,
 } from './agentWs';
+import { metricsRegistry } from '../services/metricsRegistry';
 import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
 import { applyCommandProgress, COMMAND_PROGRESS_CAPABILITY } from '../services/commandProgress';
 import { dispatchCommandToAgent } from '../services/agentCommandRelay';
@@ -881,7 +910,9 @@ describe('validateAgentToken — tenant-status gate', () => {
   it('accepts a valid agent token for an active tenant', async () => {
     queueDeviceSelect(deviceRow);
 
+    const before = Date.now();
     const result = await validateAgentToken('agent-1', TOKEN);
+    const after = Date.now();
 
     expect(result).toEqual({
       ok: true,
@@ -891,9 +922,14 @@ describe('validateAgentToken — tenant-status gate', () => {
         partnerId: 'partner-1',
         role: 'agent',
         credentialTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+        credentialValidatedAt: expect.any(Number),
         parked: false,
       },
     });
+    // #8838: the upgrade's confirmation anchors the socket's lease grace.
+    const validatedAt = (result as { ctx: { credentialValidatedAt: number } }).ctx.credentialValidatedAt;
+    expect(validatedAt).toBeGreaterThanOrEqual(before);
+    expect(validatedAt).toBeLessThanOrEqual(after);
     expect(getAgentTenantState).toHaveBeenCalledWith('org-1');
   });
 
@@ -971,13 +1007,13 @@ describe('validateAgentToken — tenant-status gate', () => {
   it('the periodic re-check refuses a device whose org is a holding org', async () => {
     queueRecheckSelect('unassigned_pool');
 
-    await expect(isAgentDeviceStillAuthorized('agent-1', deviceRow.agentTokenHash)).resolves.toBe(false);
+    await expect(isAgentDeviceStillAuthorized('agent-1', deviceRow.agentTokenHash)).resolves.toBe('denied');
   });
 
   it('the periodic re-check keeps a device in a regular org (positive control)', async () => {
     queueRecheckSelect('customer');
 
-    await expect(isAgentDeviceStillAuthorized('agent-1', deviceRow.agentTokenHash)).resolves.toBe(true);
+    await expect(isAgentDeviceStillAuthorized('agent-1', deviceRow.agentTokenHash)).resolves.toBe('authorized');
   });
 });
 
@@ -1075,6 +1111,7 @@ describe('validateAgentToken — certificate/device binding (Wave 5 Task 6)', ()
         partnerId: 'partner-1',
         role: 'agent',
         credentialTokenHash: createHash('sha256').update(TOKEN).digest('hex'),
+        credentialValidatedAt: expect.any(Number),
         parked: false,
       },
     });
@@ -1818,6 +1855,63 @@ describe('agent websocket command results', () => {
 
     expect(db.update).not.toHaveBeenCalled();
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  describe('late caller_verify rejection (#6354 W02)', () => {
+    const commandId = '44444444-4444-4444-8444-444444444444';
+    const owned = { id: commandId, type: 'caller_verify', targetRole: 'agent', status: 'completed', deviceId: 'device-123', payload: {} };
+    const authorizedDevice = [{ status: 'online', agentTokenSuspendedAt: null, orgType: 'customer' }];
+    const notMe = { type: 'command_result', commandId, status: 'completed', result: { delivered: true, choice: 'not_me' } };
+
+    it.each(['completed', 'failed', 'cancelled'])('honours a rejection after the command was %s', async (status) => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any) // terminal: the accepting lookup misses
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: { ...owned, status }, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice(authorizedDevice) as any);
+      callerReceiptMock.mockResolvedValue(true);
+      callerLateDecisionMock.mockResolvedValue(undefined);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, deviceId: 'device-123' }));
+      expect(callerLateDecisionMock).toHaveBeenCalledWith(expect.objectContaining({ commandId, resolvedDeviceId: 'device-123' }));
+      expect(db.update).not.toHaveBeenCalled(); // never reopens the command row
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    });
+
+    it('never records a receipt for a command another agent owns', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([]) as any)
+        .mockReturnValue(selectWithInnerJoin([]) as any);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+      expect(callerLateDecisionMock).not.toHaveBeenCalled();
+    });
+
+    it('re-checks containment before writing anything', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: owned, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice([{ status: 'decommissioned', agentTokenSuspendedAt: null, orgType: 'customer' }]) as any);
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).not.toHaveBeenCalled();
+      expect(callerLateDecisionMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the committed receipt when the decision fails (reconciliation finishes it)', async () => {
+      const { handlers, ws } = await connectedAgent('agent-123', { deviceId: 'device-123', orgId: 'org-123', partnerId: 'partner-123' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectOwnedCommandResult([]) as any)
+        .mockReturnValueOnce(selectWithInnerJoin([{ command: owned, deviceId: 'device-123' }]) as any)
+        .mockReturnValueOnce(selectAgentDevice(authorizedDevice) as any);
+      callerReceiptMock.mockResolvedValue(true);
+      callerLateDecisionMock.mockRejectedValue(new Error('db down'));
+      await handlers.onMessage({ data: JSON.stringify(notMe) } as any, ws as any);
+      expect(callerReceiptMock).toHaveBeenCalledTimes(1);
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    });
   });
 
   it('updates command result when command belongs to connected agent', async () => {
@@ -4167,7 +4261,7 @@ describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
     expect(refreshAgentPresence).not.toHaveBeenCalled();
   });
 
-  it('fails closed when the bounded generation query does not return', async () => {
+  it('fails closed at onOpen when the first bounded query does not return and no upgrade validation was recorded', async () => {
     const handlers = createAgentWsHandlers('agent-generation-timeout', {
       deviceId: 'device-generation-timeout',
       orgId: 'org-generation-timeout',
@@ -4185,7 +4279,12 @@ describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
 
     await handlers.onOpen({}, ws as any);
 
-    expect(ws.close).toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    // No authorization has been confirmed on this socket yet, so there is no
+    // grace window to extend: an indeterminate first check fails closed, with
+    // the reason that says it could not be verified (#8838), not "denied".
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Device authorization could not be verified');
+    expect(ws.close).not.toHaveBeenCalledWith(4001, 'Device no longer authorized');
+    expect(isAgentConnected('agent-generation-timeout')).toBe(false);
     expect(setAgentPresence).not.toHaveBeenCalled();
     expect(db.update).not.toHaveBeenCalled();
 
@@ -4429,6 +4528,575 @@ describe('Finding #3 — lifecycle recheck on sensitive operations', () => {
     // Severed BEFORE the status write — a contained device must not be
     // flipped back online by its own heartbeat.
     expect(db.update).not.toHaveBeenCalled();
+  });
+});
+
+// #8838 — the credential lease must tell a definitive "no" from "could not
+// ask". A DB pool stall once closed hundreds of healthy sockets fleet-wide
+// because a timed-out re-check was treated as a denial.
+describe('#8838 — indeterminate credential re-check keeps the socket inside a bounded grace', () => {
+  let now: number;
+  const tokenHash = createHash('sha256').update('current-agent-token').digest('hex');
+  const UNVERIFIED = 'Device authorization could not be verified';
+  const DENIED = 'Device no longer authorized';
+
+  function generationRow(overrides: Record<string, unknown> = {}) {
+    return {
+      status: 'online',
+      agentTokenSuspendedAt: null,
+      agentTokenHash: tokenHash,
+      previousTokenHash: null,
+      previousTokenExpiresAt: null,
+      watchdogTokenHash: null,
+      previousWatchdogTokenHash: null,
+      previousWatchdogTokenExpiresAt: null,
+      pendingTokenHash: null,
+      pendingWatchdogTokenHash: null,
+      pendingTokenExpiresAt: null,
+      orgType: 'customer',
+      ...overrides,
+    };
+  }
+
+  /** The error the pool raises when no connection frees up in time. */
+  function poolAcquireTimeout(): Error {
+    const err = new Error('Timed out acquiring a database connection after 10000ms');
+    err.name = 'DbPoolAcquireTimeoutError';
+    return err;
+  }
+
+  function selectRejecting(err: Error) {
+    return {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockRejectedValue(err),
+        }),
+      }),
+    };
+  }
+
+  function selectPending(): { select: unknown; resolve: (rows: unknown[]) => void } {
+    let resolve!: (rows: unknown[]) => void;
+    const pending = new Promise<unknown[]>((r) => { resolve = r; });
+    return {
+      select: {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn(() => pending),
+          }),
+        }),
+      },
+      resolve,
+    };
+  }
+
+  async function openSocket(agentId: string) {
+    const handlers = createAgentWsHandlers(agentId, {
+      deviceId: `device-${agentId}`,
+      orgId: `org-${agentId}`,
+      partnerId: `partner-${agentId}`,
+      credentialTokenHash: tokenHash,
+    });
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws, [generationRow()]);
+    vi.mocked(refreshAgentPresence).mockClear();
+    return { handlers, ws };
+  }
+
+  const pong = () => ({ data: JSON.stringify({ type: 'pong' }) }) as any;
+
+  async function counterValue(name: string, labels: Record<string, string>): Promise<number> {
+    const metric = metricsRegistry.getSingleMetric(name) as unknown as
+      | { get: () => Promise<{ values: Array<{ labels: Record<string, string | number>; value: number }> }> }
+      | undefined;
+    if (!metric) throw new Error(`metric ${name} is not registered`);
+    const { values } = await metric.get();
+    return values.find((v) => Object.entries(labels).every(([k, val]) => v.labels[k] === val))?.value ?? 0;
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    now = Date.parse('2026-10-15T19:40:00Z');
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('keeps the socket open and processes the frame when the re-check throws a pool-acquire timeout', async () => {
+    const { handlers, ws } = await openSocket('agent-pool-error');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+
+    // The next frame is still processed. Inside the retry backoff it does not
+    // re-query (a fast-failing outage must not query on every frame)...
+    await handlers.onMessage(pong(), ws as any);
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(2);
+    expect(db.select).toHaveBeenCalledTimes(1);
+
+    // ...and after it, the check is retried: an indeterminate result never
+    // extended the lease.
+    now += AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS;
+    await handlers.onMessage(pong(), ws as any);
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(3);
+    expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it('concurrent frames share one bounded re-check', async () => {
+    const { handlers, ws } = await openSocket('agent-concurrent-frames');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    const hung = selectPending();
+    vi.mocked(db.select).mockReturnValue(hung.select as any);
+
+    const frames = [handlers.onMessage(pong(), ws as any), handlers.onMessage(pong(), ws as any)];
+    hung.resolve([generationRow()]);
+    await Promise.all(frames);
+
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(2);
+    expect(ws.close).not.toHaveBeenCalled();
+  });
+
+  it('a re-check that never returns still fails closed once the grace window expires', async () => {
+    const { handlers, ws } = await openSocket('agent-hung-forever');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    const hung = selectPending();
+    vi.mocked(db.select).mockReturnValue(hung.select as any);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const frame = handlers.onMessage(pong(), ws as any);
+    await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS + 1);
+    await frame;
+    expect(ws.close).not.toHaveBeenCalled();
+
+    now += AGENT_CREDENTIAL_RECHECK_GRACE_MS;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, UNVERIFIED);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('a late confirmation from a re-check that outlived its bounded wait renews the lease and the grace anchor', async () => {
+    const openedAt = now;
+    const { handlers, ws } = await openSocket('agent-late-authorized');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    const hung = selectPending();
+    vi.mocked(db.select).mockReturnValue(hung.select as any);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const frame = handlers.onMessage(pong(), ws as any);
+    await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS + 1);
+    await frame;
+
+    now = openedAt + AGENT_CREDENTIAL_RECHECK_GRACE_MS - 1;
+    hung.resolve([generationRow()]);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    // Past onOpen + grace, but inside the lease the late answer granted.
+    now = openedAt + AGENT_CREDENTIAL_RECHECK_GRACE_MS + 10;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(db.select).toHaveBeenCalledTimes(1);
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the socket open when the re-check exceeds its bounded wait, without piling up DB queries', async () => {
+    const { handlers, ws } = await openSocket('agent-recheck-timeout');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    const hung = selectPending();
+    vi.mocked(db.select).mockReturnValue(hung.select as any);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const frame = handlers.onMessage(pong(), ws as any);
+    await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS + 1);
+    await frame;
+
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+
+    // While the first query is still waiting for a pooled connection, later
+    // frames proceed at once and do not queue another query behind it.
+    await handlers.onMessage(pong(), ws as any);
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(2);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a late definitive denial from a re-check that outlived its bounded wait', async () => {
+    const { handlers, ws } = await openSocket('agent-late-denial');
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    const hung = selectPending();
+    vi.mocked(db.select).mockReturnValue(hung.select as any);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+    const frame = handlers.onMessage(pong(), ws as any);
+    await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS + 1);
+    await frame;
+    expect(ws.close).not.toHaveBeenCalled();
+
+    hung.resolve([generationRow({
+      agentTokenHash: createHash('sha256').update('replacement-token').digest('hex'),
+    })]);
+
+    await vi.waitFor(() => expect(ws.close).toHaveBeenCalledWith(4001, DENIED));
+    vi.mocked(refreshAgentPresence).mockClear();
+    await handlers.onMessage(pong(), ws as any);
+    expect(refreshAgentPresence).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with a distinct reason once indeterminate results outlast the grace window', async () => {
+    const { handlers, ws } = await openSocket('agent-grace-expired');
+    vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const unverifiedBefore = await counterValue('breeze_agent_ws_closed_total', { reason: 'unverified_grace_expired' });
+
+    // Just inside the grace window (measured from onOpen's confirmed check):
+    // still open.
+    now += AGENT_CREDENTIAL_RECHECK_GRACE_MS;
+    await handlers.onMessage(pong(), ws as any);
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+
+    now += 1;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, UNVERIFIED);
+    expect(ws.close).not.toHaveBeenCalledWith(4001, DENIED);
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(
+      new RegExp(`agent-grace-expired.*${AGENT_CREDENTIAL_RECHECK_GRACE_MS + 1}ms`),
+    ));
+    expect(await counterValue('breeze_agent_ws_closed_total', { reason: 'unverified_grace_expired' }))
+      .toBe(unverifiedBefore + 1);
+
+    // Terminal for this socket: queued frames neither re-query nor process.
+    const selectsAtClose = vi.mocked(db.select).mock.calls.length;
+    await handlers.onMessage(pong(), ws as any);
+    expect(vi.mocked(db.select).mock.calls.length).toBe(selectsAtClose);
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+    expect(ws.close).toHaveBeenLastCalledWith(4001, UNVERIFIED);
+  });
+
+  it('measures the grace window from the last confirmed authorization, not from onOpen', async () => {
+    const { handlers, ws } = await openSocket('agent-grace-renewed');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Indeterminate, then a confirmed check late in the window...
+    vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    await handlers.onMessage(pong(), ws as any);
+    now += AGENT_CREDENTIAL_RECHECK_GRACE_MS - AGENT_CREDENTIAL_RECHECK_TTL_MS - 10;
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([generationRow()]) as any);
+    await handlers.onMessage(pong(), ws as any);
+
+    // ...so indeterminate results past onOpen + grace keep the socket open.
+    vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(3);
+  });
+
+  it('a definitive denial still closes immediately, even while inside an indeterminate grace window', async () => {
+    const { handlers, ws } = await openSocket('agent-denied-in-grace');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deniedBefore = await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'denied' });
+    const unknownBefore = await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'unknown' });
+
+    vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    await handlers.onMessage(pong(), ws as any);
+    expect(ws.close).not.toHaveBeenCalled();
+
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([generationRow({ status: 'decommissioned' })]) as any);
+    now += AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS;
+    await handlers.onMessage(pong(), ws as any);
+
+    expect(ws.close).toHaveBeenCalledWith(4001, DENIED);
+    expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+    expect(await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'unknown' })).toBe(unknownBefore + 1);
+    expect(await counterValue('breeze_agent_ws_credential_recheck_total', { result: 'denied' })).toBe(deniedBefore + 1);
+  });
+
+  it('the Redis revocation fast path still closes with its own reason, grace or not', async () => {
+    const { handlers, ws } = await openSocket('agent-revoked-in-grace');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+    now += AGENT_CREDENTIAL_RECHECK_TTL_MS + 1;
+    await handlers.onMessage(pong(), ws as any);
+    expect(ws.close).not.toHaveBeenCalled();
+
+    expect(handleAgentCredentialRevocation({
+      agentId: 'agent-revoked-in-grace',
+      revokedTokenHashes: [tokenHash],
+    })).toBe(true);
+    expect(ws.close).toHaveBeenCalledWith(4001, 'Agent credentials revoked');
+
+    vi.mocked(refreshAgentPresence).mockClear();
+    await handlers.onMessage(pong(), ws as any);
+    expect(refreshAgentPresence).not.toHaveBeenCalled();
+  });
+
+  describe('onOpen: the upgrade validation is the first confirmation', () => {
+    function validatedHandlers(agentId: string, validatedAt: number) {
+      return createAgentWsHandlers(agentId, {
+        deviceId: `device-${agentId}`,
+        orgId: `org-${agentId}`,
+        partnerId: `partner-${agentId}`,
+        credentialTokenHash: tokenHash,
+        credentialValidatedAt: validatedAt,
+      });
+    }
+
+    it('an onOpen re-check that throws keeps the socket and completes setup', async () => {
+      const handlers = validatedHandlers('agent-open-throws', now);
+      const ws = wsMock();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.mocked(db.update).mockReturnValue(updateResult() as any);
+      vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+
+      await handlers.onOpen({}, ws as any);
+
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(isAgentConnected('agent-open-throws')).toBe(true);
+      expect(setAgentPresence).toHaveBeenCalledWith('agent-open-throws', expect.anything());
+    });
+
+    it('an onOpen re-check that exceeds its bounded wait keeps the socket and completes setup', async () => {
+      const handlers = validatedHandlers('agent-open-timeout', now);
+      const ws = wsMock();
+      const hung = selectPending();
+      vi.mocked(db.update).mockReturnValue(updateResult() as any);
+      vi.mocked(db.select).mockReturnValueOnce(hung.select as any).mockReturnValue(selectAgentDevice([]) as any);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+      const open = handlers.onOpen({}, ws as any);
+      await vi.advanceTimersByTimeAsync(AGENT_CREDENTIAL_RECHECK_TIMEOUT_MS + 1);
+      await open;
+
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(isAgentConnected('agent-open-timeout')).toBe(true);
+      expect(setAgentPresence).toHaveBeenCalledWith('agent-open-timeout', expect.anything());
+    });
+
+    it('a definitive denial at onOpen still closes 4001 before any setup', async () => {
+      const handlers = validatedHandlers('agent-open-denied', now);
+      const ws = wsMock();
+      vi.mocked(db.select).mockReturnValue(selectAgentDevice([generationRow({
+        agentTokenHash: createHash('sha256').update('replacement-token').digest('hex'),
+      })]) as any);
+
+      await handlers.onOpen({}, ws as any);
+
+      expect(ws.close).toHaveBeenCalledWith(4001, DENIED);
+      expect(isAgentConnected('agent-open-denied')).toBe(false);
+      expect(setAgentPresence).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('a socket that opens during an outage fails closed once the grace window from upgrade validation elapses', async () => {
+      const validatedAt = now;
+      const handlers = validatedHandlers('agent-open-outage', validatedAt);
+      const ws = wsMock();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(db.update).mockReturnValue(updateResult() as any);
+      vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+
+      // onOpen runs a little after the upgrade validated the token.
+      now = validatedAt + 500;
+      await handlers.onOpen({}, ws as any);
+      expect(ws.close).not.toHaveBeenCalled();
+
+      // Never confirmed since: open up to validatedAt + grace...
+      now = validatedAt + AGENT_CREDENTIAL_RECHECK_GRACE_MS;
+      await handlers.onMessage(pong(), ws as any);
+      expect(ws.close).not.toHaveBeenCalled();
+      expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+
+      // ...and closed with the unverified reason just after it.
+      now = validatedAt + AGENT_CREDENTIAL_RECHECK_GRACE_MS + 1;
+      await handlers.onMessage(pong(), ws as any);
+      expect(ws.close).toHaveBeenCalledWith(4001, UNVERIFIED);
+      expect(refreshAgentPresence).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(
+        new RegExp(`agent-open-outage.*${AGENT_CREDENTIAL_RECHECK_GRACE_MS + 1}ms`),
+      ));
+    });
+  });
+
+  it('a command result on a hash-less socket proceeds when the lifecycle re-check is indeterminate', async () => {
+    const preValidatedAgent = { deviceId: 'device-cr-unknown', orgId: 'org-cr-unknown', partnerId: 'partner-cr-unknown' };
+    vi.mocked(db.update).mockReturnValue(updateResult([{ id: 'cmd-1' }]) as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    const handlers = createAgentWsHandlers('agent-cr-unknown', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    vi.mocked(db.update).mockClear();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectOwnedCommandResult([
+        { id: 'cmd-1', type: 'run_script', payload: {}, deviceId: 'device-cr-unknown' },
+      ]) as any)
+      .mockReturnValueOnce(selectRejecting(poolAcquireTimeout()) as any)
+      .mockReturnValue(selectAgentDevice([]) as any);
+
+    await handlers.onMessage({
+      data: JSON.stringify({
+        type: 'command_result',
+        commandId: '88888888-8888-4888-8888-888888888888',
+        status: 'completed',
+        stdout: 'ok',
+      }),
+    } as any, ws as any);
+
+    expect(ws.close).not.toHaveBeenCalled();
+    // Not aborted: the result reached persistence.
+    expect(db.update).toHaveBeenCalled();
+  });
+
+  it('a heartbeat on a hash-less socket proceeds on an indeterminate re-check and rate-limits the warning', async () => {
+    const preValidatedAgent = { deviceId: 'device-hb-unknown', orgId: 'org-hb-unknown', partnerId: 'partner-hb-unknown' };
+    vi.mocked(db.update).mockReturnValue(updateResult() as any);
+    vi.mocked(db.select).mockReturnValue(selectAgentDevice([]) as any);
+    const handlers = createAgentWsHandlers('agent-hb-unknown', preValidatedAgent);
+    const ws = wsMock();
+    await handlers.onOpen({}, ws as any);
+    vi.mocked(db.update).mockClear();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select).mockReturnValue(selectRejecting(poolAcquireTimeout()) as any);
+
+    const heartbeat = { data: JSON.stringify({ type: 'heartbeat', timestamp: 123 }) } as any;
+    await handlers.onMessage(heartbeat, ws as any);
+    await handlers.onMessage(heartbeat, ws as any);
+
+    expect(ws.close).not.toHaveBeenCalled();
+    // Not severed: the status write ran for each heartbeat.
+    expect(db.update).toHaveBeenCalledTimes(2);
+    const unverifiedWarnings = () => warn.mock.calls.filter(([msg]) =>
+      typeof msg === 'string' && msg.includes('could not be verified') && msg.includes('agent-hb-unknown'));
+    expect(unverifiedWarnings()).toHaveLength(1);
+
+    now += 60_001;
+    await handlers.onMessage(heartbeat, ws as any);
+    expect(unverifiedWarnings()).toHaveLength(2);
+  });
+});
+
+describe('#8838 — isAgentDeviceStillAuthorized is tri-state', () => {
+  const tokenHash = createHash('sha256').update('tri-state-token').digest('hex');
+  const row = {
+    status: 'online',
+    agentTokenSuspendedAt: null,
+    agentTokenHash: tokenHash,
+    previousTokenHash: null,
+    previousTokenExpiresAt: null,
+    watchdogTokenHash: null,
+    previousWatchdogTokenHash: null,
+    previousWatchdogTokenExpiresAt: null,
+    pendingTokenHash: null,
+    pendingWatchdogTokenHash: null,
+    pendingTokenExpiresAt: null,
+    orgType: 'customer',
+  };
+
+  function queueRows(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce(selectAgentDevice(rows) as any);
+  }
+
+  function queueRejection(err: Error) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockRejectedValue(err) }),
+      }),
+    } as any);
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('authorizes the admitting generation in a live, unsuspended device', async () => {
+    queueRows([row]);
+    await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash)).resolves.toBe('authorized');
+  });
+
+  it('denies when the row is gone and a credential hash was supplied', async () => {
+    queueRows([]);
+    await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash)).resolves.toBe('denied');
+  });
+
+  it('keeps the hash-less compatibility seam: a missing row is authorized', async () => {
+    queueRows([]);
+    await expect(isAgentDeviceStillAuthorized('agent-t')).resolves.toBe('authorized');
+  });
+
+  it.each([
+    ['decommissioned', { status: 'decommissioned' }],
+    ['quarantined', { status: 'quarantined' }],
+    ['token suspended', { agentTokenSuspendedAt: new Date('2026-10-15T00:00:00Z') }],
+    ['holding org', { orgType: 'unassigned_pool' }],
+  ] as const)('denies a %s device', async (_label, overrides) => {
+    queueRows([{ ...row, ...overrides }]);
+    await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash)).resolves.toBe('denied');
+  });
+
+  it('denies a lifecycle-contained device on the hash-less seam too', async () => {
+    queueRows([{ ...row, status: 'decommissioned' }]);
+    await expect(isAgentDeviceStillAuthorized('agent-t')).resolves.toBe('denied');
+  });
+
+  it('denies a replaced credential generation', async () => {
+    queueRows([{ ...row, agentTokenHash: createHash('sha256').update('replacement').digest('hex') }]);
+    await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash)).resolves.toBe('denied');
+  });
+
+  it('denies a hash that matches only the watchdog role', async () => {
+    queueRows([{
+      ...row,
+      agentTokenHash: createHash('sha256').update('agent-generation').digest('hex'),
+      watchdogTokenHash: tokenHash,
+    }]);
+    await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash)).resolves.toBe('denied');
+  });
+
+  it.each([
+    ['a pool-acquire timeout', Object.assign(new Error('acquire timed out'), { name: 'DbPoolAcquireTimeoutError' })],
+    ['a query error', new Error('connection terminated unexpectedly')],
+  ])('is unknown, not denied, on %s', async (_label, err) => {
+    queueRejection(err);
+    await expect(isAgentDeviceStillAuthorized('agent-t', tokenHash)).resolves.toBe('unknown');
+    queueRejection(err);
+    await expect(isAgentDeviceStillAuthorized('agent-t')).resolves.toBe('unknown');
   });
 });
 
@@ -7260,5 +7928,135 @@ describe('W08 admission integration', () => {
     const neverOpened = { release: vi.fn() };
     await createAgentWsHandlers('agent-456', preValidatedAgent, neverOpened).onClose({}, wsMock() as any);
     expect(neverOpened.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4757 W06 — restore-point outcome ingest on the WS transport
+// ---------------------------------------------------------------------------
+
+describe('#4757: restore-point outcome ingest after the WS terminal CAS', () => {
+  const COMMAND_ID = '55555555-5555-4555-8555-555555555555';
+  const REQUEST_ID = '3f1d1a0e-0000-4000-8000-000000000001';
+  const outcome = {
+    status: 'created', requestId: REQUEST_ID, sequenceNumber: '42',
+    attemptedAt: '2026-09-02T18:03:11Z', durationMs: 1234,
+  };
+  const commandRow = {
+    id: COMMAND_ID, type: 'install_patches', payload: {}, deviceId: 'device-rp', status: 'sent',
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(runOutsideDbContext).mockImplementation(((fn: any) => fn()) as any);
+    vi.mocked(withSystemDbAccessContext).mockImplementation(((fn: any) => fn()) as any);
+    vi.mocked(withDbAccessContext).mockImplementation(((_ctx: any, fn: any) => fn()) as any);
+  });
+
+  /** Drive one command_result frame; returns the CAS `.set()` payloads and the socket. */
+  async function driveResult(
+    frame: Record<string, unknown>,
+    opts: { casRows?: unknown[]; commandRows?: unknown[] } = {},
+  ) {
+    const { handlers, ws } = await connectedAgent('agent-rp', {
+      deviceId: 'device-rp', orgId: 'org-rp', partnerId: 'partner-rp',
+    });
+    let commandReads = 0;
+    vi.mocked(db.select).mockImplementation((() => ({
+      from: vi.fn((table: unknown) => {
+        const rows = table === deviceCommands && commandReads++ === 0 ? (opts.commandRows ?? [commandRow]) : [];
+        return {
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        };
+      }),
+    })) as any);
+    const sets: Array<Record<string, unknown>> = [];
+    vi.mocked(db.update).mockImplementation((() => {
+      const returning = vi.fn().mockResolvedValue(opts.casRows ?? [{ id: COMMAND_ID }]);
+      return {
+        set: vi.fn((set: Record<string, unknown>) => {
+          sets.push(set);
+          return { where: vi.fn().mockReturnValue({ returning }), returning };
+        }),
+      };
+    }) as any);
+    await handlers.onMessage({
+      data: JSON.stringify({ type: 'command_result', commandId: COMMAND_ID, status: 'completed', exitCode: 0, ...frame }),
+    } as any, ws as any);
+    return { sets, ws };
+  }
+
+  it('terminalises the ledger after the CAS wins, with the command link, and stores the outcome', async () => {
+    ingestRestorePointOutcomeMock.mockResolvedValue({ outcome: 'terminalised' });
+    const { sets, ws } = await driveResult({ restorePoint: outcome });
+
+    expect(ingestRestorePointOutcomeMock).toHaveBeenCalledTimes(1);
+    expect(ingestRestorePointOutcomeMock).toHaveBeenCalledWith(outcome, {
+      orgId: 'org-rp', deviceId: 'device-rp', deviceCommandId: COMMAND_ID,
+    });
+    expect((sets[0]!.result as Record<string, unknown>).restorePoint).toEqual(outcome);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+  });
+
+  it('terminalises for a FAILED command result too (the command went terminal)', async () => {
+    ingestRestorePointOutcomeMock.mockResolvedValue({ outcome: 'terminalised' });
+    const failedOutcome = { ...outcome, status: 'failed', sequenceNumber: undefined, message: 'vss error' };
+    const { sets } = await driveResult({ status: 'failed', exitCode: 1, restorePoint: failedOutcome });
+    expect(sets[0]!.status).toBe('failed');
+    expect(ingestRestorePointOutcomeMock).toHaveBeenCalledTimes(1);
+    expect(ingestRestorePointOutcomeMock.mock.calls[0]![0]).toMatchObject({ status: 'failed', message: 'vss error' });
+  });
+
+  it('does NOT terminalise when the CAS lost (duplicate / late frame)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await driveResult({ restorePoint: outcome }, { casRows: [] });
+    } finally {
+      warnSpy.mockRestore();
+    }
+    expect(ingestRestorePointOutcomeMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT terminalise for a UUID result with no acceptable command row (orphan branch, no CAS)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await driveResult({ restorePoint: outcome }, { commandRows: [] });
+    } finally {
+      warnSpy.mockRestore();
+    }
+    expect(db.update).not.toHaveBeenCalled();
+    expect(ingestRestorePointOutcomeMock).not.toHaveBeenCalled();
+  });
+
+  it('never calls ingest and stores no restorePoint key when the agent sent none', async () => {
+    const { sets } = await driveResult({});
+    expect(ingestRestorePointOutcomeMock).not.toHaveBeenCalled();
+    expect('restorePoint' in (sets[0]!.result as Record<string, unknown>)).toBe(false);
+  });
+
+  it('an invalid / unknown-status outcome leaves the command result accepted and stored without it', async () => {
+    ingestRestorePointOutcomeMock.mockResolvedValue({ outcome: 'invalid', reason: 'unknown_status' });
+    const { sets, ws } = await driveResult({ restorePoint: { ...outcome, status: 'probably_fine' } });
+    expect(sets[0]!.status).toBe('completed');
+    expect('restorePoint' in (sets[0]!.result as Record<string, unknown>)).toBe(false);
+    expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+    expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('"error"'));
+  });
+
+  it('a ledger ingest failure does not fail the command result', async () => {
+    ingestRestorePointOutcomeMock.mockRejectedValue(new Error('ledger down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { sets, ws } = await driveResult({ restorePoint: outcome });
+      expect(sets).toHaveLength(1); // the CAS only -- no park as result_processing_failed
+      expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));
+      expect(ws.send).not.toHaveBeenCalledWith(expect.stringContaining('RESULT_PROCESSING_FAILED'));
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(captureException).toHaveBeenCalled();
   });
 });

@@ -27,6 +27,7 @@ import {
 } from './bareMetalRecoveryCodes';
 import { resolveSnapshotPlatform } from './bareMetalRebuildSchemas';
 import { generateRecoveryToken, hashRecoveryToken } from './recoveryBootstrap';
+import { refreshReadinessAfterRecovery } from './bareMetalReadinessRefresh';
 import { RECOVERY_REFUSAL_MESSAGES } from './recoveryCapabilities';
 
 export type BareMetalRecoveryRow = typeof bareMetalRecoveries.$inferSelect;
@@ -533,7 +534,7 @@ export async function applyRebuildCommandResult(input: {
     set.failureReason = error ?? (envelopeStatus === 'timeout' ? 'command timed out' : 'failed without reason');
   }
 
-  await db
+  const updated = await db
     .update(bareMetalRecoveries)
     .set(set)
     .where(
@@ -544,4 +545,7 @@ export async function applyRebuildCommandResult(input: {
       ),
     )
     .returning();
+  if (updated?.length && (set.status === 'completed' || set.status === 'failed')) {
+    refreshReadinessAfterRecovery(input.orgId, rec.deviceId);
+  }
 }

@@ -35,4 +35,17 @@ describe('insertQueuedCommandInTransaction', () => {
     await insertQueuedCommandInTransaction(tx, { ...base, type: 'script' });
     expect(values).toHaveBeenCalledWith(expect.objectContaining({ type: 'script', deviceId: 'device-1' }));
   });
+
+  it('carries a delivery deadline and the submitting org when given, and omits them otherwise', async () => {
+    const deliverBy = new Date('2026-10-12T10:02:00Z');
+    const { tx, values } = fakeTx('customer');
+    await insertQueuedCommandInTransaction(tx, { ...base, type: 'caller_verify', deliverBy, submittedOrgId: 'org-1' });
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ deliverBy, submittedOrgId: 'org-1' }));
+
+    const plain = fakeTx('customer');
+    await insertQueuedCommandInTransaction(plain.tx, { ...base, type: 'script' });
+    const row = (plain.values.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+    expect(row).not.toHaveProperty('deliverBy');
+    expect(row).not.toHaveProperty('submittedOrgId');
+  });
 });

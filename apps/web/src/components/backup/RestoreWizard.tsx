@@ -37,13 +37,6 @@ type RestoreType = 'full' | 'selective';
 
 type DestinationType = 'original' | 'alternate';
 
-type SnapshotFile = {
-  id: string;
-  name: string;
-  size?: string;
-  path: string;
-};
-
 type Snapshot = {
   id: string;
   label: string;
@@ -53,7 +46,6 @@ type Snapshot = {
   // /backup/snapshots carries no status (a snapshot row only exists once its
   // backup completed), so the card shows when it was captured instead (#6496).
   createdAt?: string | null;
-  files?: SnapshotFile[];
   /** Integrity status from GET /backup/snapshots (absent on an older API). */
   integrityStatus?: string | null;
 };
@@ -96,30 +88,19 @@ type SnapshotTreeItem = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
-  children?: SnapshotTreeItem[];
 };
 
-function flattenSnapshotTree(nodes: SnapshotTreeItem[]): SnapshotFile[] {
-  const files: SnapshotFile[] = [];
+const ROOT_DIR = '/';
 
-  const visit = (entries: SnapshotTreeItem[]) => {
-    for (const entry of entries) {
-      if (entry.type === 'file') {
-        files.push({
-          id: entry.path,
-          path: entry.path,
-          name: entry.name,
-          size: typeof entry.sizeBytes === 'number' ? formatBytes(entry.sizeBytes) : undefined,
-        });
-        continue;
-      }
-      if (entry.children) visit(entry.children);
-    }
-  };
-
-  visit(nodes);
-  return files;
+// #8230: browse returns one directory level per request, paged by cursor.
+function browseUrl(snapshotId: string, dir: string, cursor?: string | null): string {
+  const params: string[] = [];
+  if (dir !== ROOT_DIR) params.push(`dir=${encodeURIComponent(dir)}`);
+  if (cursor) params.push(`cursor=${encodeURIComponent(cursor)}`);
+  return `/backup/snapshots/${snapshotId}/browse${params.length ? `?${params.join('&')}` : ''}`;
 }
+
+type DirPage = { items: SnapshotTreeItem[]; nextCursor: string | null };
 
 function formatBytes(bytes?: number | null): string {
   if (!Number.isFinite(bytes) || !bytes || bytes <= 0) return '--';
@@ -198,6 +179,10 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   const [restoreSuccess, setRestoreSuccess] = useState<string>();
   const [restoring, setRestoring] = useState(false);
   const [filesLoading, setFilesLoading] = useState(false);
+  const [dirs, setDirs] = useState<Record<string, DirPage>>({});
+  const [browseDir, setBrowseDir] = useState(ROOT_DIR);
+  // Bumped per snapshot so a slow page for the previous snapshot is dropped.
+  const browseEpoch = useRef(0);
   const [restoreJob, setRestoreJob] = useState<RestoreJob | null>(null);
   const [restoreHistory, setRestoreHistory] = useState<RestoreJob[]>([]);
   const [restoreHistoryLoading, setRestoreHistoryLoading] = useState(false);
@@ -275,40 +260,45 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     setSelectedFiles(new Set());
   }, [snapshotId]);
 
-  useEffect(() => {
+  const loadDir = useCallback(async (dir: string, cursor?: string | null) => {
     if (!snapshotId) return;
-
-    let cancelled = false;
-    const loadSnapshotFiles = async () => {
-      try {
-        setFilesLoading(true);
-        const response = await fetchWithAuth(`/backup/snapshots/${snapshotId}/browse`);
-        if (!response.ok) {
-          throw new Error('Failed to browse snapshot contents');
-        }
-        const payload = await response.json();
-        const items = Array.isArray(payload?.data) ? payload.data as SnapshotTreeItem[] : [];
-        const files = flattenSnapshotTree(items);
-        if (cancelled) return;
-        setSnapshots((prev) => prev.map((snapshot) => (
-          snapshot.id === snapshotId
-            ? { ...snapshot, files }
-            : snapshot
-        )));
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load snapshot contents');
-        }
-      } finally {
-        if (!cancelled) setFilesLoading(false);
+    const epoch = browseEpoch.current;
+    try {
+      setFilesLoading(true);
+      const response = await fetchWithAuth(browseUrl(snapshotId, dir, cursor));
+      if (!response.ok) {
+        throw new Error('Failed to browse snapshot contents');
       }
-    };
-
-    void loadSnapshotFiles();
-    return () => {
-      cancelled = true;
-    };
+      const payload = await response.json();
+      if (epoch !== browseEpoch.current) return;
+      const items = Array.isArray(payload?.data) ? payload.data as SnapshotTreeItem[] : [];
+      setDirs((prev) => ({
+        ...prev,
+        [dir]: {
+          items: cursor ? [...(prev[dir]?.items ?? []), ...items] : items,
+          nextCursor: typeof payload?.nextCursor === 'string' ? payload.nextCursor : null,
+        },
+      }));
+    } catch (err) {
+      if (epoch === browseEpoch.current) {
+        setError(err instanceof Error ? err.message : 'Failed to load snapshot contents');
+      }
+    } finally {
+      if (epoch === browseEpoch.current) setFilesLoading(false);
+    }
   }, [snapshotId]);
+
+  useEffect(() => {
+    browseEpoch.current += 1;
+    setDirs({});
+    setBrowseDir(ROOT_DIR);
+    void loadDir(ROOT_DIR);
+  }, [loadDir]);
+
+  const openDir = (dir: string) => {
+    setBrowseDir(dir);
+    if (!dirs[dir]) void loadDir(dir);
+  };
 
   const toggleFile = (id: string) => {
     setSelectedFiles((prev) => {
@@ -333,7 +323,11 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     () => snapshots.find((snap) => snap.id === snapshotId),
     [snapshotId, snapshots]
   );
-  const selectableFiles = selectedSnapshot?.files ?? [];
+  const currentPage = dirs[browseDir];
+  const currentItems = currentPage?.items ?? [];
+  const parentDir = browseDir === ROOT_DIR
+    ? null
+    : `/${browseDir.split('/').filter(Boolean).slice(0, -1).join('/')}`.replace(/^\/$/, ROOT_DIR);
   const latestKnownRestore = useMemo(() => {
     if (restoreJob) return restoreJob;
     return restoreHistory[0] ?? null;
@@ -631,28 +625,63 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
               </div>
               {restoreType === 'selective' ? (
                 <div className="space-y-3">
-                  {selectableFiles.length === 0 ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    {parentDir !== null && (
+                      <button
+                        type="button"
+                        onClick={() => openDir(parentDir)}
+                        className="rounded-md border px-2 py-1 font-medium text-foreground hover:bg-muted"
+                      >
+                        Up
+                      </button>
+                    )}
+                    <span data-testid="restore-wizard-current-dir">{browseDir}</span>
+                  </div>
+                  {currentItems.length === 0 ? (
                     <div className="rounded-md border border-dashed bg-muted/30 p-4 text-sm text-muted-foreground">
                       {filesLoading ? 'Loading snapshot contents...' : 'No files available for this snapshot.'}
                     </div>
                   ) : (
-                    selectableFiles.map((file) => (
-                      <label
-                        key={file.id}
-                        className="flex items-center justify-between rounded-md border bg-muted/20 px-4 py-3 text-sm"
-                      >
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={selectedFiles.has(file.id)}
-                            onChange={() => toggleFile(file.id)}
-                            className="h-4 w-4"
-                          />
-                          <span className="font-medium text-foreground">{file.name}</span>
-                        </div>
-                        <span className="text-xs text-muted-foreground">{file.size ?? '--'}</span>
-                      </label>
+                    currentItems.map((item) => (
+                      item.type === 'directory' ? (
+                        <button
+                          key={`d:${item.path}`}
+                          type="button"
+                          onClick={() => openDir(item.path)}
+                          className="flex w-full items-center gap-2 rounded-md border bg-muted/20 px-4 py-3 text-left text-sm font-medium text-foreground hover:bg-muted/40"
+                        >
+                          {item.name}/
+                        </button>
+                      ) : (
+                        <label
+                          key={`f:${item.path}`}
+                          className="flex items-center justify-between rounded-md border bg-muted/20 px-4 py-3 text-sm"
+                        >
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedFiles.has(item.path)}
+                              onChange={() => toggleFile(item.path)}
+                              className="h-4 w-4"
+                            />
+                            <span className="font-medium text-foreground">{item.name}</span>
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {typeof item.sizeBytes === 'number' ? formatBytes(item.sizeBytes) : '--'}
+                          </span>
+                        </label>
+                      )
                     ))
+                  )}
+                  {currentPage?.nextCursor && (
+                    <button
+                      type="button"
+                      onClick={() => void loadDir(browseDir, currentPage.nextCursor)}
+                      disabled={filesLoading}
+                      className="text-xs font-medium text-primary hover:underline disabled:opacity-60"
+                    >
+                      Load more
+                    </button>
                   )}
                 </div>
               ) : (

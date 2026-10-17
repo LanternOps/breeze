@@ -23,6 +23,7 @@ Notes:
 - Requires Node v22.20.0 on PATH and a populated root `.env` (image refs).
 - `.env.stack` pins `RESEND_API_KEY`, `MAILGUN_API_KEY` and `SMTP_HOST` to empty so a QA stack never sends real email even though the root `.env` carries live keys; set `BREEZE_WT_STACK_LIVE_MAIL=1` to keep the root values.
 - Caddy serves plain HTTP in dev; `baseUrl` is `http://localhost:<port>`.
+- Caddy's host port is random by default and **changes if caddy is restarted** (`docker restart` re-allocates it), stranding anything that read `baseUrl`. Export `BREEZE_WT_CADDY_PORT=<free port>` before `pnpm wt-stack up` to pin it; the descriptor then has `caddyPortPinned: true`. Required for any storm scenario that restarts caddy (`socket-drop`, `storm-suite`) — `storm.sh` refuses to run it otherwise (#8718).
 - OrbStack is recommended for speed but not required — the CLI uses only the
   standard `docker compose` interface.
 - `pnpm wt-stack ls` lists running stacks; `pnpm wt-stack info` prints the descriptor.

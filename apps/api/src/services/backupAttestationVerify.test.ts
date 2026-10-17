@@ -50,7 +50,7 @@ function attestation(overrides: Partial<AttestationUnderVerification> = {}): Att
 
 function deps(opts: {
   attestation?: AttestationUnderVerification;
-  snapshot?: Partial<{ deviceId: string; jobId: string; snapshotId: string; storageIdentity: string | null; keyLayout: string }> | null;
+  snapshot?: Partial<{ deviceId: string; jobId: string; snapshotId: string; storageIdentity: string | null; keyLayout: string; keyPrefix: string | null }> | null;
   provider?: { type: string; config: Record<string, unknown> } | null;
   objects?: Record<string, Uint8Array>;
   fetchError?: Error;
@@ -74,7 +74,7 @@ function deps(opts: {
     load: vi.fn(async () => ({
       attestation: opts.attestation ?? attestation(),
       snapshot: opts.snapshot === null ? null : {
-        deviceId: 'device-1', jobId: 'job-1', snapshotId: SID, storageIdentity: IDENTITY, keyLayout: 'legacy_flat', ...opts.snapshot,
+        deviceId: 'device-1', jobId: 'job-1', snapshotId: SID, storageIdentity: IDENTITY, keyLayout: 'legacy_flat', keyPrefix: null, ...opts.snapshot,
       },
       provider: opts.provider === undefined ? { type: 's3', config: S3_CONFIG } : opts.provider,
       writeInFlight: opts.writeInFlight,
@@ -258,6 +258,47 @@ describe('verifySnapshotAttestation', () => {
     });
     const { d, fetchObject } = deps({ attestation: att });
     expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'layout_too_large' });
+    expect(fetchObject).not.toHaveBeenCalled();
+  });
+});
+
+// #7081: the helper attests LOGICAL keys (keyLayout legacy_flat); the server
+// fetches the attested objects at their physical keys under the snapshot's
+// recorded root.
+describe('verifySnapshotAttestation key root (#7081)', () => {
+  beforeEach(() => recordBackupAttestationMock.mockReset());
+  const P = 'msp/acme';
+
+  it('binds a prefixed snapshot to its logical attestation and fetches the physical control objects', async () => {
+    const { d, fetchObject } = deps({
+      snapshot: { keyLayout: 'prefixed_flat', keyPrefix: P },
+      objects: { [`${P}/snapshots/${SID}/manifest.json`]: manifest, [`${P}/snapshots/${SID}/layout.json`]: layout },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'verified' });
+    expect(fetchObject.mock.calls.map((c) => c[0].key).sort()).toEqual([
+      `${P}/snapshots/${SID}/layout.json`,
+      `${P}/snapshots/${SID}/manifest.json`,
+    ]);
+  });
+
+  it('still fails a snapshot in a layout this server cannot read with binding_changed', async () => {
+    const { d, fetchObject } = deps({ snapshot: { keyLayout: 'device_scoped' } });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'binding_changed' });
+    expect(fetchObject).not.toHaveBeenCalled();
+  });
+
+  it('fails a prefixed snapshot whose recorded root is unreadable, without fetching', async () => {
+    const { d, fetchObject } = deps({ snapshot: { keyLayout: 'prefixed_flat', keyPrefix: 'x/snapshots' } });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'key_root_invalid' });
+    expect(fetchObject).not.toHaveBeenCalled();
+  });
+
+  it('never binds an attestation that claims a physical layout', async () => {
+    const { d, fetchObject } = deps({
+      attestation: attestation({ keyLayout: 'prefixed_flat' }),
+      snapshot: { keyLayout: 'prefixed_flat', keyPrefix: P },
+    });
+    expect(await verifySnapshotAttestation('snap-db-1', d)).toEqual({ outcome: 'mismatch', reason: 'binding_changed' });
     expect(fetchObject).not.toHaveBeenCalled();
   });
 });

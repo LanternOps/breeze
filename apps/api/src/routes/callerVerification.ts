@@ -45,6 +45,7 @@ import type { CallerVerificationActor } from '../services/callerVerification/typ
 import { getRedis } from '../services/redis';
 import { rateLimiter } from '../services/rate-limit';
 import { createAuditLog } from '../services/auditService';
+import { registerCallerDeviceSuggestionsRoutes } from './callerVerificationWorkstation';
 
 export const callerVerificationRoutes = new Hono();
 
@@ -101,10 +102,12 @@ callerVerificationRoutes.onError((e, c) => {
 // --- Verifications -----------------------------------------------------------
 
 callerVerificationRoutes.post(cv, ...base, write, requireMfa(), zValidator('json', startCallerVerificationSchema), async (c) => {
-  const limit = await rateLimiter(getRedis(), `caller-start:${actor(c).userId}`, 10, 600);
+  const limit = await rateLimiter(getRedis(), `caller-verification:start:${actor(c).userId}`, 10, 600);
   if (!limit.allowed) return c.json({ error: 'Rate limited' }, 429);
   return c.json({ data: await service.start(actor(c), { ...c.req.valid('json'), orgId: oid(c) }) }, 202);
 });
+// W02: must precede `${cv}/:id` (that route would read 'device-suggestions' as an id).
+registerCallerDeviceSuggestionsRoutes(callerVerificationRoutes, { base, read, actor });
 callerVerificationRoutes.get(`${cv}/:id`, ...base, read, async (c) => c.json({ data: await service.get(actor(c), oid(c), c.req.param('id')) }));
 callerVerificationRoutes.post(`${cv}/:id/cancel`, ...base, write, requireMfa(), async (c) => c.json({ data: await service.cancel(actor(c), oid(c), c.req.param('id')) }));
 callerVerificationRoutes.post(`${cv}/:id/attest`, ...base, write, requireMfa(), zValidator('json', attestCallerVerificationSchema), async (c) =>

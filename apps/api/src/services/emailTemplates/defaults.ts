@@ -24,6 +24,9 @@ const PREHEADER_BY_ID: Record<EmailTemplateId, string> = {
   payment_overdue: 'An invoice payment is overdue.',
   payment_receipt: 'Your payment receipt.',
   payment_failed: 'Your payment needs your attention.',
+  ticket_approval_requested_approver: 'Your approval is needed before more work is billed.',
+  ticket_approval_requested_notify: 'An approval was requested on your ticket.',
+  ticket_approval_decided: 'A work approval request was decided.',
 };
 
 const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
@@ -45,6 +48,9 @@ const FOOTER_BY_ID: Record<EmailTemplateId, string | undefined> = {
   payment_overdue: undefined,
   payment_receipt: undefined,
   payment_failed: undefined,
+  ticket_approval_requested_approver: undefined,
+  ticket_approval_requested_notify: undefined,
+  ticket_approval_decided: undefined,
 };
 
 function tidyDefaultCopy(value: string): string {

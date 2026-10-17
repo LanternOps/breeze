@@ -322,7 +322,8 @@
       "automatic": "An online agent in this site with an address in one of the subnets is preferred.",
       "pinned": "Scans run only from this agent. If it is offline, the scan fails instead of using another agent.",
       "loadError": "Could not load this site's agents. Automatic selection is still available."
-    }
+    },
+    "subnetTopologyNote": "Subnets here also identify this site's networks on the topology map."
   },
   "discoveryProfileList": {
     "actions": {
@@ -436,7 +437,8 @@
       "interval": "Scan interval must be between 1 and 168 hours.",
       "selectSite": "Select a site before saving."
     },
-    "configuredCount": "{{count}} baselines configured"
+    "configuredCount": "{{count}} baselines configured",
+    "subnetTopologyNote": "Subnets here also identify this site's networks on the topology map."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Acknowledge Event",

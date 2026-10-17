@@ -547,10 +547,10 @@ The export action itself is recorded as an audit event with action `audit_logs.e
 #### Export Audit Logs (GET)
 
 ```
-GET /audit-logs/export?userId=<uuid>
+GET /audit-logs/export?from=<iso>&to=<iso>&action=<action>&q=<text>
 ```
 
-CSV-only export endpoint used by the AuditLogViewer export button. Optionally filter by a specific user's `actorId`. Maximum 10,000 rows.
+CSV-only export endpoint used by the **Export** button on the audit log page. From v0.123.0 it accepts the same filters as the list and search endpoints (`from`, `to`, `user`, `action`, `resource`, `q`, `orgId`, `excludeActions`), so the file contains exactly what the filtered list shows; earlier releases ignored every filter except `userId`. The legacy `userId` parameter still works and is combined with the others. An `orgId` you cannot access returns `403`. Maximum 10,000 rows. The `audit_logs.export` event records the filters that were applied.
 
   </TabItem>
   <TabItem label="Reports">

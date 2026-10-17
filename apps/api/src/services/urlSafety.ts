@@ -59,6 +59,19 @@ export class SsrfBlockedError extends Error {
   }
 }
 
+/**
+ * A hop's host failed the caller's `allowHost` predicate
+ * (`safeFetchFollowingRedirects`). A subclass so callers can tell "this host
+ * is outside what I may contact" (a standing answer) from an address-policy
+ * refusal such as a private-range resolution (possibly transient).
+ */
+export class HostNotAllowedError extends SsrfBlockedError {
+  constructor(hostname: string) {
+    super(`host not allowed: ${hostname}`, { hostname });
+    this.name = 'HostNotAllowedError';
+  }
+}
+
 /** The response body exceeded the caller's `maxBytes` ceiling. The socket is destroyed. */
 export class ResponseTooLargeError extends Error {
   constructor(public readonly maxBytes: number) {
@@ -905,15 +918,34 @@ function stripCredentialHeaders(headers: SafeFetchInit['headers']): Record<strin
  * 301/302 on a non-GET/HEAD request) degrades to GET with no body, and
  * credential headers are dropped when the hop crosses to a different origin.
  */
+export interface FollowRedirectsOptions {
+  /**
+   * Optional host predicate, checked against EVERY hop (the first URL
+   * included) before that hop is resolved or dialed. A hop that fails it
+   * throws `SsrfBlockedError`. This narrows, never widens: the pinned-DNS
+   * address policy still applies to every hop that passes. Used by callers
+   * that may only talk to a fixed allowlist of hosts (the workload
+   * image-currency registry client).
+   */
+  allowHost?: (url: URL) => boolean;
+}
+
 export async function safeFetchFollowingRedirects(
   urlStr: string,
   init: SafeFetchInit = {},
-  maxRedirects: number = SAFE_FETCH_MAX_REDIRECTS
+  maxRedirects: number = SAFE_FETCH_MAX_REDIRECTS,
+  options: FollowRedirectsOptions = {}
 ): Promise<Response> {
   let currentUrl = urlStr;
   let currentInit: SafeFetchInit = init;
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
+    if (options.allowHost) {
+      const target = new URL(currentUrl);
+      if (!options.allowHost(target)) {
+        throw new HostNotAllowedError(target.hostname);
+      }
+    }
     const response = await safeFetch(currentUrl, currentInit);
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 

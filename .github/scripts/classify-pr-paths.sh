@@ -192,6 +192,8 @@ while IFS= read -r path; do
     # the conversion services can return, so a new API reason is caught on
     # the PR that adds it, not on some later web PR.
     apps/api/src/services/monitors/*) web=true ;;
+    # executionRefusedFields.test.ts reads filterEngine.ts to catch drift in its refused-field list.
+    apps/api/src/services/filterEngine.ts) web=true ;;
   esac
   case "${path}" in
     .github/workflows/ci.yml|.github/scripts/classify-pr-paths.sh|.github/scripts/qemu-gate-paths.txt) agent=true ;;

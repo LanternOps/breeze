@@ -1,0 +1,53 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { TrustPageEditor } from '../../components/trust/TrustPageEditor';
+import { EmptyState, ErrorNotice, PageHeader } from '../../components/portal/ui';
+import { PORTAL_TRUST_EDITOR_CODES, trustEditorApi } from '../../lib/trustEditorApi';
+import { buildServerApiConfig, loadPortalProfile } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import { redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+
+// Trust Center W3d: the customer org admin's trust page editor. The API gate is
+// a permission (the MSP's enable_trust_page_editing flag AND an org-scoped admin
+// contact), re-checked on every request. Either refusal is a decision, not a
+// load failure, so the page bounces to the ungated home instead of rendering an
+// error the customer would raise a ticket about (#4932 pattern).
+const config = buildServerApiConfig(Astro.request);
+const [response, profile] = await Promise.all([
+  trustEditorApi.get(config),
+  loadPortalProfile(Astro.request),
+]);
+if (response.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+if (
+  response.statusCode === 403
+  && (PORTAL_TRUST_EDITOR_CODES as readonly string[]).includes(response.code ?? '')
+) {
+  return redirectToPortalHomeAfterDisabled(Astro);
+}
+const page = response.data?.data.page ?? null;
+const orgName = profile?.orgName ?? profile?.organizationName ?? '';
+---
+
+<PortalLayout title="Trust page">
+  <PageHeader
+    title="Trust page"
+    lede="Keep your public security page accurate. Your provider reviews and publishes what you change."
+  />
+  {
+    response.data
+      ? page
+        ? <TrustPageEditor client:load initialPage={page} orgName={orgName} />
+        : (
+            <EmptyState title="No trust page yet" data-testid="trust-editor-empty">
+              <p class="mt-2 text-sm text-muted-foreground">Your provider has not set up a trust page for your organization.</p>
+            </EmptyState>
+          )
+      : (
+          <div data-testid="trust-editor-load-error">
+            <ErrorNotice>We couldn't load your trust page just now. Your IT team can help.</ErrorNotice>
+          </div>
+        )
+  }
+</PortalLayout>

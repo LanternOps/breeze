@@ -1,0 +1,14 @@
+{
+  "name": "slow-loop",
+  "description": "Slow event loop, by proxy: throttle the api container to STORM_CPUS CPUs for 5 minutes, then lift the limit (0 = unlimited). This is CPU starvation, not a blocked loop; the API has no lag-injection hook. See stall for a frozen process.",
+  "events": [
+    {
+      "name": "slow-loop",
+      "at": "3m",
+      "hold": "5m",
+      "recovery": "3m",
+      "start": [{ "exec": ["docker", "update", "--cpus", "${STORM_CPUS}", "${STORM_API}"] }],
+      "end": [{ "exec": ["docker", "update", "--cpus", "0", "${STORM_API}"] }]
+    }
+  ]
+}

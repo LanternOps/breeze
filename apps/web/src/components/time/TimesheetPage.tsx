@@ -19,6 +19,7 @@ import { useHashState } from '@/lib/useHashState';
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { replaceUrl } from '../../lib/replaceUrl';
+import { AwaitingApprovalChip, WriteOffHeldButton, isAwaitingApproval } from './HeldEntryControls';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,7 +43,7 @@ interface TsEntry extends BillingOutcomeStamp {
   currencyCode: string | null;
   /** `billed` locks startedAt/endedAt/isBillable/hourlyRate server-side (409 ENTRY_BILLED
    *  if any of them is PRESENT in a PATCH) — only the description may change. */
-  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract';
+  billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
   /** W06 (#3900) server-stamped provenance. Absent on an API predating the
    *  column — render nothing rather than guessing 'manual'. */
   source?: string | null;
@@ -613,6 +614,9 @@ export default function TimesheetPage() {
                             placeholder={t('common:labels.description')}
                             className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1 text-sm"
                           />
+                          <p className="mt-1 w-full text-xs text-muted-foreground" data-testid="time-entry-note-invoice-cue">
+                            {t('longTail.time.TimesheetPage.noteInvoiceCue')}
+                          </p>
                           <div className="w-full sm:w-40">
                             <WorkTypeSelect
                               value={editForm.workTypeId}
@@ -707,6 +711,7 @@ export default function TimesheetPage() {
                                   {t('longTail.time.TimesheetPage.approved')}
                                 </span>
                               )}
+                              {isAwaitingApproval(entry) && <AwaitingApprovalChip entryId={entry.id} />}
                               {!entry.isBillable && (
                                 <span className="text-xs text-muted-foreground">{t('longTail.time.TimesheetPage.nonBillable')}</span>
                               )}
@@ -741,6 +746,9 @@ export default function TimesheetPage() {
                             >
                               {t('common:actions.edit')}
                             </button>
+                            {isAwaitingApproval(entry) && (
+                              <WriteOffHeldButton entryId={entry.id} onDone={() => void loadSheet(week, tech)} />
+                            )}
                             {canWriteTime && entry.billingStatus !== 'billed' && (
                               <button
                                 type="button"

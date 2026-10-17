@@ -1000,6 +1000,8 @@
     "codeExpires": "Caduca a las {{time}}",
     "overdueNotice": "Aún sin confirmación — revise la consola de recuperación.",
     "fileIndexPreparing": "Preparando el índice de archivos para referencias entre instantáneas…",
+    "snapshotsLoadFailed": "No se pudieron cargar las instantáneas. Recargue la página para volver a intentarlo.",
+    "noSnapshots": "Aún no hay instantáneas restaurables en bare-metal. Se necesita una copia de seguridad completa del equipo marcada como restaurable en bare-metal.",
     "statusFailed": "La recuperación falló",
     "statusRefused": "Recuperación rechazada",
     "status": {
@@ -1009,7 +1011,8 @@
       "restoring": "Restaurando",
       "validated": "Validada",
       "rebooted": "Reiniciada",
-      "checked_in": "Confirmada"
+      "checked_in": "Confirmada",
+      "completed": "Completado"
     }
   },
   "backupHealth": {

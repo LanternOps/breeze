@@ -505,6 +505,17 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   { method: 'POST', pattern: /^\/api\/v1\/edr\/connections\/?$/ },
   { method: 'PATCH', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/test\/?$/ },
+  // #8167 W03 PR-B — vendor push opt-in / opt-out / test event: each makes a
+  // vendor push-settings call between short `withAuthDbAccessContext` phases.
+  { method: 'POST', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/push\/?$/ },
+  { method: 'DELETE', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/push\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/edr\/connections\/[^/]+\/push\/test\/?$/ },
+  // #8167 W03 — EDR response actions. `dispatchEdrAction` must COMMIT its
+  // `edr_actions` row (and audit) before the one vendor call, and must not hold
+  // a pooled connection across vendor HTTP (#1105): impossible inside the
+  // ambient request transaction. It asserts no context is held and opens its
+  // own short caller-scoped / system contexts. `GET /edr/actions` keeps the tx.
+  { method: 'POST', pattern: /^\/api\/v1\/edr\/actions\/?$/ },
   // Caller verification (#6354 W01): the three Graph-backed operations
   // (directory picker search, authoritative sync, manual binding) each open
   // short `withAuthDbAccessContext` phases around a Microsoft Graph read, so

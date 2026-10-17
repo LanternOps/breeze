@@ -322,7 +322,8 @@
       "automatic": "Un agent en ligne de ce site ayant une adresse dans l'un des sous-réseaux est privilégié.",
       "pinned": "Les analyses s'exécutent uniquement depuis cet agent. S'il est hors ligne, l'analyse échoue au lieu d'utiliser un autre agent.",
       "loadError": "Impossible de charger les agents de ce site. La sélection automatique reste disponible."
-    }
+    },
+    "subnetTopologyNote": "Les sous-réseaux saisis ici identifient aussi les réseaux de ce site sur la carte de topologie."
   },
   "discoveryProfileList": {
     "actions": {
@@ -436,7 +437,8 @@
       "interval": "L’intervalle de balayage doit être compris entre 1 et 168 heures.",
       "selectSite": "Sélectionnez un site avant d’enregistrer."
     },
-    "configuredCount": "{{count}} bases configurées"
+    "configuredCount": "{{count}} bases configurées",
+    "subnetTopologyNote": "Les sous-réseaux saisis ici identifient aussi les réseaux de ce site sur la carte de topologie."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Accuser réception de l’événement",

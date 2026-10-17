@@ -45,6 +45,16 @@ describe('feature Save action feedback', () => {
       message: expect.not.stringContaining('MONITOR_NOT_ATTACHABLE'),
     }));
   });
+  it('maps APPROVAL_RULES_MOVED_TO_RING to copy that points at the Update Ring (#8187)', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
+      error: 'Approval and application rules are configured on the Update Ring linked to this policy.',
+      code: 'APPROVAL_RULES_MOVED_TO_RING',
+    }), { status: 400 }));
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
+    expect(result.current.error).toMatch(/Update Ring/);
+    expect(result.current.error).toMatch(/reload/i);
+  });
   it('redirects on 401 without an extra toast', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response('{}', { status: 401 }));
     const { result } = renderHook(() => useFeatureLink(POLICY));

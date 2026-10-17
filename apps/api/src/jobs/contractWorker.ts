@@ -19,6 +19,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { contracts } from '../db/schema';
 import { generateDueInvoice } from '../services/contractService';
 import { runHourBlockCloseOutSweep } from '../services/contractHourBlockClose';
+import { runHourBlockAlertSweep } from '../services/contractHourBlockAlerts';
 import { buildAutomationEligibleOrgPredicate } from '../services/tenantStatus';
 import { runContractRenewalSweep } from '../services/contractRenewal';
 import { issueInvoice } from '../services/invoiceService';
@@ -147,7 +148,7 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
 }
 
 /**
- * The daily billing-sweep job, in order: renewal → billing → block-hours close-out.
+ * The daily billing-sweep job, in order: renewal → billing → block-hours close-out → threshold alerts.
  * Renewal MUST run before billing so an about-to-expire auto-renew contract has
  * its term extended before generateDueInvoice decides expiry. The close-out runs
  * AFTER billing so a contract the billing run just expired or cancelled has its
@@ -160,6 +161,16 @@ export async function runBillingSweepJob(asOf: Date = new Date()): Promise<{ bil
   const hb = await runHourBlockCloseOutSweep(asOf);
   if (hb.closes > 0 || hb.errors > 0) {
     console.info('[contract-billing] block-hours close-out: contracts=%d closes=%d errors=%d', hb.contracts, hb.closes, hb.errors);
+  }
+  // Threshold alerts run LAST: they read the open period's carried-in balance,
+  // which only exists once billing and close-out have closed the period that
+  // just ended. Own per-line system contexts; a failure is reported but must
+  // never fail the job or the billing result.
+  try {
+    await runHourBlockAlertSweep(asOf);
+  } catch (err) {
+    console.error('[ContractWorker] hour-block alert sweep failed', err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
   }
   return billing;
 }

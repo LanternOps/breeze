@@ -59,6 +59,7 @@ describe('buildPortalNavItems — full flag set (#4562)', () => {
       '/quotes',
       '/invoices',
       '/tickets',
+      '/approvals',
       '/devices',
       '/security',
       '/backups',
@@ -112,6 +113,7 @@ describe('buildPortalNavItems — Network (/network) gating (#6640)', () => {
       '/quotes',
       '/invoices',
       '/tickets',
+      '/approvals',
       '/devices',
       '/assets',
       '/network',
@@ -175,4 +177,48 @@ describe('buildPortalNavItems — W04 service and documents', () => {
 it('payment methods is fail-closed and can be visible without a branding row', () => {
   expect(buildPortalNavItems({}).some(item => item.href === '/payment-methods')).toBe(false);
   expect(buildPortalNavItems({}, true).some(item => item.href === '/payment-methods')).toBe(true);
+});
+
+describe('buildPortalNavItems — Approvals (/approvals) (#8200)', () => {
+  it('sits right after Support', () => {
+    const hrefs = buildPortalNavItems({}).map((i) => i.href);
+    expect(hrefs.indexOf('/approvals')).toBe(hrefs.indexOf('/tickets') + 1);
+    expect(buildPortalNavItems({}).find((i) => i.href === '/approvals')).toEqual({
+      href: '/approvals',
+      label: 'Approvals',
+    });
+  });
+
+  it('follows the Support rule: hidden only when tickets are explicitly disabled', () => {
+    expect(buildPortalNavItems({ enableTickets: false }).map((i) => i.href)).not.toContain('/approvals');
+    expect(buildPortalNavItems({ enableTickets: undefined }).map((i) => i.href)).toContain('/approvals');
+  });
+
+  it('carries a badge only when there are pending approvals', () => {
+    const find = (n?: number) =>
+      buildPortalNavItems({}, false, n).find((i) => i.href === '/approvals');
+    expect(find(3)).toEqual({ href: '/approvals', label: 'Approvals', badge: 3 });
+    expect(find(0)).not.toHaveProperty('badge');
+    expect(find(undefined)).not.toHaveProperty('badge');
+  });
+});
+
+describe('buildPortalNavItems — Trust page (/security/trust-page) (Trust Center W3d)', () => {
+  const hrefs = (b: Parameters<typeof buildPortalNavItems>[0]) => buildPortalNavItems(b).map((i) => i.href);
+
+  it('appears only when canEditTrustPage is strictly true', () => {
+    expect(hrefs({ enableSecurity: true })).not.toContain('/security/trust-page');
+    expect(hrefs({ enableSecurity: true, canEditTrustPage: false })).not.toContain('/security/trust-page');
+    expect(buildPortalNavItems({ canEditTrustPage: true }).find((i) => i.href === '/security/trust-page'))
+      .toEqual({ href: '/security/trust-page', label: 'Trust page' });
+  });
+
+  it('sits directly under Security when Security is on', () => {
+    const list = hrefs({ enableSecurity: true, canEditTrustPage: true });
+    expect(list.indexOf('/security/trust-page')).toBe(list.indexOf('/security') + 1);
+  });
+
+  it('does not depend on the Security flag (its own permission)', () => {
+    expect(hrefs({ enableSecurity: false, canEditTrustPage: true })).toContain('/security/trust-page');
+  });
 });

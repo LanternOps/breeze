@@ -18,7 +18,17 @@
  * result, so the chat painted `MANAGE_SERVICES · FAILED` in deny-red at the
  * exact moment the user had just said yes.
  */
-export type ToolRowStatus = 'completed' | 'approved' | 'denied' | 'failed';
+export type ToolRowStatus = 'completed' | 'approved' | 'denied' | 'failed' | 'expired';
+
+/**
+ * #8855: the retention job's tombstone over an expired tool output. MIRROR of
+ * `isAiToolOutputTombstone` in `packages/shared/src/utils/aiToolOutputTombstone.ts`
+ * (no `@breeze/shared` dependency here; see the label table note below).
+ */
+function isRetentionTombstone(output: unknown): boolean {
+  return typeof output === 'object' && output !== null && !Array.isArray(output)
+    && (output as { _retention?: unknown })._retention === 'scrubbed';
+}
 
 /** The wire literal. Must match `APPROVED_EXECUTING_STATUS` on the API. */
 export const APPROVED_EXECUTING_STATUS = 'approved_executing';
@@ -44,7 +54,7 @@ const MAX_TOOL_ROW_ERROR_TEXT_LENGTH = 400;
  * this function exists to fix, just for object-typed errors.
  */
 export function toolRowErrorText(output: unknown): string | null {
-  if (!output || typeof output !== 'object') return null;
+  if (!output || typeof output !== 'object' || isRetentionTombstone(output)) return null;
   const obj = output as { error?: unknown; message?: unknown };
   const field = obj.error !== undefined ? obj.error : obj.message;
   const raw = stringifyErrorField(field);
@@ -103,6 +113,9 @@ export function toolRowStatus(event: {
 }): ToolRowStatus {
   const { output, isError, handoff } = event;
   if (handoff === APPROVED_EXECUTING_STATUS) return 'approved';
+  // A replayed row whose output the retention job scrubbed: the original
+  // outcome is gone, so say that rather than guess DONE or FAILED from it.
+  if (isRetentionTombstone(output)) return 'expired';
   if (!isError) {
     return typeof output === 'object' &&
       output !== null &&
@@ -124,6 +137,8 @@ export function toolRowSuffix(status: ToolRowStatus): string {
       return 'FAILED';
     case 'completed':
       return 'DONE';
+    case 'expired':
+      return 'OUTPUT EXPIRED';
   }
 }
 

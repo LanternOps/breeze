@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
@@ -36,6 +36,11 @@ vi.mock('../../db', () => {
     withSystemDbAccessContext: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   };
 });
+
+// Trust Center W3d: the per-user capability is decided by the editor gate (tested in featureFlags.test.ts and
+// against Postgres in portalTrustPageEditing.integration.test.ts); here only its plumbing onto /branding.
+const { capabilitiesMock } = vi.hoisted(() => ({ capabilitiesMock: vi.fn(async () => ({ canEditTrustPage: false })) }));
+vi.mock('./featureFlags', () => ({ resolvePortalCapabilities: capabilitiesMock }));
 
 import { brandingRoutes } from './branding';
 
@@ -81,6 +86,10 @@ describe('GET /branding (authenticated)', () => {
       enablePerformanceMetrics: true,
       enableSoftwareInventory: true,
       enableNetworkVisibility: true,
+      enableHourBlock: true,
+      enablePatchDetail: true,
+      enableVulnerabilityDetail: true,
+      enableEdrVisibility: true,
     }];
 
     const response = await authenticatedApp.request('/branding');
@@ -100,6 +109,10 @@ describe('GET /branding (authenticated)', () => {
         enableHardwareInventory: true,
         enablePerformanceMetrics: true,
         enableSoftwareInventory: true,
+        enableHourBlock: true,
+        enablePatchDetail: true,
+        enableVulnerabilityDetail: true,
+        enableEdrVisibility: true,
       },
     });
 
@@ -127,6 +140,10 @@ describe('GET /branding (authenticated)', () => {
         'enablePerformanceMetrics',
         'enableSoftwareInventory',
         'enableNetworkVisibility',
+        'enableHourBlock',
+        'enablePatchDetail',
+        'enableVulnerabilityDetail',
+        'enableEdrVisibility',
       ]),
     );
   });
@@ -162,6 +179,11 @@ describe('GET /branding (authenticated)', () => {
     expect(body).not.toHaveProperty('enablePerformanceMetrics');
     expect(body).not.toHaveProperty('enableSoftwareInventory');
     expect(body).not.toHaveProperty('enableNetworkVisibility');
+    expect(body).not.toHaveProperty('enableHourBlock');
+    expect(body).not.toHaveProperty('enablePatchDetail');
+    expect(body).not.toHaveProperty('enableVulnerabilityDetail');
+    expect(body).not.toHaveProperty('enableEdrVisibility');
+    expect(body).not.toHaveProperty('canEditTrustPage');
   });
 
   it('applies private cache headers scoped to the authenticated viewer', async () => {
@@ -178,6 +200,37 @@ describe('GET /branding (authenticated)', () => {
     expect(response.headers.get('Cache-Control')).toContain('private');
     expect(response.headers.get('Vary')).toContain('Authorization');
     expect(response.headers.get('Vary')).toContain('Cookie');
+  });
+});
+
+describe('GET /branding canEditTrustPage (Trust Center W3d)', () => {
+  afterEach(() => { capabilitiesMock.mockImplementation(async () => ({ canEditTrustPage: false })); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [{ enableSecurity: true }];
+  });
+
+  it('is false when the editor gate refuses (flag off, or not an org-admin contact)', async () => {
+    capabilitiesMock.mockResolvedValue({ canEditTrustPage: false });
+    const response = await authenticatedApp.request('/branding');
+    expect(response.status).toBe(200);
+    expect((await response.json()).branding.canEditTrustPage).toBe(false);
+    expect(capabilitiesMock).toHaveBeenCalledWith({ id: 'pu1', orgId: ORG_ID });
+  });
+
+  it('is true when the flag is on and the session user is an org-admin contact', async () => {
+    capabilitiesMock.mockResolvedValue({ canEditTrustPage: true });
+    const response = await authenticatedApp.request('/branding');
+    expect((await response.json()).branding.canEditTrustPage).toBe(true);
+  });
+
+  it('is part of the ETag, so a capability change is not answered 304', async () => {
+    capabilitiesMock.mockResolvedValue({ canEditTrustPage: false });
+    const etagOff = (await authenticatedApp.request('/branding')).headers.get('etag');
+    capabilitiesMock.mockResolvedValue({ canEditTrustPage: true });
+    const res = await authenticatedApp.request('/branding', { headers: { 'if-none-match': etagOff ?? '' } });
+    expect(res.status).toBe(200);
+    expect((await res.json()).branding.canEditTrustPage).toBe(true);
   });
 });
 
@@ -231,6 +284,11 @@ describe('GET /branding/:domain (public)', () => {
     expect(body.branding).not.toHaveProperty('enablePerformanceMetrics');
     expect(body.branding).not.toHaveProperty('enableSoftwareInventory');
     expect(body.branding).not.toHaveProperty('enableNetworkVisibility');
+    expect(body.branding).not.toHaveProperty('enableHourBlock');
+    expect(body.branding).not.toHaveProperty('enablePatchDetail');
+    expect(body.branding).not.toHaveProperty('enableVulnerabilityDetail');
+    expect(body.branding).not.toHaveProperty('enableEdrVisibility');
+    expect(body.branding).not.toHaveProperty('canEditTrustPage');
     expect(response.headers.get('Cache-Control')).toContain('public');
 
     // Same reasoning as the authenticated case: the mock ignores the
@@ -252,6 +310,10 @@ describe('GET /branding/:domain (public)', () => {
       'enablePerformanceMetrics',
       'enableSoftwareInventory',
       'enableNetworkVisibility',
+      'enableHourBlock',
+      'enablePatchDetail',
+      'enableVulnerabilityDetail',
+      'enableEdrVisibility',
     ]) {
       expect(Object.keys(dbState.selected ?? {})).not.toContain(flag);
     }

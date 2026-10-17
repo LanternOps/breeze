@@ -1178,6 +1178,16 @@ describe('GET /install.sh — generated installer script', () => {
     expect(backupStepIdx).toBeGreaterThan(agentInstalledIdx);
   });
 
+  it('never appends the deprecated --site-id to the enroll command (#8474)', async () => {
+    const script = await fetchScript();
+    // Positive anchor: both the darwin and linux enroll blocks still exist.
+    expect(script.match(/ENROLL_ARGS=\(enroll --server "\$BREEZE_SERVER"\)/g)).toHaveLength(2);
+    // The arg parser keeps a `--site-id)` case (accept and ignore); no other
+    // `--site-id` may remain on any ENROLL_ARGS or enroll line.
+    expect(script).not.toMatch(/ENROLL_ARGS[^\n]*--site-id/);
+    expect(script).not.toMatch(/enroll[^\n]*--site-id/);
+  });
+
   it('accepts a --token argument for enrollment-key based enrollment', async () => {
     const script = await fetchScript();
     // Argument parser handles --token; the script's own $BREEZE_ENROLL_TOKEN
@@ -1253,6 +1263,74 @@ describe('GET /install.sh — generated installer script', () => {
   it('documents --token usage in the script header', async () => {
     const script = await fetchScript();
     expect(script).toContain('--token YOUR_ENROLLMENT_TOKEN');
+  });
+});
+
+describe('install.sh — macOS enrolls with the binary the .pkg actually installed (#8778)', () => {
+  // The .pkg (agent/installer/macos/install-location.sh) installs to
+  // /Library/Breeze/bin when the agent is already there or /usr/local/bin is
+  // unsafe for a root daemon, else to /usr/local/bin. install.sh used to
+  // enroll with a hard-coded /usr/local/bin/breeze-agent. The resolver is run
+  // here against temp directories standing in for the two real ones.
+  let tmp: string;
+  let legacy: string;
+  let trusted: string;
+  let fn: string;
+
+  beforeEach(async () => {
+    const res = await downloadRoutes.request('/install.sh');
+    const script = await res.text();
+    const m = script.match(/^resolve_macos_agent_bin\(\) \{[\s\S]*?^\}$/m);
+    expect(m, 'install.sh defines resolve_macos_agent_bin').not.toBeNull();
+    fn = m![0];
+    tmp = mkdtempSync(join(tmpdir(), 'breeze-mac-bin-'));
+    legacy = join(tmp, 'usr-local-bin');
+    trusted = join(tmp, 'Library-Breeze-bin');
+    mkdirSync(legacy);
+    mkdirSync(trusted);
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function resolve(): { code: number; out: string } {
+    const harness = `${fn}\nINSTALL_DIR='${legacy}'\nMACOS_TRUSTED_BIN_DIR='${trusted}'\nBINARY_NAME=breeze-agent\nresolve_macos_agent_bin`;
+    try {
+      return { code: 0, out: execFileSync('bash', ['-c', harness]).toString().trim() };
+    } catch (e) {
+      return { code: (e as { status?: number }).status ?? 1, out: '' };
+    }
+  }
+  const agent = (dir: string) => writeFileSync(join(dir, 'breeze-agent'), '#!/bin/sh\n', { mode: 0o755 });
+
+  it('uses /Library/Breeze/bin when the .pkg installed there (the reported case)', () => {
+    agent(trusted);
+    expect(resolve()).toEqual({ code: 0, out: join(trusted, 'breeze-agent') });
+  });
+
+  it('uses /usr/local/bin when the .pkg installed there', () => {
+    agent(legacy);
+    expect(resolve()).toEqual({ code: 0, out: join(legacy, 'breeze-agent') });
+  });
+
+  it('prefers /Library/Breeze/bin over a leftover pre-relocation /usr/local/bin copy', () => {
+    agent(legacy);
+    agent(trusted);
+    expect(resolve()).toEqual({ code: 0, out: join(trusted, 'breeze-agent') });
+  });
+
+  it('fails when neither location has an executable agent', () => {
+    expect(resolve().code).not.toBe(0);
+  });
+
+  it('enrolls through the resolved path, not a hard-coded /usr/local/bin', async () => {
+    const res = await downloadRoutes.request('/install.sh');
+    const script = await res.text();
+    const mac = script.slice(script.indexOf('installer -pkg'), script.indexOf('Agent enrolled successfully'));
+    expect(mac).toContain('MACOS_AGENT_BIN="$(resolve_macos_agent_bin)"');
+    expect(mac).toContain('"$MACOS_AGENT_BIN" "${ENROLL_ARGS[@]}"');
+    expect(mac).not.toContain('"$INSTALL_DIR/$BINARY_NAME" "${ENROLL_ARGS[@]}"');
   });
 });
 

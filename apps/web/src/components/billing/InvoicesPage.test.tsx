@@ -418,6 +418,42 @@ describe('InvoicesPage', () => {
         type: 'warning', message: expect.stringContaining('EUR'),
       }));
     });
+
+    it('warns that entries are held for the block hours, then still opens the draft', async () => {
+      wireAssemble(() => json({
+        data: { invoice: { id: 'inv-new' }, lines: [], blockedByCurrency: [], heldForHourBlock: { count: 2, hours: 1.5 } },
+      }));
+      await openAndFill();
+      fireEvent.click(screen.getByTestId('invoices-assemble-submit'));
+      await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/billing/invoices/inv-new'));
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning',
+        message: expect.stringMatching(/2 time entries \(1\.5 hours\) are held for this organization's block hours/),
+      }));
+    });
+
+    it('says nothing when nothing is held', async () => {
+      wireAssemble(() => json({
+        data: { invoice: { id: 'inv-new' }, lines: [], blockedByCurrency: [], heldForHourBlock: { count: 0, hours: 0 } },
+      }));
+      await openAndFill();
+      fireEvent.click(screen.getByTestId('invoices-assemble-submit'));
+      await waitFor(() => expect(navigateTo).toHaveBeenCalled());
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+    });
+
+    it('on 409 NOTHING_TO_INVOICE with held hours, explains why instead of leaving a bare error', async () => {
+      wireAssemble(() => json({
+        error: 'No unbilled billable work in range', code: 'NOTHING_TO_INVOICE',
+        details: { heldForHourBlock: { count: 1, hours: 1 } },
+      }, false, 409));
+      await openAndFill();
+      fireEvent.click(screen.getByTestId('invoices-assemble-submit'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'warning', message: expect.stringContaining('1 time entry (1 hours) is held'),
+      })));
+      expect(navigateTo).not.toHaveBeenCalled();
+    });
   });
 
   it('renders the access-denied state (not the retryable error) on a 403', async () => {

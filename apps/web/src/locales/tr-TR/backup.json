@@ -1000,6 +1000,8 @@
     "codeExpires": "Şu saatte sona erer: {{time}}",
     "overdueNotice": "Henüz bir onay yok — kurtarma konsoluna bakın.",
     "fileIndexPreparing": "Anlık görüntüler arası referanslar için dosya dizini hazırlanıyor…",
+    "snapshotsLoadFailed": "Anlık görüntüler yüklenemedi. Tekrar denemek için sayfayı yenileyin.",
+    "noSnapshots": "Henüz bare-metal ile geri yüklenebilir anlık görüntü yok. Bare-metal geri yüklenebilir olarak işaretlenmiş tam makine yedeği gerekir.",
     "statusFailed": "Kurtarma başarısız oldu",
     "statusRefused": "Kurtarma reddedildi",
     "status": {
@@ -1009,7 +1011,8 @@
       "restoring": "Geri yükleniyor",
       "validated": "Doğrulandı",
       "rebooted": "Yeniden başlatıldı",
-      "checked_in": "Giriş yapıldı"
+      "checked_in": "Giriş yapıldı",
+      "completed": "Tamamlandı"
     }
   },
   "backupHealth": {

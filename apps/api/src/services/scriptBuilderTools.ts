@@ -13,7 +13,7 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { executeTool } from './aiTools';
 import { withDbAccessContext, runOutsideDbContext } from '../db';
 import type { AiToolTier } from '@breeze/shared/types/ai';
-import { scriptParameterDefinitionsSchema } from '@breeze/shared';
+import { scriptParameterDefinitionsSchema, WORKLOAD_RUNTIMES, WORKLOAD_STATES } from '@breeze/shared';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
@@ -47,6 +47,7 @@ export const SCRIPT_BUILDER_TOOL_TIERS: Record<string, AiToolTier> = {
   get_device_details: 1,
   get_device_hardware_health: 1,
   get_device_time_status: 1,
+  query_device_workloads: 1,
   list_time_sync_issues: 1,
   manage_alerts: 1,
   list_scripts: 1,
@@ -325,6 +326,18 @@ export function buildScriptBuilderTools(
     ),
 
     tool(
+      'query_device_workloads',
+      'List the containers and VMs a device hosts, with per-runtime status and counts.',
+      {
+        deviceId: z.string().uuid(),
+        runtime: z.enum(WORKLOAD_RUNTIMES).optional(),
+        state: z.enum(WORKLOAD_STATES).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeExistingHandler('query_device_workloads', getAuth, onPreToolUse, onPostToolUse),
+    ),
+
+    tool(
       'list_time_sync_issues',
       'List observed time synchronization findings in the accessible fleet.',
       fleetTimeFiltersSchema.shape,
@@ -415,7 +428,11 @@ export function buildScriptBuilderTools(
       'Run a saved script on one or more devices. The script must be saved first. Requires user approval.',
       {
         scriptId: uuid.describe('The saved script ID to execute'),
-        deviceIds: z.array(uuid).min(1).max(10).describe('Target device IDs'),
+        // Exactly one of deviceIds / groupId (#8600); the raw-shape form cannot
+        // refine, so `toolInputSchemas.run_script` (the handler this routes to)
+        // enforces it at dispatch.
+        deviceIds: z.array(uuid).min(1).max(10).optional().describe('Target device IDs (max 10). Omit when groupId is given.'),
+        groupId: uuid.optional().describe('Saved device group UUID to run on instead of deviceIds. Its members are frozen when approval is requested and that list runs; refused above 10 devices.'),
         parameters: z.record(z.string(), z.unknown()).optional(),
         // #4888 — the same run-context pair the `run_script` handler this tool
         // dispatches to accepts. Adding fields here does NOT disturb the #4883

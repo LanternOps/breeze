@@ -34,22 +34,17 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'alerts/correlations.ts',
   'alertTemplates/correlations.ts',
   'auditBaselines.ts',
-  'backup/bmr.ts',
   'backup/bmrRecoveries.ts',
-  'backup/encryption.ts',
   'backup/health.ts',
-  'backup/reconcile.ts',
   'backup/verification.ts',
   'backup/vss.ts',
   'billingProfiles.ts',
   'c2c/configs.ts',
-  'catalog/enrich.ts',
   'contracts/documents.ts',
   'contracts/generate.ts',
   'contracts/periods.ts',
   'contracts/reports.ts',
   'contracts/templates.ts',
-  'devices/actuateElevation.ts',
   'devices/aiOrigin.ts',
   'devices/anomalies.ts',
   'devices/billing.ts',
@@ -63,18 +58,14 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'devices/processSamples.ts',
   'devices/software.ts',
   'devices/softwareActions.ts',
-  'devices/stats.ts',
   'devices/warranty.ts',
   'devices/watchdogLogs.ts',
   'discoveryAssetProbe.ts',
   'fleetDesign.ts',
   'invoices/evidence.ts',
-  'invoices/pdf.ts',
   'invoices/settings.ts',
   'monitoringAssetMetrics.ts',
   'networkKnownGuests.ts',
-  'notifications.ts',
-  'onedrive.ts',
   'orgAccountReadiness.ts',
   'orgAuditRetentionSettings.ts',
   'orgBillingProfile.ts',
@@ -83,20 +74,14 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'orgSummary.ts',
   'orgTicketSettings.ts',
   'packageSearch.ts',
-  'partner.ts',
-  'partnerLoginBranding.ts',
-  'partnerSendingDomains.ts',
   'patchPlan.ts',
-  'patchPolicies.ts',
   'pax8.ts',
   'pax8Orders.ts',
-  'plugins.ts',
   'policyManagement/actions.ts',
   'reliability.ts',
   'remote/supportSessions.ts',
   'reports/recipients.ts',
   'roles.ts',
-  'scriptBundle.ts',
   'security/compliance.ts',
   'security/dashboard.ts',
   'security/policies.ts',
@@ -107,7 +92,6 @@ const FROZEN_GAPS: ReadonlySet<string> = new Set([
   'software.ts',
   'softwareInstallMethods.ts',
   'softwareInventory.ts',
-  'system.ts',
   'systemTools/eventLogs.ts',
   'tenantVariables.ts',
   'ticketCategories.ts',
@@ -148,6 +132,14 @@ describe('MCP_COVERAGE (route module → tool surface)', () => {
       if (e.tools.length === 0) bad.push(`${k}: empty tools[]`);
       for (const t of e.tools) if (!registered.has(t)) bad.push(`${k}: unknown tool ${t}`);
     }
+    expect(bad).toEqual([]);
+  });
+  it('tool_in_later_wave entries name the issue that ships the tool', () => {
+    // Not a parking lot: an entry without the shipping wave's issue would be a
+    // gap under another name, escaping FROZEN_GAPS.
+    const bad = Object.entries(MCP_COVERAGE)
+      .filter(([, e]) => 'exempt' in e && e.exempt === 'tool_in_later_wave' && !/#\d+/.test(e.note ?? ''))
+      .map(([k]) => k);
     expect(bad).toEqual([]);
   });
   it('gap entries are frozen: none outside FROZEN_GAPS, and FROZEN_GAPS has no stale entry', () => {

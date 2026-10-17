@@ -1,7 +1,7 @@
 ---
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
-import { apiGet } from '../lib/api';
+import { apiGet, portalApi } from '../lib/api';
 import { buildServerApiConfig, loadPortalBranding, loadPortalProfile } from '../lib/server';
 import { buildPortalNavItems } from '../lib/navItems';
 import { stripBase, withBase } from '../lib/basePath';
@@ -38,7 +38,20 @@ const profile = await loadPortalProfile(Astro.request);
 // Fail-open when the flag is absent (shared-domain portals get no branding row);
 // the API's 403 gate on /portal/tickets/* is the real enforcement.
 const paymentMethods = await apiGet('/portal/payment-methods', { ...buildServerApiConfig(Astro.request), timeoutMs: 3000 });
-const navItems = buildPortalNavItems(branding, paymentMethods.statusCode === 200);
+// Customer work approval (#8200): the nav badge counts pending requests this
+// customer can decide. It rides the tickets flag, and any non-200 (gate 403,
+// 401, outage) reads as zero: a badge must never break the shell.
+let approvalsPendingCount = 0;
+if (branding.enableTickets !== false) {
+  const approvals = await portalApi.getApprovals(
+    { ...buildServerApiConfig(Astro.request), timeoutMs: 3000 },
+    { pendingOnly: true }
+  );
+  if (approvals.statusCode === 200) {
+    approvalsPendingCount = (approvals.data?.data ?? []).filter((a) => a.canDecide === true).length;
+  }
+}
+const navItems = buildPortalNavItems(branding, paymentMethods.statusCode === 200, approvalsPendingCount);
 
 const accentCss = buildDocAccentCss(docAccent ?? branding.primaryColor);
 // Org-authored portal styling (#5940) — saved via the branding editor and
@@ -121,6 +134,15 @@ const isActive = (href: string) => {
                 ]}
               ></span>
               {item.label}
+              {item.badge !== undefined && item.badge > 0 && (
+                <span
+                  data-testid={`portal-nav-badge-${item.href.slice(1)}`}
+                  aria-label={`${item.badge} waiting`}
+                  class="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold leading-5 text-primary-foreground"
+                >
+                  {item.badge}
+                </span>
+              )}
             </a>
           ))}
         </nav>
@@ -183,6 +205,15 @@ const isActive = (href: string) => {
                       ]}
                     ></span>
                     {item.label}
+                    {item.badge !== undefined && item.badge > 0 && (
+                      <span
+                        data-testid={`portal-nav-badge-mobile-${item.href.slice(1)}`}
+                        aria-label={`${item.badge} waiting`}
+                        class="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold leading-5 text-primary-foreground"
+                      >
+                        {item.badge}
+                      </span>
+                    )}
                   </a>
                 ))}
               </nav>

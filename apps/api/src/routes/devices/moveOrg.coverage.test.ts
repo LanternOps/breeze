@@ -206,6 +206,8 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
       'software_inventory_observations',
       'agent_rollback_events',
       'peripheral_policy_delivery_events',
+      // #4755: composite (device_id, org_id) FK ON UPDATE CASCADE restamps it.
+      'device_restore_point_attempts',
     ]);
     expect(deviceOrgDenormalizedTables).toEqual(
       expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),
@@ -1480,4 +1482,48 @@ describe('device move severs cross-tenant AI origin pointers (#5022 W01)', () =>
       'breeze_cascade_device_org_id() must mirror the route, or a fix-up script that writes devices.org_id directly strands a cross-tenant pointer',
     ).toMatch(/UPDATE public\.script_executions SET ai_session_id = NULL, ai_agent_run_id = NULL/);
   });
+});
+
+/**
+ * ticket_links (#7900 W02) — the one ticket child the schema-derived
+ * completeness check above CANNOT see: it has two ticket legs
+ * (source_ticket_id, target_ticket_id) and no literal `ticket_id`, so it is
+ * neither re-stamped nor discovered. A link whose ticket moves would leave
+ * legs in two orgs, which its composite FKs forbid, so BOTH movers delete
+ * every link touching a moved ticket and defer both FKs by name (the device
+ * axis re-stamps tickets.org_id inside the devices UPDATE trigger, long
+ * before its child tail runs). Pinned statically here because a missing
+ * leg or a missing deferral only fails on a real move of a linked ticket.
+ */
+describe('ticket_links on both org movers (#7900 W02)', () => {
+  const flat = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8').replace(/\s+/g, ' ');
+  const sources = [
+    ['moveTicketOrg', flat('../../services/ticketService.ts')],
+    ['moveDeviceOrgInTransaction', flat('../../services/deviceOrgMove/moveDeviceOrgInTransaction.ts')],
+  ] as const;
+
+  it('the schema gives ticket_links two ticket legs and no ticket_id (why discovery misses it)', () => {
+    const cols = getTableConfig(schema.ticketLinks).columns.map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(['org_id', 'source_ticket_id', 'target_ticket_id']));
+    expect(cols).not.toContain('ticket_id');
+  });
+
+  for (const [axis, src] of sources) {
+    it(`${axis} defers both ticket_links FKs by name`, () => {
+      // The executed statements only (sql`…` templates), not prose comments.
+      const setConstraints = src.match(/sql`SET CONSTRAINTS [^`]* DEFERRED`/g) ?? [];
+      expect(setConstraints.length).toBeGreaterThan(0);
+      for (const stmt of setConstraints) {
+        expect(stmt).toContain('ticket_links_source_org_fk');
+        expect(stmt).toContain('ticket_links_target_org_fk');
+      }
+    });
+
+    it(`${axis} deletes links on BOTH legs of a moved ticket`, () => {
+      const del = src.match(/DELETE FROM ticket_links WHERE [^`]*/)?.[0] ?? '';
+      expect(del).toMatch(/source_ticket_id/);
+      expect(del).toMatch(/target_ticket_id/);
+      expect(del).toMatch(/RETURNING/);
+    });
+  }
 });

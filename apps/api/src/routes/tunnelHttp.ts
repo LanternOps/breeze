@@ -1,27 +1,26 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { getCookie, setCookie, generateCookie } from 'hono/cookie';
-import { SignJWT, jwtVerify } from 'jose';
-import { randomUUID, createHmac, timingSafeEqual } from 'crypto';
-import { brotliDecompress, gunzip, inflate } from 'node:zlib';
-import { promisify } from 'node:util';
-import { eq } from 'drizzle-orm';
-import { db, withSystemDbAccessContext } from '../db';
-import { tunnelSessions, devices } from '../db/schema';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
-import { sendCommandToAgentAwaitResult } from '../services/agentCommandAwait';
-import { getActiveAllowlistPatterns } from '../services/tunnelAllowlist';
-import { isAgentConnected } from './agentWs';
-import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { getTrustedClientIp } from '../services/clientIp';
-import { getSignKey, getVerifyKey, buildHeader } from '../services/jwt';
-import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
-import { PERMISSIONS } from '../services/permissions';
+import { getSignKey } from '../services/jwt';
 import { rewriteTunnelCss, rewriteTunnelHtml } from './tunnelHttpRewrite';
 import { createCorsOriginResolver } from '../services/corsOrigins';
 import { isSameOriginRequest } from '../services/requestTransport';
 import { UUID_REGEX } from '../utils/uuid';
 import { getRedis } from '../services/redis';
+import {
+  CONNECTABLE_TUNNEL_STATUSES, HOP_BY_HOP, activateTunnelSessionOnExchange, HTTP_TUNNEL_COOKIE_TTL_SECONDS,
+  authorizeTunnelContinuation, bumpTunnelActivity, collectForwardableHeaders, decodeUpstreamBody,
+  deviceTargetOrigin, dispatchTunnelHttpRequest, loadOwnedTunnelSession, loadTunnelRow,
+  runTunnelRequestGates, signTunnelCookie, upstreamHeaderValue, verifyTunnelCookie,
+} from './tunnelHttpCore';
+
+// Re-exported: tunnels.ts and tunnelHttp.test.ts import these from here.
+export {
+  HTTP_TUNNEL_COOKIE_TTL_SECONDS, HTTP_TUNNEL_COOKIE_CLOCK_TOLERANCE_SECONDS, HTTP_TUNNEL_MAX_SESSION_HOURS,
+} from './tunnelHttpCore';
 
 /**
  * HTTP reverse-proxy route for the Network Proxy feature.
@@ -50,32 +49,11 @@ import { getRedis } from '../services/redis';
  */
 export const tunnelHttpRoutes = new Hono();
 
-const HTTP_REQUEST_TIMEOUT_MS = 25_000;
-export const HTTP_TUNNEL_COOKIE_TTL_SECONDS = 300;
-export const HTTP_TUNNEL_COOKIE_CLOCK_TOLERANCE_SECONDS = 0;
-// Absolute session cap, independent of the sliding cookie refresh. Enforced
-// here (before forwarding to the agent) AND in POST /tunnels/:id/http-ticket
-// (tunnels.ts) so an already-capped session can't even mint a fresh ticket.
-export const HTTP_TUNNEL_MAX_SESSION_HOURS = 12;
 // Cookie-less path-token auth is only honoured while the owner's own Breeze
 // proxy page is open: its authenticated 5s poll of GET /tunnels/:id refreshes
 // this marker (see markTunnelViewerPresent). Generous enough to survive
 // background-tab timer throttling (Chrome clamps hidden tabs to ~1/min).
 export const TUNNEL_VIEWER_PRESENCE_TTL_SECONDS = 90;
-const HTTP_TUNNEL_MAX_SESSION_MS = HTTP_TUNNEL_MAX_SESSION_HOURS * 60 * 60 * 1000;
-// Throttle for the lastActivityAt bump — avoid a write on every single
-// sub-resource request while a page is actively loading.
-const ACTIVITY_BUMP_THROTTLE_MS = 30_000;
-const COOKIE_AUDIENCE = 'breeze-tunnel-http';
-const CONNECTABLE_TUNNEL_STATUSES = ['pending', 'connecting', 'active'];
-const TUNNEL_CONTINUATION_PERMISSIONS = [PERMISSIONS.REMOTE_ACCESS, PERMISSIONS.DEVICES_EXECUTE];
-
-async function authorizeTunnelContinuation(tunnelId: string, userId: string) {
-  return authorizeRemoteSessionContinuation(
-    { sessionId: tunnelId, sessionType: 'tunnel', userId },
-    TUNNEL_CONTINUATION_PERMISSIONS,
-  );
-}
 
 // GET/HEAD are the only methods a cross-site page can send without the
 // browser signaling it in a way this check relies on (a state-changing
@@ -169,41 +147,6 @@ function tunnelPathTokenMatches(candidate: string, tunnelId: string, userId: str
   return timingSafeEqual(Buffer.from(candidate), Buffer.from(expected));
 }
 
-/** Absolute 12h cap off the tunnel row's createdAt, independent of activity. */
-function isPastSessionCap(createdAt: Date): boolean {
-  return Date.now() - createdAt.getTime() > HTTP_TUNNEL_MAX_SESSION_MS;
-}
-
-// Hop-by-hop headers (RFC 7230 §6.1) plus `host` — never forwarded in either
-// direction. Lowercased for case-insensitive matching.
-const HOP_BY_HOP = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-  'host',
-]);
-
-// Request headers we forward to the LAN device. ALLOWLIST, not denylist — the
-// device is untrusted and must never receive the user's Breeze credentials
-// (`cookie`, `authorization`). Device session cookies are handled separately via
-// the prefixed jar below so they round-trip without leaking app cookies.
-const FORWARDABLE_REQUEST_HEADERS = new Set([
-  'accept',
-  'accept-language',
-  'user-agent',
-  'content-type',
-  'content-length',
-  'range',
-  'if-modified-since',
-  'if-none-match',
-  'cache-control',
-]);
-
 // The device's own cookies are stored in the browser under this prefix so they
 // are namespaced away from (and never confused with) Breeze app cookies. We
 // de-prefix on the way to the device and re-prefix on the way back.
@@ -214,20 +157,6 @@ const DEVICE_COOKIE_PREFIX = 'bzdev_';
 // letting the device's own scripts/forms run, and forbid third-party framing.
 const PROXY_RESPONSE_CSP = "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox; frame-ancestors 'self'";
 
-// Promise-based (worker-pool) zlib, not the *Sync forms — decompressing a
-// compressed device response off the event loop keeps one slow or oversized
-// upstream from stalling every other tenant's request on this process while
-// it runs. `maxOutputLength` bounds the decoded size regardless: a small
-// compressed body can still expand enormously (a few MB of gzip-of-zeros
-// decodes to gigabytes), and the cap turns that into a clean 502 instead of
-// an unbounded allocation.
-const gunzipAsync = promisify(gunzip);
-const inflateAsync = promisify(inflate);
-const brotliDecompressAsync = promisify(brotliDecompress);
-// Generous for any real device admin-UI page/stylesheet; far below what a
-// compression bomb would otherwise be allowed to decode to.
-const TUNNEL_DECOMPRESSED_BODY_MAX_BYTES = 32 * 1024 * 1024;
-
 /** Rebuild a Cookie header containing only the device's own (prefixed) cookies, de-prefixed. */
 function extractDeviceCookies(cookieHeader: string): string {
   return cookieHeader
@@ -236,75 +165,6 @@ function extractDeviceCookies(cookieHeader: string): string {
     .filter((c) => c.startsWith(DEVICE_COOKIE_PREFIX))
     .map((c) => c.slice(DEVICE_COOKIE_PREFIX.length))
     .join('; ');
-}
-
-// ---------------------------------------------------------------------------
-// Cookie signing (reuses the JWT keyring from services/jwt.ts — no bespoke
-// crypto). Distinct audience so a tunnel cookie can never be replayed as an API
-// access/viewer token, and vice-versa.
-// ---------------------------------------------------------------------------
-
-async function signTunnelCookie(userId: string, tunnelId: string): Promise<string> {
-  const { key, kid } = getSignKey();
-  return new SignJWT({ tunnelId })
-    .setProtectedHeader(buildHeader(kid))
-    .setSubject(userId)
-    .setIssuedAt()
-    .setExpirationTime(`${HTTP_TUNNEL_COOKIE_TTL_SECONDS}s`)
-    .setIssuer('breeze')
-    .setAudience(COOKIE_AUDIENCE)
-    .sign(key);
-}
-
-async function verifyTunnelCookie(token: string | undefined, tunnelId: string): Promise<string | null> {
-  if (!token) return null;
-  try {
-    const { payload } = await jwtVerify(token, getVerifyKey, {
-      issuer: 'breeze',
-      audience: COOKIE_AUDIENCE,
-      algorithms: ['HS256'],
-      clockTolerance: HTTP_TUNNEL_COOKIE_CLOCK_TOLERANCE_SECONDS,
-    });
-    if (payload.tunnelId !== tunnelId) return null;
-    if (typeof payload.sub !== 'string' || payload.sub.length === 0) return null;
-    return payload.sub;
-  } catch {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Session ownership + reachability lookup (fail-closed).
-// ---------------------------------------------------------------------------
-
-interface UsableTunnel {
-  agentId: string | null;
-  deviceId: string;
-  deviceStatus: string;
-  deviceSiteId: string | null;
-  targetHost: string;
-  targetPort: number;
-  scheme: string | null;
-  skipTlsVerify: boolean;
-  orgId: string;
-  type: string;
-  createdAt: Date;
-  startedAt: Date | null;
-  lastActivityAt: Date | null;
-}
-
-// System DB context: this route mounts before auth middleware (no
-// request-scoped RLS context); every caller enforces ownership in app code.
-async function loadTunnelRow(tunnelId: string) {
-  return withSystemDbAccessContext(async () => {
-    const [row] = await db
-      .select({ session: tunnelSessions, device: devices })
-      .from(tunnelSessions)
-      .innerJoin(devices, eq(tunnelSessions.deviceId, devices.id))
-      .where(eq(tunnelSessions.id, tunnelId))
-      .limit(1);
-    return row ?? null;
-  });
 }
 
 /**
@@ -364,51 +224,16 @@ async function authenticateByPathToken(
   const row = await loadTunnelRow(tunnelId);
   if (!row) return null;
   const { session } = row;
-  if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status)) return null;
+  if (!(CONNECTABLE_TUNNEL_STATUSES as readonly string[]).includes(session.status)) return null;
   const lastSeen = session.lastActivityAt ?? session.startedAt;
   if (!lastSeen || Date.now() - lastSeen.getTime() > HTTP_TUNNEL_COOKIE_TTL_SECONDS * 1000) return null;
   return tunnelPathTokenMatches(candidateToken, tunnelId, session.userId) ? session.userId : null;
-}
-
-/**
- * Load a tunnel session and confirm the cookie/ticket user owns it and it's in
- * a connectable state (`session.userId === userId`). Returns null (→ 404)
- * when the session is missing, owned by someone else, or in a terminal state.
- */
-async function loadOwnedTunnelSession(tunnelId: string, userId: string): Promise<UsableTunnel | null> {
-  const row = await loadTunnelRow(tunnelId);
-  if (!row) return null;
-  const { session, device } = row;
-  if (session.userId !== userId) return null;
-  if (!CONNECTABLE_TUNNEL_STATUSES.includes(session.status)) return null;
-
-  return {
-    agentId: device.agentId ?? null,
-    deviceId: device.id,
-    deviceStatus: device.status,
-    deviceSiteId: device.siteId ?? null,
-    targetHost: session.targetHost,
-    targetPort: session.targetPort,
-    scheme: session.scheme ?? null,
-    skipTlsVerify: session.skipTlsVerify ?? false,
-    orgId: session.orgId,
-    type: session.type,
-    createdAt: session.createdAt,
-    startedAt: session.startedAt ?? null,
-    lastActivityAt: session.lastActivityAt ?? null,
-  };
 }
 
 // ---------------------------------------------------------------------------
 // Response-rewriting helpers.
 // ---------------------------------------------------------------------------
 
-function upstreamHeaderValue(headers: Record<string, string[]> | undefined, name: string): string | null {
-  for (const [k, values] of Object.entries(headers ?? {})) {
-    if (k.toLowerCase() === name) return values.join(', ');
-  }
-  return null;
-}
 
 /** Rewrite an upstream Location (3xx) so the browser stays inside the proxy. */
 function rewriteLocation(loc: string, basePath: string): string {
@@ -580,16 +405,12 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       return c.text('Not found', 404);
     }
 
-    // `active` means "a client established a session" — set it at successful
-    // ticket->cookie exchange. `startedAt` only when still null so a later
-    // re-mint (session resuming after idle) doesn't reset session duration.
-    const mintUpdates: Record<string, unknown> = { status: 'active' };
-    if (!ownedAtMint.startedAt) {
-      mintUpdates.startedAt = new Date();
+    // `active` = "a client established a session"; startedAt only when still
+    // null. Conditional on the row still being connectable (spec §4): a ticket
+    // racing Close must not reopen the session.
+    if (!(await activateTunnelSessionOnExchange(tunnelId, !ownedAtMint.startedAt))) {
+      return c.text('Not found', 404);
     }
-    await withSystemDbAccessContext(async () => {
-      await db.update(tunnelSessions).set(mintUpdates).where(eq(tunnelSessions.id, tunnelId));
-    });
 
     // Mint the per-request path token now — it's the first point we have an
     // authenticated userId — and fold it into both the cookie's scoping path
@@ -624,37 +445,12 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   }
   const basePath = `${tunnelRootPath}${candidateToken}/`;
 
-  // 2. Authz: owner + absolute cap + device online + agent connected + policy
-  // (fail-closed).
-  const liveAuthority = await authorizeTunnelContinuation(tunnelId, userId);
-  if (!liveAuthority.ok) {
-    return c.text('Access denied', liveAuthority.status);
+  // 2. Authz — shared core (identical gates/order/responses in both modes).
+  const gate = await runTunnelRequestGates(tunnelId, userId);
+  if (!gate.ok) {
+    return c.text(gate.message, gate.status);
   }
-  const session = await loadOwnedTunnelSession(tunnelId, userId);
-  if (!session) {
-    return c.text('Not found', 404);
-  }
-
-  // Absolute 12h cap, checked before any further processing — including
-  // before contacting the agent. The terminal row write (not just the 410)
-  // is what makes the cap visible to the polling parent page; a cap that only
-  // 410s inside the sandboxed iframe would be a silent reconnect loop.
-  if (isPastSessionCap(session.createdAt)) {
-    await withSystemDbAccessContext(async () => {
-      await db.update(tunnelSessions)
-        .set({ status: 'disconnected', errorMessage: 'session_expired', endedAt: new Date() })
-        .where(eq(tunnelSessions.id, tunnelId));
-    });
-    return c.text('Session expired', 410);
-  }
-
-  if (session.deviceStatus !== 'online' || !session.agentId || !isAgentConnected(session.agentId)) {
-    return c.text('Bridge agent offline', 502);
-  }
-  const policy = await checkRemoteAccess(session.deviceId, 'proxy');
-  if (!policy.allowed) {
-    return c.text(policy.reason ?? 'Proxy access disabled by policy', 403);
-  }
+  const { session } = gate;
 
   // CORS preflight from the sandboxed document: answered here, never sent to
   // the device (it has no idea about our origin). Preflights carry no
@@ -677,14 +473,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // NOT reach here: bumping activity (or refreshing the cookie) over a
   // rejected request could paper over a policy-denied/offline stretch with a
   // stale-green session over a dead cookie.
-  const activityNow = new Date();
-  if (!session.lastActivityAt || activityNow.getTime() - session.lastActivityAt.getTime() > ACTIVITY_BUMP_THROTTLE_MS) {
-    await withSystemDbAccessContext(async () => {
-      await db.update(tunnelSessions)
-        .set({ lastActivityAt: activityNow })
-        .where(eq(tunnelSessions.id, tunnelId));
-    });
-  }
+  await bumpTunnelActivity(tunnelId, session.lastActivityAt);
   // Built here (not via setCookie(c, …), which no-ops against the hand-built
   // Response returned below) and appended to respHeaders once it exists.
   const refreshedCookie = pathTokenOnly ? null : generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
@@ -704,12 +493,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // `cookie`/`authorization` (which would leak Breeze session credentials to the
   // untrusted device). The device's own cookies are reconstructed from the
   // prefixed jar so its session round-trips without exposing app cookies.
-  const headers: Record<string, string[]> = {};
-  for (const [k, v] of Object.entries(c.req.header())) {
-    if (FORWARDABLE_REQUEST_HEADERS.has(k.toLowerCase())) {
-      headers[k] = [v];
-    }
-  }
+  const headers = collectForwardableHeaders(c.req.header());
   const deviceCookies = extractDeviceCookies(c.req.header('cookie') ?? '');
   if (deviceCookies) {
     headers['cookie'] = [deviceCookies];
@@ -722,68 +506,12 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
     bodyB64 = buf.toString('base64');
   }
 
-  const scheme: 'http' | 'https' = (session.scheme as 'http' | 'https' | null) ?? (session.targetPort === 443 ? 'https' : 'http');
-  // This cookie-authenticated route has no request-scoped DB context. The
-  // session lookup above established trusted org/device/site values under a
-  // bounded system read; use those exact values for the FORCE-RLS allowlist
-  // lookup rather than issuing a contextless query that would fail closed for
-  // every legitimate proxy request.
-  const allowlistRules = await withSystemDbAccessContext(() =>
-    getActiveAllowlistPatterns(session.orgId, session.deviceSiteId)
-  );
-
-  const awaitResult = await sendCommandToAgentAwaitResult(
-    session.agentId,
-    {
-      id: `http-req-${tunnelId}-${randomUUID()}`,
-      type: 'http_request',
-      payload: {
-        tunnelId,
-        targetHost: session.targetHost,
-        targetPort: session.targetPort,
-        scheme,
-        method,
-        path,
-        headers,
-        bodyB64,
-        skipTlsVerify: session.skipTlsVerify,
-        allowlistRules,
-      },
-    },
-    HTTP_REQUEST_TIMEOUT_MS,
-  );
-
-  if (awaitResult.status !== 'completed') {
-    const err = awaitResult.error ?? '';
-    if (/timeout/i.test(err)) {
-      return c.text('Upstream timeout', 504);
-    }
-    if (err === 'tls_cert_untrusted') {
-      // Surface via the session row so ProxyTunnelPage's existing poll renders
-      // the "recreate with self-signed allowed" banner. A cert failure on load
-      // is terminal for the session — the cert won't become trusted on retry.
-      //
-      // Must run under system DB context: this route mounts before auth
-      // middleware so there is no request-scoped RLS context. Without system
-      // context this becomes a silent 0-row write once tunnel_sessions gains
-      // RLS, causing the recreate banner to never appear (#1916 follow-up).
-      await withSystemDbAccessContext(async () => {
-        await db.update(tunnelSessions)
-          .set({ status: 'failed', errorMessage: 'tls_cert_untrusted', endedAt: new Date() })
-          .where(eq(tunnelSessions.id, tunnelId));
-      });
-      return c.text('Untrusted upstream certificate', 502);
-    }
-    return c.text('Bridge agent error', 502);
+  const outcome = await dispatchTunnelHttpRequest(tunnelId, session, { method, path, headers, bodyB64 });
+  if (!outcome.ok) {
+    return c.text(outcome.message, outcome.status);
   }
 
-  // 4. Parse the agent's structured HTTP response (carried in stdout).
-  let upstream: { status: number; headers: Record<string, string[]>; bodyB64: string; truncated?: boolean };
-  try {
-    upstream = JSON.parse(awaitResult.stdout ?? '');
-  } catch {
-    return c.text('Malformed upstream response', 502);
-  }
+  const upstream = outcome.upstream;
 
   // 5. Rewrite headers + body, then return.
   let body: Buffer | string = Buffer.from(upstream.bodyB64 ?? '', 'base64');
@@ -838,31 +566,17 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // owner's viewer presence.
   if (refreshedCookie) respHeaders.append('set-cookie', refreshedCookie);
 
-  const targetHost = session.targetHost.includes(':') && !session.targetHost.startsWith('[')
-    ? `[${session.targetHost}]` : session.targetHost;
-  const rewriteOptions = { basePath, targetOrigin: `${scheme}://${targetHost}:${session.targetPort}` };
+  const rewriteOptions = { basePath, targetOrigin: deviceTargetOrigin(session) };
   const isHtml = contentType.toLowerCase().includes('text/html');
   if (isHtml || contentType.toLowerCase().includes('text/css')) {
-    const encodings = (respHeaders.get('content-encoding') ?? 'identity')
-      .split(',').map((encoding) => encoding.trim().toLowerCase());
-    // Check the entire stack first: an unknown encoding must pass through with
-    // its original bytes and headers, even when another layer is supported.
-    if (encodings.every((encoding) => ['identity', 'gzip', 'deflate', 'br'].includes(encoding))) {
-      try {
-        const zlibOptions = { maxOutputLength: TUNNEL_DECOMPRESSED_BODY_MAX_BYTES };
-        for (const encoding of encodings.reverse()) {
-          if (encoding === 'gzip') body = await gunzipAsync(body, zlibOptions);
-          else if (encoding === 'deflate') body = await inflateAsync(body, zlibOptions);
-          else if (encoding === 'br') body = await brotliDecompressAsync(body, zlibOptions);
-        }
-      } catch {
-        // Covers both malformed upstream encoding and ERR_BUFFER_TOO_LARGE
-        // (decoded size past the cap above) — same safe response either way.
-        return c.text('Malformed upstream content encoding', 502);
-      }
+    const decoded = await decodeUpstreamBody(body as Buffer, respHeaders.get('content-encoding'));
+    if (!decoded.ok) {
+      return c.text('Malformed upstream content encoding', 502);
+    }
+    if (decoded.decoded) {
       body = isHtml
-        ? rewriteTunnelHtml(body.toString('utf8'), rewriteOptions)
-        : rewriteTunnelCss(body.toString('utf8'), rewriteOptions);
+        ? rewriteTunnelHtml(decoded.body.toString('utf8'), rewriteOptions)
+        : rewriteTunnelCss(decoded.body.toString('utf8'), rewriteOptions);
       respHeaders.delete('content-encoding');
       respHeaders.set('content-length', String(Buffer.byteLength(body)));
     }

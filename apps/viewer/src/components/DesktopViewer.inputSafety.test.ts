@@ -8,7 +8,9 @@ import source from './DesktopViewer.tsx?raw';
 describe('DesktopViewer input safety wiring', () => {
   it('maps mouse buttons through mouseButtonName (back/forward must not click)', () => {
     expect(source).not.toMatch(/e\.button === 2 \? 'right'/);
-    expect(source.match(/mouseButtonName\(e\.button\)/g)).toHaveLength(2);
+    // Back/forward map only when the agent advertises them (W03, #8239).
+    expect(source).not.toMatch(/mouseButtonName\(e\.button\)/);
+    expect(source.match(/mouseButtonName\(e\.button, \{ extraButtons: reliableInput\.extended\(\)\.extraButtons \}\)/g)).toHaveLength(2);
   });
 
   it('releases held input when the window loses focus or is hidden', () => {

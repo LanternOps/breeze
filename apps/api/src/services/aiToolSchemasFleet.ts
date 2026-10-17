@@ -52,8 +52,6 @@ export const fleetToolInputSchemas: Record<string, z.ZodType> = {
     deferUntil: z.string().datetime({ offset: true }).optional(),
     notes: z.string().max(1000).optional(),
     configPolicyId: uuid.optional(),
-    autoApprove: z.boolean().optional(),
-    autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).optional(),
     scheduleFrequency: z.enum(['daily', 'weekly', 'monthly']).optional(),
     scheduleTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
     rebootPolicy: z.enum(['if_required', 'always', 'never']).optional(),

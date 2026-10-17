@@ -24,7 +24,8 @@
         "perDeviceRole": "Per ruolo dispositivo",
         "perDeviceGroup": "Per gruppo di dispositivi",
         "perSeat": "Per postazione",
-        "manual": "Quantità manuale"
+        "manual": "Quantità manuale",
+        "hourBlock": "Monte ore"
       },
       "dynamicGroup": "dinamico",
       "deletedGroup": "{{name}} (gruppo eliminato)",
@@ -587,6 +588,62 @@
       "publishSuccess": "Versione pubblicata",
       "warnings": {
         "markupRemoved": "Salvato, ma è stata rimossa una formattazione non supportata: {{tags}}. Il corpo degli accordi supporta titoli, grassetto, corsivo, sottolineato, elenchi e collegamenti."
+      }
+    },
+    "hourBlock": {
+      "form": {
+        "hoursPerPeriod": "Ore incluse per periodo",
+        "extraRate": "Prezzo per ora aggiuntiva",
+        "rolloverMode": "Ore non utilizzate a fine periodo",
+        "rolloverExpire": "Scadono",
+        "rolloverCarry": "Riportate",
+        "carryCap": "Limite di ore riportabili (vuoto per nessun limite)",
+        "alertPct": "Avvisa al % del monte ore utilizzato (facoltativo)",
+        "required": "Inserisci le ore incluse e il prezzo per ora aggiuntiva.",
+        "firstPeriod": "Le ore contano dal primo periodo di fatturazione ancora da fatturare; in un contratto in bozza viene stabilito all'attivazione. Il tempo precedente viene fatturato come di consueto.",
+        "midPeriodEdit": "Le modifiche si applicano al periodo aperto corrente ({{start}} – {{end}}) alla sua chiusura.",
+        "midPeriodEditNoDates": "Le modifiche si applicano al periodo aperto corrente alla sua chiusura.",
+        "onlyOne": "Questa organizzazione ha già un monte ore attivo. Ritiralo prima di aggiungerne un altro."
+      },
+      "row": {
+        "perPeriod": "{{hours}} ore per periodo",
+        "retiredBadge": "Ritirato",
+        "startsOn": "Conta dal {{date}}"
+      },
+      "errors": {
+        "exists": "Questa organizzazione ha già una riga di monte ore attiva. Ritirala prima, poi aggiungi quella nuova.",
+        "locked": "Questo campo non può essere modificato su una riga di monte ore."
+      },
+      "retire": {
+        "title": "Ritira il monte ore",
+        "message": "«{{description}}» ha uno storico di fatturazione, quindi viene ritirato anziché eliminato. Nessun nuovo periodo; i periodi già fatturati vengono comunque regolati. I periodi chiusi restano nel contratto.",
+        "confirm": "Ritira monte ore",
+        "toast": "Monte ore ritirato"
+      },
+      "detail": {
+        "title": "Monte ore",
+        "usage": "{{used}} di {{included}} ore usate · {{remaining}} rimanenti · il periodo termina il {{end}}",
+        "carried": "Include {{hours}} ore riportate.",
+        "unapproved": "{{hours}} ore di questo tempo non sono ancora approvate.",
+        "foreign": "{{hours}} ore sono state registrate in un'altra valuta; consumano comunque il monte ore.",
+        "over": "{{hours}} ore oltre il monte ore → {{amount}} alla chiusura del periodo",
+        "advanceNote": "L'eccedenza viene fatturata nella fattura successiva.",
+        "arrearsNote": "L'eccedenza viene fatturata nella fattura di questo periodo.",
+        "lateEntry": "{{hours}} ore sono state inserite dopo la chiusura del loro periodo e vengono fatturate separatamente.",
+        "startsLater": "Il monte ore inizia il {{date}}.",
+        "extraRate": "Ore aggiuntive: {{rate}} ciascuna",
+        "loadFailed": "Impossibile caricare l'utilizzo del monte ore."
+      },
+      "history": {
+        "title": "Periodi di monte ore chiusi",
+        "empty": "Nessun periodo di monte ore è ancora stato chiuso.",
+        "included": "Incluse",
+        "carriedIn": "Riportate in ingresso",
+        "used": "Usate",
+        "over": "Eccedenza",
+        "carriedOut": "Riportate in uscita",
+        "loadMore": "Carica altro",
+        "invoiceRemoved": "Fattura dell'eccedenza rimossa — ore non fatturate"
       }
     }
   },
@@ -1714,7 +1771,8 @@
       "saveNotes": "Impossibile salvare le note.",
       "saveTerms": "Impossibile salvare i termini.",
       "updateLine": "Impossibile aggiornare la riga.",
-      "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale."
+      "noPriceForCurrency": "Nessun prezzo in {{currency}} per questo elemento. Aggiungine uno nel catalogo o inserisci una riga manuale.",
+      "saveLineDetail": "Impossibile aggiornare la stampa dei tempi registrati"
     },
     "fields": {
       "descriptionOptional": "Descrizione (facoltativa)",
@@ -1781,6 +1839,35 @@
     "linesScrollAria": "Righe della fattura — scorri lateralmente per altre colonne",
     "unsavedField": {
       "lines": "Righe"
+    },
+    "lineDetail": {
+      "default": "Predefinito di fatturazione",
+      "grouping": "Disposizione",
+      "groupingDay": "Raggruppa per giorno",
+      "groupingEntry": "Una riga per registrazione",
+      "help": "Sostituisce l’impostazione predefinita di fatturazione solo per questa bozza.",
+      "hide": "Nascondi",
+      "show": "Mostra",
+      "showDate": "Data del lavoro",
+      "showNote": "Nota del tecnico",
+      "showWorkedTime": "Tempo lavorato e fatturato",
+      "title": "Righe dei tempi registrati"
+    },
+    "refreshTimeLines": {
+      "billedElsewhere": "{{count}} righe bloccheranno l'emissione: le registrazioni ore sono state fatturate su un'altra fattura. Rimuovile prima di emettere:",
+      "billedElsewhere_one": "{{count}} riga bloccherà l'emissione: la registrazione ore è stata fatturata su un'altra fattura. Rimuovila prima di emettere:",
+      "billedElsewhere_other": "{{count}} righe bloccheranno l'emissione: le registrazioni ore sono state fatturate su un'altra fattura. Rimuovile prima di emettere:",
+      "button": "Aggiorna dalle registrazioni ore",
+      "drifted": "{{count}} righe invariate: il tempo fatturato delle registrazioni non corrisponde più alla quantità. Modifica la quantità o crea una nuova bozza.",
+      "drifted_one": "{{count}} riga invariata: il tempo fatturato della registrazione non corrisponde più alla quantità. Modifica la quantità o crea una nuova bozza.",
+      "drifted_other": "{{count}} righe invariate: il tempo fatturato delle registrazioni non corrisponde più alla quantità. Modifica la quantità o crea una nuova bozza.",
+      "error": "Impossibile aggiornare dalle registrazioni ore",
+      "help": "Aggiorna note, date di lavoro e approvazione dalle registrazioni ore. Quantità, prezzi e descrizioni modificate a mano non cambiano mai.",
+      "running": "Aggiornamento…",
+      "skipped": "{{count}} righe saltate: le registrazioni ore sono state fatturate altrove, rimosse o non sono più fatturabili in questa bozza.",
+      "skipped_one": "{{count}} riga saltata: la registrazione ore è stata fatturata altrove, rimossa o non è più fatturabile in questa bozza.",
+      "skipped_other": "{{count}} righe saltate: le registrazioni ore sono state fatturate altrove, rimosse o non sono più fatturabili in questa bozza.",
+      "summary": "Aggiornate: {{refreshed}} · Già aggiornate: {{unchanged}}"
     }
   },
   "invoiceActions": {
@@ -1963,7 +2050,10 @@
       "syncingToProvider": "Sincronizzazione…",
       "providerSyncFailed": "Sincronizzazione con {{provider}} non riuscita",
       "reverseInProviderToo": "Storna questo pagamento anche in {{provider}}",
-      "overpayment": "L'importo supera il saldo dovuto ({{balance}})."
+      "overpayment": "L'importo supera il saldo dovuto ({{balance}}).",
+      "fillLabel": "Compila importo",
+      "fillDeposit": "Acconto ({{amount}})",
+      "fillBalance": "Saldo totale ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fattura inviata",
@@ -1978,7 +2068,8 @@
       "paid": "Pagato",
       "subtotal": "Subtotale",
       "tax": "Imposta",
-      "total": "Totale"
+      "total": "Totale",
+      "depositDueNow": "Acconto dovuto ora"
     },
     "terms": "Termini e condizioni",
     "void": {
@@ -2028,6 +2119,7 @@
     "empty": "Questa fattura non contiene ancora righe.",
     "fallbackTitle": "Fattura",
     "issued": "Emessa",
+    "laborLine": "Manodopera",
     "preview": {
       "description": "Questo è ciò che il cliente vede sulla fattura.",
       "downloadError": "Impossibile scaricare il PDF della fattura.",
@@ -2124,7 +2216,9 @@
       "sourceAria": "Origine fattura",
       "title": "Nuova fattura",
       "to": "A",
-      "working": "Elaborazione…"
+      "working": "Elaborazione…",
+      "heldForHourBlock_one": "{{count}} registrazione di tempo ({{hours}} ore) è trattenuta per il monte ore di questa organizzazione e verrà fatturata alla chiusura del periodo del monte ore.",
+      "heldForHourBlock_other": "{{count}} registrazioni di tempo ({{hours}} ore) sono trattenute per il monte ore di questa organizzazione e verranno fatturate alla chiusura del periodo del monte ore."
     },
     "empty": {
       "description": "Componi tempo e parti non fatturati in una bozza oppure parti da una fattura vuota.",
@@ -2295,7 +2389,15 @@
       "prefixInvalid": "Inserisci un prefisso da 1 a 12 caratteri.",
       "taxRateInvalid": "Inserisci un'aliquota fiscale da 0 a 100.",
       "termsDaysInvalid": "Inserisci un numero intero di giorni da 0 a 365.",
-      "title": "Valori predefiniti di fatturazione"
+      "title": "Valori predefiniti di fatturazione",
+      "lineDetailTitle": "Righe dei tempi registrati nelle fatture",
+      "lineDetailHelp": "Scegli cosa vedono i clienti per i tempi registrati. Una bozza di fattura può sostituire questa scelta; viene bloccata all’emissione della fattura.",
+      "lineShowDate": "Mostra la data del lavoro",
+      "lineShowNote": "Mostra la nota del tecnico",
+      "lineShowWorkedTime": "Mostra tempo lavorato e fatturato",
+      "lineGrouping": "Disposizione",
+      "lineGroupingEntry": "Una riga per registrazione",
+      "lineGroupingDay": "Raggruppa per giorno"
     },
     "loadError": "Impossibile caricare le impostazioni di fatturazione.",
     "loading": "Caricamento impostazioni di fatturazione…",

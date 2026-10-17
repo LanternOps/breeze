@@ -1053,6 +1053,28 @@ describe('DevicePatchStatusTab', () => {
     expect(installAuto.getAttribute('aria-label')).toContain('next scheduled patch run');
   });
 
+  it('explains a held-back patch when the policy links an invalid update ring', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        data: {
+          compliancePercent: 0,
+          approvalEvaluation: { available: true, ring: null },
+          pending: [{
+            id: 'badring-1', title: 'Held Update (KB5)', source: 'microsoft', category: 'security', status: 'pending',
+            approvalStatus: 'approved', effectiveApproval: { state: 'excluded', reason: 'ring_reference_invalid', holdUntil: null }, installFailure: null
+          }],
+          installed: []
+        }
+      })
+    );
+
+    render(<DevicePatchStatusTab deviceId={deviceId} osType="windows" timezone="UTC" />);
+
+    const badge = await screen.findByTestId('device-patch-badring-1-approval');
+    expect(badge.textContent).toBe('Excluded by policy');
+    expect(badge.getAttribute('title')).toContain('links an update ring that no longer exists');
+  });
+
   it('falls back to the manual approval badge when the ring evaluation is unavailable (#7625)', async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeJsonResponse({

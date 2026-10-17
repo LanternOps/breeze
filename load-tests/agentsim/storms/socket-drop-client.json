@@ -1,0 +1,12 @@
+{
+  "name": "socket-drop-client",
+  "description": "Drop every socket, client side: the simulator closes all of its agent WebSockets at once and every agent redials immediately. Exercises only the socket path; HTTP keep-alives and in-flight requests are untouched.",
+  "events": [
+    {
+      "name": "socket-drop-client",
+      "at": "3m",
+      "recovery": "3m",
+      "start": [{ "internal": "drop-sockets" }]
+    }
+  ]
+}

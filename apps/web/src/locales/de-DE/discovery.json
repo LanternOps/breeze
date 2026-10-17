@@ -322,7 +322,8 @@
       "automatic": "Bevorzugt wird ein Online-Agent an diesem Standort mit einer Adresse in einem der Subnetze.",
       "pinned": "Scans laufen nur über diesen Agenten. Ist er offline, schlägt der Scan fehl, statt einen anderen Agenten zu verwenden.",
       "loadError": "Die Agenten dieses Standorts konnten nicht geladen werden. Die automatische Auswahl ist weiterhin verfügbar."
-    }
+    },
+    "subnetTopologyNote": "Die Subnetze hier identifizieren auch die Netzwerke dieses Standorts auf der Topologiekarte."
   },
   "discoveryProfileList": {
     "actions": {
@@ -436,7 +437,8 @@
       "interval": "Das Scanintervall muss zwischen 1 und 168 Stunden liegen.",
       "selectSite": "Wählen Sie vor dem Speichern eine Standort aus."
     },
-    "configuredCount": "{{count}} Baselines konfiguriert"
+    "configuredCount": "{{count}} Baselines konfiguriert",
+    "subnetTopologyNote": "Die Subnetze hier identifizieren auch die Netzwerke dieses Standorts auf der Topologiekarte."
   },
   "networkChangeDetailModal": {
     "acknowledgeTitle": "Ereignis bestätigen",

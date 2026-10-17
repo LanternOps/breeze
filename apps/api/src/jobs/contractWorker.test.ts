@@ -15,6 +15,9 @@ vi.mock('../services/contractRenewal', () => ({ runContractRenewalSweep: vi.fn()
 vi.mock('../services/contractHourBlockClose', () => ({
   runHourBlockCloseOutSweep: vi.fn().mockResolvedValue({ contracts: 0, closes: 0, errors: 0 }),
 }));
+vi.mock('../services/contractHourBlockAlerts', () => ({
+  runHourBlockAlertSweep: vi.fn().mockResolvedValue({ lines: 0, crossed: 0, notified: 0, skippedBacklog: 0, errors: 0 }),
+}));
 vi.mock('../services/invoiceService', () => ({ issueInvoice: issueInvoiceMock }));
 vi.mock('../services/invoicePdf', () => ({ sendInvoiceEmail: sendInvoiceEmailMock }));
 vi.mock('../services/sentry', () => ({ captureException: captureExceptionMock }));

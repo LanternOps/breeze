@@ -31,6 +31,14 @@ vi.mock('./OrgServiceTab', () => ({
   },
 }));
 
+const trustTabProps = vi.hoisted(() => vi.fn());
+vi.mock('@/components/trustCenter/TrustCenterTab', () => ({
+  default: (props: { orgId: string; orgFetch: unknown }) => {
+    trustTabProps(props);
+    return <div data-testid="org-trust-tab" />;
+  },
+}));
+
 // OverflowTabs (the tab strip this page renders into) measures button widths
 // via `offsetWidth` against the container's `clientWidth`; jsdom always
 // reports 0 for both, which its own computeVisible() collapses to "only the
@@ -213,6 +221,15 @@ describe('OrganizationRecordPage — happy path', () => {
     await waitFor(() => expect(screen.getByTestId('org-service-tab')).toBeTruthy());
     expect(screen.queryByTestId('org-overview-tab')).toBeNull();
     const props = serviceTabProps.mock.calls.at(-1)?.[0] as { orgId: string; orgFetch: unknown };
+    expect(props.orgId).toBe(RECORD_ORG);
+    expect(typeof props.orgFetch).toBe('function');
+  });
+
+  it('opens the Trust Center tab named in the URL hash and hands it the record orgFetch', async () => {
+    window.location.hash = '#trust';
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-trust-tab')).toBeTruthy());
+    const props = trustTabProps.mock.calls.at(-1)?.[0] as { orgId: string; orgFetch: unknown };
     expect(props.orgId).toBe(RECORD_ORG);
     expect(typeof props.orgFetch).toBe('function');
   });

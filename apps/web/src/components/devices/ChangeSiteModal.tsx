@@ -58,16 +58,33 @@ function subjectFromDevice(device: Device): ChangeSiteSubject {
 // The agent-device write. Kept here (not in a writer hook) so the existing
 // device callers are unchanged; network assets pass their own `submit` from
 // useNetworkAssetMutations, which is the single writer for that endpoint.
-function deviceSubmit(deviceId: string): ChangeSiteSubmit {
+/** Thrown by the device writer on 409 `device_site_changed` (someone else moved it). */
+export class DeviceSiteChangedError extends Error {
+  readonly status = 409;
+  readonly code = "device_site_changed";
+  constructor(readonly currentSiteId?: string) {
+    super("device_site_changed");
+    this.name = "DeviceSiteChangedError";
+  }
+}
+
+// `expectedSiteId` lets the API reject the write if the device moved since this
+// dialog loaded (optimistic concurrency).
+function deviceSubmit(deviceId: string, expectedSiteId: string): ChangeSiteSubmit {
   return async (siteId) => {
     const res = await fetchWithAuth(`/devices/${deviceId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ siteId }),
+      body: JSON.stringify({ siteId, expectedSiteId }),
     });
 
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && data?.error === "device_site_changed") {
+        throw new DeviceSiteChangedError(
+          typeof data.currentSiteId === "string" ? data.currentSiteId : undefined,
+        );
+      }
       throw new Error(extractApiError(data, "Failed to change site"));
     }
     return res;
@@ -81,7 +98,8 @@ export default function ChangeSiteModal(props: ChangeSiteModalProps) {
     () => props.subject ?? subjectFromDevice(props.device as Device),
     [props.subject, props.device],
   );
-  const submit = props.submit ?? deviceSubmit(subject.id);
+  const isDeviceVariant = !props.submit;
+  const submit = props.submit ?? deviceSubmit(subject.id, subject.siteId);
   const [sites, setSites] = useState<Site[]>([]);
   const [siteId, setSiteId] = useState(subject.siteId);
   const [loading, setLoading] = useState(false);
@@ -126,6 +144,10 @@ export default function ChangeSiteModal(props: ChangeSiteModalProps) {
       onSaved();
       onClose();
     } catch (err) {
+      if (err instanceof DeviceSiteChangedError) {
+        setError(t("changeSiteModal.deviceMovedByOther"));
+        return;
+      }
       setError(
         err instanceof Error
           ? err.message
@@ -225,6 +247,11 @@ export default function ChangeSiteModal(props: ChangeSiteModalProps) {
                 </option>
               ))}
             </select>
+          )}
+          {isDeviceVariant && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("changeSiteModal.policyNote", { device: subject.name })}
+            </p>
           )}
         </div>
 

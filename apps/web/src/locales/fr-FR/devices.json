@@ -358,7 +358,9 @@
     "current": "(actuel)",
     "cancel": "Annuler",
     "moving": "En mouvement...",
-    "toADifferentSite": "vers un autre site."
+    "toADifferentSite": "vers un autre site.",
+    "deviceMovedByOther": "Cet appareil a été déplacé par quelqu'un d'autre : rechargez pour voir son site actuel",
+    "policyNote": "Le déplacement modifie les politiques de configuration, les fenêtres de maintenance, le routage des alertes et les rapports du site qui s'appliquent à {{device}}. Breeze ne le remettra pas en place automatiquement."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossible de créer un groupe",
@@ -912,6 +914,7 @@
     "diskCleanup": "Nettoyage des disques",
     "diskUsageAnalysisAndCleanup": "Analyse et nettoyage de l’utilisation du disque",
     "bootPerf": "Perf. de démarrage",
+    "systemRestore": "Restauration du système",
     "startupTimeAndBootProcessAnalysis": "Temps de démarrage et analyse du processus de démarrage",
     "backup": "Sauvegarde",
     "backupStatusJobsSnapshotsAndVerification": "État de sauvegarde, tâches, instantanés et vérification",
@@ -945,7 +948,9 @@
       "management": "Gestion",
       "history": "Historique et réseau",
       "extensions": "Modules complémentaires"
-    }
+    },
+    "workloads": "Charges de travail",
+    "workloadsTitle": "Conteneurs et machines virtuelles sur cet hôte"
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
@@ -1360,6 +1365,50 @@
       "awaitingServerOffer": "Breeze Assist est activé mais non installé (depuis le {{since}}) : le serveur n’a proposé aucune version de Breeze Assist à installer sur cet appareil, qui reste donc sans installation. Vérifiez qu’une version de Breeze Assist est publiée pour la plateforme de cet appareil.",
       "installAbandoned": "Breeze Assist est activé mais non installé (depuis le {{since}}) : l’installation de la version proposée a échoué à plusieurs reprises, l’agent a donc suspendu les tentatives. Il réessaiera dans quelques heures ou dès qu’une version plus récente sera proposée ; le journal de l’agent contient l’erreur d’installation.",
       "unknown": "Breeze Assist est activé mais non installé (depuis le {{since}})."
+    },
+    "watchdogInstall": {
+      "gaveUp": "Le watchdog n’a pas pu être installé automatiquement (depuis le {{since}}) : {{reason}}. Exécutez <code>breeze-agent service install --watchdog</code> sur l’hôte pour réessayer.",
+      "unsupported": "L’installation automatique du watchdog n’est pas prise en charge sur cet hôte (depuis le {{since}}).",
+      "reason": {
+        "network": "le téléchargement est injoignable",
+        "server": "le serveur a refusé le téléchargement",
+        "policy": "le téléchargement a été bloqué par la politique réseau",
+        "signature": "la vérification de signature du watchdog téléchargé a échoué",
+        "checksum": "la vérification d’intégrité du watchdog téléchargé a échoué",
+        "devBuild": "il s’agit d’une version de développement",
+        "unsupportedOs": "ce système d’exploitation n’est pas pris en charge",
+        "installCmd": "la commande d’installation a échoué",
+        "locked": "une autre installation était déjà en cours",
+        "unknown": "une erreur non reconnue s’est produite"
+      }
+    },
+    "logShipping": {
+      "label": "Envoi des journaux",
+      "state": {
+        "healthy": "Sain",
+        "quiet": "Inactif",
+        "failing": "En échec"
+      },
+      "tooltip": {
+        "healthy": "L'agent envoie normalement ses journaux.",
+        "quiet": "L'agent n'a effectué aucune tentative d'envoi récente, il n'y a donc rien à signaler.",
+        "failing": "L'envoi des journaux échoue depuis le {{since}}. Motif : {{reason}}"
+      },
+      "reason": {
+        "http": "Le serveur a renvoyé HTTP {{status}}",
+        "timeout": "La requête a expiré",
+        "dns": "Le nom du serveur n'a pas pu être résolu",
+        "connectionRefused": "La connexion a été refusée",
+        "tls": "La connexion sécurisée a échoué",
+        "authRejected": "Le serveur a rejeté les identifiants de l'agent",
+        "urlUnresolved": "L'adresse du serveur n'a pas pu être déterminée",
+        "other": "Autre erreur d'envoi",
+        "unspecified": "Non précisé"
+      }
+    },
+    "logsNotArriving": {
+      "label": "Journaux après hausse du niveau",
+      "text": "Aucun journal reçu depuis l'augmentation du niveau de journalisation ({{since}})."
     },
     "gpu": "GPU",
     "text": "—",
@@ -1826,7 +1875,11 @@
       "description": "Mises à jour en attente vs installées",
       "installed": "{{count}} installé",
       "pending": "{{count}} en attente",
-      "title": "Conformité aux correctifs"
+      "title": "Conformité aux correctifs",
+      "imagesNotChecked_one": "{{count}} image de conteneur non vérifiée",
+      "imagesNotChecked_other": "{{count}} images de conteneur non vérifiées",
+      "imagesBehind_one": "{{count}} image de conteneur en retard",
+      "imagesBehind_other": "{{count}} images de conteneur en retard"
     },
     "confirm": {
       "install": "Installer",
@@ -1938,7 +1991,8 @@
       "excluded": "Exclu par la stratégie",
       "excludedSourceTitle": "Les sources de la stratégie de correctifs ne couvrent pas ce correctif : les exécutions planifiées l'ignorent.",
       "excludedCategoryTitle": "L'anneau de mise à jour {{ring}} exclut la catégorie de ce correctif : les exécutions planifiées l'ignorent.",
-      "excludedAppRuleTitle": "Une règle de blocage ou d'épinglage d'application de la stratégie de correctifs retient ce correctif : les exécutions planifiées l'ignorent.",
+      "excludedAppRuleTitle": "Une règle de blocage ou d'épinglage d'application de l'anneau de mise à jour lié retient ce correctif : les exécutions planifiées l'ignorent.",
+      "excludedRingReferenceTitle": "Retenu : la stratégie de correctifs de cet appareil est liée à un anneau de mise à jour qui n'existe plus ou n'est pas disponible pour ce partenaire. Corrigez l'anneau de mise à jour de la stratégie pour reprendre l'application des correctifs.",
       "pending": "Approbation en attente",
       "needsApprovalRingTitle": "L'anneau de mise à jour {{ring}} n'approuve pas automatiquement ce correctif. Approuvez-le manuellement pour l'installer.",
       "needsApprovalNoRingTitle": "Aucun anneau de mise à jour n'est lié à la stratégie de correctifs de cet appareil : ce correctif ne s'installe qu'après une approbation manuelle.",
@@ -2243,7 +2297,8 @@
     "displayName": "Nom d’affichage",
     "errors": {
       "loadSites": "Impossible de charger les sites",
-      "saveSettings": "Impossible d’enregistrer les paramètres"
+      "saveSettings": "Impossible d’enregistrer les paramètres",
+      "siteChanged": "Cet appareil a été déplacé par quelqu'un d'autre : rechargez pour voir son site actuel"
     },
     "hostname": "Nom d’hôte : {{hostname}}",
     "saved": "Paramètres de l’appareil enregistrés",
@@ -2309,9 +2364,13 @@
     "updatesAvailable_other": "{{count}} mises à jour disponibles"
   },
   "deviceUserIdleStat": {
+    "active": "Actif",
+    "asOf": "à {{time}}",
     "label": "Inactivité utilisateur",
+    "locked": "Verrouillé",
     "retryAria": "Impossible de charger l’état d’inactivité — réessayer",
-    "retryTitle": "Impossible de charger l’état d’inactivité — cliquez pour réessayer"
+    "retryTitle": "Impossible de charger l’état d’inactivité — cliquez pour réessayer",
+    "unknown": "Inconnu"
   },
   "deviceVulnerabilitiesTab": {
     "actions": {
@@ -2628,7 +2687,8 @@
       "software": {
         "installed": "A un logiciel installé",
         "notInstalled": "Logiciels manquants"
-      }
+      },
+      "logShippingFailing": "Échec de l'envoi des journaux"
     }
   },
   "filterChipBar": {
@@ -2697,7 +2757,8 @@
       "software": {
         "installed": "A un logiciel installé",
         "notInstalled": "Logiciels manquants"
-      }
+      },
+      "logShippingFailing": "Échec de l'envoi des journaux"
     }
   },
   "filterHelpPopover": {
@@ -2783,7 +2844,8 @@
       "software": {
         "installed": "A un logiciel installé",
         "notInstalled": "Logiciels manquants"
-      }
+      },
+      "logShippingFailing": "Échec de l'envoi des journaux"
     }
   },
   "filterValueEditor": {
@@ -3399,6 +3461,7 @@
     "ariaLabel": "Filtres à ajout rapide",
     "chips": {
       "critical": "Critique",
+      "logShippingFailing": "Échec de l'envoi des journaux",
       "lowDisk": "Disque bas",
       "needsPatches": "Nécessite des correctifs",
       "notSeen7d": "Non vu depuis 7 j",
@@ -3696,7 +3759,15 @@
     "cancelled": "Action en file d'attente annulée",
     "cancelFailed": "Échec de l'annulation de l'action en file d'attente",
     "loadFailed": "Impossible de charger les actions en file d'attente.",
-    "empty": "Aucune action en file d'attente"
+    "empty": "Aucune action en file d'attente",
+    "powerHold": {
+      "title": "{{action}} attend la fin d’une commande en cours",
+      "body": "{{action}} sera envoyé une fois que l’appareil aura terminé ses commandes en cours. {{command}} est en cours depuis {{minutes}} min sans résultat.",
+      "markFailed": "Marquer en échec",
+      "markFailedIn": "Vous pourrez la marquer en échec dans {{minutes}} min.",
+      "markedFailed": "Commande marquée en échec",
+      "markFailedFailed": "Impossible de marquer la commande en échec"
+    }
   },
   "manualAssetModal": {
     "addTitle": "Ajouter un actif manuel",
@@ -3959,5 +4030,393 @@
       "forest_root_pdc_emulator": "Émulateur PDC de la racine de la forêt",
       "unknown": "Inconnu"
     }
+  },
+  "workloads": {
+    "loadFailed": "Impossible de charger les charges de travail de cet appareil.",
+    "retry": "Réessayer",
+    "agentTooOld": "Agent trop ancien — mettez à jour l’agent pour signaler les charges de travail.",
+    "noRuntimes": "Aucun runtime de conteneurs ou de VM détecté sur cet appareil.",
+    "runtimes": {
+      "docker": "Docker",
+      "podman": "Podman",
+      "hyperv": "Hyper-V",
+      "proxmox": "Proxmox VE",
+      "containerd": "containerd"
+    },
+    "version": "Version {{version}}",
+    "versionUnknown": "Version inconnue",
+    "detection": {
+      "absent": "Non installé",
+      "unknown": "Détection non concluante"
+    },
+    "status": {
+      "ok": "Collecte en cours",
+      "disabled": "La collecte est désactivée — activez l’inventaire des charges de travail dans une politique de configuration",
+      "unavailable": "Runtime non démarré",
+      "permission_denied": "Autorisation refusée",
+      "error": "Échec de la collecte",
+      "unsupported": "Non pris en charge sur cet appareil"
+    },
+    "detectOnly": "Détecté seulement — les charges de travail de ce runtime ne sont pas listées.",
+    "counts": "{{total}} charges de travail · {{running}} en cours · {{stopped}} arrêtées",
+    "partial": "Instantané partiel — certains détails n’ont pas pu être lus ; voici ce qui a été collecté.",
+    "truncated": "Affichage de {{reported}} sur {{observed}} charges de travail signalées par le runtime.",
+    "lastError": "Dernière erreur : {{error}}",
+    "lastCollected": "Dernière collecte {{time}}",
+    "empty": "Aucune charge de travail signalée.",
+    "columns": {
+      "name": "Nom",
+      "state": "État",
+      "image": "Image / OS invité",
+      "compose": "Projet Compose",
+      "started": "Démarré",
+      "imageStatus": "État de l'image"
+    },
+    "states": {
+      "running": "En cours",
+      "stopped": "Arrêtée",
+      "paused": "En pause",
+      "restarting": "Redémarrage",
+      "other": "Autre"
+    },
+    "policy": {
+      "title": "Inventaire des charges de travail",
+      "description": "Lister les conteneurs et les machines virtuelles sur les hôtes de conteneurs et de VM",
+      "offNote": "Les runtimes sont toujours détectés, mais la liste des charges de travail reste désactivée tant qu’une politique ne l’active pas.",
+      "enabled": "Lister les charges de travail",
+      "runtimesHeading": "Runtimes à lister",
+      "agentSupport": "Les options Hyper-V et Proxmox VE ne s’appliquent qu’aux agents qui incluent ces pilotes ; les agents plus anciens les ignorent.",
+      "interval": "Intervalle de collecte (minutes)",
+      "invalidInterval": "L’intervalle doit être un nombre entier de minutes entre {{min}} et {{max}}."
+    },
+    "imageStatus": {
+      "behind": "En retard",
+      "current": "À jour",
+      "pinned": "Épinglée",
+      "local": "Build local",
+      "not_found": "Tag introuvable",
+      "not_checked": "Non vérifiée"
+    },
+    "imageStatusReason": {
+      "pending": "Pas encore vérifiée",
+      "private": "Registre privé — identifiants requis",
+      "unsupported_registry": "Registre non pris en charge",
+      "error": "Échec de la vérification du registre — nouvelle tentative prévue",
+      "behind": "Une image plus récente est publiée pour ce tag",
+      "current": "Correspond au registre",
+      "pinned": "Épinglée à un digest — rien à comparer",
+      "local": "Construite localement — aucun digest de registre",
+      "not_found": "Le tag n'existe plus dans le registre"
+    },
+    "imageFilter": {
+      "label": "État de l'image",
+      "all": "Toutes",
+      "empty": "Aucune charge de travail ne correspond à cet état d'image."
+    }
+  },
+  "deviceEdrGenericSection": {
+    "title": "Autres fournisseurs EDR",
+    "loadError": "Certaines données des fournisseurs EDR n'ont pas pu être chargées.",
+    "duplicateNotice": "Lié par deux consoles : cet appareil apparaît dans plusieurs connexions {{provider}}.",
+    "openDetections": "Détections ouvertes",
+    "coverageHeading": "La couverture peut être incomplète",
+    "fields": {
+      "health": "État de santé",
+      "status": "Statut",
+      "isolation": "Isolement",
+      "agentVersion": "Version de l'agent",
+      "lastSeen": "Dernière activité"
+    },
+    "health": {
+      "healthy": "Sain",
+      "degraded": "Dégradé",
+      "unhealthy": "Défaillant",
+      "unknown": "Inconnu"
+    },
+    "online": {
+      "online": "En ligne",
+      "offline": "Hors ligne",
+      "unknown": "Inconnu"
+    },
+    "isolation": {
+      "isolated": "Isolé",
+      "not_isolated": "Non isolé",
+      "pending": "En attente",
+      "unknown": "Inconnu"
+    },
+    "severity": {
+      "critical": "Critique",
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "info": "Info",
+      "unknown": "Inconnue"
+    },
+    "detectionStatus": {
+      "open": "Ouverte",
+      "in_progress": "En cours",
+      "mitigated": "Atténuée",
+      "resolved": "Résolue",
+      "false_positive": "Faux positif",
+      "dismissed": "Ignorée",
+      "unknown": "Inconnu"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Isoler l’appareil",
+        "unisolate": "Lever l’isolement",
+        "scan": "Lancer une analyse",
+        "update_agent": "Mettre à jour l’agent"
+      },
+      "unavailable": "Non disponible",
+      "mfaRequired": "Vérifiez avec la MFA pour exécuter des actions de réponse",
+      "error": "Impossible de demander l’action de réponse.",
+      "requested": "{{action}} demandé pour {{device}}",
+      "inProgress": "Une autre action de réponse est déjà en cours pour cet appareil.",
+      "confirming": "Demandé — confirmation en cours auprès de {{vendor}}",
+      "reasonLabel": "Motif (facultatif)",
+      "confirm": {
+        "isolate": {
+          "title": "Isoler {{device}} ?",
+          "message": "{{vendor}} va isoler {{device}} : l’appareil perd l’accès au réseau, sauf vers {{vendor}}. Vous pourrez lever l’isolement plus tard."
+        },
+        "unisolate": {
+          "title": "Lever l’isolement de {{device}} ?",
+          "message": "{{vendor}} rétablira l’accès normal au réseau pour {{device}}."
+        }
+      }
+    },
+    "history": {
+      "heading": "Actions de réponse récentes",
+      "checking": "Vérification en cours",
+      "aiBadge": "IA",
+      "status": {
+        "queued": "En attente",
+        "submitted": "En cours",
+        "succeeded": "Réussie",
+        "failed": "Échec"
+      }
+    }
+  },
+  "endpointMessages": {
+    "dialogTitle": "Envoyer un message aux utilisateurs",
+    "sendAction": "Envoyer un message",
+    "fields": {
+      "title": "Titre",
+      "body": "Texte du message",
+      "severity": "Gravité",
+      "requiresAck": "Exiger un accusé de réception",
+      "expiry": "Expire"
+    },
+    "severity": {
+      "info": "Information",
+      "warning": "Avertissement",
+      "critical": "Critique"
+    },
+    "expiry": {
+      "h1": "1 heure",
+      "h4": "4 heures",
+      "h24": "24 heures",
+      "h72": "72 heures",
+      "untilClosed": "Jusqu'à la fermeture (7 jours max.)"
+    },
+    "preview": {
+      "heading": "Aperçu",
+      "sender": "De votre entreprise",
+      "footer": "Envoyé par votre fournisseur informatique",
+      "acknowledge": "Accuser réception"
+    },
+    "recipients": "Destinataires : {{count}} appareils",
+    "columns": {
+      "device": "Appareil",
+      "delivery": "Livraison"
+    },
+    "capability": {
+      "assist_card": "Carte Assist (session console) ou notification native de secours",
+      "native": "Notification native",
+      "unsupported": "Version de l'agent non prise en charge : ne sera pas livré"
+    },
+    "confirm": {
+      "text": "Ce message sera envoyé à {{count}} appareils. Vérifiez la carte exacte ci-dessous.",
+      "send": "Envoyer à {{count}} appareils"
+    },
+    "result": {
+      "summary": "{{queued}} en file, {{failed}} en échec",
+      "queued": "En file",
+      "failed": "Échec"
+    },
+    "actions": {
+      "send": "Envoyer le message",
+      "sending": "Envoi...",
+      "cancel": "Annuler",
+      "back": "Retour",
+      "close": "Fermer"
+    },
+    "errors": {
+      "send_failed": "Le message n'a pas pu être envoyé. Réessayez.",
+      "agent_unsupported": "L'agent de cet appareil ne prend pas encore en charge les messages.",
+      "no_permission": "Vous n'avez pas la permission d'envoyer des messages à cet appareil.",
+      "offline_rejected": "L'appareil est hors ligne et le message n'a pas été mis en file.",
+      "rate_limited": "Trop de messages envoyés récemment. Réessayez plus tard.",
+      "cap_exceeded": "Cet envoi dépasse la limite autorisée.",
+      "feature_disabled": "La messagerie des terminaux n'est pas activée pour cette organisation.",
+      "queue_failed": "Le message n'a pas pu être mis en file pour cet appareil.",
+      "in_progress": "Ce message est déjà en cours d'envoi. Patientez un instant, puis vérifiez le résultat.",
+      "unavailable": "L'envoi de messages est temporairement indisponible. Réessayez dans un instant.",
+      "no_devices_resolved": "Aucun appareil ne correspond à cette sélection.",
+      "idempotency_conflict": "Cet identifiant de message a déjà été utilisé pour un autre message. Modifiez le message puis renvoyez-le."
+    },
+    "issues": {
+      "html": "Le HTML n'est pas autorisé dans le corps du message.",
+      "images": "Les images ne sont pas autorisées dans le corps du message.",
+      "httpsLinks": "Les liens du corps du message doivent utiliser https.",
+      "referenceLinks": "Les liens de référence ne sont pas autorisés. Utilisez plutôt des liens en ligne.",
+      "titleHtml": "Le HTML n'est pas autorisé dans le titre.",
+      "titleLinks": "Les liens ne sont pas autorisés dans le titre.",
+      "invalid": "Le message contient du contenu non autorisé."
+    },
+    "history": {
+      "title": "Messages aux terminaux",
+      "description": "Messages envoyés aux personnes sur leurs appareils, et ce qu'il est advenu de chacun.",
+      "empty": "Aucun message n'a encore été envoyé.",
+      "loading": "Chargement...",
+      "loadFailed": "Impossible de charger les messages.",
+      "retry": "Réessayer",
+      "loadMore": "Charger plus",
+      "selectPrompt": "Sélectionnez un message pour voir les détails de livraison.",
+      "detailLoadFailed": "Impossible de charger ce message.",
+      "notFound": "Ce message est introuvable.",
+      "noAccess": "Vous n'avez pas l'autorisation de consulter les messages aux terminaux.",
+      "purgedTitle": "Contenu supprimé",
+      "purgedBody": "Le texte du message a été supprimé après 90 jours. L'historique de livraison est conservé.",
+      "purgedListTitle": "(contenu supprimé)",
+      "badgeRetracted": "Retiré",
+      "badgeAi": "IA",
+      "devicesLabel": "Appareils : {{count}}",
+      "fields": {
+        "body": "Contenu",
+        "deliveries": "Appareils",
+        "host": "Appareil",
+        "status": "Statut",
+        "surface": "Affiché dans",
+        "error": "Erreur",
+        "sent": "Envoyé",
+        "expires": "Expire",
+        "delivered": "Livré",
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "retracted": "Retiré",
+        "receipts": "Accusés",
+        "noReceipts": "Aucun",
+        "requiresAck": "Confirmation requise"
+      },
+      "receiptEvents": {
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "expired": "Expiré"
+      },
+      "surface": {
+        "assist": "Carte Assist",
+        "native": "Notification native"
+      },
+      "statuses": {
+        "queued": "En file",
+        "delivered": "Livré",
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "expired": "Expiré",
+        "retracted": "Retiré",
+        "failed": "Échec",
+        "superseded": "Remplacé"
+      },
+      "actions": {
+        "retract": "Retirer",
+        "retracting": "Retrait...",
+        "resend": "Renvoyer aux échecs ou expirés",
+        "resending": "Renvoi..."
+      },
+      "retractConfirm": {
+        "title": "Retirer ce message ?",
+        "message": "Il sera retiré des appareils qui l'affichent. Les appareils qui ne l'ont pas encore reçu ne le recevront pas.",
+        "confirm": "Retirer"
+      },
+      "messages": {
+        "retractSuccess": "Message retiré.",
+        "retractPartial": "Message retiré, mais {{count}} appareils n'ont pas pu être mis à jour.",
+        "retractFailed": "Impossible de retirer le message.",
+        "resendSuccess": "Message renvoyé. Appareils : {{count}}.",
+        "resendFailed": "Impossible de renvoyer le message."
+      },
+      "resendErrors": {
+        "retracted": "Ce message a été retiré et ne peut pas être renvoyé.",
+        "body_purged": "Le texte du message a été supprimé, il ne peut donc pas être renvoyé.",
+        "in_progress": "Un envoi de ce message est déjà en cours.",
+        "idempotency_conflict": "Ce renvoi a déjà été soumis avec des détails différents.",
+        "nothing_to_resend": "Aucun appareil en échec ou expiré à qui renvoyer."
+      }
+    }
+  },
+  "endpointChat": {
+    "tabLabel": "Chat en direct",
+    "tabTitle": "Chat en direct avec la personne devant cet appareil",
+    "unsupported": "Pas de chat sur cet appareil. Le chat nécessite Breeze Assist dans une session console Windows.",
+    "footer": "L'utilisateur le voit comme une fenêtre de chat. Un chat n'accorde jamais d'accès à distance.",
+    "startHeading": "Démarrer un chat",
+    "firstMessageLabel": "Premier message",
+    "startChat": "Démarrer le chat",
+    "starting": "Démarrage...",
+    "recentHeading": "Chats récents",
+    "empty": "Aucun chat avec cet appareil pour le moment.",
+    "loadFailed": "Impossible de charger les chats.",
+    "loading": "Chargement...",
+    "back": "Retour aux chats",
+    "endChat": "Terminer le chat",
+    "ending": "Fin du chat...",
+    "messageLabel": "Votre message",
+    "send": "Envoyer",
+    "sending": "Envoi...",
+    "openExisting": "Ouvrir le chat existant",
+    "user": "Utilisateur",
+    "technician": "Technicien",
+    "fromUser": "{{name}} (utilisateur)",
+    "undelivered": "Non remis",
+    "status": {
+      "opening": "En attente que l'utilisateur voie la fenêtre de chat...",
+      "open": "Chat ouvert",
+      "closed": "Ce chat est terminé.",
+      "expired": "Ce chat s'est terminé après 30 minutes d'inactivité.",
+      "failed": "Le chat n'a pas pu être démarré."
+    },
+    "statusShort": {
+      "opening": "Ouverture",
+      "open": "Ouvert",
+      "closed": "Terminé",
+      "expired": "Expiré",
+      "failed": "Échec"
+    },
+    "errors": {
+      "chat_requires_assist": "Le chat nécessite Breeze Assist dans une session console Windows.",
+      "agent_unsupported": "L'agent de cet appareil ne prend pas encore en charge le chat.",
+      "device_offline": "L'appareil est hors ligne. Réessayez lorsqu'il sera en ligne.",
+      "platform_unsupported": "Le chat n'est disponible que sur les appareils Windows.",
+      "conversation_active": "Un chat avec cet appareil est déjà en cours.",
+      "rate_limited": "Trop de chats ou de messages envoyés récemment. Réessayez plus tard.",
+      "open_timeout": "L'appareil n'a pas répondu à temps ; le chat n'a donc pas démarré.",
+      "chat_window_failed": "L'appareil n'a pas pu afficher la fenêtre de chat.",
+      "conversation_not_open": "Ce chat n'est plus ouvert.",
+      "feature_disabled": "Le chat n'est pas activé pour cette organisation.",
+      "no_permission": "Vous n'avez pas l'autorisation de discuter avec cet appareil.",
+      "device_not_found": "Cet appareil est introuvable.",
+      "generic": "Un problème est survenu avec le chat. Réessayez.",
+      "open_failed": "Le chat n'a pas pu être démarré. Réessayez.",
+      "send_failed": "Le message n'a pas pu être envoyé. Réessayez.",
+      "close_failed": "Le chat n'a pas pu être terminé. Réessayez."
+    },
+    "updatesPaused": "Mises à jour en direct suspendues — nouvelle tentative en cours",
+    "closeNotAnnounced": "Le chat est fermé ici. La fenêtre de chat de l'utilisateur peut rester ouverte jusqu'à la reconnexion de son appareil ou jusqu'à sa réponse.",
+    "unavailable": "Ce chat n'est plus disponible"
   }
 }

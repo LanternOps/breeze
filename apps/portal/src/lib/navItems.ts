@@ -3,6 +3,8 @@ import type { BrandingConfig } from './api';
 export interface PortalNavItem {
   label: string;
   href: string;
+  /** Count shown beside the label, e.g. requests waiting on the customer. */
+  badge?: number;
 }
 
 /**
@@ -44,8 +46,10 @@ export function buildPortalNavItems(
     | 'enableService'
     | 'enableDocuments'
     | 'enableNetworkVisibility'
+    | 'canEditTrustPage'
   >,
-  paymentMethodsAvailable = false
+  paymentMethodsAvailable = false,
+  approvalsPendingCount = 0
 ): PortalNavItem[] {
   return [
     branding.enableDashboard === true
@@ -57,11 +61,24 @@ export function buildPortalNavItems(
     branding.enableTickets !== false
       ? { href: '/tickets', label: 'Support' }
       : null,
+    // Customer work approval (#8200) rides the Support flag. The badge counts
+    // requests the signed-in customer can decide, supplied by the layout.
+    branding.enableTickets !== false
+      ? approvalsPendingCount > 0
+        ? { href: '/approvals', label: 'Approvals', badge: approvalsPendingCount }
+        : { href: '/approvals', label: 'Approvals' }
+      : null,
     branding.enableDevices === true || branding.enableSelfService !== false
       ? { href: '/devices', label: 'Devices' }
       : null,
     branding.enableSecurity === true
       ? { href: '/security', label: 'Security' }
+      : null,
+    // Trust Center W3d: a per-user permission (org flag + org-scoped admin
+    // contact), not a visibility flag, so it does not follow enableSecurity.
+    // Fail closed: only an explicit true earns the slot.
+    branding.canEditTrustPage === true
+      ? { href: '/security/trust-page', label: 'Trust page' }
       : null,
     branding.enableBackups === true
       ? { href: '/backups', label: 'Backups' }

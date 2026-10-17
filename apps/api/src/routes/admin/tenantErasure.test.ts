@@ -22,8 +22,14 @@ vi.mock('../../services/clientIp', () => ({
   getTrustedClientIpOrUndefined: vi.fn(() => '127.0.0.1'),
 }));
 
-const { legalHoldMock } = vi.hoisted(() => ({
+const { legalHoldMock, findEvidenceHoldMock } = vi.hoisted(() => ({
   legalHoldMock: vi.fn(async () => false),
+  findEvidenceHoldMock: vi.fn(async (_orgId: string): Promise<null | { survivorOrgId: string; mergeEventId: string; reason: string }> => null),
+}));
+
+vi.mock('../../services/orgEvidenceHold', () => ({
+  EVIDENCE_HOLD_DEFERRED_ACTION: 'tenant.erasure.deferred_evidence_hold',
+  findEvidenceHold: findEvidenceHoldMock,
 }));
 
 vi.mock('../../services/tenantCascade', () => ({
@@ -144,6 +150,42 @@ describe('POST /admin/tenant-erasure', () => {
     vi.clearAllMocks();
     orgLookup.current = { id: ORG_ID, name: 'Acme Inc', partnerId: 'p-1' };
     legalHoldMock.mockResolvedValue(false);
+    findEvidenceHoldMock.mockResolvedValue(null);
+  });
+
+  it('enqueues a held org (erasure is scoped), audits what the hold retains, and says so in the 202', async () => {
+    findEvidenceHoldMock.mockResolvedValue({ survivorOrgId: 'survivor-1', mergeEventId: 'merge-evt-1', reason: 'pam_evidence' });
+    const app = buildApp(platformAdminAuth);
+    const res = await app.request('/admin/tenant-erasure', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID, confirmEmail: 'admin@breeze.test' }),
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.status).toBe('accepted');
+    expect(body.evidenceHold).toEqual({ retained: true, survivorOrgId: 'survivor-1' });
+    expect(findEvidenceHoldMock).toHaveBeenCalledWith(ORG_ID);
+    expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID, source: 'platform_admin' }));
+    expect(createAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'tenant.erasure.deferred_evidence_hold',
+        resourceId: ORG_ID,
+        result: 'success',
+        details: expect.objectContaining({
+          stage: 'admin_request',
+          survivorOrgId: 'survivor-1',
+          mergeEventId: 'merge-evt-1',
+          holdReason: 'pam_evidence',
+        }),
+      }),
+    );
+    expect(createAuditLogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'tenant.erasure.enqueued',
+        details: expect.objectContaining({ evidenceHoldScoped: true }),
+      }),
+    );
   });
 
   it('returns 409 and does not enqueue when the org has a snapshot under legal hold', async () => {

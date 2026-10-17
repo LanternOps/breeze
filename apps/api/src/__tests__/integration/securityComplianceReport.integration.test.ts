@@ -3,7 +3,7 @@ import './setup';
 import { describe, expect, it } from 'vitest';
 
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { devices, deviceVulnerabilities, vulnerabilities } from '../../db/schema';
+import { devices, deviceVulnerabilities, securityStatus, vulnerabilities } from '../../db/schema';
 import { generateSecurityCompliancePostureReport } from '../../services/securityComplianceReport';
 import { siteScopeFingerprint, type OrgReportExecutionAuthority } from '../../services/siteScope';
 import { loadOpenVulnerabilityCounts } from '../../services/securityComplianceReportVulnerabilities';
@@ -142,5 +142,48 @@ describe('security compliance report vulnerability isolation', () => {
     );
     expect(vulnerabilityCounts.get(seeded.deviceA)).toEqual({ high: 1, critical: 0 });
     expect(vulnerabilityCounts.has(seeded.deviceB)).toBe(false);
+  });
+
+  // Spec §19.6: a decommissioned device is out of the compliance population,
+  // even when it still has a security_status row.
+  runDb('leaves a decommissioned device out of rows and deviceCount', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const stamp = Date.now();
+    await withSystemDbAccessContext(async () => {
+      const inserted = await db
+        .insert(devices)
+        .values([
+          { orgId: env.organization.id, siteId: env.site.id, agentId: `posture-live-${stamp}`, hostname: 'posture-live', osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: 'test', status: 'online' },
+          { orgId: env.organization.id, siteId: env.site.id, agentId: `posture-decom-${stamp}`, hostname: 'posture-decom', osType: 'windows', osVersion: '11', architecture: 'x86_64', agentVersion: 'test', status: 'decommissioned' },
+        ])
+        .returning({ id: devices.id });
+      await db.insert(securityStatus).values(inserted.map((d) => ({
+        orgId: env.organization.id,
+        deviceId: d.id,
+        provider: 'windows_defender' as const,
+        realTimeProtection: true,
+        encryptionStatus: 'encrypted',
+        firewallEnabled: true,
+      })));
+    });
+
+    const result = await withDbAccessContext(
+      { scope: 'organization', orgId: env.organization.id, accessibleOrgIds: [env.organization.id], userId: env.user.id },
+      async () => {
+        const scope = { version: 1 as const, kind: 'unrestricted' as const, orgId: env.organization.id };
+        return generateSecurityCompliancePostureReport(env.organization.id, { includeCis: false }, {
+          principalKind: 'user',
+          scope,
+          principalUserId: env.user.id,
+          capturedAt: new Date(),
+          fingerprint: siteScopeFingerprint(scope),
+        });
+      },
+    );
+
+    const hostnames = (result.rows as Array<{ hostname: string }>).map((r) => r.hostname);
+    expect(hostnames).toContain('posture-live');
+    expect(hostnames).not.toContain('posture-decom');
+    expect((result.summary as { deviceCount: number }).deviceCount).toBe(1);
   });
 });

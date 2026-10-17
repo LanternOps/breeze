@@ -169,6 +169,10 @@ vi.mock('../../jobs/edrProviderSync', () => ({
   enqueueEdrSync: (id: string, stream: string) => enqueueMock(id, stream),
 }));
 
+const lastHint = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => new Map<string, string>()));
+vi.mock('../../services/edrProviders/hints', () => ({ readLastEdrHintAt: lastHint }));
+vi.mock('../../services/redis', () => ({ getRedis: () => ({ fake: 'redis' }) }));
+
 import { writeRouteAudit } from '../../services/auditEvents';
 import { runOutsideDbContext } from '../../db';
 import { edrConnectionRoutes } from './connections';
@@ -242,6 +246,34 @@ describe('EDR connection routes', () => {
     it('a selected-org partner user can read', async () => {
       authState.partnerOrgAccess = 'selected';
       expect((await app.request('/edr/connections')).status).toBe(200);
+    });
+
+    it('W03 PR-B: rows carry push state, pushSupported from the adapter, and lastHintAt (Redis, else the pending marker)', async () => {
+      const pending = new Date('2026-10-16T09:00:00.000Z');
+      dbState.connections = [
+        connectionRow({ pushEnabled: true, pushRegisteredAt: pending, pendingHintAt: null }),
+        connectionRow({ id: 'other', provider: 'bitdefender', pushEnabled: true, pendingHintAt: pending }),
+        connectionRow({ id: 'gone', provider: 'retired', pushEnabled: false, pendingHintAt: null }),
+      ];
+      lastHint.mockResolvedValue(new Map([[CONNECTION_ID, '2026-10-16T10:00:00.000Z']]));
+      Object.assign(adapter, { registerPush: vi.fn(), verifyWebhook: vi.fn() });
+      try {
+        const body = await (await app.request('/edr/connections')).json();
+        expect(body.data[0]).toMatchObject({ pushSupported: true, pushEnabled: true, lastHintAt: '2026-10-16T10:00:00.000Z' });
+        expect(body.data[1]).toMatchObject({ pushSupported: true, lastHintAt: pending.toISOString() });
+        expect(body.data[2]).toMatchObject({ pushSupported: false, lastHintAt: null });
+        expect(lastHint).toHaveBeenCalledWith([CONNECTION_ID, 'other', 'gone'], { fake: 'redis' });
+        expect(JSON.stringify(body)).not.toMatch(/webhookSecretEncrypted/);
+      } finally {
+        delete (adapter as Record<string, unknown>).registerPush;
+        delete (adapter as Record<string, unknown>).verifyWebhook;
+      }
+    });
+
+    it('W03 PR-B: an adapter without push -> pushSupported false', async () => {
+      dbState.connections = [connectionRow()];
+      const body = await (await app.request('/edr/connections')).json();
+      expect(body.data[0]).toMatchObject({ pushSupported: false });
     });
   });
 
@@ -379,6 +411,45 @@ describe('EDR connection routes', () => {
       expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain('rotated-key');
     });
 
+    it('credentials resolving to a DIFFERENT vendorRootId -> 409 VENDOR_ROOT_MISMATCH, nothing written', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '2000', rootName: 'Other Console', rootType: 'partner', tenantCount: 1, capabilityNotes: [],
+      };
+      const res = await patch({ credentials: { apiKey: 'other-console-key' } });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        code: 'VENDOR_ROOT_MISMATCH', storedVendorRootId: '1000', newVendorRootId: '2000',
+      });
+      expect(dbState.updated).toHaveLength(0);
+      expect(encryptMock).not.toHaveBeenCalled();
+    });
+
+    it('baseUrl-only change resolving to a DIFFERENT vendorRootId -> 409, nothing written', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '2000', rootName: 'Other Console', rootType: 'partner', tenantCount: 1, capabilityNotes: [],
+      };
+      const res = await patch({ baseUrl: ACCESS_URL });
+      expect(res.status).toBe(409);
+      expect(dbState.updated).toHaveLength(0);
+    });
+
+    it('credentials resolving to the SAME vendorRootId still rotate', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '1000', rootName: 'OliveTech', rootType: 'partner', tenantCount: 3, capabilityNotes: [],
+      };
+      expect((await patch({ credentials: { apiKey: 'k2' } })).status).toBe(200);
+      expect(dbState.updated).toHaveLength(1);
+    });
+
+    it('a stored connection with no vendorRootId yet may adopt the first resolved root', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: null })];
+      expect((await patch({ credentials: { apiKey: 'k2' } })).status).toBe(200);
+      expect(dbState.updated[0]).toMatchObject({ vendorRootId: '1000' });
+    });
+
     it('failed rotation -> 422 and the stored credential is untouched', async () => {
       dbState.connections = [connectionRow()];
       adapterState.test = { ok: false, error: 'rejected', reauth: true };
@@ -402,8 +473,67 @@ describe('EDR connection routes', () => {
       expect(dbState.updated[0]).toMatchObject({ name: 'Renamed' });
     });
 
+    it.each(['detectionIntervalMinutes', 'inventoryIntervalMinutes'])(
+      '%s: 3 and 4 are 400 (DB CHECK minimum is 5), 5 is 200 (#8666)',
+      async (field) => {
+        dbState.connections = [connectionRow()];
+        for (const bad of [1, 3, 4]) {
+          const res = await patch({ [field]: bad });
+          expect(res.status).toBe(400);
+        }
+        expect((await patch({ [field]: 5 })).status).toBe(200);
+      },
+    );
+
     it('404 for an unknown connection', async () => {
       expect((await patch({ name: 'x' })).status).toBe(404);
+    });
+
+    describe('W03 actionsEnabled (#8167)', () => {
+      it('turns actions on without a vendor re-test and writes a dedicated audit', async () => {
+        dbState.connections = [connectionRow({ actionsEnabled: false })];
+        const res = await patch({ actionsEnabled: true });
+        expect(res.status).toBe(200);
+        expect(testConnection).not.toHaveBeenCalled();
+        expect(dbState.updated[0]).toMatchObject({ actionsEnabled: true });
+        const actions = vi.mocked(writeRouteAudit).mock.calls.map((c) => (c[1] as { action: string }).action);
+        expect(actions).toContain('edr.connection.actions_enabled');
+      });
+
+      it('turning actions off audits actions_disabled', async () => {
+        dbState.connections = [connectionRow({ actionsEnabled: true })];
+        expect((await patch({ actionsEnabled: false })).status).toBe(200);
+        expect(dbState.updated[0]).toMatchObject({ actionsEnabled: false });
+        const actions = vi.mocked(writeRouteAudit).mock.calls.map((c) => (c[1] as { action: string }).action);
+        expect(actions).toContain('edr.connection.actions_disabled');
+      });
+
+      it('a non-boolean actionsEnabled is a 400', async () => {
+        dbState.connections = [connectionRow()];
+        expect((await patch({ actionsEnabled: 'yes' })).status).toBe(400);
+        expect(dbState.updated).toHaveLength(0);
+      });
+
+      it('selected-org partner user, org token and missing MFA are each refused with nothing written', async () => {
+        dbState.connections = [connectionRow()];
+        authState.partnerOrgAccess = 'selected';
+        expect((await patch({ actionsEnabled: true })).status).toBe(403);
+        authState.partnerOrgAccess = 'all';
+        authState.scope = 'organization';
+        authState.orgId = '11111111-1111-4111-8111-111111111111';
+        expect((await patch({ actionsEnabled: true })).status).toBe(403);
+        authState.scope = 'partner';
+        authState.orgId = null;
+        gates.mfa = true;
+        expect((await patch({ actionsEnabled: true })).status).toBe(403);
+        expect(dbState.updated).toHaveLength(0);
+      });
+
+      it('GET /edr/connections exposes actionsEnabled', async () => {
+        dbState.connections = [connectionRow({ actionsEnabled: true })];
+        const body = await (await app.request('/edr/connections')).json();
+        expect(body.data[0]).toMatchObject({ actionsEnabled: true });
+      });
     });
   });
 
@@ -415,6 +545,17 @@ describe('EDR connection routes', () => {
       expect(await res.json()).toMatchObject({ success: true, tenantCount: 3 });
       expect(ctxState.testCalledInContext).toBe(false);
       expect(dbState.updated[0]).toMatchObject({ status: 'connected', vendorRootId: '1000' });
+    });
+
+    it('a test that resolves a DIFFERENT vendorRootId -> 409 and does not overwrite the stored root', async () => {
+      dbState.connections = [connectionRow({ vendorRootId: '1000' })];
+      adapterState.test = {
+        ok: true, rootId: '2000', rootName: 'Other Console', rootType: 'partner', tenantCount: 1, capabilityNotes: [],
+      };
+      const res = await post(app, `/edr/connections/${CONNECTION_ID}/test`, {});
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: 'VENDOR_ROOT_MISMATCH' });
+      expect(dbState.updated).toHaveLength(0);
     });
 
     it('a reauth failure flips status to reauth_required; a transient one persists nothing', async () => {

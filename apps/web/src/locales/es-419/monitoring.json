@@ -192,7 +192,8 @@
     "script": "Verificación de script",
     "network_check": "Verificación de red",
     "hardware_health": "Estado del hardware",
-    "time_sync": "Sincronización de hora"
+    "time_sync": "Sincronización de hora",
+    "container_image_currency": "Actualización de imágenes de contenedor"
   },
   "fields": {
     "operator": "Comparación",
@@ -538,6 +539,7 @@
       "more": "Cargar más",
       "empty": "No hay historial de conversión.",
       "system": "Sistema",
+      "unknownUser": "Usuario desconocido",
       "reverted": "Revertido",
       "deadline": "Deshacer no está disponible cuando el retiro de alertas heredadas elimina el evaluador de origen."
     },
@@ -646,6 +648,9 @@
           "policy_not_applied": "No se aplicó la política de hora",
           "policy_conflict_gpo": "Una directiva de grupo controla la configuración de hora"
         }
+      },
+      "container_image_currency": {
+        "minDaysBehind": "Días mínimos desactualizada"
       }
     }
   },

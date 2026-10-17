@@ -122,6 +122,8 @@ vi.mock('../../services/permissions', () => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+const describeRows = vi.hoisted(() => vi.fn());
+vi.mock('../../services/edrProviders/actionAvailability', () => ({ describeEndpointActionsForRows: describeRows }));
 
 import { writeRouteAudit } from '../../services/auditEvents';
 import { edrEndpointRoutes } from './endpoints';
@@ -147,6 +149,8 @@ describe('EDR endpoint routes', () => {
     dbState.updates = [];
     dbState.throwOnEndpointUpdate = null;
     dbState.capturedListWhere = [];
+    describeRows.mockImplementation(async (_auth: unknown, _perms: unknown, rows: Array<{ id: string }>) =>
+      new Map(rows.map((r) => [r.id, [{ action: 'isolate', available: false, reason: 'Response actions are turned off for this EDR connection' }]])));
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth' as never, {
@@ -171,6 +175,22 @@ describe('EDR endpoint routes', () => {
       const res = await app.request('/edr/endpoints?state=unlinked');
       expect(res.status).toBe(200);
       expect((await res.json()).data).toHaveLength(1);
+    });
+
+    it('W03: each row carries its action availability with reasons (no vendor call)', async () => {
+      dbState.rows = [{ id: ENDPOINT_ID, hostname: 'ws-1', connectionId: 'c', tenantId: 't' }];
+      permsState.value = { allowedSiteIds: [SITE_OK] };
+      const body = await (await app.request('/edr/endpoints')).json();
+      expect(body.data[0].actions).toEqual([
+        { action: 'isolate', available: false, reason: 'Response actions are turned off for this EDR connection' },
+      ]);
+      // The caller's identity and site permissions are what availability is computed for.
+      expect(describeRows).toHaveBeenCalledWith(expect.objectContaining({ scope: 'partner' }), { allowedSiteIds: [SITE_OK] }, dbState.rows);
+    });
+
+    it('W03: no rows → no availability lookup', async () => {
+      await app.request('/edr/endpoints');
+      expect(describeRows).not.toHaveBeenCalled();
     });
 
     it('rejects a malformed state / connectionId instead of ignoring them', async () => {
@@ -207,6 +227,16 @@ describe('EDR endpoint routes', () => {
     it('is gated on devices:read', async () => {
       gates.permission = true;
       expect((await app.request('/edr/endpoints')).status).toBe(403);
+    });
+
+    // #8166: the device panel reads only the rows linked to one device.
+    it('?deviceId narrows to that device, still under the org scope; malformed is a 400', async () => {
+      const res = await app.request(`/edr/endpoints?orgId=${ORG_ID}&deviceId=${DEVICE_ID}`);
+      expect(res.status).toBe(200);
+      const text = flatten(dbState.capturedListWhere[0]);
+      expect(text).toContain(DEVICE_ID);
+      expect(text).toContain(ORG_ID);
+      expect((await app.request('/edr/endpoints?deviceId=nope')).status).toBe(400);
     });
   });
 

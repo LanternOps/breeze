@@ -14,6 +14,9 @@ export interface Features {
   /** The server's PRE_ASSIGNMENT_ENROLLMENT_ENABLED platform switch. Off ⇒
    *  the Unassigned Devices nav entry and page are hidden. */
   preAssignmentEnrollment: boolean;
+  /** The server's CALLER_VERIFICATION_ENABLED switch (#6354). Off ⇒ every
+   *  caller-verification surface stays unmounted and makes no requests. */
+  callerVerification: boolean;
 }
 
 export interface CfAccessLoginConfig {
@@ -42,7 +45,7 @@ interface FeaturesState {
 // flags are off by default (decision D2). An unreachable or older /config
 // (missing the field) must hide the "Delegate to Operator" button, never
 // show it.
-const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false };
+const DEFAULT_FEATURES: Features = { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false };
 const DEFAULT_CF_ACCESS: CfAccessLoginConfig = { enabled: false };
 // Default closed: until /config confirms registration is open we hide the
 // registration UI rather than flash a link that may be disabled (#1308).
@@ -85,6 +88,8 @@ export const useFeaturesStore = create<FeaturesState>()((set, get) => ({
           toolSources: !!data.features?.toolSources,
           // Default CLOSED: an older or unreachable /config hides the surface.
           preAssignmentEnrollment: data.features?.preAssignmentEnrollment === true,
+          // Default CLOSED: only an exact boolean true mounts the feature.
+          callerVerification: data.features?.callerVerification === true,
         },
         cfAccessLogin: {
           enabled: !!data.cfAccessLogin?.enabled,

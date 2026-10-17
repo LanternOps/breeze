@@ -55,7 +55,9 @@ import {
   commitDesktopStartIntent,
   formatDesktopGeneration,
   startIntentDenialCode,
+  startIntentDenialMessage,
 } from '../../services/remoteDesktopStartIntent';
+import { releaseDesktopStartInFlight } from '../../services/desktopStartInFlight';
 import { revokeViewerSession } from '../../services/viewerTokenRevocation';
 import { captureException, captureMessage } from '../../services/sentry';
 import { ACTIVE_REMOTE_SESSION_STATUSES, teardownDisconnectedSessions } from '../../services/remoteSessionTeardown';
@@ -1105,85 +1107,103 @@ sessionRoutes.post(
           code: 'SESSION_TERMINAL',
         }, 409);
       }
+      if (startIntent.reason === 'start_in_flight') {
+        // #8947: a concurrent second offer for a start still waiting on its
+        // answer — refused, not superseded (see the viewer-token twin).
+        return c.json({
+          error: startIntentDenialMessage(startIntent.reason),
+          code: startIntentDenialCode(startIntent.reason),
+        }, 409);
+      }
       return jsonError(c, 409, ERROR_CODES.CONFLICT, 'Session state changed while submitting offer');
     }
 
-    const startGeneration = startIntent.generation;
+    // Every exit below that does not hand the start to the agent — a refusal,
+    // an unreachable agent, or a throw — drops this start's in-flight marker,
+    // so the viewer's retry is not refused as a duplicate of a start the
+    // agent never received (#8947).
+    let dispatched = false;
+    try {
+      const startGeneration = startIntent.generation;
 
-    await logSessionAudit(
-      'session_offer_submitted',
-      auth.user.id,
-      device.orgId,
-      {
-        sessionId,
-        type: session.type,
-        startCommandId,
-        promptMode,
-        startGeneration: formatDesktopGeneration(startGeneration),
-      },
-      getTrustedClientIpOrUndefined(c)
-    );
+      await logSessionAudit(
+        'session_offer_submitted',
+        auth.user.id,
+        device.orgId,
+        {
+          sessionId,
+          type: session.type,
+          startCommandId,
+          promptMode,
+          startGeneration: formatDesktopGeneration(startGeneration),
+        },
+        getTrustedClientIpOrUndefined(c)
+      );
 
-    // Fail-closed revocation lease. Without a lease-capable agent there is no
-    // way to end this peer-to-peer session once authorization changes, so the
-    // start is refused rather than run unrevokable.
-    const leaseResult = await prepareRevocationLeaseForStart(sessionId);
-    if (!leaseResult.ok) {
-      if (leaseResult.reason === 'agent_upgrade_required') {
+      // Fail-closed revocation lease. Without a lease-capable agent there is no
+      // way to end this peer-to-peer session once authorization changes, so the
+      // start is refused rather than run unrevokable.
+      const leaseResult = await prepareRevocationLeaseForStart(sessionId);
+      if (!leaseResult.ok) {
+        if (leaseResult.reason === 'agent_upgrade_required') {
+          return c.json({
+            error: AGENT_UPGRADE_REQUIRED_MESSAGE,
+            code: AGENT_UPGRADE_REQUIRED_CODE,
+          }, 503);
+        }
         return c.json({
-          error: AGENT_UPGRADE_REQUIRED_MESSAGE,
-          code: AGENT_UPGRADE_REQUIRED_CODE,
+          error: 'Unable to authorize this remote session right now. Please try again.',
+          code: 'lease_unavailable',
         }, 503);
       }
-      return c.json({
-        error: 'Unable to authorize this remote session right now. Please try again.',
-        code: 'lease_unavailable',
-      }, 503);
-    }
 
-    // Re-read generation + phase immediately before publication. An End that
-    // committed while the lease was being minted supersedes this start, and the
-    // command must not go out at all. This narrows the window to microseconds;
-    // the endpoint fence (W04/W05) is what closes it.
-    const stillCurrent = await assertDesktopStartIntentCurrent(sessionId, startGeneration);
-    if (!stillCurrent.ok) {
-      return c.json({
-        error: 'This session was ended while the stream was starting',
-        code: startIntentDenialCode(stillCurrent.reason),
-      }, 409);
-    }
-
-    const agentReachable = sendCommandToAgent(device.agentId, {
-      id: startCommandId,
-      type: 'start_desktop',
-      payload: {
-        sessionId,
-        startGeneration: formatDesktopGeneration(startGeneration),
-        offer: data.offer,
-        iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
-        clipboard: desktopPolicy.clipboard,
-        idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
-        maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
-        revocationLease: leaseResult.lease,
-        ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
-        ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
-        ...(gpuVendor ? { gpuVendor } : {}),
-        ...(prompt ? { prompt } : {})
+      // Re-read generation + phase immediately before publication. An End that
+      // committed while the lease was being minted supersedes this start, and the
+      // command must not go out at all. This narrows the window to microseconds;
+      // the endpoint fence (W04/W05) is what closes it.
+      const stillCurrent = await assertDesktopStartIntentCurrent(sessionId, startGeneration);
+      if (!stillCurrent.ok) {
+        return c.json({
+          error: 'This session was ended while the stream was starting',
+          code: startIntentDenialCode(stillCurrent.reason),
+        }, 409);
       }
-    });
 
-    if (!agentReachable) {
-      console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
-      // 503, not 502: the device is temporarily unreachable, which is exactly
-      // what 503 means — and unlike 502 the body survives Cloudflare.
-      return jsonError(c, 503, ERROR_CODES.DEVICE_UNREACHABLE, 'Agent is not currently connected. Please verify the device is online and try again.');
+      const agentReachable = sendCommandToAgent(device.agentId, {
+        id: startCommandId,
+        type: 'start_desktop',
+        payload: {
+          sessionId,
+          startGeneration: formatDesktopGeneration(startGeneration),
+          offer: data.offer,
+          iceServers: getIceServers({ sessionId, userId: session.userId, deviceId: session.deviceId }),
+          clipboard: desktopPolicy.clipboard,
+          idleTimeoutMinutes: desktopPolicy.idleTimeoutMinutes,
+          maxSessionDurationHours: desktopPolicy.maxSessionDurationHours,
+          revocationLease: leaseResult.lease,
+          ...(data.displayIndex != null ? { displayIndex: data.displayIndex } : {}),
+          ...(data.targetSessionId != null ? { targetSessionId: data.targetSessionId } : {}),
+          ...(gpuVendor ? { gpuVendor } : {}),
+          ...(prompt ? { prompt } : {})
+        }
+      });
+
+      if (!agentReachable) {
+        console.warn(`[Remote] Agent ${device.agentId} not connected, cannot send start_desktop for session ${sessionId}`);
+        // 503, not 502: the device is temporarily unreachable, which is exactly
+        // what 503 means — and unlike 502 the body survives Cloudflare.
+        return jsonError(c, 503, ERROR_CODES.DEVICE_UNREACHABLE, 'Agent is not currently connected. Please verify the device is online and try again.');
+      }
+      dispatched = true;
+
+      return c.json({
+        id: sessionId,
+        status: 'connecting',
+        webrtcOffer: data.offer,
+      });
+    } finally {
+      if (!dispatched) await releaseDesktopStartInFlight(sessionId, startCommandId);
     }
-
-    return c.json({
-      id: sessionId,
-      status: 'connecting',
-      webrtcOffer: data.offer,
-    });
   }
 );
 

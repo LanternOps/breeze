@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -256,10 +257,15 @@ func TestUploadPool_StagedBytesBudgetBoundsConcurrentUploads(t *testing.T) {
 
 // A fence refusal that cannot be waited out ends the run with
 // errWriterStillActive, and only after every other worker has returned.
+//
+// Deterministic: f00 and f01 finish at once, which admits f04 and f05 behind
+// the f02 head; f03..f05 block until the run cancels them. f02's refusal is
+// held until those three are in flight (#8490: refused at once, the run
+// could end before any of them reached the provider, leaving peak at 1).
 func TestUploadPool_WriterStillActiveDrainsWorkers(t *testing.T) {
 	defer setUploadConcurrencyForTest(4)()
 	files := poolFiles(t, 10)
-	provider := &stuckFenceProvider{poolProvider: newPoolProvider()}
+	provider := &stuckFenceProvider{poolProvider: newPoolProvider(), refuseOnceActive: 3}
 	provider.ignoresCancel = true
 	provider.hold = func(ctx context.Context, remotePath string) error {
 		if poolKeyIs(remotePath, "f00") || poolKeyIs(remotePath, "f01") {
@@ -290,11 +296,18 @@ func TestUploadPool_WriterStillActiveDrainsWorkers(t *testing.T) {
 }
 
 // stuckFenceProvider refuses f02 as an earlier writer's, and its fence never
-// opens.
-type stuckFenceProvider struct{ *poolProvider }
+// opens. With refuseOnceActive set, the refusal waits until that many other
+// file uploads are in flight, so the run ends with uploads to drain.
+type stuckFenceProvider struct {
+	*poolProvider
+	refuseOnceActive int
+}
 
 func (p *stuckFenceProvider) UploadContext(ctx context.Context, localPath, remotePath string) error {
 	if poolKeyIs(remotePath, "f02") {
+		if p.refuseOnceActive > 0 && !p.waitForActive(p.refuseOnceActive, 10*time.Second) {
+			return fmt.Errorf("test setup: %d other uploads never in flight", p.refuseOnceActive)
+		}
 		return fmt.Errorf("storage session: %w", providers.ErrPreviousWriterActive)
 	}
 	return p.poolProvider.UploadContext(ctx, localPath, remotePath)
@@ -306,4 +319,81 @@ func (p *stuckFenceProvider) Upload(localPath, remotePath string) error {
 
 func (p *stuckFenceProvider) AwaitWriteAccess(context.Context) error {
 	return errors.New("an earlier writer still holds the snapshot")
+}
+
+// recordMeasuredForTest wraps statBeforeUpload, the first thing an upload
+// worker does, so a test can see which files were handed to a worker at all,
+// whether or not the upload then reached the provider. drainUploads waits for
+// every worker before createSnapshotWithProgress returns, so the record is
+// complete when the run is.
+func recordMeasuredForTest(t *testing.T) (measured func(sourcePath string) bool) {
+	t.Helper()
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	old := statBeforeUpload
+	statBeforeUpload = func(sourcePath string) (filePreUploadMeasurement, error) {
+		mu.Lock()
+		seen[sourcePath] = true
+		mu.Unlock()
+		return old(sourcePath)
+	}
+	t.Cleanup(func() { statBeforeUpload = old })
+	return func(sourcePath string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return seen[sourcePath]
+	}
+}
+
+// Once a worker has handed back an outcome that ends the run (source gone,
+// writer still active), no further file is admitted: the run will end at that
+// file whatever happens next, so a new upload could only run against a dead
+// snapshot or a fence that will not open, and be discarded. With one worker
+// this is the serial loop's behaviour exactly: the file after the abort point
+// is never even started (#8490).
+//
+// Deterministic: with one worker, admitting the next file after the
+// run-ending outcome is not a race. It either happens or it does not, and
+// recordMeasuredForTest sees it either way.
+func TestUploadPool_RunEndingOutcomeStopsAdmission(t *testing.T) {
+	defer setUploadConcurrencyForTest(1)()
+
+	t.Run("source gone", func(t *testing.T) {
+		defer setShortUploadRetryDelayForTest(0)()
+		defer setUploadRetryDelayForTest(0)()
+		measured := recordMeasuredForTest(t)
+		f := newFakeStat()
+		f.install(t)
+		root, files := filesUnderCommonRoot(t, 4)
+		f.set(root, true)
+		provider := &dyingOnRetryProvider{
+			target:   files[1].sourcePath,
+			srcRoot:  root,
+			attempts: map[string]int{},
+			onDeath:  func() { f.set(root, false) },
+		}
+		liveness := newShadowRootLiveness(map[string]string{`C:`: root})
+		if _, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, liveness); !errors.Is(err, errSourceSnapshotGone) {
+			t.Fatalf("err = %v, want errSourceSnapshotGone", err)
+		}
+		for _, later := range files[2:] {
+			if measured(later.sourcePath) {
+				t.Fatalf("%s was admitted after the source was known to be gone", later.snapshotPath)
+			}
+		}
+	})
+
+	t.Run("writer still active", func(t *testing.T) {
+		measured := recordMeasuredForTest(t)
+		files := poolFiles(t, 5)
+		provider := &stuckFenceProvider{poolProvider: newPoolProvider()}
+		if _, err := createSnapshotWithProgress(context.Background(), provider, files, nil, nil, nil, nil); !errors.Is(err, errWriterStillActive) {
+			t.Fatalf("err = %v, want errWriterStillActive", err)
+		}
+		for _, later := range files[3:] {
+			if measured(later.sourcePath) {
+				t.Fatalf("%s was admitted after the writer fence refused the run", later.snapshotPath)
+			}
+		}
+	})
 }

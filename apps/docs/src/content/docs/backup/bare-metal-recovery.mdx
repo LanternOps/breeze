@@ -57,6 +57,13 @@ The media is a Debian live system with the `breeze-backup` binary and nothing el
   supports cross-snapshot references. An older ISO is refused with a
   message telling you to download the current recovery media and boot
   again — the target disk is never touched.
+
+  Recovery media and recovery tools older than v0.120.0 are refused at
+  code exchange and authentication with **This recovery tool is too old to
+  check backup integrity.** Rebuild or download current media before you
+  need it. Recovering from a **Not verified** (unattested) snapshot also
+  needs a technician's two-factor confirmation; see
+  [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore).
 </Aside>
 
 <Aside type="note">
@@ -85,6 +92,15 @@ If a phase fails or the snapshot is refused, the reason stays on screen with a `
 <Aside type="caution" title="Unattended boot options">
   The kernel command line accepts `breeze.server=`, `breeze.code=`, `breeze.target=`, `breeze.confirm=` and `breeze.after=poweroff` to pre-answer the prompts. These exist for Breeze's own CI and for lab automation; a code on a command line is a code in a boot log, so do not use them for production recoveries.
 </Aside>
+
+### Known limits of the media path
+
+- **Linux only today.** There is no Windows or macOS recovery media. For those, use [reinstall-then-recover](#alternative-recover-into-a-freshly-installed-os), or rebuild a Windows snapshot onto a VHDX with [Restore as VM](#restore-as-vm) or a [DR rehearsal](/backup/disaster-recovery/).
+- **One blank UEFI/GPT disk** at least as large as the source disk, from a snapshot marked **Bare-metal restorable**. Multi-disk, BIOS/MBR, LVM, LUKS, RAID, btrfs and ZFS layouts are named at backup time and not rebuilt.
+- **No driver injection.** The rebuilt system boots with the drivers its own image carries; see [Windows fidelity](#windows-fidelity) for the Windows side.
+- **Rehearsal is not production.** DR rehearsals and Restore as VM rebuild into a disk image on a rebuild host and prove the snapshot can be rebuilt; only a recovery from the media brings a real machine back (with **Original device** it counts as done once the machine checks in).
+
+Every rebuild outcome, with its measured duration, also feeds the device's [recovery readiness](/backup/verification/#bare-metal-rebuild-evidence) — a failed or stale rebuild shows up as a risk factor on the Verification tab.
 
 ---
 

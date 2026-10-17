@@ -36,6 +36,12 @@ vi.mock('./TicketPushoverSettings', () => ({
   default: () => null,
 }));
 
+// EmailNotificationSettings fetches /users/me/email-preferences on mount; stub it so
+// it doesn't consume from this file's fetchWithAuth mocks (covered by its own test).
+vi.mock('./EmailNotificationSettings', () => ({
+  default: () => null,
+}));
+
 // ConnectSsoCard (#2183) fetches /sso/link/options on mount; stub it so it
 // doesn't consume from this file's ordered fetchWithAuth mock sequence. Its own
 // behavior is covered by ConnectSsoCard.test.tsx.

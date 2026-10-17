@@ -450,7 +450,7 @@ The enrollment key is an optional positional argument (`breeze-agent enroll [enr
 | `[enrollment-key]` | Enrollment key from the web console (positional), or set `BREEZE_AGENT_ENROLLMENT_KEY` |
 | `--server` | Breeze server URL |
 | `--enrollment-secret` | Enrollment secret, when the server requires one (`AGENT_ENROLLMENT_SECRET`) |
-| `--site-id` | Accepted but currently ignored; the device joins the site the enrollment key is bound to |
+| `--site-id` | Deprecated and ignored; the device joins the site the enrollment key is bound to. Passing it prints a deprecation warning; the flag will be removed in a future release |
 | `--device-role` | Device role override (e.g. `workstation`, `server`) |
 | `--force` | Re-enroll even if already enrolled; replaces the agent ID and auth token on success |
 | `--quiet` | Suppress progress output (errors still go to stderr) |
@@ -957,8 +957,8 @@ sudo launchctl unload /Library/LaunchDaemons/com.breeze.agent.plist
 # Remove LaunchDaemon
 sudo rm /Library/LaunchDaemons/com.breeze.agent.plist
 
-# Remove binary
-sudo rm /usr/local/bin/breeze-agent
+# Remove binary (the .pkg installs to either location)
+sudo rm -f /usr/local/bin/breeze-agent /Library/Breeze/bin/breeze-agent
 
 # Remove configuration
 sudo rm -rf /etc/breeze

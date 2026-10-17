@@ -400,3 +400,68 @@ export interface AiOperatorTaskEventDto {
   detail: string | null;
   createdAt: string;
 }
+
+/**
+ * `ai_operator_plan_approvals.state` (Recipe Library spec §5.4).
+ *
+ * `superseded` is NOT a variant of `rejected`: nobody refused this plan, the
+ * plan itself stopped existing when `ai_operator_tasks.revision` moved. Keeping
+ * them apart is what lets the task page say "the plan changed, re-approve"
+ * instead of "an approver said no", and it is the state the release-time
+ * membership check refuses on (spec §6.4: "Any change … bumps `revision`,
+ * supersedes the approval, and requires a new one").
+ */
+export const AI_OPERATOR_PLAN_APPROVAL_STATES = Object.freeze([
+  'pending', 'approved', 'rejected', 'expired', 'superseded',
+] as const);
+export type AiOperatorPlanApprovalState = (typeof AI_OPERATOR_PLAN_APPROVAL_STATES)[number];
+
+/**
+ * Per-effect replay classification (spec §6.6).
+ *
+ *  - `idempotent`           — the write may be re-sent safely (group remove,
+ *                             license remove, disable, revoke sessions).
+ *  - `idempotent_by_probe`  — safe only because the pre-probe observes the end
+ *                             state first (forwarding, auto-reply).
+ *  - `non_idempotent`       — NEVER auto-retried (create user, reset password).
+ *                             An unknown outcome hands the task off.
+ */
+export const AI_OPERATOR_EFFECT_IDEMPOTENCY_CLASSES = Object.freeze([
+  'idempotent', 'idempotent_by_probe', 'non_idempotent',
+] as const);
+export type AiOperatorEffectIdempotencyClass =
+  (typeof AI_OPERATOR_EFFECT_IDEMPOTENCY_CLASSES)[number];
+
+/** One approved effect, as the approval card and the task page render it. */
+export interface AiOperatorPlanEffectDto {
+  ordinal: number;
+  toolName: string;
+  provider: 'breeze' | 'm365' | 'google';
+  /** Frozen display label for the target, never re-resolved. */
+  targetLabel: string;
+  /** Frozen UPN / primary email at approval time, display only. Null for a
+   *  `breeze` effect, which names a device row rather than a provider account. */
+  principalLabel: string | null;
+  /** Bounded human-readable rendering the approver actually signed off on. */
+  rendering: string;
+  idempotencyClass: AiOperatorEffectIdempotencyClass;
+  /** Set once the effect has an operation; null while the plan is pending. */
+  operationState: 'pending' | 'succeeded' | 'failed' | 'unknown' | 'superseded' | null;
+  /** True when the pre-write probe already observed the end state (§6.6). */
+  noop: boolean;
+}
+
+export interface AiOperatorPlanApprovalDto {
+  id: string;
+  taskId: string;
+  planRevision: number;
+  effectSetDigest: string;
+  effectCount: number;
+  intentId: string;
+  state: AiOperatorPlanApprovalState;
+  approvedByUserId: string | null;
+  approvedAt: string | null;
+  supersededByRevision: number | null;
+  createdAt: string;
+  effects: AiOperatorPlanEffectDto[];
+}

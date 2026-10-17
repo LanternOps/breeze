@@ -1,0 +1,11 @@
+{ "public": {
+  "title": "Controlla una richiesta di assistenza", "loading": "Caricamento della richiesta…", "hello": "Ciao {{name}}",
+  "request": "{{technician}} di {{partner}} vuole:",
+  "reset_password": "Reimpostare la password di {{target}}", "disable_user": "Disattivare l’account di {{target}}",
+  "any": "Confermare una richiesta di assistenza per {{target}}", "target": "l’account indicato", "provider": "il tuo fornitore di assistenza",
+  "reverse": "Codice della richiesta", "choose": "Tocca il numero indicato dal tecnico. Non leggere mai un codice ad alta voce.",
+  "notMe": "Non sono io", "caution": "Tocca un numero solo se sei al telefono con {{technician}} in questo momento. In caso di dubbi, riaggancia e chiama {{partner}} al numero che hai già.",
+  "expires": "Scade tra {{seconds}} secondi", "expired": "Questa richiesta non è disponibile o è scaduta.",
+  "received": "La tua risposta è stata ricevuta.", "failed": "Impossibile inviare la risposta. Riprova.",
+  "loadFailed": "Impossibile caricare la richiesta. Riprova.", "retry": "Riprova", "sending": "Invio in corso…"
+} }
