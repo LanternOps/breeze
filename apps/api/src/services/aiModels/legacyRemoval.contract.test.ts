@@ -16,16 +16,8 @@ const ROOTS = ['apps/api/src', 'apps/web/src', 'packages/shared/src', 'ee'];
 const SKIP_DIR = new Set(['node_modules', 'dist', 'build', '.astro', '__tests__', '__fixtures__']);
 /** Files whose job is to NAME the legacy objects (archive metadata), never to read them. */
 const ALLOWED_FILES = new Set([
+  // W08b (#7606): the archive's source_table CHECK literals name the dropped table.
   'apps/api/src/db/schema/aiModelRegistryLegacyArchive.ts',
-  // purgeRetiredLegacyKeyCopy deletes the partner's row from the still-existing legacy table
-  // (guarded by to_regclass) when a key is rotated or disconnected, preserving the W03 #7700
-  // "revoked key must not persist" behaviour until W08b drops the table.
-  // W08b removes the helper and this entry.
-  'apps/api/src/services/aiModels/connectionRemap.ts',
-  // CORE_NON_DRIZZLE_TABLES must name the still-existing legacy table, or the
-  // boot tripwire refuses to start the API (it has no Drizzle model any more).
-  // W08b removes the entry and this allowlist line with the table.
-  'apps/api/src/extensions/tenancyTripwire.ts',
 ]);
 
 export const DELETED_PATHS: readonly string[] = [
@@ -60,6 +52,12 @@ export const RETIRED_IDENTIFIERS: ReadonlyArray<readonly [string, RegExp]> = [
   ['PartnerLlmError', /\bPartnerLlmError\b/],
   ['_ignoredReviewerModel', /_ignoredReviewerModel/],
   ['bindAgentModel', /\bbindAgentModel\b/],
+  // W08b (#7606): the dropped objects and the code that only existed for them.
+  ['ai_model_registry_state', /\bai_model_registry_state\b/],
+  ['compat_uq', /\bcompat_uq\b|partner_ai_connections_compat_uq/],
+  ['hasAnthropicConnection', /\bhasAnthropicConnection\b/],
+  ['MAX_ANTHROPIC_API_CONNECTIONS_PER_PARTNER', /\bMAX_ANTHROPIC_API_CONNECTIONS_PER_PARTNER\b/],
+  ['purgeRetiredLegacyKeyCopy', /\bpurgeRetiredLegacyKeyCopy\b/],
 ];
 
 function walk(dir: string, out: string[]): string[] {

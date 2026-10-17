@@ -366,7 +366,6 @@
       "supportedGeos": "Desteklenen: {{geos}}",
       "refreshQueued": "Model yenileme sıraya alındı",
       "refreshFailed": "Model yenileme sıraya alınamadı.",
-      "alreadyConnected": "Zaten bağlı",
       "addKind": {
         "anthropic_byok": "Anthropic API anahtarı",
         "openai_compatible": "OpenAI uyumlu uç nokta"

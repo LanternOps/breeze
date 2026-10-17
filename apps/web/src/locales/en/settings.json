@@ -366,7 +366,6 @@
       "supportedGeos": "Supports: {{geos}}",
       "refreshQueued": "Model refresh queued",
       "refreshFailed": "Couldn't queue a model refresh.",
-      "alreadyConnected": "Already connected",
       "addKind": {
         "anthropic_byok": "Anthropic API key",
         "openai_compatible": "OpenAI-compatible endpoint"

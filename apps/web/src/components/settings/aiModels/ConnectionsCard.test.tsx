@@ -10,11 +10,13 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 import ConnectionsCard from './ConnectionsCard';
 
 describe('ConnectionsCard', () => {
-  it('keeps Add connection visible with an existing Anthropic connection; the Anthropic option is disabled', () => {
+  it('keeps the Anthropic option enabled with an existing Anthropic connection (W08b: several allowed, #7606)', () => {
     render(<ConnectionsCard snapshot={SNAPSHOT} onChanged={vi.fn()} />);
     fireEvent.click(screen.getByTestId('ai-connection-add'));
-    expect((screen.getByTestId('ai-connection-add-kind-anthropic') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('ai-connection-add-kind-anthropic') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByTestId('ai-connection-add-kind-openai') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId('ai-connection-add-kind-anthropic'));
+    expect(screen.getByTestId('ai-connection-key')).toBeTruthy();
   });
 
   it('choosing OpenAI-compatible opens the drawer with that kind form', () => {

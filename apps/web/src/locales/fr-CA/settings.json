@@ -366,7 +366,6 @@
       "supportedGeos": "Prend en charge : {{geos}}",
       "refreshQueued": "Actualisation des modèles mise en file d'attente",
       "refreshFailed": "Impossible de mettre l'actualisation des modèles en file d'attente.",
-      "alreadyConnected": "Déjà connectée",
       "addKind": {
         "anthropic_byok": "Clé API Anthropic",
         "openai_compatible": "Point de terminaison compatible OpenAI"

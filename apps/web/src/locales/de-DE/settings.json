@@ -366,7 +366,6 @@
       "supportedGeos": "Unterstützt: {{geos}}",
       "refreshQueued": "Modellaktualisierung eingeplant",
       "refreshFailed": "Die Modellaktualisierung konnte nicht eingeplant werden.",
-      "alreadyConnected": "Bereits verbunden",
       "addKind": {
         "anthropic_byok": "Anthropic-API-Schlüssel",
         "openai_compatible": "OpenAI-kompatibler Endpunkt"

@@ -366,7 +366,6 @@
       "supportedGeos": "Admite: {{geos}}",
       "refreshQueued": "Actualización de modelos en cola",
       "refreshFailed": "No se pudo poner en cola la actualización de modelos.",
-      "alreadyConnected": "Ya conectada",
       "addKind": {
         "anthropic_byok": "Clave de API de Anthropic",
         "openai_compatible": "Endpoint compatible con OpenAI"

@@ -4,7 +4,7 @@
  * called from a partner request context (breeze_app, FORCE RLS), each write
  * in its own system transaction behind the partner registry lock, so the
  * app-layer partner pin is the guard this suite proves — plus the DB
- * constraints (shape_chk, composite FK, compat_uq predicate) underneath it.
+ * constraints (shape_chk, composite FK) underneath it.
  *
  * DNS for the BYO base URLs is stubbed to a public address so the egress
  * policy passes deterministically offline.
@@ -102,7 +102,7 @@ describe('gateway connections — tenancy (real DB)', () => {
     expect(err.cause).toMatchObject({ code: '23514', constraint_name: 'partner_ai_connections_shape_chk' });
   });
 
-  it('many openai_compatible connections per partner are allowed (compat_uq predicate excludes them)', async () => {
+  it('many openai_compatible connections per partner are allowed', async () => {
     const a = (await createPartner()).id;
     await asPartner(a, () => createGatewayConnection({ partnerId: a, name: 'one', baseUrl: 'https://one.example.com/v1', connectedBy: null }));
     await asPartner(a, () => createGatewayConnection({ partnerId: a, name: 'two', baseUrl: 'https://two.example.com/v1', connectedBy: null }));
