@@ -566,7 +566,14 @@ Custom roles are created with `POST /roles` and must include a name. Permissions
 
 Set `forceMfa: true` (the **Require MFA for this role** toggle in Settings → Roles) to require every member assigned this role to enrol in MFA. It defaults to `false`, can be changed later with `PATCH /roles/:id`, and is not inherited through `parentRoleId` — each role sets it for its own members. Roles that require MFA show an **MFA required** badge in the roles list. The built-in Partner Admin role requires MFA and, like every system role, cannot be edited.
 
-Custom roles are automatically scoped to the current user's context (partner or organisation). System roles cannot be modified or deleted.
+A role's owner axis is fixed at creation. Partner-scope callers choose it with `ownerScope`:
+
+| `ownerScope` | Result |
+|---|---|
+| `"partner"` | A partner role, assignable to your own staff on the Users page. `orgId` must be omitted. |
+| `"organization"` | An organisation role for the organisation named in `orgId` (required, and it must be one you can access). Assignable to that organisation's users and usable as its SSO default role. |
+
+In **Settings → Roles** the Create Role dialog shows this as a **Scope** choice that defaults to **Partner**; the header organisation no longer decides it. Organisation-scope callers can only create roles in their own organisation, and a request with `ownerScope: "partner"` from one is refused with `403`. If `ownerScope` is omitted, the older rule still applies: an `orgId` makes an organisation role, otherwise the role takes the caller's own scope. `ownerScope` cannot be changed later with `PATCH /roles/:id`. System roles cannot be modified or deleted.
 
 ### Cloning Roles
 
