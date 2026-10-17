@@ -56,7 +56,7 @@ export const frFR: TrustCatalogCopy = {
     },
     hardening_baseline: {
       title: "Référentiel de durcissement de la configuration",
-      description: "Taux de conformité moyen de la dernière analyse de configuration selon les CIS Benchmarks, sur l'ensemble des appareils évalués.",
+      description: "Taux de réussite moyen de la dernière analyse de configuration selon les CIS Benchmarks, sur l'ensemble des appareils évalués.",
     },
     dns_filtering: {
       title: "Filtrage DNS actif",

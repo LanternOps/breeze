@@ -133,7 +133,7 @@ export const pageCopy = defineTrustCopy({
     summary: (shown: number, total: number, met: number, verified: string) =>
       `Affichage de ${shown} contrôles sur ${total} vérifiables par Breeze (sélectionnés par l’éditeur) · ${met} satisfaits · dernière vérification ${verified}`,
     deviceCount: (n: number) => `${n} appareils`,
-    stale: (when: string) => `Vérification suspendue depuis le ${when}. Les statuts ci-dessous sont les dernières valeurs connues.`,
+    stale: (when: string) => `Vérification suspendue (dernière vérification : ${when}). Les statuts ci-dessous sont les dernières valeurs connues.`,
     unknownTime: "une date inconnue",
     never: "jamais",
     justNow: "à l’instant",
@@ -172,7 +172,7 @@ export const pageCopy = defineTrustCopy({
     summary: (shown: number, total: number, met: number, verified: string) =>
       `Affichage de ${shown} contrôles sur ${total} pouvant être vérifiés par Breeze (choisis par l’éditeur) · ${met} respectés · dernière vérification : ${verified}`,
     deviceCount: (n: number) => `${n} appareils`,
-    stale: (when: string) => `Vérification interrompue depuis le ${when}. Les états ci-dessous correspondent aux dernières valeurs connues.`,
+    stale: (when: string) => `Vérification interrompue (dernière vérification : ${when}). Les états ci-dessous correspondent aux dernières valeurs connues.`,
     unknownTime: "une date inconnue",
     never: "jamais",
     justNow: "à l’instant",
