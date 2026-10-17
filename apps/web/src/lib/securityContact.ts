@@ -1,9 +1,12 @@
 /**
  * Operator abuse/security contact surface (#8872).
  *
- * Deployment-level, read SERVER-SIDE ONLY (Astro frontmatter / endpoints):
- * the web image is built once, so `PUBLIC_*` values are not inlined at build
- * time for these — they come from the container environment at request time.
+ * Deployment-level, read SERVER-SIDE ONLY (Astro frontmatter / endpoints) and
+ * ALWAYS through `process.env`, never `import.meta.env`: Vite inlines a bare
+ * `import.meta.env` (PUBLIC_ or not) as a fixed object at build time, and the
+ * web image is built once, so an `import.meta.env` read would freeze whatever
+ * the build machine had (nothing) into every deployment. `process.env` is the
+ * container environment at request time, which is the whole point.
  * Nothing here may be imported by a client island.
  *
  * Self-hosted deployments publish nothing unless they set the variables; the
@@ -55,11 +58,21 @@ export function resolveSecurityContacts(env: EnvLike): SecurityContacts {
   return contacts;
 }
 
+/**
+ * The request-time contacts for this deployment. The only sanctioned way for
+ * route/layout code to read them (see the header comment on `process.env`).
+ */
+export function currentSecurityContacts(): SecurityContacts {
+  return resolveSecurityContacts(process.env);
+}
+
 export function hasSecurityContacts(contacts: SecurityContacts): boolean {
   return Boolean(contacts.abuseEmail || contacts.securityEmail || contacts.policyUrl);
 }
 
-const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+// RFC 9116 §2.5.5 recommends an `Expires` under a year; validators flag >= 1y.
+// The value rolls on every request, so a shorter window costs nothing.
+const EXPIRES_MS = 180 * 24 * 60 * 60 * 1000;
 
 /**
  * RFC 9116 body, or null when there is no `Contact:` to publish (the spec
@@ -71,7 +84,7 @@ export function buildSecurityTxt(contacts: SecurityContacts, now: Date): string 
   if (contacts.securityEmail) lines.push(`Contact: mailto:${contacts.securityEmail}`);
   if (contacts.abuseEmail) lines.push(`Contact: mailto:${contacts.abuseEmail}`);
   if (lines.length === 0) return null;
-  lines.push(`Expires: ${new Date(now.getTime() + ONE_YEAR_MS).toISOString()}`);
+  lines.push(`Expires: ${new Date(now.getTime() + EXPIRES_MS).toISOString()}`);
   if (contacts.policyUrl) lines.push(`Policy: ${contacts.policyUrl}`);
   lines.push('Preferred-Languages: en');
   return `${lines.join('\n')}\n`;

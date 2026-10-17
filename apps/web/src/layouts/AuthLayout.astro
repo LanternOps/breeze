@@ -2,7 +2,7 @@
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import { tServer } from '../lib/i18n/server';
-import { getAuthFooterLinks, resolveSecurityContacts } from '../lib/securityContact';
+import { currentSecurityContacts, getAuthFooterLinks } from '../lib/securityContact';
 
 interface Props {
   title?: string;
@@ -14,7 +14,7 @@ const pageTitle = titleKey ? tServer(Astro.locals.locale, titleKey) : title;
 const metaDescription = tServer(Astro.locals.locale, 'layout.metaDescription');
 const tagline = tServer(Astro.locals.locale, 'authLayout.tagline');
 // Operator abuse/security links (#8872): server-side env, empty unless configured.
-const footerLinks = getAuthFooterLinks(resolveSecurityContacts(import.meta.env), Astro.url.host);
+const footerLinks = getAuthFooterLinks(currentSecurityContacts(), Astro.url.host);
 ---
 
 <!DOCTYPE html>
