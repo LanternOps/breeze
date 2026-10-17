@@ -35,6 +35,11 @@ test('gated document: request → verify → approve → download → revoke', a
   expect(docId).toMatch(/^[0-9a-f-]{36}$/);
 
   try {
+    // The onboarding tour opens ~1.5 s after load in a fresh context and its card intercepts clicks in the
+    // disclosure dialog; it keys off one localStorage flag (ScriptProposalsPage precedent).
+    await page.addInitScript(() => {
+      try { localStorage.setItem('breeze-onboarding-complete', 'true'); } catch { /* private mode */ }
+    });
     await page.goto(`${orgHref}#trust`);
     const publish = page.getByTestId('trust-publish');
     await expect(publish).toBeVisible({ timeout: 60_000 });
