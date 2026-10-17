@@ -1733,15 +1733,16 @@ export async function maybeQueueThresholdFilesystemAnalysis(
 }
 
 /**
- * #8509: the agent refused this scan because another was already running.
- * Producers register a command as its volume's scan generation when they queue
- * it, so a refused command left as the generation would make the RUNNING
- * scan's result look superseded and be dropped. Release it — conditionally, so
+ * #8509/#8945: this scan ended without a result (agent refused it as
+ * scan_in_progress, or it failed / timed out). Producers register a command as its volume's scan generation when they queue
+ * it, so a dead command left as the generation would make another scan's
+ * (or an older good) result look superseded and be dropped. Release it — conditionally, so
  * a newer producer's registration is never cleared. The running scan then
  * claims through the NULL-generation branch of claimFilesystemScanGeneration.
  */
-async function releaseRefusedFilesystemScanGeneration(
+async function releaseFailedFilesystemScanGeneration(
   command: typeof deviceCommands.$inferSelect,
+  status: string,
 ): Promise<void> {
   const [deviceRow] = await db
     .select({ osType: devices.osType })
@@ -1750,7 +1751,7 @@ async function releaseRefusedFilesystemScanGeneration(
     .limit(1);
   if (!deviceRow) {
     console.warn(
-      `[agents/helpers] filesystem_analysis command ${command.id} refused as scan_in_progress but device ${command.deviceId} has no devices row; scan generation not released`
+      `[agents/helpers] filesystem_analysis command ${command.id} ended ${status} but device ${command.deviceId} has no devices row; scan generation not released`
     );
     return;
   }
@@ -1765,9 +1766,10 @@ export async function handleFilesystemAnalysisCommandResult(
   orgId: string
 ): Promise<void> {
   if (resultData.status !== 'completed') {
-    if (resultData.status === 'failed' && resultData.errorCode === 'scan_in_progress') {
-      await releaseRefusedFilesystemScanGeneration(command);
-    }
+    // #8509 (scan_in_progress refusal) and #8945 (any failed/timeout result):
+    // a scan that produced no result must not stay registered as the volume's
+    // generation, or older good results are dropped as superseded.
+    await releaseFailedFilesystemScanGeneration(command, resultData.status);
     return;
   }
 
