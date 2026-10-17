@@ -73,6 +73,7 @@ import {
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
+import { runOutsideHeldDbContext } from '../../db/outsideHeldContext';
 import { captureException } from '../../services/sentry';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
 
@@ -1301,7 +1302,9 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
   // Key prefix `mfa:stepup-rl:` is deliberately disjoint from the grant store's
   // `mfa:stepup:` (mfaStepUpGrant.ts) so the rate-limiter's sorted-set never
   // shares a namespace with a grant key.
-  const stepUpRate = await rateLimiter(redis, `mfa:stepup-rl:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+  const stepUpRate = await runOutsideHeldDbContext(() =>
+    rateLimiter(redis, `mfa:stepup-rl:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds),
+  );
   if (!stepUpRate.allowed) {
     return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many attempts. Please try again later.');
   }

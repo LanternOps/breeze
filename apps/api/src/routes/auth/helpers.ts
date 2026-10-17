@@ -13,6 +13,7 @@ import {
   verifyPassword,
   getUserEpochs
 } from '../../services';
+import { runOutsideHeldDbContext } from '../../db/outsideHeldContext';
 import { envStr } from '../../utils/envStr';
 import { getImmediatePeerIpOrUndefined, rateLimitIpKey, trustsForwardedHeadersFrom } from '../../services/clientIp';
 import { effectiveRequestScheme, isSameOriginRequest } from '../../services/requestTransport';
@@ -330,7 +331,7 @@ export async function requireCurrentPasswordStepUp(
     return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
   }
 
-  const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
+  const rateCheck = await runOutsideHeldDbContext(() => rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60));
   if (!rateCheck.allowed) {
     return c.json({
       error: STEP_UP_THROTTLED_MESSAGE,
@@ -381,7 +382,7 @@ export async function requireFreshMfaStepUp(
     return c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503);
   }
 
-  const rateCheck = await rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60);
+  const rateCheck = await runOutsideHeldDbContext(() => rateLimiter(redis, `${keyPrefix}:${userId}`, 5, 5 * 60));
   if (!rateCheck.allowed) {
     return c.json({
       error: STEP_UP_THROTTLED_MESSAGE,
@@ -841,7 +842,7 @@ export async function resolveFactorManagementStepUp(
   if (!redis) {
     return { error: c.json({ error: STEP_UP_UNAVAILABLE_MESSAGE, message: STEP_UP_UNAVAILABLE_MESSAGE }, 503) };
   }
-  const rateCheck = await rateLimiter(redis, `${opts.keyPrefix}:${auth.user.id}`, 5, 5 * 60);
+  const rateCheck = await runOutsideHeldDbContext(() => rateLimiter(redis, `${opts.keyPrefix}:${auth.user.id}`, 5, 5 * 60));
   if (!rateCheck.allowed) {
     return {
       error: c.json({
