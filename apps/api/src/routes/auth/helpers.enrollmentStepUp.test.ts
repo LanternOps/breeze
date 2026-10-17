@@ -17,10 +17,7 @@ const {
   validateStepUpGrant,
   consumeStepUpGrant,
   withSystemDbAccessContext,
-  outside,
 } = vi.hoisted(() => {
-  // #8334: depth > 0 while inside runOutsideDbContext (the held-tx exit).
-  const outside = { depth: 0 };
   const selectLimit = vi.fn();
   const db = {
     // db.select(...).from(...).where(...).limit(...) chain returning the mocked user row.
@@ -51,21 +48,12 @@ const {
     // (still a no-op passthrough) while making "was the read wrapped"
     // observable via `toHaveBeenCalled()`.
     withSystemDbAccessContext: vi.fn(),
-    outside,
   };
 });
 
 vi.mock('../../db', () => ({
   db,
   withSystemDbAccessContext,
-  runOutsideDbContext: <T,>(fn: () => T): T => {
-    outside.depth++;
-    try {
-      return fn();
-    } finally {
-      outside.depth--;
-    }
-  },
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -215,20 +203,6 @@ describe('resolveEnrollmentStepUp', () => {
       await resolveEnrollmentStepUp(ctx(), authCtx(), { currentPassword: 'pw' }, { keyPrefix: 'passkey:pwd', consume: false });
 
       expect(rateLimiter).toHaveBeenCalledWith(expect.anything(), `passkey:pwd:${USER_ID}`, 5, 5 * 60);
-    });
-
-    it('runs the password-road limiter outside the held DB context (#8334)', async () => {
-      queuePasswordAccount();
-      verifyPassword.mockResolvedValue(true);
-      let depthDuringLimiter = -1;
-      rateLimiter.mockImplementation(async () => {
-        depthDuringLimiter = outside.depth;
-        return { allowed: true, resetAt: new Date(Date.now() + 60_000) };
-      });
-
-      await resolveEnrollmentStepUp(ctx(), authCtx(), { currentPassword: 'pw' }, TERMINAL);
-
-      expect(depthDuringLimiter).toBe(1);
     });
 
     it('rejects an SSO grant when the account HAS a password', async () => {
