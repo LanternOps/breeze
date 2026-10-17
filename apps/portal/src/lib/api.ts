@@ -9,7 +9,7 @@ import { navigateTo } from './navigation';
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, NetworkAssetsDto, NetworkOverviewDto, NetworkSitesDto, PortalHourBlockResponse, PublicQuoteCoverPage, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField, TicketType } from '@breeze/shared';
 import { lineWorkedVsBilled } from '@breeze/shared';
-import type { TrustPagePublicPayload } from '@breeze/shared';
+import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
@@ -1611,7 +1611,7 @@ export const portalApi = {
 };
 
 export interface TrustCard { title: string; orgName: string; logoUrl: string | null; primaryColor: string | null; managedByName: string | null; summaryLine: string; publishedAt: string; lastEvaluatedAt: string | null; stale: boolean; searchIndexable: boolean }
-export interface TrustPageResponse { payload: TrustPagePublicPayload; lastEvaluatedAt: string | null; stale: boolean; preview?: boolean }
+export interface TrustPageResponse { payload: TrustPagePublicPayloadAny; lastEvaluatedAt: string | null; stale: boolean; preview?: boolean }
 
 export const trustBadgePath = (p: string, o: string): PublicApiPath => publicApiPath(`/trust/public/${encodeURIComponent(p)}/${encodeURIComponent(o)}/badge.svg`);
 /** `o` null = the partner-home page, which has its own document route (/trust/public/:partnerSlug/documents/:id). */

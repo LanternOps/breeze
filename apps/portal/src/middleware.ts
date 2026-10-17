@@ -155,6 +155,12 @@ export const onRequest = defineMiddleware(async (context, next) => {
     headers.set('Cache-Control', 'no-store');
     headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
     headers.set('Referrer-Policy', 'no-referrer');
+  } else if (pathname.startsWith('/trust/access/')) {
+    // Gated-document token pages (Trust Center W2, amendment 32): the token rides in the URL fragment, so
+    // never cache, never index, and never leak the page URL to a third party.
+    headers.set('Cache-Control', 'no-store');
+    headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    headers.set('Referrer-Policy', 'no-referrer');
   } else if (pathname.startsWith('/trust/')) {
     // Only a fully loaded card page is shareable-cacheable; 404s and the degraded
     // shell (card fetch failed) must not be pinned in shared caches.
