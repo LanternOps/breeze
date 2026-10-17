@@ -43,6 +43,12 @@ vi.mock('./TicketPushoverSettings', () => ({
   default: () => null,
 }));
 
+// EmailNotificationSettings fetches /users/me/email-preferences on mount; stub it.
+// Covered by EmailNotificationSettings.test.tsx.
+vi.mock('./EmailNotificationSettings', () => ({
+  default: () => null,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

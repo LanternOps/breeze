@@ -6777,5 +6777,16 @@
     "invalidKey": "Pushover kullanıcı anahtarı 30 harf veya rakamdan oluşur.",
     "loadFailed": "Pushover ayarınız yüklenemedi.",
     "saveFailed": "Pushover ayarınız kaydedilemedi."
+  },
+  "emailNotificationSettings": {
+    "title": "E-posta bildirimleri",
+    "description": "Breeze'in size hangi e-postaları göndereceğini seçin. Uygulama içi bildirimler her zaman açık kalır.",
+    "digestLabel": "Günlük bağlantı sağlığı özeti",
+    "digestHelp": "Düzeltebileceğiniz bozuk entegrasyonların ve oturum açma sorunlarının, ayrıca düzelenlerin sabah özeti. Günde en fazla bir kez gönderilir.",
+    "enabledToast": "Bağlantı sağlığı özeti açıldı",
+    "disabledToast": "Bağlantı sağlığı özeti kapatıldı",
+    "loadFailed": "E-posta tercihleri yüklenemedi.",
+    "saveFailed": "E-posta tercihleri kaydedilemedi.",
+    "retry": "Yeniden dene"
   }
 }

@@ -6777,5 +6777,16 @@
     "invalidKey": "Una chiave utente Pushover è composta da 30 lettere o cifre.",
     "loadFailed": "Impossibile caricare l’impostazione Pushover.",
     "saveFailed": "Impossibile salvare l’impostazione Pushover."
+  },
+  "emailNotificationSettings": {
+    "title": "Notifiche via email",
+    "description": "Scegli quali email ti invia Breeze. Gli avvisi nell'app restano sempre attivi.",
+    "digestLabel": "Riepilogo giornaliero sullo stato delle connessioni",
+    "digestHelp": "Un riepilogo mattutino delle integrazioni e degli accessi che puoi correggere e di quelli ripristinati. Inviato al massimo una volta al giorno.",
+    "enabledToast": "Riepilogo sullo stato delle connessioni attivato",
+    "disabledToast": "Riepilogo sullo stato delle connessioni disattivato",
+    "loadFailed": "Impossibile caricare le preferenze email.",
+    "saveFailed": "Impossibile salvare le preferenze email.",
+    "retry": "Riprova"
   }
 }

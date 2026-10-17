@@ -6777,5 +6777,16 @@
     "invalidKey": "Une clé d’utilisateur Pushover compte 30 lettres ou chiffres.",
     "loadFailed": "Impossible de charger votre réglage Pushover.",
     "saveFailed": "Impossible d’enregistrer votre réglage Pushover."
+  },
+  "emailNotificationSettings": {
+    "title": "Notifications par courriel",
+    "description": "Choisissez les courriels que Breeze vous envoie. Les avis dans l'application restent toujours activés.",
+    "digestLabel": "Résumé quotidien de l'état des connexions",
+    "digestHelp": "Un résumé matinal des intégrations et des connexions que vous pouvez réparer, ainsi que de celles qui ont été rétablies. Envoyé au plus une fois par jour.",
+    "enabledToast": "Résumé de l'état des connexions activé",
+    "disabledToast": "Résumé de l'état des connexions désactivé",
+    "loadFailed": "Impossible de charger les préférences de courriel.",
+    "saveFailed": "Impossible d'enregistrer les préférences de courriel.",
+    "retry": "Réessayer"
   }
 }

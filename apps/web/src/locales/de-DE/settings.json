@@ -6777,5 +6777,16 @@
     "invalidKey": "Ein Pushover-Benutzerschlüssel besteht aus 30 Buchstaben oder Ziffern.",
     "loadFailed": "Ihre Pushover-Einstellung konnte nicht geladen werden.",
     "saveFailed": "Ihre Pushover-Einstellung konnte nicht gespeichert werden."
+  },
+  "emailNotificationSettings": {
+    "title": "E-Mail-Benachrichtigungen",
+    "description": "Legen Sie fest, welche E-Mails Breeze Ihnen sendet. Hinweise in der App bleiben immer aktiv.",
+    "digestLabel": "Tägliche Zusammenfassung zum Verbindungsstatus",
+    "digestHelp": "Eine morgendliche Übersicht über defekte Integrationen und Anmeldungen, die Sie beheben können, sowie über bereits wiederhergestellte. Höchstens einmal täglich.",
+    "enabledToast": "Zusammenfassung zum Verbindungsstatus aktiviert",
+    "disabledToast": "Zusammenfassung zum Verbindungsstatus deaktiviert",
+    "loadFailed": "E-Mail-Einstellungen konnten nicht geladen werden.",
+    "saveFailed": "E-Mail-Einstellungen konnten nicht gespeichert werden.",
+    "retry": "Erneut versuchen"
   }
 }

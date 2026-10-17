@@ -6777,5 +6777,16 @@
     "invalidKey": "A Pushover user key is 30 letters or digits.",
     "loadFailed": "Could not load your Pushover setting.",
     "saveFailed": "Could not save your Pushover setting."
+  },
+  "emailNotificationSettings": {
+    "title": "Email notifications",
+    "description": "Choose which emails Breeze sends you. In-app notices always stay on.",
+    "digestLabel": "Daily connection health digest",
+    "digestHelp": "A morning summary of broken integrations and sign-ins you can fix, and the ones that recovered. Sent at most once a day.",
+    "enabledToast": "Connection health digest turned on",
+    "disabledToast": "Connection health digest turned off",
+    "loadFailed": "Could not load email preferences.",
+    "saveFailed": "Could not save email preferences.",
+    "retry": "Retry"
   }
 }
