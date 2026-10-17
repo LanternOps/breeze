@@ -9,6 +9,8 @@ import { getRedis } from '../../services/redis';
 import { writeAuditEventAsync } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { recordDeliveryEvent } from '../../services/endpointMessaging/receipts';
+import { recordChatReply } from '../../services/endpointMessaging/chatReplies';
+import { ENDPOINT_CHAT_LIMITS } from '@breeze/shared';
 
 // Endpoint messaging (#8741 W1): the main agent reports what the signed-in
 // user did with a technician message (card displayed, acknowledged, dismissed,
@@ -23,7 +25,14 @@ import { recordDeliveryEvent } from '../../services/endpointMessaging/receipts';
 // the notify_user command row the API itself queued for this device.
 
 const MESSAGE_EVENT_DEDUP_TTL_SECONDS = 7 * 24 * 60 * 60;
-const MAX_BODY_BYTES = 8 * 1024;
+// A chat reply carries up to 2000 characters, i.e. up to 8 000 UTF-8 bytes.
+const MAX_BODY_BYTES = 16 * 1024;
+
+const attestedSessionSchema = z.object({
+  username: z.string().min(1).max(256),
+  sid: z.string().min(1).max(256).optional(),
+  winSessionId: z.number().int().min(0).max(1_000_000).optional(),
+});
 
 export const messageEventSchema = z.object({
   messageId: z.string().uuid(),
@@ -37,6 +46,23 @@ export const messageEventSchema = z.object({
   at: z.string().datetime({ offset: true }),
 });
 
+/**
+ * Endpoint live chat (#8743 W03): an end-user reply relayed by the agent. The
+ * conversation must belong to the authenticated device; the session is the
+ * broker's attested helper session. The body is plain text (rendered as
+ * text, never markup, in the console).
+ */
+export const chatReplyEventSchema = z.object({
+  eventType: z.literal('chat_reply'),
+  conversationId: z.string().uuid(),
+  clientNonce: z.string().uuid(),
+  body: z.string().trim().min(1).max(ENDPOINT_CHAT_LIMITS.bodyMax),
+  session: attestedSessionSchema,
+  at: z.string().datetime({ offset: true }),
+}).strict();
+
+const agentEventSchema = z.union([chatReplyEventSchema, messageEventSchema]);
+
 export const messageEventsRoutes = new Hono();
 // Attested user events are the main agent's job; reject watchdog tokens.
 messageEventsRoutes.use('*', requireAgentRole);
@@ -48,14 +74,37 @@ messageEventsRoutes.post(
     if (Number.isFinite(len) && len > MAX_BODY_BYTES) return c.json({ error: 'Body too large' }, 413);
     return next();
   },
-  zValidator('json', messageEventSchema),
+  zValidator('json', agentEventSchema),
   async (c) => {
-    const event = c.req.valid('json');
+    const parsed = c.req.valid('json');
     const agent = c.get('agent') as { deviceId?: string; orgId?: string } | undefined;
     if (!agent?.deviceId || !agent.orgId) {
       return c.json({ error: 'Agent context missing device or organization' }, 401);
     }
     const { deviceId, orgId } = agent;
+
+    if (parsed.eventType === 'chat_reply') {
+      const outcome = await recordChatReply({
+        deviceId,
+        conversationId: parsed.conversationId,
+        clientNonce: parsed.clientNonce,
+        body: parsed.body,
+        session: parsed.session,
+      });
+      switch (outcome.kind) {
+        case 'accepted':
+          return c.json({ ok: true, duplicate: outcome.duplicate });
+        case 'unknown_conversation':
+          return c.json({ error: 'unknown_conversation' }, 404);
+        case 'conversation_closed':
+          return c.json({ error: 'conversation_closed' }, 409);
+        case 'replies_disabled':
+          return c.json({ error: 'replies_disabled' }, 403);
+        case 'rate_limited':
+          return c.json({ error: 'rate_limited', retryAfterSeconds: outcome.retryAfterSeconds }, 429);
+      }
+    }
+    const event = parsed;
 
     // Proof the message was sent to THIS device. device_commands has no RLS,
     // so the device filter is the whole boundary. The row survives terminal
