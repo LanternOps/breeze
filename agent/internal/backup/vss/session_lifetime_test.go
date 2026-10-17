@@ -394,3 +394,32 @@ func TestSnapshotCreation_ConcurrentCallersNeverOverlap(t *testing.T) {
 		t.Error("gate is still held after every caller released")
 	}
 }
+
+// The exported wrappers are what agent/internal/systemrestore uses to share
+// this one process-wide gate (#4609). They must be the SAME gate, not a
+// parallel one — a second gate would let a restore point and a backup snapshot
+// enter the VSS creation interval together.
+func TestExportedSnapshotCreationGateIsTheSameGate(t *testing.T) {
+	release, err := AcquireSnapshotCreation(context.Background())
+	if err != nil {
+		t.Fatalf("AcquireSnapshotCreation: %v", err)
+	}
+	if !SnapshotCreationBusy() {
+		t.Fatal("SnapshotCreationBusy() = false while the gate is held")
+	}
+	if !snapshotCreationBusy() {
+		t.Fatal("the exported acquire did not take the unexported gate")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := AcquireSnapshotCreation(ctx); !errors.Is(err, ErrVSSSessionInProgress) {
+		t.Fatalf("second exported acquire with a cancelled ctx = %v, want ErrVSSSessionInProgress", err)
+	}
+	if _, err := acquireSnapshotCreation(ctx); !errors.Is(err, ErrVSSSessionInProgress) {
+		t.Fatalf("backup-side acquire while systemrestore holds the gate = %v, want ErrVSSSessionInProgress", err)
+	}
+	release()
+	if SnapshotCreationBusy() {
+		t.Fatal("SnapshotCreationBusy() = true after release")
+	}
+}
