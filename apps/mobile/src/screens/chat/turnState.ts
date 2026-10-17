@@ -62,3 +62,20 @@ export function transcriptSignature(messages: ChatMessage[]): string {
     : `u:${last.content.length}`;
   return `${messages.length}|${last.id}|${tail}`;
 }
+
+/**
+ * Whether the reply turn holding `messages[index]` is still streaming (#8888).
+ * A turn is one assistant row per model message, so the row that proposed a
+ * plan stops streaming as soon as the next message starts — while the server
+ * may still hold the plan open or be running its steps. The plan card's
+ * controls follow the turn, not the row: this row and the assistant rows after
+ * it, up to the next user row.
+ */
+export function turnIsLive(messages: ChatMessage[], index: number): boolean {
+  for (let i = index; i >= 0 && i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== 'assistant') return false;
+    if (m.isStreaming) return true;
+  }
+  return false;
+}

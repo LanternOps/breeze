@@ -1409,6 +1409,34 @@
       "degraded": "Eingeschränkt",
       "unhealthy": "Fehlerhaft",
       "unknown": "Unbekannt"
-    }
+    },
+    "actionsLabel": "Reaktionsaktionen zulassen",
+    "actionsHelp": "Erlaubt Technikern, Geräte zu isolieren und Scans über diese Verbindung auszuführen.",
+    "actionsConfirmTitle": "Reaktionsaktionen zulassen?",
+    "actionsConfirmMessage": "Techniker mit der Berechtigung zum Ausführen auf Geräten können über „{{name}}“ verwaltete Endpunkte isolieren, die Isolierung aufheben und Scans starten.",
+    "actionsConfirmLabel": "Zulassen",
+    "actionsOnToast": "Reaktionsaktionen zugelassen",
+    "actionsOffToast": "Reaktionsaktionen deaktiviert",
+    "actionsError": "Reaktionsaktionen konnten nicht aktualisiert werden.",
+    "pushLabel": "Push-Ereignisse",
+    "pushHelp": "{{provider}} benachrichtigt Breeze über neue Ereignisse und löst damit früher als im regulären Zeitplan eine Synchronisierung aus. Geplante Synchronisierungen laufen weiter.",
+    "pushOnToast": "Push-Ereignisse aktiviert",
+    "pushOffToast": "Push-Ereignisse deaktiviert",
+    "pushReplaceTitle": "Bestehendes Push-Ziel ersetzen?",
+    "pushReplaceMessage": "{{provider}} sendet Push-Ereignisse bereits an ein anderes Ziel (zum Beispiel ein SIEM). Wenn Breeze es ersetzt, endet dieser Datenstrom.",
+    "pushReplaceConfirm": "Ersetzen und aktivieren",
+    "pushError": "Push-Ereignisse konnten nicht geändert werden.",
+    "pushErrors": {
+      "public_url_unset": "Legen Sie die öffentliche Server-URL fest, bevor Sie Push-Ereignisse aktivieren.",
+      "public_url_not_https": "Push-Ereignisse erfordern eine öffentliche HTTPS-URL.",
+      "connection_inactive": "Aktivieren Sie die Verbindung, bevor Sie Push-Ereignisse aktivieren.",
+      "push_state_changed": "Die Push-Einstellungen haben sich beim Aktivieren geändert. Aktualisieren Sie die Seite und versuchen Sie es erneut."
+    },
+    "pushTest": "Testereignis senden",
+    "pushTestQueuedToast": "Testereignis angefordert",
+    "pushTestError": "Das Testereignis konnte nicht gesendet werden.",
+    "pushTestNote": "Das Testereignis kann einige Minuten brauchen, bis es eintrifft.",
+    "pushLast": "Letztes Push-Ereignis: {{relative}}",
+    "pushNone": "Noch keine Push-Ereignisse empfangen"
   }
 }

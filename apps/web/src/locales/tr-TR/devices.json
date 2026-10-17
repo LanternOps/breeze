@@ -4160,6 +4160,42 @@
       "false_positive": "Yanlış pozitif",
       "dismissed": "Yoksayıldı",
       "unknown": "Bilinmiyor"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Cihazı izole et",
+        "unisolate": "İzolasyonu kaldır",
+        "scan": "Tarama başlat",
+        "update_agent": "Aracıyı güncelle"
+      },
+      "unavailable": "Kullanılamıyor",
+      "mfaRequired": "Müdahale eylemlerini çalıştırmak için MFA ile doğrulayın",
+      "error": "Müdahale eylemi istenemedi.",
+      "requested": "{{device}} için {{action}} istendi",
+      "inProgress": "Bu cihaz için başka bir müdahale eylemi zaten sürüyor.",
+      "confirming": "İstendi — {{vendor}} ile doğrulanıyor",
+      "reasonLabel": "Neden (isteğe bağlı)",
+      "confirm": {
+        "isolate": {
+          "title": "{{device}} izole edilsin mi?",
+          "message": "{{vendor}}, {{device}} cihazını izole edecek: cihaz, {{vendor}} dışında ağ erişimini kaybeder. İzolasyonu daha sonra kaldırabilirsiniz."
+        },
+        "unisolate": {
+          "title": "{{device}} izolasyonu kaldırılsın mı?",
+          "message": "{{vendor}}, {{device}} için normal ağ erişimini geri yükleyecek."
+        }
+      }
+    },
+    "history": {
+      "heading": "Son müdahale eylemleri",
+      "checking": "Kontrol ediliyor",
+      "aiBadge": "YZ",
+      "status": {
+        "queued": "Sırada",
+        "submitted": "Devam ediyor",
+        "succeeded": "Başarılı",
+        "failed": "Başarısız"
+      }
     }
   },
   "endpointMessages": {

@@ -3468,6 +3468,7 @@
         "delete_tenant": "Eliminar una organización",
         "detect_log_correlations": "Detectar correlaciones de registros",
         "disk_cleanup": "Limpieza de disco",
+        "edr_endpoint_action": "EDR: aislar, liberar o analizar un dispositivo",
         "execute_command": "Ejecutar un comando del sistema",
         "execute_playbook": "Ejecutar un playbook",
         "file_operations": "Operaciones con archivos",
@@ -3555,6 +3556,7 @@
         "security_scan": "Análisis de seguridad",
         "set_agent_log_level": "Establecer el nivel de registro del agente",
         "set_device_context": "Establecer el contexto del dispositivo",
+        "sync_edr_data": "Sincronizar datos de EDR",
         "sync_huntress_data": "Sincronizar datos de Huntress",
         "system_cleanup": "Limpieza del sistema",
         "take_screenshot": "Tomar una captura de pantalla"

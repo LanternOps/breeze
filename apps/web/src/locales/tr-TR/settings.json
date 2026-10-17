@@ -3468,6 +3468,7 @@
         "delete_tenant": "Bir organizasyonu sil",
         "detect_log_correlations": "Günlük korelasyonlarını tespit et",
         "disk_cleanup": "Disk temizliği",
+        "edr_endpoint_action": "EDR: cihazı yalıt, serbest bırak veya tara",
         "execute_command": "Bir sistem komutu çalıştır",
         "execute_playbook": "Bir playbook çalıştır",
         "file_operations": "Dosya işlemleri",
@@ -3555,6 +3556,7 @@
         "security_scan": "Güvenlik taraması",
         "set_agent_log_level": "Aracı günlük düzeyini ayarla",
         "set_device_context": "Cihaz bağlamını ayarla",
+        "sync_edr_data": "EDR verilerini eşitle",
         "sync_huntress_data": "Huntress verilerini eşitle",
         "system_cleanup": "Sistem temizliği",
         "take_screenshot": "Ekran görüntüsü al"

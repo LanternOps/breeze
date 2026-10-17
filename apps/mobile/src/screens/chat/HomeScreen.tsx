@@ -5,6 +5,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   Text,
   View,
 } from 'react-native';
@@ -18,39 +19,69 @@ import {
   addUserMessage,
   appendDelta,
   appendToolEvent,
+  assistantMessageStarted,
   clearError,
+  discardTurn,
   failAssistantMessage,
   finishAssistantMessage,
   loadHistory,
+  planDecision,
+  planNoLongerPending,
+  planProposed,
+  planInput,
+  planStreamEvent,
   reconcileHistory,
   resetChat,
   sessionCreated,
   setError,
   setInFlightTool,
   setStatus,
+  setTurnModel,
 } from '../../store/aiChatSlice';
 import { useApprovalTheme, spacing, type } from '../../theme';
 import {
+  abortAiPlan,
+  AiHttpError,
+  continueAiSession,
   createAiSession,
+  decideAiPlan,
   getAiSessionMessages,
   streamChat,
+  StreamHttpError,
   type AiStreamEvent,
   type SseStreamHandle,
 } from '../../services/aiChat';
 
 import { fetchAlerts } from '../../store/alertsSlice';
+import { shouldRefreshAlerts, type AlertRefreshTrigger } from './homeAlertsRefresh';
 import { fetchOne as fetchApprovalOne, setFocus as setApprovalFocus } from '../../store/approvalsSlice';
 import { track } from '../../lib/analytics';
 import { reportInternalError } from '../../lib/errorReporting';
 import { ChatHeader } from './components/ChatHeader';
 import { ColdOpenChips } from './components/ColdOpenChips';
 import { Composer } from './components/Composer';
+import { ContinuationPrompt } from './components/ContinuationPrompt';
 import { ConversationList } from './components/ConversationList';
 import { HomeFleetStrip } from './components/HomeFleetStrip';
+import { ModelPicker } from './components/ModelPicker';
 import { SessionsSheet } from './components/SessionsSheet';
 import { SettingsSheet } from './components/SettingsSheet';
 import { historyToMessages } from './historyAdapter';
+import {
+  CONTINUATION_FAILED,
+  CONTINUATION_OPEN_FAILED,
+  FIRST_SEND_MENU_CAP_MS,
+  classifySendFailure,
+  continuationStep,
+  firstSendMenuWait,
+  parseTurnModel,
+  sessionCreateFailure,
+  withinCap,
+  type ModelChoice,
+} from './modelPicker';
+import { isPlanTool, parsePlanSteps, planDecisionFailure } from './planState';
 import { isStreamLostError, isTurnComplete, isTurnSettlingError, transcriptSignature } from './turnState';
+import { useChatModelPicker } from './useChatModelPicker';
 
 /** Catch-up poll cadence while the server is still writing the turn. */
 const RECONCILE_POLL_MS = 3_000;
@@ -65,6 +96,7 @@ const SETTLE_RETRY_MS = 2_500;
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
   const theme = useApprovalTheme('dark');
   const dispatch = useAppDispatch();
 
@@ -78,6 +110,18 @@ export function HomeScreen() {
   const streamHandleRef = useRef<SseStreamHandle | null>(null);
   const lastUserContentRef = useRef<string | null>(null);
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const alertsFetchedAtRef = useRef(0);
+  // Keeps the header StatusPill's alerts slice fresh on every trigger the
+  // fleet strip's data can change on (#8890). Failures are intentional no-ops.
+  const refreshAlerts = useCallback(
+    (trigger: AlertRefreshTrigger) => {
+      const since = Date.now() - alertsFetchedAtRef.current;
+      if (!shouldRefreshAlerts(trigger, since)) return;
+      alertsFetchedAtRef.current = Date.now();
+      dispatch(fetchAlerts()).unwrap().catch(() => undefined);
+    },
+    [dispatch],
+  );
   const settleRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
    * Bumped on every send / new chat / session switch / unmount. Async work
@@ -104,6 +148,15 @@ export function HomeScreen() {
     settleRetryTimerRef.current = null;
   }, []);
   const [draft, setDraft] = useState<string | undefined>(undefined);
+  // W05: the composer's model menu, and a switch parked for a continuation.
+  const picker = useChatModelPicker();
+  // The callbacks below read the picker through a ref: its object identity
+  // changes on every picker state change, and depending on it would tear
+  // down and re-subscribe the AppState listener (losing its `previous`) on
+  // every menu load or pick. Its action functions are stable.
+  const pickerRef = useRef(picker);
+  pickerRef.current = picker;
+  const [continuing, setContinuing] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const userName = useAppSelector((s) => s.auth.user?.name);
@@ -132,17 +185,23 @@ export function HomeScreen() {
         else dispatch(setError(message));
       };
       try {
-        const { messages: rows } = await getAiSessionMessages(sid);
+        const { session, messages: rows, lastTurnModel } = await getAiSessionMessages(sid);
         // A send, new chat or session switch superseded this catch-up.
         if (gen !== turnGenRef.current || sessionIdRef.current !== sid) return;
-        const msgs = historyToMessages(rows);
+        const msgs = historyToMessages(rows, lastTurnModel);
         const signature = transcriptSignature(msgs);
         // "Complete" is only trusted once the transcript has stopped changing
         // between two polls: a tool_result can be persisted a beat before the
         // model's follow-up text, and that instant looks finished.
         const complete = isTurnComplete(msgs) && signature === previousSignature;
-        dispatch(reconcileHistory({ sessionId: sid, messages: msgs, complete }));
-        if (complete) return;
+        dispatch(reconcileHistory({ sessionId: sid, messages: msgs, complete, orgId: session?.orgId }));
+        if (complete) {
+          // The stream that would have committed a pick is gone: re-read the
+          // chat's stamped choice instead.
+          const p = pickerRef.current;
+          if (p.selection()) void p.load({ sessionId: sid });
+          return;
+        }
         if (attempt >= RECONCILE_MAX_POLLS) {
           giveUp('Lost track of this reply. Tap to retry.');
           return;
@@ -167,6 +226,8 @@ export function HomeScreen() {
     if (statusRef.current === 'streaming' && sid && !streamHandleRef.current) {
       void reconcileFromServer(sid);
     }
+    // W05: this chat's model menu (or a new chat's, from the caller's org).
+    void pickerRef.current.load({ sessionId: sid });
     // Mount only.
   }, []);
 
@@ -180,6 +241,7 @@ export function HomeScreen() {
       const wasBackground = previous === 'background';
       previous = next;
       if (!wasBackground || next !== 'active') return;
+      refreshAlerts('foreground');
       const sid = sessionIdRef.current;
       if (statusRef.current !== 'streaming' || !sid) return;
       streamHandleRef.current?.abort();
@@ -187,20 +249,34 @@ export function HomeScreen() {
       void reconcileFromServer(sid);
     });
     return () => sub.remove();
-  }, [reconcileFromServer]);
+  }, [reconcileFromServer, refreshAlerts]);
 
   // Refresh alerts whenever the Home tab gains focus, not just on first
   // mount. Keeps the StatusPill from going stale after a tab switch.
   // Failures are intentional no-ops; the pill falls back to "all clear".
   useFocusEffect(
     useCallback(() => {
-      dispatch(fetchAlerts()).unwrap().catch(() => undefined);
-    }, [dispatch]),
+      refreshAlerts('focus');
+    }, [refreshAlerts]),
   );
 
   const beginStream = useCallback(
-    (sid: string, content: string, retry?: { assistantId: string }) => {
+    (
+      sid: string,
+      content: string,
+      turn: { userMessageId?: string; model?: ModelChoice } = {},
+      retry?: { assistantId: string },
+    ) => {
       const assistantId = retry?.assistantId ?? `m-${Date.now()}-a`;
+      const { model } = turn;
+      const picker = pickerRef.current;
+      // The pick that rode on this turn is the chat's choice once the turn ran.
+      // Reference check: a pick changed since (the menu is disabled mid-turn,
+      // but be exact) is not what ran.
+      const commitPick = () => {
+        if (model && picker.selection() === model) picker.commit();
+      };
+      if (!retry) picker.setSuggested([]);
       if (!retry) {
         dispatch(addPendingAssistantMessage({ id: assistantId, sentAt: new Date().toISOString() }));
       }
@@ -208,10 +284,14 @@ export function HomeScreen() {
       streamHandleRef.current = streamChat({
         sessionId: sid,
         content,
+        model,
         onEvent: (ev: AiStreamEvent) => {
           switch (ev.type) {
             case 'message_start':
-              // Server message id is informational; we already have a local id.
+              // Each model message of the turn gets its own row, as the server
+              // persists it (#8888). Its id is informational; the slice keeps
+              // addressing the turn by `assistantId`.
+              dispatch(assistantMessageStarted({ turnId: assistantId, sentAt: new Date().toISOString() }));
               break;
             case 'content_delta':
               dispatch(appendDelta({ id: assistantId, delta: ev.delta }));
@@ -229,6 +309,11 @@ export function HomeScreen() {
                 messageId: assistantId,
                 event: { toolUseId: ev.toolUseId, toolName: ev.toolName, state: 'started', input },
               }));
+              // Plan-first approval mode: the card appears now and fills in
+              // when plan_approval_required brings the steps.
+              if (isPlanTool(ev.toolName)) {
+                dispatch(planProposed({ messageId: assistantId, toolUseId: ev.toolUseId }));
+              }
               break;
             }
             case 'tool_result':
@@ -248,7 +333,26 @@ export function HomeScreen() {
               }));
               dispatch(setInFlightTool(null));
               break;
+            case 'tool_use_input':
+              dispatch(planInput({ messageId: assistantId, toolUseId: ev.toolUseId, input: ev.input }));
+              break;
             case 'message_end':
+              break;
+            case 'plan_approval_required':
+              // Steps the app cannot read would leave the server waiting on
+              // a card with no buttons; the card falls back to Reject-only
+              // (planState.unreadable) and the contract drift is reported.
+              if (parsePlanSteps(ev.steps).length === 0) {
+                reportInternalError(new Error('plan_approval_required with unreadable steps'), 'ai-plan-steps');
+              }
+              dispatch(planStreamEvent({ messageId: assistantId, event: ev }));
+              break;
+            case 'plan_step_start':
+            case 'plan_step_complete':
+            case 'plan_complete':
+              // In-chat only: the server creates no approval_requests row and
+              // sends no push for a plan, so the PlanCard is its only answer.
+              dispatch(planStreamEvent({ messageId: assistantId, event: ev }));
               break;
             case 'approval_required':
               // When approvalRequestId is present (server linked the AI tool execution
@@ -264,22 +368,60 @@ export function HomeScreen() {
               // Older server (no approvalRequestId): no-op fallback. The 5-min
               // server-side waitForApproval timeout will eventually resolve.
               break;
+            case 'turn_model': {
+              const turnModel = parseTurnModel(ev.turnModel);
+              if (turnModel) dispatch(setTurnModel({ messageId: assistantId, turnModel }));
+              break;
+            }
+            case 'model_refusal':
+              // The menu marks these as "Suggested" (spec §9.1 "choose another").
+              picker.setSuggested(
+                Array.isArray(ev.alternatives) ? ev.alternatives.map((a) => a.offeringId) : [],
+              );
+              break;
             case 'error':
               dispatch(failAssistantMessage({ id: assistantId, error: ev.message }));
               break;
             case 'done':
-              dispatch(finishAssistantMessage({
-                id: assistantId,
-                failIfEmpty: { error: 'No reply. Tap to retry.' },
-              }));
+              // streamChat calls onDone right after this event (and on a
+              // socket close without one), so the turn-done work lives there
+              // once — not here too (double alerts fetch per turn).
               break;
             case 'unknown':
-              // plan_*, warning, title_updated — ignored in step 1.
+              // warning, title_updated, tool_use_input, … — ignored.
               break;
           }
         },
         onError: (err) => {
           streamHandleRef.current = null;
+          // W05: the server refused this turn's model before it ran.
+          if (err instanceof StreamHttpError) {
+            const failure = classifySendFailure(err.status, err.body);
+            const optimisticIds = [assistantId, ...(turn.userMessageId ? [turn.userMessageId] : [])];
+            if (failure.kind === 'continuation') {
+              // The switch cannot resume this chat. The message is parked for
+              // the continuation prompt, not lost or errored.
+              dispatch(discardTurn({ ids: optimisticIds }));
+              picker.setContinuation({ required: failure.required, pendingContent: content, sourceSessionId: sid });
+              return;
+            }
+            if (failure.kind === 'model_unavailable') {
+              // The chosen / stored model is no longer usable: refresh the menu
+              // so the technician can pick another, and hand the text back.
+              dispatch(discardTurn({ ids: optimisticIds }));
+              dispatch(setError(failure.message));
+              setDraft(content);
+              // When this turn carried the pick, drop the stored pref too:
+              // for a partner-scope technician the pref is applied on each
+              // new chat's FIRST message rather than on create, so a refusal
+              // here would otherwise repeat on every new chat (same reasoning
+              // as the create path below). A refusal of the chat's own
+              // stamped model (no pick sent) says nothing about the pref.
+              if (turn.model) void picker.forgetPref().then(() => picker.load({ sessionId: sid }));
+              else void picker.load({ sessionId: sid });
+              return;
+            }
+          }
           // 409 while the previous turn settles (≤3s server-side). One quiet
           // retry instead of a red "Stopped. Tap to retry." for a race the
           // server documents as expected. Generation-guarded: a send or new
@@ -290,7 +432,7 @@ export function HomeScreen() {
             settleRetryTimerRef.current = setTimeout(() => {
               settleRetryTimerRef.current = null;
               if (gen !== turnGenRef.current || sessionIdRef.current !== sid) return;
-              beginStream(sid, content, { assistantId });
+              beginStream(sid, content, turn, { assistantId });
             }, SETTLE_RETRY_MS);
             return;
           }
@@ -302,8 +444,11 @@ export function HomeScreen() {
           dispatch(failAssistantMessage({ id: assistantId, error: err.message }));
         },
         onDone: () => {
-          // `done` SSE event already finishes the message. This fires on
-          // socket close without a `done` event — finish defensively.
+          // Fires exactly once per stream: after the `done` event, or on a
+          // socket close without one. The turn may have resolved or
+          // acknowledged alerts (#8890).
+          refreshAlerts('turn_done');
+          commitPick();
           dispatch(finishAssistantMessage({
             id: assistantId,
             failIfEmpty: { error: 'No reply. Tap to retry.' },
@@ -311,17 +456,18 @@ export function HomeScreen() {
         },
       });
     },
-    [dispatch, reconcileFromServer],
+    [dispatch, reconcileFromServer, refreshAlerts],
   );
 
   const handleSend = useCallback(
-    async (text: string) => {
+    async (text: string, opts: { sessionId?: string } = {}) => {
       // #5104: the composer keyboard otherwise stays up and covers the
       // streaming reply as it arrives.
       Keyboard.dismiss();
       // Abort any prior stream, catch-up poll or settle retry before starting
       // the next turn.
       cancelTurnWork();
+      const gen = turnGenRef.current;
 
       const userMessageId = `m-${Date.now()}-u`;
       lastUserContentRef.current = text;
@@ -329,34 +475,148 @@ export function HomeScreen() {
       // Length only — never the message body. See analytics.ts privacy notes.
       track('chat_message_sent', { length: text.length });
 
-      let sid = sessionId;
+      // W05: the composer's pending choice rides on this message — or, for
+      // the first message of a new chat, on the session create (web parity).
+      const picker = pickerRef.current;
+      let model = picker.pending();
+      let sid = opts.sessionId ?? sessionId;
       if (!sid) {
+        const hadMenu = picker.hasMenu();
         try {
           dispatch(setStatus('creating-session'));
-          const session = await createAiSession({});
+          const session = await createAiSession(model ? { model } : {});
           sid = session.id;
-          dispatch(sessionCreated({ sessionId: sid }));
+          if (gen !== turnGenRef.current) return;
+          dispatch(sessionCreated({ sessionId: sid, orgId: session.orgId }));
           track('chat_session_created');
         } catch (err) {
+          // The user moved on (new chat, opened history) while the create was
+          // in flight: nothing here is theirs any more, including the menu.
+          if (gen !== turnGenRef.current) return;
           dispatch(setStatus('error'));
-          // The raw message is internal (function name + HTTP status) — report it
-          // to Sentry and show the user a static string instead (issue #3141).
-          reportInternalError(err, 'ai-session-create');
-          dispatch(failAssistantMessage({ id: userMessageId, error: 'Could not start a session.' }));
+          // Same classification as a refused message: a model code (the
+          // stored pick is not on this plan / region / role) shows the
+          // server's reason and drops the pref, or every new chat would
+          // re-apply it and fail. Anything else is internal (function name +
+          // HTTP status) — report it and show a static string (issue #3141).
+          const failure = err instanceof AiHttpError
+            ? sessionCreateFailure(err.status, err.body)
+            : sessionCreateFailure(0, null);
+          if (!failure.modelRefused) reportInternalError(err, 'ai-session-create');
+          dispatch(failAssistantMessage({ id: userMessageId, error: failure.message }));
+          if (failure.modelRefused) {
+            void picker.forgetPref().then(() => picker.load({}));
+          } else if (model) {
+            // A refused pick (model gone since the menu loaded): re-read the menu.
+            void picker.load({});
+          }
           return;
+        }
+        if (model) {
+          // The create carried the pick; it must not ride on the message too.
+          picker.commit();
+          model = undefined;
+        }
+        if (hadMenu) {
+          void picker.load({ sessionId: sid });
+        } else {
+          // No menu before the session existed. The session's menu applies
+          // the stored pick to this first turn, which starts a fresh
+          // transcript, so a switch here never needs a continuation. Worth
+          // waiting for only when the menu was missing for lack of org
+          // context (a partner-scope token, 400); a registry outage or a bad
+          // link must not hold the first reply for a fetch timeout.
+          const menuLoad = picker.load({ sessionId: sid, applyPref: true });
+          if (firstSendMenuWait(picker.lastLoadFailure()) === 'await') {
+            await menuLoad;
+          } else if (!(await withinCap(menuLoad, FIRST_SEND_MENU_CAP_MS)).done) {
+            // Lost the race: this turn runs on the server default. Supersede
+            // the pref load so the pref is not shown as this chat's pick.
+            if (gen !== turnGenRef.current) return;
+            void picker.load({ sessionId: sid });
+            beginStream(sid, text, { userMessageId });
+            return;
+          }
+          if (gen !== turnGenRef.current) return;
+          model = picker.pending();
         }
       }
 
-      beginStream(sid, text);
+      beginStream(sid, text, { userMessageId, model });
     },
     [beginStream, cancelTurnWork, dispatch, sessionId],
   );
+
+  /** W05: continue the parked message in a new chat seeded with a summary. */
+  const handleContinue = useCallback(async () => {
+    const picker = pickerRef.current;
+    const parked = picker.continuationRef.current;
+    if (!parked) return;
+    const step = continuationStep(parked, picker.selection());
+    if (!step) return;
+    setContinuing(true);
+    try {
+      let newSessionId: string;
+      if (step.kind === 'open') {
+        // `/continue` already created the chat; only opening it failed.
+        newSessionId = step.sessionId;
+      } else {
+        const res = await continueAiSession(parked.sourceSessionId, step.target);
+        if (!res.ok) {
+          // A 4xx carries a user-facing reason (budget, a reply still running);
+          // anything else is internal. The prompt stays open to retry.
+          if (res.status < 400 || res.status >= 500) {
+            reportInternalError(new Error(`continue failed: ${res.status} ${res.error}`), 'ai-session-continue');
+          }
+          dispatch(setError(res.status >= 400 && res.status < 500 ? res.error : CONTINUATION_FAILED));
+          return;
+        }
+        newSessionId = res.sessionId;
+        // Remember the new chat: a retry after a failed open must open it,
+        // not create another linked chat (and bill another summary).
+        picker.setContinuation({ ...parked, createdSessionId: newSessionId });
+        // The pick was spent creating the new chat; it must not ride on it again.
+        picker.clearSelection();
+      }
+      cancelTurnWork();
+      try {
+        const { session, messages: rows, lastTurnModel } = await getAiSessionMessages(newSessionId);
+        dispatch(loadHistory({
+          sessionId: newSessionId,
+          messages: historyToMessages(rows, lastTurnModel),
+          orgId: session?.orgId,
+        }));
+      } catch (err) {
+        // Send only into the chat we actually opened. The parked message stays
+        // (the prompt is still bound to the old chat on screen).
+        reportInternalError(err, 'ai-session-continue-open');
+        dispatch(setError(CONTINUATION_OPEN_FAILED));
+        return;
+      }
+      lastUserContentRef.current = null;
+      picker.setContinuation(null);
+      void picker.load({ sessionId: newSessionId });
+      await handleSend(parked.pendingContent, { sessionId: newSessionId });
+    } finally {
+      setContinuing(false);
+    }
+  }, [cancelTurnWork, dispatch, handleSend]);
+
+  /** W05: drop the pick and send the parked message on the current model. */
+  const handleKeepModel = useCallback(() => {
+    const picker = pickerRef.current;
+    const parked = picker.continuationRef.current;
+    if (!parked) return;
+    picker.clearSelection();
+    picker.setContinuation(null);
+    void handleSend(parked.pendingContent, { sessionId: parked.sourceSessionId });
+  }, [handleSend]);
 
   const handleRetry = useCallback(() => {
     const lastContent = lastUserContentRef.current;
     if (!lastContent) return;
     dispatch(clearError());
-    handleSend(lastContent);
+    void handleSend(lastContent);
   }, [dispatch, handleSend]);
 
   const handleChip = useCallback((text: string) => {
@@ -369,6 +629,8 @@ export function HomeScreen() {
     cancelTurnWork();
     lastUserContentRef.current = null;
     dispatch(resetChat());
+    pickerRef.current.reset();
+    void pickerRef.current.load({});
   }, [cancelTurnWork, dispatch]);
 
   const handleOpenHistory = useCallback(() => {
@@ -380,9 +642,16 @@ export function HomeScreen() {
       setHistoryOpen(false);
       cancelTurnWork();
       try {
-        const { messages: rows } = await getAiSessionMessages(sid);
-        const messages = historyToMessages(rows);
-        dispatch(loadHistory({ sessionId: sid, messages }));
+        const { session, messages: rows, lastTurnModel } = await getAiSessionMessages(sid);
+        const messages = historyToMessages(rows, lastTurnModel);
+        dispatch(loadHistory({ sessionId: sid, messages, orgId: session?.orgId }));
+        // A continuation parked for another chat never follows us here, and a
+        // pick made there must not ride on this one.
+        const picker = pickerRef.current;
+        if (picker.continuationRef.current?.sourceSessionId !== sid) picker.setContinuation(null);
+        picker.clearSelection();
+        picker.setSuggested([]);
+        void picker.load({ sessionId: sid });
       } catch (err) {
         // The raw message is internal (function name + HTTP status) — report it
         // to Sentry and show the user a static string instead (issue #3115).
@@ -393,26 +662,76 @@ export function HomeScreen() {
     [cancelTurnWork, dispatch],
   );
 
+  /**
+   * Approve or reject the plan the server is blocked on. Resolves to an
+   * inline error for the card, or null. A 400/404/409 means the server no
+   * longer holds the plan open, so the card settles instead of nagging.
+   */
+  const handlePlanDecide = useCallback(
+    async (messageId: string, approved: boolean): Promise<string | null> => {
+      const sid = sessionIdRef.current;
+      if (!sid) return 'This conversation is no longer open.';
+      const res = await decideAiPlan(sid, approved);
+      if (res.ok) {
+        dispatch(planDecision({ messageId, decision: approved ? 'approved' : 'rejected' }));
+        return null;
+      }
+      if (planDecisionFailure(res.status) === 'gone') {
+        dispatch(planNoLongerPending({ messageId }));
+        return null;
+      }
+      reportInternalError(new Error(`approve-plan failed: ${res.status} ${res.error}`), 'ai-plan-decide');
+      return approved ? 'Could not approve the plan. Try again.' : 'Could not reject the plan. Try again.';
+    },
+    [dispatch],
+  );
+
+  /** Stop a running plan; plan_complete(aborted) then settles the card. */
+  const handlePlanStop = useCallback(async (_messageId: string): Promise<string | null> => {
+    const sid = sessionIdRef.current;
+    if (!sid) return 'This conversation is no longer open.';
+    const res = await abortAiPlan(sid);
+    if (res.ok) return null;
+    if (planDecisionFailure(res.status) === 'gone') return 'This plan has already finished.';
+    reportInternalError(new Error(`abort-plan failed: ${res.status} ${res.error}`), 'ai-plan-abort');
+    return 'Could not stop the plan. Try again.';
+  }, []);
+
   const isCold = messages.length === 0 && status !== 'creating-session';
+  // Bound to the chat it came from: another chat never sees, or sends, it.
+  const parkedContinuation =
+    picker.continuation && picker.continuation.sourceSessionId === sessionId ? picker.continuation : null;
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0, paddingTop: insets.top }}>
-      <ChatHeader
-        userName={userName}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenHistory={handleOpenHistory}
-        onNewChat={handleNewChat}
-      />
+      <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
+        <ChatHeader
+          userName={userName}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenHistory={handleOpenHistory}
+          onNewChat={handleNewChat}
+        />
+      </View>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
+        // The KAV sits below the safe-area inset AND the header; offsetting by
+        // the inset alone over-pads by the header height and pushes the cold
+        // strip up over the avatar (#8889).
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + headerHeight : 0}
         style={{ flex: 1 }}
       >
         {isCold ? (
-          <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+          // ScrollView, not a bare flex-end View: when the keyboard leaves less
+          // room than the content needs, a View overflows upward over the
+          // header; this scrolls instead, and flexGrow keeps it bottom-anchored.
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}
+            keyboardShouldPersistTaps="handled"
+          >
             <HomeFleetStrip />
             <ColdOpenChips onPick={handleChip} />
-          </View>
+          </ScrollView>
         ) : (
           <ConversationList
             messages={messages}
@@ -423,6 +742,8 @@ export function HomeScreen() {
                 handleRetry();
               }
             }}
+            onPlanDecide={handlePlanDecide}
+            onPlanStop={handlePlanStop}
           />
         )}
 
@@ -440,8 +761,20 @@ export function HomeScreen() {
           padding double-counts and leaves a visible gap between the
           composer and the tab bar.
         */}
+        {parkedContinuation ? (
+          <ContinuationPrompt
+            required={parkedContinuation.required}
+            busy={continuing}
+            canContinue={continuationStep(parkedContinuation, picker.state.selection) !== null}
+            onContinue={() => void handleContinue()}
+            onKeep={handleKeepModel}
+          />
+        ) : null}
+
+        <ModelPicker picker={picker} disabled={status === 'streaming' || status === 'creating-session'} />
+
         <Composer
-          onSend={handleSend}
+          onSend={(text) => void handleSend(text)}
           disabled={status === 'creating-session'}
           draft={draft}
           onDraftConsumed={() => setDraft(undefined)}

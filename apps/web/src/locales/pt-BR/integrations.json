@@ -1409,6 +1409,34 @@
       "degraded": "Degradado",
       "unhealthy": "Com problemas",
       "unknown": "Desconhecido"
-    }
+    },
+    "actionsLabel": "Permitir ações de resposta",
+    "actionsHelp": "Permite que os técnicos isolem dispositivos e executem varreduras por esta conexão.",
+    "actionsConfirmTitle": "Permitir ações de resposta?",
+    "actionsConfirmMessage": "Técnicos com permissão de execução em dispositivos poderão isolar e liberar dispositivos e executar varreduras nos endpoints gerenciados por “{{name}}”.",
+    "actionsConfirmLabel": "Permitir",
+    "actionsOnToast": "Ações de resposta permitidas",
+    "actionsOffToast": "Ações de resposta desativadas",
+    "actionsError": "Não foi possível atualizar as ações de resposta.",
+    "pushLabel": "Eventos push",
+    "pushHelp": "O {{provider}} avisa o Breeze sobre novos eventos, o que dispara uma sincronização antes do cronograma normal. As sincronizações agendadas continuam.",
+    "pushOnToast": "Eventos push ativados",
+    "pushOffToast": "Eventos push desativados",
+    "pushReplaceTitle": "Substituir o destino de push existente?",
+    "pushReplaceMessage": "{{provider}} já envia eventos push para outro destino (por exemplo, um SIEM). Substituí-lo pelo Breeze interrompe esse fluxo.",
+    "pushReplaceConfirm": "Substituir e ativar",
+    "pushError": "Não foi possível alterar os eventos push.",
+    "pushErrors": {
+      "public_url_unset": "Defina a URL pública do servidor antes de ativar os eventos push.",
+      "public_url_not_https": "Os eventos push exigem uma URL pública HTTPS.",
+      "connection_inactive": "Ative a conexão antes de ativar os eventos push.",
+      "push_state_changed": "As configurações de push mudaram durante a ativação. Atualize e tente novamente."
+    },
+    "pushTest": "Enviar evento de teste",
+    "pushTestQueuedToast": "Evento de teste solicitado",
+    "pushTestError": "Não foi possível enviar o evento de teste.",
+    "pushTestNote": "O evento de teste pode levar alguns minutos para chegar.",
+    "pushLast": "Último evento push: {{relative}}",
+    "pushNone": "Nenhum evento push recebido ainda"
   }
 }

@@ -52,6 +52,7 @@ import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
 import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
+import { edrWebhookRoutes } from './routes/webhooks/edr';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
@@ -941,6 +942,13 @@ api.route('/webhooks', xeroWebhookRoutes);
 // sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: there is no ambient
 // auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', resendWebhookRoutes);
+// EDR vendor push hints (W03 PR-B, #8167) — no session auth; the per-connection
+// secret the vendor echoes in Authorization is verified in the handler.
+// partnerGuard skips the exact /webhooks/edr/<uuid> path so that secret is never
+// parsed as a JWT; the global body gate caps it at 256 KB and it has its own
+// isolated per-IP bucket. NOT under /edr (whose authMiddleware covers `*`) and
+// NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient auth transaction exists here.
+api.route('/webhooks', edrWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);

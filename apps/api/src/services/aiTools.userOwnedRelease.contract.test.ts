@@ -118,7 +118,7 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // edr_actions.requested_by for EVERY action. There is no `if (action === …)`
   // guard: the action flows straight into the dispatch. The model is offered
   // isolate/unisolate/scan, the whole input_schema enum (proven below).
-  ['services/aiToolsEdr.ts:233', ['isolate', 'unisolate', 'scan']],
+  ['services/aiToolsEdr.ts:239', ['isolate', 'unisolate', 'scan']],
 ]);
 
 /**
@@ -345,7 +345,7 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
 
     const edrSrc = readFileSync(join(API_SRC, 'services/aiToolsEdr.ts'), 'utf8');
     const edrLines = edrSrc.split('\n');
-    expect(edrLines[232], 'aiToolsEdr.ts:233 moved — re-key ACTION_GUARD_ALIASES').toMatch(/^\s*requestedBy: auth\.user\.id,$/);
+    expect(edrLines[238], 'aiToolsEdr.ts:239 moved — re-key ACTION_GUARD_ALIASES').toMatch(/^\s*requestedBy: auth\.user\.id,$/);
     expect(edrSrc.match(/requestedBy: auth\.user\.id/g)?.length, 'edr_endpoint_action must keep ONE write site').toBe(1);
     expect(edrSrc).toMatch(/const EDR_AI_ENDPOINT_ACTIONS = \['isolate', 'unisolate', 'scan'\] as const;/);
     expect(edrSrc).not.toMatch(/if \(action === /);

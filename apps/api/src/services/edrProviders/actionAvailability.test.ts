@@ -35,6 +35,15 @@ const h = vi.hoisted(() => {
 vi.mock('../../db', () => ({ db: h.db, runOutsideDbContext: h.runOutsideDbContext, withSystemDbAccessContext: h.withSystemDbAccessContext }));
 vi.mock('./read', () => ({ resolveEdrReadScope: h.resolveEdrReadScope }));
 vi.mock('./actions', () => ({ describeEndpointActions: h.describeEndpointActions }));
+const mfa = vi.hoisted(() => ({ satisfied: true }));
+vi.mock('../../middleware/auth', () => ({ hasSatisfiedMfa: vi.fn(() => mfa.satisfied) }));
+vi.mock('../permissions', () => ({
+  PERMISSIONS: { DEVICES_EXECUTE: { resource: 'devices', action: 'execute' } },
+  hasPermission: (p: { permissions: Array<{ resource: string; action: string }> }, r: string, a: string) =>
+    p.permissions.some((x) => x.resource === r && x.action === a),
+}));
+const EXEC = { permissions: [{ resource: 'devices', action: 'read' }, { resource: 'devices', action: 'execute' }] } as never;
+const READ_ONLY = { permissions: [{ resource: 'devices', action: 'read' }] } as never;
 
 import { describeEndpointActionsForRows, type EdrEndpointRowForActions } from './actionAvailability';
 
@@ -61,6 +70,28 @@ describe('describeEndpointActionsForRows', () => {
     expect(h.describeEndpointActions).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'e1' }), tenant, connection,
       expect.objectContaining({ restriction: { allowedDeviceIds: ['d1'], allowedSiteIds: ['s1'] } }),
+    );
+  });
+
+  it('PR-B carry-forward: the caller facts (devices.execute, MFA) are derived from the request and passed down', async () => {
+    h.state.results = [[connection], [tenant]];
+    mfa.satisfied = true;
+    await describeEndpointActionsForRows({} as never, EXEC, [row()]);
+    expect(h.describeEndpointActions).toHaveBeenLastCalledWith(
+      expect.anything(), tenant, connection, expect.objectContaining({ caller: { canExecute: true, mfaSatisfied: true } }),
+    );
+    h.state.results = [[connection], [tenant]];
+    mfa.satisfied = false;
+    await describeEndpointActionsForRows({} as never, READ_ONLY, [row()]);
+    expect(h.describeEndpointActions).toHaveBeenLastCalledWith(
+      expect.anything(), tenant, connection, expect.objectContaining({ caller: { canExecute: false, mfaSatisfied: false } }),
+    );
+    // No resolved permissions -> fail closed.
+    h.state.results = [[connection], [tenant]];
+    mfa.satisfied = true;
+    await describeEndpointActionsForRows({} as never, undefined, [row()]);
+    expect(h.describeEndpointActions).toHaveBeenLastCalledWith(
+      expect.anything(), tenant, connection, expect.objectContaining({ caller: { canExecute: false, mfaSatisfied: true } }),
     );
   });
 

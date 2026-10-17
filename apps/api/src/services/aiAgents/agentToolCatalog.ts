@@ -196,6 +196,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_edr_status: 'security_response',
   list_edr_detections: 'security_response',
   edr_endpoint_action: 'security_response',
+  sync_edr_data: 'security_response',
   execute_containment: 'security_response',
   apply_cis_remediation: 'security_response',
   get_cis_compliance: 'security_response',

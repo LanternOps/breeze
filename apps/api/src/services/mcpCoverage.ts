@@ -335,7 +335,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // no adapter implements a detection action (GravityZone quarantine
   // restore/delete waits on the lab gate), so only the endpoint tool covers it.
   'edr/actions.ts': { tools: ['edr_endpoint_action'] },
-  'edr/connections.ts': { exempt: 'vendor_console_admin', note: 'stores and rotates the EDR console API key' },
+  'edr/connectionPush.ts': { exempt: 'vendor_console_admin', note: 'registers the vendor push webhook and its shared secret' },
+  'edr/connections.ts': { exempt: 'vendor_console_admin', note: 'stores and rotates the EDR console API key; its /sync route is also reachable as sync_edr_data' },
   'edr/detections.ts': { tools: ['get_edr_status', 'list_edr_detections'] },
   'edr/endpoints.ts': { exempt: 'vendor_console_admin', note: 'lists EDR endpoint rows and links one to a Breeze device' },
   'edr/providers.ts': { exempt: 'vendor_console_admin', note: 'static adapter catalog for the connect-a-provider form' },
@@ -745,6 +746,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'viewers/download.ts': { exempt: 'internal_plumbing' },
   'vulnerabilities.ts': { tools: ['get_vulnerability_report', 'get_device_vulnerabilities', 'remediate_vulnerability'] },
   'webhooks.ts': { tools: ['query_webhooks', 'test_webhook'] },
+  'webhooks/edr.ts': { exempt: 'inbound_integration' },
   'webhooks/emailProvider.ts': { exempt: 'inbound_integration' },
   'webhooks/quickbooks.ts': { exempt: 'inbound_integration' },
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },

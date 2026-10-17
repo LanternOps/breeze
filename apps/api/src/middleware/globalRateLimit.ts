@@ -96,6 +96,12 @@ export const ISOLATED_BUCKETS: readonly IsolatedBucket[] = [
   // route carries its own 600/min limiter and rejects anything unsigned, so
   // this bucket only needs to stay out of runaway territory.
   { prefix: '/api/v1/webhooks/email-provider/', name: 'emaildomainswebhook', limit: 1200 },
+  // EDR vendor push hints (W03 PR-B). One vendor egress IP delivers every
+  // partner's console events, so the shared per-IP budget would couple partners
+  // to each other and to dashboard traffic. The route carries its own
+  // per-connection 60/min limiter (checked before any DB read) and rejects
+  // anything without the connection's secret.
+  { prefix: '/api/v1/webhooks/edr/', name: 'edrwebhook', limit: 1200 },
   // Public trust pages (spec trust-center §8, §10): unauthenticated by design. Isolated so a scanner
   // enumerating slugs cannot burn the shared budget; 120/min is generous for one human reading a page
   // (payload + badge + a few documents). The SSR card path lives under /trust/card/ and is skip-listed

@@ -538,9 +538,36 @@ describe('dispatchEdrAction — the single action door', () => {
 describe('describeEndpointActions', () => {
   const endpoint = { vendorEndpointId: 'v', osPlatform: 'windows' as const, isolationState: 'not_isolated' as const, online: true, breezeDeviceId: 'dev-1' };
   const tenant = { unsupportedActions: [] as never[], unsupportedActionsAt: null };
+  const caller = { canExecute: true, mfaSatisfied: true };
+
+  it('PR-B carry-forward: a caller without devices.execute sees EVERY action unavailable, with a stated reason', () => {
+    const rows = describeEndpointActions(endpoint, tenant, connectionRow() as never, { caller: { canExecute: false, mfaSatisfied: true } });
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) {
+      expect(r).toMatchObject({ available: false, reason: expect.stringMatching(/Execute permission on devices/) });
+      expect(r.mfaRequired).toBeUndefined();
+    }
+  });
+
+  it('PR-B carry-forward: an otherwise-available action needs MFA -> unavailable + mfaRequired (UI prompts, never lies)', () => {
+    const rows = describeEndpointActions(endpoint, tenant, connectionRow() as never, { caller: { canExecute: true, mfaSatisfied: false } });
+    expect(rows.find((r) => r.action === 'isolate')).toEqual({
+      action: 'isolate', available: false, reason: 'Verify your sign-in with MFA to run response actions', mfaRequired: true,
+    });
+    // A gate failure keeps its own reason; MFA is not the blocker there.
+    expect(rows.find((r) => r.action === 'update_agent')).toMatchObject({ available: false, reason: 'Not supported by Bitdefender GravityZone' });
+    expect(rows.find((r) => r.action === 'update_agent')!.mfaRequired).toBeUndefined();
+  });
+
+  it('PR-B carry-forward: the kill switch still wins over the permission reason (the UI hides on it)', () => {
+    h.edrActionsEnabled.mockReturnValue(false);
+    const rows = describeEndpointActions(endpoint, tenant, connectionRow() as never, { caller: { canExecute: false, mfaSatisfied: false } });
+    expect(rows.every((r) => r.reason === 'Response actions are disabled on this server')).toBe(true);
+    h.edrActionsEnabled.mockReturnValue(true);
+  });
 
   it('lists every endpoint action with availability and reasons, no I/O', () => {
-    const rows = describeEndpointActions(endpoint, tenant, connectionRow() as never);
+    const rows = describeEndpointActions(endpoint, tenant, connectionRow() as never, { caller });
     expect(rows.map((r) => r.action)).toEqual(['isolate', 'unisolate', 'scan', 'update_agent', 'kill_process']);
     expect(rows.find((r) => r.action === 'isolate')).toEqual({ action: 'isolate', available: true, reason: null });
     expect(rows.find((r) => r.action === 'update_agent')).toMatchObject({ available: false, reason: 'Not supported by Bitdefender GravityZone' });
@@ -549,11 +576,12 @@ describe('describeEndpointActions', () => {
 
   it('kill switch, connection switch and site restriction each show a reason', () => {
     h.edrActionsEnabled.mockReturnValue(false);
-    expect(describeEndpointActions(endpoint, tenant, connectionRow() as never)[0]!.reason).toBe('Response actions are disabled on this server');
+    expect(describeEndpointActions(endpoint, tenant, connectionRow() as never, { caller })[0]!.reason).toBe('Response actions are disabled on this server');
     h.edrActionsEnabled.mockReturnValue(true);
-    expect(describeEndpointActions(endpoint, tenant, connectionRow({ actionsEnabled: false }) as never)[0]!.reason)
+    expect(describeEndpointActions(endpoint, tenant, connectionRow({ actionsEnabled: false }) as never, { caller })[0]!.reason)
       .toMatch(/turned off for this EDR connection/);
     expect(describeEndpointActions({ ...endpoint, breezeDeviceId: null }, tenant, connectionRow() as never, {
+      caller,
       restriction: { allowedDeviceIds: ['dev-1'], allowedSiteIds: ['s1'] },
     })[0]).toMatchObject({ available: false, reason: expect.stringMatching(/not linked to a device in your sites/) });
   });

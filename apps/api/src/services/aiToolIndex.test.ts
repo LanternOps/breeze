@@ -141,7 +141,8 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // #8167 W03: `edr_endpoint_action (isolate/unisolate/scan)` on the
     // Integrations line adds 46 bytes (6677 vs the 6656 limit). Paid for by
     // dropping the patching note's "Approve patches before install." (names no
-    // tool), not by raising the ceiling.
+    // tool), not by raising the ceiling. W03 PR-B's `sync_edr_data` (+15 bytes)
+    // was absorbed by further tightening the scripts note.
     // #8742 W02: `send_endpoint_message (send/list/get)` on the Tickets line
     // took it to 6684. Paid for by tightening the scripts note's wording (same
     // guidance), not by raising the ceiling.
