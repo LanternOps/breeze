@@ -1,6 +1,6 @@
 import { redactLogFields, redactLogMessage, redactToolOutputFields } from './logRedaction';
 import { scrubErrorFieldsDeep } from './aiToolErrors';
-import { sanitizeUntrustedToolText } from './aiInputSanitizer';
+import { sanitizeUntrustedToolStdout, sanitizeUntrustedToolText, sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { BARE_SECRET_PATTERNS } from './redactionPatterns';
 
 // Re-exported for existing importers; the rule set lives in ./redactionPatterns.
@@ -1087,11 +1087,15 @@ export const RAW_TEXT_FIELDS_BY_TOOL: Readonly<Record<string, ReadonlySet<string
   get_network_asset_reachability: new Set(['name']),
   // Evidence collect_evidence/execute_containment brought back from the
   // device: evidence descriptions and metadata, raw action results.
-  get_incident_timeline: new Set(['description', 'metadata', 'result']),
-  generate_incident_report: new Set(['description']),
+  // timeline[].summary repeats the evidence/action description verbatim
+  // (routes/incidentActions.ts writes summary: description).
+  get_incident_timeline: new Set(['description', 'metadata', 'result', 'summary']),
+  generate_incident_report: new Set(['description', 'metadata', 'summary']),
   // Extension names/versions are self-reported by the browser profile; a
   // sideloaded extension's name is whatever its author chose.
   get_browser_security: new Set(['name', 'version', 'extensionId', 'details']),
+  // Per-device install history: the installer's/OS's own error text.
+  manage_patches: new Set(['errorMessage']),
 } as const;
 
 /**
@@ -1122,7 +1126,7 @@ function fenceRawTextFields(value: unknown, fieldNames: ReadonlySet<string>, fla
       if (key === 'stdout' && typeof v === 'string') {
         out[key] = fenceEncodedStdout(v, fieldNames, flags);
       } else if (fieldNames.has(key)) {
-        out[key] = fenceAllStrings(v, flags);
+        out[key] = sanitizeUntrustedToolValue(v, flags);
       } else {
         out[key] = fenceRawTextFields(v, fieldNames, flags);
       }
@@ -1132,30 +1136,43 @@ function fenceRawTextFields(value: unknown, fieldNames: ReadonlySet<string>, fla
   return value;
 }
 
-function fenceAllStrings(value: unknown, flags: string[]): unknown {
-  if (typeof value === 'string') {
-    return value.length > 0 ? sanitizeUntrustedToolText(value, flags) : value;
-  }
-  if (Array.isArray(value)) return value.map((entry) => fenceAllStrings(entry, flags));
-  if (isRecord(value)) {
-    const out: Record<string, unknown> = {};
-    for (const [key, v] of Object.entries(value)) out[key] = fenceAllStrings(v, flags);
-    return out;
-  }
-  return value;
-}
-
 function fenceEncodedStdout(stdout: string, fieldNames: ReadonlySet<string>, flags: string[]): string {
+  // The whole stdout is device output: decode, fence every string, re-encode.
+  if (fieldNames.has('stdout')) return sanitizeUntrustedToolStdout(stdout, flags);
+  // Otherwise only the registered field names inside a JSON stdout are device
+  // text; raw stdout of an unregistered-stdout tool is left alone.
   const decoded = tryParseJson(stdout);
-  if (decoded === null || typeof decoded !== 'object') {
-    // Raw script/command output. Fenced only when the tool registered it.
-    return fieldNames.has('stdout') && stdout.length > 0 ? sanitizeUntrustedToolText(stdout, flags) : stdout;
-  }
-  const fenced = fieldNames.has('stdout')
-    ? fenceAllStrings(decoded, flags)
-    : fenceRawTextFields(decoded, fieldNames, flags);
+  if (decoded === null || typeof decoded !== 'object') return stdout;
+  const fenced = fenceRawTextFields(decoded, fieldNames, flags);
   const reencoded = JSON.stringify(fenced);
   return reencoded === JSON.stringify(decoded) ? stdout : reencoded;
+}
+
+/**
+ * The capture envelope's `head`/`tail` previews are the first and last bytes
+ * of the raw (redacted) result — for a registered tool, device bytes the inner
+ * `compacted` fence never sees. Fenced as text; the handle, sizes and content
+ * type (Breeze-generated, the model's route back to the bytes) stay verbatim.
+ */
+function fenceArtifactPreviews(toolName: string, artifact: Record<string, unknown>): Record<string, unknown> {
+  if (!RAW_TEXT_FIELDS_BY_TOOL[toolName]) return artifact;
+  const flags: string[] = [];
+  const out: Record<string, unknown> = { ...artifact };
+  for (const key of ['head', 'tail'] as const) {
+    const preview = artifact[key];
+    if (typeof preview === 'string' && preview.length > 0) out[key] = sanitizeUntrustedToolText(preview, flags);
+  }
+  logFenceFlags(toolName, flags);
+  return out;
+}
+
+function logFenceFlags(toolName: string, flags: readonly string[]): void {
+  // NBSP and soft hyphens are common in benign files; a lone dangerous_unicode
+  // strip is not a signal worth a log line per call.
+  if (!flags.some((flag) => flag !== 'dangerous_unicode')) return;
+  // Flag names and the tool only — never the text: it is attacker-authored
+  // and may carry secrets the redactor has not reached yet.
+  console.warn('[AI] Untrusted tool-output fence flags:', flags.join(','), 'tool:', toolName);
 }
 
 function fenceRegisteredRawTextFields(toolName: string, value: unknown): unknown {
@@ -1163,11 +1180,7 @@ function fenceRegisteredRawTextFields(toolName: string, value: unknown): unknown
   if (!fieldNames) return value;
   const flags: string[] = [];
   const fenced = fenceRawTextFields(value, fieldNames, flags);
-  if (flags.length > 0) {
-    // Flag names and the tool only — never the text: it is attacker-authored
-    // and may carry secrets the redactor has not reached yet.
-    console.warn('[AI] Untrusted tool-output fence flags:', flags.join(','), 'tool:', toolName);
-  }
+  logFenceFlags(toolName, flags);
   return fenced;
 }
 
@@ -1189,7 +1202,7 @@ export function compactToolResultForChat(
     const artifactJson = JSON.stringify({ artifact: envelope.artifact, compacted: '' });
     const innerBudget = Math.max(512, maxChars - artifactJson.length - 8);
     const inner = compactToolResultForChat(toolName, envelope.compacted, innerBudget);
-    return safeStringify({ artifact: envelope.artifact, compacted: tryParseJson(inner) ?? inner });
+    return safeStringify({ artifact: fenceArtifactPreviews(toolName, envelope.artifact), compacted: tryParseJson(inner) ?? inner });
   }
 
   if (parsed === null) {
