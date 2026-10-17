@@ -9,6 +9,7 @@ import { getRedis } from '../../services/redis';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { TRUST_SERVING_SET_KEY } from '../../services/trustPage/servingSet';
 import { ensureTrustPage, publishTrustPage, refreshPublishedPage, unpublishTrustPage } from '../../services/trustPage/publication';
+import { TELEMETRY_CONTROL_IDS } from '@breeze/shared';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
 
@@ -165,7 +166,58 @@ describe('trust page publication', () => {
     expect(first.page.publishedConfig).toEqual({
       hiddenControlIds: ['dns_filtering'], showPercentages: true, showDeviceCount: false, showManagedBy: true,
       searchIndexable: true, introHtml: '<p>Hello</p>', websiteUrl: null, securityContactEmail: null, documentIds: [docId],
+      // W2 frozen config v2 (amendment 28).
+      documents: [{ id: docId, visibility: 'public' }], catalogControlIds: [...TELEMETRY_CONTROL_IDS], declarationIds: [],
+      frameworkView: ['nist_csf_2'], showHistory: false, subprocessors: [], faq: [], ndaText: null, locale: 'en',
     });
+  });
+
+  it('Review Focus 1: a page published under W1 (hand-written legacy config + v1 snapshot) refreshes to a v2 snapshot without mfa_enforced_m365', async () => {
+    const first = await publishFirst(s);
+    // Rewind the row to exactly what W1 left behind: a legacy published_config and a v1 current snapshot.
+    const legacy = {
+      hiddenControlIds: [], showPercentages: false, showDeviceCount: false, showManagedBy: true, searchIndexable: false,
+      introHtml: '<p>W1 intro</p>', websiteUrl: null, securityContactEmail: null, documentIds: [],
+    };
+    await getTestDb().execute(sql`UPDATE trust_pages SET published_config = ${JSON.stringify(legacy)}::jsonb WHERE id = ${first.page.id}`);
+    await getTestDb().execute(sql`UPDATE trust_page_snapshots SET is_current = false WHERE trust_page_id = ${first.page.id}`);
+    await getTestDb().execute(sql`
+      INSERT INTO trust_page_snapshots (trust_page_id, org_id, payload, payload_sha256, catalog_version, publication_revision, is_current)
+      VALUES (${first.page.id}, ${s.orgId}, '{"schemaVersion":1}'::jsonb, ${'0'.repeat(64)}, '2026-10-13.1', ${first.page.publicationRevision}, true)`);
+
+    const r = await refreshPublishedPage(first.page.id);
+    expect(r.rebuilt).toBe(true);
+    const payload = await currentPayload(first.page.id);
+    expect(payload.schemaVersion).toBe(2);
+    expect(payload.controls.map((c) => c.id)).not.toContain('mfa_enforced_m365');
+    expect(payload.summary.catalogTotal).toBe(15);
+    expect(payload).toMatchObject({ locale: 'en', introHtml: '<p>W1 intro</p>', declaredControls: [], faq: [], subprocessors: [], history: [], frameworks: [], access: null });
+    // The legacy config itself is left as it was (only a republish rewrites it).
+    const [row] = await sys(() => db.select({ c: trustPages.publishedConfig }).from(trustPages).where(eq(trustPages.id, first.page.id)));
+    expect(row?.c).toEqual(legacy);
+  });
+
+  it('Review Focus 2: a draft gated→public change stays gated until a republish; a public→gated change gates at the next refresh', async () => {
+    const page = await sys(() => ensureTrustPage(s.orgId, s.userId));
+    const gatedId = await seedDocument(s.orgId, 'Pen test report');
+    const publicId = await seedDocument(s.orgId, 'Security policy');
+    await sys(() => db.insert(trustPageDocuments).values([
+      { trustPageId: page.id, documentId: gatedId, orgId: s.orgId, visibility: 'gated', sortOrder: 0, disclosureConfirmedAt: new Date(), disclosureConfirmedByUserId: s.userId },
+      { trustPageId: page.id, documentId: publicId, orgId: s.orgId, visibility: 'public', sortOrder: 1, disclosureConfirmedAt: new Date(), disclosureConfirmedByUserId: s.userId },
+    ]));
+    const first = await sys(() => publishTrustPage({
+      orgId: s.orgId, expectedRevision: 0, actorUserId: s.userId, authorization: { authorizedBy: 'Jane Doe, COO' },
+      partnerTrustState: 'trusted', partnerSlug: s.partnerSlug, orgSlug: s.orgSlug,
+    }));
+    const before = await currentPayload(first.page.id);
+    expect(before.documents.map((d) => [d.id, 'visibility' in d ? d.visibility : null])).toEqual([[gatedId, 'gated'], [publicId, 'public']]);
+    expect('access' in before ? before.access : undefined).toEqual({ ndaText: null });
+    // Draft edits, no republish: flip both.
+    await sys(() => db.update(trustPageDocuments).set({ visibility: 'public' }).where(eq(trustPageDocuments.documentId, gatedId)));
+    await sys(() => db.update(trustPageDocuments).set({ visibility: 'gated' }).where(eq(trustPageDocuments.documentId, publicId)));
+    expect((await refreshPublishedPage(first.page.id)).rebuilt).toBe(true);
+    const after = await currentPayload(first.page.id);
+    expect(after.documents.map((d) => [d.id, 'visibility' in d ? d.visibility : null])).toEqual([[gatedId, 'gated'], [publicId, 'gated']]);
   });
 
   it('PUT after publish does not change the next refreshed payload', async () => {

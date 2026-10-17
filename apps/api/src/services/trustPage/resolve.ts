@@ -2,15 +2,16 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { organizations, partners, trustPages, trustPageSnapshots } from '../../db/schema';
 import { livePublicationPredicate } from './predicate';
-import { TRUST_SLUG_RE, type TrustPagePublicPayload } from '@breeze/shared';
+import { TRUST_SLUG_RE, type TrustPagePublicPayloadAny } from '@breeze/shared';
 
 export { livePublicationPredicate } from './predicate';
 
 /**
  * Partner slugs that can never address a trust page: `preview` is the path segment of the public
- * preview-token route (/trust/public/preview/:token), which is registered ahead of the slug routes.
+ * preview-token route (/trust/public/preview/:token), which is registered ahead of the slug routes;
+ * `access` is the portal's gated-document request path (/trust/access/*, amendment 36).
  */
-export const TRUST_RESERVED_PARTNER_SLUGS: ReadonlySet<string> = new Set(['preview']);
+export const TRUST_RESERVED_PARTNER_SLUGS: ReadonlySet<string> = new Set(['preview', 'access']);
 
 export function parseTrustSlugs(partnerSlug: string, orgSlug?: string): { partnerSlug: string; orgSlug: string | null } | null {
   if (typeof partnerSlug !== 'string' || !TRUST_SLUG_RE.test(partnerSlug)) return null;
@@ -22,7 +23,7 @@ export function parseTrustSlugs(partnerSlug: string, orgSlug?: string): { partne
 
 export interface ResolvedTrustPage {
   pageId: string; orgId: string; partnerId: string; publishedAt: Date; searchIndexable: boolean;
-  lastEvaluatedAt: Date | null; snapshotId: string | null; payload: TrustPagePublicPayload | null;
+  lastEvaluatedAt: Date | null; snapshotId: string | null; payload: TrustPagePublicPayloadAny | null;
 }
 
 /** ONE indexed query. Caller holds the system db context. Unknown/unpublished/non-live/untrusted → null. */
@@ -45,5 +46,5 @@ export async function resolvePublishedTrustPage(partnerSlug: string, orgSlug: st
     .where(and(eq(partners.slug, partnerSlug), target, livePublicationPredicate()))
     .limit(1);
   if (!row || !row.publishedAt) return null;
-  return { ...row, publishedAt: row.publishedAt, payload: (row.payload as TrustPagePublicPayload | null) ?? null };
+  return { ...row, publishedAt: row.publishedAt, payload: (row.payload as TrustPagePublicPayloadAny | null) ?? null };
 }

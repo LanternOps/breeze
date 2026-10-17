@@ -14,6 +14,8 @@ import { captureException } from '../services/sentry';
 import { refreshPublishedPage } from '../services/trustPage/publication';
 import { rebuildServingSetFromDb } from '../services/trustPage/servingSet';
 import { livePublicationPredicate } from '../services/trustPage/predicate';
+import { runDeclarationReminders } from '../services/trustPage/declarationReminders';
+import { pruneTrustAccessData } from '../services/trustPage/access/retention';
 import { attachWorkerObservability } from './workerObservability';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -30,6 +32,10 @@ export interface TrustPageSweepSummary {
   failed: number;
   pruned: number;
   servingMembers: number;
+  /** Declaration expiry reminders sent (W02b). */
+  reminded: number;
+  /** Access-request retention (W02d). */
+  accessPruned: { tokens: number; requests: number };
   durationMs: number;
 }
 
@@ -42,7 +48,7 @@ export async function runTrustPageSnapshotSweepOnce(now: Date = new Date()): Pro
       .where(livePublicationPredicate()),
   )) as Array<{ pageId: string }>;
 
-  const summary: TrustPageSweepSummary = { pages: rows.length, rebuilt: 0, failed: 0, pruned: 0, servingMembers: 0, durationMs: 0 };
+  const summary: TrustPageSweepSummary = { pages: rows.length, rebuilt: 0, failed: 0, pruned: 0, servingMembers: 0, reminded: 0, accessPruned: { tokens: 0, requests: 0 }, durationMs: 0 };
   for (const r of rows) {
     try {
       if ((await refreshPublishedPage(r.pageId)).rebuilt) summary.rebuilt += 1;
@@ -71,9 +77,23 @@ export async function runTrustPageSnapshotSweepOnce(now: Date = new Date()): Pro
     captureException(err);
   }
 
+  // W2 hooks (#8770): each is independent of the refresh and of each other, so one failing never stops the rest.
+  try {
+    summary.reminded = (await runDeclarationReminders(now)).reminded;
+  } catch (err) {
+    console.error(`${LOG_PREFIX} declaration reminders failed:`, err);
+    captureException(err);
+  }
+  try {
+    summary.accessPruned = await pruneTrustAccessData(now);
+  } catch (err) {
+    console.error(`${LOG_PREFIX} access-data retention failed:`, err);
+    captureException(err);
+  }
+
   summary.durationMs = Date.now() - startedAt;
-  if (summary.pages > 0 || summary.pruned > 0) {
-    console.log(`${LOG_PREFIX} refreshed ${summary.pages} pages (rebuilt=${summary.rebuilt}, failed=${summary.failed}), serving=${summary.servingMembers}, pruned ${summary.pruned} snapshots in ${summary.durationMs}ms`);
+  if (summary.pages > 0 || summary.pruned > 0 || summary.reminded > 0 || summary.accessPruned.tokens > 0 || summary.accessPruned.requests > 0) {
+    console.log(`${LOG_PREFIX} refreshed ${summary.pages} pages (rebuilt=${summary.rebuilt}, failed=${summary.failed}), serving=${summary.servingMembers}, pruned ${summary.pruned} snapshots, reminded ${summary.reminded}, access pruned tokens=${summary.accessPruned.tokens} requests=${summary.accessPruned.requests} in ${summary.durationMs}ms`);
   }
   return summary;
 }

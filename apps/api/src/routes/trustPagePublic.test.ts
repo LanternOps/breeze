@@ -151,6 +151,27 @@ describe('badge, documents, preview', () => {
     expect(hit.headers.get('Cache-Control')).toBe('no-store');
     expect(await hit.text()).toBe('pdf');
   });
+  it('W2 (Review Focus 2): a document whose snapshot entry is gated → generic 404 even when its live link is public, with zero SQL', async () => {
+    const gated = { ...PAYLOAD, schemaVersion: 2, locale: 'en', declaredControls: [], frameworks: [], subprocessors: [], faq: [], history: [], access: { ndaText: null }, documents: [{ id: DOC_ID, title: 'Doc', visibility: 'gated' }] };
+    resolve.resolvePublishedTrustPage.mockResolvedValue({ ...RESOLVED, payload: gated });
+    dbSelect.mockReturnValue(docRow()); // the live link IS public — the frozen entry alone must refuse
+    await expectGeneric404(await app.request(`/trust/public/nw/acme/documents/${DOC_ID}`));
+    expect(dbSelect).not.toHaveBeenCalled();
+  });
+  it('W2: a v1 cached payload is served normalized to schemaVersion 2 (English, no W2 block, public documents)', async () => {
+    serving.readCachedSnapshotPayload.mockResolvedValueOnce(PAYLOAD as never);
+    const res = await app.request('/trust/public/nw/acme');
+    const { payload } = (await res.json()).data;
+    expect(payload).toMatchObject({ schemaVersion: 2, locale: 'en', declaredControls: [], faq: [], access: null });
+    expect(payload.documents[0].visibility).toBe('public');
+  });
+  it('W2 (amendment 36): reserved partner slug "access" → generic 404 with zero Redis and zero SQL', async () => {
+    await expectGeneric404(await app.request('/trust/public/access/acme'));
+    await expectGeneric404(await app.request('/trust/public/access'));
+    await expectGeneric404(await app.request('/trust/card/access/acme'));
+    await expectGeneric404(await app.request(`/trust/public/access/documents/${DOC_ID}`));
+    expect(serving.isServing).not.toHaveBeenCalled(); expect(resolve.resolvePublishedTrustPage).not.toHaveBeenCalled(); expect(dbSelect).not.toHaveBeenCalled();
+  });
   it('document unlinked from the snapshot never queries SQL', async () => {
     await expectGeneric404(await app.request('/trust/public/nw/acme/documents/00000000-0000-4000-8000-000000000000'));
     expect(dbSelect).not.toHaveBeenCalled();

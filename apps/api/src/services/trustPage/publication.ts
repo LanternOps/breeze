@@ -2,8 +2,10 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { randomUUID } from 'node:crypto';
 import {
-  DEFAULT_TRUST_EVALUATION_POLICY, TRUST_CONTROL_CATALOG, TRUST_CONTROL_CATALOG_VERSION, TRUST_DOCUMENTS_MAX, TRUST_SLUG_RE,
-  evaluateTrustControls, trustPublishedConfigSchema, type TrustPagePublicPayload, type TrustPublishedConfig,
+  DEFAULT_TRUST_EVALUATION_POLICY, TELEMETRY_CONTROL_IDS, TRUST_CONTROL_CATALOG, TRUST_CONTROL_CATALOG_VERSION, TRUST_DOCUMENTS_MAX,
+  TRUST_FRAMEWORKS, TRUST_SLUG_RE, evaluateTrustControls, resolveEffectiveTrustSettings, resolveFrozenConfig, trustPublishedConfigSchema,
+  type EffectiveTrustSettings, type TelemetryControlId, type TrustFramework, type TrustPagePublicPayload, type TrustPublishedConfig,
+  type TrustPublishedConfigResolved, type TrustTemplateSettings,
 } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -12,10 +14,14 @@ import {
 import type { PartnerTrustState } from '../../db/schema/orgs';
 import type { TrustPageRow } from '../../db/schema/trustPages';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
-import { loadPostureEvidence, TRUST_PAGE_EVIDENCE_POLICY } from '../postureEvidence';
-import type { OrgDocumentView } from '../orgDocumentService';
+import { loadPostureEvidence, TRUST_PAGE_EVIDENCE_POLICY, type PostureEvidence } from '../postureEvidence';
+import { resolvePartnerDocumentLocale } from '../documentLocale';
 import { isEdrVisibilityEnabled } from '../portal/edrVisibility';
-import { buildTrustPagePayload, payloadSha256 } from './payloadBuilder';
+import { buildTrustPagePayload, payloadSha256, projectPayloadDocuments, type LiveTrustDocument } from './payloadBuilder';
+import { buildSections, freezeSections } from './sections';
+import { defaultFrameworkView, resolveFrameworkView } from './sections/frameworks';
+import { loadTrustOnlyEvidence } from './trustOnlyEvidence';
+import { loadPartnerTemplate } from './template';
 import { addServing, cacheSnapshotPayload, removeServing, trustServingMember } from './servingSet';
 import { TRUST_RESERVED_PARTNER_SLUGS } from './resolve';
 
@@ -55,24 +61,69 @@ export async function ensureTrustPage(orgId: string, actorUserId: string | null)
   return raced;
 }
 
-/** Linked + public + disclosure-confirmed + live + not superseded, in sort order (spec §12). */
-export async function loadPublicDocumentsForPage(page: TrustPageRow): Promise<OrgDocumentView[]> {
+/**
+ * Linked + disclosure-confirmed + live + not superseded, BOTH visibilities, in sort order, each row carrying
+ * its live `visibility` (spec §12; amendment 35). The builder intersects these with the frozen document list
+ * and keeps the more restrictive visibility.
+ */
+export async function loadPublicDocumentsForPage(page: TrustPageRow): Promise<LiveTrustDocument[]> {
   const successor = alias(orgDocuments, 'successor');
-  const rows = await db.select({ ...ORG_DOCUMENT_META_COLUMNS, supersededByDocumentId: successor.id, sortOrder: trustPageDocuments.sortOrder })
+  const rows = await db.select({
+    ...ORG_DOCUMENT_META_COLUMNS, supersededByDocumentId: successor.id, sortOrder: trustPageDocuments.sortOrder,
+    linkVisibility: trustPageDocuments.visibility,
+  })
     .from(trustPageDocuments)
     .innerJoin(orgDocuments, and(eq(orgDocuments.id, trustPageDocuments.documentId), eq(orgDocuments.orgId, trustPageDocuments.orgId)))
     .leftJoin(successor, and(eq(successor.supersedesDocumentId, orgDocuments.id), eq(successor.orgId, orgDocuments.orgId)))
     .where(and(
       eq(trustPageDocuments.trustPageId, page.id),
-      eq(trustPageDocuments.visibility, 'public'),
       sql`${trustPageDocuments.disclosureConfirmedAt} IS NOT NULL`,
       isNull(orgDocuments.deletedAt),
       isNull(successor.id),
     ))
     .orderBy(asc(trustPageDocuments.sortOrder), asc(orgDocuments.createdAt));
-  return rows.map(({ supersededByDocumentId: _s, sortOrder: _o, createdAt, ...r }) => ({
-    ...r, supersededByDocumentId: null, createdAt: createdAt.toISOString(),
+  return rows.map(({ supersededByDocumentId: _s, sortOrder: _o, linkVisibility, createdAt, ...r }) => ({
+    ...r, supersededByDocumentId: null, createdAt: createdAt.toISOString(), visibility: linkVisibility,
   }));
+}
+
+const KNOWN_CONTROL_IDS = new Set<string>(TELEMETRY_CONTROL_IDS);
+const KNOWN_FRAMEWORKS = new Set<string>(TRUST_FRAMEWORKS);
+
+/** The page level of the settings chain (null = inherit). Stale ids in the text[] columns are dropped. */
+export function pageTrustSettings(page: TrustPageRow): TrustTemplateSettings {
+  return {
+    introHtml: page.introHtml ?? null,
+    searchIndexable: page.searchIndexable ?? null,
+    showPercentages: page.showPercentages ?? null,
+    showDeviceCount: page.showDeviceCount ?? null,
+    showManagedBy: page.showManagedBy ?? null,
+    showHistory: page.showHistory ?? null,
+    hiddenControlIds: page.hiddenControlIds ? page.hiddenControlIds.filter((id): id is TelemetryControlId => KNOWN_CONTROL_IDS.has(id)) : null,
+    frameworkView: page.frameworkView ? page.frameworkView.filter((fw): fw is TrustFramework => KNOWN_FRAMEWORKS.has(fw)) : null,
+  };
+}
+
+/** Page → partner template → built-in default (W02g supplies the template). What the editor shows and publish freezes. */
+export async function resolveTrustPageSettings(page: TrustPageRow): Promise<{ effective: EffectiveTrustSettings; template: { revision: number } | null }> {
+  const template = await loadPartnerTemplate(page.partnerId);
+  return {
+    effective: resolveEffectiveTrustSettings(pageTrustSettings(page), template?.settings ?? null, defaultFrameworkView()),
+    template: template ? { revision: template.revision } : null,
+  };
+}
+
+/** loadPostureEvidence + the trust-page-only evidence overlay (amendment 30: never inside loadPostureEvidence). */
+export async function loadTrustPageEvidence(orgId: string, asOf: Date): Promise<PostureEvidence> {
+  const evidence = await loadPostureEvidence(
+    { version: 1, kind: 'unrestricted', orgId },
+    TRUST_PAGE_EVIDENCE_POLICY,
+    asOf,
+    // Public is at least as strict as the portal: EDR evidence only when the org enabled EDR visibility.
+    { edrEvidenceAllowed: () => isEdrVisibilityEnabled(orgId) },
+  );
+  const trustOnly = await loadTrustOnlyEvidence(orgId, asOf, TRUST_PAGE_EVIDENCE_POLICY);
+  return { ...evidence, controls: { ...evidence.controls, ...trustOnly } };
 }
 
 export interface LinkedDocumentForEditor {
@@ -111,24 +162,18 @@ export interface SnapshotBuild {
 
 /**
  * Where the publication settings come from (Ruling 20):
- *  - 'draft'  — the trust_pages draft columns + every live public link (publish, preview);
- *  - a frozen TrustPublishedConfig — published_config (the hourly refresh): evidence and live links are
- *    re-read, but documents are the frozen ids ∩ live public/confirmed/not-superseded links, in frozen order.
+ *  - 'draft'  — the effective settings (page → partner template → default), the section freezes, every live
+ *    confirmed link (both visibilities), every current catalog control and the partner's language (publish, preview);
+ *  - a frozen TrustPublishedConfig — published_config (the hourly refresh): evidence, live links and declaration
+ *    withdrawal/expiry are re-read; everything publisher-authored comes from the frozen config. A W1 config's
+ *    missing W2 fields take their W1 meaning (resolveFrozenConfig).
  */
 export type SnapshotConfigSource = 'draft' | TrustPublishedConfig;
 
-function draftSettings(page: TrustPageRow): Omit<TrustPublishedConfig, 'documentIds'> {
-  return {
-    hiddenControlIds: [...page.hiddenControlIds] as TrustPublishedConfig['hiddenControlIds'],
-    showPercentages: page.showPercentages, showDeviceCount: page.showDeviceCount, showManagedBy: page.showManagedBy,
-    searchIndexable: page.searchIndexable, introHtml: page.introHtml ?? null, websiteUrl: page.websiteUrl ?? null,
-    securityContactEmail: page.securityContactEmail ?? null,
-  };
-}
-
 /**
- * loader → evaluator → documents → builder. Runs in the CALLER's db context (route: user RLS; worker: system).
- * A ZodError from the builder's final schema parse is a builder bug and propagates.
+ * loader → evaluator → documents → sections → builder. Runs in the CALLER's db context (route: user RLS;
+ * worker: system). A ZodError from the draft-config parse or the builder's final schema parse is a bug and
+ * propagates (better a failed publish than a frozen config the refresh cannot read).
  */
 export async function buildSnapshotForPage(
   page: TrustPageRow,
@@ -142,33 +187,45 @@ export async function buildSnapshotForPage(
   if (!ctx) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
   const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
     .from(portalBranding).where(eq(portalBranding.orgId, page.orgId)).limit(1);
-  // Public is at least as strict as the portal: EDR evidence only when the org enabled EDR visibility.
-  const evidence = await loadPostureEvidence(
-    { version: 1, kind: 'unrestricted', orgId: page.orgId },
-    TRUST_PAGE_EVIDENCE_POLICY,
-    generatedAt,
-    { edrEvidenceAllowed: () => isEdrVisibilityEnabled(page.orgId) },
-  );
+  const evidence = await loadTrustPageEvidence(page.orgId, generatedAt);
   const assessments = evaluateTrustControls(TRUST_CONTROL_CATALOG, evidence.controls, DEFAULT_TRUST_EVALUATION_POLICY, generatedAt);
   const liveDocuments = await loadPublicDocumentsForPage(page);
-  let config: TrustPublishedConfig;
-  let documents: OrgDocumentView[];
+
+  let frozen: TrustPublishedConfig;
   if (opts.config === 'draft') {
-    documents = liveDocuments.slice(0, TRUST_DOCUMENTS_MAX);
-    config = { ...draftSettings(page), documentIds: documents.map((d) => d.id) };
+    const { effective } = await resolveTrustPageSettings(page);
+    const v = effective.values;
+    const sectionFreeze = await freezeSections({ page, asOf: generatedAt });
+    const documents = liveDocuments.slice(0, TRUST_DOCUMENTS_MAX).map((d) => ({ id: d.id, visibility: d.visibility }));
+    frozen = trustPublishedConfigSchema.parse({
+      hiddenControlIds: v.hiddenControlIds, showPercentages: v.showPercentages, showDeviceCount: v.showDeviceCount,
+      showManagedBy: v.showManagedBy, searchIndexable: v.searchIndexable, introHtml: v.introHtml,
+      websiteUrl: page.websiteUrl ?? null, securityContactEmail: page.securityContactEmail ?? null,
+      // documentIds stays for W1 readers (back-compat); documents is the W2 authority.
+      documentIds: documents.map((d) => d.id),
+      documents,
+      catalogControlIds: [...TELEMETRY_CONTROL_IDS],
+      ...sectionFreeze,
+      frameworkView: resolveFrameworkView(v.frameworkView),
+      showHistory: v.showHistory,
+      ndaText: page.ndaText ?? null,
+      // Settings rule 6: the page language is the partner's, frozen at publish.
+      locale: resolvePartnerDocumentLocale({ settings: ctx.partnerSettings }),
+    } satisfies TrustPublishedConfigResolved);
   } else {
-    config = opts.config;
-    const live = new Map(liveDocuments.map((d) => [d.id, d]));
-    documents = config.documentIds.map((id) => live.get(id)).filter((d): d is OrgDocumentView => Boolean(d));
+    frozen = opts.config;
   }
+  const config = resolveFrozenConfig(frozen);
+  const documents = projectPayloadDocuments(config.documents, liveDocuments);
+  const sections = await buildSections({ page, asOf: generatedAt, partnerName: ctx.partnerName, config, documents });
+
   const snapshotId = randomUUID();
   const payload = buildTrustPagePayload({
     snapshotId, generatedAt, publishedAt: opts.publishedAt ?? page.publishedAt ?? generatedAt,
-    // The builder reads the publication settings off the page; overlay the chosen config.
-    page: { ...page, ...config, hiddenControlIds: [...config.hiddenControlIds] },
+    config, sections,
     org: { name: ctx.orgName },
     partner: { name: ctx.partnerName, settings: ctx.partnerSettings, billingWebsite: ctx.billingWebsite, trustPageUnbranded: ctx.trustPageUnbranded },
-    orgBrand: brand ?? null, assessments, deviceCount: evidence.deviceCount, documents,
+    orgBrand: brand ?? null, assessments, deviceCount: evidence.deviceCount, documents: liveDocuments,
     policy: {
       evidenceMaxAgeDays: TRUST_PAGE_EVIDENCE_POLICY.maxSecurityStatusAgeDays,
       definitionsMaxAgeDays: TRUST_PAGE_EVIDENCE_POLICY.maxAvDefinitionsAgeDays,
@@ -176,7 +233,7 @@ export async function buildSnapshotForPage(
       thresholds: DEFAULT_TRUST_EVALUATION_POLICY.thresholds,
     },
   });
-  return { snapshotId, payload, sha256: payloadSha256(payload), deviceCount: evidence.deviceCount, generatedAt, config };
+  return { snapshotId, payload, sha256: payloadSha256(payload), deviceCount: evidence.deviceCount, generatedAt, config: frozen };
 }
 
 /**
@@ -198,6 +255,7 @@ function trustDenial(state: PartnerTrustState): TrustPageError | null {
 }
 
 export const PARTNER_HOME_INTERNAL_ONLY_MESSAGE = 'Only your own (internal) organization can be the partner home page.';
+export const TEMPLATE_CHANGED_MESSAGE = "Your partner's Trust Center template changed since you loaded this page. Reload and publish again.";
 
 /**
  * One transaction: lock the page row, demote the previous current snapshot, insert the new current one, stamp
@@ -207,6 +265,8 @@ export const PARTNER_HOME_INTERNAL_ONLY_MESSAGE = 'Only your own (internal) orga
 export async function publishTrustPage(args: {
   orgId: string; expectedRevision: number; actorUserId: string; authorization?: { authorizedBy: string } | null;
   partnerTrustState: PartnerTrustState; partnerSlug: string; orgSlug: string;
+  /** The template revision the editor loaded (null = no template); undefined = not checked (amendment 33). */
+  expectedTemplateRevision?: number | null;
 }): Promise<{ page: TrustPageRow; snapshotId: string }> {
   const denied = trustDenial(args.partnerTrustState);
   if (denied) throw denied;
@@ -223,6 +283,14 @@ export async function publishTrustPage(args: {
   const authorizedBy = suppliedAuthorizedBy ?? page.publicationAuthorizedBy;
   if (!page.isPartnerHome && !authorizedBy) {
     throw new TrustPageError('Record who at the customer authorized publication before publishing.', 422, 'AUTHORIZATION_REQUIRED');
+  }
+  if (args.expectedTemplateRevision !== undefined) {
+    // The editor showed inherited values from the template revision it loaded; publishing after the template
+    // changed would freeze values the publisher never saw.
+    const current = (await loadPartnerTemplate(page.partnerId))?.revision ?? null;
+    if (current !== args.expectedTemplateRevision) {
+      throw new TrustPageError(TEMPLATE_CHANGED_MESSAGE, 409, 'TEMPLATE_CHANGED');
+    }
   }
   const publishedAt = page.publishedAt ?? new Date();
   // Built from the DRAFT; the same config is frozen below (a PUT racing this bumps the revision → 409).

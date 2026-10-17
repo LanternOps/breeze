@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { pgTable, pgEnum, uuid, varchar, text, integer, char, boolean, timestamp, jsonb, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { users } from './users';
-import type { TrustPagePublicPayload, TrustPublishedConfig } from '@breeze/shared';
+import type { TrustPagePublicPayloadAny, TrustPublishedConfig } from '@breeze/shared';
 
 export const trustPageDocumentVisibilityEnum = pgEnum('trust_page_document_visibility', ['public', 'gated']);
 
@@ -55,7 +55,8 @@ export const trustPageSnapshots = pgTable('trust_page_snapshots', {
   id: uuid('id').primaryKey().defaultRandom(),
   trustPageId: uuid('trust_page_id').notNull(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  payload: jsonb('payload').$type<TrustPagePublicPayload>().notNull(),
+  // Stored snapshots may be v1 (W1) or v2; every reader normalizes (normalizeTrustPagePayload).
+  payload: jsonb('payload').$type<TrustPagePublicPayloadAny>().notNull(),
   payloadSha256: char('payload_sha256', { length: 64 }).notNull(),
   catalogVersion: text('catalog_version').notNull(),
   publicationRevision: integer('publication_revision').notNull(),

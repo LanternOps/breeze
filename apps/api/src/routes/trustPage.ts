@@ -13,13 +13,13 @@ import { requireCapability } from '../services/partnerTrust';
 import { createAuditLogAsync } from '../services/auditService';
 import { captureException } from '../services/sentry';
 import {
-  ensureTrustPage, publishTrustPage, unpublishTrustPage, loadLinkedDocumentsForEditor, trustPublishDecision, TrustPageError,
-  PARTNER_HOME_INTERNAL_ONLY_MESSAGE,
+  ensureTrustPage, publishTrustPage, unpublishTrustPage, loadLinkedDocumentsForEditor, loadTrustPageEvidence, resolveTrustPageSettings,
+  trustPublishDecision, TrustPageError, PARTNER_HOME_INTERNAL_ONLY_MESSAGE,
 } from '../services/trustPage/publication';
-import { isEdrVisibilityEnabled } from '../services/portal/edrVisibility';
+import { withTrustPageRevision } from '../services/trustPage/revision';
+import { frameworkOptionsFor } from '../services/trustPage/sections/frameworks';
 import { sanitizeIntro } from '../services/trustPage/payloadBuilder';
 import { createTrustPreviewToken, TRUST_PREVIEW_TTL_SECONDS } from '../services/trustPage/previewToken';
-import { loadPostureEvidence, TRUST_PAGE_EVIDENCE_POLICY } from '../services/postureEvidence';
 import {
   DEFAULT_TRUST_EVALUATION_POLICY, TRUST_CONTROL_CATALOG, TRUST_INTRO_STORED_MAX_CHARS, TRUST_SLUG_RE, evaluateTrustControls,
   trustPageDocumentsUpdateSchema, trustPagePartnerHomeSchema, trustPagePublishSchema, trustPageUpdateSchema,
@@ -32,14 +32,14 @@ const orgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.OR
 const orgWrite = requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action);
 const orgParam = z.object({ orgId: z.string().guid() });
 
-interface OrgCtx { orgId: string; orgSlug: string; orgType: string | null; partnerSlug: string; partnerId: string; trustState: 'probation' | 'trusted' | 'restricted'; probationEnrollments: number }
+interface OrgCtx { orgId: string; orgSlug: string; orgType: string | null; partnerSlug: string; partnerId: string; trustState: 'probation' | 'trusted' | 'restricted'; probationEnrollments: number; partnerCountry: string | null }
 async function resolveAccessibleOrg(c: Context, orgId: string): Promise<OrgCtx | null> {
   const auth = c.get('auth') as AuthContext;
   if (auth.scope === 'partner' && !auth.canAccessOrg(orgId)) return null;
-  const [row] = await db.select({ orgSlug: organizations.slug, orgType: organizations.type, partnerSlug: partners.slug, partnerId: partners.id, trustState: partners.trustState, probationEnrollments: partners.probationEnrollments, deletedAt: organizations.deletedAt })
+  const [row] = await db.select({ orgSlug: organizations.slug, orgType: organizations.type, partnerSlug: partners.slug, partnerId: partners.id, trustState: partners.trustState, probationEnrollments: partners.probationEnrollments, partnerCountry: partners.billingAddressCountry, deletedAt: organizations.deletedAt })
     .from(organizations).innerJoin(partners, eq(partners.id, organizations.partnerId)).where(eq(organizations.id, orgId)).limit(1);
   if (!row || row.deletedAt) return null;
-  return { orgId, orgSlug: row.orgSlug, orgType: row.orgType ?? null, partnerSlug: row.partnerSlug, partnerId: row.partnerId, trustState: row.trustState, probationEnrollments: row.probationEnrollments ?? 0 };
+  return { orgId, orgSlug: row.orgSlug, orgType: row.orgType ?? null, partnerSlug: row.partnerSlug, partnerId: row.partnerId, trustState: row.trustState, probationEnrollments: row.probationEnrollments ?? 0, partnerCountry: row.partnerCountry ?? null };
 }
 const notFound = (c: Context) => c.json({ error: 'Not found', code: 'NOT_FOUND' }, 404);
 function handleError(c: Context, err: unknown): Response {
@@ -72,8 +72,13 @@ trustPageRoutes.get('/:orgId/trust-page', scopes, orgRead, zValidator('param', o
     const auth = c.get('auth') as AuthContext;
     const page = await ensureTrustPage(orgId, auth.user.id);
     const documents = await loadLinkedDocumentsForEditor(page);
+    // page holds the org's own values (null = inherit); effective is what publish would freeze, with each value's source.
+    const { effective, template } = await resolveTrustPageSettings(page);
     // Ruling 24: the same rule POST /publish applies (shadow = enforce), never the shadow-allowing continuation gate.
-    return c.json({ data: { page, documents, ...publicPaths(ctx, page.isPartnerHome), slugs: slugReport(ctx), canPublish: trustPublishDecision(ctx.trustState) } });
+    return c.json({ data: {
+      page, documents, ...publicPaths(ctx, page.isPartnerHome), slugs: slugReport(ctx), canPublish: trustPublishDecision(ctx.trustState),
+      effective, template, frameworkOptions: frameworkOptionsFor({ partnerCountry: ctx.partnerCountry }),
+    } });
   } catch (err) { return handleError(c, err); }
 });
 
@@ -85,9 +90,11 @@ trustPageRoutes.put('/:orgId/trust-page', scopes, orgWrite, zValidator('param', 
   const body = c.req.valid('json');
   try {
     const page = await ensureTrustPage(orgId, auth.user.id);
-    const patch: Partial<typeof trustPages.$inferInsert> = { updatedAt: new Date(), updatedByUserId: auth.user.id, publicationRevision: sql`${trustPages.publicationRevision} + 1` as never };
+    const patch: Partial<typeof trustPages.$inferInsert> = {};
     if (body.introHtml !== undefined) {
-      const intro = body.introHtml === null ? null : sanitizeIntro(body.introHtml);
+      // null = inherit the template's intro; any string is the page's own intro, and one that sanitizes to
+      // nothing is stored as '' — explicitly "no intro", which must not fall back to the template.
+      const intro = body.introHtml === null ? null : (sanitizeIntro(body.introHtml) ?? '');
       if (intro !== null && intro.length > TRUST_INTRO_STORED_MAX_CHARS) {
         return c.json({ error: 'The intro is too long after formatting; shorten it.', code: 'INTRO_TOO_LONG' }, 422);
       }
@@ -96,10 +103,22 @@ trustPageRoutes.put('/:orgId/trust-page', scopes, orgWrite, zValidator('param', 
     if (body.securityContactEmail !== undefined) patch.securityContactEmail = body.securityContactEmail;
     if (body.websiteUrl !== undefined) patch.websiteUrl = body.websiteUrl;
     if (body.hiddenControlIds !== undefined) patch.hiddenControlIds = body.hiddenControlIds;
-    for (const k of ['showPercentages', 'showDeviceCount', 'showManagedBy', 'searchIndexable'] as const) if (body[k] !== undefined) (patch as Record<string, unknown>)[k] = body[k];
-    const [updated] = await db.update(trustPages).set(patch).where(eq(trustPages.id, page.id)).returning();
-    if (!updated) return notFound(c);
-    await audit(c, orgId, 'trust_page.update', page.id, { fields: Object.keys(body), publicationRevision: updated.publicationRevision });
+    if (body.frameworkView !== undefined) patch.frameworkView = body.frameworkView;
+    if (body.ndaText !== undefined) patch.ndaText = body.ndaText === null || body.ndaText === '' ? null : body.ndaText;
+    if (body.accessRequestCreatesTicket !== undefined) patch.accessRequestCreatesTicket = body.accessRequestCreatesTicket;
+    for (const k of ['showPercentages', 'showDeviceCount', 'showManagedBy', 'searchIndexable', 'showHistory'] as const) if (body[k] !== undefined) (patch as Record<string, unknown>)[k] = body[k];
+    // Amendment 34: lock + revision check + bump in one transaction; a stale expectedRevision is a 409.
+    const { result: row, publicationRevision } = await withTrustPageRevision({ pageId: page.id, expectedRevision: body.expectedRevision, actorUserId: auth.user.id }, async (tx) => {
+      const [r] = Object.keys(patch).length > 0
+        ? await tx.update(trustPages).set(patch).where(eq(trustPages.id, page.id)).returning()
+        : await tx.select().from(trustPages).where(eq(trustPages.id, page.id)).limit(1);
+      return r ?? null;
+    });
+    if (!row) return notFound(c);
+    // The row was read before the helper's bump; report the committed revision.
+    const updated = { ...row, publicationRevision };
+    const fields = Object.keys(body).filter((k) => k !== 'expectedRevision');
+    await audit(c, orgId, 'trust_page.update', page.id, { fields, publicationRevision });
     return c.json({ data: { page: updated } });
   } catch (err) { return handleError(c, err); }
 });
@@ -109,7 +128,7 @@ trustPageRoutes.put('/:orgId/trust-page/documents', scopes, orgWrite, zValidator
   const ctx = await resolveAccessibleOrg(c, orgId);
   if (!ctx) return notFound(c);
   const auth = c.get('auth') as AuthContext;
-  const { documents } = c.req.valid('json');
+  const { documents, expectedRevision } = c.req.valid('json');
   try {
     const page = await ensureTrustPage(orgId, auth.user.id);
     const ids = documents.map((d) => d.documentId);
@@ -123,30 +142,32 @@ trustPageRoutes.put('/:orgId/trust-page/documents', scopes, orgWrite, zValidator
       if (missing.length) return c.json({ error: 'One or more documents are deleted, superseded or not in this organization.', code: 'DOCUMENT_UNAVAILABLE', details: { documentIds: missing } }, 422);
     }
     const beforeRows = await db.select({
-      documentId: trustPageDocuments.documentId, disclosureConfirmedAt: trustPageDocuments.disclosureConfirmedAt,
+      documentId: trustPageDocuments.documentId, visibility: trustPageDocuments.visibility,
+      disclosureConfirmedAt: trustPageDocuments.disclosureConfirmedAt,
       disclosureConfirmedByUserId: trustPageDocuments.disclosureConfirmedByUserId,
     }).from(trustPageDocuments).where(eq(trustPageDocuments.trustPageId, page.id));
     // I7: an already-linked, already-confirmed document keeps WHO confirmed it and WHEN — a reorder or an
-    // unrelated add must not re-stamp the disclosure provenance.
+    // unrelated add must not re-stamp the disclosure provenance. Amendment 35: a visibility change IS a new
+    // disclosure decision (public reaches anyone; gated reaches approved requesters), so it re-stamps.
     const priorConfirmation = new Map(beforeRows.filter((r) => r.disclosureConfirmedAt).map((r) => [r.documentId, r]));
     const now = new Date();
-    await db.transaction(async (tx) => {
+    const { publicationRevision } = await withTrustPageRevision({ pageId: page.id, expectedRevision, actorUserId: auth.user.id }, async (tx) => {
       await tx.delete(trustPageDocuments).where(eq(trustPageDocuments.trustPageId, page.id));
       if (documents.length) {
         await tx.insert(trustPageDocuments).values(documents.map((d, i) => {
-          const prior = d.disclosureConfirmed ? priorConfirmation.get(d.documentId) : undefined;
+          const candidate = priorConfirmation.get(d.documentId);
+          const prior = candidate && candidate.visibility === d.visibility ? candidate : undefined;
           return {
             trustPageId: page.id, documentId: d.documentId, orgId, visibility: d.visibility, sortOrder: i,
-            disclosureConfirmedAt: d.disclosureConfirmed ? (prior?.disclosureConfirmedAt ?? now) : null,
-            disclosureConfirmedByUserId: d.disclosureConfirmed ? (prior ? prior.disclosureConfirmedByUserId : auth.user.id) : null,
+            disclosureConfirmedAt: prior?.disclosureConfirmedAt ?? now,
+            disclosureConfirmedByUserId: prior ? prior.disclosureConfirmedByUserId : auth.user.id,
           };
         }));
       }
-      await tx.update(trustPages).set({ publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: auth.user.id }).where(eq(trustPages.id, page.id));
     });
-    const [{ publicationRevision } = { publicationRevision: page.publicationRevision + 1 }] = await db.select({ publicationRevision: trustPages.publicationRevision }).from(trustPages).where(eq(trustPages.id, page.id)).limit(1);
     const after = new Set(ids); const prev = new Set(beforeRows.map((r) => r.documentId));
-    await audit(c, orgId, 'trust_page.documents.update', page.id, { added: ids.filter((i) => !prev.has(i)), removed: [...prev].filter((i) => !after.has(i)), confirmed: documents.filter((d) => d.disclosureConfirmed).length, publicationRevision });
+    const visibilityChanged = documents.filter((d) => { const b = beforeRows.find((r) => r.documentId === d.documentId); return b && b.visibility !== d.visibility; }).map((d) => d.documentId);
+    await audit(c, orgId, 'trust_page.documents.update', page.id, { added: ids.filter((i) => !prev.has(i)), removed: [...prev].filter((i) => !after.has(i)), visibilityChanged, confirmed: documents.length, gated: documents.filter((d) => d.visibility === 'gated').length, publicationRevision });
     return c.json({ data: { documents, publicationRevision } });
   } catch (err) { return handleError(c, err); }
 });
@@ -158,7 +179,7 @@ trustPageRoutes.post('/:orgId/trust-page/publish', scopes, orgWrite, requireMfa(
   const auth = c.get('auth') as AuthContext;
   const body = c.req.valid('json');
   try {
-    const { page, snapshotId } = await publishTrustPage({ orgId, expectedRevision: body.expectedRevision, actorUserId: auth.user.id, authorization: body.authorization ?? null, partnerTrustState: ctx.trustState, partnerSlug: ctx.partnerSlug, orgSlug: ctx.orgSlug });
+    const { page, snapshotId } = await publishTrustPage({ orgId, expectedRevision: body.expectedRevision, expectedTemplateRevision: body.expectedTemplateRevision, actorUserId: auth.user.id, authorization: body.authorization ?? null, partnerTrustState: ctx.trustState, partnerSlug: ctx.partnerSlug, orgSlug: ctx.orgSlug });
     await audit(c, orgId, 'trust_page.publish', page.id, { publicationRevision: page.publicationRevision, snapshotId, authorizationRecorded: Boolean(body.authorization) });
     return c.json({ data: { page, snapshotId, ...publicPaths(ctx, page.isPartnerHome) } });
   } catch (err) { return handleError(c, err); }
@@ -228,7 +249,8 @@ trustPageRoutes.get('/:orgId/trust-page/controls', scopes, orgRead, zValidator('
   if (!ctx) return notFound(c);
   try {
     const asOf = new Date();
-    const evidence = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId }, TRUST_PAGE_EVIDENCE_POLICY, asOf, { edrEvidenceAllowed: () => isEdrVisibilityEnabled(orgId) });
+    // Same evidence as the published page, trust-only overlay included (mfa_enforced_m365), so the editor shows every control.
+    const evidence = await loadTrustPageEvidence(orgId, asOf);
     const assessments = evaluateTrustControls(TRUST_CONTROL_CATALOG, evidence.controls, DEFAULT_TRUST_EVALUATION_POLICY, asOf);
     return c.json({ data: { assessments, catalog: TRUST_CONTROL_CATALOG, evaluatedAt: asOf.toISOString(), deviceCount: evidence.deviceCount } });
   } catch (err) { return handleError(c, err); }
