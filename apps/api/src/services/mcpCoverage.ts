@@ -460,6 +460,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/software.ts': { gap: '#6782' },
   'devices/softwareActions.ts': { gap: '#6782' },
   'devices/stats.ts': { tools: ['get_fleet_device_stats'] },
+  'devices/attentionCounts.ts': { exempt: 'internal_plumbing', note: 'Per-page alert/ticket count batch for the devices list UI (#9038); the same counts reach the model through manage_alerts and the ticket tools.' },
   'devices/tabCounts.ts': { exempt: 'internal_plumbing' },
   'devices/warranty.ts': { gap: '#6783' },
   'devices/watchdogLogs.ts': { gap: '#6783' },
