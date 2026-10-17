@@ -543,6 +543,29 @@
         "copy": "Copiar fragmento",
         "copied": "Fragmento copiado",
         "copyFailed": "No se pudo copiar el fragmento."
+      },
+      "embed": {
+        "title": "Insertar en tu sitio web",
+        "description": "Muestra una tarjeta compacta y actualizada de la postura de seguridad en tu propio sitio web, dentro de un iframe. Solo los sitios indicados aquí pueden mostrarla; la página de confianza completa nunca se puede insertar.",
+        "liveNote": "Los cambios se aplican en menos de un minuto; no hace falta volver a publicar.",
+        "unpublishedNote": "La tarjeta insertada aparece cuando la página está publicada.",
+        "originLabel": "Dirección del sitio (solo https, sin ruta)",
+        "add": "Agregar sitio",
+        "remove": "Quitar",
+        "save": "Guardar sitios",
+        "saved": "Sitios de inserción guardados",
+        "saveFailed": "No se pudieron guardar los sitios de inserción.",
+        "invalidOrigin": "Ingresa una dirección https exacta, sin ruta, comodín ni dirección IP, por ejemplo https://www.example.com",
+        "duplicateOrigin": "Ese sitio ya está en la lista.",
+        "maxReached": "Puedes permitir como máximo {{max}} sitios.",
+        "preview": "Se guardará como",
+        "snippetLabel": "HTML de inserción",
+        "frameTitle": "Tarjeta de postura de seguridad",
+        "copy": "Copiar fragmento",
+        "copied": "Fragmento copiado",
+        "copyFailed": "No se pudo copiar el fragmento.",
+        "emptyNote": "Agrega al menos un sitio para habilitar la inserción.",
+        "mfaRequired": "Cambiar los sitios de inserción requiere autenticación multifactor. Activa la MFA en la configuración de seguridad de tu perfil y vuelve a intentarlo."
       }
     },
     "documents": {

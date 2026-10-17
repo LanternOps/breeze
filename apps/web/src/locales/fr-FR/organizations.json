@@ -543,6 +543,29 @@
         "copy": "Copier l'extrait",
         "copied": "Extrait copié",
         "copyFailed": "Impossible de copier l'extrait."
+      },
+      "embed": {
+        "title": "Intégrer sur votre site web",
+        "description": "Affichez une carte compacte et à jour de la posture de sécurité sur votre propre site, dans une iframe. Seuls les sites listés ici peuvent l’afficher ; la page de confiance complète ne peut jamais être intégrée.",
+        "liveNote": "Les modifications s’appliquent en moins d’une minute ; aucune republication n’est nécessaire.",
+        "unpublishedNote": "La carte intégrée s’affiche une fois la page publiée.",
+        "originLabel": "Adresse du site (https uniquement, sans chemin)",
+        "add": "Ajouter un site",
+        "remove": "Retirer",
+        "save": "Enregistrer les sites",
+        "saved": "Sites d’intégration enregistrés",
+        "saveFailed": "Impossible d’enregistrer les sites d’intégration.",
+        "invalidOrigin": "Saisissez une adresse https exacte, sans chemin, joker ni adresse IP, par exemple https://www.example.com",
+        "duplicateOrigin": "Ce site figure déjà dans la liste.",
+        "maxReached": "Vous pouvez autoriser au plus {{max}} sites.",
+        "preview": "Sera enregistré sous la forme",
+        "snippetLabel": "HTML d’intégration",
+        "frameTitle": "Carte de posture de sécurité",
+        "copy": "Copier l’extrait",
+        "copied": "Extrait copié",
+        "copyFailed": "Impossible de copier l’extrait.",
+        "emptyNote": "Ajoutez au moins un site pour activer l’intégration.",
+        "mfaRequired": "La modification des sites d’intégration exige l’authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
       }
     },
     "documents": {

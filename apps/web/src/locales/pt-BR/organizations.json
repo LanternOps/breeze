@@ -543,6 +543,29 @@
         "copy": "Copiar trecho",
         "copied": "Trecho copiado",
         "copyFailed": "Não foi possível copiar o trecho."
+      },
+      "embed": {
+        "title": "Incorporar no seu site",
+        "description": "Mostre um cartão compacto e atualizado da postura de segurança no seu próprio site, dentro de um iframe. Apenas os sites listados aqui podem exibi-lo; a página de confiança completa nunca pode ser incorporada.",
+        "liveNote": "As alterações entram em vigor em até um minuto; não é preciso republicar.",
+        "unpublishedNote": "O cartão incorporado aparece depois que a página for publicada.",
+        "originLabel": "Endereço do site (somente https, sem caminho)",
+        "add": "Adicionar site",
+        "remove": "Remover",
+        "save": "Salvar sites",
+        "saved": "Sites de incorporação salvos",
+        "saveFailed": "Não foi possível salvar os sites de incorporação.",
+        "invalidOrigin": "Informe um endereço https exato, sem caminho, curinga ou endereço IP, por exemplo https://www.example.com",
+        "duplicateOrigin": "Esse site já está na lista.",
+        "maxReached": "Você pode permitir no máximo {{max}} sites.",
+        "preview": "Será salvo como",
+        "snippetLabel": "HTML de incorporação",
+        "frameTitle": "Cartão de postura de segurança",
+        "copy": "Copiar trecho",
+        "copied": "Trecho copiado",
+        "copyFailed": "Não foi possível copiar o trecho.",
+        "emptyNote": "Adicione pelo menos um site para permitir a incorporação.",
+        "mfaRequired": "Alterar os sites de incorporação exige autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
       }
     },
     "documents": {

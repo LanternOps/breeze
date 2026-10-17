@@ -543,6 +543,29 @@
         "copy": "Parçayı kopyala",
         "copied": "Parça kopyalandı",
         "copyFailed": "Parça kopyalanamadı."
+      },
+      "embed": {
+        "title": "Web sitenize yerleştirin",
+        "description": "Kendi web sitenizde bir iframe içinde kompakt, güncel bir güvenlik durumu kartı gösterin. Bunu yalnızca burada listelenen web siteleri görüntüleyebilir; tam güven sayfasının kendisi hiçbir zaman yerleştirilemez.",
+        "liveNote": "Değişiklikler bir dakika içinde geçerli olur; yeniden yayımlamaya gerek yoktur.",
+        "unpublishedNote": "Yerleştirilen kart, sayfa yayımlandıktan sonra görünür.",
+        "originLabel": "Web sitesi adresi (yalnızca https, yol olmadan)",
+        "add": "Web sitesi ekle",
+        "remove": "Kaldır",
+        "save": "Web sitelerini kaydet",
+        "saved": "Yerleştirme web siteleri kaydedildi",
+        "saveFailed": "Yerleştirme web siteleri kaydedilemedi.",
+        "invalidOrigin": "Yol, joker karakter veya IP adresi içermeyen tam bir https adresi girin; örneğin https://www.example.com",
+        "duplicateOrigin": "Bu web sitesi zaten listede.",
+        "maxReached": "En fazla {{max}} web sitesine izin verebilirsiniz.",
+        "preview": "Şu şekilde kaydedilecek:",
+        "snippetLabel": "Yerleştirme HTML kodu",
+        "frameTitle": "Güvenlik durumu kartı",
+        "copy": "Kodu kopyala",
+        "copied": "Kod kopyalandı",
+        "copyFailed": "Kod kopyalanamadı.",
+        "emptyNote": "Yerleştirmeyi etkinleştirmek için en az bir web sitesi ekleyin.",
+        "mfaRequired": "Yerleştirme web sitelerini değiştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirip yeniden deneyin."
       }
     },
     "documents": {

@@ -543,6 +543,29 @@
         "copy": "Copy snippet",
         "copied": "Snippet copied",
         "copyFailed": "Could not copy the snippet."
+      },
+      "embed": {
+        "title": "Embed on your website",
+        "description": "Show a compact, live security posture card on your own website in an iframe. Only the websites listed here may display it; the full trust page itself can never be embedded.",
+        "liveNote": "Changes apply within a minute; no republish needed.",
+        "unpublishedNote": "The embed card shows once the page is published.",
+        "originLabel": "Website address (https only, no path)",
+        "add": "Add website",
+        "remove": "Remove",
+        "save": "Save websites",
+        "saved": "Embed websites saved",
+        "saveFailed": "Could not save the embed websites.",
+        "invalidOrigin": "Enter an exact https address with no path, wildcard or IP address, for example https://www.example.com",
+        "duplicateOrigin": "That website is already in the list.",
+        "maxReached": "You can allow at most {{max}} websites.",
+        "preview": "Will be saved as",
+        "snippetLabel": "Embed HTML",
+        "frameTitle": "Security posture card",
+        "copy": "Copy snippet",
+        "copied": "Snippet copied",
+        "copyFailed": "Could not copy the snippet.",
+        "emptyNote": "Add at least one website to enable embedding.",
+        "mfaRequired": "Changing the embed websites requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
     },
     "documents": {
