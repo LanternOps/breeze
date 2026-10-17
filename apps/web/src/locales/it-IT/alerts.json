@@ -479,7 +479,7 @@
     "alertResolved": "Avviso risolto",
     "alertSuppressed": "\"{{title}}\" soppresso",
     "failedToSuppressAlert": "Impossibile sopprimere l'avviso",
-    "failedToRestoreAlert": "Impossibile ripristinare l'avviso",
+    "failedToRestoreAlert": "Impossibile ripristinare l'avviso. È ancora silenziato.",
     "failedBulkAction": "Impossibile {{action}} gli avvisi",
     "skippedCount": "{{count}} ignorati",
     "failedCount": "{{count}} non riusciti",

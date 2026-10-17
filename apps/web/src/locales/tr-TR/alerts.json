@@ -474,7 +474,7 @@
     "alertResolved": "Uyarı Çözüldü",
     "alertSuppressed": "\"{{title}}\" bastırıldı",
     "failedToSuppressAlert": "Uyarıyı Bastıramadı",
-    "failedToRestoreAlert": "Uyarı Geri Yüklenemedi",
+    "failedToRestoreAlert": "Uyarı geri yüklenemedi. Hâlâ sessize alınmış durumda.",
     "failedBulkAction": "{{action}} uyarıları alınamadı",
     "skippedCount": "{{count}} atlandı",
     "failedCount": "{{count}} başarısız oldu",

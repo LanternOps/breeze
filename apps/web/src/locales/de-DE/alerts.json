@@ -479,7 +479,7 @@
     "alertResolved": "Warnung behoben",
     "alertSuppressed": "„{{title}}“ unterdrückt",
     "failedToSuppressAlert": "Warnung konnte nicht unterdrückt werden",
-    "failedToRestoreAlert": "Warnung konnte nicht wiederhergestellt werden",
+    "failedToRestoreAlert": "Die Warnung konnte nicht wiederhergestellt werden. Sie ist weiterhin stummgeschaltet.",
     "failedBulkAction": "{{action}} Warnungen konnten nicht erstellt werden",
     "skippedCount": "{{count}} übersprungen",
     "failedCount": "{{count}} fehlgeschlagen",
