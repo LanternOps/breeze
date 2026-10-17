@@ -338,4 +338,69 @@ describe('EndpointChatWindow', () => {
     unmount();
     await waitFor(() => expect(unsubscribe).toHaveBeenCalled());
   });
+
+  describe('live updates unavailable', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('shows a visible notice and polls get_chat_view every 3 s when subscribing fails', async () => {
+      vi.useFakeTimers();
+      const second = view({
+        messages: [tech(), tech({ messageId: '22222222-2222-4222-8222-222222222222', body: 'arrived by polling' })],
+      });
+      const { api } = makeApi();
+      (api.subscribe as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('denied'));
+      (api.getView as ReturnType<typeof vi.fn>).mockResolvedValueOnce(view()).mockResolvedValue(second);
+      const { unmount } = render(<EndpointChatWindow conversationId={CID} api={api} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      expect(screen.getByText('Live updates unavailable. Checking for new messages…')).toBeInTheDocument();
+      expect(screen.queryByText('arrived by polling')).toBeNull();
+      const before = (api.getView as ReturnType<typeof vi.fn>).mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect((api.getView as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(before);
+      expect(screen.getByText('arrived by polling')).toBeInTheDocument();
+      // Polling stops on unmount.
+      unmount();
+      const after = (api.getView as ReturnType<typeof vi.fn>).mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12000);
+      });
+      expect((api.getView as ReturnType<typeof vi.fn>).mock.calls.length).toBe(after);
+    });
+
+    it('does not poll or show the notice when subscribing works', async () => {
+      vi.useFakeTimers();
+      const { api } = makeApi();
+      render(<EndpointChatWindow conversationId={CID} api={api} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10000);
+      });
+      expect(screen.queryByText(/Live updates unavailable/)).toBeNull();
+      expect(api.getView).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a non-blocking error line when a refresh fails, and clears it on success', async () => {
+      const { api } = makeApi();
+      render(<EndpointChatWindow conversationId={CID} api={api} />);
+      const box = await screen.findByRole('textbox');
+      (api.getView as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+      fireEvent.change(box, { target: { value: 'hi' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      });
+      expect(await screen.findByText("Couldn't refresh the chat. Some messages may be out of date.")).toBeInTheDocument();
+      // The chat itself stays usable.
+      expect(screen.getByRole('textbox')).toBeEnabled();
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'again' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      });
+      await waitFor(() =>
+        expect(screen.queryByText("Couldn't refresh the chat. Some messages may be out of date.")).toBeNull(),
+      );
+    });
+  });
 });

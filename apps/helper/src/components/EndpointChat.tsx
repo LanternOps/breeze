@@ -37,6 +37,8 @@ export interface ChatView {
 /** Rust emits the full `ChatView` to this window's label only. */
 export const CHAT_UPDATED_EVENT = 'chat-updated';
 export const CHAT_BODY_MAX = 2000;
+/** Fallback refresh interval when pushed updates are unavailable. */
+const POLL_MS = 3000;
 
 const ACCENT = /^#[0-9a-f]{6}$/i;
 
@@ -93,8 +95,11 @@ export function EndpointChat({
   view,
   onSend,
   onRetry,
+  notice,
 }: {
   view: ChatView;
+  /** Non-blocking status line (live updates down, refresh failed). */
+  notice?: string | null;
   /** May reject (e.g. no live agent session): the draft is kept and the reason shown. */
   onSend: (body: string) => Promise<void>;
   onRetry: (clientNonce: string) => Promise<void>;
@@ -168,6 +173,11 @@ export function EndpointChat({
         )}
         <div ref={endRef} />
       </div>
+      {notice && (
+        <div className="helper-chat-note" role="status">
+          {notice}
+        </div>
+      )}
       {error && (
         <div className="helper-message-error helper-chat-error" role="alert">
           {error}
@@ -242,6 +252,9 @@ export function EndpointChatWindow({
 }) {
   const [view, setView] = useState<ChatView | null>(null);
   const [gone, setGone] = useState(false);
+  // Pushed updates are unavailable (listen denied/failed): poll instead.
+  const [liveFailed, setLiveFailed] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const viewRef = useRef<ChatView | null>(null);
   viewRef.current = view;
   const markedFor = useRef(0);
@@ -258,7 +271,9 @@ export function EndpointChatWindow({
         if (live) unsubscribe = fn;
         else fn();
       })
-      .catch(() => {});
+      .catch(() => {
+        if (live) setLiveFailed(true);
+      });
     api
       .getView(conversationId)
       .then((v) => {
@@ -300,9 +315,20 @@ export function EndpointChatWindow({
   const refresh = useCallback(() => {
     api
       .getView(conversationId)
-      .then((v) => setView(v))
-      .catch(() => {});
+      .then((v) => {
+        setView(v);
+        setRefreshFailed(false);
+      })
+      .catch(() => setRefreshFailed(true));
   }, [api, conversationId]);
+
+  // Without pushed updates the window would never learn of new messages,
+  // results or a close: poll while it is open.
+  useEffect(() => {
+    if (!liveFailed) return;
+    const timer = setInterval(refresh, POLL_MS);
+    return () => clearInterval(timer);
+  }, [liveFailed, refresh]);
 
   const onSend = useCallback(
     async (body: string) => {
@@ -332,5 +358,10 @@ export function EndpointChatWindow({
     );
   }
   if (!view) return null;
-  return <EndpointChat view={view} onSend={onSend} onRetry={onRetry} />;
+  const notice = liveFailed
+    ? 'Live updates unavailable. Checking for new messages…'
+    : refreshFailed
+      ? "Couldn't refresh the chat. Some messages may be out of date."
+      : null;
+  return <EndpointChat view={view} onSend={onSend} onRetry={onRetry} notice={notice} />;
 }

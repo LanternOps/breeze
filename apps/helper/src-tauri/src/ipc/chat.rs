@@ -55,6 +55,9 @@ pub const MAX_CONVERSATIONS: usize = 8;
 pub const MAX_MESSAGES: usize = 50;
 /// Unconfirmed replies per conversation (a runaway frontend / dead link).
 pub const MAX_PENDING: usize = 10;
+/// A reply with no `chat_reply_result` after this long is failed (retryable,
+/// same nonce): defence in depth against a stuck "Sending...".
+pub const PENDING_TIMEOUT_MS: i64 = 30_000;
 /// Bound on the per-conversation seen-id set.
 const SEEN_CAP: usize = 1024;
 
@@ -300,6 +303,8 @@ struct Conversation {
     messages: Vec<ChatMessageView>,
     seen: HashSet<String>,
     activity: u64,
+    /// nonce -> when its `chat_reply` was handed to the session (ms).
+    pending_since: HashMap<String, i64>,
 }
 
 impl Conversation {
@@ -427,6 +432,7 @@ impl ChatTracker {
                     messages: Vec::new(),
                     seen: HashSet::new(),
                     activity: 0,
+                    pending_since: HashMap::new(),
                 },
             );
         }
@@ -578,6 +584,21 @@ impl ChatTracker {
         body: &str,
         retry_nonce: Option<&str>,
     ) -> Result<ReplyPlan, ReplyError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.prepare_reply_at(conversation_id, body, retry_nonce, now_ms)
+    }
+
+    /// [`Self::prepare_reply`] with an injected clock (ms since the epoch).
+    pub fn prepare_reply_at(
+        &mut self,
+        conversation_id: &str,
+        body: &str,
+        retry_nonce: Option<&str>,
+        now_ms: i64,
+    ) -> Result<ReplyPlan, ReplyError> {
         self.seq += 1;
         let seq = self.seq;
         let conv = self.convs.get_mut(conversation_id).ok_or(ReplyError::Unknown)?;
@@ -624,6 +645,7 @@ impl ChatTracker {
             }
         };
         conv.activity = seq;
+        conv.pending_since.insert(nonce.clone(), now_ms);
         let frame = Outbound {
             id: self.fresh_id(),
             typ: TYPE_CHAT_REPLY,
@@ -636,11 +658,36 @@ impl ChatTracker {
         Ok(ReplyPlan { client_nonce: nonce, frame })
     }
 
+    /// Fail every reply still pending `PENDING_TIMEOUT_MS` after it was sent
+    /// (no `chat_reply_result` ever came). They become retryable with the same
+    /// nonce. Returns the conversations that changed.
+    pub fn expire_pending(&mut self, now_ms: i64) -> Vec<String> {
+        let mut changed = Vec::new();
+        for (id, c) in self.convs.iter_mut() {
+            let mut any = false;
+            for m in c.messages.iter_mut().filter(|m| m.status.as_deref() == Some("pending")) {
+                let Some(nonce) = m.client_nonce.as_deref() else { continue };
+                let since = *c.pending_since.entry(nonce.to_string()).or_insert(now_ms);
+                if now_ms.saturating_sub(since) >= PENDING_TIMEOUT_MS {
+                    m.status = Some("failed".into());
+                    m.retryable = true;
+                    any = true;
+                }
+            }
+            if any {
+                changed.push(id.clone());
+            }
+        }
+        changed.sort();
+        changed
+    }
+
     /// Undo `prepare_reply` for a brand-new reply that could not be sent.
     pub fn discard_reply(&mut self, conversation_id: &str, nonce: &str) {
         if let Some(c) = self.convs.get_mut(conversation_id) {
             c.messages.retain(|m| m.client_nonce.as_deref() != Some(nonce));
             c.seen.remove(nonce);
+            c.pending_since.remove(nonce);
         }
     }
 
@@ -1212,6 +1259,58 @@ mod tests {
         assert_eq!(t.prepare_reply(CID, "x", Some(&b.client_nonce)).unwrap_err(), ReplyError::NotRetryable);
         // Unknown nonce.
         assert_eq!(t.prepare_reply(CID, "x", Some(M3)).unwrap_err(), ReplyError::NotRetryable);
+    }
+
+    #[test]
+    fn a_pending_reply_with_no_result_fails_retryably_after_the_timeout() {
+        let mut t = ChatTracker::default();
+        opened(&mut t);
+        let a = t.prepare_reply_at(CID, "one", None, 1_000).unwrap();
+        // Not yet.
+        assert!(t.expire_pending(1_000 + PENDING_TIMEOUT_MS - 1).is_empty());
+        assert_eq!(t.view(CID).unwrap().messages[1].status.as_deref(), Some("pending"));
+        // At the timeout it fails, retryable, and the conversation is reported.
+        assert_eq!(t.expire_pending(1_000 + PENDING_TIMEOUT_MS), vec![CID.to_string()]);
+        let m = t.view(CID).unwrap().messages[1].clone();
+        assert_eq!(m.status.as_deref(), Some("failed"));
+        assert!(m.retryable);
+        // Reported once.
+        assert!(t.expire_pending(1_000 + PENDING_TIMEOUT_MS * 5).is_empty());
+        // Same-nonce retry restarts the clock.
+        let again = t.prepare_reply_at(CID, "x", Some(&a.client_nonce), 100_000).unwrap();
+        assert_eq!(again.client_nonce, a.client_nonce);
+        assert!(t.expire_pending(100_000 + PENDING_TIMEOUT_MS - 1).is_empty());
+        assert_eq!(t.expire_pending(100_000 + PENDING_TIMEOUT_MS).len(), 1);
+        // A late "sent" still settles an expired reply.
+        let res = ChatReplyResult {
+            conversation_id: CID.into(),
+            client_nonce: a.client_nonce.clone(),
+            status: "sent".into(),
+        };
+        assert!(t.on_reply_result(&res));
+        assert_eq!(t.view(CID).unwrap().messages[1].status.as_deref(), Some("sent"));
+    }
+
+    #[test]
+    fn a_confirmed_reply_never_expires_and_expiry_frees_the_pending_bound() {
+        let mut t = ChatTracker::default();
+        opened(&mut t);
+        let a = t.prepare_reply_at(CID, "one", None, 0).unwrap();
+        t.on_reply_result(&ChatReplyResult {
+            conversation_id: CID.into(),
+            client_nonce: a.client_nonce,
+            status: "sent".into(),
+        });
+        assert!(t.expire_pending(PENDING_TIMEOUT_MS * 10).is_empty());
+        assert_eq!(t.view(CID).unwrap().messages[1].status.as_deref(), Some("sent"));
+
+        for _ in 0..MAX_PENDING {
+            t.prepare_reply_at(CID, "x", None, 5_000).unwrap();
+        }
+        assert_eq!(t.prepare_reply_at(CID, "x", None, 5_000).unwrap_err(), ReplyError::TooManyPending);
+        t.expire_pending(5_000 + PENDING_TIMEOUT_MS);
+        // Expired replies are failed, not pending, so the bound no longer blocks.
+        assert!(t.prepare_reply_at(CID, "x", None, 5_000 + PENDING_TIMEOUT_MS).is_ok());
     }
 
     #[test]

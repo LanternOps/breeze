@@ -394,6 +394,11 @@ where
                     }
                     // Message cards past `expiresAt` close themselves; the
                     // agent is told `message_dismissed` reason `expired`.
+                    // Chat replies with no result after 30 s fail (retryable).
+                    let stale = ctx.chat.tracker().expire_pending(now_unix_ms());
+                    for id in stale {
+                        publish_chat_view(ctx, &id);
+                    }
                     let due = ctx.messages.tracker().expire_due(now_unix_ms());
                     for (id, frame) in due {
                         desktop::close_message_window(&ctx.app, &id);
@@ -565,7 +570,13 @@ where
                         write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
                     }
                 }
-                Err(e) => eprintln!("[helper] bad chat_open payload: {}", e),
+                Err(e) => {
+                    // Unparseable: no conversation to name, but the agent is
+                    // waiting on this envelope id; answer so it fails fast.
+                    eprintln!("[helper] bad chat_open payload: {}", e);
+                    let frame = ChatTracker::presented(&env.id, "", None, CHAT_PRESENTED_FAILED);
+                    write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
             },
             "chat_message" => match parse_payload::<ChatShow>(&env.payload) {
                 Ok(show) => {
@@ -579,7 +590,13 @@ where
                         write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
                     }
                 }
-                Err(e) => eprintln!("[helper] bad chat_message payload: {}", e),
+                Err(e) => {
+                    // Unparseable: no conversation to name, but the agent is
+                    // waiting on this envelope id; answer so it fails fast.
+                    eprintln!("[helper] bad chat_message payload: {}", e);
+                    let frame = ChatTracker::presented(&env.id, "", None, CHAT_PRESENTED_FAILED);
+                    write_outbound(&mut stream, &session_key, &mut send_seq, frame).await?;
+                }
             },
             "chat_close" => {
                 if let (Ok(c), Some(ctx)) = (parse_payload::<ChatClose>(&env.payload), desktop_ctx) {
@@ -1118,6 +1135,52 @@ mod tests {
             "expected Transient, got {:?}",
             res
         );
+    }
+
+    /// A malformed chat_open / chat_message must be answered with
+    /// chat_presented status "failed" on the inbound envelope id, so the agent
+    /// does not wait out its full timeout and report the wrong cause.
+    #[tokio::test]
+    async fn test_malformed_chat_payload_replies_presented_failed() {
+        let (client_half, mut broker_half) = tokio::io::duplex(8192);
+        let token = HelperToken::new();
+        let id = test_identity();
+        let session = tokio::spawn(async move {
+            run_session_with_identity(client_half, &token, &id, None).await
+        });
+        let mut broker_send = 0u64;
+        let mut broker_recv = 0u64;
+        let env = read_frame(&mut broker_half, &ZERO_KEY, &mut broker_recv).await.expect("auth_request");
+        let session_key = [9u8; 32];
+        let resp = format!(r#"{{"accepted":true,"sessionKey":"{}"}}"#, hex::encode(session_key));
+        write_frame(&mut broker_half, &ZERO_KEY, &mut broker_send, &env.id, "auth_response", Some(raw(&resp)))
+            .await
+            .expect("auth_response");
+
+        for (env_id, typ) in [("open-1", "chat_open"), ("msg-1", "chat_message")] {
+            write_frame(
+                &mut broker_half,
+                &session_key,
+                &mut broker_send,
+                env_id,
+                typ,
+                Some(raw(r#"{"conversationId":5,"messages":"nope"}"#)),
+            )
+            .await
+            .expect("write malformed chat frame");
+            let reply = read_frame(&mut broker_half, &session_key, &mut broker_recv)
+                .await
+                .expect("read chat_presented");
+            assert_eq!(reply.typ, "chat_presented", "{typ}");
+            assert_eq!(reply.id, env_id, "{typ}");
+            let p: serde_json::Value = serde_json::from_str(reply.payload.as_ref().unwrap().get()).unwrap();
+            assert_eq!(p["status"], "failed", "{typ}");
+        }
+
+        write_frame(&mut broker_half, &session_key, &mut broker_send, "bye", "disconnect", None)
+            .await
+            .expect("disconnect");
+        let _ = session.await;
     }
 
     /// A ping from the broker must be answered with a pong carrying the same id.
