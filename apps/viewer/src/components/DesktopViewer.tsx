@@ -17,6 +17,7 @@ import { capabilitiesFor, type TransportCapabilities } from '../lib/transports/t
 import type { VncSessionWrapper } from '../lib/transports/vnc';
 import { createVncTunnel, closeTunnel, retryVncTunnel, type VncTunnelInfo } from '../lib/tunnel';
 import { pollDesktopAccess } from '../lib/desktopAccess';
+import { createAttemptGeneration } from '../lib/attemptGeneration';
 import {
   mapKey,
   getModifiers,
@@ -203,6 +204,10 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const videoRef = useRef<HTMLVideoElement>(null);
   const wsRef = useRef<WebSocketSessionWrapper | null>(null);
   const webrtcRef = useRef<WebRTCSessionWrapper | null>(null);
+  // Which connectWebRTC call owns the next install into webrtcRef (#8947).
+  // Every call begins an attempt; teardown sites whose owner is gone
+  // invalidate it, so a late result is closed instead of installed.
+  const webrtcAttemptsRef = useRef(createAttemptGeneration());
   const transportRef = useRef<Transport | null>(null);
   const wsCleanupRef = useRef<(() => void) | null>(null);
   const authRef = useRef<AuthenticatedConnectionParams | null>(null);
@@ -635,6 +640,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       webrtcMouseMoveRafRef.current = null;
     }
     webrtcMouseMovePendingRef.current = null;
+    // A reconnect's connectWebRTC may still be in flight; it must not install
+    // itself over the transport this switch brings up.
+    webrtcAttemptsRef.current.invalidate();
     const prevRtc = webrtcRef.current;
     webrtcRef.current = null;
     prevRtc?.close();
@@ -736,65 +744,82 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     clipboardSyncRef.current = null;
     setClipboardState(null);
 
-    const sessionWrapper = await connectWebRTCTransport(auth, {
-      videoElement: videoEl,
-      cursorOverlayRef,
-      targetSessionId: targetSessionId ?? defaultTargetSessionId,
-      showRemoteCursorRef,
-      remoteCursorShapeRef,
-      onAwaitingUserApproval: () => setAwaitingUserApproval(true),
-      onConnected: () => {
-        // Guard: ignore stale session events after the ref has moved on
-        if (webrtcRef.current !== sessionWrapper) return;
-        setStatus('connected');
-        setConnectedAt(new Date());
-        setErrorMessage(null);
-        // Ensure keyboard input is captured without an extra click.
-        focusKeyboardTarget(videoRef.current);
-      },
-      onDisconnected: () => {
-        if (webrtcRef.current !== sessionWrapper) return;
-        if (userDisconnectRef.current) return;
-        startReconnectRef.current();
-      },
-      onFailed: () => {
-        if (webrtcRef.current !== sessionWrapper) return;
-        if (userDisconnectRef.current) return;
-        startReconnectRef.current();
-      },
-      onClosed: () => {
-        if (webrtcRef.current !== sessionWrapper) return;
-        if (userDisconnectRef.current) return;
-        setStatus('disconnected');
-        setConnectedAt(null);
-      },
-      onAudioTrack: (audioEl) => {
-        audioElRef.current = audioEl;
-        setHasAudioTrack(true);
-      },
-      onClipboardChannel: (channel) => {
-        // A new channel is a new session as far as the clipboard is concerned:
-        // anything the old one was doing (a paste waiting on its ack) must
-        // never complete into this one.
-        clipboardSyncRef.current?.close();
-        const sync = new ClipboardSync({
-          channel,
-          io: clipboardIO,
-          hasFocus: () => document.hasFocus(),
-          lastCopyIntentAt: () => lastCopyIntentAtRef.current,
-          onChange: (state) => {
-            if (clipboardSyncRef.current === sync) setClipboardState(state);
-          },
-        });
-        clipboardSyncRef.current = sync;
-        setClipboardState(sync.state);
-      },
-      onCursorChannelOpen: () => setCursorStreamActive(true),
-      onCursorChannelClose: () => setCursorStreamActive(false),
-      onWebRTCUnsupported: markWebRTCUnusable,
-    });
+    // Taken before the await: anything that supersedes this call while the
+    // transport is negotiating (a newer call, a cancelled connect effect, a
+    // user disconnect) makes it stale (#8947).
+    const attempt = webrtcAttemptsRef.current.begin();
+
+    let sessionWrapper: WebRTCSessionWrapper | null;
+    try {
+      sessionWrapper = await connectWebRTCTransport(auth, {
+        videoElement: videoEl,
+        cursorOverlayRef,
+        targetSessionId: targetSessionId ?? defaultTargetSessionId,
+        showRemoteCursorRef,
+        remoteCursorShapeRef,
+        onAwaitingUserApproval: () => setAwaitingUserApproval(true),
+        onConnected: () => {
+          // Guard: ignore stale session events after the ref has moved on
+          if (webrtcRef.current !== sessionWrapper) return;
+          setStatus('connected');
+          setConnectedAt(new Date());
+          setErrorMessage(null);
+          // Ensure keyboard input is captured without an extra click.
+          focusKeyboardTarget(videoRef.current);
+        },
+        onDisconnected: () => {
+          if (webrtcRef.current !== sessionWrapper) return;
+          if (userDisconnectRef.current) return;
+          startReconnectRef.current();
+        },
+        onFailed: () => {
+          if (webrtcRef.current !== sessionWrapper) return;
+          if (userDisconnectRef.current) return;
+          startReconnectRef.current();
+        },
+        onClosed: () => {
+          if (webrtcRef.current !== sessionWrapper) return;
+          if (userDisconnectRef.current) return;
+          setStatus('disconnected');
+          setConnectedAt(null);
+        },
+        onAudioTrack: (audioEl) => {
+          audioElRef.current = audioEl;
+          setHasAudioTrack(true);
+        },
+        onClipboardChannel: (channel) => {
+          // A new channel is a new session as far as the clipboard is concerned:
+          // anything the old one was doing (a paste waiting on its ack) must
+          // never complete into this one.
+          clipboardSyncRef.current?.close();
+          const sync = new ClipboardSync({
+            channel,
+            io: clipboardIO,
+            hasFocus: () => document.hasFocus(),
+            lastCopyIntentAt: () => lastCopyIntentAtRef.current,
+            onChange: (state) => {
+              if (clipboardSyncRef.current === sync) setClipboardState(state);
+            },
+          });
+          clipboardSyncRef.current = sync;
+          setClipboardState(sync.state);
+        },
+        onCursorChannelOpen: () => setCursorStreamActive(true),
+        onCursorChannelClose: () => setCursorStreamActive(false),
+        onWebRTCUnsupported: markWebRTCUnusable,
+      });
+    } catch (err) {
+      // A superseded attempt's failure belongs to nobody: its owner has moved
+      // on and must not be told this attempt failed.
+      if (attempt.isStale()) return false;
+      throw err;
+    }
 
     if (!sessionWrapper) return false;
+    // The owner moved on while this attempt was negotiating. Close this
+    // attempt's own peer and leave webrtcRef to whoever owns it now — closing
+    // or overwriting it here is what orphaned the live peer (#8947).
+    if (!attempt.adopt(sessionWrapper)) return false;
 
     // Close the old transport's input-r; this one runs its own handshake.
     reliableInput.detach();
@@ -1111,6 +1136,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     wsRef.current?.close();
     wsRef.current = null;
     // Null ref before close to prevent stale onconnectionstatechange handlers
+    webrtcAttemptsRef.current.invalidate();
     const prevWebrtc = webrtcRef.current;
     webrtcRef.current = null;
     prevWebrtc?.close();
@@ -1204,11 +1230,11 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // case skip straight to WebSocket rather than paying a doomed signalling
         // round trip on every connect and reconnect (issue #3410).
         const webrtcOk = webrtcUsableRef.current ? await connectWebRTC(authParams) : false;
-        if (cancelled) {
-          webrtcRef.current?.close();
-          webrtcRef.current = null;
-          return;
-        }
+        // Cancelled: the cleanup below invalidated this run's WebRTC attempt,
+        // so connectWebRTC already closed its own peer instead of installing
+        // it. webrtcRef now belongs to the newer run — never touch it here
+        // (#8947: closing it orphaned the newer run's live peer).
+        if (cancelled) return;
 
         if (!webrtcOk) {
           // Fall back to WebSocket
@@ -1254,6 +1280,9 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     return () => {
       cancelled = true;
       cancelledRef.current = true;
+      // An in-flight connectWebRTC from this run must not install itself
+      // after this cleanup has run (#8947).
+      webrtcAttemptsRef.current.invalidate();
       stopReconnect();
       reconnectInFlightRef.current = false;
 
@@ -1354,6 +1383,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     const endSession = (message: string) => {
       userDisconnectRef.current = true; // no auto-reconnect onto a dead session
       stopReconnect();
+      webrtcAttemptsRef.current.invalidate();
       const prevRtc = webrtcRef.current;
       webrtcRef.current = null;
       prevRtc?.close();
@@ -2755,6 +2785,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       audioEl.srcObject = null;
       audioElRef.current = null;
     }
+    webrtcAttemptsRef.current.invalidate();
     const rtcSession = webrtcRef.current;
     webrtcRef.current = null;
     rtcSession?.close();

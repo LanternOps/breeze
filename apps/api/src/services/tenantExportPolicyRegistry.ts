@@ -476,6 +476,14 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "edr_tenants": tablePolicy("org_id", {"included":["id","connection_id","partner_id","vendor_tenant_id","vendor_tenant_name","vendor_parent_id","vendor_tenant_type","vendor_external_code","api_host","org_id","mapping_source","endpoint_count","open_detection_count","last_seen_at","vendor_missing_since","last_inventory_sync_at","last_inventory_sync_status","last_inventory_sync_error","last_detection_sync_at","last_detection_sync_status","last_detection_sync_error","detection_cursor","created_at","updated_at","unsupported_actions","unsupported_actions_at"],"reviewedIncluded":[],"excludedSensitive":["installer_secret_encrypted"],"excludedOpen":[]}),
   "elevation_audit": tablePolicy("org_id", {"included":["id","org_id","elevation_request_id","event_type","actor","actor_user_id","occurred_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"]}),
   "elevation_requests": tablePolicy("org_id", {"included":["id","org_id","site_id","partner_id","device_id","device_epoch","flow_type","subject_user_id","subject_username","reason","target_executable_path","target_executable_signer","target_publisher","status","revision","requested_at","approved_at","expires_at","expired_at","revoked_at","revoked_by_user_id","revoked_reason","approved_by_user_id","denied_by_user_id","denial_reason","parent_approval_id","software_policy_match_id","execution_id","tool_name","action_digest","risk_tier","decided_assurance_level","decided_via","authenticator_device_id","session_started_at","session_ended_at","client_ip","user_agent","created_at","updated_at"],"reviewedIncluded":["target_executable_hash"],"excludedSensitive":[],"excludedOpen":["metadata"]}),
+  // Endpoint messaging (#8742 W02). title/body are customer-authored message
+  // text (same class as ticket_comments.content): included. target_spec (the
+  // send's target selector) and branding (the sender snapshot) are jsonb, so
+  // excludedOpen. body_sha256 is a content digest of the exported body, not a
+  // credential verifier, and trips no SUSPICIOUS_NAME_PARTS entry.
+  "endpoint_message_deliveries": tablePolicy("org_id", {"included":["id","endpoint_message_id","org_id","device_id","command_id","status","surface","error_code","delivered_at","displayed_at","acknowledged_at","dismissed_at","retracted_at","retract_command_id","expires_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "endpoint_message_receipts": tablePolicy("org_id", {"included":["id","delivery_id","org_id","device_id","session_key","session_username","event_type","occurred_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "endpoint_messages": tablePolicy("org_id", {"included":["id","org_id","batch_id","client_message_id","created_by","target_mode","title","body","severity","requires_ack","expires_at","ai_initiator_kind","ai_session_id","ai_agent_run_id","body_sha256","body_length","body_purged_at","resend_of_id","retracted_at","retracted_by","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["target_spec","branding"]}),
   // source_link_key_id / source_link_key_generation (fix round, #2776
   // lineage follow-up): a plain self-referencing row id and an integer
   // generation snapshot recording which parent short-link row (and which of
@@ -983,6 +991,25 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "topology_view_exclusions": tablePolicy("org_id", {"included":["id","org_id","site_id","relationship_id","view","reason","created_by","revoked_at","revoked_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "topology_layout": tablePolicy("org_id", {"included":["id","org_id","site_id","node_type","node_id","x","y","pinned","updated_by","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "topology_manual_nodes": tablePolicy("org_id", {"included":["id","org_id","site_id","label","role","notes","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // Trust Center W1: `payload` (the published public snapshot) and
+  // trust_pages.published_config are jsonb ->
+  // excludedOpen by rule; payload_sha256 is a content digest, reviewedIncluded
+  // (org_documents.sha256 precedent).
+  "trust_page_documents": tablePolicy("org_id", {
+    included: ["trust_page_id", "document_id", "org_id", "visibility", "disclosure_confirmed_at", "disclosure_confirmed_by_user_id", "sort_order", "created_at"],
+    reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
+  }),
+  "trust_page_snapshots": tablePolicy("org_id", {
+    included: ["id", "trust_page_id", "org_id", "catalog_version", "publication_revision", "is_current", "generated_at"],
+    reviewedIncluded: ["payload_sha256"], excludedSensitive: [],
+    excludedOpen: ["payload"],
+  }),
+  "trust_pages": tablePolicy("org_id", {
+    included: ["id", "org_id", "partner_id", "is_partner_home", "published_at", "publication_revision", "search_indexable", "show_percentages", "show_device_count", "show_managed_by", "security_contact_email", "website_url", "intro_html", "hidden_control_ids", "publication_authorized_by", "publication_authorized_at", "publication_authorized_by_user_id", "last_evaluated_at", "created_by_user_id", "updated_by_user_id", "created_at", "updated_at"],
+    reviewedIncluded: [], excludedSensitive: [],
+    // published_config: jsonb frozen publication settings -> excludedOpen by rule.
+    excludedOpen: ["published_config"],
+  }),
   "tunnel_allowlists": tablePolicy("org_id", {"included":["id","org_id","site_id","direction","pattern","description","enabled","source","discovered_asset_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "tunnel_sessions": tablePolicy("org_id", {"included":["id","device_id","user_id","org_id","type","status","target_host","target_port","scheme","skip_tls_verify","source_ip","bytes_sent","bytes_recv","started_at","ended_at","duration_seconds","error_message","created_at","last_activity_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "unifi_clients": tablePolicy("org_id", {"included":["id","collector_id","org_id","site_id","mac","hostname","ip_address","connected_device_id","uplink_port_idx","is_wired","ssid","vlan","signal_dbm","tx_bytes","rx_bytes","uptime_seconds","discovered_asset_id","is_stale","first_seen_at","last_seen_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["raw"]}),

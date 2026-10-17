@@ -54,7 +54,7 @@ const observe = (tracked: string[] = []) => asSystem(() => oauthGrantSource.obse
 
 describe('oauthGrantSource', () => {
   it('is registered', () => {
-    expect(HEALTH_SOURCES).toEqual([oauthGrantSource]);
+    expect(HEALTH_SOURCES).toContain(oauthGrantSource);
     expect(oauthGrantSource).toMatchObject({ kind: 'oauth_grant', intervalMinutes: 15 });
   });
 

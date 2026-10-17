@@ -1367,7 +1367,7 @@
       "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
     },
     "watchdogInstall": {
-      "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run `breeze-agent service install --watchdog` on the host to retry.",
+      "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run <code>breeze-agent service install --watchdog</code> on the host to retry.",
       "unsupported": "Automatic watchdog install is not supported on this host (since {{since}}).",
       "reason": {
         "network": "the download could not be reached",
@@ -4085,7 +4085,7 @@
       "offNote": "Runtimes are always detected, but workload listing is off until a policy enables it.",
       "enabled": "List workloads",
       "runtimesHeading": "Runtimes to list",
-      "laterRelease": "Hyper-V and Proxmox VE listing arrives with a later agent release; these toggles take effect then.",
+      "agentSupport": "Hyper-V and Proxmox VE toggles only take effect on agents that include these drivers; older agents ignore them.",
       "interval": "Collection interval (minutes)",
       "invalidInterval": "Interval must be a whole number of minutes between {{min}} and {{max}}."
     },
@@ -4238,6 +4238,89 @@
       "titleHtml": "HTML is not allowed in the title.",
       "titleLinks": "Links are not allowed in the title.",
       "invalid": "The message contains content that is not allowed."
+    },
+    "history": {
+      "title": "Endpoint messages",
+      "description": "Messages sent to people at their devices, and what happened to each one.",
+      "empty": "No messages have been sent yet.",
+      "loading": "Loading...",
+      "loadFailed": "Could not load messages.",
+      "retry": "Try again",
+      "loadMore": "Load more",
+      "selectPrompt": "Select a message to see its delivery details.",
+      "detailLoadFailed": "Could not load this message.",
+      "notFound": "This message was not found.",
+      "noAccess": "You do not have permission to view endpoint messages.",
+      "purgedTitle": "Content removed",
+      "purgedBody": "The message text was removed after 90 days. Delivery history is kept.",
+      "purgedListTitle": "(content removed)",
+      "badgeRetracted": "Retracted",
+      "badgeAi": "AI",
+      "devicesLabel": "Devices: {{count}}",
+      "fields": {
+        "body": "Message",
+        "deliveries": "Devices",
+        "host": "Device",
+        "status": "Status",
+        "surface": "Shown in",
+        "error": "Error",
+        "sent": "Sent",
+        "expires": "Expires",
+        "delivered": "Delivered",
+        "displayed": "Displayed",
+        "acknowledged": "Acknowledged",
+        "dismissed": "Dismissed",
+        "retracted": "Retracted",
+        "receipts": "Receipts",
+        "noReceipts": "None",
+        "requiresAck": "Needs acknowledgement"
+      },
+      "receiptEvents": {
+        "displayed": "Displayed",
+        "acknowledged": "Acknowledged",
+        "dismissed": "Dismissed",
+        "expired": "Expired"
+      },
+      "surface": {
+        "assist": "Assist card",
+        "native": "Native notification"
+      },
+      "statuses": {
+        "queued": "Queued",
+        "delivered": "Delivered",
+        "displayed": "Displayed",
+        "acknowledged": "Acknowledged",
+        "dismissed": "Dismissed",
+        "expired": "Expired",
+        "retracted": "Retracted",
+        "failed": "Failed",
+        "superseded": "Superseded"
+      },
+      "actions": {
+        "retract": "Retract",
+        "retracting": "Retracting...",
+        "resend": "Resend to failed or expired",
+        "resending": "Resending..."
+      },
+      "retractConfirm": {
+        "title": "Retract this message?",
+        "message": "Devices that show it now will have it removed. Devices that have not received it will not get it.",
+        "confirm": "Retract"
+      },
+      "messages": {
+        "retractSuccess": "Message retracted.",
+        "retractPartial": "Message retracted, but {{count}} devices could not be updated.",
+        "retractFailed": "Could not retract the message.",
+        "resendSuccess": "Message resent. Devices: {{count}}.",
+        "resendFailed": "Could not resend the message."
+      },
+      "resendErrors": {
+        "retracted": "This message was retracted and cannot be resent.",
+        "body_purged": "The message text was removed, so it cannot be resent.",
+        "in_progress": "A send for this message is already in progress.",
+        "idempotency_conflict": "This resend was already submitted with different details.",
+        "nothing_to_resend": "No failed or expired devices to resend to."
+      }
     }
   }
 }

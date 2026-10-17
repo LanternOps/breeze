@@ -2,17 +2,18 @@ import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const { navigateToMock, showToastMock, selectOrganizationMock, selectAllOrgsMock } = vi.hoisted(() => ({
+const { navigateToMock, showToastMock, selectOrganizationMock, selectAllOrgsMock, recordRecentOrgMock } = vi.hoisted(() => ({
   navigateToMock: vi.fn(),
   showToastMock: vi.fn(),
   selectOrganizationMock: vi.fn(),
   selectAllOrgsMock: vi.fn(),
+  recordRecentOrgMock: vi.fn(),
 }));
 vi.mock('./navigation', () => ({ navigateTo: navigateToMock }));
 vi.mock('../components/shared/Toast', () => ({ showToast: showToastMock }));
 vi.mock('../stores/auth', () => ({ waitForPendingRefresh: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../stores/orgStore', () => ({
-  useOrgStore: { getState: () => ({ selectOrganization: selectOrganizationMock, selectAllOrgs: selectAllOrgsMock }) },
+  useOrgStore: { getState: () => ({ selectOrganization: selectOrganizationMock, selectAllOrgs: selectAllOrgsMock, recordRecentOrg: recordRecentOrgMock }) },
 }));
 
 import { stashSwitchToast, consumeSwitchToast, getOrgSwitchRedirect, applyOrgSwitch } from './orgSwitch';
@@ -96,9 +97,25 @@ describe('applyOrgSwitch — soft navigation instead of a full reload', () => {
     showToastMock.mockReset();
     selectOrganizationMock.mockReset();
     selectAllOrgsMock.mockReset();
+    recordRecentOrgMock.mockReset();
   });
   afterAll(() => {
     Object.defineProperty(window, 'location', { configurable: true, writable: true, value: originalLocation });
+  });
+
+  it('applyOrgSwitch records a real org as recent, after selecting it', async () => {
+    stubLocation('/devices');
+    await applyOrgSwitch('org-b', 'Switched');
+    expect(recordRecentOrgMock).toHaveBeenCalledWith('org-b');
+    expect(recordRecentOrgMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      selectOrganizationMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('fleet view is never recorded', async () => {
+    stubLocation('/devices');
+    await applyOrgSwitch(null, 'Switched');
+    expect(recordRecentOrgMock).not.toHaveBeenCalled();
   });
 
   it('re-navigates to the current path (query kept, hash dropped) via the view-transition router, replacing history', async () => {

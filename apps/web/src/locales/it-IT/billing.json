@@ -2050,7 +2050,10 @@
       "syncingToProvider": "Sincronizzazione…",
       "providerSyncFailed": "Sincronizzazione con {{provider}} non riuscita",
       "reverseInProviderToo": "Storna questo pagamento anche in {{provider}}",
-      "overpayment": "L'importo supera il saldo dovuto ({{balance}})."
+      "overpayment": "L'importo supera il saldo dovuto ({{balance}}).",
+      "fillLabel": "Compila importo",
+      "fillDeposit": "Acconto ({{amount}})",
+      "fillBalance": "Saldo totale ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fattura inviata",
@@ -2065,7 +2068,8 @@
       "paid": "Pagato",
       "subtotal": "Subtotale",
       "tax": "Imposta",
-      "total": "Totale"
+      "total": "Totale",
+      "depositDueNow": "Acconto dovuto ora"
     },
     "terms": "Termini e condizioni",
     "void": {

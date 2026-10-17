@@ -2050,7 +2050,10 @@
       "syncingToProvider": "Sincronizando…",
       "providerSyncFailed": "Falha na sincronização com o {{provider}}",
       "reverseInProviderToo": "Estorne este pagamento também no {{provider}}",
-      "overpayment": "O valor é maior que o saldo devido ({{balance}})."
+      "overpayment": "O valor é maior que o saldo devido ({{balance}}).",
+      "fillLabel": "Preencher valor",
+      "fillDeposit": "Entrada ({{amount}})",
+      "fillBalance": "Saldo total ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Fatura enviada",
@@ -2065,7 +2068,8 @@
       "paid": "Paga",
       "subtotal": "Subtotal",
       "tax": "Imposto",
-      "total": "Total"
+      "total": "Total",
+      "depositDueNow": "Entrada devida agora"
     },
     "terms": "Termos e condições",
     "void": {

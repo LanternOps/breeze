@@ -967,6 +967,26 @@ const mergeBackupConfigs: CustomMergeExecutor = async (loser, survivor) => {
 };
 
 // ---------------------------------------------------------------------------
+// trust_pages — UNIQUE(org_id) and a page is an org's PUBLIC identity (spec
+// trust-center §9 "Merge"). The loser's page is ALWAYS retired, even when the
+// survivor has none: repointing would publish org A's history under org B's
+// name. Children (snapshots, document links) are ON DELETE CASCADE. The
+// survivor's last_evaluated_at is cleared so the next hourly refresh rebuilds
+// its snapshot: its fleet just changed.
+// ---------------------------------------------------------------------------
+const mergeTrustPages: CustomMergeExecutor = async (loser, survivor) => {
+  const dropped = await run(sql`DELETE FROM trust_pages WHERE org_id = ${uuid(loser)}`);
+  await run(sql`UPDATE trust_pages SET last_evaluated_at = NULL, updated_at = now() WHERE org_id = ${uuid(survivor)}`);
+  return {
+    moved: 0,
+    dropped,
+    notes: dropped > 0
+      ? [`trust_pages: retired the merged-away org's public trust page (${dropped}); its snapshots and document links were removed with it. The surviving page will be rebuilt on the next hourly refresh.`]
+      : [],
+  };
+};
+
+// ---------------------------------------------------------------------------
 // audit_baselines — no unique index at all, but `auditBaselineJobs.ts` joins
 // devices to baselines on (org_id, os_type) WHERE is_active, so two active
 // baselines for one (org, os_type) would silently double-evaluate every
@@ -1790,6 +1810,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   tool_source_tools: mergeToolSourceTools,
   contacts: mergeContacts,
   backup_configs: mergeBackupConfigs,
+  trust_pages: mergeTrustPages,
   audit_baselines: mergeAuditBaselines,
   service_deliverables: mergeServiceDeliverables,
   ticket_checklist_templates: mergeTicketChecklistTemplates,
@@ -1909,6 +1930,9 @@ export const CUSTOM_WOULD_REVOKE_COUNTS: Readonly<Record<string, (loser: string)
  */
 export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, survivor: string) => SQL>> = {
   ticket_drafts: (loser) => sql`SELECT count(*)::int AS n FROM ticket_drafts WHERE org_id = ${uuid(loser)}`,
+  // mergeTrustPages deletes the loser's page unconditionally (no collision
+  // key), so the mirror is plain loserRows, like ticket_drafts.
+  trust_pages: (loser) => sql`SELECT count(*)::int AS n FROM trust_pages WHERE org_id = ${uuid(loser)}`,
   // m365 tenant-sync snapshots: resolveM365SnapshotTable deletes EVERY
   // loser-org row unconditionally, so the mirror is plain loserRows.
   m365_sync_state: (loser) => sql`SELECT count(*)::int AS n FROM m365_sync_state WHERE org_id = ${uuid(loser)}`,

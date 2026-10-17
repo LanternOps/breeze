@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   redisDel: vi.fn(),
   audit: vi.fn(async () => {}),
   redisAvailable: true,
+  record: vi.fn(),
 }));
 
 vi.mock('../../db', () => ({
@@ -25,7 +26,8 @@ vi.mock('../../db', () => ({
       from: vi.fn(() => ({
         where: vi.fn((cond: unknown) => {
           h.selectWhere(cond);
-          return { limit: vi.fn(async () => h.commandRows) };
+          const limit = vi.fn(async () => h.commandRows);
+          return { limit, orderBy: vi.fn(() => ({ limit })) };
         }),
       })),
     })),
@@ -33,7 +35,7 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
-  deviceCommands: { id: 'id', deviceId: 'deviceId', type: 'type', payload: 'payload' },
+  deviceCommands: { id: 'id', deviceId: 'deviceId', type: 'type', payload: 'payload', createdAt: 'createdAt' },
 }));
 
 vi.mock('../../services/redis', () => ({
@@ -42,6 +44,10 @@ vi.mock('../../services/redis', () => ({
 
 vi.mock('../../services/auditEvents', () => ({
   writeAuditEventAsync: h.audit,
+}));
+
+vi.mock('../../services/endpointMessaging/receipts', () => ({
+  recordDeliveryEvent: h.record,
 }));
 
 vi.mock('../../services/clientIp', () => ({ getTrustedClientIpOrUndefined: () => '203.0.113.7' }));
@@ -84,6 +90,8 @@ describe('POST /agents/:id/message-events (#8741)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.commandRows = [{ id: 'cmd-1', batchId: BATCH_ID }];
+    // Default: a pre-W2 message with no delivery row takes the W1 audit sink.
+    h.record.mockResolvedValue({ found: false });
     h.redisKeys.clear();
     h.redisAvailable = true;
     h.redisSet.mockImplementation(async (key: string, _v: string, ..._rest: unknown[]) => {
@@ -193,5 +201,41 @@ describe('POST /agents/:id/message-events (#8741)', () => {
     const res = await post(buildApp(agentA), 'agent-a', body());
     expect(res.status).toBe(503);
     expect(h.audit).not.toHaveBeenCalled();
+  });
+
+  describe('W02 receipts sink (#8742)', () => {
+    it('a message with a delivery row writes a receipt, not an audit row, and touches no Redis', async () => {
+      h.record.mockResolvedValue({ found: true, inserted: true });
+      const res = await post(buildApp(agentA), 'agent-a', body());
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, duplicate: false });
+      expect(h.record).toHaveBeenCalledWith({
+        deviceId: DEVICE_A,
+        commandId: 'cmd-1',
+        batchId: BATCH_ID,
+        messageId: MESSAGE_ID,
+        sessionKey: 'S-1-5-21-1',
+        sessionUsername: 'alice',
+        eventType: 'acknowledged',
+        occurredAt: new Date('2026-12-27T10:00:00.000Z'),
+      });
+      expect(h.audit).not.toHaveBeenCalled();
+      expect(h.redisSet).not.toHaveBeenCalled();
+    });
+
+    it('a duplicate receipt (DB unique key) reports duplicate:true', async () => {
+      h.record.mockResolvedValue({ found: true, inserted: false });
+      const res = await post(buildApp(agentA), 'agent-a', body());
+      expect(await res.json()).toEqual({ ok: true, duplicate: true });
+      expect(h.audit).not.toHaveBeenCalled();
+    });
+
+    it('the receipt lookup uses the batch stored on the sent command, never the agent claim', async () => {
+      const stored = '55555555-5555-4555-8555-555555555555';
+      h.commandRows = [{ id: 'cmd-9', batchId: stored }];
+      h.record.mockResolvedValue({ found: true, inserted: true });
+      await post(buildApp(agentA), 'agent-a', body());
+      expect(h.record).toHaveBeenCalledWith(expect.objectContaining({ batchId: stored, commandId: 'cmd-9' }));
+    });
   });
 });

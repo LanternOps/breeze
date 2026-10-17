@@ -21,6 +21,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
@@ -64,12 +65,12 @@ func (t *unifiAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 // newUnifiAPIClient builds an http.Client that authenticates to the Breeze API
-// as this agent and refuses redirects (token-leak guard).
+// as this agent and refuses redirects (token-leak guard). It backs the UniFi
+// collector config/telemetry calls and the workspace-index client, so its TLS
+// goes through the shared ECH dialer like the heartbeat's (#8869); tlsCfg may
+// be nil.
 func newUnifiAPIClient(token *secmem.SecureString, tlsCfg *tls.Config) *http.Client {
-	tr := &http.Transport{}
-	if tlsCfg != nil {
-		tr.TLSClientConfig = tlsCfg
-	}
+	tr := ech.NewTransport(tlsCfg)
 	return &http.Client{
 		Timeout:       30 * time.Second,
 		Transport:     &unifiAuthTransport{base: tr, token: token},
@@ -834,7 +835,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			AgentID:      cfg.AgentID,
 			AuthToken:    secureToken,
 			AgentVersion: version,
-			HTTPClient:   nil, // will use default
+			HTTPClient:   newShipperHTTPClient(),
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
 			// Restores a set_log_level override across restarts (#7416).
@@ -1550,8 +1551,16 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	cfg, err := config.Load(cfgFile)
+	// One-shot ECH is armed only now, with the loaded config, so an existing
+	// `ech: false` opt-out or a stored server kill switch is honoured. Nothing
+	// above touches the network (env, trimming, config-folder reclaim and the
+	// config read are all local). A failed load leaves the shared dialer's
+	// flags as they are (initially both on), not config.Default().
 	if err != nil {
+		enableOneShotECH(nil)
 		cfg = config.Default()
+	} else {
+		enableOneShotECH(cfg)
 	}
 
 	if serverURL != "" {
@@ -2150,6 +2159,9 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		slog.Warn("helper config load failed; helper log shipping disabled", "error", err)
 		cfg = config.Default()
 	}
+	// Long-lived process: configure the shared ECH dialer for the log shipper
+	// (no one-shot mode).
+	ech.Configure(cfg.ECH, cfg.ECHServerEnabled)
 
 	socketPath := ipc.DefaultSocketPath()
 	if cfg.IPCSocketPath != "" {
@@ -2183,6 +2195,7 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 			AgentID:      cfg.AgentID,
 			AuthToken:    helperToken,
 			AgentVersion: version + "-helper",
+			HTTPClient:   newShipperHTTPClient(),
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  helperAuthMon,
 			// Follows the agent's set_log_level override (#7416).

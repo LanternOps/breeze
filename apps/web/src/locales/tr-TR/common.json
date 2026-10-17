@@ -114,7 +114,8 @@
     "ticketsIncidents": "Olaylar",
     "ticketsServiceRequests": "Hizmet talepleri",
     "ticketsProblems": "Sorunlar",
-    "ticketsChanges": "Değişiklikler"
+    "ticketsChanges": "Değişiklikler",
+    "endpointMessages": "Mesajlar"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -314,6 +315,17 @@
       "action": "Eylem",
       "target": "Hedef",
       "time": "Zaman"
+    },
+    "recentlyViewed": {
+      "title": "Kaldığınız yerden devam edin",
+      "kind": {
+        "device": "Cihaz",
+        "org": "Kuruluş",
+        "ticket": "Bilet",
+        "alert": "Uyarı",
+        "site": "Site",
+        "page": "Sayfa"
+      }
     },
     "alerts": {
       "title": "Son Uyarılar",
@@ -688,7 +700,23 @@
       "noSelection": "Kuruluşu seçin",
       "searchOrganizations": "Arama kuruluşları…",
       "noMatches": "Hiçbir kuruluş eşleşmiyor",
-      "legacyFilterNotice": "Organizasyon filtreleme artık başlık seçiciyi takip ediyor."
+      "legacyFilterNotice": "Organizasyon filtreleme artık başlık seçiciyi takip ediyor.",
+      "recent": "Son kullanılanlar",
+      "pane": {
+        "destinations": {
+          "overview": "Genel bakış",
+          "devices": "Cihazlar",
+          "tickets": "Biletler",
+          "alerts": "Uyarılar",
+          "sites": "Siteler",
+          "billing": "Faturalama"
+        },
+        "offlineCount": "{{count}} çevrimdışı",
+        "openCount": "{{count}} açık",
+        "criticalCount": "{{count}} kritik",
+        "noCritical": "yok",
+        "hint": "Geçiş yapmak için bir ada tıklayın · geçiş yapıp gitmek için bir sayfaya tıklayın"
+      }
     },
     "header": {
       "menu": "Menü",
@@ -805,9 +833,9 @@
       "expand": "Kenar çubuğunu genişlet",
       "collapseSections": "Tüm bölümleri daralt",
       "closeMenu": "Menüyü kapat",
-      "recentDevices": "Son açılan cihazlar",
-      "hideRecentDevices": "Son açılan cihazları gizle",
-      "showRecentDevices": "Son açılan cihazları göster"
+      "recent": "Son açılanlar",
+      "hideRecent": "Son açılanları gizle",
+      "showRecent": "Son açılanları göster"
     },
     "orgRequired": {
       "title": "Bir kuruluş seçin",

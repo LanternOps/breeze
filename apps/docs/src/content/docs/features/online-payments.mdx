@@ -47,13 +47,26 @@ Every issued invoice has its own private link that opens a view-and-pay page wit
 3. Share it however you like. The customer can read the invoice, download the PDF, and pay the amount due by card; the payment is recorded against the invoice automatically and badged **Online**.
 </Steps>
 
-The link stays valid for 12 months, or 180 days past the due date if that is later. If a link has gone to the wrong person, click **Reset customer link** -- that revokes *every* link issued for the invoice so far, including the one already sitting in a sent email, and issues a fresh one.
+The link stays valid for 12 months, or 180 days past the due date if that is later. If a link has gone to the wrong person, click **Reset customer link** -- that revokes *every* link issued for the invoice so far, including the one already sitting in a sent email, and issues a fresh one. It also revokes the automatic-payment links sent for that invoice (skip, confirm-payment and update-method links), and a revoked automatic-payment link no longer offers the invoice's pay link.
 
 A voided invoice's link keeps working but shows a plain "this invoice was voided" page with no amounts and no payment option.
 
 ## Paying from the Customer Portal
 
 Customers who use the [Customer Portal](/features/portal/) can view their issued invoices and pay any with an outstanding balance using a **Pay now** button, which opens the same secure Stripe Checkout. Once payment succeeds, the invoice's balance and status update on their own.
+
+## Payment reminders
+
+Payment reminders email the organization's billing contact about unpaid invoices: an upcoming reminder before the due date, optional repeats before it, and repeat reminders once the invoice is overdue. They are off by default and work on their own, with or without automatic payments.
+
+<Steps>
+1. Go to **Billing settings → Payments** and find the **Payment reminders** section.
+2. Set **Send payment reminders** to **Enabled**.
+3. Adjust **Days before the due date** (default 3), **Repeat before due every (days)** (blank sends one upcoming reminder) and **Remind overdue every (days)** (default 7). Each accepts 1 to 31 days.
+4. Click **Save payment settings**.
+</Steps>
+
+An organization's **Billing** tab can override each value for that client, or turn reminders off for that client only. No reminder is sent on the due date itself; the first overdue reminder goes out one overdue interval after it.
 
 ## Refunds
 
@@ -63,7 +76,7 @@ Refunds are **reflect-only**: you issue a refund from your own Stripe dashboard,
 
 Connecting and disconnecting Stripe requires billing management permission plus multi-factor authentication. Copying or resetting an invoice's customer link uses the same permission as issuing and sending invoices, and both actions are recorded in the [audit log](/reference/audit-logs/).
 
-**Charge now** on an invoice, saving the partner **Billing settings → Payments** tab, saving an organization's **Billing** tab when one of its own payment settings (automatic-payment limit, schedule, fees, payment methods or reminders) changes, and sending a client's automatic-payment request to an address other than its billing contact each ask for a second-factor confirmation (an authenticator-app code or a passkey) for that exact invoice, those settings or that recipient. Saving an organization's **Billing** tab without changing its payment settings, for example to edit only the tax ID or address, asks for nothing. These actions are available only from a signed-in user session, not from API keys. If your account has only text-message codes, add an authenticator app or passkey under your profile first.
+**Charge now** on an invoice, saving the partner **Billing settings → Payments** tab, saving an organization's **Billing** tab when one of its own payment settings (automatic-payment limit, schedule, fees, payment methods or reminders) changes, and sending a client's automatic-payment request to an address other than its billing contact each ask for a second-factor confirmation (an authenticator-app code or a passkey) for that exact invoice, those settings or that recipient. Saving an organization's **Billing** tab without changing its payment settings, for example to edit only the tax ID or address, asks for nothing. These actions are available only from a signed-in user session, not from API keys. If your account has only text-message codes, add an authenticator app or passkey under your profile first. Self-hosted deployments running with `ENABLE_2FA=false` are not asked for this confirmation.
 
 Before an automatic payment is started, Breeze checks the invoice against the automatic-payment limit the client authorized and against your current limit, if lower. An invoice above either limit is not charged: nothing is created in Stripe, the planned charge is cancelled and the client is told it will not happen.
 
@@ -92,6 +105,14 @@ For existing invoice checkout, the key must read the Stripe account and Events a
 Saving or refreshing the key checks these permissions without creating a payment or saving a customer's payment method. A missing automatic-payment permission does not disable existing card checkout. Automatic payments remain unavailable until every required permission is present and the feature is enabled for your partner account. Use **Refresh** after updating a restricted key's permissions.
 
 Automatic payments support Stripe accounts in the United States, Canada, United Kingdom, European Economic Area, Australia and New Zealand. Bank-account debit requires a United States Stripe account and a USD invoice. Existing one-time invoice checkout remains card-only.
+
+Automatic payments ship switched off for every partner and are turned on per partner by a rollout switch. Once on, they run only while your partner account is active. If the partner account is suspended, churned, offboarding, pending or deleted, automatic payments stop for all of your clients:
+
+- Enroll and update-method links stop working. Setup creates no Stripe customer or checkout session, and a setup that finishes saves no payment method and does not turn automatic payments on.
+- Due charges and retries are deferred. They end after the usual grace period, the same as when automatic payments are switched off. Card-expiry emails stop.
+- Stop and skip links keep working for clients, and payments already in progress at Stripe are still recorded.
+
+When the partner account is reactivated, charges that were already scheduled or waiting for a retry resume. Invoices whose charging notice was cancelled while the account was inactive are not rescheduled; collect those through the invoice's pay link.
 
 ## Processing fees
 

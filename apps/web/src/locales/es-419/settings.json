@@ -4428,7 +4428,8 @@
     "sessionInvalid": "Su sesión cambió antes de que se pudiera completar la vinculación. Inicie sesión de nuevo y vuelva a intentarlo.",
     "providerInactive": "Ese proveedor de inicio de sesión único ya no está activo. Comuníquese con su administrador.",
     "configChanged": "La configuración del inicio de sesión único cambió mientras se conectaba. Vuelva a intentarlo.",
-    "emailUnverified": "Su proveedor de identidad no confirmó que su correo electrónico esté verificado. Comuníquese con su administrador."
+    "emailUnverified": "Su proveedor de identidad no confirmó que su correo electrónico esté verificado. Comuníquese con su administrador.",
+    "idpVerifyFailed": "Breeze no pudo verificar el inicio de sesión que devolvió su proveedor de identidad. Vuelva a intentarlo."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Cargando aplicaciones conectadas…",
@@ -4629,6 +4630,7 @@
     "ssoReauthProviderInactive": "El inicio de sesión único ya no está disponible para esta cuenta. Consulta a tu administrador e inténtalo de nuevo.",
     "ssoReauthConfigChanged": "Tu configuración de inicio de sesión único cambió mientras te verificabas. Comienza la verificación otra vez.",
     "ssoReauthEmailUnverified": "Tu proveedor de identidad indica que tu dirección de correo no está verificada. Verifícala allí y vuelve a intentarlo.",
+    "ssoReauthIdpVerifyFailed": "Breeze no pudo verificar el inicio de sesión que devolvió tu proveedor de identidad. Vuelve a intentarlo. Si sigue fallando, pide a tu administrador que revise los registros del servidor.",
     "ssoReauthProofExpired": "Tu verificación con el proveedor de identidad venció. Verifícate de nuevo para terminar de configurar la autenticación multifactor.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Esta cuenta inicia sesión mediante un proveedor de identidad y no tiene contraseña. Vuelve a verificarte con tu proveedor antes de agregar una clave de acceso.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Tu identidad está verificada. Asigna un nombre a esta clave de acceso y continúa.",
@@ -5980,6 +5982,8 @@
     },
     "columns": {
       "timezone": "Zona horaria",
+      "address": "Dirección",
+      "contact": "Contacto",
       "devices": "Dispositivos"
     },
     "empty": "No se encontraron sitios. Agregue un sitio para comenzar."

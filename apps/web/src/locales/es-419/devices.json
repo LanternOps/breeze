@@ -1367,7 +1367,7 @@
       "unknown": "Breeze Assist está habilitado pero no instalado (desde {{since}})."
     },
     "watchdogInstall": {
-      "gaveUp": "No se pudo instalar el watchdog automáticamente (desde {{since}}): {{reason}}. Ejecute `breeze-agent service install --watchdog` en el equipo para reintentar.",
+      "gaveUp": "No se pudo instalar el watchdog automáticamente (desde {{since}}): {{reason}}. Ejecute <code>breeze-agent service install --watchdog</code> en el equipo para reintentar.",
       "unsupported": "La instalación automática del watchdog no es compatible con este equipo (desde {{since}}).",
       "reason": {
         "network": "no se pudo acceder a la descarga",
@@ -4085,7 +4085,7 @@
       "offNote": "Los runtimes siempre se detectan, pero la lista de cargas de trabajo permanece desactivada hasta que una política la habilite.",
       "enabled": "Enumerar cargas de trabajo",
       "runtimesHeading": "Runtimes a enumerar",
-      "laterRelease": "La lista de Hyper-V y Proxmox VE llegará con una versión posterior del agente; estos interruptores surtirán efecto entonces.",
+      "agentSupport": "Los interruptores de Hyper-V y Proxmox VE solo surten efecto en agentes que incluyen estos controladores; los agentes más antiguos los ignoran.",
       "interval": "Intervalo de recopilación (minutos)",
       "invalidInterval": "El intervalo debe ser un número entero de minutos entre {{min}} y {{max}}."
     },
@@ -4238,6 +4238,89 @@
       "titleHtml": "No se permite HTML en el título.",
       "titleLinks": "No se permiten enlaces en el título.",
       "invalid": "El mensaje contiene contenido no permitido."
+    },
+    "history": {
+      "title": "Mensajes al equipo",
+      "description": "Mensajes enviados a las personas en sus dispositivos y qué pasó con cada uno.",
+      "empty": "Aún no se ha enviado ningún mensaje.",
+      "loading": "Cargando...",
+      "loadFailed": "No se pudieron cargar los mensajes.",
+      "retry": "Reintentar",
+      "loadMore": "Cargar más",
+      "selectPrompt": "Selecciona un mensaje para ver los detalles de entrega.",
+      "detailLoadFailed": "No se pudo cargar este mensaje.",
+      "notFound": "No se encontró este mensaje.",
+      "noAccess": "No tienes permiso para ver los mensajes al equipo.",
+      "purgedTitle": "Contenido eliminado",
+      "purgedBody": "El texto del mensaje se eliminó después de 90 días. El historial de entrega se conserva.",
+      "purgedListTitle": "(contenido eliminado)",
+      "badgeRetracted": "Retirado",
+      "badgeAi": "IA",
+      "devicesLabel": "Dispositivos: {{count}}",
+      "fields": {
+        "body": "Mensaje",
+        "deliveries": "Dispositivos",
+        "host": "Dispositivo",
+        "status": "Estado",
+        "surface": "Mostrado en",
+        "error": "Falla",
+        "sent": "Enviado",
+        "expires": "Vence",
+        "delivered": "Entregado",
+        "displayed": "Mostrado",
+        "acknowledged": "Confirmado",
+        "dismissed": "Descartado",
+        "retracted": "Retirado",
+        "receipts": "Recibos",
+        "noReceipts": "Ninguno",
+        "requiresAck": "Requiere confirmación"
+      },
+      "receiptEvents": {
+        "displayed": "Mostrado",
+        "acknowledged": "Confirmado",
+        "dismissed": "Descartado",
+        "expired": "Vencido"
+      },
+      "surface": {
+        "assist": "Tarjeta de Assist",
+        "native": "Notificación nativa"
+      },
+      "statuses": {
+        "queued": "En cola",
+        "delivered": "Entregado",
+        "displayed": "Mostrado",
+        "acknowledged": "Confirmado",
+        "dismissed": "Descartado",
+        "expired": "Vencido",
+        "retracted": "Retirado",
+        "failed": "Fallido",
+        "superseded": "Reemplazado"
+      },
+      "actions": {
+        "retract": "Retirar",
+        "retracting": "Retirando...",
+        "resend": "Reenviar a fallidos o vencidos",
+        "resending": "Reenviando..."
+      },
+      "retractConfirm": {
+        "title": "¿Retirar este mensaje?",
+        "message": "Se quitará de los dispositivos que lo muestran ahora. Los dispositivos que aún no lo recibieron ya no lo recibirán.",
+        "confirm": "Retirar"
+      },
+      "messages": {
+        "retractSuccess": "Mensaje retirado.",
+        "retractPartial": "Mensaje retirado, pero no se pudieron actualizar {{count}} dispositivos.",
+        "retractFailed": "No se pudo retirar el mensaje.",
+        "resendSuccess": "Mensaje reenviado. Dispositivos: {{count}}.",
+        "resendFailed": "No se pudo reenviar el mensaje."
+      },
+      "resendErrors": {
+        "retracted": "Este mensaje fue retirado y no se puede reenviar.",
+        "body_purged": "El texto del mensaje se eliminó, así que no se puede reenviar.",
+        "in_progress": "Ya hay un envío en curso para este mensaje.",
+        "idempotency_conflict": "Este reenvío ya se envió con otros datos.",
+        "nothing_to_resend": "No hay dispositivos fallidos o vencidos a los que reenviar."
+      }
     }
   }
 }

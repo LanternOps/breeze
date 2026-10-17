@@ -103,6 +103,21 @@ Partners edit the invoice email under **Settings → Partner → Email templates
 
 An invoice that has already been issued can be **re-sent** without changing anything about it -- its number, dates, amounts, and "sent" timestamp all stay as they were, so a reminder never looks like a second invoice. A paid invoice can be re-sent too, as a receipt. Drafts and voided invoices can't be sent this way.
 
+When **Show the date worked** is in effect for an invoice, the date is also sent to accounting: as the line's service date in QuickBooks, and appended to the line description in Xero, which has no per-line date field. Long line descriptions are shortened before the worked-vs-billed note and the date, so those always reach the accounting copy whole.
+
+#### Refresh from time entries
+
+If a technician corrects a time entry's note or start time after a draft invoice was assembled, click **Refresh from time entries** in the draft editor. It updates each time-entry line's note, date worked, worked time and approval marker from its source entry.
+
+- **Never changed:** quantities, prices, line totals and invoice totals, and any description you edited by hand. Lines are never added or removed.
+- A line whose entry's billed time no longer matches the line quantity is left untouched and listed, so you can edit the quantity or assemble a new draft.
+- Lines whose entry was deleted, billed on another invoice or is no longer billable on this draft are skipped and listed. A line whose entry was billed on another invoice blocks **Issue** until you remove it.
+- Only drafts can be refreshed; issued and void invoices are refused.
+
+When you upgrade to v0.123.0, time-entry lines already on draft invoices are treated as hand-edited, so a refresh never overwrites a description that existed before the upgrade.
+
+To remind customers automatically about upcoming and overdue invoices, turn on [payment reminders](/features/online-payments/#payment-reminders). They are off by default and do not need automatic payments.
+
 The issued-invoice view puts the **balance due** front and center, shows recorded payments, and offers a one-click **PDF download**, plus **Copy invoice link** and **Reset customer link** -- see [Online Payments](/features/online-payments/#the-customer-invoice-link).
 
 ## Recording Payments

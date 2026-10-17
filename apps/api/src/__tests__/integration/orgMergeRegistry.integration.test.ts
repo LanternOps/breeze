@@ -288,6 +288,12 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   'backup_snapshots.backup_snapshots_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
   'backup_snapshot_id_reservations.backup_snapshot_id_reservations_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
   'backup_snapshot_retirements.backup_snapshot_retirements_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
+  // Trust Center W1 (2026-12-29-130100): BEFORE UPDATE immutability guard on
+  // the published snapshot. It RAISEs on any column change EXCEPT is_current
+  // and org_id, so a merge repoint (org_id only) passes. In practice the repoint
+  // sees zero rows: mergeTrustPages deletes the loser's page first and its
+  // snapshots go with it (ON DELETE CASCADE).
+  'trust_page_snapshots.trust_page_snapshots_immutable_trg': 'freezes every column except is_current and org_id; an org_id-only repoint passes',
   // PAM ownership epochs W1 (#8203, 2026-12-17-130000). The advance trigger
   // fires on the devices repoint and only APPENDS lineage (closes the loser
   // epoch, opens survivor epoch +1, writes retirement markers); it never

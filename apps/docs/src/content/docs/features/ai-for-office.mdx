@@ -110,7 +110,11 @@ Manage the links at **Settings → Outlook Add-in Bindings**. The list shows eac
 
 ## Permissions
 
-Viewing AI for Office configuration requires organization read access; changing org policies and templates requires organization write access. Tenant-mapping changes additionally require multi-factor authentication. The per-partner entitlement is operator-only.
+Viewing AI for Office configuration requires organization read access; changing org policies requires organization write access. Tenant-mapping changes additionally require multi-factor authentication. The per-partner entitlement is operator-only.
+
+**Prompt templates have their own permissions** (v0.122.1). The template manager needs `client_ai_templates:read` to view templates and `client_ai_templates:write` to create, edit or delete them; creating, editing and deleting also require MFA when your MFA policy requires it. The **Templates** tab is hidden from users without read access, and its edit controls are hidden from users without write access.
+
+On upgrade, every role that held organization read access receives `client_ai_templates:read`, and every role that held organization write access receives `client_ai_templates:write`. Among the built-in roles, Partner Technician, Partner Viewer and Partner Security Approver can view templates; Org Admin can view and manage them (new for that role); Org Technician and Org Viewer can do neither; Partner Admin has full access. Adjust custom roles under **Settings → Roles**. See [Users and Roles](/reference/users-and-roles/#permission-model).
 
 ## Related
 

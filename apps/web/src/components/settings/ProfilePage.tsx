@@ -80,6 +80,9 @@ const SSO_REAUTH_ERROR_KEYS: Record<string, string> = {
   provider_inactive: 'profilePage.ssoReauthProviderInactive',
   config_changed: 'profilePage.ssoReauthConfigChanged',
   email_unverified: 'profilePage.ssoReauthEmailUnverified',
+  // #8862: the IdP's id_token failed verification (signature/issuer/expiry).
+  // The API logs the token's timing claims, so the copy points there.
+  idp_verify_failed: 'profilePage.ssoReauthIdpVerifyFailed',
 };
 
 /**

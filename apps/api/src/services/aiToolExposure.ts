@@ -39,6 +39,10 @@ export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, str
  */
 export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_ai_agents',
+  // Endpoint messaging (#8742 W02): text shown to end users under the MSP's
+  // brand is authored in a human chat session and approved card by card; an
+  // operator agent never proposes one.
+  'send_endpoint_message',
   // Recipe Library spec §6.2: the model never proposes an effect buildPlan did
   // not produce and never edits plan arguments. A model that could raise an
   // operator_plan intent could author the set a human then approves in one

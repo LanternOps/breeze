@@ -7,7 +7,7 @@ wave: W01 (#8845)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** When Breeze automatically revokes an OAuth grant (refresh-token reuse or code replay) and the app never re-authorizes, the grant's owner and the partner's connected-app admins get an in-app notice within about 15 minutes. The notice clears itself when the app is re-authorized.
+**Goal:** When Breeze automatically revokes an OAuth grant for refresh-token reuse (code-replay detection is deferred to W4) and the app never re-authorizes, the grant's owner and the partner's connected-app admins get an in-app notice within about 15 minutes. The notice clears itself when the app is re-authorized.
 
 **Architecture:**
 - A pure transition function maps `(observations, tracked incidents, now)` to actions.

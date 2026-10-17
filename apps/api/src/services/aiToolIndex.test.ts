@@ -142,6 +142,9 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // Integrations line adds 46 bytes (6677 vs the 6656 limit). Paid for by
     // dropping the patching note's "Approve patches before install." (names no
     // tool), not by raising the ceiling.
+    // #8742 W02: `send_endpoint_message (send/list/get)` on the Tickets line
+    // took it to 6684. Paid for by tightening the scripts note's wording (same
+    // guidance), not by raising the ceiling.
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(6.5 * 1024);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });

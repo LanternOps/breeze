@@ -364,7 +364,7 @@ func TestMainAgentPinnedShareModeAllowsWriteAndRefusesDelete(t *testing.T) {
 
 // TestPinnedMainAgentDirectoriesAllowAtomicRenamesInside is the regression test
 // for issue #4184. While OpenPreparedMainAgentLockDir holds its lifetime pins,
-// the agent's own write-temp-then-rename persistence (state.renameReplace,
+// the agent's own write-temp-then-rename persistence (atomicrename.Replace,
 // pamlifetime persist, config.SaveTo) must still work in BOTH pinned
 // directories. File creation always worked, so only the rename discriminates.
 func TestPinnedMainAgentDirectoriesAllowAtomicRenamesInside(t *testing.T) {

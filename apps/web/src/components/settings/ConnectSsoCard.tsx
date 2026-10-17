@@ -19,7 +19,9 @@ const LINK_ERROR_KEYS: Record<string, string> = {
   provider_inactive: 'connectSsoCard.providerInactive',
   config_changed: 'connectSsoCard.configChanged',
   // SR2-12: the IdP did not positively verify the asserted address.
-  email_unverified: 'connectSsoCard.emailUnverified'
+  email_unverified: 'connectSsoCard.emailUnverified',
+  // #8862: the IdP's id_token failed verification during linking.
+  idp_verify_failed: 'connectSsoCard.idpVerifyFailed'
 };
 
 export default function ConnectSsoCard() {

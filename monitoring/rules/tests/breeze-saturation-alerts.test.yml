@@ -1,0 +1,204 @@
+# promtool test rules for the #8840 API-saturation alerts in the
+# `breeze-api-alerts` group.
+#
+#   promtool test rules monitoring/rules/tests/breeze-saturation-alerts.test.yml
+#   (CI: .github/workflows/perf-rules.yml runs it with the pinned prom/prometheus image)
+#
+# Every alert has one case that fires and one that stays silent. Instances are
+# one letter each; a worker instance (w) carries the role-agnostic series with
+# the "-1 = no request pool" sentinel so the pool rules are proven not to match
+# it. One sample per minute.
+rule_files:
+  - ../breeze-rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  # ---------------------------------------------------------------- pool waiters
+  # a: 25 waiting (warning only); b: 150 (warning + critical); c: 5 (silent);
+  # w: worker with no request pool (-1, silent).
+  - interval: 1m
+    input_series:
+      - series: 'breeze_db_pool_admission_waiting{job="breeze-api-us",instance="a"}'
+        values: '25x10'
+      - series: 'breeze_db_pool_admission_waiting{job="breeze-api-us",instance="b"}'
+        values: '150x10'
+      - series: 'breeze_db_pool_admission_waiting{job="breeze-api-eu",instance="c"}'
+        values: '5x10'
+      - series: 'breeze_db_pool_admission_waiting{job="breeze-worker-us",instance="w"}'
+        values: '-1x10'
+    alert_rule_test:
+      - alertname: ApiDbPoolWaitersHigh
+        eval_time: 3m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: breeze-api-us
+              instance: a
+            exp_annotations:
+              summary: "DB pool admission queue is backing up on a"
+              description: "25 requests have been waiting for a transaction permit for 1m on breeze-api-us. Requests are queueing toward DB_POOL_ACQUIRE_TIMEOUT_MS; check breeze_admission_level and the [db-pool-admission] logs for the tenant or route holding the pool."
+          - exp_labels:
+              severity: warning
+              job: breeze-api-us
+              instance: b
+            exp_annotations:
+              summary: "DB pool admission queue is backing up on b"
+              description: "150 requests have been waiting for a transaction permit for 1m on breeze-api-us. Requests are queueing toward DB_POOL_ACQUIRE_TIMEOUT_MS; check breeze_admission_level and the [db-pool-admission] logs for the tenant or route holding the pool."
+          - exp_labels:
+              severity: critical
+              job: breeze-api-us
+              instance: b
+            exp_annotations:
+              summary: "DB pool admission queue is saturated on b"
+              description: "150 requests waiting for a transaction permit for 1m on breeze-api-us. This is the 2026-10-15 stall shape: expect acquire timeouts, agent WS closes and web 500s next. Shed the offending ingest (admission controller / Caddy) and find the tenant holding the pool."
+
+  # Silent: a short spike (one sample above the threshold) never satisfies `for: 1m`.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_db_pool_admission_waiting{job="breeze-api-us",instance="a"}'
+        values: '5 5 30 5 5 5 5 5 5 5'
+      - series: 'breeze_db_pool_admission_waiting{job="breeze-worker-us",instance="w"}'
+        values: '-1x10'
+    alert_rule_test:
+      - alertname: ApiDbPoolWaitersHigh
+        eval_time: 2m
+        exp_alerts: []
+      - alertname: ApiDbPoolWaitersHigh
+        eval_time: 6m
+        exp_alerts: []
+
+  # ------------------------------------------------------------ acquire timeouts
+  # a ticks once a minute on timer="on_time" (the 2026-10-15 shape); c is flat.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_db_pool_acquire_timeouts_total{job="breeze-api-us",instance="a",timer="on_time"}'
+        values: '0+1x10'
+      - series: 'breeze_db_pool_acquire_timeouts_total{job="breeze-api-us",instance="a",timer="late"}'
+        values: '0x10'
+      - series: 'breeze_db_pool_acquire_timeouts_total{job="breeze-api-eu",instance="c",timer="on_time"}'
+        values: '7x10'
+    alert_rule_test:
+      - alertname: ApiDbPoolAcquireTimeouts
+        eval_time: 5m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: breeze-api-us
+              instance: a
+            exp_annotations:
+              summary: "DB pool acquire timeouts on a"
+              description: "5 request(s) on breeze-api-us exhausted DB_POOL_ACQUIRE_TIMEOUT_MS waiting for a pool permit in the last 5m and were answered 503. Check breeze_db_pool_admission_waiting and the [db-pool-acquire] logs."
+
+  # Silent: a non-zero but unchanging counter is history, not a current timeout.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_db_pool_acquire_timeouts_total{job="breeze-api-us",instance="a",timer="on_time"}'
+        values: '7x10'
+    alert_rule_test:
+      - alertname: ApiDbPoolAcquireTimeouts
+        eval_time: 5m
+        exp_alerts: []
+
+  # --------------------------------------------------------------- event loop
+  # a: 800ms sustained (fires after 3m); b: one 800ms blip then recovered
+  # (silent — `for: 3m` outlasts the monitor's 2m retention window); c: 300ms.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_nodejs_eventloop_lag_window_max_seconds{job="breeze-api-us",instance="a"}'
+        values: '0.8x10'
+      - series: 'breeze_nodejs_eventloop_lag_window_max_seconds{job="breeze-api-us",instance="b"}'
+        values: '0.8 0.8 0 0 0 0 0 0 0 0'
+      - series: 'breeze_nodejs_eventloop_lag_window_max_seconds{job="breeze-api-eu",instance="c"}'
+        values: '0.3x10'
+    alert_rule_test:
+      - alertname: ApiEventLoopLagHigh
+        eval_time: 2m
+        exp_alerts: []
+      - alertname: ApiEventLoopLagHigh
+        eval_time: 5m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: breeze-api-us
+              instance: a
+            exp_annotations:
+              summary: "Event-loop lag is sustained on a"
+              description: "Worst event-loop delay on breeze-api-us has stayed above 500ms (currently 800ms) for 3m. Timers fire late, pool-acquire deadlines slip and WS pings time out; look for a hot synchronous path or a stalled upload parse."
+
+  # ----------------------------------------------------------- admission level
+  # a: level 2 (fires); b: level 3 (fires); c: level 1, bulk shed only (silent).
+  - interval: 1m
+    input_series:
+      - series: 'breeze_admission_level{job="breeze-api-us",instance="a"}'
+        values: '2x10'
+      - series: 'breeze_admission_level{job="breeze-api-us",instance="b"}'
+        values: '3x10'
+      - series: 'breeze_admission_level{job="breeze-api-eu",instance="c"}'
+        values: '1x10'
+    alert_rule_test:
+      - alertname: ApiAdmissionDegraded
+        eval_time: 1m
+        exp_alerts: []
+      - alertname: ApiAdmissionDegraded
+        eval_time: 4m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: breeze-api-us
+              instance: a
+            exp_annotations:
+              summary: "Admission controller is at a degraded level on a"
+              description: "breeze-api-us has been at admission level 2 (2 = degraded, 3 = critical) for 2m. Standard traffic is refused only when BREEZE_ADMISSION_MODE=enforce (ApiAdmissionShedding fires on actual refusals); in observe mode this is saturation only. Check breeze_admission_signal_db_wait_seconds and breeze_admission_signal_lag_seconds for which signal drove it."
+          - exp_labels:
+              severity: warning
+              job: breeze-api-us
+              instance: b
+            exp_annotations:
+              summary: "Admission controller is at a degraded level on b"
+              description: "breeze-api-us has been at admission level 3 (2 = degraded, 3 = critical) for 2m. Standard traffic is refused only when BREEZE_ADMISSION_MODE=enforce (ApiAdmissionShedding fires on actual refusals); in observe mode this is saturation only. Check breeze_admission_signal_db_wait_seconds and breeze_admission_signal_lag_seconds for which signal drove it."
+
+  # Silent: the controller recovered to 0 before `for: 2m` elapsed.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_admission_level{job="breeze-api-us",instance="a"}'
+        values: '0 2 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - alertname: ApiAdmissionDegraded
+        eval_time: 4m
+        exp_alerts: []
+
+  # ------------------------------------------------------- admission shedding
+  # a: 20 sheds/min across two reasons (100 in 5m, fires); c: 5/min (25, silent).
+  # The would_shed series on a is observe-mode noise and must not count.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_admission_decisions_total{job="breeze-api-us",instance="a",class="bulk",route="/api/v1/agents/:id/logs",outcome="shed",reason="level"}'
+        values: '0+15x10'
+      - series: 'breeze_admission_decisions_total{job="breeze-api-us",instance="a",class="standard",route="/api/v1/agents/:id/connections",outcome="shed",reason="bulk_in_flight"}'
+        values: '0+5x10'
+      - series: 'breeze_admission_decisions_total{job="breeze-api-us",instance="a",class="bulk",route="/api/v1/agents/:id/logs",outcome="would_shed",reason="level"}'
+        values: '0+500x10'
+      - series: 'breeze_admission_decisions_total{job="breeze-api-eu",instance="c",class="bulk",route="/api/v1/agents/:id/logs",outcome="shed",reason="level"}'
+        values: '0+5x10'
+    alert_rule_test:
+      - alertname: ApiAdmissionShedding
+        eval_time: 6m
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: breeze-api-us
+              instance: a
+            exp_annotations:
+              summary: "Admission control refused 100 agent requests in 5m on a"
+              description: "More than 50 agent requests were shed by admission control on breeze-api-us in the last 5m. Agents are backing off (Retry-After); split breeze_admission_decisions_total by class, route and reason to see what is being refused."
+
+  # Silent: observe mode alone (would_shed only) never fires, however busy.
+  - interval: 1m
+    input_series:
+      - series: 'breeze_admission_decisions_total{job="breeze-api-us",instance="a",class="bulk",route="/api/v1/agents/:id/logs",outcome="would_shed",reason="level"}'
+        values: '0+500x10'
+    alert_rule_test:
+      - alertname: ApiAdmissionShedding
+        eval_time: 6m
+        exp_alerts: []

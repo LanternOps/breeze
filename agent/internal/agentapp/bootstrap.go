@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/pkg/api"
@@ -142,10 +143,7 @@ func redeemBootstrapToken(server, token string) (*bootstrapResult, error) {
 	initialURL := *req.URL
 	initialRequest := &http.Request{URL: &initialURL}
 
-	client := &http.Client{
-		Timeout:       30 * time.Second,
-		CheckRedirect: api.RefuseUntrustedRedirect,
-	}
+	client := ech.NewClient(nil, 30*time.Second, api.RefuseUntrustedRedirect)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -262,6 +260,7 @@ func runBootstrap() {
 	if err != nil {
 		cfg = config.Default()
 	}
+	enableOneShotECH(cfg)
 	initEnrollLogging(cfg, quietEnroll)
 	bsLog := logging.L("bootstrap")
 

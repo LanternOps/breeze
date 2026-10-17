@@ -233,6 +233,67 @@ The viewer toolbar includes a keyboard shortcut menu that adapts to the target d
 
 Select a shortcut from the menu to inject it into the remote session. This avoids the problem of your local operating system intercepting the key combination before it reaches the viewer.
 
+### Viewer Shortcuts
+
+The Breeze Viewer keeps its own shortcuts behind one prefix chord that remote applications do not use, so every other key combination reaches the remote:
+
+| Action | Windows / Linux | macOS |
+|--------|-----------------|-------|
+| Fullscreen (toggle) | Ctrl+Alt+Shift+F | ⌃⌥⌘F |
+| Paste as keystrokes (**Paste Text**) | Ctrl+Alt+Shift+V | ⌃⌥⌘V |
+| **Release stuck keys** (in the toolbar's overflow menu) | Ctrl+Alt+Shift+R | ⌃⌥⌘R |
+
+From v0.122.1, Ctrl/Cmd+Shift+V and Ctrl/Cmd+Shift+F are no longer viewer shortcuts: they go to the remote, so paste-as-plain-text and Find in Files work in remote applications.
+
+### Keyboard and Mouse Input
+
+- **Nothing stays held down.** When the viewer window loses focus or the session drops, the viewer and agent release every key and mouse button they pressed on the remote. If a key still seems stuck, use **Release stuck keys**.
+- **German and French keyboards** (QWERTZ and AZERTY) type the right letters on Windows and Linux remotes.
+
+### Keyboard Mode
+
+The **Keyboard mode** control in the Breeze Viewer toolbar (v0.123.0+) sets how your keystrokes reach the remote:
+
+- **Type what I see** (default). The remote resolves each key through its own keyboard layout, so the characters you see on your keys are what gets typed. IME composition (Chinese, Japanese, Korean input) and dead keys (for example ´ then E for É) are sent as finished text once you commit them. The remote sees nothing until the composition is committed.
+- **Physical keys**. The viewer sends the physical key position, which keeps distinctions such as the numpad and the right-hand modifier keys. It needs a WebRTC session and an agent from v0.123.0 or later; on an older agent or a WebSocket session the option is disabled and its tooltip says why.
+
+The mode is remembered for each device, and the last mode you chose becomes the default for devices that have no choice of their own. Keyboard mode does not apply to VNC sessions.
+
+### Viewer Options
+
+The toolbar's **More options** menu (v0.123.0+) adds:
+
+| Option | What it does |
+|--------|--------------|
+| **View only** | Stops sending your keyboard and mouse to the remote, so you can watch without clicking anything by accident. Turning it on releases any held keys first, and an indicator shows while it is on. Nothing is sent to the device; it only affects your viewer. |
+| **Block remote input** | Blocks the keyboard and mouse at the remote device while you work. WebRTC sessions only. The option is disabled when the device does not support it, and the toggle shows the device's confirmed state rather than assuming the request worked. |
+| **Stats overlay** | Shows round-trip time, frame rate, bitrate, packet loss, codec and connection path. Off by default. |
+| **Copy screenshot** / **Save screenshot** | Captures the current frame to your clipboard, or saves it as a PNG in your Pictures folder (Downloads if there is none). Screenshots stay on your machine and are never uploaded. |
+| **Fit to window** / **100% (scroll)** | Scales the remote screen to the window, or shows it at one remote pixel per screen point with scrollbars. |
+
+Scaling and audio are remembered per device, along with keyboard mode. These preferences are stored by the Breeze Viewer on your computer and are never sent to Breeze.
+
+**Fullscreen keyboard lock.** In fullscreen, the viewer captures system shortcuts such as Alt+Tab, the Windows key and Esc, so they reach the remote instead of your computer. Exit fullscreen with the toolbar button or the fullscreen shortcut. Where the platform does not support keyboard lock, nothing changes and **Send Keys** remains the way to send those combinations.
+
+**macOS viewer.** Cmd+H, Cmd+M and Cmd+W go to the remote; Hide, Minimize and Close Window are still in the menu bar. Cmd+Q asks before quitting while sessions are open.
+
+### Clipboard
+
+On a WebRTC session the clipboard syncs in both directions: text up to 1 MiB and PNG or JPEG images up to 8 MiB. Each direction is a separate setting on the **Remote Access** feature of a configuration policy: **Clipboard: remote → viewer (copy from remote)** and **Clipboard: viewer → remote (paste to remote)**. Copying from the remote is the data-egress direction (whatever the end user copies reaches the technician) and is off by default on hosted Breeze.
+
+The **Clipboard** chip in the viewer toolbar (it reads **Clipboard off** when both directions are disabled) shows what policy allows in each direction (*Remote → local* and *Local → remote*, each **On** or **Disabled by policy**) and the last transfer. Its menu has two actions:
+
+- **Copy remote clipboard** brings the remote clipboard to your machine, for example when the viewer was in the background when something was copied on the remote.
+- **Send clipboard to remote** pushes your clipboard to the remote, for applications where you paste from a menu rather than with a keyboard shortcut.
+
+Pressing the remote's paste shortcut sends your clipboard first. If it can't be delivered (too large, disabled by policy, or the connection dropped), the paste is cancelled with a *Nothing pasted* message instead of pasting whatever was on the remote clipboard before. Connecting to a session no longer overwrites your local clipboard with the remote's.
+
+Clipboard v2 needs agent and Breeze Viewer v0.122.1 or later. With an older agent the chip reports that the agent did not report clipboard status: text only, policy unknown. On a VNC session the clipboard is text only.
+
+<Aside type="caution" title="Known gap: images copied on a Windows device">
+  An image copied on a Windows device does not reach the viewer yet. The desktop session runs as SYSTEM and cannot read the user's copied image formats. Text copies work in both directions, and images pasted *into* a Windows device are not affected. A fix is planned for a follow-up release.
+</Aside>
+
 ### Login Screen (macOS)
 
 WebRTC remote desktop cannot control a Mac at the login window. macOS blocks remote keyboard and mouse input there for third-party agents, so a session would show the login screen while ignoring every click and keystroke. The agent therefore refuses to start a WebRTC session while the Mac is at the login window:
@@ -403,6 +464,12 @@ Clicking a row in the session history re-opens a live detail panel for that sess
 
 ---
 
+## Who's Connected
+
+When a colleague already has a live **Desktop**, **Terminal** or VNC session on a device, the device page shows a banner such as *Someone else has a session on this device* (or *N other people have sessions on this device*), with one row per person naming them, the session type and how long it has been open (or *connecting…*). Your own sessions are not listed. The banner is informational only: it never blocks or ends a session. It refreshes every 60 seconds while the tab is visible, and straight away when you return to the tab or the device's status changes. It needs `remote:access` and `devices:read`; an offline device shows no banner.
+
+---
+
 ## Session Lifecycle
 
 All session types follow the same state machine:
@@ -478,6 +545,8 @@ To free session capacity, close active sessions from the Active Sessions list on
 
 **All sessions are audit logged.** Every session creation, state transition, and termination is recorded with the actor identity, device identifier, start time, end time, duration in seconds, and bytes transferred. Audit records are immutable.
 
+**Clipboard activity is summarised, never recorded.** Each desktop session writes one `session_clipboard_summary` audit entry describing its clipboard activity. Clipboard content is never logged.
+
 **Consent is audit logged.** When session consent or notification is enabled by policy, each session records whether the end user granted, denied, or had consent bypassed (with the reason — for example, no user logged in), alongside the technician identity disclosed.
 
 **Remote access requires the `remote:access` permission.** This permission is not granted by default on all roles. Navigate to **Settings → Roles** if a user receives "Access denied" when creating a session.
@@ -495,6 +564,7 @@ To free session capacity, close active sessions from the Active Sessions list on
 | GET | `/remote/sessions/:id` | Get session details |
 | GET | `/remote/sessions/history` | Session statistics (total sessions, total duration, average duration) |
 | DELETE | `/remote/sessions/stale` | Terminate all pending, connecting, and active sessions |
+| GET | `/remote/devices/:deviceId/active-sessions` | Live sessions on a device (all users), for the [Who's Connected](#whos-connected) banner |
 | GET | `/remote/ice-servers` | Get ICE/TURN server configuration for WebRTC |
 | POST | `/remote/sessions/:id/offer` | Send SDP offer from browser to device |
 | POST | `/remote/sessions/:id/ice` | Exchange ICE candidates between browser and device |

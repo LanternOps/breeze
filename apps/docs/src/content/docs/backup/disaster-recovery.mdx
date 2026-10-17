@@ -119,6 +119,8 @@ Each device recovers from its own latest snapshot marked **Bare-metal restorable
 
 If a group can't start, the execution error names the specific missing prerequisite — for example, no restorable snapshot for a device, or no valid recovery source — instead of a generic error, so you know exactly what to fix before retrying.
 
+DR plan steps that restore a backup also follow the [restore integrity checks](/backup/restoring/#integrity-checks-on-restore): each target device needs a v0.120.0 or later agent, and a plan cannot restore a **Not verified** (unattested) snapshot, because that needs a technician's two-factor confirmation. Restore such a snapshot from the console instead.
+
 ### Viewing Execution History
 
 Past executions are listed on the plan detail page, showing:
