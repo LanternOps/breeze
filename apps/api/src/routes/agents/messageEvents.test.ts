@@ -310,8 +310,10 @@ describe('POST /agents/:id/message-events chat_reply (#8743)', () => {
     expect(h.chatReply).not.toHaveBeenCalled();
   });
 
-  it('accepts a full-length reply of multi-byte characters', async () => {
-    const res = await post(buildApp(agentA), 'agent-a', reply({ body: '\u{1F600}'.repeat(1000) }));
-    expect(res.status).toBe(200);
+  it('counts reply length in characters, as the agent and helper do (2000 emoji is full length, not 4000)', async () => {
+    // The agent counts runes and the helper Unicode scalars; counting UTF-16
+    // units here would 400 an emoji-heavy reply both of them accepted.
+    expect((await post(buildApp(agentA), 'agent-a', reply({ body: '\u{1F600}'.repeat(2000) }))).status).toBe(200);
+    expect((await post(buildApp(agentA), 'agent-a', reply({ body: '\u{1F600}'.repeat(2001) }))).status).toBe(400);
   });
 });

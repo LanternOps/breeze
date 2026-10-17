@@ -101,7 +101,9 @@ func chatShowFromPayload(p map[string]any) (ipc.ChatShow, error) {
 		return show, errors.New("branding displayName is out of bounds")
 	}
 	if branding.Accent != "" && !chatAccentRE.MatchString(branding.Accent) {
-		return show, errors.New("branding accent is invalid")
+		// Decoration only (partner branding may hold "#0af"): drop it, never
+		// fail the chat over it. The helper re-validates whatever it gets.
+		branding.Accent = ""
 	}
 	m, ok := p["message"].(map[string]any)
 	if !ok {

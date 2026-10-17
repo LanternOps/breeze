@@ -350,9 +350,6 @@ func TestChatOpenInvalidPayloads(t *testing.T) {
 		"no message":          mut(func(p map[string]any) { delete(p, "message") }),
 		"no branding":         mut(func(p map[string]any) { delete(p, "branding") }),
 		"empty company":       mut(func(p map[string]any) { p["branding"] = map[string]any{"companyName": "", "displayName": "x"} }),
-		"bad accent": mut(func(p map[string]any) {
-			p["branding"] = map[string]any{"companyName": "c", "displayName": "d", "accent": "red;}"}
-		}),
 	}
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -426,5 +423,30 @@ func TestChatOpenForClosedConversationIsNotDelivered(t *testing.T) {
 	}
 	if n := len(assist.ofType(ipc.TypeChatMessage)); n != 0 {
 		t.Fatalf("helper got %d chat_message for a closed conversation", n)
+	}
+}
+
+// The accent is decoration: partner branding legitimately holds 3-digit hex
+// (partnerDocumentBrand accepts "#0af"), and anything the helper cannot use is
+// dropped there too. An unusable accent must never fail the whole chat.
+func TestChatOpenDropsAnUnusableAccentInsteadOfFailing(t *testing.T) {
+	for _, accent := range []string{"#0af", "red;}", "rgb(0,0,0)"} {
+		t.Run(accent, func(t *testing.T) {
+			assist := newChatProbe(t, "alice", "1", chatScopes)
+			h, _ := newChatHeartbeat(t, assist.session)
+			p := chatPayload(testConvID, testMsgID, "hi")
+			p["branding"] = map[string]any{"companyName": "Example IT", "displayName": "Example IT", "accent": accent}
+			res := handleChatOpen(h, chatCmd("chat_open", p))
+			if res.Status != "completed" {
+				t.Fatalf("status = %s (%s)", res.Status, res.Error)
+			}
+			var show ipc.ChatShow
+			if err := json.Unmarshal(assist.ofType(ipc.TypeChatOpen)[0].Payload, &show); err != nil {
+				t.Fatal(err)
+			}
+			if show.Branding.Accent != "" {
+				t.Fatalf("accent %q must be dropped, got %q", accent, show.Branding.Accent)
+			}
+		})
 	}
 }

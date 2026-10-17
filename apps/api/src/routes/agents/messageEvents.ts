@@ -56,7 +56,12 @@ export const chatReplyEventSchema = z.object({
   eventType: z.literal('chat_reply'),
   conversationId: z.string().uuid(),
   clientNonce: z.string().uuid(),
-  body: z.string().trim().min(1).max(ENDPOINT_CHAT_LIMITS.bodyMax),
+  // Characters (code points), the unit the agent (runes) and helper (Unicode
+  // scalars) enforce — not UTF-16 units, which would 400 an emoji-heavy reply
+  // both of them accepted.
+  body: z.string().trim().min(1).refine((b) => [...b].length <= ENDPOINT_CHAT_LIMITS.bodyMax, {
+    message: `body must be at most ${ENDPOINT_CHAT_LIMITS.bodyMax} characters`,
+  }),
   session: attestedSessionSchema,
   at: z.string().datetime({ offset: true }),
 }).strict();
