@@ -96,6 +96,11 @@ export const MAIL_PURPOSES = {
   'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
   'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
+  // Connection health digest to CUSTOMER org users, sent only when the MSP turns
+  // on customerAdminsNotified for their org (spec 2026-10-15 §6, W5). Same mail
+  // as staff.connection_health_digest, but customer-facing, so it rides the
+  // partner's stream. Send site: services/connectionHealth/digest.ts.
+  'customer.connection_health_digest': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
 } as const satisfies Record<string, MailPurposePolicy>;
 
 export type MailPurpose = keyof typeof MAIL_PURPOSES;

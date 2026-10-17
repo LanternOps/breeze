@@ -77,6 +77,7 @@ const GOLDEN: Array<{ name: string; params: SendEmailParams; expectedFrom: strin
   { name: 'security.caller_verification_link', params: { ...MESSAGE, purpose: 'security.caller_verification_link', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'portal.password_reset', params: { ...MESSAGE, purpose: 'portal.password_reset', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'report.delivery', params: { ...MESSAGE, purpose: 'report.delivery', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
+  { name: 'customer.connection_health_digest', params: { ...MESSAGE, purpose: 'customer.connection_health_digest', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'quote.sent (partner named)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },
   { name: 'quote.sent (no partner name)', params: { ...MESSAGE, purpose: 'quote.sent', partnerId: PARTNER_ID, partnerName: null }, expectedFrom: DEFAULT_FROM },
   { name: 'quote.acceptance_recorded (partner named)', params: { ...MESSAGE, purpose: 'quote.acceptance_recorded', partnerId: PARTNER_ID, partnerName: 'Acme MSP' }, expectedFrom: BRANDED_FROM },

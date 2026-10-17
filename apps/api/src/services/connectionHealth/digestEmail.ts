@@ -43,6 +43,12 @@ export type DigestEmailContext = {
   appBaseUrl: string;
   /** Absolute one-click unsubscribe URL (also the List-Unsubscribe target). */
   unsubscribeUrl: string;
+  /**
+   * 'customer' = an org-scope user (reached through the customerAdminsNotified
+   * setting, or as a grant owner). Their mail rides the partner's lane, so the
+   * copy never names the platform. Defaults to 'staff'.
+   */
+  audience?: 'staff' | 'customer';
 };
 
 const PARTNER_WIDE = 'Partner-wide connections';
@@ -115,7 +121,9 @@ export function buildDigestEmail(ctx: DigestEmailContext): { subject: string; ht
     text.push('');
   }
 
-  const why = 'You receive this because you can fix these connections in Breeze. At most one digest is sent a day.';
+  const why = ctx.audience === 'customer'
+    ? 'You receive this because you can fix these connections. At most one digest is sent a day.'
+    : 'You receive this because you can fix these connections in Breeze. At most one digest is sent a day.';
   html.push(renderParagraph(escapeHtml(why), { muted: true, marginTop: 16 }));
   html.push(renderLinkRow([
     { label: 'Unsubscribe from this digest', url: unsubscribeUrl },

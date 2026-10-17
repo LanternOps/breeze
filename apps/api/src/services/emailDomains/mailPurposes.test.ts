@@ -69,6 +69,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       'billing.notice': { lane: 'partner', stream: 'billing', fallbackFrom: 'default' },
       'invoice.sent': { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
       'report.delivery': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
+      'customer.connection_health_digest': { lane: 'partner', stream: 'general', fallbackFrom: 'partner_display_name' },
     });
   });
 
@@ -78,6 +79,7 @@ describe('MAIL_PURPOSES registry (spec §8.1, §8.2)', () => {
       return policy.lane === 'partner' && policy.fallbackFrom === 'partner_display_name';
     });
     expect(branded.sort()).toEqual([
+      'customer.connection_health_digest',
       'invoice.sent',
       'portal.invite',
       'portal.password_reset',
