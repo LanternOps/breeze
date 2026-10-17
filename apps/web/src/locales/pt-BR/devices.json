@@ -1788,6 +1788,30 @@
       "none": "Nada pendente",
       "unavailable": "Contagens de alertas e tickets indisponíveis",
       "loading": "Carregando contagens de alertas e tickets"
+    },
+    "columnChooser": {
+      "title": "Colunas",
+      "searchLabel": "Filtrar colunas",
+      "searchPlaceholder": "Filtrar colunas…",
+      "noMatches": "Nenhuma coluna corresponde a “{{query}}”",
+      "alwaysShown": "Sempre exibida",
+      "showColumn": "Mostrar {{column}}",
+      "hideColumn": "Ocultar {{column}}",
+      "moveColumnUp": "Mover {{column}} para cima",
+      "moveColumnDown": "Mover {{column}} para baixo",
+      "gate": {
+        "agentOnlyFleet": "Oculta em frotas só com agentes",
+        "networkOnlyView": "Oculta enquanto só dispositivos de rede são listados",
+        "noManualAssets": "Exibida só quando há ativos manuais listados"
+      },
+      "groups": {
+        "identity": "Identidade",
+        "platform": "Plataforma",
+        "health": "Saúde",
+        "versions": "Versões",
+        "network": "Rede",
+        "inventory": "Inventário"
+      }
     }
   },
   "deviceLogsTab": {

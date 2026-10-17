@@ -19,7 +19,6 @@ import {
   Shield,
   Trash2,
   Zap,
-  Columns3,
   Network,
   Package,
   Cpu,
@@ -80,7 +79,6 @@ import {
 } from "./pageSizePreference";
 import {
   COLUMN_IDS,
-  COLUMN_LABELS,
   DEVICES_PAGE_COLUMN_PRESET,
   readColumnOrder,
   readColumnVisibility,
@@ -119,6 +117,7 @@ import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
 import { getAgentVersionRelation } from "./agentVersionRelation";
 import { EntityLink } from "@/components/shared/EntityLink";
+import { ColumnChooser, type ColumnGateReason } from "./ColumnChooser";
 import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
@@ -899,8 +898,6 @@ export default function DeviceList({
   const [columnOrder, setColumnOrder] = useState<ColumnId[]>(() =>
     readColumnOrder(columnPreset),
   );
-  const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
-  const columnsMenuRef = useRef<HTMLDivElement>(null);
   // Custom field columns (#6594) — additive, NOT part of ColumnId/COLUMN_IDS
   // (see customFieldColumnVisibility.ts for why). Definitions come from the
   // same store the advanced filter picker uses; visibility is a separate,
@@ -999,21 +996,6 @@ export default function DeviceList({
       window.removeEventListener("resize", handleScroll);
     };
   }, [rowMenuOpenId]);
-
-  // Close columns visibility menu on outside click
-  useEffect(() => {
-    if (!columnsMenuOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        columnsMenuRef.current &&
-        !columnsMenuRef.current.contains(e.target as Node)
-      ) {
-        setColumnsMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [columnsMenuOpen]);
 
   // Hiding does not change columnOrder, so re-showing restores the slot.
   const toggleColumn = (id: ColumnId) => {
@@ -1418,11 +1400,17 @@ export default function DeviceList({
     if (!hasAgentRows && vpnFilter !== "all") setVpnFilter("all");
   }, [hasAgentRows, vpnFilter]);
 
-  const classAllowsColumn = (id: ColumnId) =>
-    (hasAgentRows || !AGENT_ONLY_COLUMNS.has(id)) &&
-    (hasNetworkRows || hasManualRows || !NON_AGENT_COLUMNS.has(id)) &&
-    (hasManualRows || !MANUAL_ONLY_COLUMNS.has(id)) &&
-    (hasAgentRows || hasManualRows || !NETWORK_EXCLUDED_COLUMNS.has(id));
+  // Why the classes on screen keep a column off the table (null = drawn). The
+  // column chooser shows this reason instead of a checked box (#9034), so the
+  // table and the chooser read from one rule.
+  const columnGateReason = (id: ColumnId): ColumnGateReason | null => {
+    if (!hasAgentRows && AGENT_ONLY_COLUMNS.has(id)) return "networkOnlyView";
+    if (!hasNetworkRows && !hasManualRows && NON_AGENT_COLUMNS.has(id)) return "agentOnlyFleet";
+    if (!hasManualRows && MANUAL_ONLY_COLUMNS.has(id)) return "noManualAssets";
+    if (!hasAgentRows && !hasManualRows && NETWORK_EXCLUDED_COLUMNS.has(id)) return "networkOnlyView";
+    return null;
+  };
+  const classAllowsColumn = (id: ColumnId) => columnGateReason(id) === null;
 
   // Effective render sequence: user-chosen order, filtered to visible.
   // Checkbox and Actions are rendered separately as the first/last cells.
@@ -2840,123 +2828,18 @@ export default function DeviceList({
                 top-bar theme/display menu (Header.tsx). The table still
                 reflects the saved preference via densityTableClasses +
                 subscribeDensity below. */}
-            <div className="relative" ref={columnsMenuRef}>
-              <button
-                type="button"
-                onClick={() => setColumnsMenuOpen((o) => !o)}
-                aria-haspopup="true"
-                aria-expanded={columnsMenuOpen}
-                className="h-10 whitespace-nowrap rounded-md border px-3 text-sm font-medium hover:bg-muted flex items-center gap-1.5"
-              >
-                <Columns3 className="h-3.5 w-3.5" />
-                {t("deviceList.columns")}{" "}
-              </button>
-              {columnsMenuOpen && (
-                <div
-                  role="menu"
-                  className="absolute right-0 z-20 mt-1 max-h-96 w-72 overflow-y-auto rounded-md border bg-card p-1 shadow-md"
-                >
-                  <p className="px-2 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t("deviceList.visibleInOrder")}{" "}
-                  </p>
-                  {columnOrder
-                    .filter(
-                      (id) => visibleColumns.has(id) && isColumnAvailable(id),
-                    )
-                    .map((id, idx, arr) => (
-                      <div
-                        key={id}
-                        className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                      >
-                        <input
-                          type="checkbox"
-                          checked
-                          onChange={() => toggleColumn(id)}
-                          className="h-4 w-4 rounded border-border"
-                          aria-label={`Hide ${COLUMN_LABELS[id]}`}
-                        />
-                        <span className="flex-1 cursor-default">
-                          {COLUMN_LABELS[id]}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={idx === 0}
-                          onClick={() => moveColumn(id, -1)}
-                          className="rounded p-0.5 hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
-                          aria-label={`Move ${COLUMN_LABELS[id]} up`}
-                          title={t("deviceList.moveUp")}
-                        >
-                          <ChevronUp className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={idx === arr.length - 1}
-                          onClick={() => moveColumn(id, 1)}
-                          className="rounded p-0.5 hover:bg-background disabled:cursor-not-allowed disabled:opacity-30"
-                          aria-label={`Move ${COLUMN_LABELS[id]} down`}
-                          title={t("deviceList.moveDown")}
-                        >
-                          <ChevronDown className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  <hr className="my-1" />
-                  <p className="px-2 pt-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {t("deviceList.hidden")}{" "}
-                  </p>
-                  {columnOrder
-                    .filter(
-                      (id) => !visibleColumns.has(id) && isColumnAvailable(id),
-                    )
-                    .map((id) => (
-                      <label
-                        key={id}
-                        className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={false}
-                          onChange={() => toggleColumn(id)}
-                          className="h-4 w-4 rounded border-border"
-                        />
-                        <span>{COLUMN_LABELS[id]}</span>
-                      </label>
-                    ))}
-                  {customFieldDefinitions.length > 0 && (
-                    <>
-                      <hr className="my-1" />
-                      <p className="px-2 pt-0.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                        {t("deviceList.customFields")}{" "}
-                      </p>
-                      {customFieldDefinitions.map((def) => (
-                        <label
-                          key={def.id}
-                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                        >
-                          <input
-                            type="checkbox"
-                            data-testid={`custom-column-toggle-${def.fieldKey}`}
-                            checked={visibleCustomFieldKeys.has(def.fieldKey)}
-                            onChange={() => toggleCustomFieldColumn(def.fieldKey)}
-                            className="h-4 w-4 rounded border-border"
-                          />
-                          <span>{def.name}</span>
-                        </label>
-                      ))}
-                    </>
-                  )}
-                  <hr className="my-1" />
-                  <button
-                    type="button"
-                    onClick={resetColumnsToDefault}
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    {t("deviceList.resetToDefaults")}{" "}
-                  </button>
-                </div>
-              )}
-            </div>
+            <ColumnChooser
+              columnOrder={columnOrder}
+              visibleColumns={visibleColumns}
+              isColumnAvailable={isColumnAvailable}
+              gateReason={columnGateReason}
+              onToggle={toggleColumn}
+              onMove={moveColumn}
+              onReset={resetColumnsToDefault}
+              customFieldDefinitions={customFieldDefinitions}
+              visibleCustomFieldKeys={visibleCustomFieldKeys}
+              onToggleCustomField={toggleCustomFieldColumn}
+            />
           </div>
         </div>
       </div>

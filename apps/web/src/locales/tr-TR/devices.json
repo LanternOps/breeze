@@ -1788,6 +1788,30 @@
       "none": "Açık öğe yok",
       "unavailable": "Uyarı ve bilet sayıları kullanılamıyor",
       "loading": "Uyarı ve bilet sayıları yükleniyor"
+    },
+    "columnChooser": {
+      "title": "Sütunlar",
+      "searchLabel": "Sütunları filtrele",
+      "searchPlaceholder": "Sütunları filtrele…",
+      "noMatches": "“{{query}}” ile eşleşen sütun yok",
+      "alwaysShown": "Her zaman gösterilir",
+      "showColumn": "{{column}} sütununu göster",
+      "hideColumn": "{{column}} sütununu gizle",
+      "moveColumnUp": "{{column}} sütununu yukarı taşı",
+      "moveColumnDown": "{{column}} sütununu aşağı taşı",
+      "gate": {
+        "agentOnlyFleet": "Yalnızca ajan içeren filolarda gizli",
+        "networkOnlyView": "Yalnızca ağ cihazları listelenirken gizli",
+        "noManualAssets": "Yalnızca manuel varlıklar listelendiğinde gösterilir"
+      },
+      "groups": {
+        "identity": "Kimlik",
+        "platform": "İşletim platformu",
+        "health": "Durum",
+        "versions": "Sürümler",
+        "network": "Ağ",
+        "inventory": "Envanter"
+      }
     }
   },
   "deviceLogsTab": {

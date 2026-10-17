@@ -1788,6 +1788,30 @@
       "none": "Niente in sospeso",
       "unavailable": "Conteggi di avvisi e ticket non disponibili",
       "loading": "Caricamento dei conteggi di avvisi e ticket"
+    },
+    "columnChooser": {
+      "title": "Colonne",
+      "searchLabel": "Filtra colonne",
+      "searchPlaceholder": "Filtra colonne…",
+      "noMatches": "Nessuna colonna corrisponde a “{{query}}”",
+      "alwaysShown": "Sempre visibile",
+      "showColumn": "Mostra {{column}}",
+      "hideColumn": "Nascondi {{column}}",
+      "moveColumnUp": "Sposta {{column}} in alto",
+      "moveColumnDown": "Sposta {{column}} in basso",
+      "gate": {
+        "agentOnlyFleet": "Nascosta per flotte di soli agenti",
+        "networkOnlyView": "Nascosta finché sono elencati solo dispositivi di rete",
+        "noManualAssets": "Visibile solo quando sono elencati asset manuali"
+      },
+      "groups": {
+        "identity": "Identità",
+        "platform": "Piattaforma",
+        "health": "Stato",
+        "versions": "Versioni",
+        "network": "Rete",
+        "inventory": "Inventario"
+      }
     }
   },
   "deviceLogsTab": {

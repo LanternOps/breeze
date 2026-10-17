@@ -1788,6 +1788,30 @@
       "none": "Nada pendiente",
       "unavailable": "Recuentos de alertas y tickets no disponibles",
       "loading": "Cargando recuentos de alertas y tickets"
+    },
+    "columnChooser": {
+      "title": "Columnas",
+      "searchLabel": "Filtrar columnas",
+      "searchPlaceholder": "Filtrar columnas…",
+      "noMatches": "Ninguna columna coincide con “{{query}}”",
+      "alwaysShown": "Siempre visible",
+      "showColumn": "Mostrar {{column}}",
+      "hideColumn": "Ocultar {{column}}",
+      "moveColumnUp": "Mover {{column}} hacia arriba",
+      "moveColumnDown": "Mover {{column}} hacia abajo",
+      "gate": {
+        "agentOnlyFleet": "Oculta en flotas solo con agentes",
+        "networkOnlyView": "Oculta mientras solo se muestran dispositivos de red",
+        "noManualAssets": "Visible solo cuando se muestran activos manuales"
+      },
+      "groups": {
+        "identity": "Identidad",
+        "platform": "Plataforma",
+        "health": "Estado",
+        "versions": "Versiones",
+        "network": "Red",
+        "inventory": "Inventario"
+      }
     }
   },
   "deviceLogsTab": {

@@ -1788,6 +1788,30 @@
       "none": "Nichts offen",
       "unavailable": "Anzahl der Warnungen und Tickets nicht verfügbar",
       "loading": "Anzahl der Warnungen und Tickets wird geladen"
+    },
+    "columnChooser": {
+      "title": "Spalten",
+      "searchLabel": "Spalten filtern",
+      "searchPlaceholder": "Spalten filtern…",
+      "noMatches": "Keine Spalten passen zu „{{query}}“",
+      "alwaysShown": "Immer sichtbar",
+      "showColumn": "{{column}} einblenden",
+      "hideColumn": "{{column}} ausblenden",
+      "moveColumnUp": "{{column}} nach oben verschieben",
+      "moveColumnDown": "{{column}} nach unten verschieben",
+      "gate": {
+        "agentOnlyFleet": "Bei reinen Agent-Flotten ausgeblendet",
+        "networkOnlyView": "Ausgeblendet, solange nur Netzwerkgeräte aufgeführt sind",
+        "noManualAssets": "Nur sichtbar, wenn manuelle Assets aufgeführt sind"
+      },
+      "groups": {
+        "identity": "Identität",
+        "platform": "Plattform",
+        "health": "Zustand",
+        "versions": "Versionen",
+        "network": "Netzwerk",
+        "inventory": "Inventar"
+      }
     }
   },
   "deviceLogsTab": {

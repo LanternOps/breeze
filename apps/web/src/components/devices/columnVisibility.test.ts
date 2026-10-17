@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  COLUMN_GROUP_ORDER,
+  COLUMN_GROUPS,
   COLUMN_IDS,
   COLUMN_LABELS,
+  isColumnLocked,
   COLUMN_STORAGE_KEY,
   DEFAULT_VISIBLE_COLUMNS,
   isValidColumnId,
@@ -103,9 +106,19 @@ describe('columnVisibility', () => {
     it('falls back to the default set when every column is hidden', () => {
       // An all-hidden list is a valid stored state, but an empty table is
       // worse UX than the pre-feature view, so the visible view recovers.
-      writeColumnVisibility([]);
+      // Written through the API this can no longer happen (the Device column
+      // is locked, #9034), so seed the raw all-hidden shape directly.
+      window.localStorage.setItem(
+        COLUMN_STORAGE_KEY,
+        JSON.stringify({ v: 1, columns: COLUMN_IDS.map((id) => ({ id, visible: false })) }),
+      );
       const got = readColumnVisibility();
       expect(got.size).toBe(DEFAULT_VISIBLE_COLUMNS.length);
+    });
+
+    it('keeps the Device column when everything else is unticked (#9034)', () => {
+      writeColumnVisibility([]);
+      expect(Array.from(readColumnVisibility())).toEqual(['hostname']);
     });
 
     it('falls back when getItem throws (Safari private mode)', () => {
@@ -357,6 +370,54 @@ describe('columnVisibility', () => {
       expect(order[order.length - 1]).toBe('attention');
       // A read never rewrites the stored value.
       expect(JSON.parse(window.localStorage.getItem(COLUMN_STORAGE_KEY)!).columns).toHaveLength(saved.length);
+    });
+  });
+
+  // #9034: the chooser groups columns and the Device column cannot be hidden.
+  describe('column groups', () => {
+    it('assigns every catalog column to a known group', () => {
+      for (const id of COLUMN_IDS) {
+        expect(COLUMN_GROUP_ORDER).toContain(COLUMN_GROUPS[id]);
+      }
+    });
+
+    it('keeps the identity columns together and the versions apart', () => {
+      expect(COLUMN_GROUPS.hostname).toBe('identity');
+      expect(COLUMN_GROUPS.organization).toBe('identity');
+      expect(COLUMN_GROUPS.agentVersion).toBe('versions');
+      expect(COLUMN_GROUPS.wanIp).toBe('network');
+      expect(COLUMN_GROUPS.serial).toBe('inventory');
+      expect(COLUMN_GROUPS.status).toBe('health');
+      expect(COLUMN_GROUPS.os).toBe('platform');
+    });
+
+    it('leaves every group non-empty', () => {
+      for (const group of COLUMN_GROUP_ORDER) {
+        expect(COLUMN_IDS.some((id) => COLUMN_GROUPS[id] === group)).toBe(true);
+      }
+    });
+  });
+
+  describe('locked columns', () => {
+    it('locks only the Device column', () => {
+      expect(isColumnLocked('hostname')).toBe(true);
+      expect(COLUMN_IDS.filter(isColumnLocked)).toEqual(['hostname']);
+    });
+
+    it('reads the Device column as visible even when storage hid it', () => {
+      window.localStorage.setItem(
+        COLUMN_STORAGE_KEY,
+        JSON.stringify({ v: 1, columns: [{ id: 'hostname', visible: false }, { id: 'cpu', visible: true }] }),
+      );
+      const got = readColumnVisibility();
+      expect(got.has('hostname')).toBe(true);
+      expect(got.has('cpu')).toBe(true);
+    });
+
+    it('never persists the Device column as hidden', () => {
+      writeColumnVisibility(['cpu']);
+      const byId = new Map(stored().columns.map((c: { id: string; visible: boolean }) => [c.id, c.visible]));
+      expect(byId.get('hostname')).toBe(true);
     });
   });
 });

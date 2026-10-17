@@ -101,6 +101,72 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   source: 'Source',
 };
 
+/**
+ * Column-chooser sections (#9034). Every catalog column belongs to exactly one;
+ * custom-field columns are not ColumnIds and get their own section.
+ */
+export const COLUMN_GROUP_ORDER = [
+  'identity',
+  'platform',
+  'health',
+  'versions',
+  'network',
+  'inventory',
+] as const;
+
+export type ColumnGroup = (typeof COLUMN_GROUP_ORDER)[number];
+
+export const COLUMN_GROUPS: Record<ColumnId, ColumnGroup> = {
+  hostname: 'identity',
+  class: 'identity',
+  type: 'identity',
+  source: 'identity',
+  organization: 'identity',
+  site: 'identity',
+  role: 'identity',
+  tags: 'identity',
+  lastUser: 'identity',
+  enrolled: 'identity',
+  os: 'platform',
+  osVersion: 'platform',
+  osBuild: 'platform',
+  architecture: 'platform',
+  isHeadless: 'platform',
+  desktopAccess: 'platform',
+  status: 'health',
+  attention: 'health',
+  pendingReboot: 'health',
+  cpu: 'health',
+  ram: 'health',
+  power: 'health',
+  lastSeen: 'health',
+  uptime: 'health',
+  reliability: 'health',
+  hardwareHealth: 'health',
+  agentVersion: 'versions',
+  watchdogVersion: 'versions',
+  helperVersion: 'versions',
+  serverUrl: 'network',
+  wanIp: 'network',
+  lanIp: 'network',
+  vpn: 'network',
+  cpuModel: 'inventory',
+  cores: 'inventory',
+  ramTotal: 'inventory',
+  diskTotal: 'inventory',
+  serial: 'inventory',
+  assetTag: 'inventory',
+  location: 'inventory',
+};
+
+// The Device column names the row; a table without it is unreadable, so it is
+// shown on every read and never persisted as hidden (#9034).
+const LOCKED_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>(['hostname']);
+
+export function isColumnLocked(id: ColumnId): boolean {
+  return LOCKED_COLUMNS.has(id);
+}
+
 export const DEFAULT_VISIBLE_COLUMNS: ReadonlyArray<ColumnId> = [
   'hostname',
   'class',
@@ -244,7 +310,7 @@ function writeColumns(columns: Iterable<StoredColumn>, preset: ColumnPreset): vo
 export function readColumnVisibility(preset: ColumnPreset = DEVICES_PAGE_COLUMN_PRESET): ReadonlySet<ColumnId> {
   const visible = readColumns(preset).filter((c) => c.visible).map((c) => c.id);
   if (visible.length === 0) return new Set(preset.defaultVisible);
-  return new Set(visible);
+  return new Set([...visible, ...LOCKED_COLUMNS]);
 }
 
 // Updates only the visibility flags, preserving the current stored order.
@@ -252,7 +318,7 @@ export function writeColumnVisibility(
   visible: Iterable<ColumnId>,
   preset: ColumnPreset = DEVICES_PAGE_COLUMN_PRESET,
 ): void {
-  const visibleSet = new Set(Array.from(visible).filter(isValidColumnId));
+  const visibleSet = new Set([...Array.from(visible).filter(isValidColumnId), ...LOCKED_COLUMNS]);
   writeColumns(readColumns(preset).map((c) => ({ id: c.id, visible: visibleSet.has(c.id) })), preset);
 }
 

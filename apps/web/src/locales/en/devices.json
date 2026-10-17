@@ -1788,6 +1788,30 @@
       "none": "Nothing open",
       "unavailable": "Alert and ticket counts unavailable",
       "loading": "Loading alert and ticket counts"
+    },
+    "columnChooser": {
+      "title": "Columns",
+      "searchLabel": "Filter columns",
+      "searchPlaceholder": "Filter columns…",
+      "noMatches": "No columns match “{{query}}”",
+      "alwaysShown": "Always shown",
+      "showColumn": "Show {{column}}",
+      "hideColumn": "Hide {{column}}",
+      "moveColumnUp": "Move {{column}} up",
+      "moveColumnDown": "Move {{column}} down",
+      "gate": {
+        "agentOnlyFleet": "Hidden for agent-only fleets",
+        "networkOnlyView": "Hidden while only network devices are listed",
+        "noManualAssets": "Shown only when manual assets are listed"
+      },
+      "groups": {
+        "identity": "Identity",
+        "platform": "Platform",
+        "health": "Health",
+        "versions": "Versions",
+        "network": "Network",
+        "inventory": "Inventory"
+      }
     }
   },
   "deviceLogsTab": {
