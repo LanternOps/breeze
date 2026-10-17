@@ -255,6 +255,20 @@ trustPageRoutes.post('/:orgId/trust-page/preview-token', scopes, orgWrite, zVali
   } catch (err) { return handleError(c, err); }
 });
 
+// Amendment 23: the org form warns before a slug rename breaks a live public URL. Read-only — unlike
+// GET /trust-page it never creates the draft row, so opening an org form leaves no trust page behind.
+trustPageRoutes.get('/:orgId/trust-page/publication', scopes, orgRead, zValidator('param', orgParam), async (c) => {
+  const { orgId } = c.req.valid('param');
+  const ctx = await resolveAccessibleOrg(c, orgId);
+  if (!ctx) return notFound(c);
+  try {
+    const [row] = await db.select({ publishedAt: trustPages.publishedAt, isPartnerHome: trustPages.isPartnerHome })
+      .from(trustPages).where(eq(trustPages.orgId, orgId)).limit(1);
+    const published = Boolean(row?.publishedAt);
+    return c.json({ data: { published, publicPath: row && published ? publicPaths(ctx, row.isPartnerHome).publicPath : null } });
+  } catch (err) { return handleError(c, err); }
+});
+
 trustPageRoutes.get('/:orgId/trust-page/controls', scopes, orgRead, zValidator('param', orgParam), async (c) => {
   const { orgId } = c.req.valid('param');
   const ctx = await resolveAccessibleOrg(c, orgId);

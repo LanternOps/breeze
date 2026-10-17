@@ -287,6 +287,33 @@ describe('trust page routes', () => {
       expect(dbm.sets[0]).toMatchObject({ isPartnerHome: true });
     });
   });
+  describe('GET /publication (amendment 23: slug-rename warning)', () => {
+    const ctxRow = { orgSlug: 'acme', partnerSlug: 'nw', partnerId: 'p1', trustState: 'trusted', deletedAt: null };
+    const get = (headers = H()) => app.request(`/orgs/${ORG}/trust-page/publication`, { headers });
+    it('a published page reports its public path, and never creates a draft', async () => {
+      dbm.rows = [[ctxRow], [{ publishedAt: new Date(), isPartnerHome: false }]];
+      const res = await get();
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: { published: true, publicPath: '/portal/trust/nw/acme' } });
+      expect(svc.ensureTrustPage).not.toHaveBeenCalled();
+      expect(vi.mocked((db as unknown as { insert: () => unknown }).insert)).not.toHaveBeenCalled();
+    });
+    it('no page, or an unpublished one, is { published: false, publicPath: null }', async () => {
+      dbm.rows = [[ctxRow], []];
+      expect(await (await get()).json()).toEqual({ data: { published: false, publicPath: null } });
+      dbm.rows = [[ctxRow], [{ publishedAt: null, isPartnerHome: false }]];
+      expect(await (await get()).json()).toEqual({ data: { published: false, publicPath: null } });
+      expect(svc.ensureTrustPage).not.toHaveBeenCalled();
+    });
+    it('the partner home reports the partner path', async () => {
+      dbm.rows = [[ctxRow], [{ publishedAt: new Date(), isPartnerHome: true }]];
+      expect((await (await get()).json()).data.publicPath).toBe('/portal/trust/nw');
+    });
+    it('needs organizations:read', async () => {
+      const res = await get(H({ 'x-allow': '' }));
+      expect(res.status).toBe(403);
+    });
+  });
   it('I10: minting a preview token needs organizations:write', async () => {
     dbm.rows.push([{ orgSlug: 'acme', partnerSlug: 'nw', trustState: 'trusted', deletedAt: null }]);
     const res = await app.request(`/orgs/${ORG}/trust-page/preview-token`, { method: 'POST', headers: H({ 'x-allow': 'organizations:read' }) });
@@ -389,6 +416,7 @@ describe('trust page routes', () => {
     ['POST', 'trust-page/partner-home', { isPartnerHome: true }],
     ['POST', 'trust-page/preview-token', undefined],
     ['GET', 'trust-page/controls', undefined],
+    ['GET', 'trust-page/publication', undefined],
   ])('%s /%s 404s an inaccessible org without touching services', async (method, path, payload) => {
     const res = await app.request(`/orgs/${OTHER}/${path}`, {
       method,

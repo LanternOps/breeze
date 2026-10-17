@@ -5726,6 +5726,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Bu kuruluşun yayımlanmış bir Güven Merkezi sayfası var. URL kısa adını değiştirmek herkese açık adresini değiştirir ve eski bağlantı artık çalışmaz.",
     "actions": {
       "save": "Organizasyonu kaydet"
     },

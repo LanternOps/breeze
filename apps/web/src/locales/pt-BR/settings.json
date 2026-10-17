@@ -5726,6 +5726,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Esta organização tem uma página pública da Central de Confiança. Alterar o slug muda o URL público, e o link antigo deixará de funcionar.",
     "actions": {
       "save": "Salvar organização"
     },

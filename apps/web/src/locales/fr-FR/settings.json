@@ -5673,6 +5673,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Cette organisation a une page publique du Centre de confiance. Modifier l’identifiant d’URL change son adresse publique, et l’ancien lien ne fonctionnera plus.",
     "actions": {
       "save": "Enregistrer l’organisation"
     },

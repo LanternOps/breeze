@@ -45,6 +45,8 @@ Publishing is limited to partners whose account is trusted. A new account must f
 
 To publish or unpublish you need the `organizations:write` permission and a session with multi-factor authentication. Viewers without write permission can see the tab but cannot change it.
 
+A page's public URL is built from the partner slug and the organization slug. Renaming either one changes the URL of every trust page built from it, and the old links stop working.
+
 ### Customer authorization
 
 When you publish a customer's page you must confirm that the customer authorized it and record who gave that authorization (name and role). Breeze stores the attestation with the date. A partner's own page needs no customer authorization, so only your own internal organization can be marked as the partner page.

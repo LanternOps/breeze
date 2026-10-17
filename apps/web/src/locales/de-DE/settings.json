@@ -5673,6 +5673,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Diese Organisation hat eine veröffentlichte Seite im Vertrauenszentrum. Wenn Sie das URL-Kürzel ändern, ändert sich die öffentliche URL, und der alte Link funktioniert nicht mehr.",
     "actions": {
       "save": "Organisation retten"
     },

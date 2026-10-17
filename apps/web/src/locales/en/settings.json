@@ -5721,6 +5721,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "This organization has a published trust page. Changing the slug changes its public URL, and the old link will stop working.",
     "actions": {
       "save": "Save organization"
     },
