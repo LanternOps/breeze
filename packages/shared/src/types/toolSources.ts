@@ -33,6 +33,7 @@ export interface ToolSourceDto {
 /** Why an operation/tool was not turned into an enable-able tool. */
 export type ToolSourceSkipReason =
   | 'unsupported_method'
+  | 'unsupported_path'
   | 'unsupported_param_style'
   | 'unsupported_request_body'
   | 'unsupported_security_location'
