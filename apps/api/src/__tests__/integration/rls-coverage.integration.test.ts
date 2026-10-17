@@ -69,6 +69,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
   'abuse_sweep_state',
   'abuse_endpoint_fingerprints',
   'ai_kill_state',
+  'trust_signing_keys',
 ]);
 
 // System-scoped tables: forced RLS with either no permissive policies at all,
@@ -92,6 +93,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'intent_outbox', // Generalized transactional outbox: system-scoped workers-only queue. Its XOR parent FK cascades from either action_intents or pam_actuations (both direct-org, forced RLS). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
   'manifest_signing_key_delegations', // System-scoped: signed authorisation to add ONE unseen agent-update signing key (Wave 6 Task 7). No tenant column — per-deployment agent-update infrastructure. Forced RLS, single system-only policy (USING + WITH CHECK) → only system context. No org_id/device_id, so no cascade-list registration applies.
+  'trust_signing_keys', // Per-deployment trust-attestation signing keys (Trust Center W3b, #8771). No tenant column. Forced RLS, single system-only policy. No org_id, so no cascade/merge/export registration.
   'm365_consent_sessions', // OAuth consent state: forced RLS, system-only policies; tenant scopes must never read verifier/nonce material.
   'm365_user_consent_sessions', // Delegated (user-axis) OAuth consent state. System-only for the same reason as its org-axis sibling: the rows hold a live PKCE code_verifier and nonce. Deliberately NOT user-axis readable — the owning user's own session is still not something their session token should select.
   'vulnerability_sources', // Global vulnerability-source sync metadata. Forced RLS, no tenant policies → only system context.
