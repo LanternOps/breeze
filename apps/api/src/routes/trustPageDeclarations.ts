@@ -86,6 +86,8 @@ trustPageDeclarationRoutes.get('/:orgId/trust-page/declarations', scopes, orgRea
       history: history.map(toDeclarationView),
       publishedDeclarationIds: publishedDeclarationIds(page),
       publicationRevision: page.publicationRevision,
+      // The name a new declaration would carry ("Declared by <partner>"), for the editor's attestation copy.
+      partnerName: ctx.partnerName,
     } });
   } catch (err) { return handleError(c, err); }
 });

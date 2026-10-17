@@ -75,6 +75,7 @@ describe('GET /orgs/:orgId/trust-page/declarations', () => {
     expect(data.active[0]).toMatchObject({ id: DECL, controlId: 'incident_response_plan', declaredAt: '2026-10-17T00:00:00.000Z' });
     expect(data.publishedDeclarationIds).toEqual([DECL]);
     expect(data.publicationRevision).toBe(4);
+    expect(data.partnerName).toBe('Northwind IT');
   });
 
   it('an unpublished page reports no published declaration ids', async () => {
