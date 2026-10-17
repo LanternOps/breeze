@@ -117,6 +117,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/siteLocation.ts': 'listing: sites a technician may match an arrival against (#4186); excludes hidden orgs, never reads devices',
   'services/backupHealthReadModel.ts': 'read model: backup health',
   'services/contractQuantities.ts': 'billing: contract quantities',
+  'services/endpointMessaging/history.ts': 'read model: endpoint message send history and per-device delivery detail (#8742); lists existing deliveries, selects no targets',
   'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
   'services/hardwareLifecycleReport.ts': 'report: hardware lifecycle',
   'services/partnerDeviceCapacity.ts': 'billing: partner device capacity',
@@ -187,6 +188,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/endpointMessaging/retract.ts': 'request path (#8742): retracts the live deliveries of ONE existing message by id in the caller\'s RLS context; selects no new targets, and a retract_message queued to a parked device is refused by command delivery',
   'services/migrationWindows.ts': 'ticket migration windows (#8313): validates the orgs an admin names for a window (hidden orgs are refused); never reads devices or dispatches device work',
   'services/automationTargetValidation.ts': 'write-time validation of an automation target config: reads device_groups/devices ids only to check they sit in the owner org; selects no targets and dispatches nothing',
   'services/scriptRunTargets.ts': 'resolves saved device groups (org-owned; the holding org has none) via the shared resolver, which keeps eq(devices.orgId, groupOrgId) on every query; the resulting run goes through executeScriptOnDevices admission, and command delivery refuses parked devices',

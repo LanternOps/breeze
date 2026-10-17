@@ -15,7 +15,7 @@ export function SeverityBadge({ severity }: { severity: EndpointMessageListItem[
   const { t } = useTranslation('devices');
   return (
     <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${SEVERITY_CLASS[severity]}`}>
-      {t(`endpointMessages.severity.${severity}`)}
+      {t(/* i18n-dynamic */ `endpointMessages.severity.${severity}`)}
     </span>
   );
 }
@@ -24,7 +24,7 @@ export function SeverityBadge({ severity }: { severity: EndpointMessageListItem[
 export function StatusSummary({ counts }: { counts: EndpointMessageListItem['statusCounts'] }) {
   const { t } = useTranslation('devices');
   const parts = STATUS_ORDER.filter((s) => (counts[s] ?? 0) > 0).map(
-    (s) => `${t(`endpointMessages.history.statuses.${s}`)} ${counts[s]}`,
+    (s) => `${t(/* i18n-dynamic */ `endpointMessages.history.statuses.${s}`)} ${counts[s]}`,
   );
   if (parts.length === 0) return null;
   return <p className="text-xs text-muted-foreground">{parts.join(' · ')}</p>;

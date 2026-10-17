@@ -4263,7 +4263,7 @@
         "host": "Dispositivo",
         "status": "Estado",
         "surface": "Mostrado en",
-        "error": "Error",
+        "error": "Falla",
         "sent": "Enviado",
         "expires": "Vence",
         "delivered": "Entregado",

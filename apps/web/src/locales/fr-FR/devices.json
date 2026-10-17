@@ -4258,7 +4258,7 @@
       "badgeAi": "IA",
       "devicesLabel": "Appareils : {{count}}",
       "fields": {
-        "body": "Message",
+        "body": "Contenu",
         "deliveries": "Appareils",
         "host": "Appareil",
         "status": "Statut",
