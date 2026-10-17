@@ -24,7 +24,8 @@ vi.mock('bullmq', () => ({
     close = vi.fn();
   },
 }));
-vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}) }));
+const redisSet = vi.hoisted(() => vi.fn(async () => 'OK'));
+vi.mock('../services/redis', () => ({ getBullMQConnection: () => ({}), getRedis: () => ({ set: redisSet }) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: (...a: unknown[]) => attachMock(...a) }));
 vi.mock('../services/connectionHealth/digest', () => ({ runDigest: (...a: unknown[]) => runDigestMock(...a) }));
 
@@ -71,5 +72,28 @@ describe('connectionHealthDigest worker', () => {
     runDigestMock.mockRejectedValueOnce(new Error('pool exhausted'));
     await expect(processor.current!()).rejects.toThrow('pool exhausted');
     expect(runDigestMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('writes the digest heartbeat after a completed run only (W4 dead-man)', async () => {
+    await initializeConnectionHealthDigestWorker();
+    redisSet.mockClear();
+    runDigestMock.mockResolvedValueOnce({ partners: 0 });
+    await processor.current!();
+    expect(redisSet).toHaveBeenCalledWith('connection-health:digest:heartbeat', expect.any(String), 'EX', 6 * 3600);
+    redisSet.mockClear();
+    runDigestMock.mockRejectedValueOnce(new Error('pool exhausted'));
+    await expect(processor.current!()).rejects.toThrow('pool exhausted');
+    expect(redisSet).not.toHaveBeenCalled();
+  });
+
+  it('a run that sent nothing because every send failed writes no heartbeat, so /admin/system goes stale', async () => {
+    await initializeConnectionHealthDigestWorker();
+    redisSet.mockClear();
+    runDigestMock.mockResolvedValueOnce({ partners: 2, sent: 0, failed: 3, errored: 1 });
+    await processor.current!();
+    expect(redisSet).not.toHaveBeenCalled();
+    runDigestMock.mockResolvedValueOnce({ partners: 2, sent: 1, failed: 3, errored: 0 });
+    await processor.current!();
+    expect(redisSet).toHaveBeenCalledTimes(1);
   });
 });

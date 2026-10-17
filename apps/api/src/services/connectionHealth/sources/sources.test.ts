@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 // The mappers are pure; the queries run against a real DB in
 // __tests__/integration/connectionHealthSources.integration.test.ts.
-vi.mock('../../../db', () => ({ db: {} }));
+// A session-less query builder: brokenQuery() builds (and is inspected) without a connection.
+vi.mock('../../../db', async () => {
+  const { QueryBuilder } = await import('drizzle-orm/pg-core');
+  return { db: new QueryBuilder() };
+});
 
 import { huntressObservation, huntressSource } from './huntress';
 import { sentinelOneObservation, sentinelOneSource } from './sentinelOne';
@@ -44,7 +50,7 @@ describe('W2 source registrations', () => {
 });
 
 describe('partner sync sources', () => {
-  const row = { id: ID, partnerId: P, isActive: true, lastSyncStatus: 'error', lastSyncError: 'scheduled: Huntress API request failed (401): token=abcdefgh1234', createdAt: OLD };
+  const row = { id: ID, partnerId: P, isActive: true, lastSyncStatus: 'error', lastSyncError: 'scheduled: Huntress API request failed (401): token=abcdefgh1234', createdAt: OLD, stale: false };
 
   it('huntress: a failed sync is a partner-wide transient incident with a sanitized detail', () => {
     expect(huntressObservation(row, NOW)).toEqual({
@@ -66,13 +72,54 @@ describe('partner sync sources', () => {
   });
 });
 
+describe('sync staleness (W4)', () => {
+  const ok = { id: ID, partnerId: P, isActive: true, lastSyncStatus: 'success', lastSyncError: 'an old error from last week', createdAt: OLD, stale: true };
+  it('a stale partner sync is a transient sync_stale incident with no detail (old error text would mislead)', () => {
+    expect(huntressObservation(ok, NOW)).toMatchObject({ state: 'broken', severity: 'transient', condition: 'sync_stale', detail: null });
+    expect(sentinelOneObservation(ok, NOW).condition).toBe('sync_stale');
+    expect(pax8Observation(ok, NOW).condition).toBe('sync_stale');
+  });
+  it('a stuck running sync is stale; a recorded failure still wins', () => {
+    expect(huntressObservation({ ...ok, lastSyncStatus: 'running' }, NOW).condition).toBe('sync_stale');
+    expect(huntressObservation({ ...ok, lastSyncStatus: 'error' }, NOW)).toMatchObject({ condition: 'sync_failed', detail: 'an old error from last week' });
+  });
+  it('unifi and backup report stale connections', () => {
+    expect(unifiObservation({ ...ok, status: 'connected' }, NOW).condition).toBe('sync_stale');
+    expect(backupProviderObservation({ ...ok, name: 'Main', provider: 'cove', status: 'connected' }, NOW).condition).toBe('sync_stale');
+  });
+
+  const sqlOf = (q: unknown) => new PgDialect().sqlToQuery((q as { getSQL(): SQL }).getSQL());
+  it.each([
+    [huntressSource, 60], [sentinelOneSource, 60], [pax8Source, 4320], [unifiSource, 90],
+  ] as const)('%#: the broken query carries the stale arm (%s minutes)', (source, minutes) => {
+    const q = sqlOf(source.brokenQuery(NOW));
+    expect(q.sql).toContain(`make_interval(mins => ${minutes})`);
+    expect(q.params).toContain(NOW.toISOString());
+  });
+  it.each([
+    ['pax8', pax8Source, true], ['backupProvider', backupProviderSource, true],
+    ['huntress', huntressSource, false], ['sentinelOne', sentinelOneSource, false], ['unifi', unifiSource, false],
+  ] as const)('%s: stale arm casts the NOW param to the column type (timestamptz=%s)', (_n, source, tz) => {
+    const text = sqlOf(source.brokenQuery(NOW)).sql;
+    if (tz) {
+      expect(text).toContain('::timestamptz - make_interval');
+    } else {
+      expect(text).toContain('::timestamp - make_interval');
+      expect(text).not.toContain('::timestamptz');
+    }
+  });
+  it('backup: the stale threshold follows each row\'s own interval', () => {
+    expect(sqlOf(backupProviderSource.brokenQuery(NOW)).sql).toMatch(/make_interval\(mins => GREATEST\(3 \* "backup_provider_connections"\."sync_interval_minutes", 60\)\)/);
+  });
+});
+
 describe('vendor sources', () => {
   it('unifi: reauth is permanent', () => {
-    expect(unifiObservation({ id: ID, partnerId: P, isActive: true, status: 'reauth_required', lastSyncStatus: 'failed', lastSyncError: 'No API key on connection', createdAt: YOUNG }, NOW))
+    expect(unifiObservation({ id: ID, partnerId: P, isActive: true, status: 'reauth_required', lastSyncStatus: 'failed', lastSyncError: 'No API key on connection', createdAt: YOUNG, stale: false }, NOW))
       .toMatchObject({ state: 'broken', severity: 'permanent', condition: 'reauth_required', displayName: 'UniFi', detail: 'No API key on connection', orgId: null });
   });
 
-  const backup = { id: ID, partnerId: P, name: 'Main\u0000 backup', provider: 'cove', isActive: true, status: 'connected', lastSyncStatus: 'error', lastSyncError: 'fetch https://api.example.com/x?key=1 failed', createdAt: OLD };
+  const backup = { id: ID, partnerId: P, name: 'Main\u0000 backup', provider: 'cove', isActive: true, status: 'connected', lastSyncStatus: 'error', lastSyncError: 'fetch https://api.example.com/x?key=1 failed', createdAt: OLD, stale: false };
   it('backup: uses the cleaned connection name and backup permissions', () => {
     expect(backupProviderObservation(backup, NOW)).toMatchObject({
       state: 'broken', severity: 'transient', displayName: 'Main backup', detail: 'fetch https://api.example.com failed',

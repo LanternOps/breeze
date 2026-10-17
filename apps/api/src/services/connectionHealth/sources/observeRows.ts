@@ -1,4 +1,4 @@
-import type { SQL, SQLWrapper } from 'drizzle-orm';
+import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import type { HealthVerdict } from '../../integrationStates';
 import type { Permission } from '../../permissions';
 import { sanitizeHealthDetail } from '../sanitize';
@@ -103,25 +103,50 @@ export function defineRowSource<Row>(def: {
   intervalMinutes: number;
   tables: readonly string[];
   fixHrefs: readonly string[];
-  select: (where: SQL) => RowQuery<Row>;
-  brokenWhere: SQL;
+  /** `now` lets a select compute time-relative columns (W4 staleness) in SQL. */
+  select: (where: SQL, now: Date) => RowQuery<Row>;
+  /** Static, or built from `now` when the broken predicate is time-relative (W4 staleness). */
+  brokenWhere: SQL | ((now: Date) => SQL);
   trackedWhere: (ids: string[]) => SQL;
   sourceIdOf: (row: Row) => string;
   toObservation: (row: Row, now: Date) => HealthObservation;
+  /** Passed through to HealthSource.prepare (runs before the kind's transaction). */
+  prepare?: (now: Date) => Promise<void>;
 }): HealthSource {
+  const brokenWhere = (now: Date): SQL => (typeof def.brokenWhere === 'function' ? def.brokenWhere(now) : def.brokenWhere);
   return {
     kind: def.kind,
     intervalMinutes: def.intervalMinutes,
     tables: def.tables,
     fixHrefs: def.fixHrefs,
-    brokenQuery: () => def.select(def.brokenWhere),
+    ...(def.prepare ? { prepare: def.prepare } : {}),
+    brokenQuery: (now) => def.select(brokenWhere(now), now),
     observe: (now, trackedSourceIds) => observeRows<Row>({
       now,
       trackedSourceIds,
-      loadBroken: async () => def.select(def.brokenWhere),
-      loadTracked: async (ids) => def.select(def.trackedWhere(ids)),
+      loadBroken: async () => def.select(brokenWhere(now), now),
+      loadTracked: async (ids) => def.select(def.trackedWhere(ids), now),
       sourceIdOf: def.sourceIdOf,
       toObservation: def.toObservation,
     }),
   };
+}
+
+/**
+ * W4 sync staleness, in SQL: no success since `minutes` before `now`, counting
+ * from creation for a connection that never succeeded. `minutes` is a number
+ * (fixed interval) or a SQL integer (a per-row interval column). The cast
+ * matches the column type: `timestamp` columns hold UTC wall time, and an ISO
+ * string cast to `timestamp` drops its `Z`, so both sides stay in UTC.
+ */
+export function staleArm(opts: {
+  lastOk: SQLWrapper;
+  createdAt: SQLWrapper;
+  now: Date;
+  minutes: number | SQL;
+  withTimezone: boolean;
+}): SQL {
+  const cast = sql.raw(opts.withTimezone ? 'timestamptz' : 'timestamp');
+  const mins = typeof opts.minutes === 'number' ? sql.raw(String(Math.trunc(opts.minutes))) : opts.minutes;
+  return sql`(COALESCE(${opts.lastOk}, ${opts.createdAt}) < ${opts.now.toISOString()}::${cast} - make_interval(mins => ${mins}))`;
 }

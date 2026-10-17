@@ -12,6 +12,8 @@ interface Props {
   orgId: string;
   orgFetch: OrgFetch;
   page: TrustPageDraft;
+  /** The EFFECTIVE value publish will freeze (page → template → default), never the raw page column. */
+  searchIndexable: boolean;
   onPublished: (page: TrustPageDraft) => void;
   /** Re-read the page (fresh publicationRevision) after a 409 REVISION_MISMATCH. */
   onStale: () => Promise<void>;
@@ -22,7 +24,7 @@ interface Props {
  * customer authorized publication; once recorded it is shown and reused (with a
  * Change link). The partner's own page needs none.
  */
-export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, page, onPublished, onStale }: Props) {
+export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, page, searchIndexable, onPublished, onStale }: Props) {
   const { t } = useTranslation('organizations');
   const tr = useCallback(
     (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.trust.${key}`, vars ?? {}),
@@ -84,7 +86,7 @@ export default function TrustPublishDialog({ open, onClose, orgId, orgFetch, pag
     <Dialog open={open} onClose={busy ? () => undefined : onClose} title={tr('publish.title')} maxWidth="md">
       <div className="space-y-4 p-6" data-testid="trust-publish-dialog">
         <p className="text-sm text-muted-foreground">
-          {tr('publish.intro', { indexable: page.searchIndexable ? tr('publish.indexableSuffix') : '' })}
+          {tr('publish.intro', { indexable: searchIndexable ? tr('publish.indexableSuffix') : '' })}
         </p>
         {page.isPartnerHome && <p className="text-sm">{tr('publish.partnerHomeNote')}</p>}
         {recorded && !changing && (

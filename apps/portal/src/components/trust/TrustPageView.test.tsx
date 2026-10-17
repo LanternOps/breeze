@@ -6,6 +6,13 @@ import TrustPageView from './TrustPageView';
 
 // @/lib/api -> lib/navigation dynamically imports an Astro virtual module vitest cannot resolve.
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+// W2 section seams: each stub records its props and its render order (the real stubs render nothing).
+const seen = vi.hoisted(() => ({ order: [] as string[], props: {} as Record<string, unknown> }));
+vi.mock('./TrustDeclaredControls', () => ({ default: (p: unknown) => { seen.order.push('declared'); seen.props.declared = p; return <div data-testid="seam-declared" />; } }));
+vi.mock('./TrustFrameworkView', () => ({ default: (p: unknown) => { seen.order.push('frameworks'); seen.props.frameworks = p; return <div data-testid="seam-frameworks" />; } }));
+vi.mock('./TrustSubprocessors', () => ({ default: (p: unknown) => { seen.order.push('subprocessors'); return <div data-testid="seam-subprocessors" />; } }));
+vi.mock('./TrustFaq', () => ({ default: (p: unknown) => { seen.order.push('faq'); seen.props.faq = p; return <div data-testid="seam-faq" />; } }));
+vi.mock('./TrustHistory', () => ({ default: (p: unknown) => { seen.order.push('history'); return <div data-testid="seam-history" />; } }));
 
 const payload = {
   schemaVersion: 1, snapshotId: 's1', generatedAt: '2026-10-13T12:00:00.000Z', publishedAt: '2026-10-01T09:00:00.000Z',
@@ -84,5 +91,39 @@ describe('TrustPageView', () => {
     render(<TrustPageView partnerSlug="nw" orgSlug="nope" card={null} />);
     expect(await screen.findByTestId('trust-page-error')).toHaveTextContent(/isn’t available|not available/i);
     vi.unstubAllGlobals();
+  });
+
+  describe('W2 seams', () => {
+    it('a v1 payload renders normalized, and the section seams render in plan order with the v2 payload', () => {
+      seen.order = []; seen.props = {};
+      render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={initial as never} />);
+      expect(seen.order).toEqual(['declared', 'frameworks', 'subprocessors', 'faq', 'history']);
+      const faq = seen.props.faq as { payload: { schemaVersion: number; locale: string; faq: unknown[] }; preview: boolean; partnerSlug: string; orgSlug: string };
+      expect(faq.payload).toMatchObject({ schemaVersion: 2, locale: 'en', faq: [] });
+      expect(faq).toMatchObject({ preview: false, partnerSlug: 'nw', orgSlug: 'acme' });
+      // DOM order: controls → declared → frameworks → method → documents → subprocessors → faq → history → managed-by.
+      const ids = ['trust-controls', 'seam-declared', 'seam-frameworks', 'trust-documents', 'seam-subprocessors', 'seam-faq', 'seam-history'];
+      const nodes = ids.map((id) => screen.getByTestId(id));
+      for (let i = 1; i < nodes.length; i++) {
+        expect(nodes[i - 1]!.compareDocumentPosition(nodes[i]!) & Node.DOCUMENT_POSITION_FOLLOWING, `${ids[i - 1]} before ${ids[i]}`).toBeTruthy();
+      }
+    });
+    it('a gated document lists its title as "Available on request" with no download link', () => {
+      const gatedId = '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6e';
+      const v2 = {
+        ...payload, schemaVersion: 2, locale: 'en', declaredControls: [], frameworks: [], subprocessors: [], faq: [], history: [], access: { ndaText: null },
+        documents: [...payload.documents, { ...payload.documents[0], id: gatedId, title: 'Pen test report', visibility: 'gated' }],
+      };
+      render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} initial={{ ...initial, payload: v2 } as never} />);
+      const row = screen.getByTestId(`trust-document-${gatedId}`);
+      expect(within(row).getByText('Pen test report')).toBeInTheDocument();
+      expect(within(row).getByTestId(`trust-document-on-request-${gatedId}`)).toHaveTextContent('Available on request');
+      expect(within(row).queryByRole('link')).toBeNull();
+      expect(screen.getByRole('link', { name: /Security policy/ })).toBeInTheDocument();
+    });
+    it('a preview never links documents', () => {
+      render(<TrustPageView partnerSlug="nw" orgSlug="acme" card={null} previewToken="tok" initial={{ ...initial, preview: true } as never} />);
+      expect(screen.queryByRole('link', { name: /Security policy/ })).toBeNull();
+    });
   });
 });

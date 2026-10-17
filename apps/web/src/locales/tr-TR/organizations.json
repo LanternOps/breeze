@@ -158,6 +158,27 @@
       }
     },
     "trust": {
+      "declarations": {
+        "title": "Beyan edilen kontroller"
+      },
+      "frameworks": {
+        "title": "Çerçeve görünümü"
+      },
+      "subprocessors": {
+        "title": "Alt işleyiciler"
+      },
+      "faq": {
+        "title": "Sıkça sorulan sorular"
+      },
+      "history": {
+        "title": "Zaman içinde karşılanan kontroller"
+      },
+      "access": {
+        "title": "Belge erişim talepleri"
+      },
+      "inheritance": {
+        "title": "Devralınan ayarlar"
+      },
       "title": "Güven Merkezi",
       "subtitle": "Bu kuruluşun güvenlik duruşunu gösteren, Breeze'in canlı telemetrisinden oluşturulan herkese açık bir sayfa.",
       "loading": "Güven Merkezi yükleniyor…",

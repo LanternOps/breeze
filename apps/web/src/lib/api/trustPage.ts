@@ -5,11 +5,15 @@
 // component owns the `runAction` call.
 
 import type {
+  EffectiveTrustSettings,
   TelemetryControlId,
   TrustControlAssessment,
   TrustControlDefinition,
+  TrustDocumentVisibility,
+  TrustFramework,
   TrustPageUpdateInput,
 } from '@breeze/shared';
+import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 import { unwrapData, type Fetcher } from './serviceDeliverables';
 
 export interface TrustPageDraft {
@@ -18,14 +22,21 @@ export interface TrustPageDraft {
   isPartnerHome: boolean;
   publishedAt: string | null;
   publicationRevision: number;
-  searchIndexable: boolean;
-  showPercentages: boolean;
-  showDeviceCount: boolean;
-  showManagedBy: boolean;
+  // W2: the org's OWN values; null = inherit (partner template → built-in default). Display reads
+  // `TrustPageState.effective`, never these directly.
+  searchIndexable: boolean | null;
+  showPercentages: boolean | null;
+  showDeviceCount: boolean | null;
+  showManagedBy: boolean | null;
+  showHistory: boolean | null;
   securityContactEmail: string | null;
   websiteUrl: string | null;
+  /** null = inherit; '' = explicitly no intro. */
   introHtml: string | null;
-  hiddenControlIds: TelemetryControlId[];
+  hiddenControlIds: TelemetryControlId[] | null;
+  frameworkView: TrustFramework[] | null;
+  ndaText: string | null;
+  accessRequestCreatesTicket: boolean;
   publicationAuthorizedBy: string | null;
   publicationAuthorizedAt: string | null;
   lastEvaluatedAt: string | null;
@@ -33,7 +44,7 @@ export interface TrustPageDraft {
 
 export interface TrustLinkedDocument {
   documentId: string;
-  visibility: 'public';
+  visibility: TrustDocumentVisibility;
   disclosureConfirmedAt: string | null;
   sortOrder: number;
   title: string;
@@ -54,6 +65,26 @@ export interface TrustPageState {
   canPublish: { allowed: boolean; reason: string | null };
   /** Linked documents in display order (editor view; includes superseded/deleted rows). */
   documents: TrustLinkedDocument[];
+  /** What publish would freeze: page → partner template → built-in default, with each value's source. */
+  effective: EffectiveTrustSettings;
+  /** The partner template revision the editor loaded (null = no template); sent back on publish. */
+  template: { revision: number } | null;
+  frameworkOptions: TrustFrameworkOption[];
+}
+
+export interface TrustFrameworkOption {
+  framework: TrustFramework;
+  available: boolean;
+  suggested: boolean;
+}
+
+/** Props every W2 Trust Center section receives from TrustCenterTab (W02a seam). */
+export interface TrustSectionProps {
+  orgId: string;
+  orgFetch: OrgFetch;
+  state: TrustPageState;
+  canWrite: boolean;
+  onReload: () => Promise<void>;
 }
 
 export interface TrustControlsState {
@@ -86,15 +117,16 @@ export function updateTrustPage(f: Fetcher, orgId: string, body: TrustPageUpdate
 export function updateTrustDocuments(
   f: Fetcher,
   orgId: string,
-  documents: Array<{ documentId: string; visibility: 'public'; disclosureConfirmed: boolean }>,
+  documents: Array<{ documentId: string; visibility: TrustDocumentVisibility; disclosureConfirmed: boolean }>,
+  expectedRevision?: number,
 ): Promise<Response> {
-  return f(`${base(orgId)}/documents`, jsonInit('PUT', { documents }));
+  return f(`${base(orgId)}/documents`, jsonInit('PUT', expectedRevision === undefined ? { documents } : { documents, expectedRevision }));
 }
 
 export function publishTrustPage(
   f: Fetcher,
   orgId: string,
-  body: { expectedRevision: number; authorization?: { authorizedBy: string } },
+  body: { expectedRevision: number; authorization?: { authorizedBy: string }; expectedTemplateRevision?: number | null },
 ): Promise<Response> {
   return f(`${base(orgId)}/publish`, jsonInit('POST', body));
 }

@@ -617,6 +617,37 @@
           "security-abuse": "Sicurezza e abusi",
           "integrations": "Integrazioni"
         }
+      },
+      "connectionHealthJobs": {
+        "title": "Attività in background dello stato delle connessioni",
+        "description": "Mostra se le attività che monitorano lo stato delle connessioni sono in esecuzione. Verificato tramite heartbeat su Redis.",
+        "jobs": {
+          "reconcile": {
+            "label": "Riconciliatore di incidenti",
+            "description": "Apre e risolve gli incidenti di connessione ogni 15 minuti."
+          },
+          "digest": {
+            "label": "Email di riepilogo giornaliero",
+            "description": "Invia il riepilogo dello stato delle connessioni; viene eseguito ogni ora."
+          }
+        },
+        "state": {
+          "ok": "Regolare",
+          "stale": "Obsoleto",
+          "missing": "Nessun heartbeat",
+          "failing": "In errore"
+        },
+        "lastRun": "Ultima esecuzione {{relative}}",
+        "neverRun": "Nessun heartbeat registrato",
+        "kindsHeading": "Origini monitorate",
+        "lastOk": "Ultimo OK {{relative}}",
+        "neverOk": "Mai riuscito",
+        "failureStreak": "Errori consecutivi: {{count}}",
+        "redisUnavailable": "Impossibile leggere lo stato delle attività perché Redis non è disponibile. Questo non significa che le attività si siano fermate.",
+        "errors": {
+          "load": "Impossibile caricare lo stato delle attività."
+        },
+        "retry": "Riprova"
       }
     },
     "aiModels": {

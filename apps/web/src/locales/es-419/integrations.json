@@ -326,6 +326,9 @@
       "grant_reconciliation_unavailable": "Verificación de concesión no disponible",
       "grant_revoked_reuse": "Concesión revocada (reutilización de token)",
       "grant_revoked": "Concesión revocada",
+      "delivery_failed": "Las entregas fallan",
+      "sync_stale": "Sincronización detenida",
+      "verification_failed": "Falló la verificación",
       "unknown": "Requiere atención"
     }
   },

@@ -173,21 +173,34 @@ const permanent = (condition: string): HealthVerdict => ({ state: 'broken', seve
 const SYNC_OK: ReadonlySet<string> = new Set(['success', 'partial']);
 const SUCCESS_ONLY: ReadonlySet<string> = new Set(['success']);
 
+/**
+ * Spec §3 sync staleness (W4): no successful sync for 3× the sync interval,
+ * and never less than an hour, so one slow run of a 15-minute sync is not a
+ * break. Sources compute `stale` in SQL from this value.
+ */
+export function staleAfterMinutes(syncIntervalMinutes: number): number {
+  return Math.max(3 * syncIntervalMinutes, 60);
+}
+
 export interface ActiveSyncRow {
   isActive: boolean;
   lastSyncStatus: string | null;
+  /** No successful sync within staleAfterMinutes (W4). A recorded failure still wins. */
+  stale?: boolean;
 }
 
 /**
  * Huntress / SentinelOne / Pax8: the board's activeRowConnectorState decides
  * disabled and error; only an explicit success proves health, so `running`
  * (Huntress and Pax8 clear the error when a sync starts) and never-synced are
- * unknown, never a recovery.
+ * unknown, never a recovery. Past the stale threshold they are `sync_stale`
+ * instead: a worker that died mid-sync leaves `running` forever.
  */
 function activeSyncHealth(row: ActiveSyncRow, failedValue: string, okValues: ReadonlySet<string>): HealthVerdict {
   const connector = activeRowConnectorState([row], failedValue);
   if (connector === 'disabled') return RETIRED;
   if (connector === 'error') return transient('sync_failed');
+  if (row.stale) return transient('sync_stale');
   return row.lastSyncStatus !== null && okValues.has(row.lastSyncStatus) ? HEALTHY : UNKNOWN;
 }
 
@@ -196,11 +209,12 @@ export const sentinelOneHealth = (row: ActiveSyncRow): HealthVerdict => activeSy
 export const pax8Health = (row: ActiveSyncRow): HealthVerdict => activeSyncHealth(row, 'failed', SUCCESS_ONLY);
 
 /** UniFi: `status` carries reauth; the worker writes `failed` to last_sync_status. Disconnect deletes the row. */
-export function unifiHealth(row: { isActive: boolean; status: string; lastSyncStatus: string | null }): HealthVerdict {
+export function unifiHealth(row: { isActive: boolean; status: string; lastSyncStatus: string | null; stale?: boolean }): HealthVerdict {
   if (!row.isActive) return RETIRED;
   if (row.status === 'reauth_required') return permanent('reauth_required');
   if (row.status === 'error' || row.lastSyncStatus === 'failed') return transient('sync_failed');
   if (row.status !== 'connected') return UNKNOWN;
+  if (row.stale) return transient('sync_stale');
   return row.lastSyncStatus !== null && SYNC_OK.has(row.lastSyncStatus) ? HEALTHY : UNKNOWN;
 }
 
@@ -210,10 +224,11 @@ export function unifiHealth(row: { isActive: boolean; status: string; lastSyncSt
  * `partial` is written only when alert evaluation fails after a successful
  * vendor sync, so the connection itself is healthy.
  */
-export function backupProviderHealth(row: { isActive: boolean; status: string; lastSyncStatus: string | null }): HealthVerdict {
+export function backupProviderHealth(row: { isActive: boolean; status: string; lastSyncStatus: string | null; stale?: boolean }): HealthVerdict {
   if (!row.isActive) return RETIRED;
   if (row.status === 'reauth_required') return permanent('reauth_required');
   if (row.status === 'error' || row.lastSyncStatus === 'error') return transient('sync_failed');
+  if (row.stale) return transient('sync_stale');
   return row.lastSyncStatus !== null && SYNC_OK.has(row.lastSyncStatus) ? HEALTHY : UNKNOWN;
 }
 
@@ -302,6 +317,31 @@ export function m365SyncHealth(connectionStatus: string | null, domainStatuses: 
   if (domainStatuses.includes('needs_consent')) return permanent('needs_consent');
   if (domainStatuses.includes('error')) return transient('sync_failed');
   return domainStatuses.some((s) => s !== null && SYNC_OK.has(s)) ? HEALTHY : UNKNOWN;
+}
+
+/**
+ * Outbound webhook (spec §3, W4). `hasTerminalFailure`: a delivery used up its
+ * retry budget (superseded deliveries do not count). Recovery is affirmative
+ * only: a successful delivery after that failure. A webhook that is not
+ * `active` delivers nothing (every queued delivery is superseded), so it is
+ * retired.
+ */
+export function webhookHealth(row: { status: string; hasTerminalFailure: boolean; recoveredSince: boolean }): HealthVerdict {
+  if (row.status !== 'active') return RETIRED;
+  if (!row.hasTerminalFailure || row.recoveredSince) return HEALTHY;
+  return transient('delivery_failed');
+}
+
+/**
+ * Google Workspace (spec §3, W4): the stored result of the reconciler's
+ * verification probe. `unavailable` (rate limit, 5xx, network) says nothing
+ * about the credentials, so it is unknown: a Google outage must not open an
+ * incident in every org. A connection not yet probed was verified when saved.
+ */
+export function googleWorkspaceHealth(row: { probeStatus: string | null }): HealthVerdict {
+  if (row.probeStatus === 'failed') return permanent('verification_failed');
+  if (row.probeStatus === 'unavailable') return UNKNOWN;
+  return HEALTHY;
 }
 
 /** Spec §3: a mailbox is broken after this many transient poll failures in a row. */

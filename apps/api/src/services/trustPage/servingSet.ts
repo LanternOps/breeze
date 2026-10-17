@@ -6,7 +6,7 @@ import { db, runAfterDbContextCommit, runOutsideDbContext, withSystemDbAccessCon
 import { organizations, partners, trustPages } from '../../db/schema';
 import { getRedis } from '../redis';
 import { livePublicationPredicate } from './predicate';
-import type { TrustPagePublicPayload } from '@breeze/shared';
+import type { TrustPagePublicPayloadAny } from '@breeze/shared';
 
 export const TRUST_SERVING_SET_KEY = 'trust:serving';
 /** Present once the set has been built/seeded. Absent => Redis lost data (or never built): the set cannot be trusted to say "not published". */
@@ -140,13 +140,13 @@ export async function replaceServingSet(members: string[]): Promise<void> {
   } catch (err) { console.warn('[trustPage] serving-set rebuild failed', err); }
 }
 
-export async function cacheSnapshotPayload(snapshotId: string, payload: TrustPagePublicPayload): Promise<void> {
+export async function cacheSnapshotPayload(snapshotId: string, payload: TrustPagePublicPayloadAny): Promise<void> {
   const redis = getRedis();
   if (!redis) return;
   try { await redis.setex(snapshotKey(snapshotId), SNAPSHOT_TTL_SECONDS, JSON.stringify(payload)); } catch { /* cache only */ }
 }
-export async function readCachedSnapshotPayload(snapshotId: string): Promise<TrustPagePublicPayload | null> {
+export async function readCachedSnapshotPayload(snapshotId: string): Promise<TrustPagePublicPayloadAny | null> {
   const redis = getRedis();
   if (!redis) return null;
-  try { const raw = await redis.get(snapshotKey(snapshotId)); return raw ? (JSON.parse(raw) as TrustPagePublicPayload) : null; } catch { return null; }
+  try { const raw = await redis.get(snapshotKey(snapshotId)); return raw ? (JSON.parse(raw) as TrustPagePublicPayloadAny) : null; } catch { return null; }
 }

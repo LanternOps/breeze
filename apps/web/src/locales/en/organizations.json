@@ -158,6 +158,27 @@
       }
     },
     "trust": {
+      "declarations": {
+        "title": "Declared controls"
+      },
+      "frameworks": {
+        "title": "Framework view"
+      },
+      "subprocessors": {
+        "title": "Subprocessors"
+      },
+      "faq": {
+        "title": "Frequently asked questions"
+      },
+      "history": {
+        "title": "Controls met over time"
+      },
+      "access": {
+        "title": "Document access requests"
+      },
+      "inheritance": {
+        "title": "Inherited settings"
+      },
       "title": "Trust Center",
       "subtitle": "A public page showing this organization's security posture, generated from live Breeze telemetry.",
       "loading": "Loading Trust Center…",

@@ -1,4 +1,5 @@
 import type { ScriptBuilderContext } from '@breeze/shared/types/ai';
+import { UNTRUSTED_TOOL_OUTPUT_RULE } from './aiAgentSystemPrompt';
 
 /**
  * Mirrors the agent's own derivation in `buildEnvironment`
@@ -52,6 +53,8 @@ mis-decoded and silently turn into string delimiters, which breaks the script wi
 parse errors that point at the wrong line.
 
 IMPORTANT: Always use apply_script_code to deliver code to the editor, not just a code block in the chat. The chat message should explain the code; the tool applies it to the editor.
+
+Untrusted output: ${UNTRUSTED_TOOL_OUTPUT_RULE}
 
 --- Runtime parameters ---
 Parameters declared via apply_script_metadata are delivered to the running script two ways, simultaneously, by the Breeze agent:

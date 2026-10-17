@@ -1262,6 +1262,13 @@ const REPOINT_TABLES: readonly string[] = [
   // Children of trust_pages: ON DELETE CASCADE removes them with the loser's page in the custom executor; a plain repoint here only ever sees zero rows and keeps the registry total.
   "trust_page_documents",
   "trust_page_snapshots",
+  // Trust Center W2 (#8770 W02a): same reasoning — each cascades with the loser's page
+  // (access_tokens via access_requests).
+  "trust_page_access_requests",
+  "trust_page_access_tokens",
+  "trust_page_declarations",
+  "trust_page_faq_items",
+  "trust_page_subprocessors",
   "tunnel_sessions",
   "unifi_clients",
   "unifi_collectors",

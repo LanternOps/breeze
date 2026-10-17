@@ -1404,3 +1404,7 @@ export * from './aiModelChoice';
 export * from './aiModelRegistryApi';
 export * from './autopay';
 export * from './trustCenter';
+export * from './trustCenterDeclarations';
+export * from './trustCenterAccess';
+export * from './trustCenterContent';
+export * from './trustCenterTemplate';

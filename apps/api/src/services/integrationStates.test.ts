@@ -4,14 +4,17 @@ import {
   backupProviderHealth,
   dnsFilterHealth,
   edrHealth,
+  googleWorkspaceHealth,
   huntressHealth,
   m365ConnectionHealth,
   m365SyncHealth,
   MAILBOX_TRANSIENT_FAILURE_THRESHOLD,
   pax8Health,
   sentinelOneHealth,
+  staleAfterMinutes,
   ticketMailboxHealth,
   unifiHealth,
+  webhookHealth,
   type HealthVerdict,
 } from './integrationStates';
 
@@ -111,6 +114,47 @@ describe('connection health verdicts (W2 Sources table)', () => {
     ['mailbox pending consent', ticketMailboxHealth({ status: 'pending_consent', consecutiveTransientFailures: 0 }), unknown],
     ['mailbox disabled', ticketMailboxHealth({ status: 'disabled', consecutiveTransientFailures: 9 }), retired],
   ])('%s', (_name, actual, expected) => expect(actual).toEqual(expected));
+
+  it.each([
+    ['webhook terminal failure, no success since', webhookHealth({ status: 'active', hasTerminalFailure: true, recoveredSince: false }), transient('delivery_failed')],
+    ['webhook succeeded after the failure', webhookHealth({ status: 'active', hasTerminalFailure: true, recoveredSince: true }), healthy],
+    ['webhook never failed terminally', webhookHealth({ status: 'active', hasTerminalFailure: false, recoveredSince: false }), healthy],
+    ['webhook disabled', webhookHealth({ status: 'disabled', hasTerminalFailure: true, recoveredSince: false }), retired],
+    ['webhook in error status delivers nothing', webhookHealth({ status: 'error', hasTerminalFailure: true, recoveredSince: false }), retired],
+  ])('%s', (_name, actual, expected) => expect(actual).toEqual(expected));
+
+  it.each([
+    ['google probe failed', googleWorkspaceHealth({ probeStatus: 'failed' }), permanent('verification_failed')],
+    ['google probe ok', googleWorkspaceHealth({ probeStatus: 'ok' }), healthy],
+    ['google never probed', googleWorkspaceHealth({ probeStatus: null }), healthy],
+    ['google unreachable is not a verdict', googleWorkspaceHealth({ probeStatus: 'unavailable' }), unknown],
+  ])('%s', (_name, actual, expected) => expect(actual).toEqual(expected));
+
+  const stale = transient('sync_stale');
+  it.each([
+    ['huntress stale success', huntressHealth({ isActive: true, lastSyncStatus: 'success', stale: true }), stale],
+    ['huntress stuck running', huntressHealth({ isActive: true, lastSyncStatus: 'running', stale: true }), stale],
+    ['huntress never synced, old', huntressHealth({ isActive: true, lastSyncStatus: null, stale: true }), stale],
+    ['huntress error beats stale', huntressHealth({ isActive: true, lastSyncStatus: 'error', stale: true }), transient('sync_failed')],
+    ['huntress inactive and stale', huntressHealth({ isActive: false, lastSyncStatus: 'success', stale: true }), retired],
+    ['huntress fresh', huntressHealth({ isActive: true, lastSyncStatus: 'success', stale: false }), healthy],
+    ['s1 stale partial', sentinelOneHealth({ isActive: true, lastSyncStatus: 'partial', stale: true }), stale],
+    ['pax8 stale', pax8Health({ isActive: true, lastSyncStatus: 'success', stale: true }), stale],
+    ['pax8 failed beats stale', pax8Health({ isActive: true, lastSyncStatus: 'failed', stale: true }), transient('sync_failed')],
+    ['unifi stale', unifiHealth({ isActive: true, status: 'connected', lastSyncStatus: 'success', stale: true }), stale],
+    ['unifi reauth beats stale', unifiHealth({ isActive: true, status: 'reauth_required', lastSyncStatus: 'success', stale: true }), permanent('reauth_required')],
+    ['unifi pending is not stale', unifiHealth({ isActive: true, status: 'pending', lastSyncStatus: null, stale: true }), unknown],
+    ['backup stale', backupProviderHealth({ isActive: true, status: 'connected', lastSyncStatus: 'success', stale: true }), stale],
+    ['backup stuck running', backupProviderHealth({ isActive: true, status: 'connected', lastSyncStatus: 'running', stale: true }), stale],
+    ['backup reauth beats stale', backupProviderHealth({ isActive: true, status: 'reauth_required', lastSyncStatus: 'error', stale: true }), permanent('reauth_required')],
+    ['backup error beats stale', backupProviderHealth({ isActive: true, status: 'connected', lastSyncStatus: 'error', stale: true }), transient('sync_failed')],
+  ])('staleness: %s', (_name, actual, expected) => expect(actual).toEqual(expected));
+
+  it('stale threshold is three intervals, at least an hour', () => {
+    expect(staleAfterMinutes(15)).toBe(60);
+    expect(staleAfterMinutes(30)).toBe(90);
+    expect(staleAfterMinutes(1440)).toBe(4320);
+  });
 
   it('pins the mailbox threshold from the spec', () => {
     expect(MAILBOX_TRANSIENT_FAILURE_THRESHOLD).toBe(5);

@@ -1,16 +1,50 @@
 // packages/shared/src/validators/trustCenter.test.ts
 import { describe, expect, it } from 'vitest';
 import {
-  TRUST_INTRO_MAX_CHARS, TRUST_INTRO_STORED_MAX_CHARS, TRUST_SLUG_RE, trustPageDocumentsUpdateSchema, trustPublishedConfigSchema, trustPagePartnerHomeSchema, trustPagePublicPayloadSchema, trustPagePublishSchema, trustPageUpdateSchema,
+  TRUST_INTRO_MAX_CHARS, TRUST_INTRO_STORED_MAX_CHARS, TRUST_SLUG_RE, normalizeTrustPagePayload, resolveFrozenConfig,
+  trustPageDocumentsUpdateSchema, trustPublishedConfigSchema, trustPagePartnerHomeSchema, trustPagePublicPayloadSchema,
+  trustPagePublicPayloadV1Schema, trustPagePublishSchema, trustPageUpdateSchema,
 } from './trustCenter';
+import { W1_TELEMETRY_CONTROL_IDS } from '../trustCenter/types';
 
 const control = {
   id: 'disk_encryption', category: 'data_protection', source: 'telemetry', unit: 'devices',
   status: 'met', reason: null, percent: null, assessed: null, eligible: null, evidenceAsOf: '2026-10-13T11:00:00.000Z',
   frameworkRefs: [{ framework: 'cis_v8', ref: '3.6' }],
 };
-const payload = {
+/** A payload exactly as W1 stored it (schemaVersion 1). */
+const payloadV1 = {
   schemaVersion: 1, snapshotId: '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6b',
+  generatedAt: '2026-10-13T12:00:00.000Z', publishedAt: '2026-10-01T09:00:00.000Z',
+  org: { name: 'Acme Dental', logoUrl: null, primaryColor: '#1d4ed8', websiteUrl: 'https://acme.example', securityContactEmail: 'security@acme.example' },
+  managedBy: { name: 'Northwind IT', logoUrl: 'https://cdn.example/logo.png', websiteUrl: null },
+  introHtml: '<p>Hello</p>',
+  summary: { catalogTotal: 15, controlsShown: 1, controlsMet: 1, deviceCount: null },
+  methodology: { catalogVersion: '2026-10-13.1', evidenceMaxAgeDays: 30, definitionsMaxAgeDays: 7, coverageFloorPct: 80, thresholds: { met: 95, attention: 80 }, eligibilityNote: 'Managed, non-decommissioned devices.' },
+  controls: [control],
+  documents: [{ id: '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c', title: 'Policy', category: 'policy', contentType: 'application/pdf', byteSize: 10, updatedAt: '2026-10-01T00:00:00.000Z', visibility: 'public' }],
+  footer: { poweredByBreeze: true, frameworkAttributions: ['cis_v8'] },
+};
+const declared = {
+  id: 'incident_response_plan', category: 'governance', source: 'declared', status: 'current',
+  statement: 'We maintain a written incident response plan.', declaredBy: 'Northwind IT',
+  declaredAt: '2026-10-01T00:00:00.000Z', expiresAt: '2027-10-01T00:00:00.000Z', evidenceDocumentId: null,
+  frameworkRefs: [{ framework: 'cis_v8', ref: '17.1' }],
+};
+/** A v2 payload with every W2 block filled (one entry each). */
+const payloadV2Full = {
+  ...payloadV1, schemaVersion: 2, locale: 'en',
+  documents: [{ ...payloadV1.documents[0], visibility: 'gated' }],
+  declaredControls: [declared],
+  frameworks: ['nist_csf_2'],
+  subprocessors: [{ name: 'Microsoft', purpose: 'Email and identity', location: 'United States', websiteUrl: 'https://microsoft.example' }],
+  faq: [{ question: 'Do you encrypt laptops?', answerHtml: '<p>Yes.</p>' }],
+  history: [{ at: '2026-10-01T00:00:00.000Z', met: 1, shown: 1 }],
+  access: { ndaText: 'Keep it confidential.' },
+};
+const payload = {
+  schemaVersion: 2, locale: 'en', declaredControls: [], frameworks: [], subprocessors: [], faq: [], history: [], access: null,
+  snapshotId: '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6b',
   generatedAt: '2026-10-13T12:00:00.000Z', publishedAt: '2026-10-01T09:00:00.000Z',
   org: { name: 'Acme Dental', logoUrl: null, primaryColor: '#1d4ed8', websiteUrl: 'https://acme.example', securityContactEmail: 'security@acme.example' },
   managedBy: { name: 'Northwind IT', logoUrl: 'https://cdn.example/logo.png', websiteUrl: null },
@@ -61,6 +95,36 @@ describe('editor inputs', () => {
     expect(trustPageDocumentsUpdateSchema.safeParse({ documents: [{ documentId: id, visibility: 'public', disclosureConfirmed: false }] }).success).toBe(false);
     expect(trustPageDocumentsUpdateSchema.safeParse({ documents: [{ documentId: id, visibility: 'public', disclosureConfirmed: true }] }).success).toBe(true);
   });
+  it('documents update requires confirmation for gated documents too (amendment 35) and accepts expectedRevision', () => {
+    const id = '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c';
+    const r = trustPageDocumentsUpdateSchema.safeParse({ documents: [{ documentId: id, visibility: 'gated', disclosureConfirmed: false }] });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues.map((i) => i.path)).toContainEqual(['documents', 0, 'disclosureConfirmed']);
+    expect(trustPageDocumentsUpdateSchema.safeParse({ documents: [{ documentId: id, visibility: 'gated', disclosureConfirmed: true }], expectedRevision: 4 }).success).toBe(true);
+    expect(trustPageDocumentsUpdateSchema.safeParse({ documents: [{ documentId: id, visibility: 'secret', disclosureConfirmed: true }] }).success).toBe(false);
+  });
+  it('update schema: null means inherit for toggles, hidden controls, framework view and intro', () => {
+    const r = trustPageUpdateSchema.parse({
+      showPercentages: null, showDeviceCount: null, showManagedBy: null, searchIndexable: null, showHistory: null,
+      hiddenControlIds: null, frameworkView: null, introHtml: null, ndaText: null,
+    });
+    expect(r.showPercentages).toBeNull();
+    expect(r.hiddenControlIds).toBeNull();
+    expect(r.frameworkView).toBeNull();
+    expect(trustPageUpdateSchema.parse({ introHtml: '' }).introHtml).toBe('');
+    expect(trustPageUpdateSchema.parse({ ndaText: '  Keep it confidential.  ' }).ndaText).toBe('Keep it confidential.');
+    expect(trustPageUpdateSchema.safeParse({ ndaText: 'x'.repeat(10_001) }).success).toBe(false);
+    expect(trustPageUpdateSchema.parse({ frameworkView: ['nist_csf_2', 'essential_eight'], accessRequestCreatesTicket: true, expectedRevision: 0 }))
+      .toEqual({ frameworkView: ['nist_csf_2', 'essential_eight'], accessRequestCreatesTicket: true, expectedRevision: 0 });
+    expect(trustPageUpdateSchema.safeParse({ frameworkView: ['nist_csf_2', 'nist_csf_2'] }).success).toBe(false);
+    expect(trustPageUpdateSchema.safeParse({ frameworkView: ['iso_27001'] }).success).toBe(false);
+    expect(trustPageUpdateSchema.safeParse({ expectedRevision: -1 }).success).toBe(false);
+  });
+  it('publish schema accepts an optional, nullable expectedTemplateRevision', () => {
+    expect(trustPagePublishSchema.parse({ expectedRevision: 1, expectedTemplateRevision: 3 })).toEqual({ expectedRevision: 1, expectedTemplateRevision: 3 });
+    expect(trustPagePublishSchema.parse({ expectedRevision: 1, expectedTemplateRevision: null }).expectedTemplateRevision).toBeNull();
+    expect(trustPagePublishSchema.safeParse({ expectedRevision: 1, expectedTemplateRevision: -1 }).success).toBe(false);
+  });
   it('publish schema needs expectedRevision; authorization is optional at schema level', () => {
     expect(trustPagePublishSchema.safeParse({}).success).toBe(false);
     expect(trustPagePublishSchema.parse({ expectedRevision: 3 })).toEqual({ expectedRevision: 3 });
@@ -90,6 +154,52 @@ describe('strictness at every nesting level', () => {
     const p = structuredClone(full);
     mutate(p);
     expect(trustPagePublicPayloadSchema.safeParse(p).success).toBe(false);
+  });
+
+  it('the full v2 fixture (every W2 block filled) is valid', () => {
+    expect(trustPagePublicPayloadSchema.safeParse(payloadV2Full).success).toBe(true);
+  });
+  it.each<[string, Mut]>([
+    ['declaredControls[]', (p) => { p.declaredControls[0].__extra = 1; }],
+    ['declaredControls[].frameworkRefs[]', (p) => { p.declaredControls[0].frameworkRefs[0].__extra = 1; }],
+    ['subprocessors[]', (p) => { p.subprocessors[0].__extra = 1; }],
+    ['faq[]', (p) => { p.faq[0].__extra = 1; }],
+    ['history[]', (p) => { p.history[0].__extra = 1; }],
+    ['access', (p) => { p.access.__extra = 1; }],
+    ['documents[] (gated)', (p) => { p.documents[0].__extra = 1; }],
+  ])('v2 rejects an unknown key at %s', (_name, mutate) => {
+    const p = structuredClone(payloadV2Full);
+    mutate(p);
+    expect(trustPagePublicPayloadSchema.safeParse(p).success).toBe(false);
+  });
+  it('v2 bounds and value rules', () => {
+    const base = structuredClone(payloadV2Full);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, frameworks: ['nist_csf_2', 'nist_csf_2'] }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, locale: 'xx' }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, declaredControls: [{ ...declared, status: 'met' }] }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, declaredControls: [{ ...declared, id: 'disk_encryption' }] }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, subprocessors: [{ ...base.subprocessors[0], websiteUrl: 'http://x.example' }] }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, faq: Array.from({ length: 31 }, () => base.faq[0]) }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, history: [{ at: base.history[0]!.at, met: -1, shown: 1 }] }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, access: { ndaText: 'x'.repeat(10_001) } }).success).toBe(false);
+    expect(trustPagePublicPayloadSchema.safeParse({ ...base, schemaVersion: 1 }).success).toBe(false);
+  });
+});
+
+describe('payload v1 compatibility', () => {
+  it('the v1 schema still parses a W1 fixture, and the v2 schema does not', () => {
+    expect(trustPagePublicPayloadV1Schema.parse(payloadV1)).toEqual(payloadV1);
+    expect(trustPagePublicPayloadSchema.safeParse(payloadV1).success).toBe(false);
+  });
+  it('normalizeTrustPagePayload(v1) yields an empty-block English v2 payload with public documents', () => {
+    const n = normalizeTrustPagePayload(trustPagePublicPayloadV1Schema.parse(payloadV1));
+    expect(n).toMatchObject({ schemaVersion: 2, locale: 'en', declaredControls: [], frameworks: [], subprocessors: [], faq: [], history: [], access: null });
+    expect(n.documents.every((d) => d.visibility === 'public')).toBe(true);
+    expect(trustPagePublicPayloadSchema.safeParse(n).success).toBe(true);
+  });
+  it('normalizeTrustPagePayload(v2) is the identity', () => {
+    const v2 = trustPagePublicPayloadSchema.parse(payloadV2Full);
+    expect(normalizeTrustPagePayload(v2)).toBe(v2);
   });
 
   const id = '0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c';
@@ -133,8 +243,33 @@ describe('trustPublishedConfigSchema (frozen publication config, Ruling 20)', ()
     searchIndexable: false, introHtml: '<p>Hi</p>', websiteUrl: 'https://acme.example', securityContactEmail: 'security@acme.example',
     documentIds: ['0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6c'],
   };
-  it('accepts a complete config', () => {
-    expect(trustPublishedConfigSchema.parse(cfg)).toEqual(cfg);
+  it('accepts a complete W1 config, filling the W2 defaults', () => {
+    expect(trustPublishedConfigSchema.safeParse(cfg).success).toBe(true);
+    expect(trustPublishedConfigSchema.parse(cfg)).toEqual({
+      ...cfg, declarationIds: [], showHistory: false, subprocessors: [], faq: [], ndaText: null, locale: 'en',
+    });
+  });
+  it('resolveFrozenConfig applies the legacy meaning to a W1 config (Global Constraints)', () => {
+    const r = resolveFrozenConfig(trustPublishedConfigSchema.parse(cfg));
+    expect(r.catalogControlIds).toEqual([...W1_TELEMETRY_CONTROL_IDS]);
+    expect(r.catalogControlIds).not.toContain('mfa_enforced_m365');
+    expect(r.documents).toEqual([{ id: cfg.documentIds[0], visibility: 'public' }]);
+    expect(r.frameworkView).toEqual([]);
+    expect(r).toMatchObject({ locale: 'en', declarationIds: [], subprocessors: [], faq: [], ndaText: null, showHistory: false });
+  });
+  it('resolveFrozenConfig keeps every W2 field a v2 config carries', () => {
+    const v2 = trustPublishedConfigSchema.parse({
+      ...cfg, documents: [{ id: cfg.documentIds[0], visibility: 'gated' }], catalogControlIds: ['mfa_enforced_m365'],
+      declarationIds: ['0f7f0d0e-5a1e-4d4b-9a7b-1c2d3e4f5a6d'], frameworkView: ['essential_eight'], showHistory: true,
+      subprocessors: [{ name: 'Microsoft', purpose: 'Email', location: null, websiteUrl: null, sortOrder: 0 }],
+      faq: [{ question: 'Q?', answerHtml: '<p>A</p>' }], ndaText: 'NDA', locale: 'de-DE',
+    });
+    const r = resolveFrozenConfig(v2);
+    expect(r.documents).toEqual([{ id: cfg.documentIds[0], visibility: 'gated' }]);
+    expect(r.catalogControlIds).toEqual(['mfa_enforced_m365']);
+    expect(r.frameworkView).toEqual(['essential_eight']);
+    expect(r).toMatchObject({ showHistory: true, ndaText: 'NDA', locale: 'de-DE' });
+    expect(trustPublishedConfigSchema.safeParse({ ...v2, subprocessors: [{ ...v2.subprocessors[0], __extra: 1 }] }).success).toBe(false);
   });
   it('is strict and requires every field', () => {
     expect(trustPublishedConfigSchema.safeParse({ ...cfg, extra: 1 }).success).toBe(false);

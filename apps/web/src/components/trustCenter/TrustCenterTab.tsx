@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getTrustControls, getTrustPage, type TrustControlsState, type TrustPageDraft, type TrustPageState } from '@/lib/api/trustPage';
+import {
+  getTrustControls, getTrustPage, type TrustControlsState, type TrustPageDraft, type TrustPageState, type TrustSectionProps,
+} from '@/lib/api/trustPage';
 import { usePermissions } from '@/lib/permissions';
 import { useLatest, type OrgFetch } from '@/components/organizations/record/orgRecordFetch';
+import TrustAccessSection from './TrustAccessSection';
 import TrustBadgeSnippet from './TrustBadgeSnippet';
 import TrustContentSection from './TrustContentSection';
 import TrustControlsSection from './TrustControlsSection';
+import TrustDeclarationsSection from './TrustDeclarationsSection';
 import TrustDocumentsSection from './TrustDocumentsSection';
+import TrustFaqSection from './TrustFaqSection';
+import TrustFrameworksSection from './TrustFrameworksSection';
+import TrustHistorySection from './TrustHistorySection';
 import TrustStatusCard from './TrustStatusCard';
+import TrustSubprocessorsSection from './TrustSubprocessorsSection';
 
 type LoadState = { failed: true } | { page: TrustPageState; controls: TrustControlsState | null } | null;
 
@@ -69,6 +77,8 @@ export default function TrustCenterTab({ orgId, orgFetch }: { orgId: string; org
   }
 
   const { page } = state;
+  // The W2 sections (W02b/d/e/f fill them) all take the same props.
+  const section: TrustSectionProps = { orgId, orgFetch, state: page, canWrite, onReload: load };
   return (
     <div className="space-y-4" data-testid="trust-center-tab">
       <TrustStatusCard
@@ -80,8 +90,14 @@ export default function TrustCenterTab({ orgId, orgFetch }: { orgId: string; org
         onReload={load}
       />
       <TrustControlsSection orgId={orgId} orgFetch={orgFetch} state={page} controls={state.controls} canWrite={canWrite} onReload={load} />
-      <TrustContentSection orgId={orgId} orgFetch={orgFetch} page={page.page} canWrite={canWrite} onReload={load} />
+      <TrustDeclarationsSection {...section} />
+      <TrustFrameworksSection {...section} />
+      <TrustContentSection {...section} />
+      <TrustFaqSection {...section} />
+      <TrustSubprocessorsSection {...section} />
       <TrustDocumentsSection orgId={orgId} orgFetch={orgFetch} canWrite={canWrite} documents={page.documents} onReload={load} />
+      <TrustAccessSection {...section} />
+      <TrustHistorySection {...section} />
       <TrustBadgeSnippet publicPath={page.publicPath} badgePath={page.badgePath} published={page.page.publishedAt !== null} />
     </div>
   );

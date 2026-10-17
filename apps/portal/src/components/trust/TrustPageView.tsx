@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react';
-import { portalApi, trustDocumentPath, type TrustCard, type TrustPageResponse } from '@/lib/api';
-import { FRAMEWORK_META, type TrustPagePublicControl } from '@breeze/shared';
+import { portalApi, type TrustCard, type TrustPageResponse } from '@/lib/api';
+import { FRAMEWORK_META, normalizeTrustPagePayload, type TrustPagePublicControl } from '@breeze/shared';
 import { TrustStatusPill } from './TrustStatusPill';
 import { coverageNote, controlCopy, frameworkChip, groupControlsByCategory, notAssessedReasonCopy, relativeTime } from './trustPageFormat';
+import { TrustLocaleContext, type TrustSectionViewProps } from './trustCopy';
+import TrustDeclaredControls from './TrustDeclaredControls';
+import TrustDocumentsList from './TrustDocumentsList';
+import TrustFaq from './TrustFaq';
+import TrustFrameworkView from './TrustFrameworkView';
+import TrustHistory from './TrustHistory';
+import TrustSubprocessors from './TrustSubprocessors';
 
 interface Props { partnerSlug: string | null; orgSlug: string | null; card: TrustCard | null; previewToken?: string; initial?: TrustPageResponse | null }
 
@@ -28,12 +35,15 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
   if (error != null || !data) {
     return <div data-testid="trust-page-error" className="mx-auto max-w-lg p-8 text-center"><p className="text-sm text-muted-foreground">This page isn’t available. The organization may not have published a trust page, or the link may have changed.</p></div>;
   }
-  const { payload, stale, lastEvaluatedAt } = data;
+  const { stale, lastEvaluatedAt } = data;
+  // A stored W1 (schemaVersion 1) snapshot stays renderable: English, public documents, no W2 block.
+  const payload = normalizeTrustPagePayload(data.payload);
   const groups = groupControlsByCategory(payload.controls);
-  // Published pages link documents (org page or partner-home page); a preview never does.
-  const docHref = (id: string) => (!previewToken && partnerSlug ? trustDocumentPath(partnerSlug, orgSlug, id) : undefined);
+  // The W2 sections (W02b/d/e/f fill them) all take the same props.
+  const section: TrustSectionViewProps = { payload, lastEvaluatedAt, preview: Boolean(previewToken || data.preview), partnerSlug, orgSlug };
 
   return (
+    <TrustLocaleContext.Provider value={payload.locale}>
     <article className="space-y-8" data-testid="trust-page">
       {data.preview && <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">Preview of the unpublished draft. Expires in 15 minutes.</div>}
       <header className="flex flex-wrap items-start justify-between gap-4">
@@ -68,6 +78,9 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
         ))}
       </section>
 
+      <TrustDeclaredControls {...section} />
+      <TrustFrameworkView {...section} />
+
       <details className="rounded-lg border bg-card p-4 text-sm">
         <summary className="cursor-pointer font-medium">How this page is verified</summary>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
@@ -80,19 +93,10 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
         </ul>
       </details>
 
-      {payload.documents.length > 0 && (
-        <section data-testid="trust-documents">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Documents</h2>
-          <ul className="divide-y rounded-lg border bg-card">
-            {payload.documents.map((d) => (
-              <li key={d.id} className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-                <div>{docHref(d.id) ? <a className="font-medium hover:underline" href={docHref(d.id)}>{d.title}</a> : <span className="font-medium">{d.title}</span>}<p className="text-xs text-muted-foreground">{d.category} · {(d.byteSize / 1024).toFixed(0)} KB · {new Date(d.updatedAt).toLocaleDateString('en-US')}</p></div>
-                {docHref(d.id) && <a className="text-xs doc-accent-text hover:underline" href={docHref(d.id)}>Download</a>}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <TrustDocumentsList {...section} />
+      <TrustSubprocessors {...section} />
+      <TrustFaq {...section} />
+      <TrustHistory {...section} />
 
       {payload.managedBy && (
         <section className="flex items-center gap-3 rounded-lg border bg-card p-4 text-sm">
@@ -107,6 +111,7 @@ export default function TrustPageView({ partnerSlug, orgSlug, card, previewToken
         {payload.footer.frameworkAttributions.map((fw) => <p key={fw}>{FRAMEWORK_META[fw].attribution}</p>)}
       </footer>
     </article>
+    </TrustLocaleContext.Provider>
   );
 }
 

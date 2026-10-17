@@ -158,6 +158,6 @@ describe("ConnectionHealthPanel", () => {
     for (const code of [...KNOWN_CONDITIONS, "unknown"]) {
       expect(typeof en.connectionHealthPanel.condition[code]).toBe("string");
     }
-    expect(KNOWN_CONDITIONS).toHaveLength(17);
+    expect(KNOWN_CONDITIONS).toHaveLength(20);
   });
 });

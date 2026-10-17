@@ -38,7 +38,7 @@ import {
 } from '../services/edrProviders/alerts';
 import { EDR_ACTION_UNKNOWN_GIVEUP_MS, pollEdrActionStatus } from '../services/edrProviders/actionStatus';
 import { attachWorkerObservability } from './workerObservability';
-import { isFinalSyncAttempt } from './syncAttempt';
+import { isFinalSyncAttempt, reportTerminalSyncFailure } from './syncAttempt';
 
 /**
  * External EDR provider sync (#8164 W01b). Two independent streams per
@@ -637,6 +637,8 @@ async function handleSyncError(
   // fall through to a plain rethrow so BullMQ backs off; nothing was persisted.
   if (isFinalAttempt || reauth) {
     await recordSyncFailure(loaded, stream, message, reauth);
+    // Connection health (W4): observe this kind soon instead of at its next poll.
+    reportTerminalSyncFailure('edr');
   }
   if (reauth) {
     throw error instanceof UnrecoverableError ? error : new UnrecoverableError(`${EDR_REAUTH_MARKER} ${message}`);

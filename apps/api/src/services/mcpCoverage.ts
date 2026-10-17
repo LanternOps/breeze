@@ -218,6 +218,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'admin/llmProviderCatalog.ts': { exempt: 'platform_admin' },
   'admin/monitorConversion.ts': { exempt: 'platform_admin' },
   'admin/sendingDomains.ts': { exempt: 'platform_admin' },
+  'admin/systemConnectionHealth.ts': { exempt: 'platform_admin' },
   'admin/systemConnections.ts': { exempt: 'platform_admin' },
   'admin/tenantErasure.ts': { exempt: 'platform_admin' },
   'admin/tenantExport.ts': { exempt: 'platform_admin' },
@@ -739,6 +740,18 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'trustPage.ts': { exempt: 'tool_in_later_wave', note: "Editor/publish routes for the public trust page. Writes are human-attested (customer authorization + MFA) and stay human-only; a READ-ONLY status tool (get_trust_page_status) is a W2 candidate under #8770." },
   'trustPagePublic.ts': { exempt: 'portal', note: 'Unauthenticated public trust page (card, payload, badge, documents, preview) read by end customers; not a tool surface.' },
   'trustPageAttestation.ts': { exempt: 'portal', note: 'Unauthenticated signed copy of the public trust payload plus its JWKS; read by insurer/auditor tooling, not a tool surface.' },
+  // ---- Trust Center W2 (#8770) route modules. W02a created the stub routers (routes/trustPage{Declarations,
+  // Access,Content,Template}.ts, routes/trustAccessPublic.ts) but cannot register them here: mcp-coverage.test.ts
+  // rejects an entry for a module that registers no route. Each owner inserts its entry on the line directly
+  // BELOW its own anchor, in the same commit that adds the module's first route (anchor inserts merge cleanly).
+  // W02b anchor: 'trustPageDeclarations.ts': { exempt: 'human_only_trust_material', note: 'Declared controls are attestations made by a named MSP user; human-only.' },
+  //
+  // W02d anchor: 'trustPageAccess.ts': { exempt: 'human_only_approval', note: 'Approving release of gated documents to an outside party; human-only, MFA.' }, 'trustAccessPublic.ts': { exempt: 'portal', note: 'Anonymous gated-document request/verify/download for end customers.' },
+  //
+  // W02f anchor: 'trustPageContent.ts': { exempt: 'tool_in_later_wave', note: 'Trust page FAQ/subprocessor editing; read access arrives via get_trust_page_status (#8770 W02i).' },
+  //
+  // W02g anchor: 'trustPageTemplate.ts': { exempt: 'tool_in_later_wave', note: 'Partner Trust Center template; partner-wide admin + MFA (#8770 W02g).' },
+  //
   'tunnelHttp.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnelWs.ts': { exempt: 'internal_plumbing', note: 'WebSocket/HTTP transport for event, remote-session or tunnel traffic.' },
   'tunnels.ts': { exempt: 'internal_plumbing' },

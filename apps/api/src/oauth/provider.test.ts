@@ -4,6 +4,7 @@ import {
   ALL_MCP_SCOPES,
   buildExtraTokenClaims,
   handleRevocationSuccess,
+  logProviderGrantError,
   REFRESH_TOKEN_TTL_SECONDS,
   resolveMcpResourceServerScope,
   resolvePartnerIdForResourceServerInfo,
@@ -13,6 +14,9 @@ import { GRANT_REVOCATION_TTL_SECONDS as REVOCATION_SERVICE_GRANT_TTL_SECONDS } 
 import { GrantTenancyError } from './effectiveScopes';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { users } from '../db/schema';
+
+const recordRefreshRetryMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/connectionHealth/oauthRetryCounter', () => ({ recordRefreshRetry: recordRefreshRetryMock }));
 
 vi.mock('../db', () => ({
   db: {
@@ -505,5 +509,14 @@ describe('resolveMcpResourceServerScope', () => {
 
     expect(result.reduced).toBe(true);
     expect(result.scope).toBe('mcp:read');
+  });
+});
+
+describe('grant.error listener feeds the connection-health retry counter (W4)', () => {
+  it('records a refresh-token-not-found from an authenticated client', () => {
+    recordRefreshRetryMock.mockClear();
+    const ctx = { oidc: { client: { clientId: 'client-a' }, params: { grant_type: 'refresh_token', refresh_token: 'rt' } }, get: () => '' };
+    logProviderGrantError(ctx, Object.assign(new Error('invalid_grant'), { error: 'invalid_grant', error_detail: 'refresh token not found' }));
+    expect(recordRefreshRetryMock).toHaveBeenCalledWith('client-a');
   });
 });

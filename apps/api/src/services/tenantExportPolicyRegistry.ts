@@ -513,7 +513,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "fleet_findings": tablePolicy("org_id", {"included":["id","org_id","kind","semantic_key","algorithm_version","status","severity","title","summary","device_count","revision","first_seen_at","last_seen_at","last_reconciled_at","acknowledged_at","acknowledged_by","dismissed_at","dismissed_by","dismiss_notes","resolved_at","resolution_reason","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["evidence"]}),
   "fleet_remediation_run_targets": tablePolicy("org_id", {"included":["run_id","org_id","target_device_uuid","hostname_snapshot","site_id_snapshot","status","device_command_id","skip_reason","queued_at","completed_at"],"reviewedIncluded":[],"excludedSensitive":["result_summary"],"excludedOpen":[]}),
   "fleet_remediation_runs": tablePolicy("org_id", {"included":["id","org_id","finding_id","finding_revision","action_kind","script_id","command_type","status","target_count","succeeded_count","failed_count","skipped_count","created_by","created_at","started_at","completed_at","run_as"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["parameter_snapshot"]}),
-  "google_workspace_connections": tablePolicy("org_id", {"included":["id","org_id","customer_domain","admin_email","service_account_email","status","created_by","last_verified_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":["service_account_key"],"excludedOpen":[]}),
+  "google_workspace_connections": tablePolicy("org_id", {"included":["id","org_id","customer_domain","admin_email","service_account_email","status","created_by","last_verified_at","created_at","updated_at","last_probe_at","last_probe_status"],"reviewedIncluded":[],"excludedSensitive":["service_account_key"],"excludedOpen":["last_probe_error"]}),
   "group_membership_log": tablePolicy("org_id", {"included":["id","group_id","device_id","org_id","action","reason","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // W03 Task 12 (#6859): lease_token authorizes outbox ownership checks and
   // is credential-like — excludedSensitive, never included/reviewedIncluded.
@@ -1001,6 +1001,28 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // trust_pages.published_config are jsonb ->
   // excludedOpen by rule; payload_sha256 is a content digest, reviewedIncluded
   // (org_documents.sha256 precedent).
+  // Trust Center W2 (#8770 W02a). token_hash is a verifier -> excludedSensitive; the sha256 columns are
+  // content digests (payload_sha256 precedent) -> reviewedIncluded; no json/jsonb/bytea columns.
+  "trust_page_access_requests": tablePolicy("org_id", {
+    included: ["id", "trust_page_id", "org_id", "requester_email", "requester_name", "requester_company", "purpose", "snapshot_id", "nda_text_accepted", "nda_accepted_at", "status", "email_verified_at", "decided_at", "decided_by_user_id", "decision_note", "grant_expires_at", "granted_document_ids", "revoked_at", "revoked_by_user_id", "last_downloaded_at", "download_count", "created_at", "updated_at"],
+    reviewedIncluded: ["nda_text_sha256"], excludedSensitive: [], excludedOpen: [],
+  }),
+  "trust_page_access_tokens": tablePolicy("org_id", {
+    included: ["id", "request_id", "org_id", "purpose", "expires_at", "consumed_at", "revoked_at", "created_at"],
+    reviewedIncluded: [], excludedSensitive: ["token_hash"], excludedOpen: [],
+  }),
+  "trust_page_declarations": tablePolicy("org_id", {
+    included: ["id", "trust_page_id", "org_id", "control_id", "statement", "evidence_document_id", "declared_by_partner_name", "declared_by_user_id", "declared_at", "expires_at", "superseded_at", "withdrawn_at", "withdrawn_by_user_id", "reminder_sent_at", "created_at"],
+    reviewedIncluded: ["evidence_document_sha256"], excludedSensitive: [], excludedOpen: [],
+  }),
+  "trust_page_faq_items": tablePolicy("org_id", {
+    included: ["id", "trust_page_id", "org_id", "question", "answer_html", "sort_order", "updated_by_user_id", "created_at", "updated_at"],
+    reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
+  }),
+  "trust_page_subprocessors": tablePolicy("org_id", {
+    included: ["id", "trust_page_id", "org_id", "name", "purpose", "location", "website_url", "source", "source_key", "sort_order", "updated_by_user_id", "created_at", "updated_at"],
+    reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
+  }),
   "trust_page_documents": tablePolicy("org_id", {
     included: ["trust_page_id", "document_id", "org_id", "visibility", "disclosure_confirmed_at", "disclosure_confirmed_by_user_id", "sort_order", "created_at"],
     reviewedIncluded: [], excludedSensitive: [], excludedOpen: [],
@@ -1011,7 +1033,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
     excludedOpen: ["payload"],
   }),
   "trust_pages": tablePolicy("org_id", {
-    included: ["id", "org_id", "partner_id", "is_partner_home", "published_at", "publication_revision", "search_indexable", "show_percentages", "show_device_count", "show_managed_by", "security_contact_email", "website_url", "intro_html", "hidden_control_ids", "publication_authorized_by", "publication_authorized_at", "publication_authorized_by_user_id", "last_evaluated_at", "created_by_user_id", "updated_by_user_id", "created_at", "updated_at"],
+    included: ["id", "org_id", "partner_id", "is_partner_home", "published_at", "publication_revision", "search_indexable", "show_percentages", "show_device_count", "show_managed_by", "security_contact_email", "website_url", "intro_html", "hidden_control_ids", "framework_view", "show_history", "nda_text", "access_request_creates_ticket", "publication_authorized_by", "publication_authorized_at", "publication_authorized_by_user_id", "last_evaluated_at", "created_by_user_id", "updated_by_user_id", "created_at", "updated_at"],
     reviewedIncluded: [], excludedSensitive: [],
     // published_config: jsonb frozen publication settings -> excludedOpen by rule.
     excludedOpen: ["published_config"],

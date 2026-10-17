@@ -244,6 +244,8 @@ beforeEach(() => {
   h.ackEdrHints.mockResolvedValue({ stillPending: false });
 });
 
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
+
 describe('isFinalSyncAttempt', () => {
   // BullMQ 5 bumps attemptsMade only when an attempt finishes or is retried, so inside the
   // processor it is 0-based: the 3rd of 3 attempts runs with attemptsMade === 2.
@@ -399,6 +401,22 @@ describe('syncEdrInventory', () => {
     expect(m.listEndpoints.mock.calls[0]![1]).toMatchObject({ vendorTenantId: 'v-mapped' });
     const results = m.persistInventory.mock.calls[0]![2] as Array<{ vendorTenantId: string; value: { endpoints: unknown[]; count?: number } }>;
     expect(results.find((r) => r.vendorTenantId === 'v-un')!.value).toMatchObject({ endpoints: [], count: 7 });
+  });
+
+  it('nudges connection health only when a terminal failure is recorded (W4)', async () => {
+    m.listTenants.mockRejectedValue(new Error('vendor 503'));
+    await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: false })).rejects.toThrow('vendor 503');
+    expect(nudgeConnectionHealth).not.toHaveBeenCalled();
+
+    await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: true })).rejects.toThrow('vendor 503');
+    expect(nudgeConnectionHealth).toHaveBeenCalledTimes(1);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('edr');
+  });
+
+  it('nudges connection health on a mid-retry reauth failure (W4)', async () => {
+    m.listTenants.mockRejectedValue(new FakeEdrError('bad key', { code: 'unauthorized', reauth: true, scope: 'connection' }));
+    await expect(syncEdrInventory(CONNECTION_ID, { isFinalAttempt: false })).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(nudgeConnectionHealth).toHaveBeenCalledWith('edr');
   });
 
   it('an earlier attempt failure leaves status running; the final attempt records error', async () => {

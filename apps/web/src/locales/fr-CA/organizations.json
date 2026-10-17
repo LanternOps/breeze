@@ -158,6 +158,27 @@
       }
     },
     "trust": {
+      "declarations": {
+        "title": "Contrôles déclarés"
+      },
+      "frameworks": {
+        "title": "Vue par cadre de référence"
+      },
+      "subprocessors": {
+        "title": "Sous-traitants"
+      },
+      "faq": {
+        "title": "Foire aux questions"
+      },
+      "history": {
+        "title": "Contrôles respectés au fil du temps"
+      },
+      "access": {
+        "title": "Demandes d'accès aux documents"
+      },
+      "inheritance": {
+        "title": "Paramètres hérités"
+      },
       "title": "Centre de confiance",
       "subtitle": "Une page publique présentant la posture de sécurité de cette organisation, générée à partir de la télémétrie en direct de Breeze.",
       "loading": "Chargement du Centre de confiance…",

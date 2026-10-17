@@ -2,8 +2,7 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TRUST_INTRO_MAX_CHARS } from '@breeze/shared';
 import RichTextEditor from '@/components/common/RichTextEditor';
-import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
-import { updateTrustPage, type TrustPageDraft } from '@/lib/api/trustPage';
+import { updateTrustPage, type TrustSectionProps } from '@/lib/api/trustPage';
 import { handleActionError, runAction } from '@/lib/runAction';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -21,23 +20,17 @@ function isEmptyHtml(html: string): boolean {
   return html.replace(/<[^>]*>/g, '').trim() === '' && !/<(img|table|hr)\b/i.test(html);
 }
 
-interface Props {
-  orgId: string;
-  orgFetch: OrgFetch;
-  page: TrustPageDraft;
-  canWrite: boolean;
-  onReload: () => Promise<void>;
-}
-
-export default function TrustContentSection({ orgId, orgFetch, page, canWrite, onReload }: Props) {
+export default function TrustContentSection({ orgId, orgFetch, state, canWrite, onReload }: TrustSectionProps) {
+  const page = state.page;
   const { t } = useTranslation('organizations');
   const tr = useCallback(
     (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.trust.${key}`, vars ?? {}),
     [t],
   );
   // Seeded once from the server page: other sections bump the revision and
-  // reload, which must not clobber unsaved edits here.
-  const [intro, setIntro] = useState(page.introHtml ?? '');
+  // reload, which must not clobber unsaved edits here. The intro shows the EFFECTIVE value (it may come
+  // from the partner template, W02g); saving writes it as the page's own value.
+  const [intro, setIntro] = useState(state.effective.values.introHtml ?? '');
   const [email, setEmail] = useState(page.securityContactEmail ?? '');
   const [website, setWebsite] = useState(page.websiteUrl ?? '');
   const [busy, setBusy] = useState(false);
@@ -56,7 +49,9 @@ export default function TrustContentSection({ orgId, orgFetch, page, canWrite, o
     try {
       await runAction({
         request: () => updateTrustPage(orgFetch, orgId, {
-          introHtml: isEmptyHtml(intro) ? null : intro,
+          // An emptied editor is the page's explicit "no intro" (''), not "inherit" (null): null would let a
+          // partner template's intro reappear on a page whose publisher cleared it.
+          introHtml: isEmptyHtml(intro) ? '' : intro,
           securityContactEmail: emailTrim === '' ? null : emailTrim,
           websiteUrl: websiteTrim === '' ? null : websiteTrim,
         }),

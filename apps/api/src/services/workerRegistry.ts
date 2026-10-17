@@ -289,6 +289,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8852 W03 (#8855): nightly AI tool output retention. db + services only.
+    name: 'aiToolOutputRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiToolOutputRetention');
+      return { init: m.initializeAiToolOutputRetention, shutdown: m.shutdownAiToolOutputRetention };
+    },
+  },
+  {
     name: 'offlineDetector',
     placement: 'global',
     load: async () => {
