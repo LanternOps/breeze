@@ -92,7 +92,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       render(<DeviceActions device={onlineDevice} />);
 
       expect(button(/run script/i)).not.toBeDisabled();
-      expect(button(/^connect desktop$/i)).not.toBeDisabled();
+      expect(button(/^connect desktop/i)).not.toBeDisabled();
       expect(button(/remote tools/i)).not.toBeDisabled();
       expect(button(/^power$/i)).not.toBeDisabled();
     });
@@ -107,7 +107,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
     it('disables Connect Desktop with the "Device is offline" tooltip', () => {
       render(<DeviceActions device={offlineDevice} />);
 
-      const connect = button(/^connect desktop$/i);
+      const connect = button(/^connect desktop/i);
       expectUnavailable(connect);
       expect(connect).toHaveAttribute('title', 'Device is offline');
     });
@@ -165,7 +165,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       render(<DeviceActions device={maintenanceDevice} />);
 
       expectUnavailable(button(/run script/i));
-      expectUnavailable(button(/^connect desktop$/i));
+      expectUnavailable(button(/^connect desktop/i));
       expectUnavailable(button(/remote tools/i));
       expectUnavailable(button(/^power$/i));
     });
@@ -173,7 +173,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
     it('uses a status-accurate tooltip (not "Device is offline") for maintenance', () => {
       render(<DeviceActions device={maintenanceDevice} />);
 
-      const connect = button(/^connect desktop$/i);
+      const connect = button(/^connect desktop/i);
       expect(connect).toHaveAttribute('title', 'Device is in maintenance mode');
       expect(button(/^power$/i)).toHaveAttribute('title', 'Device is in maintenance mode');
     });
@@ -229,7 +229,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       // Only the MoreHorizontal trigger is rendered until the menu opens.
       fireEvent.click(screen.getByRole('button'));
 
-      const connect = button(/^connect desktop$/i);
+      const connect = button(/^connect desktop/i);
       expectUnavailable(connect);
       expect(connect).toHaveAttribute('title', 'Device is offline');
 
@@ -243,7 +243,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
 
       fireEvent.click(screen.getByRole('button'));
 
-      expect(button(/^connect desktop$/i)).not.toBeDisabled();
+      expect(button(/^connect desktop/i)).not.toBeDisabled();
     });
 
     // `offline` satisfies BOTH the old `=== 'offline'` and the new
@@ -256,7 +256,7 @@ describe('DeviceActions — offline gating (issue #2013)', () => {
       fireEvent.click(screen.getByRole('button'));
 
       expectUnavailable(button(/run script/i));
-      const connect = button(/^connect desktop$/i);
+      const connect = button(/^connect desktop/i);
       expectUnavailable(connect);
       expect(connect).toHaveAttribute('title', 'Device is in maintenance mode');
       expect(screen.queryByRole('button', { name: /^wake$/i })).toBeNull();
@@ -477,7 +477,7 @@ describe('DeviceActions — one primary, uniform height, reachable reasons (#902
 
   it('keeps a disabled header button focusable with its reason wired through aria-describedby', () => {
     render(<DeviceActions device={offlineDevice} />);
-    for (const name of [/run script/i, /remote tools/i, /^power$/i, /^connect desktop$/i]) {
+    for (const name of [/run script/i, /remote tools/i, /^power$/i, /^connect desktop/i]) {
       const el = button(name);
       expect(el).not.toHaveAttribute('disabled');
       expect(el).toHaveAttribute('aria-disabled', 'true');
@@ -497,6 +497,47 @@ describe('DeviceActions — one primary, uniform height, reachable reasons (#902
     render(<DeviceActions device={offlineDevice} onAction={onAction} />);
     await userEvent.click(button(/run script/i));
     expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('DeviceActions — menu placement and labels (#9030)', () => {
+  it('portals the "…" menu below its trigger, wide enough that items never wrap', async () => {
+    render(<DeviceActions device={onlineDevice} />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    const menu = screen.getByRole('menu');
+    expect(screen.getByTestId('device-header-actions').contains(menu)).toBe(false);
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.className).toContain('fixed');
+    expect(menu.className).toContain('min-w-[14rem]');
+    for (const item of screen.getAllByRole('menuitem')) {
+      expect(item.className).toContain('whitespace-nowrap');
+    }
+  });
+
+  it('keeps the portalled menu open when an item is pressed, and closes on an outside press', async () => {
+    const onAction = vi.fn();
+    render(<DeviceActions device={onlineDevice} onAction={onAction} />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /deploy software/i }));
+    expect(onAction).toHaveBeenCalledWith('deploy-software', onlineDevice);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('says Connect Desktop opens a new window', () => {
+    render(<DeviceActions device={onlineDevice} />);
+    expect(screen.getByRole('button', { name: /connect desktop/i })).toHaveAccessibleName(
+      /opens in a new window/i,
+    );
+  });
+
+  it('gives Refresh a short visible description instead of a long hover-only title', async () => {
+    render(<DeviceActions device={onlineDevice} />);
+    await userEvent.click(screen.getByTestId('device-actions-menu'));
+    const refresh = screen.getByRole('menuitem', { name: /refresh/i });
+    expect(refresh).not.toHaveAttribute('title');
+    expect(refresh).toHaveTextContent('Collect fresh inventory now');
   });
 });
 

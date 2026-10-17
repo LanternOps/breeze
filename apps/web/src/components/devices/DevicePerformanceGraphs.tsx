@@ -233,7 +233,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false, off
         <div className="flex items-center gap-2">
           <Activity className="h-4 w-4 text-muted-foreground" />
           <div>
-            <h3 className="text-lg font-semibold">{t('devicePerformanceGraphs.title')}</h3>
+            <h2 className="text-lg font-semibold">{t('devicePerformanceGraphs.title')}</h2>
             {!compact && (
               <p className="text-sm text-muted-foreground">{t('devicePerformanceGraphs.description')}</p>
             )}
@@ -337,7 +337,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false, off
       {hasBandwidth && (
         <>
           <div className={compact ? 'mt-4' : 'mt-8'}>
-            <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{t('devicePerformanceGraphs.networkBandwidth')}</h4>
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{t('devicePerformanceGraphs.networkBandwidth')}</h3>
           </div>
           <div className={compact ? 'mt-2 h-40' : 'mt-3 h-64'}>
             <ResponsiveContainer width="100%" height="100%">
@@ -418,7 +418,7 @@ export default function DevicePerformanceGraphs({ deviceId, compact = false, off
       {hasDiskActivity && (
         <>
           <div className={compact ? 'mt-4' : 'mt-8'}>
-            <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{t('devicePerformanceGraphs.diskActivity')}</h4>
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{t('devicePerformanceGraphs.diskActivity')}</h3>
           </div>
           <div className={compact ? 'mt-2 h-40' : 'mt-3 h-64'}>
             <ResponsiveContainer width="100%" height="100%">

@@ -474,7 +474,7 @@
     },
     "runScript": "Skript ausführen",
     "remoteTools": "Remote-Tools",
-    "reRunAgentInventoryCollectorsSo": "Bestandsdatenerfassung des Agents erneut ausführen, damit die Benutzeroberfläche aktuelle Hardware-, Software- und Netzwerkdaten erhält, ohne auf den nächsten Heartbeat-Zyklus zu warten",
+    "reRunAgentInventoryCollectorsSo": "Bestandsdaten jetzt neu erfassen",
     "refresh": "Aktualisieren",
     "reboot": "Neu starten",
     "wake": "Aufwecken",
@@ -1518,7 +1518,8 @@
     "tags": "Schlagworte",
     "customFields": "Benutzerdefinierte Felder",
     "text2": "*",
-    "edit": "Bearbeiten"
+    "edit": "Bearbeiten",
+    "roleNotAssessed": "Rolle noch nicht bewertet"
   },
   "deviceIpHistoryTab": {
     "true": "wahr",

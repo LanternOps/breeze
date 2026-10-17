@@ -474,7 +474,7 @@
     },
     "runScript": "Run Script",
     "remoteTools": "Remote Tools",
-    "reRunAgentInventoryCollectorsSo": "Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle",
+    "reRunAgentInventoryCollectorsSo": "Collect fresh inventory now",
     "refresh": "Refresh",
     "reboot": "Reboot",
     "wake": "Wake",
@@ -1518,7 +1518,8 @@
     "tags": "Tags",
     "customFields": "Custom Fields",
     "text2": "*",
-    "edit": "Edit"
+    "edit": "Edit",
+    "roleNotAssessed": "Role not assessed yet"
   },
   "deviceIpHistoryTab": {
     "true": "true",

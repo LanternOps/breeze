@@ -474,7 +474,7 @@
     },
     "runScript": "Komut Dosyasını Çalıştır",
     "remoteTools": "Uzaktan Araçlar",
-    "reRunAgentInventoryCollectorsSo": "Kullanıcı arayüzünün bir sonraki kalp atışı döngüsünü beklemeden yeni donanım/yazılım/ağ verilerini görmesi için aracı envanter toplayıcılarını yeniden çalıştırın",
+    "reRunAgentInventoryCollectorsSo": "Envanteri şimdi topla",
     "refresh": "Yenile",
     "reboot": "Yeniden başlat",
     "wake": "Uyan",
@@ -1518,7 +1518,8 @@
     "tags": "Etiketler",
     "customFields": "Özel Alanlar",
     "text2": "*",
-    "edit": "Düzenle"
+    "edit": "Düzenle",
+    "roleNotAssessed": "Rol henüz değerlendirilmedi"
   },
   "deviceIpHistoryTab": {
     "true": "doğru",

@@ -632,6 +632,9 @@ export default function DeviceDetails({
     },
     {
       id: "topology",
+      // #9030: grouped, so it sits under the Monitoring header in "More"
+      // instead of orphaned above the first section.
+      group: groups.monitoring,
       label: t("topology:title"),
       icon: <Network className="h-4 w-4" />,
       title: t("topology:title"),
@@ -1128,8 +1131,10 @@ export default function DeviceDetails({
             <NetworkAssetRow deviceId={device.id} />
           </div>
 
+          {/* #9030: the rail collapses instantly — animating `width` reflowed
+              the whole Overview column on every frame. */}
           <div
-            className={`w-full shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${
+            className={`w-full shrink-0 overflow-hidden ${
               activityCollapsed ? "lg:w-11 lg:self-stretch" : "lg:w-80"
             }`}
           >

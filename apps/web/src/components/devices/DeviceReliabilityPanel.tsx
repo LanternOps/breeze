@@ -503,7 +503,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
           <div>
-            <h3 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h3>
+            <h2 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h2>
             <p className="text-sm text-muted-foreground">{t('deviceReliabilityPanel.disabled')}</p>
           </div>
         </div>
@@ -555,7 +555,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-            <h3 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h3>
+            <h2 className="text-base font-semibold">{t('deviceReliabilityPanel.title')}</h2>
             {/* A provisional score is not evidence either way (the fleet
                 finding excludes provisional devices too), so no at-risk pill. */}
             {!provisional && snapshot.reliabilityScore <= 70 && (

@@ -57,7 +57,7 @@ describe('DeviceBillingCard (#3205 W06)', () => {
     expect(rows[1]!.textContent).toContain('Group: VIP Laptops');
     expect(rows[0]!.querySelector('a')!.getAttribute('href')).toBe('/contracts/c1');
     expect(rows[1]!.querySelector('a')!.getAttribute('href')).toBe('/contracts/c2');
-    expect(screen.getByRole('heading', { level: 3, name: 'Billing' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'Billing' })).toBeInTheDocument();
     expect(fetchWithAuth).toHaveBeenCalledWith(`/devices/${DEVICE_ID}/billing`);
   });
 

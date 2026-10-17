@@ -1119,6 +1119,9 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
            status === 'creating' ? t('connectDesktopButton.connecting') :
            status === 'launching' ? t('connectDesktopButton.launching') :
            t('connectDesktopButton.connectDesktop')}
+          {status === 'idle' && !error && (
+            <span className="sr-only"> {t('connectDesktopButton.opensNewWindow')}</span>
+          )}
         </button>
         {fallbackContent}
         {deniedContent}
@@ -1150,7 +1153,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
          status === 'creating' ? t('connectDesktopButton.creatingSession') :
          status === 'launching' ? t('connectDesktopButton.launchingViewer') :
          t('connectDesktopButton.connectDesktop')}
-        {status === 'idle' && !error && <ExternalLink className="w-3.5 h-3.5 opacity-60" />}
+        {/* #9030: the icon is decorative, so the label itself says where it goes. */}
+        {status === 'idle' && !error && (
+          <>
+            <span className="sr-only"> {t('connectDesktopButton.opensNewWindow')}</span>
+            <ExternalLink className="w-3.5 h-3.5 opacity-60" aria-hidden="true" />
+          </>
+        )}
       </button>
       {disabled && disabledTitle && <span id={reasonId} className="sr-only">{disabledTitle}</span>}
 

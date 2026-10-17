@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useMenuKeyboard } from "../billing/shared/menuKeyboard";
 import { usePermissions } from "../../lib/permissions";
 import {
@@ -231,8 +232,9 @@ function getModalConfig(
 const DropdownContext = createContext<{
   open: boolean;
   listRef: RefObject<HTMLDivElement | null>;
+  rootRef: RefObject<HTMLDivElement | null>;
   onKeyDown: (e: ReactKeyboardEvent) => void;
-}>({ open: false, listRef: { current: null }, onKeyDown: () => {} });
+}>({ open: false, listRef: { current: null }, rootRef: { current: null }, onKeyDown: () => {} });
 
 function DropdownRoot({
   open,
@@ -249,7 +251,11 @@ function DropdownRoot({
   useEffect(() => {
     if (!open) return;
     const onMouseDown = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) onClose();
+      const target = e.target as Node;
+      // The popup is portalled out of the root (#9030), so check it too —
+      // otherwise a press on an item closes the menu before its click lands.
+      if (rootRef.current?.contains(target) || listRef.current?.contains(target)) return;
+      onClose();
     };
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
@@ -267,7 +273,7 @@ function DropdownRoot({
   };
 
   return (
-    <DropdownContext.Provider value={{ open, listRef, onKeyDown }}>
+    <DropdownContext.Provider value={{ open, listRef, rootRef, onKeyDown }}>
       <div ref={rootRef} className="relative" onKeyDown={onKeyDown}>
         {children}
       </div>
@@ -275,20 +281,68 @@ function DropdownRoot({
   );
 }
 
+// #9030: Refresh's explanation used to be a 150-character `title`, which a
+// keyboard or touch user never sees; it is now a short visible second line.
+function RefreshLabel() {
+  const { t } = useTranslation("devices");
+  return (
+    <span className="flex flex-col">
+      <span>{t("deviceActions.refresh")}</span>
+      <span className="text-xs text-muted-foreground">{t("deviceActions.reRunAgentInventoryCollectorsSo")}</span>
+    </span>
+  );
+}
+
+const MENU_GAP_PX = 4;
+
+// #9030: the popup renders through a portal with `position: fixed`, anchored
+// below its trigger (flipping above when there is no room), so it floats over
+// the tab strip instead of being stacked under or clipped by it, and is wide
+// enough that no item label wraps. React events still bubble through the
+// portal to DropdownRoot, so its keyboard handling is unchanged. `sheet` is
+// the phone bottom sheet (#9028), which positions itself.
 function DropdownPopup({
   children,
-  className = "absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg",
+  sheetClassName,
   testId,
   label,
 }: {
   children: ReactNode;
-  className?: string;
+  /** Render as a self-positioned sheet with these classes instead of anchoring. */
+  sheetClassName?: string;
   testId?: string;
   label?: string;
 }) {
-  const { open, listRef } = useContext(DropdownContext);
-  if (!open) return null;
-  return (
+  const { open, listRef, rootRef } = useContext(DropdownContext);
+  const [style, setStyle] = useState<CSSProperties>({ position: "fixed", top: 0, right: 0 });
+
+  useLayoutEffect(() => {
+    if (!open || sheetClassName) return;
+    const place = () => {
+      const trigger = rootRef.current?.querySelector<HTMLElement>("[aria-haspopup]");
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const menuHeight = listRef.current?.offsetHeight ?? 0;
+      const below = rect.bottom + MENU_GAP_PX;
+      const flip =
+        below + menuHeight > window.innerHeight && rect.top > window.innerHeight - rect.bottom;
+      setStyle({
+        position: "fixed",
+        top: flip ? Math.max(MENU_GAP_PX, rect.top - MENU_GAP_PX - menuHeight) : below,
+        right: Math.max(0, window.innerWidth - rect.right),
+      });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, sheetClassName, listRef, rootRef]);
+
+  if (!open || typeof document === "undefined") return null;
+  return createPortal(
     <div
       ref={listRef}
       role="menu"
@@ -302,10 +356,15 @@ function DropdownPopup({
           e.stopPropagation();
         }
       }}
-      className={className}
+      style={sheetClassName ? undefined : style}
+      className={
+        sheetClassName ??
+        "fixed z-50 min-w-[14rem] rounded-md border bg-card py-1 shadow-lg"
+      }
     >
       {children}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -415,7 +474,7 @@ export default function DeviceActions({
           onClick={() => handleAction("restore")}
           role="menuitem"
           tabIndex={-1}
-          className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-success hover:bg-success/10"
+          className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm text-success hover:bg-success/10"
         >
           <RotateCcw className="h-4 w-4" />
           {t("deviceActions.restore")}
@@ -426,7 +485,7 @@ export default function DeviceActions({
           onClick={() => handleAction("permanent-delete")}
           role="menuitem"
           tabIndex={-1}
-          className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+          className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
         >
           <Trash2 className="h-4 w-4" />
           {t("deviceActions.permanentlyDelete")}
@@ -439,7 +498,7 @@ export default function DeviceActions({
         onClick={() => handleAction("decommission")}
         role="menuitem"
         tabIndex={-1}
-        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
+        className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
       >
         <Trash2 className="h-4 w-4" />
         {t("deviceActions.decommission")}{" "}
@@ -470,7 +529,7 @@ export default function DeviceActions({
                 aria-disabled={(!online) || undefined}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <Play className="h-4 w-4" />
                 {t("deviceActions.runScript")}{" "}
@@ -502,7 +561,7 @@ export default function DeviceActions({
                   }
                   role="menuitem"
                   tabIndex={-1}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                  className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                 >
                   <Wrench className="h-4 w-4" />
                   {t("deviceActions.remoteTools")}{" "}
@@ -512,13 +571,12 @@ export default function DeviceActions({
                 type="button"
                 onClick={() => handleAction("refresh")}
                 aria-disabled={(!online) || undefined}
-                title={t("deviceActions.reRunAgentInventoryCollectorsSo")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <RefreshCw className="h-4 w-4" />
-                {t("deviceActions.refresh")}{" "}
+                <RefreshLabel />{" "}
               </button>
               <button
                 type="button"
@@ -526,7 +584,7 @@ export default function DeviceActions({
                 aria-disabled={(!online) || undefined}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceActions.reboot")}{" "}
@@ -537,7 +595,7 @@ export default function DeviceActions({
                   onClick={() => handleAction("wake")}
                   role="menuitem"
                   tabIndex={-1}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                  className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <Zap className="h-4 w-4" />
                   {t("deviceActions.wake")}{" "}
@@ -550,7 +608,7 @@ export default function DeviceActions({
                   aria-disabled={(!online) || undefined}
                   role="menuitem"
                   tabIndex={-1}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                  className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                 >
                   <Shield className="h-4 w-4" />
                   {t("deviceActions.rebootToSafeMode")}{" "}
@@ -561,7 +619,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("deploy-software")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Package className="h-4 w-4" />
                 {t("deviceActions.deploySoftware")}{" "}
@@ -573,7 +631,7 @@ export default function DeviceActions({
                   onClick={() => handleAction("install-homebrew")}
                   role="menuitem"
                   tabIndex={-1}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                  className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <Beer className="h-4 w-4" />
                   {t("deviceActions.installHomebrew")}{" "}
@@ -584,7 +642,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("clear-sessions")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <XCircle className="h-4 w-4" />
                 {t("deviceActions.clearSessions")}{" "}
@@ -595,7 +653,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("change-site")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <MapPin className="h-4 w-4" />
                 {t("deviceActions.changeSite")}{" "}
@@ -605,7 +663,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("maintenance")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
                 {isInMaintenance(device)
@@ -768,7 +826,7 @@ export default function DeviceActions({
           <DropdownPopup
             testId="device-actions-sheet"
             label={t("common:labels.actions")}
-            className="fixed inset-x-0 bottom-0 z-50 max-h-[75vh] overflow-y-auto rounded-t-xl border-t bg-card pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-lg"
+            sheetClassName="fixed inset-x-0 bottom-0 z-50 max-h-[75vh] overflow-y-auto rounded-t-xl border-t bg-card pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-lg"
           >
             {showWake &&
               sheetItem({
@@ -987,7 +1045,7 @@ export default function DeviceActions({
                 aria-disabled={(!online) || undefined}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <RotateCcw className="h-4 w-4" />
                 {t("deviceActions.reboot")}{" "}
@@ -999,7 +1057,7 @@ export default function DeviceActions({
                   aria-disabled={(!online) || undefined}
                   role="menuitem"
                   tabIndex={-1}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                  className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm text-warning hover:bg-warning/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                 >
                   <Shield className="h-4 w-4" />
                   {t("deviceActions.rebootToSafeMode")}{" "}
@@ -1011,7 +1069,7 @@ export default function DeviceActions({
                 aria-disabled={(!online) || undefined}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm text-destructive hover:bg-destructive/10 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <Power className="h-4 w-4" />
                 {t("deviceActions.shutdown")}{" "}
@@ -1031,7 +1089,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("maintenance")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
                 {isInMaintenance(device)
@@ -1064,20 +1122,19 @@ export default function DeviceActions({
                 type="button"
                 onClick={() => handleAction("refresh")}
                 aria-disabled={(!online || loading) || undefined}
-                title={t("deviceActions.reRunAgentInventoryCollectorsSo")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
               >
                 <RefreshCw className="h-4 w-4" />
-                {t("deviceActions.refresh")}{" "}
+                <RefreshLabel />{" "}
               </button>
               <button
                 type="button"
                 onClick={() => handleAction("maintenance")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Shield className="h-4 w-4" />
                 {isInMaintenance(device)
@@ -1089,7 +1146,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("deploy-software")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Package className="h-4 w-4" />
                 {t("deviceActions.deploySoftware")}{" "}
@@ -1101,7 +1158,7 @@ export default function DeviceActions({
                   onClick={() => handleAction("install-homebrew")}
                   role="menuitem"
                   tabIndex={-1}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                  className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <Beer className="h-4 w-4" />
                   {t("deviceActions.installHomebrew")}{" "}
@@ -1112,7 +1169,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("clear-sessions")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <XCircle className="h-4 w-4" />
                 {t("deviceActions.clearSessions")}{" "}
@@ -1122,7 +1179,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("change-site")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <MapPin className="h-4 w-4" />
                 {t("deviceActions.changeSite")}{" "}
@@ -1136,7 +1193,7 @@ export default function DeviceActions({
                   onClick={() => handleAction("move-org")}
                   role="menuitem"
                   tabIndex={-1}
-                  className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                  className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
                 >
                   <ArrowRightLeft className="h-4 w-4" />
                   {t("deviceActions.moveOrg")}{" "}
@@ -1147,7 +1204,7 @@ export default function DeviceActions({
                 onClick={() => handleAction("settings")}
                 role="menuitem"
                 tabIndex={-1}
-                className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted"
+                className="flex w-full items-center gap-2 whitespace-nowrap px-4 py-2 text-left text-sm hover:bg-muted"
               >
                 <Settings className="h-4 w-4" />
                 {t("deviceActions.deviceSettings")}{" "}

@@ -106,6 +106,24 @@ describe('DeviceDetails tab layout', () => {
     expect(headers).toEqual(['Monitoring', 'Inventory', 'Management', 'History & Network']);
   });
 
+  it('files Topology under the Monitoring header in "More" instead of orphaning it above (#9030)', async () => {
+    render(<DeviceDetails device={device} />);
+    fireEvent.click(screen.getByRole('button', { name: /^more$/i }));
+    const menu = screen.getByRole('menu');
+    const first = menu.querySelector('[data-overflow-group], [role="menuitem"]');
+    expect(first).toHaveAttribute('data-overflow-group', 'Monitoring');
+    const nodes = Array.from(menu.querySelectorAll('[data-overflow-group], [role="menuitem"]'));
+    const topologyIndex = nodes.findIndex((n) => n.textContent === 'Topology');
+    const inventoryIndex = nodes.findIndex((n) => n.getAttribute('data-overflow-group') === 'Inventory');
+    expect(topologyIndex).toBeGreaterThan(0);
+    expect(topologyIndex).toBeLessThan(inventoryIndex);
+  });
+
+  it('collapses the Activity rail without animating width (#9030)', () => {
+    const { container } = render(<DeviceDetails device={device} />);
+    expect(container.querySelector('[class*="transition-[width]"]')).toBeNull();
+  });
+
   it('promotes Tickets into the primary row with a badge when the device has open tickets', async () => {
     counts = { alerts: 4, anomalies: 0, tickets: 2, operatorTasks: 0, monitoring: 0, compliance: 0 };
     render(<DeviceDetails device={device} />);
