@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 
 const addTicketComment = vi.fn();
 // The real module pulls in astro-only imports through @/lib/navigation, so it
@@ -61,6 +62,26 @@ describe('TicketDetails — pending approval banner (#8200)', () => {
     ticketNumber: 'T-1',
     ask: { minutes: 60, amount: null, currencyCode: null, coverageStartsAt: null, coverageEndsAt: null },
   };
+
+  it('server-renders no ask sentence, so no server-zone time reaches the HTML', () => {
+    // RTL runs effects, so only a server render shows what the `mounted` gate
+    // keeps out of the SSR HTML (the sentence formats times in the runtime zone).
+    const html = renderToString(
+      <TicketDetails
+        ticket={ticket()}
+        pendingApproval={{
+          id: 'req-9',
+          approval: {
+            trigger: 'after_hours',
+            ticketNumber: 'T-1',
+            ask: { minutes: null, amount: null, currencyCode: null, coverageStartsAt: '2026-12-02T00:25:00.000Z', coverageEndsAt: '2026-12-02T02:25:00.000Z' },
+          },
+        }}
+      />
+    );
+    expect(html).toContain('This ticket has work waiting for your approval');
+    expect(html).not.toContain('Approve after-hours work');
+  });
 
   it('renders the after-hours window in the viewer local time, not the server UTC', () => {
     const startIso = '2026-12-02T00:25:00.000Z';
