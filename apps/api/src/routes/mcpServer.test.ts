@@ -238,6 +238,7 @@ function setTestApiKey(overrides: Record<string, unknown> = {}) {
     partnerId: 'partner-1',
     name: 'test',
     keyPrefix: 'brz_test',
+    mcpDomains: null,
     scopes: ['ai:read'],
     rateLimit: 1000,
     createdBy: 'user-1',
@@ -535,6 +536,7 @@ describe('MCP transport integration', () => {
       oauthGrantId: 'grant-stable-1',
       name: 'OAuth bearer',
       keyPrefix: 'oauth',
+      mcpDomains: null,
     });
 
     const rateLimiter = routeMocks.rateLimiter;
@@ -875,6 +877,7 @@ describe('MCP transport integration', () => {
       partnerId: 'partner-1',
       name: 'A',
       keyPrefix: 'oauth',
+      mcpDomains: null,
       scopes: ['ai:read'],
       rateLimit: 1000,
       createdBy: 'user-shared',
@@ -1046,6 +1049,7 @@ describe('MCP transport integration', () => {
       partnerId: 'partner-1',
       name: 'A',
       keyPrefix: 'brz_a',
+      mcpDomains: null,
       scopes: ['ai:read'],
       rateLimit: 1000,
       createdBy: 'user-A',
@@ -1056,6 +1060,7 @@ describe('MCP transport integration', () => {
       partnerId: 'partner-1',
       name: 'B',
       keyPrefix: 'brz_b',
+      mcpDomains: null,
       scopes: ['ai:read'],
       rateLimit: 1000,
       createdBy: 'user-B',

@@ -37,6 +37,7 @@ const setApiKeyContext = (c: any, scopes: string[] = ['ai:read']) => {
     orgId: 'org-1',
     name: 'test',
     keyPrefix: 'brz_test',
+    mcpDomains: null,
     partnerId: 'partner-1',
     scopes,
     rateLimit: 1000,

@@ -32,6 +32,8 @@ interface OAuthApiKeyContext {
   createdBy: string;
   oauthGrantId?: string;
   oauthClientId?: string;
+  // B-W02 (#6156): the Grant's mcp_domains, read in the live-user query.
+  mcpDomains: readonly string[] | null;
 }
 
 let cachedJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
@@ -49,6 +51,13 @@ export type LiveOAuthUserResult =
        * single system-context round-trip.
        */
       grantActive: boolean | null;
+      /**
+       * B-W02 (#6156): the live Grant's `mcp_domains`, from the SAME joined
+       * row. `null` = unrestricted. Also `null` when the Grant is not live,
+       * which would read as unrestricted — safe only because the middleware
+       * 401s on `grantActive !== true` before it sets any context.
+       */
+      grantMcpDomains: string[] | null;
     }
   | {
       ok: false;
@@ -98,7 +107,13 @@ export async function assertLiveOAuthUser(
   // are in the same system context anyway. The LEFT JOIN keeps a missing or
   // revoked Grant as a row with a NULL join side rather than no row at all, so
   // "user gone" stays distinguishable from "grant dead".
-  let liveUser: { id: string; status: string; authEpoch: number; grantActive: boolean } | undefined;
+  let liveUser: {
+    id: string;
+    status: string;
+    authEpoch: number;
+    grantActive: boolean;
+    mcpDomains: string[] | null;
+  } | undefined;
   try {
     [liveUser] = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
@@ -108,6 +123,7 @@ export async function assertLiveOAuthUser(
             status: users.status,
             authEpoch: users.authEpoch,
             grantActive: sql<boolean>`${oauthGrants.id} IS NOT NULL`,
+            mcpDomains: oauthGrants.mcpDomains,
           })
           .from(users)
           .leftJoin(
@@ -143,6 +159,7 @@ export async function assertLiveOAuthUser(
       authEpoch: liveUser.authEpoch,
       legacyClaim: true,
       grantActive: grantId ? liveUser.grantActive : null,
+      grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : null,
     };
   }
 
@@ -160,6 +177,7 @@ export async function assertLiveOAuthUser(
     authEpoch: liveUser.authEpoch,
     legacyClaim: false,
     grantActive: grantId ? liveUser.grantActive : null,
+    grantMcpDomains: grantId && liveUser.grantActive ? liveUser.mcpDomains : null,
   };
 }
 
@@ -504,6 +522,9 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     createdBy: payload.sub,
     ...(typeof payload.grant_id === 'string' ? { oauthGrantId: payload.grant_id } : {}),
     ...(clientIdClaim ? { oauthClientId: clientIdClaim } : {}),
+    // B-W02 (#6156): live per request, so a domain edit or revocation needs
+    // no token re-mint. Reached only with grantActive === true (401 above).
+    mcpDomains: liveUser.grantMcpDomains,
   });
   if (payload.org_id) c.set('apiKeyOrgId', payload.org_id);
 

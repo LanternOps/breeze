@@ -31,6 +31,11 @@ export interface ApiKeyContext {
     // `id` is then the partner_service_principal_keys row id, never an
     // api_keys id, and orgId is null (partner scope).
     partnerServicePrincipalId?: string;
+    // B-W02 (#6156): MCP tool domains this principal may use. `null` =
+    // unrestricted. Every MCP auth middleware sets it explicitly; a missing
+    // value (undefined) fails CLOSED to core-only in mcpServer.ts
+    // (services/mcpDomains.ts parseStoredMcpDomains). REST ignores it.
+    mcpDomains?: readonly string[] | null;
   };
   orgId: string;
 }
@@ -130,7 +135,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
         principalId: apiKeys.principalId,
         creatorAuthEpoch: apiKeys.creatorAuthEpoch,
         creatorMfaEpoch: apiKeys.creatorMfaEpoch,
-        creatorCredentialEpoch: apiKeys.creatorCredentialEpoch
+        creatorCredentialEpoch: apiKeys.creatorCredentialEpoch,
+        mcpDomains: apiKeys.mcpDomains
       })
       .from(apiKeys)
       .where(eq(apiKeys.keyHash, keyHash))
@@ -321,6 +327,8 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     // on principal type too, without a second DB read.
     principalType: apiKey.principalType,
     principalId: apiKey.principalId,
+    // B-W02 (#6156): passed through untouched (string[] | null from the row).
+    mcpDomains: apiKey.mcpDomains,
   });
   c.set('apiKeyOrgId', apiKey.orgId);
 

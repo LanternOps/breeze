@@ -124,6 +124,7 @@ function mockApiKey() {
         partnerId: null,
         name: 'test',
         keyPrefix: 'brz_test',
+        mcpDomains: null,
         scopes: ['ai:read'],
         rateLimit: 1000,
         createdBy: 'creator-user',

@@ -94,6 +94,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
       partnerId: 'partner-1',
       name: 'test',
       keyPrefix: 'brz_test',
+      mcpDomains: null,
       scopes: testState.scopes,
       rateLimit: 1000,
       createdBy: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',

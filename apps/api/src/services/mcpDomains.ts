@@ -97,3 +97,12 @@ export function buildDomainNotGrantedError(
     data: { reason: 'domain_not_granted', domain: label, hint: DOMAIN_NOT_GRANTED_HINT },
   };
 }
+
+/**
+ * Lazy form of `isDomainGranted(grant, mcpToolDomain(name))`: an unrestricted
+ * grant never consults the registry, so the unrestricted path does exactly
+ * the work it did before B-W02.
+ */
+export function isMcpToolGranted(grant: McpDomainGrant, toolName: string): boolean {
+  return !grant.restricted || isDomainGranted(grant, mcpToolDomain(toolName));
+}
