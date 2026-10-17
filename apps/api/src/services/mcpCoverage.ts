@@ -470,6 +470,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'dnsSecurity.ts': { tools: ['get_dns_security', 'manage_dns_policy'] },
   'docs.ts': { tools: ['search_documentation'] },
   'dr.ts': { tools: ['query_dr_plans', 'get_dr_plan_details', 'get_dr_execution_status', 'execute_dr_plan', 'manage_dr_plan'] },
+  'emailUnsubscribe.ts': { exempt: 'internal_plumbing', note: 'Public unauthenticated one-click email unsubscribe (RFC 8058); the signed token is the only credential and can only opt its own user out. Not an agent tool surface.' },
   'endpointMessages/list.ts': { tools: ['send_endpoint_message'] },
   'endpointMessages/resend.ts': { exempt: 'human_only_message_control', note: 'Operator re-send of a stored message (#8742); the AI tool authors new approval-gated sends only.' },
   'endpointMessages/retract.ts': { exempt: 'human_only_message_control', note: 'Operator safety stop that withdraws a message from user desktops (#8742); not an AI action.' },
