@@ -89,6 +89,21 @@ describe('InvoiceDetail deposit + due-date + request payment', () => {
     expect(screen.queryByTestId('invoice-payment-fill-deposit')).not.toBeInTheDocument();
   });
 
+  it('shows the void state, not a deposit headline, on a void invoice with an unpaid deposit', async () => {
+    render(<InvoiceDetail detail={detail({ status: 'void', depositDue: '300.00' })} onChanged={vi.fn()} />);
+    expect(await screen.findByTestId('invoice-detail-void-state')).toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-detail-deposit-due-now')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('invoice-payment-form')).not.toBeInTheDocument();
+  });
+
+  // A draft isn't payable yet (the portal has no Pay button for it), so nothing is "due now".
+  it('keeps the balance-due headline on a draft invoice that has a deposit set', async () => {
+    render(<InvoiceDetail detail={detail({ status: 'draft', depositDue: '300.00' })} onChanged={vi.fn()} />);
+    await screen.findByTestId('invoice-deposit-strip');
+    expect(screen.queryByTestId('invoice-detail-deposit-due-now')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-detail-headline-label')).toHaveTextContent('Balance due');
+  });
+
   it('keeps the balance-due headline and offers no deposit chip when there is no deposit', async () => {
     render(<InvoiceDetail detail={detail()} onChanged={vi.fn()} />);
     await screen.findByTestId('invoice-payment-form');

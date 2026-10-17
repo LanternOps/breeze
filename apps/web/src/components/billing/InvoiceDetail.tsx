@@ -273,9 +273,11 @@ export default function InvoiceDetail({ detail, onChanged, actionsInHeader = fal
     amountPaid: invoice.amountPaid,
     balance: invoice.balance,
   }, invoice.currencyCode);
-  // Lead the sidebar with the deposit while one is still owed (#8786). A void
-  // invoice owes nothing; a zero charge (balance already cleared) has nothing to lead with.
-  const leadWithDeposit = chargeNow.isDeposit && invoice.status !== 'void' && Number(chargeNow.amount) > 0;
+  // Lead the sidebar with the deposit while one is still owed (#8786). A draft
+  // isn't payable yet and a void invoice owes nothing, so neither has a deposit
+  // "due now"; a zero charge (balance already cleared) has nothing to lead with.
+  const leadWithDeposit =
+    chargeNow.isDeposit && invoice.status !== 'void' && invoice.status !== 'draft' && Number(chargeNow.amount) > 0;
 
   // The due date is editable once the invoice is live (issued/partially paid/overdue);
   // the /due-date route is gated on invoices:write.
