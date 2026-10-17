@@ -1,23 +1,15 @@
-// Catalog copy for the Trust Center editor (category labels, control titles and descriptions). W02a moved it
-// here out of TrustControlsSection so W02h can localize it in ONE file; until then it returns the catalog's
-// English (spec §19 item 4), for telemetry and declared controls alike.
+// Catalog copy for the Trust Center editor (category labels, control titles and descriptions), in the editor
+// user's UI language (spec §19 item 31). The strings live in @breeze/shared `trustCopyFor` (single-sourced with
+// the public portal); an unsupported language gets English. This is the editor's language, not the published
+// page's: the page locale is the partner's document language, frozen at publish.
 import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
-  declaredControlById,
-  trustControlById,
+  trustCopyFor,
   type DeclaredControlId,
   type TelemetryControlId,
   type TrustControlCategory,
 } from '@breeze/shared';
-
-const CATEGORY_LABEL: Record<TrustControlCategory, string> = {
-  endpoint_protection: 'Endpoint protection',
-  patching_hardening: 'Patching and hardening',
-  identity_access: 'Identity and access',
-  data_protection: 'Data protection',
-  monitoring: 'Monitoring',
-  governance: 'Governance and response',
-};
 
 export interface TrustControlCopy {
   categoryLabel(c: TrustControlCategory): string;
@@ -25,16 +17,15 @@ export interface TrustControlCopy {
   controlDescription(id: TelemetryControlId | DeclaredControlId): string;
 }
 
-function definition(id: TelemetryControlId | DeclaredControlId) {
-  return trustControlById(id as TelemetryControlId) ?? declaredControlById(id as DeclaredControlId);
-}
-
-const ENGLISH: TrustControlCopy = {
-  categoryLabel: (c) => CATEGORY_LABEL[c],
-  controlTitle: (id) => definition(id)?.title ?? id,
-  controlDescription: (id) => definition(id)?.description ?? '',
-};
-
 export function useTrustControlCopy(): TrustControlCopy {
-  return useMemo(() => ENGLISH, []);
+  const { i18n } = useTranslation();
+  const language = i18n.resolvedLanguage ?? i18n.language;
+  return useMemo(() => {
+    const copy = trustCopyFor(language);
+    return {
+      categoryLabel: (c) => copy.categories[c],
+      controlTitle: (id) => copy.controls[id]?.title ?? id,
+      controlDescription: (id) => copy.controls[id]?.description ?? '',
+    };
+  }, [language]);
 }
