@@ -2,7 +2,7 @@
 import '@/lib/i18n';
 import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import DeviceDetails from './DeviceDetails';
+import DeviceDetails, { METRIC_SAMPLE_FRESH_MS, metricsAreCurrent } from './DeviceDetails';
 import type { Device } from './DeviceList';
 
 vi.mock('../../stores/auth', async (importOriginal) => {
@@ -45,6 +45,30 @@ const base: Device = {
   pendingReboot: false,
   displayName: 'Front desk PC',
 } as Device;
+
+describe('metricsAreCurrent (#9026)', () => {
+  const now = Date.parse('2026-10-17T12:00:00.000Z');
+  const ago = (ms: number) => new Date(now - ms).toISOString();
+
+  it('is current up to and including the freshness window, stale one ms past it', () => {
+    expect(METRIC_SAMPLE_FRESH_MS).toBe(10 * 60 * 1000);
+    expect(metricsAreCurrent('online', ago(METRIC_SAMPLE_FRESH_MS), now)).toBe(true);
+    expect(metricsAreCurrent('online', ago(METRIC_SAMPLE_FRESH_MS + 1), now)).toBe(false);
+  });
+
+  it('separates "caller cannot say" (undefined) from "no sample" (null / empty / garbage)', () => {
+    expect(metricsAreCurrent('online', undefined, now)).toBe(true);
+    expect(metricsAreCurrent('online', null, now)).toBe(false);
+    expect(metricsAreCurrent('online', '', now)).toBe(false);
+    expect(metricsAreCurrent('online', 'garbage', now)).toBe(false);
+  });
+
+  it('is never current for an offline or removed device', () => {
+    expect(metricsAreCurrent('offline', ago(1000), now)).toBe(false);
+    expect(metricsAreCurrent('decommissioned', undefined, now)).toBe(false);
+    expect(metricsAreCurrent('maintenance', ago(1000), now)).toBe(true);
+  });
+});
 
 describe('DeviceDetails header state (#9026)', () => {
   it('shows "—" for CPU and RAM on an offline device instead of a stale 0.0%', () => {

@@ -6,6 +6,16 @@ describe('formatOsLabel (#9026)', () => {
     expect(formatOsLabel('windows', '11.0.22631')).toBe('Windows 11 (build 22631)');
     expect(formatOsLabel('windows', '10.0.22631.4317')).toBe('Windows 11 (build 22631)');
     expect(formatOsLabel('windows', '10.0.19045')).toBe('Windows 10 (build 19045)');
+    // Windows 11 kept NT 10.0; build 22000 is the first Windows 11 build.
+    expect(formatOsLabel('windows', '10.0.21999')).toBe('Windows 10 (build 21999)');
+    expect(formatOsLabel('windows', '10.0.22000')).toBe('Windows 11 (build 22000)');
+  });
+
+  it('is case-insensitive on the OS type and tolerates a missing type or version', () => {
+    expect(formatOsLabel('Windows', 'Microsoft Windows 11 Pro', '22631')).toBe('Windows 11 Pro (build 22631)');
+    expect(formatOsLabel('macos', '')).toBe('macOS');
+    expect(formatOsLabel(undefined, undefined)).toBe('Unknown OS');
+    expect(formatOsLabel(null, '14.1-RELEASE')).toBe('14.1-RELEASE');
   });
 
   it('keeps the edition the agent reports and appends the build from osBuild', () => {

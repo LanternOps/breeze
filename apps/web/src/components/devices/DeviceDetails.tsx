@@ -177,9 +177,12 @@ type DeviceDetailsProps = {
 const SUBLINE_LINK =
   "text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground max-md:inline-flex max-md:min-h-[32px] max-md:items-center";
 
-// Mirrors the API's DEFAULT_OFFLINE_THRESHOLD_MINUTES (services/deviceLiveness):
-// a sample older than the window a heartbeat must land in is not "current".
-const METRIC_SAMPLE_FRESH_MS = 5 * 60 * 1000;
+// A sample is written on every heartbeat that carries metrics (60s by
+// default, routes/agents/heartbeat.ts). Twice the API's 5-minute offline
+// threshold (services/deviceLiveness) tolerates a lengthened heartbeat or a
+// skipped sample without flapping to "—", while a genuinely stale number
+// still never reads as live.
+export const METRIC_SAMPLE_FRESH_MS = 10 * 60 * 1000;
 
 /** Whether the header's CPU/RAM numbers describe the machine right now (#9026). */
 export function metricsAreCurrent(

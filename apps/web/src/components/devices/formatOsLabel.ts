@@ -22,6 +22,9 @@ function formatWindows(osVersion: string, osBuild: string | null | undefined): s
   }
 
   // Bare NT version ("11.0.22631", "10.0.19045.6456") from seeds/older rows.
+  // Known limit: a bare version cannot tell a server edition apart (Server
+  // 2022 is build 20348, Server 2025 is 26100). Real agents always report the
+  // edition name (the branch above), so this fallback only meets bare rows.
   const dotted = osVersion.match(/^(\d+)\.(\d+)\.(\d+)/);
   if (dotted) {
     const major = Number(dotted[1]);
