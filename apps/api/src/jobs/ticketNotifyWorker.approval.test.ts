@@ -139,6 +139,12 @@ describe('ticket.approval_requested', () => {
     const notify = mails.find((m) => m.to === 'requester@customer.example')!;
     expect(approver.subject).toBe('[TKT-1] Your approval is needed: Server migration');
     expect(notify.subject).toBe('[TKT-1] Approval requested: Server migration');
+    // #8965: the staff-only internal number never reaches a customer email.
+    for (const m of mails) {
+      expect(m.subject).not.toContain('T-1042');
+      expect(m.html).not.toContain('T-1042');
+    }
+    expect(approver.html).toContain('TKT-1');
     expect(approver.html).toContain('Up to 2 h 30 m');
     expect(approver.html).toContain('$375.00');
     expect(approver.html).toContain('Budget 10 h, used 9 h 45 m');

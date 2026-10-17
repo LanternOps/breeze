@@ -83,6 +83,26 @@ describe.each([
     expect(mocks.inbound).not.toHaveBeenCalled();
   });
 
+  it('matches a bracketed customer-facing ticket_number in the subject, partner-scoped (#8965)', async () => {
+    const found = await match({ subject: 'Re: [KQ04YOHZ-N] Printer is down' }, PARTNER);
+    expect(found).toEqual(ticket);
+    const compiled = new PgDialect().sqlToQuery(mocks.where.mock.calls[0]![0]);
+    expect(compiled.sql).toContain('"tickets"."ticket_number"');
+    expect(compiled.sql).toContain('"tickets"."partner_id" =');
+    expect(compiled.params).toContain('KQ04YOHZ-N');
+  });
+
+  it('still matches the staff-style [T-YYYY-NNNN] subject token', async () => {
+    expect(await match({ subject: 'Re: [T-2026-0001] Printer' }, PARTNER)).toEqual(ticket);
+    const compiled = new PgDialect().sqlToQuery(mocks.where.mock.calls[0]![0]);
+    expect(compiled.params).toContain('T-2026-0001');
+  });
+
+  it('ignores an unbracketed uppercase word that merely looks like a ticket_number', async () => {
+    expect(await match({ subject: 'Re: ABCDEFGHIJ printer' }, PARTNER)).toBeNull();
+    expect(mocks.where).not.toHaveBeenCalled();
+  });
+
   it('locks the matched ticket before checking requester identity', async () => {
     const resolver = sender('requester');
     vi.mocked(resolver.portalUser).mockImplementation(async () => {
