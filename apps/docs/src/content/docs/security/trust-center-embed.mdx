@@ -1,0 +1,71 @@
+---
+title: Embed a Trust Center card
+description: Show a compact, live security posture card from a published Trust Center page inside an iframe on websites you allow.
+sidebar:
+  order: 8
+  label: Trust Center embed
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A published [Trust Center](/security/trust-center/) page can be shown on the customer's own website as a small card inside an `<iframe>`. The card is a summary that links out to the full page. Only the websites you list may display it.
+
+## What the embed shows
+
+The card shows the same summary the public page header shows:
+
+- the organization's logo and name
+- "Security posture · verified by Breeze"
+- the summary line (how many Breeze-verifiable controls are shown and how many are met)
+- the date the page was last verified, and a "Verification paused" note when the page is stale (not evaluated in the last 24 hours)
+- a **View the full trust page** link, which opens the full page in a new tab
+
+The card never shows individual controls, documents, the method section or anything that is not already on the public page. It has no scripts and no forms.
+
+## Turn it on
+
+1. Open the organization, then the **Trust Center** tab.
+2. Find **Embed on your website**.
+3. Add each website that will show the card, for example `https://www.example.com`, and select **Save websites**. Saving requires multi-factor authentication.
+4. Copy the iframe snippet into the website's HTML.
+
+```html
+<iframe src="https://breeze.example.com/portal/trust/embed/<partner>/<org>" title="Security posture card" width="100%" height="160" loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+```
+
+Until at least one website is listed, the embed URL answers 404 and nothing can frame it.
+
+## Rules for allowed websites
+
+Each entry is an exact **origin**: `https://`, a host name, and an optional port.
+
+- `https` only. `http://` addresses are refused.
+- No paths, queries or fragments (`https://www.example.com/about` is refused, not shortened).
+- No wildcards (`https://*.example.com`), IP addresses, `localhost` or single-label host names.
+- `www.example.com` and `example.com` are different websites; list both if both show the card.
+- At most 10 websites per page.
+- International domain names are stored in their punycode form (`https://bücher.example` is saved as `https://xn--bcher-kva.example`).
+
+## When changes take effect
+
+The list is a live setting. It is not part of the published snapshot, so changing it needs no republish.
+
+- Removing a website takes effect on the next load of the embed. The card and the embed responses are never cached (`Cache-Control: no-store`).
+- A card that is already open in a visitor's browser stays until that visitor reloads the page.
+- Unpublishing the page stops the embed everywhere on the next load.
+
+## Nested frames
+
+Browsers check every frame above the card, not only the one that contains it. If the website that shows the card is itself framed by another site, that outer site must be on the list too.
+
+## The full page is never framable
+
+Only `/portal/trust/embed/...` can be framed. The full trust page, previews and gated-document links always answer with `frame-ancestors 'none'` and `X-Frame-Options: DENY`.
+
+## Behind your own reverse proxy
+
+The portal sets the framing headers itself. A proxy in front of Breeze that adds its own `X-Frame-Options` or a second `Content-Security-Policy` to `/portal/trust/embed/` responses breaks the embed, because browsers apply every policy they receive. See the note in [TLS and reverse proxies](/deploy/tls/#nginx-alternative).
+
+<Aside type="tip" title="Prefer a badge?">
+  If you only need a small "verified by Breeze" link, the **Badge** section of the same tab gives you an image badge that works on any website, with no allowlist.
+</Aside>
