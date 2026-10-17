@@ -32,6 +32,10 @@ describe('caPolicyEnforcesMfaForAllUsers', () => {
     expect(caPolicyEnforcesMfaForAllUsers(policy({ grantControls: { operator: 'OR', builtInControls: [], authenticationStrength: { id: 's', displayName: 'MFA' } } }))).toBe(true);
   });
 
+  it('true when locations include All with no exclusions and no narrowing members are set', () => {
+    expect(caPolicyEnforcesMfaForAllUsers(policy({ conditions: conditions({ locations: { includeLocations: ['All'], excludeLocations: [] }, signInRiskLevels: [], platforms: null }) }))).toBe(true);
+  });
+
   it('true for operator AND of mfa + compliantDevice', () => {
     expect(caPolicyEnforcesMfaForAllUsers(policy({ grantControls: grant({ operator: 'AND', builtInControls: ['mfa', 'compliantDevice'] }) }))).toBe(true);
   });
@@ -54,6 +58,14 @@ describe('caPolicyEnforcesMfaForAllUsers', () => {
     ['specific apps', policy({ conditions: conditions({ applications: { includeApplications: ['app-1'] } }) })],
     ['browser-only client types', policy({ conditions: conditions({ clientAppTypes: ['browser'] }) })],
     ['OR with compliantDevice', policy({ grantControls: grant({ operator: 'OR', builtInControls: ['mfa', 'compliantDevice'] }) })],
+    ['risk-based (sign-in risk)', policy({ conditions: conditions({ signInRiskLevels: ['high', 'medium'] }) })],
+    ['user risk', policy({ conditions: conditions({ userRiskLevels: ['high'] }) })],
+    ['excluded application', policy({ conditions: conditions({ applications: { includeApplications: ['All'], excludeApplications: ['00000002-0000-0ff1-ce00-000000000000'] } }) })],
+    ['excluded trusted locations', policy({ conditions: conditions({ locations: { includeLocations: ['All'], excludeLocations: ['AllTrusted'] } }) })],
+    ['platform-limited', policy({ conditions: conditions({ platforms: { includePlatforms: ['android'] } }) })],
+    ['device filter', policy({ conditions: conditions({ devices: { deviceFilter: { mode: 'exclude', rule: 'x' } } }) })],
+    ['guest exclusion', policy({ conditions: conditions({}, { excludeGuestsOrExternalUsers: { guestOrExternalUserTypes: 'b2bCollaborationGuest' } }) })],
+    ['auth strength OR compliantDevice', policy({ grantControls: { operator: 'OR', builtInControls: ['compliantDevice'], authenticationStrength: { id: 's' } } })],
     ['no mfa control', policy({ grantControls: grant({ builtInControls: ['compliantDevice'] }) })],
     ['block only', policy({ grantControls: grant({ builtInControls: ['block'] }) })],
     ['null grantControls', policy({ grantControls: null })],
