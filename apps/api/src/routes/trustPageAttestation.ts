@@ -11,7 +11,7 @@
 // below sets `Access-Control-Allow-Origin: *` and removes the credentialed-CORS header the app-wide cors() adds.
 import { Hono, type Context } from 'hono';
 import { decodeJwt } from 'jose';
-import type { TrustPagePublicPayload } from '@breeze/shared';
+import { normalizeTrustPagePayload, type TrustPagePublicPayload } from '@breeze/shared';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { isServing, readCachedSnapshotPayload, cacheSnapshotPayload, trustServingMember } from '../services/trustPage/servingSet';
 import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage } from '../services/trustPage/resolve';
@@ -87,9 +87,11 @@ async function admit(c: Context, partnerSlug: string, orgSlug: string | undefine
 
 async function payloadFor(r: ResolvedTrustPage): Promise<TrustPagePublicPayload | null> {
   if (!r.snapshotId) return null;
+  // Same normalization as the public payload route: a stored v1 snapshot is signed in its v2 shape, so the
+  // attestation always carries exactly what the public page serves (W02a payload v2).
   const cached = await readCachedSnapshotPayload(r.snapshotId);
-  if (cached) return cached;
-  if (r.payload) { await cacheSnapshotPayload(r.snapshotId, r.payload); return r.payload; }
+  if (cached) return normalizeTrustPagePayload(cached);
+  if (r.payload) { await cacheSnapshotPayload(r.snapshotId, r.payload); return normalizeTrustPagePayload(r.payload); }
   return null;
 }
 
