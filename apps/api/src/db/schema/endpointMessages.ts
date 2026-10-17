@@ -19,7 +19,7 @@ import { users } from './users';
 
 /**
  * Endpoint messaging persistence (#8742 W02). Migration:
- * 2026-12-29-160000-endpoint-messaging-tables.sql.
+ * 2026-12-29-200000-endpoint-messaging-tables.sql.
  *
  * Tenancy (docs/agents/tenancy-rls.md):
  * - endpoint_messages: shape 1, direct org_id. One row per send PER ORG; a

@@ -1,6 +1,6 @@
 /**
  * Endpoint messaging persistence tables (#8742 W02): RLS + tenant-consistency
- * contract. Migration: 2026-12-29-160000-endpoint-messaging-tables.sql.
+ * contract. Migration: 2026-12-29-200000-endpoint-messaging-tables.sql.
  *
  * - endpoint_messages: shape 1 (direct org_id).
  * - endpoint_message_deliveries / endpoint_message_receipts: shape 5 hot
