@@ -188,6 +188,8 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/endpointMessaging/chat.ts': 'request path (#8743): opens/messages ONE device the caller named and reached under RLS + the site axis; selects no targets, and chat_open/chat_message to a parked device is refused by command delivery',
+  'services/endpointMessaging/chatReads.ts': 'read model (#8743): conversations and messages of one device or one conversation the caller already reaches; selects no targets',
   'services/endpointMessaging/retract.ts': 'request path (#8742): retracts the live deliveries of ONE existing message by id in the caller\'s RLS context; selects no new targets, and a retract_message queued to a parked device is refused by command delivery',
   'services/migrationWindows.ts': 'ticket migration windows (#8313): validates the orgs an admin names for a window (hidden orgs are refused); never reads devices or dispatches device work',
   'services/automationTargetValidation.ts': 'write-time validation of an automation target config: reads device_groups/devices ids only to check they sit in the owner org; selects no targets and dispatches nothing',
