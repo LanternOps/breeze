@@ -74,6 +74,8 @@ function prepare(emptySites = false) {
     };
     query('legacyDevices', [{ ...row, policyId: POLICY }]);
     query('configDevices', [{ ...row, configPolicyId: LINK, configItemName: 'Rule' }]);
+    // One (deviceId, status) row per distinct pair; the device is in both policies.
+    query('deviceStatuses', [{ deviceId: DEVICE, status: 'non_compliant' }]);
   }
 }
 
@@ -114,7 +116,8 @@ describe('GET /policies/compliance/summary site isolation (#4880)', () => {
     const body = await response.json();
     expect(body.nonCompliantDevices).toHaveLength(1);
     expect(body.nonCompliantDevices[0]).toMatchObject({ deviceId: DEVICE, deviceName: 'allowed-device' });
-    expect(body.overall).toEqual({ total: 2, compliant: 0, nonCompliant: 2, unknown: 0 });
+    // Distinct devices (#8967): one device in two policies is one device, not two.
+    expect(body.overall).toEqual({ total: 1, compliant: 0, nonCompliant: 1, unknown: 0 });
     for (const name of ['legacyTotals', 'configTotals', 'legacyDevices', 'configDevices']) {
       const condition = conditions.get(name)!;
       expect(condition.sql, name).toContain('"devices"."site_id" in');
@@ -176,6 +179,7 @@ describe('GET /policies/compliance/summary site isolation (#4880)', () => {
     ]);
     query('configTotals', [{ configPolicyId: LINK, status: 'non_compliant', count: 1 }]);
     query('configDevices', []);
+    query('deviceStatuses', [{ deviceId: DEVICE, status: 'non_compliant' }]);
     const response = await request();
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -187,11 +191,44 @@ describe('GET /policies/compliance/summary site isolation (#4880)', () => {
     expect(body.overall).toEqual({ total: 1, compliant: 0, nonCompliant: 1, unknown: 0 });
   });
 
+  it('counts each device once at its worst status across policies (#8967)', async () => {
+    const D2 = '99999999-9999-4999-8999-999999999999';
+    const D3 = '88888888-8888-4888-8888-888888888888';
+    // D1 is compliant in one policy and non-compliant in another, D2 only
+    // compliant, D3 only pending/error.
+    query('policies', [{ id: POLICY, name: 'Legacy', enforcement: 'monitor' }]);
+    query('legacyTotals', [{ policyId: POLICY, status: 'non_compliant', count: 1 }]);
+    query('policyCount', [{ total: 1, enabled: 1 }]);
+    query('configCount', [{ total: 1, active: 1 }]);
+    query('enforcement', [{ enforcement: 'monitor', count: 1 }]);
+    query('rules', [{
+      configPolicyId: CONFIG, configPolicyName: 'Config', featureLinkId: LINK,
+      complianceRuleId: POLICY, complianceRuleName: 'Rule', enforcementLevel: 'warn',
+    }]);
+    query('configTotals', [{ configPolicyId: LINK, status: 'compliant', count: 3 }]);
+    query('legacyDevices', []);
+    query('configDevices', []);
+    query('deviceStatuses', [
+      { deviceId: DEVICE, status: 'compliant' },
+      { deviceId: DEVICE, status: 'non_compliant' },
+      { deviceId: D2, status: 'compliant' },
+      { deviceId: D3, status: 'pending' },
+      { deviceId: D3, status: 'error' },
+    ]);
+    const response = await request();
+    const body = await response.json();
+    expect(body.overall).toEqual({ total: 3, compliant: 1, nonCompliant: 1, unknown: 1 });
+    expect(body.complianceRate).toBe(33);
+    expect(body.complianceOverview).toMatchObject({ compliant: 1, non_compliant: 1, pending: 1 });
+    // Per-policy rows stay per-policy observations.
+    expect(body.policies.find((p: any) => p.policyId === POLICY).compliance.total).toBe(1);
+  });
+
   it('preserves unrestricted compliance reads', async () => {
     prepare();
     const response = await request();
     expect(response.status).toBe(200);
-    expect((await response.json()).overall.total).toBe(2);
+    expect((await response.json()).overall.total).toBe(1);
     for (const name of ['legacyTotals', 'configTotals', 'legacyDevices', 'configDevices']) {
       expect(conditions.get(name)!.sql).not.toContain('site_id');
     }
