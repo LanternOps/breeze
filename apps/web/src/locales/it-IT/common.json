@@ -315,6 +315,17 @@
       "target": "Destinazione",
       "time": "Ora"
     },
+    "recentlyViewed": {
+      "title": "Riprendi da dove avevi lasciato",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organizzazione",
+        "ticket": "Ticket",
+        "alert": "Avviso",
+        "site": "Sede",
+        "page": "Pagina"
+      }
+    },
     "alerts": {
       "title": "Avvisi recenti",
       "viewAll": "Visualizza tutto",

@@ -315,6 +315,17 @@
       "target": "Hedef",
       "time": "Zaman"
     },
+    "recentlyViewed": {
+      "title": "Kaldığınız yerden devam edin",
+      "kind": {
+        "device": "Cihaz",
+        "org": "Kuruluş",
+        "ticket": "Bilet",
+        "alert": "Uyarı",
+        "site": "Site",
+        "page": "Sayfa"
+      }
+    },
     "alerts": {
       "title": "Son Uyarılar",
       "viewAll": "Tümünü görüntüle",

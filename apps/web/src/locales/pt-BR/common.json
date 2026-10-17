@@ -315,6 +315,17 @@
       "target": "Destino",
       "time": "Hora"
     },
+    "recentlyViewed": {
+      "title": "Continue de onde parou",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organização",
+        "ticket": "Chamado",
+        "alert": "Alerta",
+        "site": "Site",
+        "page": "Página"
+      }
+    },
     "alerts": {
       "title": "Alertas recentes",
       "viewAll": "Ver todos",

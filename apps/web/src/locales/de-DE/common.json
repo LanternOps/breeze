@@ -315,6 +315,17 @@
       "target": "Ziel",
       "time": "Zeit"
     },
+    "recentlyViewed": {
+      "title": "Weitermachen, wo Sie aufgehört haben",
+      "kind": {
+        "device": "Gerät",
+        "org": "Organisation",
+        "ticket": "Vorgang",
+        "alert": "Alarm",
+        "site": "Standort",
+        "page": "Seite"
+      }
+    },
     "alerts": {
       "title": "Letzte Warnmeldungen",
       "viewAll": "Alle anzeigen",

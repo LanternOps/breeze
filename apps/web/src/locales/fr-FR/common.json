@@ -315,6 +315,17 @@
       "target": "Cible",
       "time": "Temps"
     },
+    "recentlyViewed": {
+      "title": "Reprenez où vous en étiez",
+      "kind": {
+        "device": "Appareil",
+        "org": "Organisation",
+        "ticket": "Demande",
+        "alert": "Alerte",
+        "site": "Emplacement",
+        "page": "Écran"
+      }
+    },
     "alerts": {
       "title": "Alertes récentes",
       "viewAll": "Voir tout",

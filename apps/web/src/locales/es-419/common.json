@@ -315,6 +315,17 @@
       "target": "Objetivo",
       "time": "Tiempo"
     },
+    "recentlyViewed": {
+      "title": "Continúa donde lo dejaste",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organización",
+        "ticket": "Ticket",
+        "alert": "Alerta",
+        "site": "Sitio",
+        "page": "Página"
+      }
+    },
     "alerts": {
       "title": "Alertas recientes",
       "viewAll": "Ver todo",

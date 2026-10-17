@@ -315,6 +315,17 @@
       "target": "Target",
       "time": "Time"
     },
+    "recentlyViewed": {
+      "title": "Pick up where you left off",
+      "kind": {
+        "device": "Device",
+        "org": "Organization",
+        "ticket": "Ticket",
+        "alert": "Alert",
+        "site": "Site",
+        "page": "Page"
+      }
+    },
     "alerts": {
       "title": "Recent Alerts",
       "viewAll": "View all",
