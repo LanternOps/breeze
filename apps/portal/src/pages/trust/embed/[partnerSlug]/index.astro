@@ -1,0 +1,18 @@
+---
+// PUBLIC, FRAMABLE (Trust Center W03a): the partner-home page's embed card. Same rules as [orgSlug].astro.
+import TrustEmbedLayout from '../../../../layouts/TrustEmbedLayout.astro';
+import TrustEmbedCard from '../../../../components/trust/TrustEmbedCard.astro';
+import { getTrustEmbedCard, trustEmbedFullPagePath } from '../../../../lib/trustEmbed';
+import { publicServerApiConfig } from '../../../../lib/server';
+import { withBase } from '../../../../lib/basePath';
+import { publicOriginFor } from '../../../../lib/publicOrigin';
+
+const { partnerSlug } = Astro.params;
+const card = await getTrustEmbedCard(partnerSlug!, null, { ...publicServerApiConfig(Astro.request), timeoutMs: 3000 });
+if (!card || card.frameAncestors.length === 0) return new Response('Not Found', { status: 404 });
+Astro.locals.trustEmbedOrigins = card.frameAncestors;
+const fullPageUrl = new URL(withBase(trustEmbedFullPagePath(partnerSlug!, null)), publicOriginFor(Astro.request, Astro.url)).toString();
+---
+<TrustEmbedLayout title={card.title} canonicalUrl={fullPageUrl} accent={card.primaryColor}>
+  <TrustEmbedCard card={card} fullPageUrl={fullPageUrl} />
+</TrustEmbedLayout>
