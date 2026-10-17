@@ -93,6 +93,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_dns_security', description: 'DNS security analysis', category: 'Network & DNS' },
       // Security & Compliance
       { name: 'get_security_posture', description: 'Security posture scores', category: 'Security & Compliance' },
+      { name: 'get_trust_page_status', description: 'Public trust page status', category: 'Security & Compliance' },
       { name: 'security_scan (vulnerabilities)', description: 'Query vulnerability data', category: 'Security & Compliance' },
       { name: 'get_software_compliance', description: 'Software compliance checks', category: 'Security & Compliance' },
       { name: 'query_compliance_policies', description: 'List compliance policies', category: 'Security & Compliance' },
@@ -463,6 +464,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'apply_cis_remediation', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'get_cis_compliance', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
   { toolName: 'get_cis_device_report', tier: 1, permission: 'devices.read', category: 'Security & Compliance' },
+  { toolName: 'get_trust_page_status', tier: 1, permission: 'organizations.read', category: 'Security & Compliance' },
   { toolName: 'assign_security_training', tier: 2, permission: 'users.write', category: 'Security & Compliance' },
   { toolName: 'collect_evidence', tier: 2, permission: 'devices.execute', category: 'Security & Compliance' },
   { toolName: 'execute_containment', tier: 3, permission: 'devices.execute', category: 'Security & Compliance' },
@@ -566,6 +568,7 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Security
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
   get_security_posture: 'devices.read',
+  get_trust_page_status: 'organizations.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
   system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },
