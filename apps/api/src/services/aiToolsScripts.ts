@@ -52,6 +52,8 @@ import { isAgentConfigPath, isDeniedRegistryTarget } from '../routes/systemTools
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { inToolDbPhase } from './aiToolDbContext';
 import { aiPathRefusal, PATH_BLOCKED_MESSAGE } from './aiPathRestriction';
+import { findProfilePathInScript } from './aiScriptProfilePathScan';
+import { resolveDevicePolicyForGate } from './aiDevicePathPolicy';
 
 // Fix 4b: headroom under MAX_TOOL_RESULT_CHARS (8000) for the rest of the
 // get_script_execution envelope once stdout/stderr are counted at their
@@ -349,6 +351,35 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       return JSON.stringify({ error: `proposal_not_runnable: ${runnable.reason}`, proposalId: input.proposalId });
     }
     const snapshot = proposalDispatchSnapshot(runnable.proposal, proposalDeviceIds);
+    // AI data policy (spec 2026-10-15 §2, best effort): an AI-authored
+    // proposal whose content names a user-profile path is refused unless every
+    // target device's org allows any_with_approval. Resolved from the DEVICE
+    // orgs with the executeTool gate's own resolver, so an unestablished
+    // partner refuses here too. Library scripts (scriptId) are human-authored
+    // and exempt; proposals take no parameters (runnable.ts), so the content
+    // is all there is to scan. Literal spellings only: a constructed path is
+    // not caught, and `off` does not make arbitrary scripts document-proof.
+    const profileHit = findProfilePathInScript(typeof runnable.proposal.content === 'string' ? runnable.proposal.content : '');
+    if (profileHit) {
+      const policy = await inToolDbPhase(auth, async () => {
+        const verified: Array<{ orgId: string }> = [];
+        for (const deviceId of proposalDeviceIds) {
+          const access = await verifyDeviceAccess(deviceId, auth);
+          if ('device' in access) verified.push(access.device);
+        }
+        return resolveDevicePolicyForGate(verified);
+      });
+      if (policy.deviceFileReadLevel !== 'any_with_approval') {
+        const level = policy.deviceFileReadLevel;
+        const source = policy.source.deviceFileReadLevel;
+        return JSON.stringify({
+          error: `This script proposal reads a user profile path (${profileHit}), which the AI data policy refuses (level: ${level}, set by: ${source}). Rewrite the script without it, or ask an administrator for a diagnostic access grant and read the file with diagnostic_read_file.`,
+          condition: 'policy_denied',
+          policy: { level, source },
+          proposalId: input.proposalId,
+        });
+      }
+    }
     // #5645 — spec §4.1 `approval_method` is DERIVED from the releasing
     // intent's decision record (§4.6), which both release paths put on the
     // context next to `actionIntentId`. Resolved once per call, never per
