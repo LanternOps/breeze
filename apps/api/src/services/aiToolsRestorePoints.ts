@@ -115,7 +115,7 @@ export function registerRestorePointTools(aiTools: Map<string, AiTool>): void {
         })
         .from(t)
         .where(and(...conditions))
-        .orderBy(desc(t.requestedAt), desc(t.requestId))
+        .orderBy(desc(t.requestedAt), desc(t.requestId), desc(t.id))
         .limit(page.limit + 1)
         .offset(page.offset);
 

@@ -107,6 +107,7 @@ describe('list_device_restore_point_attempts', () => {
     expect(order).toEqual([
       '"device_restore_point_attempts"."requested_at" desc',
       '"device_restore_point_attempts"."request_id" desc',
+      '"device_restore_point_attempts"."id" desc',
     ]);
   });
 
