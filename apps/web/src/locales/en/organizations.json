@@ -237,6 +237,41 @@
         "title": "Document access requests"
       },
       "inheritance": {
+        "sources": {
+          "page": "Set for this organization",
+          "template": "Partner template",
+          "default": "Breeze default"
+        },
+        "reset": "Reset to inherited",
+        "intro": {
+          "template": "Use the partner template intro",
+          "none": "No intro",
+          "custom": "Custom",
+          "inheritedEmpty": "Nothing is inherited, so the page shows no intro."
+        },
+        "template": {
+          "heading": "Trust Center defaults",
+          "description": "Defaults for every customer trust page. A setting an organization chooses for itself always wins. Published pages pick up changes the next time they are republished.",
+          "readOnly": "Only partner admins with access to every organization can change these defaults.",
+          "loadFailed": "Couldn't load the Trust Center defaults.",
+          "inheritOption": "Breeze default ({{value}})",
+          "on": "On",
+          "off": "Off",
+          "introLabel": "Default intro",
+          "introHint": "Leave blank for no intro.",
+          "hiddenLabel": "Controls hidden by default",
+          "hiddenDefault": "Breeze default (show every control)",
+          "hiddenCustom": "Hide the controls I pick",
+          "frameworksLabel": "Framework view",
+          "frameworksCustom": "Show the frameworks I pick",
+          "showHistoryLabel": "Show the 90-day history",
+          "showHistoryDescription": "A chart of how many controls were met over the last 90 days.",
+          "save": "Save defaults",
+          "saved": "Trust Center defaults saved",
+          "saveFailed": "Couldn't save the Trust Center defaults",
+          "mfaRequired": "Changing these defaults requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+          "revisionMismatch": "Someone else changed these defaults. Reload to see their changes."
+        },
         "title": "Inherited settings"
       },
       "title": "Trust Center",

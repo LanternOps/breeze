@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Trust Center",
+        "description": "Defaults for your customers' trust pages"
+      },
       "company": {
         "label": "Company",
         "description": "Name, address, contacts"

@@ -237,6 +237,41 @@
         "title": "Belge erişim talepleri"
       },
       "inheritance": {
+        "sources": {
+          "page": "Bu kuruluş için ayarlandı",
+          "template": "İş ortağı şablonu",
+          "default": "Breeze varsayılanı"
+        },
+        "reset": "Devralınan değere sıfırla",
+        "intro": {
+          "template": "İş ortağı şablonunun girişini kullan",
+          "none": "Giriş yok",
+          "custom": "Özel",
+          "inheritedEmpty": "Hiçbir şey devralınmıyor, bu yüzden sayfada giriş gösterilmez."
+        },
+        "template": {
+          "heading": "Güven Merkezi varsayılanları",
+          "description": "Tüm müşteri güven sayfaları için varsayılanlar. Bir kuruluşun kendisi için seçtiği ayar her zaman geçerlidir. Yayımlanmış sayfalar değişiklikleri bir sonraki yeniden yayımlamada alır.",
+          "readOnly": "Bu varsayılanları yalnızca tüm kuruluşlara erişimi olan iş ortağı yöneticileri değiştirebilir.",
+          "loadFailed": "Güven Merkezi varsayılanları yüklenemedi.",
+          "inheritOption": "Breeze varsayılanı ({{value}})",
+          "on": "Açık",
+          "off": "Kapalı",
+          "introLabel": "Varsayılan giriş",
+          "introHint": "Giriş olmaması için boş bırakın.",
+          "hiddenLabel": "Varsayılan olarak gizlenen kontroller",
+          "hiddenDefault": "Breeze varsayılanı (tüm kontrolleri göster)",
+          "hiddenCustom": "Seçtiğim kontrolleri gizle",
+          "frameworksLabel": "Çerçeve görünümü",
+          "frameworksCustom": "Seçtiğim çerçeveleri göster",
+          "showHistoryLabel": "90 günlük geçmişi göster",
+          "showHistoryDescription": "Son 90 günde kaç kontrolün karşılandığını gösteren bir grafik.",
+          "save": "Varsayılanları kaydet",
+          "saved": "Güven Merkezi varsayılanları kaydedildi",
+          "saveFailed": "Güven Merkezi varsayılanları kaydedilemedi",
+          "mfaRequired": "Bu varsayılanları değiştirmek için çok faktörlü kimlik doğrulama gerekir. Profil güvenlik ayarlarınızda MFA’yı etkinleştirip tekrar deneyin.",
+          "revisionMismatch": "Bu varsayılanları başka biri değiştirdi. Değişiklikleri görmek için yeniden yükleyin."
+        },
         "title": "Devralınan ayarlar"
       },
       "title": "Güven Merkezi",

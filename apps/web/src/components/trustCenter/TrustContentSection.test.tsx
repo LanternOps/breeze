@@ -43,9 +43,48 @@ describe('TrustContentSection', () => {
     fireEvent.click(screen.getByTestId('trust-content-save'));
     await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', expect.objectContaining({ introHtml: '' })));
   });
-  it('the intro editor shows the EFFECTIVE intro (e.g. inherited), not only the page column', () => {
-    mount(true, { ...page, introHtml: null }, { values: { ...effectiveOf(page).values, introHtml: '<p>From template</p>' }, sources: { ...effectiveOf(page).sources, introHtml: 'template' } });
-    expect(screen.getByTestId('trust-content-intro')).toHaveValue('<p>From template</p>');
+  describe('W02g intro inheritance', () => {
+    const inherited = (introHtml: string | null, source: string) => ({
+      values: { ...effectiveOf(page).values, introHtml }, sources: { ...effectiveOf(page).sources, introHtml: source },
+    });
+    it('a page with no intro of its own (null) shows the inherited intro read-only, with its source', () => {
+      mount(true, { ...page, introHtml: null }, inherited('<p>From template</p>', 'template'));
+      expect(screen.getByTestId('trust-content-intro-mode-template')).toBeChecked();
+      expect(screen.getByTestId('trust-content-intro-inherited')).toHaveValue('<p>From template</p>');
+      expect(screen.getByTestId('trust-content-intro-inherited-wrap')).toHaveAttribute('inert');
+      expect(screen.queryByTestId('trust-content-intro')).toBeNull();
+      expect(screen.getByTestId('trust-inheritance-introHtml')).toHaveTextContent('Partner template');
+    });
+    it('inheriting with nothing to inherit says so', () => {
+      mount(true, { ...page, introHtml: null }, inherited(null, 'default'));
+      expect(screen.getByTestId('trust-content-intro-inherited-empty')).toBeInTheDocument();
+      expect(screen.getByTestId('trust-inheritance-introHtml')).toHaveTextContent('Breeze default');
+    });
+    it('"Use the partner template intro" saves introHtml: null (inherit)', async () => {
+      mount();
+      fireEvent.click(screen.getByTestId('trust-content-intro-mode-template'));
+      fireEvent.click(screen.getByTestId('trust-content-save'));
+      await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', expect.objectContaining({ introHtml: null })));
+    });
+    it('"No intro" saves the explicit empty intro \'\'', async () => {
+      mount(true, { ...page, introHtml: null }, inherited('<p>From template</p>', 'template'));
+      fireEvent.click(screen.getByTestId('trust-content-intro-mode-none'));
+      expect(screen.queryByTestId('trust-content-intro-inherited')).toBeNull();
+      fireEvent.click(screen.getByTestId('trust-content-save'));
+      await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', expect.objectContaining({ introHtml: '' })));
+    });
+    it('a page whose own intro is \'\' opens in "No intro"', () => {
+      mount(true, { ...page, introHtml: '' }, inherited(null, 'page'));
+      expect(screen.getByTestId('trust-content-intro-mode-none')).toBeChecked();
+    });
+    it('"Custom" starts from the inherited intro and saves it as the page\'s own', async () => {
+      mount(true, { ...page, introHtml: null }, inherited('<p>From template</p>', 'template'));
+      fireEvent.click(screen.getByTestId('trust-content-intro-mode-custom'));
+      expect(screen.getByTestId('trust-content-intro')).toHaveValue('<p>From template</p>');
+      fireEvent.change(screen.getByTestId('trust-content-intro'), { target: { value: '<p>Ours</p>' } });
+      fireEvent.click(screen.getByTestId('trust-content-save'));
+      await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', expect.objectContaining({ introHtml: '<p>Ours</p>' })));
+    });
   });
   it('rejects a non-https website inline and blocks Save', () => {
     mount();

@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Centro de confianza",
+        "description": "Valores predeterminados para las páginas de confianza de sus clientes"
+      },
       "company": {
         "label": "Compañía",
         "description": "Nombre, dirección, contactos"

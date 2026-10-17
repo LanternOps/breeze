@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Vertrauenszentrum",
+        "description": "Standardwerte für die Vertrauensseiten Ihrer Kunden"
+      },
       "company": {
         "label": "Unternehmen",
         "description": "Name, Adresse, Kontakte"

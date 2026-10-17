@@ -237,6 +237,41 @@
         "title": "Anfragen für Dokumentzugriff"
       },
       "inheritance": {
+        "sources": {
+          "page": "Für diese Organisation festgelegt",
+          "template": "Partnervorlage",
+          "default": "Breeze-Standard"
+        },
+        "reset": "Auf geerbten Wert zurücksetzen",
+        "intro": {
+          "template": "Einleitung der Partnervorlage verwenden",
+          "none": "Keine Einleitung",
+          "custom": "Eigene",
+          "inheritedEmpty": "Es wird nichts geerbt, daher zeigt die Seite keine Einleitung."
+        },
+        "template": {
+          "heading": "Standardwerte des Vertrauenszentrums",
+          "description": "Standardwerte für alle Vertrauensseiten Ihrer Kunden. Eine Einstellung, die eine Organisation selbst wählt, hat immer Vorrang. Veröffentlichte Seiten übernehmen Änderungen bei der nächsten erneuten Veröffentlichung.",
+          "readOnly": "Nur Partner-Administratoren mit Zugriff auf alle Organisationen können diese Standardwerte ändern.",
+          "loadFailed": "Die Standardwerte des Vertrauenszentrums konnten nicht geladen werden.",
+          "inheritOption": "Breeze-Standard ({{value}})",
+          "on": "An",
+          "off": "Aus",
+          "introLabel": "Standard-Einleitung",
+          "introHint": "Leer lassen für keine Einleitung.",
+          "hiddenLabel": "Standardmäßig ausgeblendete Kontrollen",
+          "hiddenDefault": "Breeze-Standard (alle Kontrollen anzeigen)",
+          "hiddenCustom": "Die von mir gewählten Kontrollen ausblenden",
+          "frameworksLabel": "Framework-Ansicht",
+          "frameworksCustom": "Die von mir gewählten Frameworks anzeigen",
+          "showHistoryLabel": "90-Tage-Verlauf anzeigen",
+          "showHistoryDescription": "Ein Diagramm, wie viele Kontrollen in den letzten 90 Tagen erfüllt waren.",
+          "save": "Standardwerte speichern",
+          "saved": "Standardwerte des Vertrauenszentrums gespeichert",
+          "saveFailed": "Die Standardwerte des Vertrauenszentrums konnten nicht gespeichert werden",
+          "mfaRequired": "Zum Ändern dieser Standardwerte ist eine Multi-Faktor-Authentifizierung erforderlich. Aktivieren Sie MFA in den Sicherheitseinstellungen Ihres Profils und versuchen Sie es erneut.",
+          "revisionMismatch": "Jemand anderes hat diese Standardwerte geändert. Laden Sie neu, um die Änderungen zu sehen."
+        },
         "title": "Geerbte Einstellungen"
       },
       "title": "Vertrauenszentrum",

@@ -237,6 +237,41 @@
         "title": "Solicitudes de acceso a documentos"
       },
       "inheritance": {
+        "sources": {
+          "page": "Definido para esta organización",
+          "template": "Plantilla del socio",
+          "default": "Predeterminado de Breeze"
+        },
+        "reset": "Restablecer valor heredado",
+        "intro": {
+          "template": "Usar la introducción de la plantilla del socio",
+          "none": "Sin introducción",
+          "custom": "Personalizada",
+          "inheritedEmpty": "No se hereda nada, así que la página no muestra introducción."
+        },
+        "template": {
+          "heading": "Valores predeterminados del Centro de confianza",
+          "description": "Valores predeterminados para todas las páginas de confianza de los clientes. Una configuración que la organización elige para sí siempre prevalece. Las páginas publicadas reciben los cambios la próxima vez que se vuelvan a publicar.",
+          "readOnly": "Solo los administradores del socio con acceso a todas las organizaciones pueden cambiar estos valores.",
+          "loadFailed": "No se pudieron cargar los valores predeterminados del Centro de confianza.",
+          "inheritOption": "Predeterminado de Breeze ({{value}})",
+          "on": "Activado",
+          "off": "Desactivado",
+          "introLabel": "Introducción predeterminada",
+          "introHint": "Déjelo en blanco para no tener introducción.",
+          "hiddenLabel": "Controles ocultos de forma predeterminada",
+          "hiddenDefault": "Predeterminado de Breeze (mostrar todos los controles)",
+          "hiddenCustom": "Ocultar los controles que elija",
+          "frameworksLabel": "Vista por marco",
+          "frameworksCustom": "Mostrar los marcos que elija",
+          "showHistoryLabel": "Mostrar el historial de 90 días",
+          "showHistoryDescription": "Un gráfico de cuántos controles se cumplieron en los últimos 90 días.",
+          "save": "Guardar valores",
+          "saved": "Valores del Centro de confianza guardados",
+          "saveFailed": "No se pudieron guardar los valores del Centro de confianza",
+          "mfaRequired": "Cambiar estos valores requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil e inténtelo de nuevo.",
+          "revisionMismatch": "Otra persona cambió estos valores. Recargue para ver sus cambios."
+        },
         "title": "Configuración heredada"
       },
       "title": "Centro de confianza",

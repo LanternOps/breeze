@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Güven Merkezi",
+        "description": "Müşterilerinizin güven sayfaları için varsayılanlar"
+      },
       "company": {
         "label": "Şirket",
         "description": "İsim, adres, kişiler"

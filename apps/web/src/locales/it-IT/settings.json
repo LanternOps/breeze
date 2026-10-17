@@ -1050,6 +1050,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Centro di fiducia",
+        "description": "Valori predefiniti per le pagine di fiducia dei tuoi clienti"
+      },
       "company": {
         "label": "Azienda",
         "description": "Nome, indirizzo, contatti"
