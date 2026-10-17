@@ -2698,5 +2698,10 @@
     "errors": {
       "loadFailed": "Düzeltme belleği yüklenemedi."
     }
+  },
+  "islandError": {
+    "title": "Bu bölüm çöktü",
+    "description": "Bir görüntüleme hatası bu sayfanın gösterilmesini engelledi. Tekrar deneyin; sorun devam ederse bildirirken aşağıdaki mesajı ekleyin.",
+    "retry": "Tekrar dene"
   }
 }

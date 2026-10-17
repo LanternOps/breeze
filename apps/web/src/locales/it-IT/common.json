@@ -2698,5 +2698,10 @@
     "errors": {
       "loadFailed": "Impossibile caricare la memoria delle correzioni."
     }
+  },
+  "islandError": {
+    "title": "Questa sezione si è bloccata",
+    "description": "Un errore di rendering ha impedito la visualizzazione di questa pagina. Riprova e, se il problema persiste, includi il messaggio qui sotto nella segnalazione.",
+    "retry": "Riprova"
   }
 }
