@@ -23,8 +23,8 @@ import (
 // reversible transform. #6263 W01 / spec D6.
 
 const (
-	quarantinePayloadExt      = ".bqz"
-	quarantineManifestExt     = ".bqz.json"
+	quarantinePayloadExt  = ".bqz"
+	quarantineManifestExt = ".bqz.json"
 	// quarantineManifestVersion is what this agent writes. v2 (#6263 W02)
 	// adds ruleName/ruleSetId; readers accept every version in
 	// supportedManifestVersions.
