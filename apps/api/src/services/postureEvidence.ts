@@ -6,7 +6,7 @@
 //  6 device_patches pending+severity  [edr gate + edr_endpoints, when allowed]
 //  7 dns  8 backup_configs  9 c2c  10 m365  11 google  12 pam_org_config
 // 13 pam_rules  14 elevation_requests  (15 loadPartnerPolicy)  16 posture snapshot
-// 17 cis (if includeCis)  18 device_patches scanned-set
+// 17 cis (if includeCis)  [17b latest-scan findings, only if includeCisSafeguards]  18 device_patches scanned-set
 import { and, desc, eq, gte, inArray, ne } from 'drizzle-orm';
 import type { z } from 'zod';
 import { db } from '../db';
@@ -46,7 +46,12 @@ import { loadBackupProviderEvidence } from './securityComplianceReportBackupProv
 import { EDR_PRODUCT_LABEL, loadEdrDeviceCoverage } from './securityComplianceReportEdr';
 import { classifyDeviceProtection } from './portal/protection';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
-import { emptyControlEvidence, type ControlEvidence, type PostureControlEvidence } from '@breeze/shared';
+import {
+  CIS_BENCHMARK_CHECK_SAFEGUARDS, emptyControlEvidence, safeguardsForCheck,
+  type BenchmarkOs, type ControlEvidence, type PostureControlEvidence, type SafeguardEvidence,
+} from '@breeze/shared';
+import { trustCisFrameworkViewEnabled } from '../config/env';
+import { cisFindingSchema } from '../db/schema/cisHardening';
 
 export interface PostureEvidencePolicy {
   sites: string[];
@@ -56,6 +61,11 @@ export interface PostureEvidencePolicy {
   maxAvDefinitionsAgeDays: number;
   maxSecurityStatusAgeDays: number;
   includeCis: boolean;
+  /**
+   * Trust Center W3e: also read the latest fresh scan's findings and report per-CIS-safeguard evidence under
+   * hardening_baseline. Needs includeCis. Always false for the report path.
+   */
+  includeCisSafeguards: boolean;
   monitoringWindowHours: number;
 }
 
@@ -80,6 +90,7 @@ export function postureEvidencePolicyFromReportConfig(
     maxAvDefinitionsAgeDays: cfg.maxAvDefinitionsAgeDays,
     maxSecurityStatusAgeDays: cfg.maxSecurityStatusAgeDays,
     includeCis: cfg.includeCis,
+    includeCisSafeguards: false,
     monitoringWindowHours: 24,
   };
 }
@@ -93,6 +104,8 @@ export const TRUST_PAGE_EVIDENCE_POLICY: PostureEvidencePolicy = {
   maxAvDefinitionsAgeDays: 7,
   maxSecurityStatusAgeDays: 30,
   includeCis: true,
+  // Read at call time (not module load): the CIS framework view is a deployment switch operators flip.
+  get includeCisSafeguards() { return trustCisFrameworkViewEnabled(); },
   monitoringWindowHours: 24,
 };
 
@@ -223,6 +236,50 @@ export function localAdminCount(summary: unknown): number | null {
   if (!summary || typeof summary !== 'object') return null;
   const s = summary as Record<string, unknown>;
   return typeof s.adminCount === 'number' ? s.adminCount : null;
+}
+
+const BENCHMARK_OSES = new Set<string>(Object.keys(CIS_BENCHMARK_CHECK_SAFEGUARDS));
+
+/**
+ * Per-safeguard hardening evidence (W3e). A device is ELIGIBLE for a safeguard when its OS has at least one agent
+ * check mapped to it; ASSESSED when its fresh latest scan holds a pass/fail result for one of those checks
+ * (not_applicable and error assess nothing); PASSING when none of those results failed. Counts only.
+ */
+function computeSafeguardEvidence(
+  deviceRows: ReadonlyArray<{ id: string; osType: string | null }>,
+  freshScans: ReadonlyMap<string, { checkedAt: Date | null }>,
+  findingsByDevice: ReadonlyMap<string, ReadonlyArray<{ checkId: string; status: string }>>,
+): Record<string, SafeguardEvidence> {
+  const out: Record<string, SafeguardEvidence> = {};
+  const slot = (ref: string): SafeguardEvidence => (out[ref] ??= { eligible: 0, assessed: 0, passing: 0, newestEvidenceAt: null });
+  for (const d of deviceRows) {
+    const os = d.osType ?? '';
+    if (!BENCHMARK_OSES.has(os)) continue;
+    const table = CIS_BENCHMARK_CHECK_SAFEGUARDS[os as BenchmarkOs];
+    const eligibleRefs = new Set<string>();
+    for (const refs of Object.values(table)) for (const ref of refs) eligibleRefs.add(ref);
+    for (const ref of eligibleRefs) slot(ref).eligible += 1;
+
+    const scan = freshScans.get(d.id);
+    if (!scan) continue;
+    const tally = new Map<string, { fail: number; seen: number }>();
+    for (const f of findingsByDevice.get(d.id) ?? []) {
+      if (f.status !== 'pass' && f.status !== 'fail') continue;
+      for (const ref of safeguardsForCheck(os, f.checkId)) {
+        const t = tally.get(ref) ?? { fail: 0, seen: 0 };
+        t.seen += 1;
+        if (f.status === 'fail') t.fail += 1;
+        tally.set(ref, t);
+      }
+    }
+    for (const [ref, t] of tally) {
+      const s = slot(ref);
+      s.assessed += 1;
+      if (t.fail === 0) s.passing += 1;
+      s.newestEvidenceAt = newer(s.newestEvidenceAt, scan.checkedAt);
+    }
+  }
+  return out;
 }
 
 function bump(c: ControlEvidence, assessed: boolean, passing: boolean, evidenceAt?: Date | null): void {
@@ -456,9 +513,11 @@ export async function loadPostureEvidence(
   // scan is stale is not assessed (an older scan is staler still).
   const cisByDevice = new Map<string, { pct: number; checkedAt: Date | null }>();
   const cisSeen = new Set<string>();
+  const cisFreshResultIds: string[] = [];
   if (policy.includeCis) {
     const cisRows = await db
       .select({
+        id: cisBaselineResults.id,
         deviceId: cisBaselineResults.deviceId,
         passedChecks: cisBaselineResults.passedChecks,
         totalChecks: cisBaselineResults.totalChecks,
@@ -475,6 +534,25 @@ export async function loadPostureEvidence(
         pct: r.totalChecks > 0 ? Math.round((r.passedChecks / r.totalChecks) * 100) : 0,
         checkedAt: r.checkedAt ?? null,
       });
+      if (r.id) cisFreshResultIds.push(r.id);
+    }
+  }
+
+  // 17b W3e — findings of ONLY the latest fresh scan per device (never the history), when asked for. Failing to
+  // parse one element skips that element, not the device.
+  const safeguardFindings = new Map<string, Array<{ checkId: string; status: string }>>();
+  if (policy.includeCis && policy.includeCisSafeguards && cisFreshResultIds.length > 0) {
+    const findingRows = await db
+      .select({ deviceId: cisBaselineResults.deviceId, findings: cisBaselineResults.findings })
+      .from(cisBaselineResults)
+      .where(and(eq(cisBaselineResults.orgId, orgId), inArray(cisBaselineResults.id, cisFreshResultIds)));
+    for (const r of findingRows) {
+      const parsed: Array<{ checkId: string; status: string }> = [];
+      for (const el of Array.isArray(r.findings) ? r.findings : []) {
+        const p = cisFindingSchema.safeParse(el);
+        if (p.success) parsed.push({ checkId: p.data.checkId, status: p.data.status });
+      }
+      safeguardFindings.set(r.deviceId, parsed);
     }
   }
 
@@ -635,6 +713,10 @@ export async function loadPostureEvidence(
     policy.includeCis && cisValues.length > 0
       ? Math.round(cisValues.reduce((a, b) => a + b, 0) / cisValues.length)
       : null;
+
+  if (policy.includeCis && policy.includeCisSafeguards) {
+    controls.hardening_baseline.safeguards = computeSafeguardEvidence(deviceRows, cisByDevice, safeguardFindings);
+  }
 
   if (orgWide) applyOrgWide(controls, orgWide);
 

@@ -19,7 +19,7 @@ const AS_OF = new Date('2026-10-13T12:00:00.000Z');
 const recent = new Date('2026-10-13T10:00:00.000Z');
 
 /** Positional sequence 1–14, 16–18 (15 is loadPartnerPolicy, mocked). `edrSlot` inserts the edr_endpoints read after slot 6. */
-function mockQueries(over: Partial<Record<number, unknown[]>> = {}, opts: { edrSlot?: unknown[] } = {}) {
+function mockQueries(over: Partial<Record<number, unknown[]>> = {}, opts: { edrSlot?: unknown[]; cisFindings?: unknown[] } = {}) {
   const seq: unknown[][] = [
     /* 1 */ [{ id: ORG, name: 'Acme', partnerId: 'p1' }],
     /* 2 */ [
@@ -40,6 +40,8 @@ function mockQueries(over: Partial<Record<number, unknown[]>> = {}, opts: { edrS
     /* 18 */ [{ deviceId: 'd1' }, { deviceId: 'd2' }],
   ];
   for (const [i, rows] of Object.entries(over)) if (rows) seq[Number(i) - 1] = rows;
+  // W3e: with includeCisSafeguards the latest-scan findings read follows the cis read (index 15) directly.
+  if (opts.cisFindings) seq.splice(16, 0, opts.cisFindings);
   if (opts.edrSlot) seq.splice(6, 0, opts.edrSlot);
   const m = vi.mocked(db.select); m.mockReset();
   for (const rows of seq) m.mockReturnValueOnce(selectChain(rows));
@@ -261,6 +263,87 @@ describe('loadPostureEvidence', () => {
       ]));
       // org-wide reads stay aligned after the extra slot
       expect(ev.report.orgWide?.postureRow).toEqual({ overallScore: 82 });
+    });
+  });
+
+  describe('per-safeguard hardening evidence (W3e)', () => {
+    const withSafeguards = { ...TRUST_PAGE_EVIDENCE_POLICY, includeCisSafeguards: true };
+    const scan = (deviceId: string, over: Record<string, unknown> = {}) => ({ id: `scan-${deviceId}`, deviceId, passedChecks: 9, totalChecks: 10, checkedAt: recent, ...over });
+    const f = (checkId: string, status: string) => ({ checkId, title: `Ensure '${checkId}' verbatim recommendation text`, severity: 'medium', status });
+    const run = async (cisRows: unknown[], findingRows: unknown[], policy = withSafeguards) => {
+      mockQueries({ 16: cisRows }, { cisFindings: findingRows });
+      return loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, policy, AS_OF);
+    };
+
+    it('counts eligible/assessed/passing per safeguard from the latest fresh scan', async () => {
+      const ev = await run([scan('d1')], [{ deviceId: 'd1', findings: [f('9.1.1', 'pass'), f('2.3.1', 'fail')] }]);
+      const sg = ev.controls.hardening_baseline.safeguards!;
+      // 4.5 is mapped on windows (9.1.1) and macos (5.1.1): all 3 eligible devices could evidence it; only d1 has.
+      expect(sg['4.5']).toEqual({ eligible: 3, assessed: 1, passing: 1, newestEvidenceAt: recent.toISOString() });
+      // 4.7 is windows-only: d1 + d3 eligible, the macOS d2 is not.
+      expect(sg['4.7']).toEqual({ eligible: 2, assessed: 1, passing: 0, newestEvidenceAt: recent.toISOString() });
+    });
+
+    it('a macOS device does not become eligible for a Windows-only safeguard', async () => {
+      const ev = await run([], []);
+      const sg = ev.controls.hardening_baseline.safeguards!;
+      expect(sg['8.5']).toMatchObject({ eligible: 2, assessed: 0, passing: 0 }); // d1 + d3 (windows); d2 (macos) excluded
+      expect(sg['3.6']).toMatchObject({ eligible: 1 }); // FileVault: macos only → d2
+    });
+
+    it('a device passes a safeguard only when every mapped check with a result passes', async () => {
+      const both = await run([scan('d1')], [{ deviceId: 'd1', findings: [f('1.1.1', 'pass'), f('1.1.2', 'pass')] }]);
+      expect(both.controls.hardening_baseline.safeguards!['5.2']).toMatchObject({ assessed: 1, passing: 1 });
+      const one = await run([scan('d1')], [{ deviceId: 'd1', findings: [f('1.1.1', 'pass'), f('1.1.2', 'fail')] }]);
+      expect(one.controls.hardening_baseline.safeguards!['5.2']).toMatchObject({ assessed: 1, passing: 0 });
+    });
+
+    it('not_applicable and error findings do not assess a safeguard', async () => {
+      const ev = await run([scan('d1')], [{ deviceId: 'd1', findings: [f('9.1.1', 'not_applicable'), f('2.3.1', 'error')] }]);
+      const sg = ev.controls.hardening_baseline.safeguards!;
+      expect(sg['4.5']).toMatchObject({ assessed: 0, passing: 0, newestEvidenceAt: null });
+      expect(sg['4.7']).toMatchObject({ assessed: 0, passing: 0, newestEvidenceAt: null });
+    });
+
+    it('a stale latest scan contributes nothing and its findings are not read', async () => {
+      const old = new Date(AS_OF.getTime() - 31 * 86400000);
+      mockQueries({ 16: [scan('d1', { checkedAt: old })] }); // no findings slot: a stale scan must not trigger the read
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, withSafeguards, AS_OF);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19);
+      expect(ev.controls.hardening_baseline.safeguards!['4.5']).toMatchObject({ assessed: 0, passing: 0 });
+    });
+
+    it('a check the mapping does not know, and a malformed finding, assess nothing and do not throw', async () => {
+      const ev = await run([scan('d1')], [{ deviceId: 'd1', findings: [f('99.9.9', 'pass'), f('2.3.7', 'pass'), { checkId: 5 }, null, f('9.1.1', 'pass')] }]);
+      const sg = ev.controls.hardening_baseline.safeguards!;
+      expect(sg['4.5']).toMatchObject({ assessed: 1, passing: 1 });
+      expect(sg['4.7']).toMatchObject({ assessed: 0 });
+    });
+
+    it('includeCisSafeguards = false issues no findings query and leaves safeguards undefined', async () => {
+      mockQueries();
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(19); // unchanged from the no-safeguards baseline above
+      expect(ev.controls.hardening_baseline.safeguards).toBeUndefined();
+    });
+
+    it('with the flag on but includeCis off nothing is read or reported', async () => {
+      mockQueries();
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, { ...withSafeguards, includeCis: false }, AS_OF);
+      expect(ev.controls.hardening_baseline.safeguards).toBeUndefined();
+    });
+
+    it('the report path leaves the flag off; the trust policy follows the CIS gate at call time', () => {
+      expect(postureEvidencePolicyFromReportConfig(securityCompliancePostureConfigSchema.parse({})).includeCisSafeguards).toBe(false);
+      const prev = process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+      try {
+        process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'true';
+        expect(TRUST_PAGE_EVIDENCE_POLICY.includeCisSafeguards).toBe(true);
+        process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'false';
+        expect(TRUST_PAGE_EVIDENCE_POLICY.includeCisSafeguards).toBe(false);
+      } finally {
+        if (prev === undefined) delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW; else process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = prev;
+      }
     });
   });
 });
