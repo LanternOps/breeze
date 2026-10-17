@@ -10,6 +10,10 @@ const trustMode = vi.hoisted(() => ({ value: 'enforce' as 'off' | 'shadow' | 'en
 vi.mock('../../config/partnerTrustMode', () => ({ partnerTrustMode: () => trustMode.value }));
 const dbm = vi.hoisted(() => ({ select: vi.fn(), transaction: vi.fn(), insert: vi.fn(), update: vi.fn() }));
 vi.mock('../../db', () => ({ db: dbm, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() }));
+// W02f: these sections read their own tables; they are unit-tested in sections/*.test.ts, so keep them off this file's db-call queue.
+vi.mock('./sections/subprocessors', () => ({ freezeSubprocessors: vi.fn(async () => []), buildSubprocessors: vi.fn(() => []) }));
+vi.mock('./sections/faq', () => ({ freezeFaq: vi.fn(async () => []), buildFaq: vi.fn(() => []) }));
+vi.mock('./sections/history', () => ({ buildHistory: vi.fn(async () => []) }));
 import { emptyControlEvidence, TELEMETRY_CONTROL_IDS } from '@breeze/shared';
 import type { TrustPageRow } from '../../db/schema/trustPages';
 import { loadPostureEvidence } from '../postureEvidence';

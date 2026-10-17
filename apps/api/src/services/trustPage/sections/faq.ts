@@ -1,11 +1,28 @@
-// Owner: W02f (FAQ). W02a stub — W02f replaces the bodies, keeping these signatures.
-import type { TrustPagePublicPayload, TrustPublishedConfig } from '@breeze/shared';
+// Owner: W02f (FAQ).
+import { asc, eq } from 'drizzle-orm';
+import { TRUST_FAQ_ANSWER_MAX_CHARS, type TrustPagePublicPayload, type TrustPublishedConfig } from '@breeze/shared';
+import { db } from '../../../db';
+import { trustPageFaqItems } from '../../../db/schema';
+import { sanitizeFlowRichTextHtml } from '../../richTextSanitize';
 import type { SectionBuildContext, SectionDraftContext } from './types';
 
-export async function freezeFaq(_ctx: SectionDraftContext): Promise<TrustPublishedConfig['faq']> {
-  return [];
+/** Re-sanitize (the builder never trusts stored HTML, W1 Ruling 10) and bound it; null = drop the item, never throw. */
+function cleanItem(question: string, answerHtml: string): { question: string; answerHtml: string } | null {
+  const answer = sanitizeFlowRichTextHtml(answerHtml).trim();
+  if (answer.length > TRUST_FAQ_ANSWER_MAX_CHARS) {
+    console.warn('[trustPage] FAQ answer exceeded the payload bound after sanitization; omitted');
+    return null;
+  }
+  return question.trim() ? { question: question.trim().slice(0, 300), answerHtml: answer } : null;
 }
 
-export function buildFaq(_ctx: SectionBuildContext): TrustPagePublicPayload['faq'] {
-  return [];
+/** Publish/preview: copy the draft items in sort order. */
+export async function freezeFaq(ctx: SectionDraftContext): Promise<TrustPublishedConfig['faq']> {
+  const rows = await db.select().from(trustPageFaqItems)
+    .where(eq(trustPageFaqItems.trustPageId, ctx.page.id)).orderBy(asc(trustPageFaqItems.sortOrder));
+  return rows.map((r) => cleanItem(r.question, r.answerHtml)).filter((i): i is NonNullable<typeof i> => i !== null);
+}
+
+export function buildFaq(ctx: SectionBuildContext): TrustPagePublicPayload['faq'] {
+  return ctx.config.faq.map((i) => cleanItem(i.question, i.answerHtml)).filter((i): i is NonNullable<typeof i> => i !== null);
 }
