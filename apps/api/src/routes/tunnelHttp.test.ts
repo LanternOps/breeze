@@ -213,10 +213,8 @@ beforeEach(() => {
   sendCommandMock.mockResolvedValue(okAgentResult());
 });
 
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
-  (await vi.importActual<typeof import('../services/agentCommandAwait')>('../services/agentCommandAwait'))
-    .__resetCancelledPrefixTombstonesForTests();
 });
 
 // Helper: run the ticket flow and return the signed auth cookie value.
@@ -1189,21 +1187,19 @@ it('401s a cookie-less request for a non-UUID tunnel id without querying the ses
 
 describe('ticket exchange vs Close (spec §4 revocation)', () => {
   it('a Close landing between the gates and dispatch yields 502 "Tunnel closed" with no agent send', async () => {
-    const actual = await vi.importActual<typeof import('../services/agentCommandAwait')>('../services/agentCommandAwait');
     const app = makeApp();
     const cookie = await mintCookie(app);
-    // Gates have passed by the time the allowlist lookup runs; Close sweeps there.
+    // Gates have passed by the time the allowlist lookup runs; a Close served
+    // by any replica lands there. The dispatch-time status re-read sees it.
     vi.mocked(getActiveAllowlistPatterns).mockImplementationOnce(async () => {
-      actual.cancelPendingAgentCommandsByPrefix(`http-req-${TUNNEL_ID}-`, 'tunnel_closed');
+      setJoinRow(defaultJoinRow({ status: 'disconnected' }));
       return ['192.168.1.0/24'];
     });
-    sendCommandMock.mockImplementationOnce((...args: Parameters<typeof actual.sendCommandToAgentAwaitResult>) =>
-      actual.sendCommandToAgentAwaitResult(...args));
-    agentSendMock.mockClear();
+    sendCommandMock.mockClear();
     const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
     expect(res.status).toBe(502);
     expect(await res.text()).toBe('Tunnel closed');
-    expect(agentSendMock).not.toHaveBeenCalled();
+    expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
   it('does not reopen a session that Close ended between the ownership read and activation', async () => {
