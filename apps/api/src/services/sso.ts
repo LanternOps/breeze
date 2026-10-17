@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from 'crypto';
-import { createRemoteJWKSet, jwtVerify, customFetch } from 'jose';
+import { createRemoteJWKSet, jwtVerify, customFetch, errors as joseErrors } from 'jose';
 import { safeFetch, SsrfBlockedError, isPrivateIp, isAlwaysBlockedIp } from './urlSafety';
 
 // ============================================
@@ -414,6 +414,56 @@ export function _resetIdTokenJwksCacheForTests(): void {
   idTokenJwksCache.clear();
 }
 
+export interface VerifyIdTokenOptions {
+  /**
+   * Seconds of leeway jose applies to `exp`/`nbf`. Omit for strict checking.
+   * Only the re-auth callback passes one (#8862): Entra answers `max_age=0`
+   * with an id_token whose `exp` is already in the past on arrival. Login and
+   * account-link verification stay strict.
+   */
+  clockToleranceSeconds?: number;
+  /** Callback mode, recorded in the failure log only. */
+  mode?: 'login' | 'link' | 'reauth';
+}
+
+/** A finite number from a decoded claim, else undefined. Never logs free text. */
+function numericClaim(payload: unknown, key: string): number | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * #8862: a verify failure used to leave nothing but the error string, so an
+ * IdP issuing already-expired tokens was indistinguishable from host clock
+ * drift. Log the timing claims next to our own clock. Only the numeric
+ * iat/nbf/exp/auth_time are read from the payload — never the token, its
+ * signature, or identity claims (sub, email, name, nonce).
+ */
+function logIdTokenVerifyFailure(
+  err: unknown,
+  mode: string,
+  clockToleranceSeconds: number | undefined,
+): void {
+  const isClaimFailure =
+    err instanceof joseErrors.JWTExpired || err instanceof joseErrors.JWTClaimValidationFailed;
+  const claimFailure = isClaimFailure
+    ? (err as InstanceType<typeof joseErrors.JWTClaimValidationFailed>)
+    : undefined;
+  console.warn('[sso] id_token verification failed', {
+    mode,
+    code: (err as { code?: unknown })?.code ?? 'unknown',
+    claim: claimFailure?.claim,
+    reason: claimFailure?.reason,
+    iat: numericClaim(claimFailure?.payload, 'iat'),
+    nbf: numericClaim(claimFailure?.payload, 'nbf'),
+    exp: numericClaim(claimFailure?.payload, 'exp'),
+    auth_time: numericClaim(claimFailure?.payload, 'auth_time'),
+    now: Math.floor(Date.now() / 1000),
+    clockToleranceSeconds: clockToleranceSeconds ?? 0,
+  });
+}
+
 /**
  * Cryptographically verify an OIDC id_token: signature against the provider's
  * JWKS plus issuer/audience/expiry/nonce. This is the hardened path — the IdP's
@@ -427,8 +477,10 @@ export function _resetIdTokenJwksCacheForTests(): void {
 export async function verifyIdTokenSignature(
   idToken: string,
   config: OIDCConfig,
-  nonce: string
+  nonce: string,
+  options: VerifyIdTokenOptions = {}
 ): Promise<IDTokenClaims> {
+  const { clockToleranceSeconds, mode = 'unspecified' } = options;
   if (!config.jwksUrl) {
     throw new Error('Cannot verify ID token signature: provider has no JWKS URL configured');
   }
@@ -449,9 +501,14 @@ export async function verifyIdTokenSignature(
       // Restrict to asymmetric algorithms; never accept `none` or HMAC, which
       // would let a token forged with a known/empty key pass verification.
       algorithms: ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'PS256'],
+      // Only applies to the time-based claims (exp/nbf). Undefined = strict.
+      ...(clockToleranceSeconds !== undefined ? { clockTolerance: clockToleranceSeconds } : {}),
     });
     payload = result.payload as unknown as IDTokenClaims;
   } catch (err) {
+    logIdTokenVerifyFailure(err, mode, clockToleranceSeconds);
+    // Deliberately no `cause`: the jose error carries the decoded payload
+    // (email, sub, name), and the callback hands this error to Sentry.
     throw new Error(`ID token signature verification failed: ${(err as Error).message}`);
   }
 

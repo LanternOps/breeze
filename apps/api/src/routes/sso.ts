@@ -618,6 +618,14 @@ async function revalidateSsoDefaultRole(params: {
 
 type SsoCallbackMode = 'login' | 'link' | 'reauth';
 
+/**
+ * #8862: clock leeway (seconds) on the RE-AUTH id_token only. Microsoft Entra
+ * answers `max_age=0` with a token whose `exp` is already past on arrival.
+ * 300s matches Microsoft's own token validator default. Login and link
+ * verification take none.
+ */
+const REAUTH_ID_TOKEN_CLOCK_TOLERANCE_SECONDS = 300;
+
 type LinkRejectReason =
   | 'link_binding_missing'
   | 'link_user_gone'
@@ -2814,7 +2822,56 @@ ssoRoutes.get('/callback', async (c) => {
       clearStateCookie();
       return c.redirect('/login?error=sso_provider_unverified');
     }
-    const idClaims = await verifyIdTokenSignature(tokens.id_token, config, session.nonce);
+    // #8862: re-auth sends `max_age=0`, and Microsoft Entra answers that with
+    // an id_token whose `exp` is already in the past on arrival (iat backdated
+    // ~5 min, exp a few seconds after auth_time). Re-auth verification alone
+    // takes a bounded clock tolerance; freshness is still enforced below by
+    // assertFreshIdpAuthentication (auth_time, ±120s) and the single-use
+    // nonce. Login and link verification stay strict.
+    let idClaims: Awaited<ReturnType<typeof verifyIdTokenSignature>>;
+    try {
+      idClaims = await verifyIdTokenSignature(
+        tokens.id_token,
+        config,
+        session.nonce,
+        callbackMode === 'reauth'
+          ? { clockToleranceSeconds: REAUTH_ID_TOKEN_CLOCK_TOLERANCE_SECONDS, mode: callbackMode }
+          : { mode: callbackMode },
+      );
+    } catch (verifyError) {
+      // Login keeps its existing path: the shared catch below logs, reports to
+      // Sentry, and sends the browser to /login.
+      if (callbackMode === 'login') throw verifyError;
+
+      // Re-auth and link belong to an ALREADY-SIGNED-IN user on
+      // /settings/profile. Sending them to /login abandons the enrollment or
+      // link they were in the middle of, so keep them on the profile page with
+      // a typed reason (same discrimination as the email_unverified branch).
+      // The verifier has already logged the claim diagnostics; the URL gets
+      // only the coarse code, never the error text.
+      console.error(`SSO callback ${callbackMode} id_token verification failed:`, verifyError);
+      captureException(verifyError, c);
+      writeRouteAudit(c, {
+        orgId: provider.orgId,
+        action: callbackMode === 'reauth' ? 'sso.reauth.rejected' : 'sso.identity.link_rejected',
+        resourceType: 'sso_provider',
+        resourceId: provider.id,
+        resourceName: provider.name,
+        result: 'denied',
+        details: {
+          mode: callbackMode,
+          reason: 'idp_verify_failed',
+          partnerId: provider.partnerId,
+          userId: callbackMode === 'reauth' ? session.reauthUserId : session.linkUserId,
+        },
+      });
+      clearStateCookie();
+      return c.redirect(
+        callbackMode === 'reauth'
+          ? '/settings/profile?ssoReauthError=idp_verify_failed'
+          : '/settings/profile?ssoLinkError=idp_verify_failed',
+      );
+    }
 
     // Get user info (display attributes). Bind it to the signed token: per OIDC
     // Core §5.3.2 the userinfo `sub` MUST equal the id_token `sub`; otherwise
