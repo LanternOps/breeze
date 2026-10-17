@@ -162,6 +162,19 @@
         "title": "Controlli dichiarati"
       },
       "frameworks": {
+        "description": "Scegli a quali framework di sicurezza la pagina pubblica associa i propri controlli. Le corrispondenze sono indicative e non una dichiarazione di conformità.",
+        "source": {
+          "page": "Impostato su questa pagina.",
+          "template": "Ereditato dal modello del partner.",
+          "default": "Viene usato il valore predefinito integrato."
+        },
+        "suggested": "Suggerito per la tua regione",
+        "cisLocked": "Disponibile dopo la conferma della licenza CIS",
+        "useDefault": "Usa predefinito",
+        "save": "Salva",
+        "saved": "Vista per framework salvata.",
+        "saveFailed": "Impossibile salvare la vista per framework.",
+        "revisionChanged": "La pagina è cambiata da quando l’hai aperta. Ricarica e riprova.",
         "title": "Vista per framework"
       },
       "subprocessors": {

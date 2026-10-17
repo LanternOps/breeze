@@ -162,6 +162,19 @@
         "title": "Beyan edilen kontroller"
       },
       "frameworks": {
+        "description": "Herkese açık sayfanın kontrollerini hangi güvenlik çerçeveleriyle eşleştireceğini seçin. Eşleştirmeler yol göstericidir, uygunluk beyanı değildir.",
+        "source": {
+          "page": "Bu sayfada ayarlandı.",
+          "template": "İş ortağı şablonundan devralındı.",
+          "default": "Yerleşik varsayılan kullanılıyor."
+        },
+        "suggested": "Bölgeniz için önerilir",
+        "cisLocked": "CIS lisansı doğrulandığında kullanılabilir",
+        "useDefault": "Varsayılanı kullan",
+        "save": "Kaydet",
+        "saved": "Çerçeve görünümü kaydedildi.",
+        "saveFailed": "Çerçeve görünümü kaydedilemedi.",
+        "revisionChanged": "Sayfa siz açtıktan sonra değişti. Yeniden yükleyip tekrar deneyin.",
         "title": "Çerçeve görünümü"
       },
       "subprocessors": {

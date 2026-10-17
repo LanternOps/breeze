@@ -162,6 +162,19 @@
         "title": "Controles declarados"
       },
       "frameworks": {
+        "description": "Escolha a quais frameworks de segurança a página pública associa seus controles. Os mapeamentos são indicativos e não uma declaração de conformidade.",
+        "source": {
+          "page": "Definido nesta página.",
+          "template": "Herdado do modelo do parceiro.",
+          "default": "Usando o padrão integrado."
+        },
+        "suggested": "Sugerido para sua região",
+        "cisLocked": "Disponível após a confirmação da licença do CIS",
+        "useDefault": "Usar padrão",
+        "save": "Salvar",
+        "saved": "Visão por framework salva.",
+        "saveFailed": "Não foi possível salvar a visão por framework.",
+        "revisionChanged": "A página mudou desde que você a abriu. Recarregue e tente novamente.",
         "title": "Visão por framework"
       },
       "subprocessors": {

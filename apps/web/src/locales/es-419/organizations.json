@@ -162,6 +162,19 @@
         "title": "Controles declarados"
       },
       "frameworks": {
+        "description": "Elige a qué marcos de seguridad asocia la página pública sus controles. Las correspondencias son indicativas y no una declaración de cumplimiento.",
+        "source": {
+          "page": "Definido en esta página.",
+          "template": "Heredado de la plantilla del socio.",
+          "default": "Usando el valor predeterminado integrado."
+        },
+        "suggested": "Sugerido para tu región",
+        "cisLocked": "Disponible cuando se confirme la licencia de CIS",
+        "useDefault": "Usar valor predeterminado",
+        "save": "Guardar",
+        "saved": "Vista por marco guardada.",
+        "saveFailed": "No se pudo guardar la vista por marco.",
+        "revisionChanged": "La página cambió desde que la abriste. Vuelve a cargar e inténtalo de nuevo.",
         "title": "Vista por marco"
       },
       "subprocessors": {

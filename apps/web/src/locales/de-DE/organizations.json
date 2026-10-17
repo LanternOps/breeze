@@ -162,6 +162,19 @@
         "title": "Erklärte Kontrollen"
       },
       "frameworks": {
+        "description": "Legen Sie fest, welchen Sicherheits-Frameworks die öffentliche Seite ihre Kontrollen zuordnet. Die Zuordnungen sind Richtwerte und keine Konformitätserklärung.",
+        "source": {
+          "page": "Auf dieser Seite festgelegt.",
+          "template": "Von der Partnervorlage übernommen.",
+          "default": "Integrierter Standard wird verwendet."
+        },
+        "suggested": "Für Ihre Region empfohlen",
+        "cisLocked": "Verfügbar, sobald die CIS-Lizenz bestätigt ist",
+        "useDefault": "Standard verwenden",
+        "save": "Speichern",
+        "saved": "Framework-Ansicht gespeichert.",
+        "saveFailed": "Die Framework-Ansicht konnte nicht gespeichert werden.",
+        "revisionChanged": "Die Seite hat sich seit dem Öffnen geändert. Bitte neu laden und erneut versuchen.",
         "title": "Framework-Ansicht"
       },
       "subprocessors": {

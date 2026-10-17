@@ -162,6 +162,19 @@
         "title": "Declared controls"
       },
       "frameworks": {
+        "description": "Choose which security frameworks the public page maps its controls to. Mappings are indicative, not a statement of compliance.",
+        "source": {
+          "page": "Set on this page.",
+          "template": "Inherited from the partner template.",
+          "default": "Using the built-in default."
+        },
+        "suggested": "Suggested for your region",
+        "cisLocked": "Available once CIS licensing is confirmed",
+        "useDefault": "Use default",
+        "save": "Save",
+        "saved": "Framework view saved.",
+        "saveFailed": "Could not save the framework view.",
+        "revisionChanged": "The page changed since you opened it. Reload and try again.",
         "title": "Framework view"
       },
       "subprocessors": {

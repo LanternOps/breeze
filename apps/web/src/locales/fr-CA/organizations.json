@@ -162,6 +162,19 @@
         "title": "Contrôles déclarés"
       },
       "frameworks": {
+        "description": "Choisissez les cadres de sécurité auxquels la page publique associe ses contrôles. Les correspondances sont indicatives et ne constituent pas une déclaration de conformité.",
+        "source": {
+          "page": "Défini sur cette page.",
+          "template": "Hérité du modèle du partenaire.",
+          "default": "Valeur par défaut intégrée utilisée."
+        },
+        "suggested": "Suggéré pour votre région",
+        "cisLocked": "Disponible dès que la licence CIS est confirmée",
+        "useDefault": "Utiliser la valeur par défaut",
+        "save": "Enregistrer",
+        "saved": "Vue par cadre de référence enregistrée.",
+        "saveFailed": "Impossible d’enregistrer la vue par cadre de référence.",
+        "revisionChanged": "La page a changé depuis son ouverture. Rechargez la page et réessayez.",
         "title": "Vue par cadre de référence"
       },
       "subprocessors": {
