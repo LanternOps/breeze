@@ -773,9 +773,12 @@ describe('edr push hints — durable marker against Postgres (W03 PR-B)', () => 
     await fx.addTenant(`co-${sfx()}`, fx.orgA.id);
     await enablePush(fx.connectionId);
     expect(await recordEdrHint(fx.connectionId, [{ vendorTenantId: 'x' }], null)).toBe(true);
-    // Force a non-zero microsecond component so a JS-Date (ms) compare could never match it.
-    await admin().execute(sql`UPDATE edr_connections SET pending_hint_at = now() - interval '1 second' + interval '123 microseconds' WHERE id = ${fx.connectionId}::uuid`);
-    expect(await marker(fx.connectionId)).toMatch(/\.\d{6}/);
+    // Force a non-zero microsecond component so a JS-Date (ms) compare could never match it. The fraction is
+    // pinned to .123456 (from a second-truncated now()) rather than now() + 123 µs: Postgres trims trailing
+    // fractional zeros in the text form, so a now() whose microseconds happened to end in 7 rendered only
+    // 4–5 digits and failed the six-digit assertion about one run in ten (#9048).
+    await admin().execute(sql`UPDATE edr_connections SET pending_hint_at = date_trunc('second', now()) - interval '1 second' + interval '123456 microseconds' WHERE id = ${fx.connectionId}::uuid`);
+    expect(await marker(fx.connectionId)).toMatch(/\.123456/);
     enqueued.length = 0;
 
     await syncEdrDetections(fx.connectionId);
