@@ -456,6 +456,19 @@ describe('filterEngine related-table fields via correlated subqueries (no joins)
         .toThrow(/Unknown value "Windows" for osType.*windows, macos, linux/);
     });
 
+    // Deployment targets (deploymentTargetResolver) and dynamic-group membership
+    // evaluate saved filters WITHOUT validateFilter in front, so the refusal
+    // must happen in the engine itself, before any query runs — otherwise a
+    // `notEquals "Windows"` target would resolve to every device.
+    it.each([
+      ['evaluateFilter', () => evaluateFilter({ operator: 'AND', conditions: [{ field: 'osType', operator: 'notEquals', value: 'Windows' }] } as FilterConditionGroup, { orgId: 'org-1' })],
+      ['deviceMatchesFilter', () => deviceMatchesFilter('device-1', { operator: 'AND', conditions: [{ field: 'osType', operator: 'notEquals', value: 'Windows' }] } as FilterConditionGroup)],
+    ] as const)('%s rejects with FilterValueError before querying', async (_name, run) => {
+      dbMock.events.length = 0;
+      await expect(run()).rejects.toThrow(FilterValueError);
+      expect(dbMock.events).not.toContain('query');
+    });
+
     it('validateFilter reports the unknown value so routes answer 400', () => {
       const res = validateFilter({ field: 'osType', operator: 'notEquals', value: 'Windows' } as FilterCondition);
       expect(res.valid).toBe(false);
