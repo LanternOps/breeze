@@ -10,6 +10,7 @@ import (
 
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 	"github.com/breeze-rmm/agent/internal/security"
+	"github.com/breeze-rmm/agent/internal/yarascan"
 )
 
 func init() {
@@ -71,9 +72,40 @@ func handleSecurityScan(h *Heartbeat, cmd Command) tools.CommandResult {
 		scanner.Timeout = time.Duration(timeoutMinutes) * time.Minute
 	}
 
+	// #6263 W02 — optional YARA rule sets (contract C1). Absent ⇒ exactly the
+	// W01 legacy scan. Every rule-set problem is reported per set in
+	// ruleSetErrors and never fails the command; with no usable set the
+	// scan falls back to the built-in signatures.
+	ruleSetErrors := []yarascan.RuleSetError{} // always an array on the wire
+	refs, refErr := yarascan.ParseRuleSetRefs(cmd.Payload["ruleSets"])
+	if refErr != nil {
+		ruleSetErrors = append(ruleSetErrors, yarascan.RuleSetError{ID: "*", Code: yarascan.CodeInvalidRefs, Detail: refErr.Error()})
+		cmdLog.Warn("ignoring malformed ruleSets; scanning with built-in signatures", "error", refErr.Error())
+	}
+	if len(refs) > 0 {
+		fetcher := &yarascan.HTTPFetcher{BaseURL: h.ServerURL(), Client: h.httpClient(), AuthHeader: h.authHeader}
+		cache := &yarascan.Cache{Dir: scanner.RuleCacheDirOrDefault(), MaxEntries: yarascan.DefaultEntries}
+		loadCtx, cancelLoad := context.WithTimeout(context.Background(), ruleSetLoadTimeout)
+		m, errs := yarascan.LoadMatcher(loadCtx, refs, fetcher, cache)
+		cancelLoad()
+		ruleSetErrors = append(ruleSetErrors, errs...)
+		if m != nil {
+			defer m.Close()
+			scanner.Matcher = m
+		} else {
+			cmdLog.Warn("no YARA rule set usable; scanning with built-in signatures", "ruleSets", len(refs), "errors", len(errs))
+		}
+		for _, e := range errs {
+			cmdLog.Warn("YARA rule set not used for this scan", "ruleSetId", e.ID, "version", e.Version, "code", e.Code, "detail", e.Detail)
+		}
+	}
+
 	outcome, err := scanner.ScanWithContext(context.Background(), scanType, paths)
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
+	}
+	if outcome.EngineError != "" {
+		ruleSetErrors = append(ruleSetErrors, yarascan.RuleSetError{ID: "*", Code: yarascan.CodeEngineUnavailable, Detail: truncateDetail(outcome.EngineError)})
 	}
 
 	if runtime.GOOS == "windows" && tools.GetPayloadBool(cmd.Payload, "triggerDefender", false) && scanType != "custom" {
@@ -83,16 +115,35 @@ func handleSecurityScan(h *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	return tools.NewSuccessResult(map[string]any{
-		"scanRecordId": scanRecordID,
-		"scanType":     scanType,
-		"durationMs":   outcome.Duration.Milliseconds(),
-		"threatsFound": len(outcome.Threats),
-		"threats":      outcome.Threats,
-		"status":       outcome.Status,
-		"filesScanned": outcome.FilesScanned,
-		"timedOut":     outcome.TimedOut,
-		"partial":      outcome.Partial,
+		"scanRecordId":  scanRecordID,
+		"scanType":      scanType,
+		"durationMs":    outcome.Duration.Milliseconds(),
+		"threatsFound":  len(outcome.Threats),
+		"threats":       outcome.Threats,
+		"status":        outcome.Status,
+		"filesScanned":  outcome.FilesScanned,
+		"timedOut":      outcome.TimedOut,
+		"partial":       outcome.Partial,
+		"engine":        outcome.Engine,
+		"ruleSetErrors": ruleSetErrors,
+		"filesFailed":   outcome.FilesFailed,
 	}, time.Since(start).Milliseconds())
+}
+
+// ruleSetLoadTimeout bounds fetching + compiling every rule set before the
+// scan starts (the scan's own timeout starts after it).
+const ruleSetLoadTimeout = 5 * time.Minute
+
+func truncateDetail(s string) string {
+	const max = 512
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && s[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return s[:cut]
 }
 
 func handleSecurityThreatQuarantine(_ *Heartbeat, cmd Command) tools.CommandResult {
