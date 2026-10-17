@@ -52,7 +52,7 @@ Once both exist, #8834's user-facing surface (8834-W2) is one list column, one c
 
 ## Global Constraints
 
-- **Every spec decision stands.** Do not reopen R-D1–R-D8 or F-D1–F-D9 / F-OD-1–F-OD-10 in a PR. Where this plan refines a spec mechanism (the quorum changes Q1–Q8 below), the plan wins and the PR cites the Q number.
+- **Every spec decision stands.** Do not reopen R-D1–R-D8 or F-D1–F-D9 / F-OD-1–F-OD-10 in a PR. Where this plan refines a spec mechanism (the quorum changes Q1–Q9 below), the plan wins and the PR cites the Q number. In particular, Q1 and Q2 supersede the *mechanism* text of F-D8 / F-§5.8 (chunk-level transactions, `pg_try_advisory_lock`). F-D8's intent is kept unchanged: one implementation, versioned, one org per transaction, single-runner.
 - **No internal infrastructure or customer names** in code, fixtures, test names or PR text.
 - **i18n:** every new `en` key is added, translated, to all 7 other locales (`de-DE, es-419, fr-CA, fr-FR, it-IT, pt-BR, tr-TR`) under `apps/web/src/locales/<loc>/`. This is required by `src/lib/i18n/localeParity.test.ts`, and `translationCoverage.test.ts` caps exact-English duplicates. Dynamic `t()` keys carry `/* i18n-dynamic */` (`keyUsage.test.ts`).
 - **Web mutations:**
@@ -99,11 +99,11 @@ Claude formed the position. Codex `gpt-6-astra` reviewed it at `xhigh` (read-onl
   - Also from Q1: the hardware PUT currently upserts `device_hardware` **before** touching `devices` (`inventoryChildSync.ts:384`). 8834-W1 adds the `devices … FOR UPDATE` lock *before* that upsert.
 - **Q2 (P9, disagreed with a bare fixed jobId).** A retained completed or failed job under a fixed id silently swallows later boot enqueues (`services/bullmqUtils.ts:42`). Resolution:
   - Enqueue through `enqueueOrReplaceStale` (`bullmqUtils.ts:66`), copying `enqueuePlatformModelSync('boot')` in `jobs/aiModelDiscoveryWorker.ts:190,248`.
-  - Make the jobId include the rules version (`form-factor-reconcile:v<N>`), so a new rules version is never absorbed by an old replica's active job.
+  - Make the jobId include the rules version (`bullmqJobId('form-factor-reconcile', 'v' + N)` → `form-factor-reconcile-v1`; BullMQ rejects `:` in custom ids, `bullmqUtils.ts:3-16`, `bullmqUtils.noColonJobIds.test.ts`), so a new rules version is never absorbed by an old replica's active job.
   - Copy the candidate-read and per-unit transaction shape from `jobs/topologyBootstrapPass.ts:95`, not `patchScheduleBackfill.ts`.
   - This **replaces** F-§5.8's `pg_try_advisory_lock`. Exclusivity is only an efficiency property: correctness comes from Q1 plus the P7 predicate.
 - **Q3 (missed risk 3, version fencing).** During a rolling deploy, an old replica must never downgrade a newer stamp. Both selection and write therefore fence on version: selection is `form_factor_rules_version IS NULL OR form_factor_rules_version < $current`; the write adds `AND (form_factor_rules_version IS NULL OR form_factor_rules_version <= $ver)`.
-- **Q4 (missed risk 4, lost group notification).** `requestDeviceGroupReevaluation` turns an enqueue failure into `null` (`jobs/deviceGroupJobs.ts:246`). The reconcile job collects device ids whose after-commit enqueue returned `null` and retries them once at the end of the run. It logs the remainder as `notifyFailed` in its `{ scanned, changed, failed, notifyFailed }` line. Other callers keep today's semantics. The general no-sweep gap stays a follow-up (F-§9).
+- **Q4 (missed risk 4, lost group notification).** `requestDeviceGroupReevaluation` turns an enqueue failure into `null` (`jobs/deviceGroupJobs.ts:246`). The reconcile job therefore calls it directly and awaits it after each per-device commit (the after-commit variant returns `void`). It collects the ids that returned `null` and retries them once at the end of the run. It logs the remainder as `notifyFailed` in its `{ scanned, changed, failed, notifyFailed }` line. Other callers keep today's semantics. The general no-sweep gap stays a follow-up (F-§9).
 - **Q5 (P11, presence vs change).** `isVirtual` enters `deviceUpdates` on **every** report that carries it (`routes/agents/heartbeat.ts:1323`). The heartbeat therefore compares against the loaded `device.isVirtual` before treating it as changed. Without that comparison, adding it to `filterableChangedFields` would enqueue group re-evaluation on every beat.
 - **Q6 (missed risk 1).** Catalog-id validation of `columns` applies only to **`device_inventory` configs with `columnsVersion: 2`**. `legacyReportConfigSchema` serves other report types and legacy alias ids. `device_inventory` gets its own `deviceInventoryReportConfigSchema` in the registry (`services/reportRegistry.ts:144`).
 - **Q7 (missed risk 2).** The 12-column PDF cap (R-D8) validates the **effective merged** format + config on create, on update (including format-only updates, `routes/reports/core.ts:821` only checks when `config` is sent) and on series routes. Legacy (non-v2) configs are grandfathered, because they deliver 13 columns today.
@@ -113,7 +113,7 @@ Claude formed the position. Codex `gpt-6-astra` reviewed it at `xhigh` (read-onl
   - **Legacy order.** The legacy order starts with `deviceId` (`reportGenerationService.ts:395`), and the fixture pins actual generator output, including the manual branch.
 
 **Plan-level refinement (no quorum needed, flagged for review):**
-- **Q9.** `withFilterStatementTimeout` hard-codes the evaluator's 500 ms (`filterEngine.ts:866`). A 10k-device report would time out. The function is exported with an optional `{ timeoutMs }`. The report path uses `REPORT_DEVICE_FILTER_TIMEOUT_MS = 30_000`. A `57014` from that wrapper fails the run with `device_filter_timeout`.
+- **Q9.** `withFilterStatementTimeout` hard-codes the evaluator's 500 ms (`filterEngine.ts:866`). A 10k-device report would time out. The function is exported with an optional `{ timeoutMs }`. The report path uses `REPORT_DEVICE_FILTER_TIMEOUT_MS = 30_000`. The wrapper already turns a `57014` into `FilterQueryTimeoutError` (`filterEngine.ts:877,941`, exported with it). The generator catches that error and fails the run with `device_filter_timeout`.
 
 ## Review Focus
 
@@ -253,7 +253,7 @@ Branch `feature/<7324-parent#>-device-export/wave-<sub#>` off fresh `origin/main
 
 - [ ] **Step 1: Write the failing tests** in `DeviceListExportControls.test.tsx`:
   - `button label carries the count`: "Export 1,284 devices", localized number.
-  - `disabled while filterBlocked` (the `DeviceList.tsx:1073` value fed from `advancedFilterBlocked`).
+  - `disabled while filterBlocked`: pass `DeviceList`'s `filterBlocked` (`DeviceList.tsx:1073`, `serverFilterLoading || serverFilterError`). It is the list-side view of the page's advanced-filter loading/error state, so an in-flight filter never exports the unfiltered fleet.
   - `disabled with a tooltip naming the incomplete arm` when any arm is `degraded` or `truncated`.
   - `"Export selected (N)" stays enabled when an arm is degraded`.
   - `selected export keeps screen order`: the selected subset is `sortedDevices.filter(d => selectedIds.has(d.id))`, not the unsorted `selectedDevices`.
@@ -351,7 +351,7 @@ export interface ReportColumnDescriptor {
   - In `packages/shared/src/utils/csvExport.test.ts`: `with columns: header uses labels in descriptor order`; `with columns: missing row keys render empty`; `custom label "=HYPERLINK(…)" is neutralized`; `without columns: byte-identical to today` (fixture string captured from the current implementation before editing); `with columns and zero rows: header-only line`.
   - The same set for `rowsToTsv`.
   - In `packages/shared/src/reportPdf` tests: `generic table uses descriptor labels and order`; `without columns, humanizeHeader(Object.keys(rows[0])) unchanged`.
-  - In `apps/web/src/components/reports/ReportPreview.test.tsx`: `descriptor drives header order and labels; static columns translate via labelKey`.
+  - In a new `apps/web/src/components/reports/ReportPreview.columns.test.tsx` (copy the harness from `ReportPreview.backupStatus.test.tsx`): `descriptor drives header order and labels; static columns translate via labelKey`.
 - [ ] **Step 2: Run them and watch them fail.**
 - [ ] **Step 3: Implement.** Keep the no-`columns` path untouched. `rowsToCsv([])` without `columns` still returns `''`.
 - [ ] **Step 4: Run them and watch them pass.**
@@ -439,13 +439,13 @@ export interface ReportColumnDescriptor {
   - `recreated definition → rebinds to the live id + warning naming the field` (R-D5).
   - `renamed definition → new name as label`.
   - `deviceFilter drops the manual branch and is ANDed with site authority`.
-  - `deviceFilter run uses the report timeout; 57014 → run fails with device_filter_timeout`.
+  - `deviceFilter run uses the report timeout; FilterQueryTimeoutError → run fails with device_filter_timeout` (mock the 57014 *below* the wrapper so the wrapper's translation is exercised).
   - `a legacy report edited without touching columns stays legacy`: covered at the route level in Task 9; here assert the generator decision only on `columnsVersion`.
 - [ ] **Step 2: Run them and watch them fail.**
 - [ ] **Step 3: Implement.**
   - The bindings use the R-§4.3 correlated jsonb subquery, keyed by `definition_id`, as the default. Task 10's plan gate may swap it for the aggregate join; both produce `custom_values`.
   - `siteName` joins `sites`. `lastUser` is `devices.lastUser`. `manufacturer`/`model` come from `deviceHardware`.
-  - When the plan has custom columns, run the read inside `withFilterStatementTimeout(…, { timeoutMs: REPORT_DEVICE_FILTER_TIMEOUT_MS })` **only when `deviceFilter` is present**, passing `executor: tx`.
+  - Wrap the read in `withFilterStatementTimeout(…, { timeoutMs: REPORT_DEVICE_FILTER_TIMEOUT_MS })`, passing `executor: tx`, **if and only if `deviceFilter` is present**, whether or not custom columns are selected. Without a filter the read runs as it does today.
 - [ ] **Step 4: Run them and watch them pass**, plus the existing report-generation tests (`reportGenerationService*.test.ts`, `reportRegistry*.test.ts`).
 - [ ] **Step 5: Commit** `feat(api/reports): device inventory column plan, custom-field values, persisted device filter (#7324)`.
 
@@ -463,7 +463,7 @@ export interface ReportColumnDescriptor {
 
 ### Task 7: `GET /custom-fields?orgId`
 
-- [ ] **Step 1: Write the failing tests** in `routes/customFields.test.ts`:
+- [ ] **Step 1: Write the failing tests** in the existing `routes/customFields_list_get.test.ts` (partner cases go in `customFields.partnerWide.test.ts`):
   - `partner caller with orgId → partner-wide + that org's only` (two orgs, same key in org B, not returned for org A);
   - `partner caller with an inaccessible orgId → 403`;
   - `org caller: orgId other than token org → 403`;
@@ -631,8 +631,8 @@ export function chassisClass(code: number): Exclude<FormFactor,'virtual_machine'
 - [ ] **Step 1: Write the failing assertions.**
   - Extend `apps/api/src/services/tenantExportPolicy*.test.ts` / `tenantExportPolicyRegistry.*.test.ts` so that every new column is classified.
   - Write a migration-shape unit test, `apps/api/src/db/migrations.formFactor.test.ts`. It reads Migration A and asserts:
-    - `form_factor` appears in exactly 6 `ROW(` tuples of the devices_update body;
-    - `form_factor_source` appears in none;
+    - the devices_update body has exactly 6 `ROW(` tuples, and each contains `form_factor` as a whole token (`/\bform_factor\b(?!_)/`; a plain substring match would also hit `form_factor_source` and `form_factor_rules_version`);
+    - `form_factor_source` and `form_factor_rules_version` appear in none of them;
     - the child excluded array contains `chassis_types` and `model_identifier`;
     - there is no `BEGIN;`/`COMMIT;`.
 - [ ] **Step 2: Run them and watch them fail.**
@@ -680,7 +680,7 @@ export function notifyFormFactorChanged(device: { id: string; orgId: string }, r
 **Callers:**
 - **Hardware PUT:**
   - `writeHardwareReport` (`inventoryChildSync.ts:369`) first runs `SELECT 1 FROM devices WHERE id=$1 FOR UPDATE` (Q1 order), then the upsert.
-  - `inventory.ts` calls `recomputeFormFactor` in the same transaction when any of `chassisTypes`, `modelIdentifier` or `model` was written.
+  - `inventory.ts` calls `recomputeFormFactor` in the same transaction whenever, after normalization, the `chassisTypes`, `modelIdentifier` or `model` key is present. `model` is in nearly every report, so this is about one recompute per device per day. That is accepted (F-§11: one `devices` row lock per device per day). The predicate makes a no-change recompute a no-op write.
   - It calls `notifyFormFactorChanged(..., 'hardware_report')`.
 - **Enrollment:** recompute in the enrollment transaction after both rows exist, with reason `enrollment`.
 - **Heartbeat:**
@@ -716,7 +716,7 @@ export function notifyFormFactorChanged(device: { id: string; orgId: string }, r
 ```ts
 // jobs/formFactorReconcileWorker.ts
 export const FORM_FACTOR_RECONCILE_QUEUE = 'form-factor-reconcile';
-export function formFactorReconcileJobId(version = FORM_FACTOR_RULES_VERSION): string; // 'form-factor-reconcile:v1'
+export function formFactorReconcileJobId(version = FORM_FACTOR_RULES_VERSION): string; // bullmqJobId('form-factor-reconcile', `v${version}`) === 'form-factor-reconcile-v1'
 export async function enqueueFormFactorReconcile(trigger: 'boot' | 'manual'): Promise<{ id: string }>; // enqueueOrReplaceStale
 export async function runFormFactorReconcile(opts?: { chunkSize?: number }): Promise<{ scanned: number; changed: number; failed: number; notifyFailed: number }>;
 export async function initializeFormFactorReconcileWorker(): Promise<void>; // also enqueues 'boot'
@@ -725,8 +725,10 @@ export async function shutdownFormFactorReconcileWorker(): Promise<void>;
 
 **Algorithm (Q1–Q4):**
 1. In a loop, read the next ≤500 candidates **outside any transaction**: `runOutsideDbContext(() => withSystemDbAccessContext(() => SELECT id, org_id FROM devices WHERE form_factor_source='auto' AND (form_factor_rules_version IS NULL OR form_factor_rules_version < $current) AND (org_id, id) > ($lastOrg, $lastId) ORDER BY org_id, id LIMIT 500))`.
-2. For each candidate, run one top-level `db.transaction` under system context that calls `recomputeFormFactor(tx, id)`. Retry `40P01`/`40001` up to 3 times with 50–250 ms jitter. Count a remaining failure in `failed` and continue.
-3. After-commit notifications that return `null` are collected and retried once at the end of the run. The remainder is reported as `notifyFailed` (Q4).
+2. For each candidate, open its **own** context: `runOutsideDbContext(() => withSystemDbAccessContext((tx) => recomputeFormFactor(tx, id)))`. `withSystemDbAccessContext` *is* the top-level transaction (`db/index.ts:894-925`), so a `db.transaction` inside it would only be a savepoint. No context may wrap the loop. Retry `40P01`/`40001` up to 3 times with 50–250 ms jitter. Count a remaining failure in `failed` and continue.
+3. Notifications: the reconcile job does **not** use the after-commit hook, because `requestDeviceGroupReevaluationAfterCommit` returns `void` (`deviceGroupJobs.ts:292`).
+   - After each per-device context has returned, and only when `valueChanged`, the job `await`s `requestDeviceGroupReevaluation({ deviceId, orgId, eventType: 'device.updated', reason: 'form_factor_reconcile', changedFields: ['formFactor'] })` (`:246`).
+   - It collects the ids whose call returned `null`, retries them once at the end of the run, and reports the remainder as `notifyFailed` (Q4).
 4. Log `[formFactorReconcile] { scanned, changed, failed, notifyFailed }`.
 
 Day-one effect (F-§5.8): VMs and Macs classify, everything else stamps `unknown` at v1, and there is no Windows/Linux model-string guessing.
@@ -736,13 +738,13 @@ The worker is `concurrency: 1`. The boot enqueue uses `{ attempts: 3, backoff: e
 - [ ] **Step 1: Write the failing tests** (`jobs/formFactorReconcileWorker.test.ts`):
   - `second run changes 0`;
   - `rule-version bump re-derives auto rows, leaves manual rows`;
-  - `each device is its own top-level transaction` (assert one `db.transaction` per candidate and none wrapping the loop);
+  - `each device gets its own system context` (assert `withSystemDbAccessContext` is entered once per candidate, the candidate read runs in a separate context, and no context is active around the loop; spy on the db-context helpers, not on `db.transaction`);
   - `deadlock 40P01 retried then counted as failed`;
   - `a stale completed boot job is replaced, not absorbed` (`enqueueOrReplaceStale` path);
-  - `jobId carries the rules version`;
+  - `jobId carries the rules version and no colon` (`=== 'form-factor-reconcile-v1'`; `bullmqUtils.noColonJobIds.test.ts` stays green);
   - `null notify is retried once and reported as notifyFailed`;
   - `selection never matches a newer stamp` (row stamped v2, current v1 → not scanned).
-  - Readiness and closure: add `consumers('formFactorReconcileWorker')` to `WORKER_READINESS_MANIFEST` and a `{ name: 'formFactorReconcileWorker', placement: 'global', load }` entry to `WORKER_REGISTRY` (`services/workerRegistry.ts`, after `aiModelDiscoveryWorker` at `:1845`). Then `jobs/workerReadinessManifest.test.ts`, `jobs/workerReadinessCoverage.test.ts`, `jobs/worker.boot.test.ts` and `services/workerEntrypointClosure.contract.test.ts` must pass. The closure must not reach `routes/agentWs.ts` or `services/agentCommandAwait.ts`.
+  - Readiness and closure: add `consumers('formFactorReconcileWorker')` to `WORKER_READINESS_MANIFEST` and a `{ name: 'formFactorReconcileWorker', placement: 'global', load }` entry to `WORKER_REGISTRY` (`services/workerRegistry.ts`, after `aiModelDiscoveryWorker` at `:1845`). Then `jobs/workerReadinessManifest.test.ts`, `jobs/workerReadinessCoverage.test.ts`, `src/worker.boot.test.ts` and `services/workerEntrypointClosure.contract.test.ts` must pass. The closure must not reach `routes/agentWs.ts` or `services/agentCommandAwait.ts`.
 - [ ] **Step 2: Run them and watch them fail.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them and watch them pass.**
@@ -832,7 +834,7 @@ Branch after 8834-W1 merges. This is the first wave that consumes the 7324 contr
     - if `aiToolsDevice.ts` lines shift, re-key the line-keyed `SAFE_WRITE_SITES` in `aiTools.userOwnedRelease.contract.test.ts:145`.
   - **MCP:** `SAFE_DEVICE_RESOURCE_FIELDS` (`mcpServer.ts:2550`) gains `formFactor` and `formFactorSource`.
   - **Partner API:**
-    - `type.formFactor` is present (`routes/partnerApi/devices.ts:113`) and parses under the **strict** `partnerDeviceExportRecordSchema.type` (`schemas.ts:144-149`);
+    - `type.formFactor` is present and parses. Add `formFactor: devices.formFactor` to the explicit select and `normalizeSourceRow` (`routes/partnerApi/devices.ts:61-90`), as well as the DTO (`:113`). The result parses under the **strict** `partnerDeviceExportRecordSchema.type` (`schemas.ts:144-149`);
     - `form_factor_source` is not published;
     - there is no new query filter (F-OD-9).
 - [ ] **Step 2: Run them and watch them fail.** **Step 3: Implement.** **Step 4: Run them and watch them pass.** **Step 5: Commit** `feat(ai,partner-api): form factor on query_devices, MCP resources, Partner API (#8834)`.
@@ -857,7 +859,7 @@ Branch after 8834-W2 merges. It is wire-independent (F-§4.4), so it is safe aga
 - `ChassisType string` stays as the first code (F-D5).
 - `intList` is a `[]int` with `UnmarshalJSON` accepting an array, a scalar number, `null` or `""`. A malformed value yields a `nil` slice and never an error that aborts the batch. It lives in `hardware_wmi_parse.go` as the twin of `gpuNameList` (`:16`).
 
-- [ ] **Step 1: Write the failing tests** (`hardware_wmi_parse_test.go`, `hardware_test.go`):
+- [ ] **Step 1: Write the failing tests** (create `hardware_wmi_parse_test.go`; extend `hardware_test.go`):
   - **`intList` decode table:** `9` → `[9]`; `[10,12]` → `[10,12]`; `null` → `nil`; `""` → `nil`; `"garbage"` → `nil` and the decode does not fail.
   - `windows batch fixture with ChassisTypes: serial and model still populate; ChassisType == "10"`.
   - `windows batch fixture without ChassisTypes: ChassisTypes nil, other fields populate`.
@@ -866,8 +868,9 @@ Branch after 8834-W2 merges. It is wire-independent (F-§4.4), so it is safe aga
 - [ ] **Step 3: Implement.**
   - Add the F-§4.1 `ChassisTypes = @(...)` line to the batched script (`hardware_windows.go:86-120`) using `Get-WmiSafe 'Win32_SystemEnclosure'`, and add the field to `windowsHardwareJSON` (`hardware_wmi_parse.go:44`).
   - In `collectPlatformHardware`, set `hw.ChassisTypes` and `hw.ChassisType = strconv.Itoa(ChassisTypes[0])` when the slice is non-empty.
-  - Delete the `wmic` path in `classify_windows.go:11`.
-  - Make the generic `hw.ChassisType = getChassisType()` at `hardware.go:238` not overwrite the Windows value, either by moving it after `collectPlatformHardware` or by making it non-Windows only.
+  - Replace the body of the Windows `getChassisType()` in `classify_windows.go:11` with `return ""`. This removes the `wmic` exec while keeping the per-platform function, which `hardware.go:238` calls unconditionally. Deleting the definition would break the Windows build.
+  - Keep `hw.ChassisType = getChassisType()` (`hardware.go:238`) **before** `collectPlatformHardware(hw)`. `collectPlatformHardware` overwrites it only when `ChassisTypes` is non-empty. On Windows the empty generic value is replaced; on Linux and macOS it stands.
+  - Add the test `windows getChassisType no longer spawns wmic` (assert the function returns `""` without an exec; the build tag keeps it Windows-only).
 - [ ] **Step 4: Run them and watch them pass.**
 - [ ] **Step 5: Commit** `feat(agent): Windows chassis via batched CIM, all codes, no wmic (#8834)`.
 
@@ -879,7 +882,10 @@ Branch after 8834-W2 merges. It is wire-independent (F-§4.4), so it is safe aga
     - MacBook Air M2 (`MacBook Air` / `Mac14,2`), Mac mini M2, `MacBookAir10,1` and Intel `MacBookPro16,1`: `ModelIdentifier` is parsed from `machine_model`, `Model` stays the marketing name and `ChassisTypes == []`;
     - an empty `machine_model` falls back to `sysctl hw.model` (inject the runner);
     - the tart VM fixture uses the model strings recorded during the lab step. Until then, use a placeholder fixture `Apple Virtual Machine 1` / `VirtualMac2,1`, marked to update.
-- [ ] **Step 2: Run them and watch them fail.** **Step 3: Implement** (new `MachineModel string \`json:"machine_model"\`` on `spHardwareEntry`, `hardware_darwin.go:11-25`). **Step 4: Run them and watch them pass.** **Step 5: Commit** `feat(agent): Linux chassis slice, macOS model identifier (#8834)`.
+- [ ] **Step 2: Run them and watch them fail.**
+- [ ] **Step 3: Implement.**
+  - **Linux:** add `collectChassisTypes() []int` in `classify_linux.go`. It reads `/sys/class/dmi/id/chassis_type` and returns `[]int{}` on `os.IsNotExist`, `nil` on any other read error or an unparseable or out-of-range (0–255) value, and `[]int{n}` otherwise. The Linux `collectPlatformHardware` path sets `hw.ChassisTypes`. `getChassisType()` is unchanged (legacy string, F-D5).
+  - **macOS:** add a new `MachineModel string \`json:"machine_model"\`` on `spHardwareEntry` (`hardware_darwin.go:11-25`), fill `hw.ModelIdentifier` from it, and set `hw.ChassisTypes = []int{}`. **Step 4: Run them and watch them pass.** **Step 5: Commit** `feat(agent): Linux chassis slice, macOS model identifier (#8834)`.
 
 ### Task 3: Enrollment payload
 
