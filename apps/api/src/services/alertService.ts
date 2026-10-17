@@ -758,6 +758,22 @@ export function buildSuppressAlertCas(alertId: string) {
   return buildAlertStatusCas(alertId, SUPPRESSIBLE_ALERT_STATUSES);
 }
 
+/** The only status an alert can be un-suppressed (restored) FROM (#8966). */
+export const UNSUPPRESSIBLE_ALERT_STATUSES = ['suppressed'] as const;
+
+/** What the unsuppress path reports when it LOSES the compare-and-swap. */
+export const ALERT_UNSUPPRESS_CAS_LOST_MESSAGE =
+  'Alert is no longer suppressed — it was already restored, resolved or dismissed.';
+
+/**
+ * Compare-and-swap predicate for restoring ONE suppressed alert by id (#8966) —
+ * the server half of the Mute toast "Undo". A stale undo landing on an alert that
+ * was since resolved/dismissed must not reopen it.
+ */
+export function buildUnsuppressAlertCas(alertId: string) {
+  return buildAlertStatusCas(alertId, UNSUPPRESSIBLE_ALERT_STATUSES);
+}
+
 /**
  * The compare-and-swap predicate for dismissing ONE alert by id (#4293) — the last
  * single-alert transition to get one.

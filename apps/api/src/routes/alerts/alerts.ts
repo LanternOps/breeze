@@ -25,10 +25,12 @@ import {
   ALERT_CAS_LOST_MESSAGE,
   ALERT_DISMISS_CAS_LOST_MESSAGE,
   ALERT_SUPPRESS_CAS_LOST_MESSAGE,
+  ALERT_UNSUPPRESS_CAS_LOST_MESSAGE,
   buildAcknowledgeAlertCas,
   buildDismissAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
+  buildUnsuppressAlertCas,
 } from '../../services/alertService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
@@ -1207,6 +1209,61 @@ alertsRoutes.post(
         nextStatus: updated.status,
         suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
       },
+    });
+
+    return c.json(updated);
+  }
+);
+
+// POST /alerts/:id/unsuppress - Lift a mute (server half of the Mute toast "Undo", #8966)
+//
+// Restores 'acknowledged' when the alert had been acknowledged before it was muted
+// (acknowledgedAt survives suppression), else 'active'. Compare-and-swap on
+// status = 'suppressed' so a stale undo can never reopen a resolved/dismissed alert.
+alertsRoutes.post(
+  '/:id/unsuppress',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  zValidator('param', alertIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: alertId } = c.req.valid('param');
+
+    const alert = await getAlertWithOrgCheck(alertId, auth);
+    if (!alert) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+    if (alert.status !== 'suppressed') {
+      return c.json({ error: ALERT_UNSUPPRESS_CAS_LOST_MESSAGE }, 409);
+    }
+
+    const restoredStatus = alert.acknowledgedAt ? 'acknowledged' : 'active';
+    const [updated] = await db
+      .update(alerts)
+      .set({ status: restoredStatus, suppressedUntil: null })
+      .where(buildUnsuppressAlertCas(alertId))
+      .returning();
+    if (!updated) {
+      return c.json({ error: ALERT_UNSUPPRESS_CAS_LOST_MESSAGE }, 409);
+    }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.reopened',
+      outcome: 'reopened',
+      actorUserId: auth.user.id,
+      occurredAt: new Date(),
+      metadata: { source: 'alerts.route', restoredStatus },
+    });
+
+    writeRouteAudit(c, {
+      orgId: alert.orgId,
+      action: 'alert.unsuppress',
+      resourceType: 'alert',
+      resourceId: updated.id,
+      resourceName: updated.title,
+      details: { previousStatus: alert.status, nextStatus: updated.status },
     });
 
     return c.json(updated);
