@@ -807,7 +807,10 @@
       "closeMenu": "Chiudi menu",
       "recentDevices": "Dispositivi recenti",
       "hideRecentDevices": "Nascondi dispositivi recenti",
-      "showRecentDevices": "Mostra dispositivi recenti"
+      "showRecentDevices": "Mostra dispositivi recenti",
+      "recent": "Recenti",
+      "hideRecent": "Nascondi recenti",
+      "showRecent": "Mostra recenti"
     },
     "orgRequired": {
       "title": "Seleziona un'organizzazione",

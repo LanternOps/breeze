@@ -807,7 +807,10 @@
       "closeMenu": "Menü schließen",
       "recentDevices": "Zuletzt geöffnete Geräte",
       "hideRecentDevices": "Zuletzt geöffnete Geräte ausblenden",
-      "showRecentDevices": "Zuletzt geöffnete Geräte anzeigen"
+      "showRecentDevices": "Zuletzt geöffnete Geräte anzeigen",
+      "recent": "Zuletzt",
+      "hideRecent": "Zuletzt geöffnete ausblenden",
+      "showRecent": "Zuletzt geöffnete anzeigen"
     },
     "orgRequired": {
       "title": "Organisation auswählen",

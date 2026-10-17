@@ -807,7 +807,10 @@
       "closeMenu": "Close menu",
       "recentDevices": "Recent devices",
       "hideRecentDevices": "Hide recent devices",
-      "showRecentDevices": "Show recent devices"
+      "showRecentDevices": "Show recent devices",
+      "recent": "Recent",
+      "hideRecent": "Hide recent",
+      "showRecent": "Show recent"
     },
     "orgRequired": {
       "title": "Select an organization",
