@@ -938,6 +938,31 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
     );
   });
 
+  // A nonce mismatch is a replay/injection signal, not an IdP clock quirk: the
+  // audit row must say which, even though the user-facing code stays coarse.
+  it.each([
+    ['nonce', 'nonce'],
+    ['claims', 'claims'],
+    [undefined, 'unknown'],
+  ] as const)('records failureKind=%s on the audit row (as %s)', async (thrownKind, auditedKind) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    primeReauthCallback();
+    vi.mocked(verifyIdTokenSignature).mockRejectedValue(
+      Object.assign(new Error('Invalid nonce'), thrownKind ? { failureKind: thrownKind } : {})
+    );
+
+    const res = await doCallback();
+
+    expect(res.headers.get('location')).toBe('/settings/profile?ssoReauthError=idp_verify_failed');
+    expect(writeRouteAudit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: 'sso.reauth.rejected',
+        details: expect.objectContaining({ reason: 'idp_verify_failed', failureKind: auditedKind }),
+      })
+    );
+  });
+
   it('verifies the re-auth id_token with the bounded clock tolerance', async () => {
     primeReauthCallback();
 

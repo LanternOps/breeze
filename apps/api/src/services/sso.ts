@@ -426,6 +426,44 @@ export interface VerifyIdTokenOptions {
   mode?: 'login' | 'link' | 'reauth';
 }
 
+/**
+ * Coarse, non-PII class of an id_token verification failure. The SSO callback
+ * records it on the audit row so an operator can tell an IdP clock quirk
+ * (`claims`) from a misconfigured provider (`config`), an unreachable or
+ * keyless JWKS (`jwks`), a bad signature or malformed token (`signature`), and
+ * a nonce mismatch on a validly-signed token (`nonce`), which is a
+ * replay/injection signal.
+ */
+export type IdTokenVerifyFailureKind = 'config' | 'jwks' | 'signature' | 'claims' | 'nonce';
+
+/** Error thrown by verifyIdTokenSignature. Carries no token data and no `cause`. */
+export class IdTokenVerificationError extends Error {
+  readonly failureKind: IdTokenVerifyFailureKind;
+  constructor(message: string, failureKind: IdTokenVerifyFailureKind) {
+    super(message);
+    this.name = 'IdTokenVerificationError';
+    this.failureKind = failureKind;
+  }
+}
+
+function classifyJoseFailure(err: unknown): IdTokenVerifyFailureKind {
+  if (err instanceof joseErrors.JWTExpired || err instanceof joseErrors.JWTClaimValidationFailed) {
+    return 'claims';
+  }
+  if (
+    err instanceof joseErrors.JWKSNoMatchingKey
+    || err instanceof joseErrors.JWKSMultipleMatchingKeys
+    || err instanceof joseErrors.JWKSTimeout
+    || err instanceof joseErrors.JWKSInvalid
+  ) {
+    return 'jwks';
+  }
+  // Every other JOSE error is about the token itself (bad signature, alg not
+  // allowed, malformed JWS/JWT). A non-JOSE error can only come from the key
+  // resolver: the JWKS transport (network, SSRF block, held-DB tripwire).
+  return err instanceof joseErrors.JOSEError ? 'signature' : 'jwks';
+}
+
 /** A finite number from a decoded claim, else undefined. Never logs free text. */
 function numericClaim(payload: unknown, key: string): number | undefined {
   if (!payload || typeof payload !== 'object') return undefined;
@@ -433,26 +471,38 @@ function numericClaim(payload: unknown, key: string): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+/** A short string property (code/name) or undefined. */
+function stringProp(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const prop = (value as Record<string, unknown>)[key];
+  return typeof prop === 'string' ? prop : undefined;
+}
+
 /**
  * #8862: a verify failure used to leave nothing but the error string, so an
  * IdP issuing already-expired tokens was indistinguishable from host clock
  * drift. Log the timing claims next to our own clock. Only the numeric
  * iat/nbf/exp/auth_time are read from the payload — never the token, its
- * signature, or identity claims (sub, email, name, nonce).
+ * signature, or identity claims (sub, email, name, nonce). For a non-claim
+ * failure (JWKS transport), the error name/code and its cause's code are
+ * logged instead; those carry no token data.
  */
 function logIdTokenVerifyFailure(
   err: unknown,
+  failureKind: IdTokenVerifyFailureKind,
   mode: string,
   clockToleranceSeconds: number | undefined,
 ): void {
-  const isClaimFailure =
-    err instanceof joseErrors.JWTExpired || err instanceof joseErrors.JWTClaimValidationFailed;
-  const claimFailure = isClaimFailure
+  const claimFailure = failureKind === 'claims'
     ? (err as InstanceType<typeof joseErrors.JWTClaimValidationFailed>)
     : undefined;
   console.warn('[sso] id_token verification failed', {
     mode,
-    code: (err as { code?: unknown })?.code ?? 'unknown',
+    failureKind,
+    code: stringProp(err, 'code') ?? 'unknown',
+    name: stringProp(err, 'name'),
+    // Never read `cause` from a claim failure: jose puts the payload there.
+    causeCode: claimFailure ? undefined : stringProp((err as { cause?: unknown } | null)?.cause, 'code'),
     claim: claimFailure?.claim,
     reason: claimFailure?.reason,
     iat: numericClaim(claimFailure?.payload, 'iat'),
@@ -482,14 +532,21 @@ export async function verifyIdTokenSignature(
 ): Promise<IDTokenClaims> {
   const { clockToleranceSeconds, mode = 'unspecified' } = options;
   if (!config.jwksUrl) {
-    throw new Error('Cannot verify ID token signature: provider has no JWKS URL configured');
+    throw new IdTokenVerificationError(
+      'Cannot verify ID token signature: provider has no JWKS URL configured',
+      'config',
+    );
   }
 
   const allowPrivateNetwork = config.allowPrivateNetwork ?? false;
   // Reject the URL before jose ever constructs a key set for it (SR2-13). The
   // customFetch injection below covers every actual request, including jose's
   // internal refreshes; this is the cheap up-front rejection.
-  assertSafeOidcEndpoint('jwks_uri', config.jwksUrl, allowPrivateNetwork);
+  try {
+    assertSafeOidcEndpoint('jwks_uri', config.jwksUrl, allowPrivateNetwork);
+  } catch (err) {
+    throw new IdTokenVerificationError((err as Error).message, 'config');
+  }
 
   const jwks = getIdTokenJwks(config.jwksUrl, allowPrivateNetwork);
 
@@ -506,15 +563,26 @@ export async function verifyIdTokenSignature(
     });
     payload = result.payload as unknown as IDTokenClaims;
   } catch (err) {
-    logIdTokenVerifyFailure(err, mode, clockToleranceSeconds);
+    const failureKind = classifyJoseFailure(err);
+    logIdTokenVerifyFailure(err, failureKind, mode, clockToleranceSeconds);
     // Deliberately no `cause`: the jose error carries the decoded payload
     // (email, sub, name), and the callback hands this error to Sentry.
-    throw new Error(`ID token signature verification failed: ${(err as Error).message}`);
+    throw new IdTokenVerificationError(
+      `ID token signature verification failed: ${(err as Error).message}`,
+      failureKind,
+    );
   }
 
   // jose already enforced iss/aud/exp; nonce is OIDC-specific and checked here.
+  // A mismatch on a validly-signed token is a replay/injection signal, so it is
+  // logged too (mode only, never either nonce value).
   if (payload.nonce !== nonce) {
-    throw new Error('Invalid nonce');
+    console.warn('[sso] id_token verification failed', {
+      mode,
+      failureKind: 'nonce',
+      now: Math.floor(Date.now() / 1000),
+    });
+    throw new IdTokenVerificationError('Invalid nonce', 'nonce');
   }
 
   return payload;

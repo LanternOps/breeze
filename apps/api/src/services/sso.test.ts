@@ -877,6 +877,66 @@ describe('verifyIdTokenSignature clock tolerance + diagnostics (#8862)', () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain('tech@acme.example');
   });
 
+  // Review round: the callback audits every verify failure as idp_verify_failed,
+  // so the error carries a non-PII `failureKind` the audit row can record. A
+  // nonce mismatch on a validly-signed token is a replay/injection signal and
+  // must not look like Entra's clock quirk.
+  it.each([
+    ['claims', async () => sign(entraReauthClaims(400)), NONCE],
+    ['nonce', async () => sign(entraReauthClaims(200)), 'some-other-nonce'],
+  ] as const)('tags a %s failure with failureKind', async (kind, makeToken, nonce) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const token = await makeToken();
+    const err = await verifyIdTokenSignature(token, config, nonce, { clockToleranceSeconds: 300, mode: 'reauth' })
+      .catch((e: unknown) => e as Error & { failureKind?: string });
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.failureKind).toBe(kind);
+  });
+
+  it('tags a bad signature with failureKind=signature', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { generateKeyPair } = await vi.importActual<typeof import('jose')>('jose');
+    const attacker = await generateKeyPair('RS256');
+    const now = nowSec();
+    const forged = await sign({ iat: now, exp: now + 3600 }, attacker.privateKey);
+    const err = await verifyIdTokenSignature(forged, config, NONCE, { mode: 'login' })
+      .catch((e: unknown) => e as Error & { failureKind?: string });
+    expect(err!.failureKind).toBe('signature');
+  });
+
+  it('tags a missing JWKS URL with failureKind=config', async () => {
+    const err = await verifyIdTokenSignature('a.b.c', { ...config, jwksUrl: undefined }, NONCE, { mode: 'reauth' })
+      .catch((e: unknown) => e as Error & { failureKind?: string });
+    expect(err!.message).toContain('no JWKS URL configured');
+    expect(err!.failureKind).toBe('config');
+  });
+
+  it('tags a key-resolution failure with failureKind=jwks and logs the cause code', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(createRemoteJWKSet).mockImplementation((() => async () => {
+      throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    }) as any);
+    const now = nowSec();
+    const token = await sign({ iat: now, exp: now + 3600 });
+    const err = await verifyIdTokenSignature(token, config, NONCE, { mode: 'reauth' })
+      .catch((e: unknown) => e as Error & { failureKind?: string });
+    expect(err!.failureKind).toBe('jwks');
+    expect(warn.mock.calls[0]![1]).toMatchObject({ mode: 'reauth', code: 'ECONNREFUSED' });
+  });
+
+  it('logs a nonce mismatch with the mode, never either nonce value', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const token = await sign(entraReauthClaims(200));
+    await verifyIdTokenSignature(token, config, 'expected-nonce-xyz', { clockToleranceSeconds: 300, mode: 'reauth' })
+      .catch(() => {});
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![1]).toMatchObject({ mode: 'reauth', failureKind: 'nonce' });
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).not.toContain('expected-nonce-xyz');
+    expect(logged).not.toContain(NONCE);
+    expect(logged).not.toContain('tech@acme.example');
+  });
+
   it('the thrown error carries no jose cause (keeps claims out of Sentry)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const token = await sign(entraReauthClaims(400));

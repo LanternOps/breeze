@@ -35,7 +35,8 @@ import {
   assertFreshIdpAuthentication,
   PROVIDER_PRESETS,
   type OIDCConfig,
-  type EmailVerifiedClaim
+  type EmailVerifiedClaim,
+  type IdTokenVerifyFailureKind
 } from '../services/sso';
 import { urlOriginChanged } from '../services/credentialOriginBinding';
 import { mintStepUpGrant } from '../services/mfaStepUpGrant';
@@ -625,6 +626,11 @@ type SsoCallbackMode = 'login' | 'link' | 'reauth';
  * verification take none.
  */
 const REAUTH_ID_TOKEN_CLOCK_TOLERANCE_SECONDS = 300;
+
+/** Values of IdTokenVerificationError.failureKind allowed onto the audit row. */
+const ID_TOKEN_FAILURE_KINDS: ReadonlySet<string> = new Set<IdTokenVerifyFailureKind>([
+  'config', 'jwks', 'signature', 'claims', 'nonce',
+]);
 
 type LinkRejectReason =
   | 'link_binding_missing'
@@ -2849,7 +2855,18 @@ ssoRoutes.get('/callback', async (c) => {
       // a typed reason (same discrimination as the email_unverified branch).
       // The verifier has already logged the claim diagnostics; the URL gets
       // only the coarse code, never the error text.
-      console.error(`SSO callback ${callbackMode} id_token verification failed:`, verifyError);
+      // `failureKind` (set by verifyIdTokenSignature) separates an IdP clock
+      // quirk from a misconfigured provider, an unreachable JWKS, a bad
+      // signature, and a nonce mismatch (a replay/injection signal) in the
+      // durable audit trail. Whitelisted so nothing else reaches the row.
+      const thrownKind = (verifyError as { failureKind?: unknown } | null)?.failureKind;
+      const failureKind = typeof thrownKind === 'string' && ID_TOKEN_FAILURE_KINDS.has(thrownKind)
+        ? thrownKind
+        : 'unknown';
+      console.error(
+        `SSO callback ${callbackMode} id_token verification failed (${failureKind}, provider ${provider.id}):`,
+        verifyError,
+      );
       captureException(verifyError, c);
       writeRouteAudit(c, {
         orgId: provider.orgId,
@@ -2861,6 +2878,7 @@ ssoRoutes.get('/callback', async (c) => {
         details: {
           mode: callbackMode,
           reason: 'idp_verify_failed',
+          failureKind,
           partnerId: provider.partnerId,
           userId: callbackMode === 'reauth' ? session.reauthUserId : session.linkUserId,
         },
