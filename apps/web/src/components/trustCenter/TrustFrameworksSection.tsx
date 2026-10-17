@@ -18,7 +18,7 @@ export default function TrustFrameworksSection({ orgId, orgFetch, state, canWrit
   // Resync only when the server's effective selection actually changes (e.g. after Save / Use default), so
   // an unrelated reload does not clobber unsaved checkbox edits.
   const effectiveKey = state.effective.values.frameworkView.join(',');
-  useEffect(() => { setSelection(state.effective.values.frameworkView); }, [effectiveKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setSelection(state.effective.values.frameworkView); }, [effectiveKey]); // (effectiveKey is the intended dependency; the exhaustive-deps rule is not registered in this config)
   const revision = state.page.publicationRevision;
   const inheriting = state.page.frameworkView === null;
   const source = state.effective.sources.frameworkView;
