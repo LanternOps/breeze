@@ -10,6 +10,8 @@ const pax8 = partnerSyncSource({
   tableName: 'pax8_integrations',
   intervalMinutes: 60,
   failedValue: 'failed',
+  syncIntervalMinutes: 1440,
+  withTimezone: true,
   displayName: 'Pax8',
   fixHref: '/integrations#pax8',
   verdict: pax8Health,

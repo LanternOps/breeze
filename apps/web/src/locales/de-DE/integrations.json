@@ -326,6 +326,9 @@
       "grant_reconciliation_unavailable": "Berechtigungsprüfung nicht verfügbar",
       "grant_revoked_reuse": "Berechtigung widerrufen (Token-Wiederverwendung)",
       "grant_revoked": "Berechtigung widerrufen",
+      "delivery_failed": "Zustellungen schlagen fehl",
+      "sync_stale": "Synchronisierung steht still",
+      "verification_failed": "Überprüfung fehlgeschlagen",
       "unknown": "Erfordert Aufmerksamkeit"
     }
   },

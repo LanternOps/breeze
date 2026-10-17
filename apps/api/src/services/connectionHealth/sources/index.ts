@@ -11,6 +11,7 @@ import { pax8Source } from './pax8';
 import { sentinelOneSource } from './sentinelOne';
 import { ticketMailboxSource } from './ticketMailbox';
 import { unifiSource } from './unifi';
+import { webhookSource } from './webhook';
 
 /**
  * Every connection kind the reconciler observes. A new integration registers
@@ -30,6 +31,7 @@ export const HEALTH_SOURCES: readonly HealthSource[] = [
   m365ConnectionSource,
   m365SyncSource,
   ticketMailboxSource,
+  webhookSource,
 ];
 
 /** Connection tables deliberately without a health source, and why. */

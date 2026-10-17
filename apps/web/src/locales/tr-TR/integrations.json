@@ -326,6 +326,9 @@
       "grant_reconciliation_unavailable": "İzin denetimi kullanılamıyor",
       "grant_revoked_reuse": "İzin iptal edildi (belirteç yeniden kullanımı)",
       "grant_revoked": "İzin iptal edildi",
+      "delivery_failed": "Teslimatlar başarısız",
+      "sync_stale": "Eşitleme durdu",
+      "verification_failed": "Doğrulama başarısız",
       "unknown": "İlgilenilmesi gerekiyor"
     }
   },

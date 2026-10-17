@@ -15,6 +15,8 @@ export const CONNECTION_SOURCE_KINDS = [
   'm365_connection',
   'm365_sync',
   'ticket_mailbox',
+  // W4: connections that fail without writing a failure (spec §3).
+  'webhook',
 ] as const;
 export type ConnectionSourceKind = (typeof CONNECTION_SOURCE_KINDS)[number];
 export type HealthState = 'healthy' | 'broken' | 'unknown' | 'retired';
