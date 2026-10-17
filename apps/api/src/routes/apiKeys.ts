@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
+import { mcpDomainsInputSchema, normalizeMcpDomainsInput } from '@breeze/shared';
 import { and, eq, sql, desc, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { apiKeys, users } from '../db/schema';
@@ -244,6 +245,17 @@ function validateRequestedScopes(c: any, scopes: string[]) {
   return { scopes: result.scopes };
 }
 
+/**
+ * True when `next` grants a key access to a tool domain `prev` did not.
+ * `null` is unrestricted, so null-from-restricted widens; a restricted `next`
+ * widens when it names any domain absent from a restricted `prev`.
+ */
+function isMcpDomainsWidening(prev: string[] | null, next: string[] | null): boolean {
+  if (prev === null) return false;
+  if (next === null) return true;
+  return next.some((d) => !prev.includes(d));
+}
+
 // ============================================
 // Validation Schemas
 // ============================================
@@ -260,13 +272,15 @@ const createApiKeySchema = z.object({
   name: z.string().min(1).max(255),
   scopes: z.array(z.string()).default([]),
   expiresAt: z.string().datetime().nullable().optional(),
-  rateLimit: z.number().int().min(1).max(100000).nullable().optional().transform(v => v ?? 1000)
+  rateLimit: z.number().int().min(1).max(100000).nullable().optional().transform(v => v ?? 1000),
+  mcpDomains: mcpDomainsInputSchema.optional()
 });
 
 const updateApiKeySchema = z.object({
   name: z.string().min(1).max(255).optional(),
   scopes: z.array(z.string()).optional(),
-  rateLimit: z.number().int().min(1).max(100000).optional()
+  rateLimit: z.number().int().min(1).max(100000).optional(),
+  mcpDomains: mcpDomainsInputSchema.optional()
 });
 
 // ============================================
@@ -351,7 +365,8 @@ apiKeyRoutes.get(
         createdAt: apiKeys.createdAt,
         updatedAt: apiKeys.updatedAt,
         status: apiKeys.status,
-        source: apiKeys.source
+        source: apiKeys.source,
+        mcpDomains: apiKeys.mcpDomains
       })
       .from(apiKeys)
       .where(whereCondition)
@@ -456,6 +471,7 @@ apiKeyRoutes.post(
         scopes: scopeValidation.scopes,
         expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
         rateLimit: data.rateLimit,
+        mcpDomains: normalizeMcpDomainsInput(data.mcpDomains ?? null),
         createdBy: auth.user.id,
         status: 'active',
         creatorAuthEpoch,
@@ -476,7 +492,8 @@ apiKeyRoutes.post(
       details: {
         scopes: apiKey.scopes,
         rateLimit: apiKey.rateLimit,
-        expiresAt: apiKey.expiresAt
+        expiresAt: apiKey.expiresAt,
+        mcpDomains: apiKey.mcpDomains ?? null
       }
     });
 
@@ -490,6 +507,7 @@ apiKeyRoutes.post(
       scopes: apiKey.scopes,
       expiresAt: apiKey.expiresAt,
       rateLimit: apiKey.rateLimit,
+      mcpDomains: apiKey.mcpDomains ?? null,
       createdBy: apiKey.createdBy,
       createdAt: apiKey.createdAt,
       status: apiKey.status,
@@ -524,7 +542,8 @@ apiKeyRoutes.get(
         createdAt: apiKeys.createdAt,
         updatedAt: apiKeys.updatedAt,
         status: apiKeys.status,
-        source: apiKeys.source
+        source: apiKeys.source,
+        mcpDomains: apiKeys.mcpDomains
       })
       .from(apiKeys)
       .where(eq(apiKeys.id, keyId))
@@ -601,6 +620,21 @@ apiKeyRoutes.patch(
       updates.scopes = scopeValidation.scopes;
     }
     if (data.rateLimit !== undefined) updates.rateLimit = data.rateLimit;
+    const previousMcpDomains = existingKey.mcpDomains ?? null;
+    let nextMcpDomains: string[] | null = previousMcpDomains;
+    if (data.mcpDomains !== undefined) {
+      nextMcpDomains = normalizeMcpDomainsInput(data.mcpDomains);
+      // Widening the domain set expands what the key can reach, so the updater
+      // must be able to delegate the key's STORED scopes (narrowing needs no
+      // extra check). Same denial the create path returns.
+      if (isMcpDomainsWidening(previousMcpDomains, nextMcpDomains)) {
+        const widenValidation = validateRequestedScopes(c, existingKey.scopes ?? []);
+        if ('response' in widenValidation) {
+          return widenValidation.response;
+        }
+      }
+      updates.mcpDomains = nextMcpDomains;
+    }
 
     const [updated] = await db
       .update(apiKeys)
@@ -619,7 +653,8 @@ apiKeyRoutes.patch(
         createdBy: apiKeys.createdBy,
         createdAt: apiKeys.createdAt,
         updatedAt: apiKeys.updatedAt,
-        status: apiKeys.status
+        status: apiKeys.status,
+        mcpDomains: apiKeys.mcpDomains
       });
 
     if (updated) {
@@ -631,7 +666,11 @@ apiKeyRoutes.patch(
         details: {
           changedFields: Object.keys(data),
           scopes: updated.scopes,
-          rateLimit: updated.rateLimit
+          rateLimit: updated.rateLimit,
+          // Only when the caller touched the field; mirrors changedFields.
+          ...(data.mcpDomains !== undefined
+            ? { mcpDomains: { previous: previousMcpDomains, next: nextMcpDomains } }
+            : {})
         }
       });
     }
@@ -824,7 +863,8 @@ apiKeyRoutes.post(
         createdBy: apiKeys.createdBy,
         createdAt: apiKeys.createdAt,
         updatedAt: apiKeys.updatedAt,
-        status: apiKeys.status
+        status: apiKeys.status,
+        mcpDomains: apiKeys.mcpDomains
       });
 
     if (rotated) {
@@ -836,7 +876,8 @@ apiKeyRoutes.post(
         details: {
           keyPrefix: rotated.keyPrefix,
           previousKeyPrefix: existingKey.keyPrefix,
-          resetUsageCount: true
+          resetUsageCount: true,
+          mcpDomains: rotated.mcpDomains ?? null
         }
       });
     }
