@@ -134,6 +134,10 @@ export const oauthGrants = pgTable('oauth_grants', {
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
   revokedByUserId: uuid('revoked_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   revokedReason: text('revoked_reason'),
+  // B-W02 (#6156): MCP tool domains for this grant, chosen at consent. NULL =
+  // unrestricted. A real column, not `payload`: oidc-provider owns the payload
+  // and drops unknown keys. Read per request by assertLiveOAuthUser.
+  mcpDomains: text('mcp_domains').array().$type<string[] | null>(),
 }, (table) => ({
   accountIdx: index('oauth_grants_account_idx').on(table.accountId),
   clientIdx: index('oauth_grants_client_idx').on(table.clientId),
