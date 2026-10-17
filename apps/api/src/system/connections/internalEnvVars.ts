@@ -435,6 +435,10 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // REQUIRE_*
   REQUIRE_DB_ON_STARTUP: 'boot strictness flag',
   REQUIRE_REDIS_ON_STARTUP: 'boot strictness flag',
+  // RESTORE_*
+  RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  RESTORE_POINT_ATTEMPT_RETENTION_DAYS: 'data retention window',
+  RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // S1_*
   S1_SYNC_MAX_PAGES: 'sync paging limit',
   // S3_*

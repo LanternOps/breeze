@@ -617,6 +617,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8581 — daily prune of device_restore_point_attempts.
+    name: 'restorePointAttemptRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/restorePointAttemptRetention');
+      return {
+        init: m.initializeRestorePointAttemptRetention,
+        shutdown: m.shutdownRestorePointAttemptRetention,
+      };
+    },
+  },
+  {
     name: 'oauthCleanup',
     placement: 'global',
     load: async () => {
