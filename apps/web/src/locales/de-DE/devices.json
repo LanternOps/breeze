@@ -1814,7 +1814,8 @@
       }
     },
     "countLine_one": "{{shown}} von {{count}} Gerät",
-    "countLine_other": "{{shown}} von {{count}} Geräten"
+    "countLine_other": "{{shown}} von {{count}} Geräten",
+    "noMatchesTitle": "Keine Geräte passen zu diesen Filtern"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",
@@ -2675,7 +2676,11 @@
         "shutdown": "Herunterfahren",
         "wake": "Aufwecken"
       }
-    }
+    },
+    "emptyOrgTitle": "Noch keine Geräte in {{org}}",
+    "emptyOrgTitleUnnamed": "Noch keine Geräte in dieser Organisation",
+    "emptyOrgDescription": "Installieren Sie den Agent auf einem Rechner dieser Organisation, um ihn zu überwachen, oder wechseln Sie zu allen Organisationen, um den Rest Ihrer Flotte zu sehen.",
+    "viewAllOrganizations": "Alle Organisationen anzeigen"
   },
   "filterAddDropdown": {
     "addFilter": "Filter hinzufügen",

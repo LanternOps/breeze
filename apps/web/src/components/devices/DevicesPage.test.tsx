@@ -8,6 +8,7 @@ import DevicesPage from './DevicesPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllDevices, fetchAllNetworkDevices, fetchAllManualAssets } from '../../lib/devicesFetch';
 import { navigateTo } from '@/lib/navigation';
+import { applyOrgSwitch } from '@/lib/orgSwitch';
 
 // Feature flags are evaluated at module load, so expose a mutable holder we can
 // flip per-test. Default the network arm ON here since most #1322 cases below
@@ -84,6 +85,12 @@ vi.mock('../../services/deviceActions', () => ({
 
 vi.mock('@/lib/navigation', () => ({
   navigateTo: vi.fn(),
+}));
+
+// #9036: "View all organizations" on an empty org switches scope through the
+// shared org-switch path.
+vi.mock('@/lib/orgSwitch', () => ({
+  applyOrgSwitch: vi.fn(async () => {}),
 }));
 
 vi.mock('../shared/Toast', () => ({
@@ -163,11 +170,13 @@ vi.mock('./ScriptPickerModal', () => ({
 // test can observe whether runDeviceAction's `settings` branch ran is whether
 // this component was invoked at all (#4014).
 vi.mock('./DeviceSettingsModal', () => ({ default: vi.fn(() => null) }));
-vi.mock('./AddDeviceModal', () => ({ default: () => null }));
+vi.mock('./AddDeviceModal', () => ({
+  default: ({ isOpen }: { isOpen: boolean }) => (isOpen ? <div data-testid="add-device-modal-stub" /> : null),
+}));
 vi.mock('./AddNetworkAssetModal', () => ({ default: () => null }));
 vi.mock('./CreateGroupModal', () => ({ default: () => null }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
-vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => null }));
+vi.mock('./DeviceFilterToolbar', () => ({ DeviceFilterToolbar: () => <div data-testid="device-filter-toolbar-stub" /> }));
 vi.mock('../shared/ProgressBar', () => ({ default: () => null }));
 
 // DeviceCard stub renders the hostname so the grid contents are assertable, and
@@ -219,7 +228,7 @@ vi.mock('./DeviceCard', () => ({
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
 type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; lastLogAt?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions, onClearFilters }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode; onClearFilters?: () => void }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
@@ -238,6 +247,11 @@ vi.mock('./DeviceList', () => ({
     >
       {/* #9035: the page hands its list/grid toggle to the table header strip. */}
       <div data-testid="device-list-header-actions">{headerActions}</div>
+      {onClearFilters && (
+        <button type="button" data-testid="stub-clear-filters" onClick={() => onClearFilters()}>
+          clear filters
+        </button>
+      )}
       {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare', 'restore', 'permanent-delete'].map(action => (
         <button
           key={action}
@@ -3550,5 +3564,98 @@ describe('DevicesPage — page chrome (#9035)', () => {
     const strip = await screen.findByTestId('device-grid-header-strip');
     expect(strip).toHaveTextContent('3 of 3 devices');
     expect(strip).toContainElement(screen.getByLabelText('List view'));
+  });
+});
+
+// #9036: the empty state is chosen by cause, and an empty org renders no dead
+// controls (chip strip, class segment, count line, pager).
+describe('DevicesPage — empty states (#9036)', () => {
+  const savedOrgState = { ...orgStoreState };
+
+  afterEach(() => {
+    Object.assign(orgStoreState, savedOrgState);
+    history.replaceState(null, '', '/');
+  });
+
+  async function renderEmpty() {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    vi.mocked(fetchAllDevices).mockResolvedValue({ data: [] } as never);
+    render(<DevicesPage />);
+  }
+
+  function selectOrg(name: string) {
+    orgStoreState.currentOrgId = 'org-1';
+    orgStoreState.allOrgs = false;
+    orgStoreState.organizations = [{ id: 'org-1', name }];
+  }
+
+  it('(a) names the org, offers Install agent and View all organizations', async () => {
+    selectOrg('Acme Dental');
+    await renderEmpty();
+    const empty = await screen.findByTestId('devices-empty-org');
+    expect(empty).toHaveTextContent('No devices in Acme Dental yet');
+    expect(empty).not.toHaveTextContent('Your fleet is empty');
+    expect(screen.getByTestId('devices-empty-install-agent')).toBeInTheDocument();
+    expect(screen.getByTestId('devices-empty-view-all-orgs')).toBeInTheDocument();
+  });
+
+  it('(a) "View all organizations" switches to the fleet view', async () => {
+    selectOrg('Acme Dental');
+    await renderEmpty();
+    fireEvent.click(await screen.findByTestId('devices-empty-view-all-orgs'));
+    expect(applyOrgSwitch).toHaveBeenCalledWith(null, 'Showing all organizations');
+  });
+
+  it('(a) "Install agent" opens the install flow', async () => {
+    selectOrg('Acme Dental');
+    await renderEmpty();
+    expect(screen.queryByTestId('add-device-modal-stub')).toBeNull();
+    fireEvent.click(await screen.findByTestId('devices-empty-install-agent'));
+    expect(screen.getByTestId('add-device-modal-stub')).toBeInTheDocument();
+  });
+
+  it('(a) hides Install agent for a role that cannot mint enrollment keys', async () => {
+    permState.grants = new Set();
+    try {
+      selectOrg('Acme Dental');
+      await renderEmpty();
+      await screen.findByTestId('devices-empty-org');
+      expect(screen.queryByTestId('devices-empty-install-agent')).toBeNull();
+    } finally {
+      permState.grants = new Set(['organizations:write']);
+    }
+  });
+
+  it('(a) renders no chip strip, class segment, count line or pager', async () => {
+    selectOrg('Acme Dental');
+    history.replaceState(null, '', '/devices#deviceClass=network');
+    await renderEmpty();
+    await screen.findByTestId('devices-empty-org');
+    expect(screen.queryByTestId('device-filter-toolbar-stub')).toBeNull();
+    expect(screen.queryByTestId('device-class-segment')).toBeNull();
+    expect(screen.queryByTestId('device-list')).toBeNull();
+    expect(screen.queryByTestId('device-grid-header-strip')).toBeNull();
+  });
+
+  it('(b) keeps "Your fleet is empty" with the install guide in fleet view', async () => {
+    await renderEmpty();
+    const empty = await screen.findByTestId('devices-empty-fleet');
+    expect(empty).toHaveTextContent('Your fleet is empty');
+    expect(screen.queryByTestId('devices-empty-org')).toBeNull();
+    expect(screen.queryByTestId('device-filter-toolbar-stub')).toBeNull();
+  });
+
+  it('(c) keeps the toolbar and hands the list a Clear filters action when filters match nothing', async () => {
+    // The harness filter (status=online) resolves to DEV_1 + DEV_3.
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(activeFilter);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    expect(screen.getByTestId('device-filter-toolbar-stub')).toBeInTheDocument();
+    expect(screen.queryByTestId('devices-empty-org')).toBeNull();
+    await waitFor(() => expect(list.getAttribute('data-filter-ids')).not.toBe(''));
+    fireEvent.click(screen.getByTestId('stub-clear-filters'));
+    await waitFor(() => expect(screen.getByTestId('device-list').getAttribute('data-filter-ids')).toBe(''));
   });
 });

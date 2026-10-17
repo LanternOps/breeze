@@ -1814,7 +1814,8 @@
       }
     },
     "countLine_one": "{{shown}} de {{count}} dispositivo",
-    "countLine_other": "{{shown}} de {{count}} dispositivos"
+    "countLine_other": "{{shown}} de {{count}} dispositivos",
+    "noMatchesTitle": "Nenhum dispositivo corresponde a estes filtros"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Falha ao buscar os logs do dispositivo",
@@ -2675,7 +2676,11 @@
         "shutdown": "Desligar",
         "wake": "Ativar (Wake)"
       }
-    }
+    },
+    "emptyOrgTitle": "Ainda não há dispositivos em {{org}}",
+    "emptyOrgTitleUnnamed": "Ainda não há dispositivos nesta organização",
+    "emptyOrgDescription": "Instale o agente em uma máquina desta organização para começar a monitorá-la, ou mude para todas as organizações para ver o restante da sua frota.",
+    "viewAllOrganizations": "Ver todas as organizações"
   },
   "filterAddDropdown": {
     "addFilter": "Adicionar filtro",

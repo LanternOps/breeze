@@ -1814,7 +1814,8 @@
       }
     },
     "countLine_one": "{{shown}} sur {{count}} appareil",
-    "countLine_other": "{{shown}} sur {{count}} appareils"
+    "countLine_other": "{{shown}} sur {{count}} appareils",
+    "noMatchesTitle": "Aucun appareil ne correspond à ces filtres"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossible de récupérer les journaux des périphériques",
@@ -2675,7 +2676,11 @@
         "shutdown": "Arrêter",
         "wake": "Réveiller"
       }
-    }
+    },
+    "emptyOrgTitle": "Aucun appareil dans {{org}} pour l’instant",
+    "emptyOrgTitleUnnamed": "Aucun appareil dans cette organisation pour l’instant",
+    "emptyOrgDescription": "Installez l’agent sur un poste de cette organisation pour commencer à le surveiller, ou passez à toutes les organisations pour voir le reste de votre parc.",
+    "viewAllOrganizations": "Voir toutes les organisations"
   },
   "filterAddDropdown": {
     "addFilter": "Ajouter un filtre",

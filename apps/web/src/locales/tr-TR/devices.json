@@ -1814,7 +1814,8 @@
       }
     },
     "countLine_one": "{{shown}} / {{count}} cihaz",
-    "countLine_other": "{{shown}} / {{count}} cihaz"
+    "countLine_other": "{{shown}} / {{count}} cihaz",
+    "noMatchesTitle": "Bu filtrelerle eşleşen cihaz yok"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",
@@ -2675,7 +2676,11 @@
         "shutdown": "Kapat",
         "wake": "Uyandır"
       }
-    }
+    },
+    "emptyOrgTitle": "{{org}} içinde henüz cihaz yok",
+    "emptyOrgTitleUnnamed": "Bu kuruluşta henüz cihaz yok",
+    "emptyOrgDescription": "İzlemeye başlamak için ajanı bu kuruluştaki bir makineye kurun veya filonuzun geri kalanını görmek için tüm kuruluşlara geçin.",
+    "viewAllOrganizations": "Tüm kuruluşları görüntüle"
   },
   "filterAddDropdown": {
     "addFilter": "Filtre ekle",

@@ -568,6 +568,9 @@ type DeviceListProps = {
   // header strip next to Columns, so the count, view and column controls share
   // one row instead of stacking above the table.
   headerActions?: React.ReactNode;
+  // #9036: resets every filter the page owns (advanced group, search, VPN,
+  // removed-devices toggle). When given, the no-match row offers "Clear filters".
+  onClearFilters?: () => void;
 };
 
 // Agent Version column tint (#5285). No new colours: reuses the same
@@ -857,6 +860,7 @@ export default function DeviceList({
   columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
   headerActions,
+  onClearFilters,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
@@ -3115,7 +3119,25 @@ export default function DeviceList({
                   }
                   className="px-3 py-6 text-center text-sm text-muted-foreground"
                 >
-                  {t("deviceList.noDevicesFoundTryAdjustingYour")}{" "}
+                  {devices.length > 0 ? (
+                    // Rows exist; the filters (search, VPN, advanced group or
+                    // the removed-devices rule) excluded all of them (#9036 c).
+                    <div data-testid="device-list-no-matches" className="flex flex-col items-center gap-2">
+                      <p className="font-medium text-foreground">{t("deviceList.noMatchesTitle")}</p>
+                      {onClearFilters && (
+                        <button
+                          type="button"
+                          data-testid="device-list-clear-filters"
+                          onClick={onClearFilters}
+                          className="rounded-md border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted"
+                        >
+                          {t("deviceFilters.clearFilters")}
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    t("deviceList.noDevicesFoundTryAdjustingYour")
+                  )}
                 </td>
               </tr>
             ) : (

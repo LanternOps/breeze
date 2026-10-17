@@ -55,6 +55,7 @@ import { ENABLE_NETWORK_DEVICES_IN_LIST } from '@/lib/featureFlags';
 import ProgressBar from '../shared/ProgressBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { scopeConfirmMessage } from '@/lib/scopeConfirmMessage';
+import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { CONFIRM_REQUIRED_BULK_COMMANDS, DECOMMISSION_BLOCKED_BULK_ACTIONS, QUEUEING_BULK_COMMANDS, isCommandQueueable } from './bulkActionGating';
 import { matchesMergedListFilters, sortByDisplayName, summarizeHiddenNonAgentDevices, VPN_FACET_FIELD } from './mergedListFilter';
 import { COLUMN_LABELS } from './columnVisibility';
@@ -261,6 +262,9 @@ function AddAssetMenu({
 
 export default function DevicesPage() {
   const { t } = useTranslation('devices');
+  // #9036: the empty-org state offers "Install agent" only to a role that can
+  // mint enrollment keys — the same UX gate as the Add menu item (#7217).
+  const { can } = usePermissions();
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   // Org scope is shown by the always-visible top-bar switcher (scope pill +
   // org picker); the page header no longer repeats it. orgStoreOrgs is still
@@ -575,10 +579,12 @@ export default function DevicesPage() {
     typeof window !== 'undefined' &&
     (deviceClassFilter === 'manual' || (deviceClassFilter === 'network' && ENABLE_NETWORK_DEVICES_IN_LIST)) &&
     readDeviceClassFromHash(window.location.hash) === deviceClassFilter;
+  // An empty list has nothing to segment (#9036): no "All 0 / Agent 0" row.
   const showDeviceClassSegment =
-    (ENABLE_NETWORK_DEVICES_IN_LIST && unfilteredClassCounts.network > 0) ||
-    unfilteredClassCounts.manual > 0 ||
-    classPinnedByHash;
+    devices.length > 0 &&
+    ((ENABLE_NETWORK_DEVICES_IN_LIST && unfilteredClassCounts.network > 0) ||
+      unfilteredClassCounts.manual > 0 ||
+      classPinnedByHash);
   const effectiveDeviceClass: DeviceClassFilter = showDeviceClassSegment ? deviceClassFilter : 'all';
   const classFilteredDevices = useMemo(
     () => filterDevicesByClass(devices, effectiveDeviceClass),
@@ -2114,6 +2120,15 @@ export default function DevicesPage() {
       </button>
     </div>
   );
+  // #9036: one action for the no-match state — drop the advanced group and the
+  // list-local narrowing (search, VPN facet).
+  const handleClearFilters = () => {
+    setAdvancedFilter(null);
+    setListFilters(DEFAULT_LIST_FILTERS);
+  };
+  // The unfiltered fetch is empty: nothing to filter, segment, count or page.
+  const listIsEmpty = devices.length === 0;
+  const emptyOrgScope = orgScope.status === 'resolved' && orgScope.scope === 'org' ? orgScope : null;
   const headingScope =
     orgScope.status !== 'resolved'
       ? null
@@ -2277,7 +2292,7 @@ export default function DevicesPage() {
         </div>
       </div>
 
-      {filtersV2 ? (
+      {listIsEmpty ? null : filtersV2 ? (
         <DeviceFilterToolbar
           value={advancedFilter}
           onChange={setAdvancedFilter}
@@ -2337,8 +2352,45 @@ export default function DevicesPage() {
         </div>
       )}
 
-      {devices.length === 0 ? (
-        <div className="rounded-lg border bg-card p-8">
+      {listIsEmpty && emptyOrgScope ? (
+        // (a) The working org has no devices at all (#9036). Naming the org
+        // keeps "Your fleet is empty" from contradicting the switcher.
+        <div data-testid="devices-empty-org" className="rounded-lg border bg-card p-8">
+          <div className="max-w-lg">
+            <h2 className="text-lg font-semibold text-foreground mb-2">
+              {emptyOrgScope.org?.name
+                ? t('devicesPage.emptyOrgTitle', { org: emptyOrgScope.org.name })
+                : t('devicesPage.emptyOrgTitleUnnamed')}
+            </h2>
+            <p className="text-sm text-muted-foreground mb-6">
+              {t('devicesPage.emptyOrgDescription')}
+            </p>
+            <div className="flex flex-wrap gap-3">
+              {can('organizations', 'write') && (
+                <button
+                  type="button"
+                  data-testid="devices-empty-install-agent"
+                  onClick={() => setShowAddDevice(true)}
+                  className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t('devicesPage.addMenu.installAgent')}
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid="devices-empty-view-all-orgs"
+                onClick={() => { void applyOrgSwitch(null, t('common:layout.org.toast.showingAll')); }}
+                className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
+              >
+                {t('devicesPage.viewAllOrganizations')}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : listIsEmpty ? (
+        // (b) The whole fleet is empty — first-run onboarding.
+        <div data-testid="devices-empty-fleet" className="rounded-lg border bg-card p-8">
           <div className="max-w-lg">
             <h2 className="text-lg font-semibold text-foreground mb-2">{t('devicesPage.emptyTitle')}</h2>
             <p className="text-sm text-muted-foreground mb-6">
@@ -2387,6 +2439,7 @@ export default function DevicesPage() {
           networkDevicesEnabled={ENABLE_NETWORK_DEVICES_IN_LIST}
           effectiveAgentVersionByOrgId={effectiveAgentVersionByOrgId}
           headerActions={viewToggle}
+          onClearFilters={handleClearFilters}
         />
       ) : (
         <div className="space-y-3">
@@ -2433,6 +2486,22 @@ export default function DevicesPage() {
                 onHide={onHideDecommissioned}
               />
             </p>
+          )}
+          {gridDevices.length === 0 && !advancedFilterBlocked && (
+            // (c) Rows exist but the filters exclude every one (#9036).
+            <div
+              data-testid="device-grid-no-matches"
+              className="flex flex-col items-center gap-2 rounded-lg border bg-card p-8 text-center text-sm text-muted-foreground"
+            >
+              <p className="font-medium text-foreground">{t('deviceList.noMatchesTitle')}</p>
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className="rounded-md border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted"
+              >
+                {t('deviceFilters.clearFilters')}
+              </button>
+            </div>
           )}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {gridDevices.map(device => (

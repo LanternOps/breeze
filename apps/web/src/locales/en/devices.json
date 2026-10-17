@@ -1814,7 +1814,8 @@
       }
     },
     "countLine_one": "{{shown}} of {{count}} device",
-    "countLine_other": "{{shown}} of {{count}} devices"
+    "countLine_other": "{{shown}} of {{count}} devices",
+    "noMatchesTitle": "No devices match these filters"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -2675,7 +2676,11 @@
         "shutdown": "Shut down",
         "wake": "Wake"
       }
-    }
+    },
+    "emptyOrgTitle": "No devices in {{org}} yet",
+    "emptyOrgTitleUnnamed": "No devices in this organization yet",
+    "emptyOrgDescription": "Install the agent on a machine in this organization to start monitoring it, or switch to all organizations to see the rest of your fleet.",
+    "viewAllOrganizations": "View all organizations"
   },
   "filterAddDropdown": {
     "addFilter": "Add filter",
