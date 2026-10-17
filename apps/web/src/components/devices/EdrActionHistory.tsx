@@ -34,14 +34,12 @@ export default function EdrActionHistory({ deviceId, refreshKey = 0 }: Props) {
     return () => {
       cancelled.current = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceId, refreshKey]);
 
   useEffect(() => {
     if (!anyOpen) return;
     const timer = setInterval(() => void load(), POLL_MS);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anyOpen, deviceId]);
 
   if (rows.length === 0) return null;
