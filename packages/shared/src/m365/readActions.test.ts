@@ -47,6 +47,8 @@ describe('m365 read action contracts', () => {
   it('m365.group.member.get: field map, projection evidence field, and strict GUID-only schema', () => {
     expect(M365_READ_ACTION_FIELDS['m365.group.member.get']).toEqual(['id', 'displayName', 'userPrincipalName', 'mail']);
     expect(M365_READ_ACTION_FIELDS['m365.user.get']).toContain('signInSessionsValidFromDateTime');
+    // The Intune retire probe's evidence: retirePending/retireIssued once a retire is accepted.
+    expect(M365_READ_ACTION_FIELDS['m365.intune.device.get']).toContain('managementState');
     const ids = [...M365_INTERACTIVE_READ_ACTION_IDS];
     expect(ids.indexOf('m365.group.member.get')).toBe(ids.indexOf('m365.group.members.list') + 1);
     const ok = { type: 'm365.group.member.get', groupId: GUID, userId: GUID };
