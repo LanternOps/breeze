@@ -59,6 +59,7 @@ import {
 import { widthPercentClass, formatUptime } from "@/lib/utils";
 import { formatLastSeen } from "@/lib/formatTime";
 import { formatNumber } from "@/lib/i18n/format";
+import { toPercent } from "@/lib/deviceUtils";
 import {
   getDeviceRoleLabel,
   getDeviceRoleIcon,
@@ -1469,8 +1470,10 @@ export default function DeviceList({
   // We still escalate amber → red at genuine pressure (≥75% / ≥90%) because a
   // pegged box is exactly what a tech must catch at a glance; the bar width
   // and the trailing number carry the exact value at every level.
-  const metricBar = (percent: number, online: boolean) =>
-    online ? (
+  const metricBar = (rawPercent: number, online: boolean) => {
+    // Round defensively: rows from any source may carry a raw float.
+    const percent = toPercent(rawPercent);
+    return online ? (
       <div className="flex items-center gap-2">
         <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
           <div
@@ -1482,6 +1485,7 @@ export default function DeviceList({
     ) : (
       <span className="text-muted-foreground">{t("deviceList.text")}</span>
     );
+  };
 
   // Format helpers for hardware columns. RAM is reported in MB; convert
   // to GB rounded to one decimal. Disk is already reported in GB.
