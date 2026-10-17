@@ -1,6 +1,6 @@
 import { and, eq, or, not, gt, gte, lt, lte, like, ilike, inArray, isNull, isNotNull, sql, SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { sqlValue } from '../db/sqlValues';
+import { sqlTextArray, sqlValue } from '../db/sqlValues';
 import { pgErrorCode } from '../utils/pgErrors';
 import { PG_UUID_REGEX } from '../utils/uuid';
 import { devices, deviceCustomFieldValues, deviceHardware, deviceHardwareHealth, deviceNetwork, deviceMetrics, deviceSoftware, deviceGroups, deviceGroupMemberships, softwareInventory } from '../db/schema';
@@ -549,6 +549,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     if (!col) {
       throw new Error(`Unknown device field: ${fieldInfo.column}`);
     }
+    assertKnownEnumValues(col, field, operator, value);
     return applyOperator(sql`${col}`, operator, value);
   }
   if (fieldInfo.table === 'hardware') {
@@ -556,6 +557,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     if (!col) {
       throw new Error(`Unknown hardware field: ${fieldInfo.column}`);
     }
+    assertKnownEnumValues(col, field, operator, value);
     // device_hardware is 1:1 with devices (device_id is PK).
     return sql`EXISTS (SELECT 1 FROM ${deviceHardware} WHERE ${deviceHardware.deviceId} = ${devices.id} AND ${applyOperator(sql`${col}`, operator, value)})`;
   }
@@ -564,6 +566,7 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
     if (!col) {
       throw new Error(`Unknown network field: ${fieldInfo.column}`);
     }
+    assertKnownEnumValues(col, field, operator, value);
     // device_network is 1:many (interfaces); EXISTS = "any interface matches".
     return sql`EXISTS (SELECT 1 FROM ${deviceNetwork} WHERE ${deviceNetwork.deviceId} = ${devices.id} AND ${applyOperator(sql`${col}`, operator, value)})`;
   }
@@ -598,10 +601,62 @@ export function buildConditionSQL(condition: FilterCondition): SQL<unknown> {
   throw new Error(`Unsupported table: ${fieldInfo.table}`);
 }
 
-function sqlTextArray(values: readonly unknown[]): SQL {
-  return values.length === 0
-    ? sql`ARRAY[]::text[]`
-    : sql`ARRAY[${sql.join(values.map((v) => sql`${sqlValue(v)}::text`), sql`, `)}]::text[]`;
+/**
+ * A filter value the engine refuses to compile (#8773 sweep): today, a value
+ * outside a pg enum column's set. Thrown instead of letting Postgres raise an
+ * opaque 22P02 ("invalid input value for enum os_type") 500. validateFilter
+ * reports the same condition up front, so the preview and group write routes
+ * answer 400; this throw covers callers that evaluate without validating
+ * (group membership turns it into GroupEvaluationError('engine_error')).
+ */
+export class FilterValueError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FilterValueError';
+  }
+}
+
+const ENUM_CHECKED_OPERATORS: ReadonlySet<FilterOperator> = new Set(['equals', 'notEquals', 'in', 'notIn']);
+
+// The pg enum values of a column, or undefined for a non-enum column (drizzle
+// sets `enumValues` only on pgEnum columns, not on text/varchar).
+function pgEnumValues(col: unknown): readonly string[] | undefined {
+  const known = (col as { enumValues?: readonly string[] } | undefined)?.enumValues;
+  return Array.isArray(known) ? known : undefined;
+}
+
+// Unknown values are refused, never dropped: dropping `osType notEquals
+// "Windows"` (a case slip) would compile to match-everything and silently widen
+// a script or deployment target to every device.
+function unknownEnumValueMessage(field: string, known: readonly string[], operator: FilterOperator, value: FilterValue): string | null {
+  if (!ENUM_CHECKED_OPERATORS.has(operator)) return null;
+  const values = Array.isArray(value) ? (value as unknown[]) : [value];
+  const unknown = values.find((v) => typeof v !== 'string' || !known.includes(v));
+  if (unknown === undefined) return null;
+  return `Unknown value ${JSON.stringify(unknown)} for ${field}; expected one of ${known.join(', ')}`;
+}
+
+function assertKnownEnumValues(col: unknown, field: string, operator: FilterOperator, value: FilterValue): void {
+  const known = pgEnumValues(col);
+  if (!known) return;
+  const message = unknownEnumValueMessage(field, known, operator, value);
+  if (message) throw new FilterValueError(message);
+}
+
+// The pg enum values behind a filter field, if it maps straight onto an enum
+// column of devices / device_hardware / device_network.
+function pgEnumValuesForField(field: string): readonly string[] | undefined {
+  let info: ReturnType<typeof getColumnForField>;
+  try {
+    info = getColumnForField(field);
+  } catch {
+    return undefined; // unknown field: validateFilter reports it separately
+  }
+  if (info.computed) return undefined;
+  if (info.table === 'devices') return pgEnumValues(devices[info.column as keyof typeof devices]);
+  if (info.table === 'hardware') return pgEnumValues(deviceHardware[info.column as keyof typeof deviceHardware]);
+  if (info.table === 'network') return pgEnumValues(deviceNetwork[info.column as keyof typeof deviceNetwork]);
+  return undefined;
 }
 
 // Build a SQL predicate applying an operator to a column expression. The
@@ -1063,6 +1118,11 @@ export function validateFilter(filter: FilterConditionGroup | FilterCondition): 
     ) {
       errors.push(`Regex pattern too long for field ${filter.field} (max ${MAX_REGEX_PATTERN_LENGTH} characters)`);
     }
+    // Same check buildConditionSQL enforces, reported here so the preview and
+    // group write routes answer 400 instead of failing at evaluation (#8773 sweep).
+    const enumValues = pgEnumValuesForField(filter.field);
+    const enumError = enumValues && unknownEnumValueMessage(filter.field, enumValues, filter.operator, filter.value);
+    if (enumError) errors.push(enumError);
   } else {
     errors.push('Invalid filter structure');
   }

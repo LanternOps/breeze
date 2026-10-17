@@ -158,6 +158,8 @@ import { sendCommandToAgent } from './agentWs';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../services/remoteAccessPolicy';
 import { createDesktopWsRoutes } from './desktopWs';
 import { RemoteSessionPromptPolicyError } from './remote/consentGate';
+import { getRedis } from '../services/redis';
+import { desktopStartInFlightRedisKey } from '../services/desktopStartInFlight';
 
 // -------------------------------------------------------------------
 // Helpers
@@ -249,8 +251,10 @@ function mockUpdateReturning(updatedRow: unknown) {
 function rigDesktopStartIntentSelects(options: {
   lockedStatus?: string;
   committedGeneration?: bigint;
+  /** Extra columns on the row-locked read (#8947: the current start's command id / answer). */
+  lockedRow?: Record<string, unknown>;
 } = {}) {
-  const { lockedStatus = 'pending', committedGeneration = 1n } = options;
+  const { lockedStatus = 'pending', committedGeneration = 1n, lockedRow = {} } = options;
 
   // A prior test may have left an unconsumed mockReturnValueOnce queued on
   // db.select (e.g. a denial test that never reached commitDesktopStartIntent
@@ -267,7 +271,7 @@ function rigDesktopStartIntentSelects(options: {
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockReturnValue({
           for: vi.fn().mockResolvedValue([
-            { status: lockedStatus, terminationPhase: 'none', generation: 0n },
+            { status: lockedStatus, terminationPhase: 'none', generation: 0n, ...lockedRow },
           ]),
         }),
       }),
@@ -860,3 +864,115 @@ describe('GET /:id/viewer/session failure diagnostics', () => {
     expect((await request()).status).toBe(404);
   });
 });
+
+// #8947: one viewer window posted two offers ~250 ms apart; both were accepted
+// and dispatched, and the first peer was orphaned. The real start-intent and
+// in-flight-marker code runs here against an in-memory Redis.
+describe('POST /:id/viewer/offer — concurrent second offer (#8947)', () => {
+  const IN_FLIGHT_COMMAND = `desk-start-${SESSION_ID}-99999999-9999-4999-8999-999999999999`;
+  let store: Map<string, string>;
+
+  function useMemoryRedis() {
+    store = new Map();
+    vi.mocked(getRedis).mockReturnValue({
+      status: 'ready',
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      set: vi.fn(async (key: string, value: string) => { store.set(key, value); return 'OK'; }),
+      eval: vi.fn(async (_script: string, _n: number, key: string, value: string) => {
+        if (store.get(key) !== value) return 0;
+        store.delete(key);
+        return 1;
+      }),
+    } as never);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    primeHappyPath();
+    useMemoryRedis();
+  });
+
+  it('refuses a second offer while the first start is unanswered: 409 START_IN_FLIGHT, nothing dispatched', async () => {
+    store.set(desktopStartInFlightRedisKey(SESSION_ID), IN_FLIGHT_COMMAND);
+    rigDesktopStartIntentSelects({
+      lockedStatus: 'connecting',
+      lockedRow: { startCommandId: IN_FLIGHT_COMMAND, hasAnswer: false },
+    });
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('START_IN_FLIGHT');
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    // The in-flight start keeps its marker.
+    expect(store.get(desktopStartInFlightRedisKey(SESSION_ID))).toBe(IN_FLIGHT_COMMAND);
+  });
+
+  it('accepts a reconnect offer once the answer is stored', async () => {
+    store.set(desktopStartInFlightRedisKey(SESSION_ID), IN_FLIGHT_COMMAND);
+    rigDesktopStartIntentSelects({
+      lockedStatus: 'connecting',
+      lockedRow: { startCommandId: IN_FLIGHT_COMMAND, hasAnswer: true },
+    });
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(200);
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a reconnect offer on an active session whose peer dropped', async () => {
+    store.set(desktopStartInFlightRedisKey(SESSION_ID), IN_FLIGHT_COMMAND);
+    rigDesktopStartIntentSelects({
+      lockedStatus: 'active',
+      lockedRow: { startCommandId: IN_FLIGHT_COMMAND, hasAnswer: true },
+    });
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(200);
+    expect(sendCommandToAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the dispatched start in flight under its own command id', async () => {
+    const res = await offerRequest();
+
+    expect(res.status).toBe(200);
+    const [, command] = vi.mocked(sendCommandToAgent).mock.calls[0]!;
+    expect(store.get(desktopStartInFlightRedisKey(SESSION_ID))).toBe((command as { id: string }).id);
+  });
+
+  it('releases the marker when the start was superseded before dispatch', async () => {
+    // The pre-send re-read sees a newer generation than the one committed.
+    rigDesktopStartIntentSelects({ lockedStatus: 'pending', committedGeneration: 2n });
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('SESSION_SUPERSEDED');
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(store.has(desktopStartInFlightRedisKey(SESSION_ID))).toBe(false);
+  });
+
+  it('releases the marker when the request throws after the commit', async () => {
+    const { logSessionAudit } = await import('./remote/helpers');
+    vi.mocked(logSessionAudit).mockRejectedValueOnce(new Error('audit write exploded'));
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(500);
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+    expect(store.has(desktopStartInFlightRedisKey(SESSION_ID))).toBe(false);
+  });
+
+  it('releases the marker when the agent is unreachable, so the retry is not refused', async () => {
+    vi.mocked(sendCommandToAgent).mockReturnValueOnce(false);
+
+    const res = await offerRequest();
+
+    expect(res.status).toBe(502);
+    expect(store.has(desktopStartInFlightRedisKey(SESSION_ID))).toBe(false);
+  });
+});
+

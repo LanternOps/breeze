@@ -22,6 +22,7 @@ import type { CaptureScope } from './artifacts/toolResultCapture';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
+import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
@@ -39,6 +40,7 @@ import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTI
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
+import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
@@ -182,6 +184,8 @@ export type PostToolUseCallback = (
 // ============================================
 
 export const TOOL_TIERS = {
+  // #8742. Base tier 3: `send` is always human-approved; list/get downgrade to 1 in aiGuardrails.
+  send_endpoint_message: 3,
   list_time_entries: 1,
   get_running_timer: 1,
   get_timesheet: 1,
@@ -210,6 +214,8 @@ export const TOOL_TIERS = {
   get_edr_status: 1,
   list_edr_detections: 1,
   s1_isolate_device: 3,
+  edr_endpoint_action: 3,
+  sync_edr_data: 2,
   s1_threat_action: 3,
   sync_huntress_data: 2,
   execute_command: 3,
@@ -297,6 +303,8 @@ export const TOOL_TIERS = {
   export_dataset: 1,
   // A-W05 (D13a): reads only the caller's own already-captured artifacts.
   read_artifact: 1,
+  // Trust Center W2 (Ruling 15): read-only page status; publish/edit stay human-attested.
+  get_trust_page_status: 1,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -665,6 +673,43 @@ function inputShape(toolName: string): z.ZodRawShape {
   return shape;
 }
 
+
+/**
+ * Text blocks that ride alongside a vision tool's image. Built from the RAW
+ * handler result (the image branch skips compactToolResultForChat), so the
+ * device-reported strings in them — the agent's screenshot error, device
+ * fields, the action echo — are fenced here (#8852 W04).
+ */
+export function visionMetadataTextBlocks(
+  toolName: string,
+  parsed: Record<string, unknown>,
+): Array<{ type: 'text'; text: string }> {
+  const blocks: Array<{ type: 'text'; text: string }> = [];
+  // For analyze_screen, include device context as text
+  if (toolName === 'analyze_screen' && parsed.device) {
+    blocks.push({
+      type: 'text',
+      text: JSON.stringify(sanitizeUntrustedToolValue({
+        analysisContext: parsed.analysisContext,
+        device: parsed.device,
+        capturedAt: parsed.capturedAt,
+        resolution: `${parsed.width}x${parsed.height}`,
+      })),
+    });
+  }
+  // For computer_control, include action metadata as text
+  if (toolName === 'computer_control') {
+    const meta: Record<string, unknown> = {
+      actionExecuted: parsed.actionExecuted,
+      capturedAt: parsed.capturedAt,
+      resolution: `${parsed.width}x${parsed.height}`,
+    };
+    if (parsed.screenshotError) meta.screenshotError = parsed.screenshotError;
+    blocks.push({ type: 'text', text: JSON.stringify(sanitizeUntrustedToolValue(meta)) });
+  }
+  return blocks;
+}
+
 function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
@@ -828,28 +873,7 @@ function makeToolHandler(
                 mimeType: `image/${parsed.format || 'jpeg'}`,
               },
             ];
-            // For analyze_screen, include device context as text
-            if (toolName === 'analyze_screen' && parsed.device) {
-              contentBlocks.push({
-                type: 'text',
-                text: JSON.stringify({
-                  analysisContext: parsed.analysisContext,
-                  device: parsed.device,
-                  capturedAt: parsed.capturedAt,
-                  resolution: `${parsed.width}x${parsed.height}`,
-                }),
-              });
-            }
-            // For computer_control, include action metadata as text
-            if (toolName === 'computer_control') {
-              const meta: Record<string, unknown> = {
-                actionExecuted: parsed.actionExecuted,
-                capturedAt: parsed.capturedAt,
-                resolution: `${parsed.width}x${parsed.height}`,
-              };
-              if (parsed.screenshotError) meta.screenshotError = parsed.screenshotError;
-              contentBlocks.push({ type: 'text', text: JSON.stringify(meta) });
-            }
+            contentBlocks.push(...visionMetadataTextBlocks(toolName, parsed));
             return { content: contentBlocks };
           }
         } catch (err) {
@@ -1818,6 +1842,28 @@ export function buildBreezeSdkTools(
     ),
 
     tool(
+      'edr_endpoint_action',
+      registryDescription('edr_endpoint_action'),
+      {
+        deviceId: uuid,
+        action: z.enum(['isolate', 'unisolate', 'scan']),
+        connectionId: uuid.optional(),
+        reason: z.string().max(500).optional(),
+      },
+      makeHandler('edr_endpoint_action', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'sync_edr_data',
+      registryDescription('sync_edr_data'),
+      {
+        connectionId: uuid.optional(),
+        orgId: uuid.optional(),
+      },
+      makeHandler('sync_edr_data', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
       's1_isolate_device',
       registryDescription('s1_isolate_device'),
       {
@@ -2261,6 +2307,13 @@ export function buildBreezeSdkTools(
         captureDelayMs: z.number().int().min(0).max(3000).optional(),
       },
       makeHandler('computer_control', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'send_endpoint_message',
+      registryDescription('send_endpoint_message'),
+      sendEndpointMessageShape,
+      makeHandler('send_endpoint_message', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Fleet orchestration tools
@@ -4050,6 +4103,16 @@ export function buildBreezeSdkTools(
           }) }],
         };
       }
+    ),
+
+    // Trust Center W2 (Ruling 15): read-only; never creates the draft page.
+    tool(
+      'get_trust_page_status',
+      registryDescription('get_trust_page_status'),
+      {
+        orgId: uuid.describe('Organization UUID'),
+      },
+      makeHandler('get_trust_page_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound

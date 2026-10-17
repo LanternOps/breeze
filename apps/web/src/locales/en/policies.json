@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Endpoint messaging",
+        "endpointMessagingHelp": "Lets technicians send messages to the person at the device.",
+        "allowUserReply": "Allow replies from the user",
+        "allowUserReplyHelp": "Lets the person at the device reply in a chat a technician starts. When off, chats are one-way."
       },
       "inlineEntityPicker": {
         "search": "Search...",

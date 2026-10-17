@@ -2050,7 +2050,10 @@
       "syncingToProvider": "Synchronisation…",
       "providerSyncFailed": "Échec de la synchronisation {{provider}}",
       "reverseInProviderToo": "Annulez également ce paiement dans {{provider}}",
-      "overpayment": "Le montant dépasse le solde dû ({{balance}})."
+      "overpayment": "Le montant dépasse le solde dû ({{balance}}).",
+      "fillLabel": "Remplir le montant",
+      "fillDeposit": "Acompte ({{amount}})",
+      "fillBalance": "Solde total ({{amount}})"
     },
     "requestPayment": {
       "invoiceSent": "Facture envoyée",
@@ -2065,7 +2068,8 @@
       "paid": "Payé",
       "subtotal": "Sous-total",
       "tax": "Taxe",
-      "total": "Total"
+      "total": "Total",
+      "depositDueNow": "Acompte dû maintenant"
     },
     "terms": "Conditions générales",
     "void": {

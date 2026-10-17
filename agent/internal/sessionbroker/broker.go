@@ -2821,7 +2821,7 @@ func (b *Broker) scopesForRole(role ipc.HelperRole, binaryKind, goos, peerPath s
 // role-scope vars are shared package state and must not be appended to.
 func (b *Broker) grantScopes(role ipc.HelperRole, authReq ipc.AuthRequest, goos, peerPath string) []string {
 	base := b.scopesForRole(role, authReq.BinaryKind, goos, peerPath)
-	scopes := make([]string, len(base), len(base)+2)
+	scopes := make([]string, len(base), len(base)+3)
 	copy(scopes, base)
 	if role == ipc.HelperRoleUser && authReq.SupportsConsentUI {
 		scopes = append(scopes, ipc.ScopeConsentUIFallback)
@@ -2830,6 +2830,10 @@ func (b *Broker) grantScopes(role ipc.HelperRole, authReq ipc.AuthRequest, goos,
 	// advertised it — never part of the static assistHelperScopes.
 	if role == ipc.HelperRoleAssist && authReq.SupportsMessaging {
 		scopes = append(scopes, ipc.ScopeMessaging)
+	}
+	// Endpoint live chat (#8743): same shape, its own advertisement.
+	if role == ipc.HelperRoleAssist && authReq.SupportsChat {
+		scopes = append(scopes, ipc.ScopeChat)
 	}
 	return scopes
 }
@@ -3296,6 +3300,18 @@ func (b *Broker) dispatchHelperMessage(s *Session, env *ipc.Envelope) {
 		if b.onMessage != nil {
 			b.onMessage(s, env)
 		}
+	case ipc.TypeChatReply, ipc.TypeChatPresented:
+		// Endpoint live chat (#8743). A chat_presented answering a live
+		// chat_open/chat_message is matched to its waiter before dispatch;
+		// reaching here means a replay or a user reply.
+		if !shouldForwardUnsolicitedHelperMessage(s, env) {
+			log.Warn("dropping chat event from a session without chat scope",
+				"type", env.Type, "sessionId", s.SessionID, "role", s.HelperRole)
+			return
+		}
+		if b.onMessage != nil {
+			b.onMessage(s, env)
+		}
 	case ipc.TypeMessagePresented, ipc.TypeMessageAck, ipc.TypeMessageDismissed:
 		// Endpoint messaging (#8293). A message_presented that answers a live
 		// message_show is matched to its waiter before dispatch; reaching here
@@ -3501,6 +3517,8 @@ func shouldForwardUnsolicitedHelperMessage(session *Session, env *ipc.Envelope) 
 		return session.HasScope("watchdog")
 	case ipc.TypeMessagePresented, ipc.TypeMessageAck, ipc.TypeMessageDismissed:
 		return session.HasScope(ipc.ScopeMessaging)
+	case ipc.TypeChatReply, ipc.TypeChatPresented:
+		return session.HasScope(ipc.ScopeChat)
 	case ipc.TypeNotifyResult, ipc.TypeClipboardData, ipc.TypeCommandResult:
 		return false
 	default:

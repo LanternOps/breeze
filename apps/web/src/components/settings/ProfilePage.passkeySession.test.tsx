@@ -49,6 +49,7 @@ vi.mock('@/lib/avatarBlobCache', () => ({
 // sequence; their own behavior is covered by their own suites.
 vi.mock('./ApproverDevicesSection', () => ({ default: () => null }));
 vi.mock('./TicketPushoverSettings', () => ({ default: () => null }));
+vi.mock('./EmailNotificationSettings', () => ({ default: () => null }));
 vi.mock('./ConnectSsoCard', () => ({ default: () => null }));
 
 import ProfilePage from './ProfilePage';

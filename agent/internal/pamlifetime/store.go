@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/atomicrename"
 	"github.com/google/uuid"
 )
 
@@ -349,7 +350,7 @@ func (s *Store) persistLocked() error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close PAM lifetime ledger: %w", err)
 	}
-	if err := replaceFile(tmpPath, s.path); err != nil {
+	if err := atomicrename.Replace(tmpPath, s.path); err != nil {
 		return fmt.Errorf("replace PAM lifetime ledger: %w", err)
 	}
 	if err := os.Chmod(s.path, 0o600); err != nil {

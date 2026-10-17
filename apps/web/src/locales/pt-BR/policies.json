@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Mensagens para dispositivos",
+        "endpointMessagingHelp": "Permite que técnicos enviem mensagens para a pessoa que usa o dispositivo.",
+        "allowUserReply": "Permitir respostas do usuário",
+        "allowUserReplyHelp": "Permite que a pessoa no dispositivo responda em um chat iniciado por um técnico. Desativado, os chats são unidirecionais."
       },
       "inlineEntityPicker": {
         "search": "Pesquisar...",

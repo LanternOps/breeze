@@ -5,6 +5,7 @@ import {
   buildListEdrDetectionsQuery,
   EdrReadError,
   SYNC_HEALTH_PARTNER_ONLY_NOTE,
+  selectStatusConnections,
   type CoverageInput,
   type EdrReadScope,
 } from './read';
@@ -153,5 +154,42 @@ describe('detection query (DB-less SQL)', () => {
   it('a partner token naming an inaccessible org is refused', () => {
     const partnerAuth = { scope: 'partner', canAccessOrg: () => false, orgCondition: () => undefined } as unknown as AuthContext;
     expect(() => sqlOf(unrestricted(partnerAuth), { orgId: OTHER_ORG })).toThrow(EdrReadError);
+  });
+});
+
+describe('selectStatusConnections — #8658 selected-org partner coverage', () => {
+  const conns = [{ id: 'c1' }, { id: 'c2' }];
+  // Tenant rows are already narrowed to the caller's reach (mapped) or unmapped.
+  const tenants = [
+    { connectionId: 'c1', orgId: ORG },
+    { connectionId: 'c2', orgId: null },
+  ];
+
+  it('a selected-org partner user with no orgId sees only connections reaching their orgs', () => {
+    expect(selectStatusConnections(conns, tenants, [], { narrowToReach: true }).map((c) => c.id)).toEqual(['c1']);
+  });
+
+  it('a connection with an endpoint row in reach counts even without a mapped tenant row', () => {
+    expect(selectStatusConnections(conns, tenants, [{ connectionId: 'c2' }], { narrowToReach: true }).map((c) => c.id))
+      .toEqual(['c1', 'c2']);
+  });
+
+  it('all-org partner users keep every connection (unchanged)', () => {
+    expect(selectStatusConnections(conns, tenants, [], { narrowToReach: false }).map((c) => c.id)).toEqual(['c1', 'c2']);
+  });
+
+  it('an explicit orgId keeps its existing rule (mapped to THAT org, or an endpoint row)', () => {
+    expect(selectStatusConnections(conns, tenants, [], { orgId: ORG, narrowToReach: true }).map((c) => c.id)).toEqual(['c1']);
+    expect(selectStatusConnections(conns, tenants, [], { orgId: OTHER_ORG, narrowToReach: false })).toEqual([]);
+  });
+
+  it('end to end: the unreachable connection no longer produces a "no vendor tenant mapped" note', () => {
+    const kept = selectStatusConnections(conns, tenants, [], { narrowToReach: true });
+    const s = buildEdrStatusSummary(partnerInput({
+      connections: kept.map((c) => ({ id: c.id, provider: 'bitdefender', status: 'connected' as const, lastDetectionSyncAt: minutesAgo(5), detectionIntervalMinutes: 15 })),
+      tenants: [{ connectionId: 'c1', orgId: ORG, lastDetectionSyncAt: minutesAgo(5), lastDetectionSyncStatus: 'success' }],
+    }));
+    expect(s.coverage.notes.join(' ')).not.toMatch(/no vendor tenant mapped/);
+    expect(s.coverage.partial).toBe(false);
   });
 });

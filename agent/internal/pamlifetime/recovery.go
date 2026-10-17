@@ -134,3 +134,24 @@ func (m *lifecycleManager) reconcileRecoveredCleanEntry(ctx context.Context, ent
 	result.FailureCode = "reconciled_account_absent"
 	return result
 }
+
+func hasAnyProcessIdentity(e LedgerEntry) bool {
+	return e.PID != 0 || e.ProcessCreationTime != nil || e.JobName != "" || e.BootID != ""
+}
+
+// recoverUnlaunchedActiveEntry resolves an active entry that never bound a
+// process (an apply that failed before launch, left by an agent without
+// failBeforeLaunch) from the same fresh job, orphan-token and account
+// evidence as a recovered entry. The marker is persisted only after that
+// evidence passes, so a crash in between leaves the entry active and
+// re-checked on the next start.
+func (m *lifecycleManager) recoverUnlaunchedActiveEntry(ctx context.Context, entry LedgerEntry) (Result, bool) {
+	result := m.reconcileRecoveredCleanEntry(ctx, entry)
+	if !verifiedCleanupOutcome(result) {
+		return result, false
+	}
+	if err := m.store.MarkReconciledClean(entry.ActuationID, entry.Generation); err != nil {
+		return m.failed(entry.ActuationID, entry.Generation, result.Evidence.BootID, "persist_cleanup_evidence_failed"), false
+	}
+	return result, true
+}

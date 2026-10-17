@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
-import type { Context } from 'hono';
 import { ENDPOINT_MESSAGE_LIMITS, endpointMessageSendSchema, type EndpointMessageSendInput } from '@breeze/shared';
 import { runOutsideDbContext } from '../../db';
 import { zValidator } from '../../lib/validation';
@@ -11,7 +10,7 @@ import { CommandTypes } from '../../services/commandTypes';
 import { deliveryTtlMs } from '../../services/commandOfflinePolicy';
 import { agentSupportsMessaging } from '../../services/commandMinVersion';
 import { buildHelperConfigUpdate } from '../../services/helperSettings';
-import { writeAuditEventAsync } from '../../services/auditEvents';
+import { writeAuditEventAsync, type RequestLike } from '../../services/auditEvents';
 import { getTrustedClientIpOrUndefined } from '../../services/clientIp';
 import { resolveMessageBranding, type MessageBranding } from '../../services/endpointMessaging/brandingSnapshot';
 import {
@@ -26,6 +25,13 @@ import {
   releaseMessageIdempotency,
 } from '../../services/endpointMessaging/idempotency';
 import { computeSendFingerprint } from '../../services/endpointMessaging/requestFingerprint';
+import {
+  attachDeliveryCommand,
+  markDeliveryQueueFailed,
+  persistSend,
+  type PersistDeviceInput,
+} from '../../services/endpointMessaging/persistence';
+import { withdrawCommand } from '../../services/endpointMessaging/retract';
 import { resolveTargetsDetailed, type TargetGroup } from './resolveTargets';
 
 export type SendErrorCode =
@@ -35,7 +41,9 @@ export type SendErrorCode =
   | 'rate_limited'
   | 'cap_exceeded'
   | 'feature_disabled'
-  | 'queue_failed';
+  | 'queue_failed'
+  // A retract landed while this send was still queueing its devices.
+  | 'retracted';
 
 export interface DeviceSendResult {
   deviceId: string;
@@ -45,12 +53,30 @@ export interface DeviceSendResult {
   errorCode?: SendErrorCode;
 }
 
+export interface SendSuccessBody {
+  batchId: string;
+  deviceCount: number;
+  results: DeviceSendResult[];
+}
+
+/** Everything a send needs from its caller; the HTTP route, resend and the AI tool each build one. */
+export interface EndpointMessageSendContext {
+  req: RequestLike;
+  auth: AuthContext;
+  permissions?: UserPermissions;
+  ipAddress?: string;
+  /** Set by the resend route: the endpoint_messages row this send replaces. */
+  resendOfId?: string;
+}
+
+export type EndpointMessageSendOutcome =
+  | { status: 200; body: SendSuccessBody }
+  | { status: 400 | 403 | 409 | 429 | 503; body: Record<string, unknown> };
+
 const FLAG_CONCURRENCY = 20;
 const MINUTE_MS = 60_000;
 
 export const sendRoutes = new Hono();
-
-type Ctx = Context;
 
 function targetMode(t: EndpointMessageSendInput['targets']): string {
   const kinds = [
@@ -69,9 +95,8 @@ function queueErrorCode(res: { error?: string; trust?: unknown }): SendErrorCode
   return 'queue_failed';
 }
 
-async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
-  const auth = c.get('auth') as AuthContext;
-  const permissions = c.get('permissions') as UserPermissions | undefined;
+async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessageSendInput): Promise<EndpointMessageSendOutcome> {
+  const { auth, permissions } = ctx;
   const startedAt = Date.now();
 
   const { groups, denied } = await resolveTargetsDetailed(auth, input.targets, { permissions });
@@ -79,20 +104,27 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
   const deviceCount = resolvedDevices.length;
 
   if (deviceCount === 0 && denied.length === 0) {
-    return { status: 400 as const, body: { error: 'no_devices_resolved' } };
+    return { status: 400, body: { error: 'no_devices_resolved' } };
   }
   if (deviceCount > ENDPOINT_MESSAGE_LIMITS.maxDevices) {
-    return { status: 400 as const, body: { error: 'cap_exceeded', deviceCount } };
+    return { status: 400, body: { error: 'cap_exceeded', deviceCount } };
   }
 
-  // Rollout flag, resolved per device. A settings entry cached before the flag
-  // existed has no `endpointMessaging` key and counts as off.
+  // Confirmation first: a refused send must not spend a per-device settings
+  // resolution on up to 5 000 devices (#8742 carry-forward).
+  if (deviceCount > ENDPOINT_MESSAGE_LIMITS.confirmAbove && input.confirmedCount !== deviceCount) {
+    return { status: 409, body: { error: 'confirmation_required', deviceCount } };
+  }
+
+  // Rollout flag, resolved per device. The Redis settings cache is skipped on
+  // both sides: this runs inside the request's held DB transaction (#1105),
+  // and a cached entry written before the flag existed would read as "off".
   const flagOn = new Map<string, boolean | 'error'>();
   for (let i = 0; i < resolvedDevices.length; i += FLAG_CONCURRENCY) {
     const chunk = resolvedDevices.slice(i, i + FLAG_CONCURRENCY);
     const settled = await Promise.all(chunk.map(async (d) => {
       try {
-        const s = await buildHelperConfigUpdate(d.id, d.orgId);
+        const s = await buildHelperConfigUpdate(d.id, d.orgId, { skipCacheRead: true, skipCacheWrite: true });
         return s.endpointMessaging?.enabled === true;
       } catch (err) {
         console.error('[endpoint-messages] helper settings resolution failed', { deviceId: d.id, error: err instanceof Error ? err.message : String(err) });
@@ -102,16 +134,12 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
     chunk.forEach((d, idx) => flagOn.set(d.id, settled[idx]!));
   }
   if (deviceCount > 0 && [...flagOn.values()].every((v) => v === false)) {
-    return { status: 403 as const, body: { error: 'feature_disabled' } };
-  }
-
-  if (deviceCount > ENDPOINT_MESSAGE_LIMITS.confirmAbove && input.confirmedCount !== deviceCount) {
-    return { status: 409 as const, body: { error: 'confirmation_required', deviceCount } };
+    return { status: 403, body: { error: 'feature_disabled' } };
   }
 
   const actor = await runOutsideDbContext(() => checkActorSendLimit(auth.user.id));
   if (!actor.allowed) {
-    return { status: 429 as const, body: { error: 'rate_limited', retryAfterSeconds: actor.retryAfterSeconds } };
+    return { status: 429, body: { error: 'rate_limited', retryAfterSeconds: actor.retryAfterSeconds } };
   }
 
   // Sender identity, once per org, from the org itself (never the request).
@@ -134,7 +162,7 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
     if (cost <= 0) continue;
     const partner = await runOutsideDbContext(() => checkPartnerDeliveryLimit(partnerId, cost));
     if (!partner.allowed) {
-      return { status: 429 as const, body: { error: 'rate_limited', retryAfterSeconds: partner.retryAfterSeconds } };
+      return { status: 429, body: { error: 'rate_limited', retryAfterSeconds: partner.retryAfterSeconds } };
     }
   }
 
@@ -143,29 +171,85 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
   const expiresMinutes = input.expiresInMinutes ?? ENDPOINT_MESSAGE_LIMITS.maxExpiresInMinutes;
   const expiresAtMs = startedAt + expiresMinutes * MINUTE_MS;
   const expiresAt = new Date(expiresAtMs).toISOString();
+  const bodySha256 = createHash('sha256').update(input.body).digest('hex');
+
+  // Persist the message and every delivery (W02) BEFORE queueing, in a
+  // transaction of its own that is visible before any command exists: a fast
+  // agent's command result must find its row. A failure here queues nothing.
+  const persistDevices: PersistDeviceInput[] = [];
+  for (const g of groups) {
+    const brand = brandingByOrg.get(g.orgId);
+    for (const d of g.devices) {
+      const failure = failures.get(d.id) ?? (brand ? undefined : 'queue_failed');
+      persistDevices.push(failure
+        ? { deviceId: d.id, orgId: g.orgId, status: 'failed', errorCode: failure }
+        : { deviceId: d.id, orgId: g.orgId, status: 'queued' });
+    }
+  }
+  const deliveryByDevice = await persistSend({
+    batchId,
+    clientMessageId: input.messageId,
+    actorId: auth.user.id,
+    targetMode: targetMode(input.targets),
+    targetSpec: input.targets as Record<string, unknown>,
+    title: input.title,
+    body: input.body,
+    bodySha256,
+    severity: input.severity,
+    requiresAck: input.requiresAck,
+    expiresAt: new Date(expiresAtMs),
+    aiOrigin: auth.aiOrigin,
+    resendOfId: ctx.resendOfId,
+    orgGroups: groups.map((g) => ({
+      orgId: g.orgId,
+      branding: { ...(brandingByOrg.get(g.orgId)?.branding ?? {}) },
+    })),
+    devices: persistDevices,
+  });
 
   const results: DeviceSendResult[] = [];
   const perOrg = new Map<string, DeviceSendResult[]>();
 
-  for (const g of groups) {
-    const orgResults: DeviceSendResult[] = [];
-    perOrg.set(g.orgId, orgResults);
-    const brand = brandingByOrg.get(g.orgId);
-    for (const d of g.devices) {
-      const failure = failures.get(d.id);
-      let result: DeviceSendResult;
-      if (failure || !brand) {
-        result = { deviceId: d.id, orgId: g.orgId, status: 'failed', errorCode: failure ?? 'queue_failed' };
-      } else {
-        result = await queueOne(d.id, g.orgId, brand.branding);
-      }
-      results.push(result);
-      orgResults.push(result);
+  async function recordQueueOutcome(
+    deliveryId: string | undefined,
+    result: DeviceSendResult,
+    agentVersion: string | null,
+  ): Promise<DeviceSendResult> {
+    if (!deliveryId) return result;
+    let attached: Awaited<ReturnType<typeof attachDeliveryCommand>> | undefined;
+    try {
+      if (result.status === 'queued' && result.commandId) attached = await attachDeliveryCommand(deliveryId, result.commandId);
+      else if (result.status === 'failed') await markDeliveryQueueFailed(deliveryId, result.errorCode ?? 'queue_failed');
+    } catch (err) {
+      // The command is already queued (or refused). Losing this bookkeeping
+      // write leaves the delivery `queued`; the command result still finds it
+      // by batch, and the expiry sweep closes it otherwise.
+      console.error('[endpoint-messages] delivery bookkeeping failed', {
+        deliveryId,
+        batchId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-  }
-  for (const dn of denied) {
-    // A named device the caller may not reach. Same code whether or not it exists.
-    results.push({ deviceId: dn.deviceId, orgId: dn.orgId ?? '', status: 'failed', errorCode: 'no_permission' });
+    if (attached !== 'retracted' || !result.commandId) return result;
+
+    // The operator retracted this message while the send was still working
+    // through its devices: take back the command just queued.
+    const withdrawn = await withdrawCommand({
+      deviceId: result.deviceId,
+      orgId: result.orgId,
+      commandId: result.commandId,
+      clientMessageId: input.messageId,
+      expiresAt: new Date(expiresAtMs),
+      agentVersion,
+      userId: auth.user.id,
+      aiOrigin: auth.aiOrigin,
+    });
+    if (withdrawn.kind === 'failed') {
+      console.error('[endpoint-messages] could not withdraw a message retracted mid-send', {
+        deviceId: result.deviceId, batchId, errorCode: withdrawn.errorCode,
+      });
+    }
+    return { deviceId: result.deviceId, orgId: result.orgId, status: 'failed', errorCode: 'retracted' };
   }
 
   async function queueOne(deviceId: string, orgId: string, branding: MessageBranding): Promise<DeviceSendResult> {
@@ -218,13 +302,33 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
     }
   }
 
+  for (const g of groups) {
+    const orgResults: DeviceSendResult[] = [];
+    perOrg.set(g.orgId, orgResults);
+    const brand = brandingByOrg.get(g.orgId);
+    for (const d of g.devices) {
+      const failure = failures.get(d.id);
+      let result: DeviceSendResult;
+      if (failure || !brand) {
+        result = { deviceId: d.id, orgId: g.orgId, status: 'failed', errorCode: failure ?? 'queue_failed' };
+      } else {
+        result = await queueOne(d.id, g.orgId, brand.branding);
+        result = await recordQueueOutcome(deliveryByDevice.get(d.id), result, d.agentVersion);
+      }
+      results.push(result);
+      orgResults.push(result);
+    }
+  }
+  for (const dn of denied) {
+    // A named device the caller may not reach. Same code whether or not it exists.
+    results.push({ deviceId: dn.deviceId, orgId: dn.orgId ?? '', status: 'failed', errorCode: 'no_permission' });
+  }
+
   // One audit row per org group: hash + length of the body, never its text.
-  const bodySha256 = createHash('sha256').update(input.body).digest('hex');
-  const ipAddress = getTrustedClientIpOrUndefined(c);
   for (const [orgId, orgResults] of perOrg) {
     const failedByCode: Record<string, number> = {};
     for (const r of orgResults) if (r.errorCode) failedByCode[r.errorCode] = (failedByCode[r.errorCode] ?? 0) + 1;
-    await writeAuditEventAsync(c, {
+    await writeAuditEventAsync(ctx.req, {
       orgId,
       action: 'endpoint_message.send',
       resourceType: 'endpoint_message',
@@ -247,12 +351,53 @@ async function handleSend(c: Ctx, input: EndpointMessageSendInput) {
         bodyLength: input.body.length,
         titleLength: input.title.length,
         ...(auth.aiOrigin ? { aiOrigin: true } : {}),
+        ...(ctx.resendOfId ? { resendOf: ctx.resendOfId } : {}),
       },
-      ipAddress,
+      ipAddress: ctx.ipAddress,
     });
   }
 
-  return { status: 200 as const, body: { batchId, deviceCount: results.length, results } };
+  return { status: 200, body: { batchId, deviceCount: results.length, results } };
+}
+
+/**
+ * The whole send, idempotency included. Shared by the HTTP route, the resend
+ * route and the `send_endpoint_message` AI tool, so every path gets the same
+ * caps, limits, version gate, persistence and audit.
+ */
+export async function executeEndpointMessageSend(
+  ctx: EndpointMessageSendContext,
+  input: EndpointMessageSendInput,
+): Promise<EndpointMessageSendOutcome> {
+  const actorId = ctx.auth.user.id;
+
+  // Idempotency first: a replay must consume no budget and touch no device.
+  // Redis round-trips run outside the request's held DB transaction.
+  const fingerprint = computeSendFingerprint(input);
+  const claim = await runOutsideDbContext(() => claimMessageIdempotency(actorId, input.messageId, fingerprint));
+  if (claim.state === 'replay') return { status: 200, body: claim.body as SendSuccessBody };
+  if (claim.state === 'in_progress') return { status: 409, body: { error: 'in_progress' } };
+  if (claim.state === 'conflict') return { status: 409, body: { error: 'idempotency_conflict' } };
+  if (claim.state === 'unavailable') return { status: 503, body: { error: 'unavailable' } };
+
+  const release = () => runOutsideDbContext(() => releaseMessageIdempotency(actorId, input.messageId));
+
+  let outcome: EndpointMessageSendOutcome;
+  try {
+    outcome = await handleSend(ctx, input);
+  } catch (err) {
+    await release();
+    throw err;
+  }
+
+  if (outcome.status === 200 && outcome.body.results.some((r) => r.status === 'queued')) {
+    await runOutsideDbContext(() => completeMessageIdempotency(actorId, input.messageId, fingerprint, outcome.body));
+  } else {
+    // A refused send, or a 200 that queued nothing, must not burn the id:
+    // fix the problem, resend.
+    await release();
+  }
+  return outcome;
 }
 
 sendRoutes.post(
@@ -263,37 +408,13 @@ sendRoutes.post(
   requireMfa(),
   zValidator('json', endpointMessageSendSchema),
   async (c) => {
-    const auth = c.get('auth') as AuthContext;
     const input = c.req.valid('json') as EndpointMessageSendInput;
-    const actorId = auth.user.id;
-
-    // Idempotency first: a replay must consume no budget and touch no device.
-    // Redis round-trips run outside the request's held DB transaction.
-    const fingerprint = computeSendFingerprint(input);
-    const claim = await runOutsideDbContext(() => claimMessageIdempotency(actorId, input.messageId, fingerprint));
-    if (claim.state === 'replay') return c.json(claim.body as object, 200);
-    if (claim.state === 'in_progress') return c.json({ error: 'in_progress' }, 409);
-    if (claim.state === 'conflict') return c.json({ error: 'idempotency_conflict' }, 409);
-    if (claim.state === 'unavailable') return c.json({ error: 'unavailable' }, 503);
-
-    const release = () => runOutsideDbContext(() => releaseMessageIdempotency(actorId, input.messageId));
-
-    let outcome: Awaited<ReturnType<typeof handleSend>>;
-    try {
-      outcome = await handleSend(c, input);
-    } catch (err) {
-      await release();
-      throw err;
-    }
-
-    const queuedAny = outcome.status === 200 && outcome.body.results.some((r) => r.status === 'queued');
-    if (queuedAny) {
-      await runOutsideDbContext(() => completeMessageIdempotency(actorId, input.messageId, fingerprint, outcome.body));
-    } else {
-      // A refused send, or a 200 that queued nothing, must not burn the id:
-      // fix the problem, resend.
-      await release();
-    }
+    const outcome = await executeEndpointMessageSend({
+      req: c,
+      auth: c.get('auth') as AuthContext,
+      permissions: c.get('permissions') as UserPermissions | undefined,
+      ipAddress: getTrustedClientIpOrUndefined(c),
+    }, input);
     return c.json(outcome.body, outcome.status);
   },
 );

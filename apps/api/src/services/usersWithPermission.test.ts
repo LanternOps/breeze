@@ -21,7 +21,7 @@ vi.mock('../db/schema', () => ({
 }));
 
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { resolveUsersWithPermissionForOrg } from './usersWithPermission';
+import { resolvePartnerUsersWithPermission, resolveUsersWithPermissionForOrg } from './usersWithPermission';
 
 const dialect = new PgDialect();
 
@@ -60,10 +60,16 @@ function mockOrgMembers(rows: Array<{ userId: string }>) {
   } as any);
 }
 
+let partnerWhereArgs: unknown[] = [];
+
 function mockPartnerMembers(rows: Array<{ userId: string; orgAccess: string; orgIds: string[] | null }>) {
+  const where = vi.fn().mockImplementation((arg: unknown) => {
+    partnerWhereArgs.push(arg);
+    return Promise.resolve(rows);
+  });
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+      innerJoin: vi.fn().mockReturnValue({ where }),
     }),
   } as any);
 }
@@ -82,6 +88,7 @@ describe('resolveUsersWithPermissionForOrg', () => {
     // by one test would leak into the next. Reset the ambient scope explicitly.
     vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
     roleWhereArgs = [];
+    partnerWhereArgs = [];
   });
 
   it('matches wildcard grants (*:*) for billing:manage', async () => {
@@ -135,5 +142,76 @@ describe('resolveUsersWithPermissionForOrg', () => {
 
     expect(runOutsideDbContext).not.toHaveBeenCalled();
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolvePartnerUsersWithPermission', () => {
+  const PERM = { resource: 'connected_apps', action: 'manage' };
+  const rows = [
+    { userId: 'u1', orgAccess: 'all', orgIds: null },
+    { userId: 'u2', orgAccess: 'selected', orgIds: ['A'] },
+    { userId: 'u3', orgAccess: 'selected', orgIds: ['B'] },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue(undefined);
+    roleWhereArgs = [];
+    partnerWhereArgs = [];
+  });
+
+  it('partner-wide: only orgAccess=all partner users', async () => {
+    mockGrantingRoles([{ roleId: 'r1' }]);
+    mockPartnerMembers(rows);
+    await expect(resolvePartnerUsersWithPermission('P', PERM)).resolves.toEqual(['u1']);
+  });
+
+  it('org-scoped: all + selected covering the org; never org members', async () => {
+    mockGrantingRoles([{ roleId: 'r1' }]);
+    mockPartnerMembers(rows);
+    const out = await resolvePartnerUsersWithPermission('P', PERM, { orgId: 'A' });
+    expect(out.sort()).toEqual(['u1', 'u2']);
+    // roles query + partner_users query only: no organizations / organization_users lookups
+    expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns [] and skips the partner query when no role grants the permission', async () => {
+    mockGrantingRoles([]);
+    await expect(resolvePartnerUsersWithPermission('P', PERM)).resolves.toEqual([]);
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('escapes an org-scoped ambient context before reading', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'organization' } as any);
+    mockGrantingRoles([]);
+    await resolvePartnerUsersWithPermission('P', PERM);
+    expect(runOutsideDbContext).toHaveBeenCalledTimes(1);
+    expect(withSystemDbAccessContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('partner query pins partner, granting roles and active status', async () => {
+    mockGrantingRoles([{ roleId: 'role-aaa' }, { roleId: 'role-bbb' }]);
+    mockPartnerMembers([]);
+    await resolvePartnerUsersWithPermission('partner-xyz', PERM);
+    const { sql, params } = dialect.sqlToQuery(partnerWhereArgs[0] as never);
+    // schema mock uses plain strings for columns, so they render as params
+    expect(sql).toBe('($1 = $2 and $3 in ($4, $5) and $6 = $7)');
+    expect(params).toEqual(['partner_id', 'partner-xyz', 'role_id', 'role-aaa', 'role-bbb', 'status', 'active']);
+  });
+
+  it('skips the escape when the ambient scope is already system', async () => {
+    vi.mocked(getCurrentDbAccessContext).mockReturnValue({ scope: 'system' } as any);
+    mockGrantingRoles([]);
+    await resolvePartnerUsersWithPermission('P', PERM);
+    expect(runOutsideDbContext).not.toHaveBeenCalled();
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+
+  it('wildcard-aware role query', async () => {
+    mockGrantingRoles([]);
+    await resolvePartnerUsersWithPermission('P', PERM);
+    expect(renderedWhere(0)).toContain('connected_apps');
+    expect(renderedWhere(0)).toContain('*');
   });
 });

@@ -295,29 +295,41 @@
     "saving": "Saving...",
     "saveSettings": "Save settings"
   },
-  "connectorStatusPanel": {
-    "healthy": "Healthy",
-    "degraded": "Degraded",
-    "paused": "Paused",
-    "connectorStatus": "Connector status",
-    "trackIntegrationHealthAndRecentActivityAtA": "Track integration health and recent activity at a glance. ",
-    "refreshAll": "Refresh all ",
-    "integration": "Integration",
-    "health": "Health",
-    "lastActivity": "Last activity",
-    "errors": "Errors",
-    "syncNow": "Sync now ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Monitoring",
-      "webhooks": "Webhooks",
-      "backup": "Backup"
+  "connectionHealthPanel": {
+    "title": "Connection health",
+    "allHealthy": "All connections are healthy",
+    "loadError": "Could not load connection health.",
+    "retry": "Retry",
+    "since": "since {{time}}",
+    "fix": "Fix",
+    "truncated": "Showing the first {{count}}",
+    "recentlyResolved": "Recently resolved ({{count}})",
+    "resolution": {
+      "recovered": "Recovered",
+      "retired": "Retired"
     },
-    "activity": {
-      "threeMinutesAgo": "3m ago",
-      "elevenMinutesAgo": "11m ago",
-      "fiveMinutesAgo": "5m ago",
-      "oneDayAgo": "1d ago"
+    "condition": {
+      "sync_failed": "Sync failed",
+      "reauth_required": "Re-authorization required",
+      "disconnected": "Disconnected",
+      "error": "Error",
+      "mailbox_error": "Mailbox error",
+      "poll_failing": "Polling failing",
+      "needs_consent": "Consent needed",
+      "degraded": "Degraded",
+      "suspended": "Suspended",
+      "grant_missing": "Grant missing",
+      "grant_unexpected": "Unexpected grant",
+      "manifest_stale": "Manifest out of date",
+      "application_token_invalid": "Application token invalid",
+      "tenant_mismatch": "Tenant mismatch",
+      "grant_reconciliation_unavailable": "Grant check unavailable",
+      "grant_revoked_reuse": "Grant revoked (token reuse)",
+      "grant_revoked": "Grant revoked",
+      "delivery_failed": "Deliveries failing",
+      "sync_stale": "Sync stalled",
+      "verification_failed": "Verification failed",
+      "unknown": "Needs attention"
     }
   },
   "googleWorkspaceIntegration": {
@@ -1305,7 +1317,8 @@
     "accessUrlHintPath": "The vendor's API address for your account, including the {{path}} path.",
     "detectionIntervalLabel": "Detections sync interval (minutes)",
     "inventoryIntervalLabel": "Inventory sync interval (minutes)",
-    "intervalHelp": "Leave blank to use the provider's default. Allowed range is 1 to 1440 minutes.",
+    "intervalHelp": "Leave blank to use the provider's default. Allowed range is 5 to 1440 minutes.",
+    "intervalInvalid": "Enter a whole number from 5 to 1440 minutes, or leave blank for the provider default.",
     "noProviders": "No EDR providers are available on this server.",
     "partnerOnly": "EDR providers are managed at the partner level. Switch to a partner account to manage them.",
     "readOnly": "Only partner administrators with access to all organizations can change EDR connections.",
@@ -1399,6 +1412,34 @@
       "degraded": "Degraded",
       "unhealthy": "Unhealthy",
       "unknown": "Unknown"
-    }
+    },
+    "actionsLabel": "Allow response actions",
+    "actionsHelp": "Lets technicians isolate devices and run scans through this connection.",
+    "actionsConfirmTitle": "Allow response actions?",
+    "actionsConfirmMessage": "Technicians with device execute permission will be able to isolate and release devices and run scans on endpoints managed through \"{{name}}\".",
+    "actionsConfirmLabel": "Allow",
+    "actionsOnToast": "Response actions allowed",
+    "actionsOffToast": "Response actions turned off",
+    "actionsError": "Could not update response actions.",
+    "pushLabel": "Push events",
+    "pushHelp": "{{provider}} notifies Breeze about new events, which triggers a sync sooner than the regular schedule. Scheduled syncs keep running.",
+    "pushOnToast": "Push events enabled",
+    "pushOffToast": "Push events disabled",
+    "pushReplaceTitle": "Replace the existing push destination?",
+    "pushReplaceMessage": "{{provider}} already sends push events to another destination (for example a SIEM). Replacing it with Breeze stops that feed.",
+    "pushReplaceConfirm": "Replace and enable",
+    "pushError": "Could not change push events.",
+    "pushErrors": {
+      "public_url_unset": "Set the server public URL before enabling push events.",
+      "public_url_not_https": "Push events need an HTTPS public URL.",
+      "connection_inactive": "Activate the connection before enabling push events.",
+      "push_state_changed": "Push settings changed while enabling. Refresh and try again."
+    },
+    "pushTest": "Send test event",
+    "pushTestQueuedToast": "Test event requested",
+    "pushTestError": "Could not send the test event.",
+    "pushTestNote": "The test event can take a few minutes to arrive.",
+    "pushLast": "Last push event: {{relative}}",
+    "pushNone": "No push events received yet"
   }
 }

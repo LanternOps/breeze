@@ -64,6 +64,13 @@ export const TOOL_ACTION_INPUT_KEYS: Record<string, string> = {
 // resolution always goes through checkGuardrails().
 export const TIER2_ACTIONS: Record<string, string[]> = {
   manage_policy_feature_link: ['describe'],
+  // EDR response actions (#8167 W03, spec §4.10): a scan is non-disruptive,
+  // so it runs without approval. The tool's base tier is 3, so every OTHER
+  // action — isolate, release, and any value not offered yet (no adapter
+  // implements the agent-update or process-kill actions; the approvalScope
+  // contract forbids classifying actions outside the real enum) — stays
+  // Tier 3 / four_eyes.
+  edr_endpoint_action: ['scan'],
   manage_alerts: ['acknowledge', 'resolve', 'suppress'],
   manage_tickets: [
     'create',
@@ -257,6 +264,8 @@ export const TIER1_NON_READONLY_TOOLS: ReadonlySet<string> = new Set<string>(WOR
 export const TIER1_ACTIONS: Record<string, string[]> = {
   security_scan: ['vulnerabilities'],
   manage_tags: ['list'],
+  // Endpoint messaging history reads (#8742); `send` stays at the tool's base Tier 3.
+  send_endpoint_message: ['list', 'get'],
 };
 
 /**
@@ -315,6 +324,9 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
 // Mutations that require approval (Tier 3) even if the tool is registered as Tier 1
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER3_ACTIONS: Record<string, string[]> = {
+  // Customer-visible: the text is shown to an end user under the MSP's brand,
+  // so a human must always have read it (same class as a public ticket reply).
+  send_endpoint_message: ['send'],
   // Privileged-read rule: filesystem READ is privileged. The endpoint agent runs as
   // root/LocalSystem and does not restrict reads to an approved root, so an
   // unapproved read can exfiltrate any file (/etc/shadow, SAM hive, SSH keys).
@@ -444,6 +456,11 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // too: rollback (containment RELEASE) is four_eyes, kill/quarantine
   // (containment/mitigation) are supervised. See spec §3.2.
   s1_threat_action: ['kill', 'quarantine', 'rollback'],
+  // EDR response actions (#8167 W03, spec §4.10). Same split as
+  // s1_threat_action: isolate is protective containment (supervised),
+  // releasing isolation reverses a mitigation (four_eyes). Listed by hand —
+  // the tier-table contracts parse this file as text.
+  edr_endpoint_action: ['isolate', 'unisolate'],
 };
 
 // Spec 2026-08-05 §3: within tier 3, `four_eyes` requires a SECOND human
@@ -510,6 +527,8 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // quarantine are protective mitigation and stay supervised (same rationale
   // as s1_isolate_device isolate — urgent protective action must not wait).
   s1_threat_action: ['rollback'],
+  // Containment RELEASE, same rationale as s1_threat_action rollback (#8167).
+  edr_endpoint_action: ['unisolate'],
 };
 
 export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
@@ -556,6 +575,9 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // TIER3_FOUR_EYES_ACTIONS/TIER3_SUPERVISED_ACTIONS above, so this only
   // matters if the action is missing/unrecognized — fail-safe.
   's1_threat_action',
+  // EDR response actions whole-tool catch-all (#8167): an unknown action
+  // string fails closed to four_eyes instead of falling through.
+  'edr_endpoint_action',
   // PAM elevation grant: rule auto-approve can grant elevated device access
   // with no further human review (see TOOL_PERMISSIONS comment on
   // request_elevation above). Not named in spec §3.2; classified four_eyes
@@ -568,6 +590,9 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
 // near the top of this file so every existing importer keeps working.
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
+  // Supervised, not four_eyes: same class as a public ticket reply. list/get
+  // resolve to Tier 1 (TIER1_ACTIONS) and never reach tier 3.
+  send_endpoint_message: ['send'],
   // complement of TIER3_FOUR_EYES_ACTIONS within TIER3_ACTIONS.
   file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
@@ -627,9 +652,14 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // rather than four_eyes — see spec §5.
   manage_organizations: ['create_site', 'add_contact'],
   s1_threat_action: ['kill', 'quarantine'],
+  // Protective containment must not wait on a second approver (#8167).
+  edr_endpoint_action: ['isolate'],
 };
 
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
+  // #8742: customer-visible endpoint message; every action is enumerated in
+  // TIER1_ACTIONS / TIER3_SUPERVISED_ACTIONS.
+  'send_endpoint_message',
   // The customer's "regular work on a PC" (spec §3.2's explicit supervised list).
   'execute_command', 'run_script',
   // #3525: stopping a script is a de-escalation — it never starts work, carries
@@ -896,6 +926,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_edr_detections: { resource: 'devices', action: 'read' },
   s1_isolate_device: { resource: 'devices', action: 'execute' },
   s1_threat_action: { resource: 'devices', action: 'execute' },
+  edr_endpoint_action: { resource: 'devices', action: 'execute' },
+  // Route parity: POST /edr/connections/:id/sync requires ORGS_WRITE.
+  sync_edr_data: { resource: 'organizations', action: 'write' },
   execute_command: { resource: 'devices', action: 'execute' },
   run_script: { resource: 'scripts', action: 'execute' },
   // Authoring is inert, but it is still script work: whoever may read the
@@ -917,6 +950,14 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // already exists in the canonical registry, seed, migration and catalog.
   manage_ai_agents: {
     authorize_supervised_key: { resource: 'ai_agents', action: 'write' },
+  },
+  // Same grants as routes/endpointMessages (send.ts requires endpoint_messages:send
+  // + MFA, list.ts requires endpoint_messages:read). MFA is satisfied by the chat
+  // entry point; see the MFA note beside TOOL_ACTION_EXTRA_PERMISSIONS.
+  send_endpoint_message: {
+    send: { resource: 'endpoint_messages', action: 'send' },
+    list: { resource: 'endpoint_messages', action: 'read' },
+    get: { resource: 'endpoint_messages', action: 'read' },
   },
   manage_tickets: {
     list: { resource: 'tickets', action: 'read' },
@@ -1086,6 +1127,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // routes/aiArtifacts.ts) — the tool's scope is stricter (own run/session
   // only), not its permission.
   read_artifact: { resource: 'ai_agents', action: 'read' },
+  // Same permission as the editor's GET /orgs/:orgId/trust-page.
+  get_trust_page_status: { resource: 'organizations', action: 'read' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
@@ -3018,6 +3061,29 @@ function buildApprovalDescription(
       const specific = commandType ? EXECUTE_COMMAND_HEADLINE_BUILDERS[commandType]?.(payload) : null;
       parts.push(specific ?? `Execute "${input.commandType}" command`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
+      break;
+    }
+
+    // Endpoint messaging (#8742 W02). Names severity, reach and acknowledgement
+    // so the approver knows what they approve; like the ticket copy, it never
+    // echoes the message text (that is in the input details below the card).
+    case 'send_endpoint_message': {
+      if (action !== 'send') { parts.push(`${toolName}${action ? `: ${action}` : ''}`); break; }
+      const t = (input.targets && typeof input.targets === 'object' ? input.targets : {}) as Record<string, unknown>;
+      const count = (k: string) => (Array.isArray(t[k]) ? (t[k] as unknown[]).length : 0);
+      const reach = [
+        count('deviceIds') ? `${count('deviceIds')} device(s)` : null,
+        count('siteIds') ? `every device in ${count('siteIds')} site(s)` : null,
+        count('deviceGroupIds') ? `every device in ${count('deviceGroupIds')} group(s)` : null,
+      ].filter((x): x is string => x !== null);
+      const scope = reach.length > 0
+        ? reach.join(' and ')
+        : (typeof t.orgId === 'string' ? 'every device in an organization' : 'no targets');
+      const severity = typeof input.severity === 'string' ? input.severity : 'info';
+      parts.push(
+        `Show a ${severity} message to ${scope}${input.requiresAck === true ? ', acknowledgement required' : ''}.`
+        + ' Review the title and body in the details before approving.',
+      );
       break;
     }
 

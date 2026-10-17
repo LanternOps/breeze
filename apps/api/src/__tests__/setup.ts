@@ -56,6 +56,20 @@ vi.mock('../services/redis', () => {
   };
 });
 
+// Connection-health reconcile nudges are fire-and-forget BullMQ adds from hot
+// paths (oauth/grantStatus.ts, jobs/syncAttempt.ts). A no-op here keeps every
+// caller's unit test from opening a real BullMQ connection; nudge.test.ts
+// unmocks it, and call-site tests assert against this mock.
+vi.mock('../services/connectionHealth/nudge', () => ({
+  CONNECTION_HEALTH_QUEUE: 'connection-health-reconcile',
+  NUDGE_JOB_NAME: 'reconcile-kind',
+  NUDGE_DELAY_MS: 60_000,
+  nudgeJobId: (kind: string) => `reconcile-kind-${kind}`,
+  nudgeConnectionHealth: vi.fn(),
+  resetNudgeQueueForTests: vi.fn(),
+  closeNudgeQueue: vi.fn(async () => {}),
+}));
+
 /**
  * Test setup for authenticated API tests.
  *

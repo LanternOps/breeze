@@ -295,29 +295,41 @@
     "saving": "Salvando...",
     "saveSettings": "Salvar configurações"
   },
-  "connectorStatusPanel": {
-    "healthy": "Saudável",
-    "degraded": "Degradado",
-    "paused": "Pausado",
-    "connectorStatus": "Status do conector",
-    "trackIntegrationHealthAndRecentActivityAtA": "Acompanhe rapidamente a integridade da integração e as atividades recentes. ",
-    "refreshAll": "Atualizar tudo ",
-    "integration": "Integração",
-    "health": "Saúde",
-    "lastActivity": "Última atividade",
-    "errors": "Erros",
-    "syncNow": "Sincronize agora ",
-    "category": {
-      "psa": "PSA",
-      "monitoring": "Monitoramento",
-      "webhooks": "Webhooks",
-      "backup": "Backup"
+  "connectionHealthPanel": {
+    "title": "Integridade das conexões",
+    "allHealthy": "Todas as conexões estão saudáveis",
+    "loadError": "Não foi possível carregar a integridade das conexões.",
+    "retry": "Tentar novamente",
+    "since": "desde {{time}}",
+    "fix": "Corrigir",
+    "truncated": "Mostrando os primeiros {{count}}",
+    "recentlyResolved": "Resolvidos recentemente ({{count}})",
+    "resolution": {
+      "recovered": "Recuperada",
+      "retired": "Desativada"
     },
-    "activity": {
-      "threeMinutesAgo": "há 3 min",
-      "elevenMinutesAgo": "há 11 min",
-      "fiveMinutesAgo": "há 5 min",
-      "oneDayAgo": "há 1 dia"
+    "condition": {
+      "sync_failed": "Falha na sincronização",
+      "reauth_required": "Reautorização necessária",
+      "disconnected": "Desconectada",
+      "error": "Erro",
+      "mailbox_error": "Erro na caixa de correio",
+      "poll_failing": "Falha na consulta periódica",
+      "needs_consent": "Consentimento necessário",
+      "degraded": "Degradada",
+      "suspended": "Suspensa",
+      "grant_missing": "Concessão ausente",
+      "grant_unexpected": "Concessão inesperada",
+      "manifest_stale": "Manifesto desatualizado",
+      "application_token_invalid": "Token do aplicativo inválido",
+      "tenant_mismatch": "Tenant divergente",
+      "grant_reconciliation_unavailable": "Verificação da concessão indisponível",
+      "grant_revoked_reuse": "Concessão revogada (reutilização de token)",
+      "grant_revoked": "Concessão revogada",
+      "delivery_failed": "Falha nas entregas",
+      "sync_stale": "Sincronização parada",
+      "verification_failed": "Falha na verificação",
+      "unknown": "Requer atenção"
     }
   },
   "googleWorkspaceIntegration": {
@@ -1305,7 +1317,8 @@
     "accessUrlHintPath": "O endereço da API do provedor para a sua conta, incluindo o caminho {{path}}.",
     "detectionIntervalLabel": "Intervalo de sincronização das detecções (minutos)",
     "inventoryIntervalLabel": "Intervalo de sincronização do inventário (minutos)",
-    "intervalHelp": "Deixe em branco para usar o padrão do provedor. O intervalo permitido é de 1 a 1440 minutos.",
+    "intervalHelp": "Deixe em branco para usar o padrão do provedor. O intervalo permitido é de 5 a 1440 minutos.",
+    "intervalInvalid": "Informe um número inteiro de 5 a 1440 minutos ou deixe em branco para o padrão.",
     "noProviders": "Nenhum provedor de EDR está disponível neste servidor.",
     "partnerOnly": "Os provedores de EDR são gerenciados no nível do parceiro. Mude para uma conta de parceiro para gerenciá-los.",
     "readOnly": "Somente administradores de parceiro com acesso a todas as organizações podem alterar as conexões de EDR.",
@@ -1399,6 +1412,34 @@
       "degraded": "Degradado",
       "unhealthy": "Com problemas",
       "unknown": "Desconhecido"
-    }
+    },
+    "actionsLabel": "Permitir ações de resposta",
+    "actionsHelp": "Permite que os técnicos isolem dispositivos e executem varreduras por esta conexão.",
+    "actionsConfirmTitle": "Permitir ações de resposta?",
+    "actionsConfirmMessage": "Técnicos com permissão de execução em dispositivos poderão isolar e liberar dispositivos e executar varreduras nos endpoints gerenciados por “{{name}}”.",
+    "actionsConfirmLabel": "Permitir",
+    "actionsOnToast": "Ações de resposta permitidas",
+    "actionsOffToast": "Ações de resposta desativadas",
+    "actionsError": "Não foi possível atualizar as ações de resposta.",
+    "pushLabel": "Eventos push",
+    "pushHelp": "O {{provider}} avisa o Breeze sobre novos eventos, o que dispara uma sincronização antes do cronograma normal. As sincronizações agendadas continuam.",
+    "pushOnToast": "Eventos push ativados",
+    "pushOffToast": "Eventos push desativados",
+    "pushReplaceTitle": "Substituir o destino de push existente?",
+    "pushReplaceMessage": "{{provider}} já envia eventos push para outro destino (por exemplo, um SIEM). Substituí-lo pelo Breeze interrompe esse fluxo.",
+    "pushReplaceConfirm": "Substituir e ativar",
+    "pushError": "Não foi possível alterar os eventos push.",
+    "pushErrors": {
+      "public_url_unset": "Defina a URL pública do servidor antes de ativar os eventos push.",
+      "public_url_not_https": "Os eventos push exigem uma URL pública HTTPS.",
+      "connection_inactive": "Ative a conexão antes de ativar os eventos push.",
+      "push_state_changed": "As configurações de push mudaram durante a ativação. Atualize e tente novamente."
+    },
+    "pushTest": "Enviar evento de teste",
+    "pushTestQueuedToast": "Evento de teste solicitado",
+    "pushTestError": "Não foi possível enviar o evento de teste.",
+    "pushTestNote": "O evento de teste pode levar alguns minutos para chegar.",
+    "pushLast": "Último evento push: {{relative}}",
+    "pushNone": "Nenhum evento push recebido ainda"
   }
 }

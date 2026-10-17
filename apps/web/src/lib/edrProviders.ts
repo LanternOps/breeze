@@ -7,6 +7,8 @@
  * `{success:false}`); callers pass their own translated `errorFallback`.
  */
 import type {
+  EdrActionDto,
+  EdrActionKey,
   EdrConnectionStatus,
   EdrCoverage,
   EdrDetectionDto,
@@ -23,7 +25,7 @@ import { fetchWithAuth } from '../stores/auth';
 import { throwIfNotOk } from './httpError';
 import { runAction, type RunActionOptions } from './runAction';
 
-export type { EdrCoverage, EdrDetectionDto, EdrStatusProviderSummary, EdrStatusSummary };
+export type { EdrActionDto, EdrCoverage, EdrDetectionDto, EdrStatusProviderSummary, EdrStatusSummary };
 
 // ---------------------------------------------------------------- shapes
 
@@ -82,6 +84,13 @@ export interface EdrConnection {
   updatedAt: string;
   hasCredentials: boolean;
   hasWebhookSecret: boolean;
+  /** W03: partner-admin opt-in for response actions through this connection. */
+  actionsEnabled?: boolean;
+  /** W03: the provider can push hint events (webhook). */
+  pushSupported?: boolean;
+  pushEnabled?: boolean;
+  pushRegisteredAt?: string | null;
+  lastHintAt?: string | null;
 }
 
 /** `EDR_TENANT_PUBLIC_SELECT` + `orgName` (GET /edr/connections/:id/tenants). */
@@ -141,6 +150,26 @@ export interface EdrEndpoint {
   lastSeenAt: string | null;
   breezeDeviceId: string | null;
   deviceMatchSource: string | null;
+  /** W03: per-action availability for the caller; absent on older APIs. */
+  actions?: EdrEndpointAction[];
+}
+
+export interface EdrEndpointAction {
+  action: EdrActionKey;
+  available: boolean;
+  reason: string | null;
+  /** Allowed by permission, blocked only because the session has not passed MFA. */
+  mfaRequired?: boolean;
+}
+
+/** One per-target result of `POST /edr/actions` (apps/api/src/routes/edr/actions.ts). */
+export interface EdrActionItemResult {
+  endpointId?: string;
+  actionId?: string;
+  status?: string;
+  outcomeUnknown?: boolean;
+  error?: string | null;
+  code?: string;
 }
 
 export type EdrEndpointState = 'unlinked' | 'ambiguous' | 'linked' | 'all';
@@ -186,6 +215,7 @@ export interface EdrConnectionPatchBody {
   inventoryIntervalMinutes?: number | null;
   credentials?: Record<string, string>;
   baseUrl?: string;
+  actionsEnabled?: boolean;
 }
 
 export interface EdrConnectionTestResult {
@@ -304,6 +334,11 @@ export async function fetchEdrDetections(q: EdrDetectionQuery): Promise<EdrDetec
   };
 }
 
+export async function fetchEdrActions(q: { deviceId?: string; endpointId?: string; limit?: number }): Promise<EdrActionDto[]> {
+  const body = await getJson(`/edr/actions${qs({ deviceId: q.deviceId, endpointId: q.endpointId, limit: q.limit })}`);
+  return asArray<EdrActionDto>(body.data);
+}
+
 export async function fetchEdrStatus(q: { orgId?: string } = {}): Promise<EdrStatusSummary> {
   const body = await getJson(`/edr/status${qs({ orgId: q.orgId })}`);
   const data = (body.data ?? {}) as Partial<EdrStatusSummary>;
@@ -339,6 +374,37 @@ export function syncEdrConnection(id: string, opts: EdrActionOptions) {
 export function deleteEdrConnection(id: string, counts: EdrDeleteConfirmCounts | null, opts: EdrActionOptions) {
   const suffix = counts ? qs({ confirm: `${counts.detections}:${counts.endpoints}` }) : '';
   return mutate<{ success: boolean }>(`/edr/connections/${id}${suffix}`, 'DELETE', opts);
+}
+
+/** Single-endpoint response action. Isolate/unisolate/scan/update_agent only (no pid). */
+export function requestEdrEndpointAction(
+  endpointId: string,
+  action: EdrActionKey,
+  reason: string | undefined,
+  opts: EdrActionOptions<{ data: EdrActionItemResult[] }>,
+) {
+  return mutate<{ data: EdrActionItemResult[] }>('/edr/actions', 'POST', opts, {
+    targetKind: 'endpoint',
+    endpointIds: [endpointId],
+    action,
+    ...(reason ? { reason } : {}),
+  });
+}
+
+/** Register the vendor push (webhook) for a connection. 409 codes: public_url_unset | public_url_not_https | connection_inactive; 502 vendor_error. */
+/** `replaceExisting` only after the user confirmed taking over a push destination the console already uses (409 push_conflict). */
+export function enableEdrPush(id: string, opts: EdrActionOptions, o: { replaceExisting?: boolean } = {}) {
+  return mutate<{ data: EdrConnection }>(
+    `/edr/connections/${id}/push`, 'POST', opts, o.replaceExisting ? { replaceExisting: true } : undefined,
+  );
+}
+
+export function disableEdrPush(id: string, opts: EdrActionOptions<{ data: EdrConnection; warnings?: string[] }>) {
+  return mutate<{ data: EdrConnection; warnings?: string[] }>(`/edr/connections/${id}/push`, 'DELETE', opts);
+}
+
+export function sendEdrPushTest(id: string, opts: EdrActionOptions) {
+  return mutate<{ accepted: boolean }>(`/edr/connections/${id}/push/test`, 'POST', opts);
 }
 
 // ---------------------------------------------------------------- labels

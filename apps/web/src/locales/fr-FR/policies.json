@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "montreDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Messagerie des terminaux",
+        "endpointMessagingHelp": "Permet aux techniciens d'envoyer des messages à la personne devant l'appareil.",
+        "allowUserReply": "Autoriser les réponses de l'utilisateur",
+        "allowUserReplyHelp": "Permet à la personne devant l'appareil de répondre dans un chat lancé par un technicien. Désactivé, les chats sont à sens unique."
       },
       "inlineEntityPicker": {
         "search": "Rechercher...",

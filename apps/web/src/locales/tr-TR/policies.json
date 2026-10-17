@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl'si"
+        "portalUrl": "portalUrl'si",
+        "endpointMessaging": "Uç nokta mesajları",
+        "endpointMessagingHelp": "Teknisyenlerin cihazdaki kişiye mesaj göndermesini sağlar.",
+        "allowUserReply": "Kullanıcının yanıtlarına izin ver",
+        "allowUserReplyHelp": "Cihazdaki kişinin, teknisyenin başlattığı bir sohbette yanıt vermesine izin verir. Kapalıyken sohbetler tek yönlüdür."
       },
       "inlineEntityPicker": {
         "search": "Ara...",

@@ -123,7 +123,7 @@ describe('terminal payload erasure', () => {
 
 describe('type-scoped terminal payload erasure (#8741 notify_user)', () => {
   it('declares title/body as notify_user-only strip keys and keeps them out of the global set', () => {
-    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS).toEqual({ notify_user: ['title', 'body'] });
+    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS).toMatchObject({ notify_user: ['title', 'body'] });
     // Global: stripping title/body from every other command type would destroy
     // forensics (e.g. script titles). They must not leak into the global list.
     expect(TERMINAL_PAYLOAD_STRIP_KEYS).not.toContain('title');
@@ -144,6 +144,21 @@ describe('type-scoped terminal payload erasure (#8741 notify_user)', () => {
     expect(query.params.filter((p) => p === 'title')).toHaveLength(1);
     expect(query.params.filter((p) => p === 'body')).toHaveLength(1);
     expect(query.sql.indexOf('ELSE')).toBeGreaterThan(query.sql.indexOf('WHEN'));
+  });
+});
+
+describe('type-scoped terminal payload erasure (#8743 endpoint chat)', () => {
+  it('strips the chat message object (body + sender) from chat_open/chat_message rows only', () => {
+    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS.chat_open).toEqual(['message']);
+    expect(TYPE_SCOPED_TERMINAL_STRIP_KEYS.chat_message).toEqual(['message']);
+    // `message` is an ordinary field name on other types: never global.
+    expect(TERMINAL_PAYLOAD_STRIP_KEYS).not.toContain('message');
+    expect(hasSensitivePayload('chat_open')).toBe(false);
+    expect(hasSensitivePayload('chat_message')).toBe(false);
+    const query = new PgDialect().sqlToQuery(terminalPayloadErasureSet().payload);
+    expect(query.params).toContain('chat_open');
+    expect(query.params).toContain('chat_message');
+    expect(query.params.filter((p) => p === 'message')).toHaveLength(2);
   });
 });
 

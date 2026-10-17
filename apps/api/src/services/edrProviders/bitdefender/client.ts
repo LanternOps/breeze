@@ -23,7 +23,20 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_INLINE_RETRY_AFTER_MS = 65_000;
 const DEFAULT_RETRY_AFTER_MS = 60_000;
 
-export type GzOperationClass = 'default' | 'inventory' | 'companies' | 'incidents';
+export type GzOperationClass = 'default' | 'inventory' | 'companies' | 'incidents' | 'actions' | 'push';
+
+/**
+ * [U] Push event types subscribed for "detections changed" hints (lab gate). An unknown
+ * type name would surface as a vendor `invalid_params` error at registration.
+ */
+export const GZ_PUSH_EVENT_TYPES: Readonly<Record<string, true>> = { 'new-incident': true, av: true, aph: true };
+
+/** What `getPushEventSettings` reports, minus the stored `authorization` value (never surfaced). */
+export interface GzPushSettingsView { enabled: boolean; url: string | null; subscribedCompanyIds: string[] }
+
+export type GzPushSettingsInput =
+  | { enabled: true; url: string; authorization: string; companyIds: string[] }
+  | { enabled: false };
 type GzVersion = '1.0' | '1.1' | '1.2';
 
 export interface GzInventoryItem {
@@ -43,6 +56,8 @@ export interface GzEndpointDetails {
   id?: string; name?: string; operatingSystem?: string; state?: number | string; lastSeen?: string;
   agent?: { productVersion?: string; signatureOutdated?: boolean; productOutdated?: boolean; licensed?: boolean };
   malwareStatus?: { detection?: boolean; infected?: boolean };
+  /** [U] unconfirmed: read by reconcileAction; absent means the verdict is `unknown`. */
+  isIsolated?: boolean;
 }
 
 export interface GzIncident {
@@ -60,6 +75,10 @@ export interface GzQuarantineItem {
   canBeRestored?: boolean; canBeRemoved?: boolean;
   details?: { filePath?: string; fileSha256?: string };
 }
+
+/** What a write call returned: the vendor accepted it, or queued a task we can poll. */
+export type GzTaskResult = { kind: 'accepted' } | { kind: 'task'; taskId: string };
+export type GzScanTaskStatus = 'pending' | 'in_progress' | 'finished' | 'failed' | 'unknown';
 
 export interface GzApiKeyDetails { enabledApis?: string[]; createdAt?: string }
 
@@ -85,6 +104,14 @@ interface CallOptions {
   scope?: EdrErrorScope;
   /** True for calls that identify the key itself (getOwnCompany/getApiKeyDetails): -32001 means a dead key. */
   keyProbe?: boolean;
+  /**
+   * Default true. False is for non-idempotent writes: a network error, 5xx or unparseable 2xx
+   * throws `outcome_unknown` at once (the vendor may have acted), and a rate limit surfaces
+   * without a sleep (nothing was accepted). Every other classification is unchanged.
+   */
+  retry?: boolean;
+  /** Replaces the random JSON-RPC envelope id. Traceability only: GravityZone does not dedupe on it. */
+  requestId?: string;
 }
 
 const API_NOT_ENABLED = /not allowed to access the selected API/i;
@@ -156,7 +183,7 @@ export class GravityZoneClient {
     o: CallOptions = {},
   ): Promise<T> {
     const url = `${this.accessUrl}/v${version}/jsonrpc/${service}`;
-    const body = JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method, params });
+    const body = JSON.stringify({ jsonrpc: '2.0', id: o.requestId ?? randomUUID(), method, params });
     const label = `GravityZone ${service}.${method}`;
     let attempt = 0;
     let rateLimitRetried = false;
@@ -185,6 +212,9 @@ export class GravityZoneClient {
 
       // Transient: network failure, 5xx, or an unparseable 2xx body.
       const transient = (reason: string, code: string): 'retry' => {
+        if (o.retry === false) {
+          throw this.fail(`${label}: outcome unknown (${reason})`, { code: 'outcome_unknown', scope: 'operation' });
+        }
         attempt += 1;
         if (attempt >= MAX_ATTEMPTS) {
           throw this.fail(`${label} failed: ${reason}`, { code, scope: 'operation' });
@@ -205,11 +235,15 @@ export class GravityZoneClient {
       }
       if (status === 429) {
         const retryAfterMs = parseRetryAfterMs(headers);
+        if (o.retry === false) throw this.rateLimited(label, retryAfterMs);
         await this.handleRateLimit(label, retryAfterMs, rateLimitRetried);
         rateLimitRetried = true;
         continue;
       }
-      if (status >= 500) {
+      // 408 is a proxy/gateway timeout like 502/504: the request may already have
+      // reached the vendor, so on a write it is `outcome_unknown` (the row keeps its
+      // in-flight slot for the reconciler), never a terminal failure; reads retry.
+      if (status >= 500 || status === 408) {
         transient(`HTTP ${status}`, 'upstream_error');
         await this.sleep(BACKOFF_BASE_MS * 2 ** (attempt - 1));
         continue;
@@ -240,6 +274,7 @@ export class GravityZoneClient {
 
       if (env.error) {
         if (env.error.code === -32003) {
+          if (o.retry === false) throw this.rateLimited(label, parseRetryAfterMs(headers));
           await this.handleRateLimit(label, parseRetryAfterMs(headers), rateLimitRetried);
           rateLimitRetried = true;
           continue;
@@ -256,12 +291,14 @@ export class GravityZoneClient {
   /** Honour a rate limit exactly once; a second one (or a long wait) surfaces to the caller. */
   private async handleRateLimit(label: string, retryAfterMs: number | undefined, alreadyRetried: boolean): Promise<void> {
     const wait = retryAfterMs ?? DEFAULT_RETRY_AFTER_MS;
-    if (alreadyRetried || wait > MAX_INLINE_RETRY_AFTER_MS) {
-      throw this.fail(`${label}: rate limited`, {
-        code: 'rate_limited', scope: 'connection', retryAfterMs: wait,
-      });
-    }
+    if (alreadyRetried || wait > MAX_INLINE_RETRY_AFTER_MS) throw this.rateLimited(label, retryAfterMs);
     await this.sleep(wait);
+  }
+
+  private rateLimited(label: string, retryAfterMs: number | undefined): EdrProviderRequestError {
+    return this.fail(`${label}: rate limited`, {
+      code: 'rate_limited', scope: 'connection', retryAfterMs: retryAfterMs ?? DEFAULT_RETRY_AFTER_MS,
+    });
   }
 
   private classifyRpcError(
@@ -384,6 +421,98 @@ export class GravityZoneClient {
 
   async getEndpointDetails(endpointId: string): Promise<GzEndpointDetails> {
     return this.call<GzEndpointDetails>('network', '1.0', 'getManagedEndpointDetails', { endpointId });
+  }
+
+  // ---- write calls (never retried; the JSON-RPC id is the edr_actions id) ----
+
+  /** Result shapes are [U] (lab gate): boolean true and a task id (string or id list) are both normalized. */
+  private taskResult(label: string, r: unknown): GzTaskResult {
+    if (r === true) return { kind: 'accepted' };
+    if (typeof r === 'string' && r.length > 0) return { kind: 'task', taskId: r };
+    if (Array.isArray(r) && r.length === 1 && typeof r[0] === 'string' && r[0].length > 0) {
+      return { kind: 'task', taskId: r[0] };
+    }
+    // A 2xx we cannot interpret: the vendor may well have acted.
+    throw this.fail(`${label}: outcome unknown (unrecognised result)`, { code: 'outcome_unknown', scope: 'operation' });
+  }
+
+  private async writeTask(
+    service: string, method: string, params: Record<string, unknown>, requestId: string,
+  ): Promise<GzTaskResult> {
+    const r = await this.call<unknown>(service, '1.0', method, params, {
+      operationClass: 'actions', retry: false, requestId, scope: 'tenant',
+    });
+    return this.taskResult(`GravityZone ${service}.${method}`, r);
+  }
+
+  createIsolateEndpointTask(endpointId: string, requestId: string): Promise<GzTaskResult> {
+    return this.writeTask('incidents', 'createIsolateEndpointTask', { endpointId }, requestId);
+  }
+
+  createRestoreEndpointFromIsolationTask(endpointId: string, requestId: string): Promise<GzTaskResult> {
+    return this.writeTask('incidents', 'createRestoreEndpointFromIsolationTask', { endpointId }, requestId);
+  }
+
+  createScanTask(endpointId: string, requestId: string): Promise<GzTaskResult> {
+    return this.writeTask('network', 'createScanTask', { targetIds: [endpointId], type: 1 }, requestId);
+  }
+
+  // ---- push settings (W03 PR-B; operation class `push`, vendor limit 5/min) ----
+  // Param and result shapes are [U] until the lab run (synthetic fixtures only).
+  // setPushEventSettings REPLACES the console's push configuration, so a retry
+  // repeats the same state and is safe; it keeps the default retrying transport.
+
+  private expectTrue(label: string, r: unknown): void {
+    if (r !== true) {
+      throw this.fail(`${label}: unexpected result`, { code: 'malformed_response', scope: 'operation' });
+    }
+  }
+
+  async setPushEventSettings(o: GzPushSettingsInput): Promise<void> {
+    const params: Record<string, unknown> = o.enabled
+      ? {
+          status: 1,
+          serviceType: 'jsonRPC',
+          serviceSettings: { url: o.url, authorization: o.authorization, requireValidSslCertificate: true },
+          subscribeToEventTypes: { ...GZ_PUSH_EVENT_TYPES },
+          ...(o.companyIds.length > 0 ? { subscribeToCompanies: [...o.companyIds] } : {}),
+        }
+      : { status: 0 };
+    const r = await this.call<unknown>('push', '1.0', 'setPushEventSettings', params, { operationClass: 'push', scope: 'connection' });
+    this.expectTrue('GravityZone push.setPushEventSettings', r);
+  }
+
+  async getPushEventSettings(): Promise<GzPushSettingsView> {
+    const r = await this.call<{
+      status?: unknown; serviceSettings?: { url?: unknown } | null; subscribeToCompanies?: unknown;
+    } | null>('push', '1.0', 'getPushEventSettings', {}, { operationClass: 'push', scope: 'connection' });
+    const url = r?.serviceSettings?.url;
+    const companies = Array.isArray(r?.subscribeToCompanies) ? r!.subscribeToCompanies : [];
+    return {
+      enabled: r?.status === 1,
+      url: typeof url === 'string' ? url : null,
+      subscribedCompanyIds: companies.filter((c): c is string => typeof c === 'string'),
+    };
+  }
+
+  async sendTestPushEvent(): Promise<void> {
+    const r = await this.call<unknown>('push', '1.0', 'sendTestPushEvent', { eventType: 'av' }, { operationClass: 'push', scope: 'connection' });
+    this.expectTrue('GravityZone push.sendTestPushEvent', r);
+  }
+
+  /** A normal retrying read. Status codes are [U]; anything unrecognised maps to `unknown`. */
+  async getScanTaskStatus(taskId: string): Promise<GzScanTaskStatus> {
+    const r = await this.call<{ items?: Array<{ id?: string; status?: unknown }> } | null>(
+      'network', '1.0', 'getScanTasksList', { taskId, page: 1, perPage: 10 },
+    );
+    const item = Array.isArray(r?.items) ? r!.items.find((i) => i?.id === taskId) : undefined;
+    switch (item?.status) {
+      case 1: return 'pending';
+      case 2: return 'in_progress';
+      case 3: return 'finished';
+      case 4: return 'failed';
+      default: return 'unknown';
+    }
   }
 
   /**

@@ -6,6 +6,7 @@ import {
   Bot,
   FileCode,
   Monitor,
+  Plug,
   Settings,
   ShieldAlert,
   ShieldCheck,
@@ -105,6 +106,11 @@ const typeConfig: Record<
     icon: CreditCard,
     className: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-200'
   },
+  integration: {
+    label: 'nav.integrations',
+    icon: Plug,
+    className: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
+  },
   unknown: {
     label: 'layout.notifications.types.unknown',
     icon: Bell,
@@ -186,6 +192,8 @@ const buildHref = (type: NotificationDisplayType, raw: RawNotification) => {
       if (runId) return `/ai-agents/runs/${runId}`;
       if (agentId) return `/ai-agents/runs#agent=${agentId}`;
       return undefined;
+    case 'integration':
+      return '/integrations';
     case 'system':
       return '/settings/organization';
     case 'unknown':

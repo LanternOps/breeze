@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
-import { sqlTimestamp, sqlTimestamptz, sqlUuidArray, sqlValue } from './sqlValues';
+import { sqlTextArray, sqlTimestamp, sqlTimestamptz, sqlUuidArray, sqlValue } from './sqlValues';
 
 const dialect = new PgDialect();
 const AT = new Date('2026-08-10T06:14:42.123Z');
@@ -112,5 +112,36 @@ describe('sqlUuidArray (#3198 W02 ruling P5)', () => {
     const { sql: text, params } = dialect.sqlToQuery(sqlUuidArray(["x'); DROP TABLE tickets; --"]));
     expect(text).not.toContain('DROP TABLE');
     expect(params).toEqual(["x'); DROP TABLE tickets; --"]);
+  });
+});
+
+describe('sqlTextArray (#8760, #8857)', () => {
+  it('a bare JS array next to `&&` renders as `($1)` / `($1, $2)` — the behaviour being guarded against', () => {
+    // Postgres rejects both: one element is "malformed array literal", two or
+    // more are "operator does not exist: text[] && record".
+    expect(dialect.sqlToQuery(sql`tags && ${['finance']}`).sql).toBe('tags && ($1)');
+    expect(dialect.sqlToQuery(sql`tags && ${['finance', 'pos']}`).sql).toBe('tags && ($1, $2)');
+  });
+
+  it('binds each element as its own text-cast parameter inside a text[] constructor', () => {
+    const one = dialect.sqlToQuery(sql`tags && ${sqlTextArray(['finance'])}`);
+    expect(one.sql).toBe('tags && ARRAY[$1::text]::text[]');
+    expect(one.params).toEqual(['finance']);
+
+    const two = dialect.sqlToQuery(sql`tags && ${sqlTextArray(['finance', 'pos'])}`);
+    expect(two.sql).toBe('tags && ARRAY[$1::text, $2::text]::text[]');
+    expect(two.params).toEqual(['finance', 'pos']);
+  });
+
+  it('renders an empty list as a typed empty array', () => {
+    const { sql: text, params } = dialect.sqlToQuery(sql`tags && ${sqlTextArray([])}`);
+    expect(text).toBe('tags && ARRAY[]::text[]');
+    expect(params).toEqual([]);
+  });
+
+  it('never inlines a value as SQL text', () => {
+    const { sql: text, params } = dialect.sqlToQuery(sqlTextArray(["x'); DROP TABLE devices; --"]));
+    expect(text).not.toContain('DROP TABLE');
+    expect(params).toEqual(["x'); DROP TABLE devices; --"]);
   });
 });

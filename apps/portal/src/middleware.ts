@@ -147,6 +147,31 @@ export const onRequest = defineMiddleware(async (context, next) => {
     headers.set('Cache-Control', 'no-store');
   }
 
+  // Public trust pages (spec trust-center §8): shareable and cacheable, unlike token pages. The
+  // layout owns the robots meta from the page's search_indexable flag; the header mirrors the
+  // conservative default so a crawler that ignores meta still gets noindex unless the page opted in
+  // (the API sets X-Robots-Tag on the data itself). Previews are drafts: never cached, never indexed.
+  if (pathname.startsWith('/trust/preview/')) {
+    headers.set('Cache-Control', 'no-store');
+    headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    headers.set('Referrer-Policy', 'no-referrer');
+  } else if (pathname.startsWith('/trust/access/')) {
+    // Gated-document token pages (Trust Center W2, amendment 32): the token rides in the URL fragment, so
+    // never cache, never index, and never leak the page URL to a third party.
+    headers.set('Cache-Control', 'no-store');
+    headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    headers.set('Referrer-Policy', 'no-referrer');
+  } else if (pathname.startsWith('/trust/')) {
+    // Only a fully loaded card page is shareable-cacheable; 404s and the degraded
+    // shell (card fetch failed) must not be pinned in shared caches.
+    headers.set(
+      'Cache-Control',
+      response.status === 200 && context.locals.trustCacheable === true
+        ? 'public, max-age=300, stale-while-revalidate=600'
+        : 'no-store'
+    );
+  }
+
   // #3906 — dev only: Astro hardcodes a few dev-server URLs straight into the
   // rendered HTML (`/@vite/client`, the island's `component-url` / `renderer-url` /
   // `before-hydration-url`, the `/src/styles/*` stylesheet). Vite's `base` — which

@@ -23,6 +23,19 @@ export function buildServerApiConfig(request: Request): ApiRequestConfig {
   };
 }
 
+/**
+ * For anonymous public pages: forward only the host headers the API needs to
+ * resolve the request, never the visitor's cookie or auth headers.
+ */
+export function publicServerApiConfig(request: Request): ApiRequestConfig {
+  const headers: Record<string, string> = {};
+  for (const name of ['host', 'x-forwarded-host', 'x-forwarded-proto']) {
+    const value = request.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  return { headers, redirectOnUnauthorized: false };
+}
+
 function brandingDomain(request: Request): string {
   const forwardedHost = request.headers
     .get('x-forwarded-host')

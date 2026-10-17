@@ -27,6 +27,8 @@ A grant never allows writes, deletes, renames, scripts or registry changes. It c
 
 The requester or an administrator can end a grant early with `revoke_diagnostic_access`. A grant also ends when it expires, when the device moves to another organization, or when its organization is merged.
 
+Diagnostic reads need the v0.122.1 or later Breeze agent on the device. An older agent answers with `agent_update_required`; update the agent, then ask again.
+
 ### Who can request and approve
 
 | Role | Requirement |
@@ -79,7 +81,7 @@ The person who asked can never approve their own request while anyone else is el
 When the requester is the **only** eligible approver — a one-person MSP, for example — they receive the single card, and approving it requires:
 
 - **A fresh second factor for this decision.** The approval must be signed with a hardware-backed factor at assurance level L3 or higher: a passkey on this device or the Breeze Authenticator on a registered phone. A plain session tap, a TOTP code or a step-up reused from an earlier approval does not count, and the request is shown at **critical** risk. See [Approval Security](/features/approval-security/) for the assurance levels.
-- **An audit record.** Breeze writes a `diagnostic_access.self_approval` record before the grant can become active. If that record cannot be written, the approval is refused and can be retried; a self-approved grant never becomes active without it. The `diagnostic_access.approved` record that follows confirms the activation; a self-approval record with no matching approval marks one that did not complete (for example, the request lapsed at that moment).
+- **An audit record.** Breeze writes a `diagnostic_access.self_approval` record before the grant can become active. If that record cannot be written, the approval is refused (`503`, `audit_unavailable`) and can be retried; a self-approved grant never becomes active without it. The `diagnostic_access.approved` record that follows confirms the activation; a self-approval record with no matching approval marks one that did not complete (for example, the request lapsed at that moment).
 
 A requester can always **deny** their own request.
 

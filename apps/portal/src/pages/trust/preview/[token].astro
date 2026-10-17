@@ -1,0 +1,14 @@
+---
+// Draft preview for the editor (15-minute token). No SSR fetch at all: the token is the capability
+// and the payload is rebuilt live; the island fetches it. Always noindex, no-store (middleware).
+import TrustPageLayout from '../../../layouts/TrustPageLayout.astro';
+import TrustPageView from '../../../components/trust/TrustPageView';
+import { pageCopy } from '../../../components/trust/copy/pageCopy';
+const { token } = Astro.params;
+// No card for a preview (the token is the capability), so the shell is English; the island renders the draft in
+// its own frozen locale once the payload loads.
+const t = pageCopy.en;
+---
+<TrustPageLayout title={t.previewTitle} description={t.previewDescription} canonicalPath="/trust/preview" indexable={false}>
+  <TrustPageView previewToken={token!} partnerSlug={null} orgSlug={null} card={null} client:load />
+</TrustPageLayout>

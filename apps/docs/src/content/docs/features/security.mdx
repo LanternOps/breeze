@@ -115,6 +115,12 @@ ThreatDown (Malwarebytes' business brand) reports as `malwarebytes`. F-Secure pr
 
 Quarantine, Remove and Restore send a command to the device; they do not change the threat on their own. Since v0.117.0 the threat keeps its current status until the agent reports the result, and only then shows **quarantined**, **removed** or **allowed**. If the device is offline, the threat keeps its previous status until the device comes back and runs the command. Earlier versions changed the status as soon as the action was queued, so a threat on an offline device could show as quarantined when nothing had happened on the device.
 
+### Auto-quarantine runs under an approving user
+
+IOC auto-quarantine (set on the **Security** feature of a configuration policy) moves files on every device the policy reaches with no one reviewing each scan, so it is treated as a device-execution grant. Saving Security settings with auto-quarantine on needs the `devices:execute` permission and MFA; with auto-quarantine off, `devices:write` is enough, and turning it off is never restricted. Because auto-quarantine is on by default, a technician with only `devices:write` must turn it off before the Security settings will save.
+
+Scheduled scans quarantine only while the user who approved auto-quarantine is active and still holds `devices:execute`. Policies that had auto-quarantine on before v0.122.1 keep running under the user who created them on the same terms. Otherwise the policy shows *Auto-quarantine is paused* and its scans run detect-only until a user with `devices:execute` and MFA saves the Security settings again. A scan you start by hand runs under your own permissions; without a completed MFA check in your session it runs detect-only.
+
 ## Threat Detection
 
 ### Threat Types and Severity

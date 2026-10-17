@@ -218,6 +218,8 @@ When a backup feature is linked to a configuration policy, the schedule, retenti
 
 Configure security policy settings for **Security**; check intervals and targets for **Monitoring**; and event triggers, cron schedules, and action chains for **Automation**.
 
+Saving **Security** settings with IOC auto-quarantine turned on needs `devices:execute` and MFA, and scheduled scans quarantine only under a user who still holds that permission; otherwise they run detect-only. See [Auto-quarantine runs under an approving user](/features/security/#auto-quarantine-runs-under-an-approving-user).
+
 ### Vulnerability Scanning
 
 The **Vulnerability** feature is a single on/off toggle that controls whether the devices in the policy's scope are scanned for CVEs. It is configured **inline** (the on/off state lives in the policy) and is **off by default** -- a device with no vulnerability policy is never scanned, and its Vulnerabilities tab stays empty.
@@ -315,7 +317,7 @@ A partner-wide "servers only" assignment reaches server-role devices in every as
 
 3. Optionally set the same **Role Filter** and **OS Filter**. Empty means every device in that target.
 
-4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`).
+4. Set a **Priority** number. When two policies at the same level both define the same feature, the lower priority number wins (priority `1` takes precedence over priority `2`). On an exact tie, the assignment created first wins.
 
 5. Click **Assign**.
 
@@ -457,4 +459,4 @@ Enforcement mode must be set to `enforce` and a remediation script must be linke
 
 **Feature type conflict between policies at the same level**
 
-When two policies at the same hierarchy level both define the same feature type, the one with the lower **Priority** number wins (priority `1` beats priority `2`). If priorities are equal, results are non-deterministic — assign distinct priorities to resolve the conflict.
+When two policies at the same hierarchy level both define the same feature type, the one with the lower **Priority** number wins (priority `1` beats priority `2`). If the assignments tie on every ranking key, the one created first wins. Before v0.122.1 an exact tie had no defined winner, so a device decided by one may change once after upgrading. Assign distinct priorities to make the choice explicit.

@@ -33,6 +33,8 @@ import {
 } from "../../services/deviceActions";
 import { useAiStore } from "@/stores/aiStore";
 import { navigateTo } from "@/lib/navigation";
+import { useOrgStore } from "@/stores/orgStore";
+import { deviceListCrumbHref } from "./deviceListCrumbHref";
 import { deviceScriptsHash } from "@/lib/deviceScriptsLink";
 import { runAction, ActionError } from "@/lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -324,14 +326,17 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   // the signed-in user (recordDevice no-ops until then), so re-run once it has.
   const recordRecentDevice = useRecentsStore((s) => s.recordDevice);
   const recentsUserId = useRecentsStore((s) => s.userId);
+  // Working org decides where the "Devices" crumb and Back land (A4).
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const recentName = device ? device.displayName || device.hostname : null;
   useEffect(() => {
     if (!device || !recentName || !recentsUserId) return;
     recordRecentDevice({ id: device.id, name: recentName, orgId: device.orgId });
   }, [device?.id, device?.orgId, recentName, recentsUserId, recordRecentDevice]);
 
+  const devicesHref = device ? deviceListCrumbHref(currentOrgId, device.orgId) : "/devices";
   const handleBack = () => {
-    void navigateTo("/devices");
+    void navigateTo(devicesHref);
   };
 
   const handleAction = async (
@@ -748,7 +753,7 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           ...(device.orgId
             ? [{ label: device.orgName, href: `/organizations/${device.orgId}` }]
             : []),
-          { label: t("deviceDetailPage.devices"), href: "/devices" },
+          { label: t("deviceDetailPage.devices"), href: devicesHref },
           { label: device.hostname || "Device" },
         ]}
       />

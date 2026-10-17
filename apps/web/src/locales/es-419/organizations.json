@@ -8,6 +8,9 @@
       },
       "primaryContact": "Contacto principal",
       "noPrimaryContact": "Sin contacto principal",
+      "billingAddress": "Dirección de facturación",
+      "noBillingAddress": "Sin dirección de facturación",
+      "billingSettingsLink": "Agregar en la configuración de facturación",
       "sites_one": "{{count}} sitio",
       "sites_other": "{{count}} sitios",
       "scopeChip": "Espacio de trabajo: {{orgName}}",
@@ -34,6 +37,7 @@
       "billing": "Contratos y facturación",
       "service": "Servicio",
       "documents": "Documentos",
+      "trust": "Centro de confianza",
       "activity": "Actividad"
     },
     "comingSoon": {
@@ -151,6 +155,338 @@
         "invoices": "Facturas",
         "quotes": "Cotizaciones",
         "agreements": "Acuerdos"
+      }
+    },
+    "trust": {
+      "declarations": {
+        "description": "Prácticas que Breeze no puede medir, declaradas por tu equipo. Cada declaración dura 365 días y aparece en la página pública como declarada, nunca como verificada.",
+        "loadFailed": "No se pudieron cargar los controles declarados.",
+        "notDeclared": "Sin declarar",
+        "current": "Vigente",
+        "expired": "Vencido",
+        "declaredBy": "Declarado por {{partner}} el {{date}} · vence el {{expires}}",
+        "expiredOn": "La declaración venció el {{date}}",
+        "expiresIn_one": "Vence en {{count}} día",
+        "expiresIn_other": "Vence en {{count}} días",
+        "onPublicPage": "En la página pública",
+        "republishNeeded": "Los cambios aparecen después de volver a publicar",
+        "declare": "Declarar",
+        "redeclare": "Volver a declarar",
+        "withdraw": "Retirar",
+        "dialogTitle": "Declarar: {{control}}",
+        "statementLabel": "Declaración",
+        "statementHelp": "Lo que hace tu equipo, en palabras sencillas (de 10 a 1000 caracteres). Aparece en la página pública tal como está escrito.",
+        "evidenceLabel": "Documento de evidencia (opcional)",
+        "evidenceNone": "Sin documento de evidencia",
+        "evidenceHelp": "Se muestra en la página pública solo si este documento también está vinculado a la página de confianza.",
+        "confirm": "Confirmo que esta declaración es exacta y que estoy autorizado para hacerla en nombre de {{partner}}.",
+        "submit": "Guardar declaración",
+        "cancel": "Cancelar",
+        "saved": "Declaración guardada. Vuelve a publicar para mostrarla en la página pública.",
+        "saveFailed": "No se pudo guardar la declaración.",
+        "withdrawTitle": "¿Retirar esta declaración?",
+        "withdrawMessage": "{{control}} se quitará de la página pública en su próxima actualización.",
+        "withdrawConfirm": "Retirar",
+        "withdrawn": "Declaración retirada.",
+        "withdrawFailed": "No se pudo retirar la declaración.",
+        "evidenceUnavailable": "Ese documento de evidencia ya no está disponible. Elige un documento vigente.",
+        "mfaRequired": "Declarar controles requiere autenticación multifactor. Activa la MFA en la configuración de seguridad de tu perfil y vuelve a intentarlo.",
+        "historyTitle": "Declaraciones anteriores",
+        "historySuperseded": "Reemplazada el {{date}}",
+        "historyWithdrawn": "Retirada el {{date}}",
+        "title": "Controles declarados"
+      },
+      "frameworks": {
+        "description": "Elige a qué marcos de seguridad asocia la página pública sus controles. Las correspondencias son indicativas y no una declaración de cumplimiento.",
+        "source": {
+          "page": "Definido en esta página.",
+          "template": "Heredado de la plantilla del socio.",
+          "default": "Usando el valor predeterminado integrado."
+        },
+        "suggested": "Sugerido para tu región",
+        "cisLocked": "Disponible cuando se confirme la licencia de CIS",
+        "useDefault": "Usar valor predeterminado",
+        "save": "Guardar",
+        "saved": "Vista por marco guardada.",
+        "saveFailed": "No se pudo guardar la vista por marco.",
+        "revisionChanged": "La página cambió desde que la abriste. Vuelve a cargar e inténtalo de nuevo.",
+        "title": "Vista por marco"
+      },
+      "subprocessors": {
+        "title": "Subprocesadores"
+      },
+      "faq": {
+        "title": "Preguntas frecuentes"
+      },
+      "history": {
+        "title": "Controles cumplidos a lo largo del tiempo"
+      },
+      "access": {
+        "description": "Los visitantes de la página pública pueden solicitar los documentos marcados como \"Disponible bajo solicitud\". Primero confirman su correo electrónico; luego usted aprueba o rechaza cada solicitud. Quien sea aprobado recibe un enlace de descarga válido por 7 días.",
+        "unpublishedBanner": "Las solicitudes se abren cuando se publique la página.",
+        "noGatedHint": "Aún no hay documentos disponibles bajo solicitud. Marque un documento vinculado como \"Disponible bajo solicitud\" para aceptar solicitudes.",
+        "ndaLabel": "Términos de confidencialidad (opcional)",
+        "ndaHelp": "Los solicitantes deben aceptar estos términos antes de enviar una solicitud. Se muestran como texto sin formato y se registran con cada solicitud. Los cambios llegan a la página pública cuando usted publica.",
+        "ndaCount": "{{count}} / {{max}} caracteres",
+        "ticketLabel": "Crear un ticket por cada solicitud confirmada",
+        "save": "Guardar configuración de acceso",
+        "saved": "Configuración de acceso guardada.",
+        "saveFailed": "No se pudo guardar la configuración de acceso.",
+        "requestsHeading": "Solicitudes",
+        "filterLabel": "Mostrar",
+        "filterAll": "Todas las solicitudes",
+        "empty": "Aún no hay solicitudes.",
+        "loadFailed": "No se pudieron cargar las solicitudes.",
+        "ndaAccepted": "Términos de confidencialidad aceptados",
+        "downloads": "Descargas: {{count}}",
+        "expired": "Vencido",
+        "status": {
+          "pending_verification": "Esperando la confirmación del correo",
+          "pending_approval": "Esperando su decisión",
+          "approved": "Aprobada",
+          "denied": "Rechazada",
+          "revoked": "Revocada"
+        },
+        "columns": {
+          "status": "Estado",
+          "requester": "Solicitante",
+          "company": "Empresa",
+          "purpose": "Propósito",
+          "requested": "Solicitada",
+          "expires": "Vence",
+          "actions": "Acciones"
+        },
+        "approve": "Aprobar",
+        "approved": "Solicitud aprobada. Se envió al solicitante un enlace de descarga por correo electrónico.",
+        "approveFailed": "No se pudo aprobar la solicitud.",
+        "deny": "Rechazar",
+        "denyTitle": "¿Rechazar esta solicitud?",
+        "denyMessage": "Se informará a {{name}} ({{company}}) que la solicitud fue rechazada, con su nota si agrega una.",
+        "denyNoteLabel": "Nota para el solicitante (opcional)",
+        "denyConfirm": "Rechazar solicitud",
+        "denied": "Solicitud rechazada.",
+        "denyFailed": "No se pudo rechazar la solicitud.",
+        "revoke": "Revocar",
+        "revokeTitle": "¿Revocar el acceso?",
+        "revokeMessage": "El enlace de descarga enviado a {{name}} dejará de funcionar de inmediato.",
+        "revokeConfirm": "Revocar acceso",
+        "revoked": "Acceso revocado.",
+        "revokeFailed": "No se pudo revocar el acceso.",
+        "resend": "Reenviar enlace",
+        "resent": "Se envió un nuevo enlace de descarga por correo electrónico. El enlace anterior ya no funciona.",
+        "resendFailed": "No se pudo reenviar el enlace.",
+        "errors": {
+          "mfaRequired": "Aprobar o reenviar requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil e inténtelo de nuevo.",
+          "invalidState": "Esta solicitud cambió desde que la cargó. Vuelva a cargar la lista.",
+          "noGatedDocuments": "La página publicada no ofrece ningún documento bajo solicitud. Marque uno como \"Disponible bajo solicitud\" y publique.",
+          "pageNotPublished": "Publique la página del Centro de confianza antes de aprobar solicitudes.",
+          "grantExpired": "Esta autorización venció. Pida al solicitante que envíe una nueva solicitud."
+        },
+        "title": "Solicitudes de acceso a documentos"
+      },
+      "inheritance": {
+        "sources": {
+          "page": "Definido para esta organización",
+          "template": "Plantilla del socio",
+          "default": "Predeterminado de Breeze"
+        },
+        "reset": "Restablecer valor heredado",
+        "intro": {
+          "template": "Usar la introducción de la plantilla del socio",
+          "none": "Sin introducción",
+          "custom": "Personalizada",
+          "inheritedAfterSave": "Esta página tiene ahora su propia introducción. Guarde para cambiarla por la heredada.",
+          "inheritedEmpty": "No se hereda nada, así que la página no muestra introducción."
+        },
+        "template": {
+          "heading": "Valores predeterminados del Centro de confianza",
+          "description": "Valores predeterminados para todas las páginas de confianza de los clientes. Una configuración que la organización elige para sí siempre prevalece. Las páginas publicadas reciben los cambios la próxima vez que se vuelvan a publicar.",
+          "readOnly": "Solo los administradores del socio con acceso a todas las organizaciones pueden cambiar estos valores.",
+          "loadFailed": "No se pudieron cargar los valores predeterminados del Centro de confianza.",
+          "inheritOption": "Predeterminado de Breeze ({{value}})",
+          "on": "Activado",
+          "off": "Desactivado",
+          "introLabel": "Introducción predeterminada",
+          "introHint": "Déjelo en blanco para no tener introducción.",
+          "hiddenLabel": "Controles ocultos de forma predeterminada",
+          "hiddenDefault": "Predeterminado de Breeze (mostrar todos los controles)",
+          "hiddenCustom": "Ocultar los controles que elija",
+          "frameworksLabel": "Vista por marco",
+          "frameworksCustom": "Mostrar los marcos que elija",
+          "showHistoryLabel": "Mostrar el historial de 90 días",
+          "showHistoryDescription": "Un gráfico de cuántos controles se cumplieron en los últimos 90 días.",
+          "save": "Guardar valores",
+          "saved": "Valores del Centro de confianza guardados",
+          "saveFailed": "No se pudieron guardar los valores del Centro de confianza",
+          "mfaRequired": "Cambiar estos valores requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil e inténtelo de nuevo.",
+          "revisionMismatch": "Otra persona cambió estos valores. Recargue para ver sus cambios."
+        },
+        "title": "Configuración heredada"
+      },
+      "title": "Centro de confianza",
+      "subtitle": "Una página pública con la postura de seguridad de esta organización, generada a partir de la telemetría en vivo de Breeze.",
+      "loading": "Cargando el Centro de confianza…",
+      "loadFailed": "No se pudo cargar la página del Centro de confianza.",
+      "retry": "Intentar de nuevo",
+      "status": {
+        "unpublished": "Sin publicar",
+        "published": "Publicada el {{date}}",
+        "publicUrl": "Página pública",
+        "copy": "Copiar enlace",
+        "copied": "Enlace copiado",
+        "copyFailed": "No se pudo copiar el enlace.",
+        "lastEvaluated": "Controles evaluados por última vez el {{date}}",
+        "gate": {
+          "probation_default_deny": "Su cuenta aún está en período de prueba. La publicación se habilita cuando su cuenta pasa a ser de confianza.",
+          "probation_enrollment_cap": "Su cuenta alcanzó el límite del período de prueba. La publicación se habilita cuando su cuenta pasa a ser de confianza.",
+          "restricted": "Su cuenta está restringida, por lo que la publicación está desactivada.",
+          "partner_unresolved": "No pudimos determinar la cuenta de socio de esta organización.",
+          "generic": "La publicación está desactivada para esta cuenta por ahora."
+        }
+      },
+      "publish": {
+        "button": "Publicar",
+        "republish": "Publicar actualización",
+        "title": "Publicar página del Centro de confianza",
+        "intro": "Esto hace que la página sea visible para cualquier persona con el enlace{{indexable}}. Los controles se evalúan de nuevo al publicar.",
+        "indexableSuffix": ", y los motores de búsqueda pueden indexarla",
+        "attestationCheckbox": "El cliente autorizó la publicación de esta página",
+        "authorizedBy": "Autorizado por (nombre, cargo)",
+        "authorizedByPlaceholder": "María Pérez, directora de operaciones",
+        "recorded": "Autorizado por {{name}} el {{date}}",
+        "change": "Cambiar",
+        "partnerHomeNote": "Esta es la página del propio socio, por lo que no se necesita autorización del cliente.",
+        "confirm": "Publicar",
+        "publishing": "Publicando…",
+        "cancel": "Cancelar",
+        "success": "Página del Centro de confianza publicada.",
+        "failed": "No se pudo publicar la página del Centro de confianza.",
+        "disabledNoWrite": "Necesita permiso para editar organizaciones para publicar.",
+        "disabledSlug": "Corrija la dirección de la página antes de publicar."
+      },
+      "unpublish": {
+        "button": "Anular publicación",
+        "title": "Anular la publicación de la página del Centro de confianza",
+        "message": "El enlace público dejará de funcionar de inmediato y la insignia se apagará. Puede volver a publicar en cualquier momento.",
+        "confirm": "Anular publicación",
+        "success": "Publicación de la página del Centro de confianza anulada.",
+        "failed": "No se pudo anular la publicación de la página del Centro de confianza."
+      },
+      "preview": {
+        "button": "Vista previa",
+        "failed": "No se pudo abrir la vista previa.",
+        "popupBlocked": "Su navegador bloqueó la ventana de vista previa. Permita las ventanas emergentes en este sitio e inténtelo de nuevo."
+      },
+      "partnerHome": {
+        "label": "Usar como la página propia del Centro de confianza del socio",
+        "description": "Muestra esta página en la dirección del socio en lugar de una dirección de cliente. No requiere autorización del cliente.",
+        "success": "Configuración de la página del socio guardada.",
+        "failed": "No se pudo cambiar la configuración de la página del socio."
+      },
+      "slug": {
+        "warningTitle": "La dirección de esta página aún no es válida",
+        "openSettings": "Editar en la configuración de la organización",
+        "partner_slug": "El slug del socio no es válido para una dirección pública.",
+        "org_slug": "El slug de la organización no es válido para una dirección pública.",
+        "unknown": "La dirección de la página tiene un problema ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "La publicación aún no está disponible. {{reason}}",
+        "readOnly": "Puede ver esta página, pero necesita permiso para editar organizaciones para cambiarla o publicarla."
+      },
+      "errors": {
+        "revisionMismatch": "Esta página cambió desde que la cargó. Vuelva a cargarla e inténtelo de nuevo.",
+        "authorizationRequired": "Registre quién autorizó la publicación.",
+        "mfaRequired": "Publicar requiere autenticación multifactor. Active MFA en la configuración de seguridad de su perfil e inténtelo de nuevo.",
+        "trustProbation": "La publicación se habilita cuando su cuenta pasa a ser de confianza.",
+        "trustRestricted": "La publicación se habilita cuando su cuenta pasa a ser de confianza.",
+        "slugInvalid": "La dirección de la página no es válida. Corrija el slug en la configuración de la organización.",
+        "introTooLong": "La introducción es demasiado larga.",
+        "partnerWideRequired": "Solo los administradores de todo el socio pueden cambiar la página del socio.",
+        "partnerHomeInternalOnly": "Solo tu propia organización (interna) puede ser la página del socio.",
+        "partnerHomeUnpublishFirst": "Esta página está publicada sin una autorización del cliente registrada. Anula la publicación antes de desactivar la página del socio."
+      },
+      "controls": {
+        "republishBanner": "Los cambios se aplican a la página pública cuando vuelva a publicar.",
+        "saveFailed": "No se pudo guardar el cambio.",
+        "unavailable": "Los resultados de los controles no están disponibles por ahora.",
+        "assessedCount": "{{assessed}} de {{eligible}} evaluados",
+        "shown": "Visible",
+        "hidden": "Oculto",
+        "toggles": {
+          "showPercentages": {
+            "label": "Mostrar porcentajes",
+            "description": "Muestra el porcentaje de cada control en la página pública."
+          },
+          "showDeviceCount": {
+            "label": "Mostrar cantidad de dispositivos",
+            "description": "Muestra cuántos dispositivos están cubiertos."
+          },
+          "showManagedBy": {
+            "label": "Mostrar “Administrado por”",
+            "description": "Nombra a su empresa como el proveedor que administra."
+          },
+          "searchIndexable": {
+            "label": "Permitir motores de búsqueda",
+            "description": "Permite que los motores de búsqueda indexen la página pública."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Introducción",
+        "contactLabel": "Correo electrónico de contacto de seguridad",
+        "contactInvalid": "Introduzca una dirección de correo electrónico válida.",
+        "websiteLabel": "Sitio web",
+        "websiteInvalid": "Introduzca una dirección completa con https://.",
+        "save": "Guardar contenido",
+        "saved": "Contenido guardado.",
+        "saveFailed": "No se pudo guardar el contenido."
+      },
+      "documents": {
+        "visibilityLabel": "Quién puede descargar",
+        "visibilityPublic": "Público",
+        "visibilityGated": "Disponible bajo solicitud",
+        "reconfirm": "Confirmar",
+        "reconfirmNeeded": "Confirme la divulgación para la nueva visibilidad antes de guardar.",
+        "disclosureTitleGated": "¿Ofrecer este documento bajo solicitud?",
+        "disclosureMessageGated": "\"{{title}}\" aparecerá en la página pública. Solo los solicitantes que usted apruebe podrán descargarlo.",
+        "disclosureCheckboxGated": "Confirmo que este documento está aprobado para entregarse a los solicitantes aprobados",
+        "disclosureConfirmChange": "Confirmar cambio",
+        "description": "Documentos que usted elige compartir en la página pública. Solo se muestran los documentos que aprueba de forma explícita.",
+        "upload": "Subir un documento",
+        "library": "Biblioteca de documentos",
+        "libraryEmpty": "No hay más documentos disponibles.",
+        "libraryFailed": "No se pudo cargar la biblioteca de documentos.",
+        "add": "Añadir",
+        "linked": "En la página pública ({{count}} de {{max}})",
+        "linkedEmpty": "Ningún documento seleccionado.",
+        "remove": "Quitar",
+        "moveUp": "Subir",
+        "moveDown": "Bajar",
+        "superseded": "Reemplazado — vuelva a vincular la versión más reciente",
+        "save": "Guardar documentos",
+        "saved": "Documentos guardados.",
+        "saveFailed": "No se pudieron guardar los documentos.",
+        "unavailable": "Estos documentos ya no están disponibles: {{titles}}. Quítelos o vuelva a vincularlos.",
+        "disclosureTitle": "¿Publicar este documento?",
+        "disclosureMessage": "“{{title}}” será visible para cualquier persona con el enlace de la página pública.",
+        "disclosureCheckbox": "Confirmo que este documento está aprobado para su divulgación pública",
+        "disclosureConfirm": "Añadir documento"
+      },
+      "sections": {
+        "controlsHeading": "Controles de seguridad",
+        "contentHeading": "Contenido de la página",
+        "documentsHeading": "Documentos"
+      },
+      "badge": {
+        "title": "Insignia",
+        "description": "Inserte una insignia de estado en vivo en su sitio web. Enlaza con la página pública.",
+        "unpublishedNote": "La insignia aparece cuando se publica la página.",
+        "snippet": "HTML de la insignia",
+        "alt": "Insignia de postura de seguridad",
+        "copy": "Copiar fragmento",
+        "copied": "Fragmento copiado",
+        "copyFailed": "No se pudo copiar el fragmento."
       }
     },
     "documents": {

@@ -3,6 +3,7 @@ package agentapp
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/updater"
 	"github.com/breeze-rmm/agent/internal/watchdoginstall"
@@ -192,9 +194,14 @@ func firstInstallTrustKeys() (map[string]ed25519.PublicKey, error) {
 	return keys, nil
 }
 
+// firstInstallHTTPClient's TLS goes through the shared ECH dialer: a hosted
+// build stages from its own control plane, which an SNI filter may make
+// reachable only over ECH (#8869). The dialer is per-host and plain-first, so
+// the GitHub release hosts keep a plain handshake.
 func firstInstallHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: releaseDownloadTimeout,
+		Transport: ech.NewTransport(&tls.Config{MinVersion: tls.VersionTLS12}),
+		Timeout:   releaseDownloadTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many release redirects")
