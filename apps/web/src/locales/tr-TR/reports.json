@@ -1067,6 +1067,13 @@
         "business": "İş",
         "general": "Genel",
         "businessDescription": "Yalnızca personel için MSP içi rakamlar — SLA başarımı, teknisyen faturalandırılabilirliği ve alacak yaşlanırması."
+      },
+      "delivery": {
+        "contactsLoading": "Kuruluş kişileri yükleniyor…",
+        "contactsFailed": "Bu kuruluşun kişileri yüklenemedi. Yine de e-posta adresi ekleyebilirsiniz.",
+        "noContacts": "Bu kuruluşun e-posta adresi olan kişisi yok.",
+        "removeEmail": "{{email}} adresini kaldır",
+        "recipientsFailed": "\"{{name}}\" raporu oluşturuldu, ancak alıcılarının tümü eklenemedi. Bunları rapordan ekleyin."
       }
     },
     "threatDetectionOptions": {

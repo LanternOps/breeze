@@ -1067,6 +1067,13 @@
         "business": "Activité",
         "general": "Général",
         "businessDescription": "Chiffres internes du prestataire MSP — respect des SLA, facturabilité des techniciens et comptes clients — réservés au personnel."
+      },
+      "delivery": {
+        "contactsLoading": "Chargement des contacts de l’organisation…",
+        "contactsFailed": "Impossible de charger les contacts de cette organisation. Vous pouvez toujours ajouter des adresses e-mail.",
+        "noContacts": "Cette organisation n’a aucun contact avec une adresse e-mail.",
+        "removeEmail": "Retirer {{email}}",
+        "recipientsFailed": "Le rapport « {{name}} » a été créé, mais tous ses destinataires n’ont pas pu être ajoutés. Ajoutez-les depuis le rapport."
       }
     },
     "threatDetectionOptions": {
