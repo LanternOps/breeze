@@ -1812,7 +1812,9 @@
         "network": "Ağ",
         "inventory": "Envanter"
       }
-    }
+    },
+    "countLine_one": "{{shown}} / {{count}} cihaz",
+    "countLine_other": "{{shown}} / {{count}} cihaz"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Cihaz günlükleri getirilemedi",

@@ -1812,7 +1812,9 @@
         "network": "Network",
         "inventory": "Inventory"
       }
-    }
+    },
+    "countLine_one": "{{shown}} of {{count}} device",
+    "countLine_other": "{{shown}} of {{count}} devices"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",

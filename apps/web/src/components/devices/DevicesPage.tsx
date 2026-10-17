@@ -32,6 +32,7 @@ import { DeviceClassSegment } from './DeviceClassSegment';
 import {
   filterDevicesByClass,
   countDevicesByClass,
+  readDeviceClassFromHash,
   type DeviceClassFilter,
 } from './deviceClassFilter';
 import { useDeviceClassFilter } from './useDeviceClassFilter';
@@ -563,10 +564,21 @@ export default function DevicesPage() {
   // The merged list narrowed by class only — what the table receives.
   // DeviceList applies the shared predicate itself (it owns paging), while the
   // grid below applies it here; both start from the same class-narrowed set.
-  // The segment only renders when the list carries a non-agent arm. When it is
-  // hidden, a remembered/deep-linked Network or Manual choice would empty the
-  // list with no control to undo it, so the class filter stands down.
-  const showDeviceClassSegment = ENABLE_NETWORK_DEVICES_IN_LIST || deviceClassCounts.manual > 0;
+  // The segment only renders when it has something to say (#9035): a network
+  // or manual row exists in the unfiltered list, or a deep link names a
+  // non-agent class (so the choice stays visible and undoable). An agent-only
+  // fleet gets no "Agent 3 / Network 0 / Manual 0" row. When it is hidden, a
+  // remembered Network or Manual choice would empty the list with no control
+  // to undo it, so the class filter stands down.
+  const unfilteredClassCounts = useMemo(() => countDevicesByClass(devices), [devices]);
+  const classPinnedByHash =
+    typeof window !== 'undefined' &&
+    (deviceClassFilter === 'manual' || (deviceClassFilter === 'network' && ENABLE_NETWORK_DEVICES_IN_LIST)) &&
+    readDeviceClassFromHash(window.location.hash) === deviceClassFilter;
+  const showDeviceClassSegment =
+    (ENABLE_NETWORK_DEVICES_IN_LIST && unfilteredClassCounts.network > 0) ||
+    unfilteredClassCounts.manual > 0 ||
+    classPinnedByHash;
   const effectiveDeviceClass: DeviceClassFilter = showDeviceClassSegment ? deviceClassFilter : 'all';
   const classFilteredDevices = useMemo(
     () => filterDevicesByClass(devices, effectiveDeviceClass),
@@ -2072,6 +2084,47 @@ export default function DevicesPage() {
   // position — keeps it mounted across the refresh; only the second child
   // (skeleton / error / real content) swaps out underneath it. Covered by
   // DevicesPage.postCreateHandoff.test.tsx ("keeps the network-asset modal mounted...").
+  // #9035: the list/grid toggle lives in each view's header strip (the table's
+  // for list, the grid's own for grid) instead of the page header.
+  const viewToggle = (
+    <div className="flex rounded-md border">
+      <button
+        type="button"
+        onClick={() => setViewMode('list')}
+        aria-pressed={viewMode === 'list'}
+        className={`flex h-8 w-8 items-center justify-center rounded-l-md transition ${
+          viewMode === 'list' ? 'bg-muted' : 'hover:bg-muted/50'
+        }`}
+        title={t('devicesPage.listView')}
+        aria-label={t('devicesPage.listView')}
+      >
+        <List className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => setViewMode('grid')}
+        aria-pressed={viewMode === 'grid'}
+        className={`flex h-8 w-8 items-center justify-center rounded-r-md transition ${
+          viewMode === 'grid' ? 'bg-muted' : 'hover:bg-muted/50'
+        }`}
+        title={t('devicesPage.gridView')}
+        aria-label={t('devicesPage.gridView')}
+      >
+        <Grid className="h-4 w-4" />
+      </button>
+    </div>
+  );
+  const headingScope =
+    orgScope.status !== 'resolved'
+      ? null
+      : orgScope.scope === 'all'
+        ? t('common:layout.org.allOrganizations')
+        : (orgScope.org?.name ?? null);
+  // Grid count-line denominator: the class-narrowed list minus hidden removed rows.
+  const gridTotal = includeDecommissioned
+    ? classFilteredDevices.length
+    : classFilteredDevices.filter(d => d.status !== 'decommissioned').length;
+
   const addNetworkAssetModal = (
     <AddNetworkAssetModal
       isOpen={showAddNetworkAsset}
@@ -2171,8 +2224,18 @@ export default function DevicesPage() {
       {addNetworkAssetModal}
       <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 data-testid="devices-heading" className="text-xl font-semibold tracking-tight">{t('devicesPage.title')}</h1>
+        <div className="min-w-0">
+          {/* #9035: the scope rides in the heading instead of a separate
+              layout line above the banner (ContextScopeLine skips /devices). */}
+          <h1 data-testid="devices-heading" className="text-xl font-semibold tracking-tight">
+            {t('devicesPage.title')}
+            {headingScope && (
+              <span data-testid="devices-heading-scope" className="font-normal text-muted-foreground">
+                {' · '}
+                {headingScope}
+              </span>
+            )}
+          </h1>
           <p className="text-muted-foreground">
             {t('devicesPage.subtitle')}
           </p>
@@ -2190,30 +2253,6 @@ export default function DevicesPage() {
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
           </button>
-          <div className="flex rounded-md border">
-            <button
-              type="button"
-              onClick={() => setViewMode('list')}
-              className={`flex h-10 w-10 items-center justify-center rounded-l-md transition ${
-                viewMode === 'list' ? 'bg-muted' : 'hover:bg-muted/50'
-              }`}
-              title={t('devicesPage.listView')}
-              aria-label={t('devicesPage.listView')}
-            >
-              <List className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('grid')}
-              className={`flex h-10 w-10 items-center justify-center rounded-r-md transition ${
-                viewMode === 'grid' ? 'bg-muted' : 'hover:bg-muted/50'
-              }`}
-              title={t('devicesPage.gridView')}
-              aria-label={t('devicesPage.gridView')}
-            >
-              <Grid className="h-4 w-4" />
-            </button>
-          </div>
           <button
             type="button"
             data-testid="devices-page-import-rmm"
@@ -2347,9 +2386,19 @@ export default function DevicesPage() {
           onAutoSelectConsumed={handleAutoSelectConsumed}
           networkDevicesEnabled={ENABLE_NETWORK_DEVICES_IN_LIST}
           effectiveAgentVersionByOrgId={effectiveAgentVersionByOrgId}
+          headerActions={viewToggle}
         />
       ) : (
         <div className="space-y-3">
+          <div
+            data-testid="device-grid-header-strip"
+            className="flex flex-wrap items-center justify-between gap-2"
+          >
+            <p className="text-sm text-muted-foreground">
+              {t('deviceList.countLine', { shown: gridDevices.length, count: gridTotal })}
+            </p>
+            {viewToggle}
+          </div>
           {/* Grid view has no filter toolbar to host DeviceList's inline
               pill, and the toast fired above is transient (auto-dismisses)
               and one-shot (only fires on the false→true transition) — a user

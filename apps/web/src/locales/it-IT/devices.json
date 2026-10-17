@@ -1812,7 +1812,9 @@
         "network": "Rete",
         "inventory": "Inventario"
       }
-    }
+    },
+    "countLine_one": "{{shown}} di {{count}} dispositivo",
+    "countLine_other": "{{shown}} di {{count}} dispositivi"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossibile recuperare i log del dispositivo",

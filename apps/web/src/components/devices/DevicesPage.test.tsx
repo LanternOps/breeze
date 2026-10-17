@@ -1,7 +1,8 @@
 import '@/lib/i18n';
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type React from 'react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import DevicesPage from './DevicesPage';
 import { fetchWithAuth } from '../../stores/auth';
@@ -218,7 +219,7 @@ vi.mock('./DeviceCard', () => ({
 // the per-action buttons to drive DevicesPage.handleBulkAction directly.
 type StubDevice = { id: string; deviceClass?: string; hostname?: string; displayName?: string; watchdogVersion?: string | null; status?: string; wanIp?: string | null; lanIp?: string | null; lastLogAt?: string | null; hardwareHealth?: string | null; hardwareHealthSummary?: Record<string, number> | null; reliabilityProvisional?: boolean };
 vi.mock('./DeviceList', () => ({
-  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean }) => (
+  default: ({ devices, serverFilterIds, onBulkAction, onAction, onSelect, onShowDecommissioned, onHideDecommissioned, includeDecommissioned, headerActions }: { devices: StubDevice[]; serverFilterIds?: Set<string> | null; onBulkAction?: (action: string, devices: StubDevice[]) => void; onAction?: (action: string, device: StubDevice) => void; onSelect?: (device: StubDevice) => void; onShowDecommissioned?: () => void; onHideDecommissioned?: () => void; includeDecommissioned?: boolean; headerActions?: React.ReactNode }) => (
     <div
       data-testid="device-list"
       data-device-count={devices.length}
@@ -235,6 +236,8 @@ vi.mock('./DeviceList', () => ({
       data-reliability-provisional={devices.map(d => String(d.reliabilityProvisional)).join(',')}
       data-hardware-summary={JSON.stringify(devices.map(d => d.hardwareHealthSummary ?? null))}
     >
+      {/* #9035: the page hands its list/grid toggle to the table header strip. */}
+      <div data-testid="device-list-header-actions">{headerActions}</div>
       {['maintenance-on', 'maintenance-off', 'decommission', 'reboot', 'run-script', 'link-vm-host', 'wake', 'deploy-software', 'compare', 'restore', 'permanent-delete'].map(action => (
         <button
           key={action}
@@ -3466,5 +3469,86 @@ describe('DevicesPage — stale fetch guard', () => {
     } finally {
       Object.assign(orgStoreState, saved);
     }
+  });
+});
+
+// #9035: ~490px of chrome before the first row. The scope folds into the
+// heading, the class segment only renders when it has something to say, and
+// the view toggle moves into the table header strip.
+describe('DevicesPage — page chrome (#9035)', () => {
+  const NET_9 = '99999999-9999-9999-9999-999999999999';
+  const savedOrgState = { ...orgStoreState };
+
+  afterEach(() => {
+    Object.assign(orgStoreState, savedOrgState);
+    history.replaceState(null, '', '/');
+  });
+
+  async function renderAgentOnly() {
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    render(<DevicesPage />);
+    const list = await screen.findByTestId('device-list');
+    await waitFor(() => expect(list.getAttribute('data-device-count')).toBe('3'));
+    return list;
+  }
+
+  it('names the fleet scope inside the heading', async () => {
+    await renderAgentOnly();
+    const heading = screen.getByTestId('devices-heading');
+    expect(heading).toHaveTextContent('Devices & Assets');
+    expect(screen.getByTestId('devices-heading-scope')).toHaveTextContent('All organizations');
+    expect(heading).toContainElement(screen.getByTestId('devices-heading-scope'));
+  });
+
+  it('names the working org inside the heading', async () => {
+    orgStoreState.currentOrgId = 'org-1';
+    orgStoreState.allOrgs = false;
+    orgStoreState.organizations = [{ id: 'org-1', name: 'Acme Dental' }];
+    await renderAgentOnly();
+    expect(screen.getByTestId('devices-heading-scope')).toHaveTextContent('Acme Dental');
+  });
+
+  it('hides the class segment for an agent-only fleet even with the network arm on', async () => {
+    flagState.ENABLE_NETWORK_DEVICES_IN_LIST = true;
+    history.replaceState(null, '', '/devices');
+    await renderAgentOnly();
+    expect(screen.queryByTestId('device-class-segment')).toBeNull();
+  });
+
+  it('shows the class segment once a network device exists', async () => {
+    history.replaceState(null, '', '/devices');
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    vi.mocked(fetchAllNetworkDevices).mockResolvedValue({
+      data: [{ id: NET_9, deviceClass: 'network', assetType: 'printer', hostname: 'Lobby Printer', status: 'online', lastSeenAt: new Date().toISOString(), orgId: 'org-1', siteId: 'site-1' }],
+      total: 1,
+      pagesWalked: 1,
+    } as never);
+    render(<DevicesPage />);
+    expect(await screen.findByTestId('device-class-segment')).toBeInTheDocument();
+  });
+
+  it('keeps the class segment when a deep link selects a non-agent class, so it can be undone', async () => {
+    history.replaceState(null, '', '/devices#deviceClass=network');
+    const { decodeFilterFromHash } = await import('./filterUrl');
+    vi.mocked(decodeFilterFromHash).mockReturnValue(null);
+    render(<DevicesPage />);
+    await screen.findByTestId('device-list');
+    expect(await screen.findByTestId('device-class-segment')).toBeInTheDocument();
+  });
+
+  it('moves the list/grid toggle into the table header strip', async () => {
+    await renderAgentOnly();
+    const actions = screen.getByTestId('device-list-header-actions');
+    expect(actions).toContainElement(screen.getByLabelText('Grid view'));
+  });
+
+  it('gives grid view its own strip with the count and the toggle', async () => {
+    await renderAgentOnly();
+    fireEvent.click(screen.getByLabelText('Grid view'));
+    const strip = await screen.findByTestId('device-grid-header-strip');
+    expect(strip).toHaveTextContent('3 of 3 devices');
+    expect(strip).toContainElement(screen.getByLabelText('List view'));
   });
 });

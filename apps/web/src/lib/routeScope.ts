@@ -211,6 +211,17 @@ export function isSingleDocumentRoute(pathname: string): boolean {
 }
 
 /**
+ * Pages whose own heading names the scope ("Devices & Assets · All
+ * organizations", #9035). They keep their org-or-all classification, but
+ * ContextScopeLine skips the fleet line: with the switcher pill and the
+ * org-switch toast it would be the third statement of the same fact, and the
+ * row it costs pushes the first table row below the fold.
+ */
+export function isScopeInHeadingRoute(pathname: string): boolean {
+  return normalize(pathname) === '/devices';
+}
+
+/**
  * Back-compat predicate used by the org-id injection chokepoint
  * (stores/orgStore.ts registerOrgIdProvider): catalog routes ignore the org
  * selector entirely, so no orgId is injected. Injection semantics are

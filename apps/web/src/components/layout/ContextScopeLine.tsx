@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Globe, Library, Building2 } from 'lucide-react';
-import { getRouteScope, isSingleDocumentRoute } from '../../lib/routeScope';
+import { getRouteScope, isScopeInHeadingRoute, isSingleDocumentRoute } from '../../lib/routeScope';
 import { useOrgStore } from '../../stores/orgStore';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +36,8 @@ export default function ContextScopeLine() {
   // is the only scroll-away content above their pinned header chrome — see
   // isSingleDocumentRoute.
   if (isSingleDocumentRoute(pathname)) return null;
+  // The devices list states its scope in its own heading (#9035).
+  if (isScopeInHeadingRoute(pathname)) return null;
   const kind = getRouteScope(pathname);
   // The organization record names its own org in its header (and chips a
   // switcher pointing elsewhere), so a scope line here adds nothing — and

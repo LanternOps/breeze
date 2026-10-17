@@ -564,6 +564,10 @@ type DeviceListProps = {
   // means "not resolved yet" and the column renders unchanged (plain dash
   // stays plain, no tint).
   effectiveAgentVersionByOrgId?: Record<string, string | null | undefined>;
+  // #9035: page-owned controls (the list/grid toggle) rendered in the table's
+  // header strip next to Columns, so the count, view and column controls share
+  // one row instead of stacking above the table.
+  headerActions?: React.ReactNode;
 };
 
 // Agent Version column tint (#5285). No new colours: reuses the same
@@ -852,6 +856,7 @@ export default function DeviceList({
   forceSingleOrg = false,
   columnPreset = DEVICES_PAGE_COLUMN_PRESET,
   effectiveAgentVersionByOrgId,
+  headerActions,
 }: DeviceListProps) {
   const { t } = useTranslation("devices");
   const { can } = usePermissions();
@@ -2736,12 +2741,17 @@ export default function DeviceList({
 
   return (
     <div>
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">
-            {filteredDevices.length} {t("deviceList.of")}{" "}
-            {countLineTotal}{" "}
-            {t("deviceList.devices")}{" "}
+      {/* #9035: one bordered card — header strip (count + list controls),
+          optional bulk bar, then the table — instead of a free-standing count
+          row and a gap above the table. Not overflow-hidden: the Columns and
+          Bulk Actions popovers hang out of it. */}
+      <div data-testid="device-list-table-card" className="rounded-md border">
+        <div
+          data-testid="device-list-header-strip"
+          className="flex flex-col gap-2 border-b px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <p data-testid="device-list-count" className="text-sm text-muted-foreground">
+            {t("deviceList.countLine", { shown: filteredDevices.length, count: countLineTotal })}{" "}
             {serverFilterError ? (
               <span
                 className="ml-2 inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive"
@@ -2792,7 +2802,7 @@ export default function DeviceList({
                 data-testid="device-vpn-filter"
                 value={vpnFilter}
                 onChange={(e) => setVpnFilter(e.target.value)}
-                className="h-10 rounded-md border bg-background px-2 text-sm text-muted-foreground"
+                className="h-8 rounded-md border bg-background px-2 text-sm text-muted-foreground"
               >
                 <option value="all">{t("deviceList.allVpn")}</option>
                 <option value="any">{t("deviceList.anyActiveVpn")}</option>
@@ -2814,7 +2824,7 @@ export default function DeviceList({
                   )
                 }
                 title={t("deviceList.multiBootMachinesTuckExpectedOffline")}
-                className={`flex h-10 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
+                className={`flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium ${
                   linkedCollapse === "on"
                     ? "border-primary/40 bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-muted"
@@ -2840,12 +2850,37 @@ export default function DeviceList({
               visibleCustomFieldKeys={visibleCustomFieldKeys}
               onToggleCustomField={toggleCustomFieldColumn}
             />
+            {headerActions}
+            {sortedDevices.length > 0 && (
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="device-page-size"
+                  className="whitespace-nowrap text-sm text-muted-foreground"
+                >
+                  {t("deviceList.perPage")}
+                </label>
+                <select
+                  id="device-page-size"
+                  value={effectivePageSize}
+                  aria-label={t("deviceList.devicesPerPage")}
+                  onChange={(event) =>
+                    handlePageSizeChange(Number(event.target.value))
+                  }
+                  className="h-8 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                >
+                  {PAGE_SIZE_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </div>
-      </div>
 
       {selectedIds.size > 0 && (
-        <div className="mt-4 flex items-center gap-3 rounded-md border bg-muted/40 px-4 py-2">
+        <div className="flex items-center gap-3 border-b bg-muted/40 px-4 py-2">
           <span className="text-sm font-medium" data-testid="bulk-selection-summary">
             {selectedIds.size} {t("deviceList.selected")}
             {selectedNonAgentCount > 0 && (
@@ -3045,7 +3080,7 @@ export default function DeviceList({
         </div>
       )}
 
-      <div className="mt-6 overflow-x-auto rounded-md border">
+      <div className="overflow-x-auto rounded-b-md">
         <table className={`w-full divide-y ${densityTableClasses(density)}`}>
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -3606,65 +3641,44 @@ export default function DeviceList({
           </tbody>
         </table>
       </div>
+      </div>
 
-      {sortedDevices.length > 0 && (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-3">
-            <p className="text-sm text-muted-foreground">
-              {t("deviceList.showing")} {startIndex + 1} {t("deviceList.to")}{" "}
-              {Math.min(startIndex + effectivePageSize, sortedDevices.length)}{" "}
-              {t("deviceList.of")} {sortedDevices.length}
-            </p>
-            <div className="flex items-center gap-2">
-              <label
-                htmlFor="device-page-size"
-                className="text-sm text-muted-foreground"
-              >
-                {t("deviceList.perPage")}{" "}
-              </label>
-              <select
-                id="device-page-size"
-                value={effectivePageSize}
-                aria-label={t("deviceList.devicesPerPage")}
-                onChange={(event) =>
-                  handlePageSizeChange(Number(event.target.value))
-                }
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-32"
-              >
-                {PAGE_SIZE_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
-                  </option>
-                ))}
-              </select>
-            </div>
+      {/* The count line already says "N of M devices"; the range and pager
+          only earn a row when there is a second page (#9035). */}
+      {totalPages > 1 && (
+        <div
+          data-testid="device-list-pagination"
+          className="mt-4 flex flex-wrap items-center justify-between gap-2"
+        >
+          <p className="text-sm text-muted-foreground">
+            {t("deviceList.showing")} {startIndex + 1} {t("deviceList.to")}{" "}
+            {Math.min(startIndex + effectivePageSize, sortedDevices.length)}{" "}
+            {t("deviceList.of")} {sortedDevices.length}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="text-sm">
+              {t("deviceList.page")} {currentPage} {t("deviceList.of")}{" "}
+              {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setCurrentPage((p) => Math.min(totalPages, p + 1))
+              }
+              disabled={currentPage === totalPages}
+              className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
           </div>
-          {totalPages > 1 && (
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <span className="text-sm">
-                {t("deviceList.page")} {currentPage} {t("deviceList.of")}{" "}
-                {totalPages}
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  setCurrentPage((p) => Math.min(totalPages, p + 1))
-                }
-                disabled={currentPage === totalPages}
-                className="flex h-9 w-9 items-center justify-center rounded-md border hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>

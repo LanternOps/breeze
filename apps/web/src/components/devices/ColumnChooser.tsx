@@ -226,7 +226,7 @@ export function ColumnChooser({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        className="flex h-10 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium hover:bg-muted"
+        className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-sm font-medium hover:bg-muted"
       >
         <Columns3 className="h-3.5 w-3.5" />
         {t('deviceList.columns')}

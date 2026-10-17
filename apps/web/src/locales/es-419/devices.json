@@ -1812,7 +1812,9 @@
         "network": "Red",
         "inventory": "Inventario"
       }
-    }
+    },
+    "countLine_one": "{{shown}} de {{count}} dispositivo",
+    "countLine_other": "{{shown}} de {{count}} dispositivos"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",

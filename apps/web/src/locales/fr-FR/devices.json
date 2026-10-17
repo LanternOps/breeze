@@ -1812,7 +1812,9 @@
         "network": "Réseau",
         "inventory": "Inventaire"
       }
-    }
+    },
+    "countLine_one": "{{shown}} sur {{count}} appareil",
+    "countLine_other": "{{shown}} sur {{count}} appareils"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossible de récupérer les journaux des périphériques",

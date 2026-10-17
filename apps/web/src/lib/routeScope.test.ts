@@ -1,7 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { getRouteScope, isGlobalScopeRoute, isSingleDocumentRoute, ROUTE_SCOPES } from './routeScope';
+import { getRouteScope, isGlobalScopeRoute, isScopeInHeadingRoute, isSingleDocumentRoute, ROUTE_SCOPES } from './routeScope';
+
+// #9035: pages whose own heading names the scope, so the layout's scope line
+// would be a third confirmation of the same thing.
+describe('isScopeInHeadingRoute', () => {
+  it('matches the devices list (with or without a trailing slash)', () => {
+    expect(isScopeInHeadingRoute('/devices')).toBe(true);
+    expect(isScopeInHeadingRoute('/devices/')).toBe(true);
+  });
+  it('does not match device records or other fleet pages', () => {
+    expect(isScopeInHeadingRoute('/devices/dev-1')).toBe(false);
+    expect(isScopeInHeadingRoute('/devices/groups')).toBe(false);
+    expect(isScopeInHeadingRoute('/alerts')).toBe(false);
+  });
+  it('leaves the org-or-all classification untouched', () => {
+    expect(getRouteScope('/devices')).toBe('org-or-all');
+  });
+});
 
 describe('isSingleDocumentRoute', () => {
   it('matches quote and invoice DETAIL pages only', () => {

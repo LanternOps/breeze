@@ -1812,7 +1812,9 @@
         "network": "Netzwerk",
         "inventory": "Inventar"
       }
-    }
+    },
+    "countLine_one": "{{shown}} von {{count}} Gerät",
+    "countLine_other": "{{shown}} von {{count}} Geräten"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Geräteprotokolle konnten nicht abgerufen werden",

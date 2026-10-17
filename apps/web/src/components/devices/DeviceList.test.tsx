@@ -1072,7 +1072,7 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
 
     // 1 visible of 1 non-decommissioned — the hidden row is called out by the
     // hint instead of silently vanishing from the denominator.
-    expect(screen.getByText(/1 of 1 devices/)).toBeInTheDocument();
+    expect(screen.getByText(/1 of 1 device\b/)).toBeInTheDocument();
   });
 
   it('renders no hint when decommissioned devices are already visible (includeDecommissioned)', () => {
@@ -1138,7 +1138,7 @@ describe('DeviceList — hidden-decommissioned hint (#2251)', () => {
     );
     expect(screen.queryByTestId('decommissioned-hidden-hint')).toBeNull();
     // Denominator still excludes the hidden removed row.
-    expect(screen.getByText(/1 of 1 devices/)).toBeInTheDocument();
+    expect(screen.getByText(/1 of 1 device\b/)).toBeInTheDocument();
 
     rerender(
       <DeviceList
