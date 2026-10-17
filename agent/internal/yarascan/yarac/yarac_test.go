@@ -11,7 +11,9 @@ import (
 )
 
 func set(id string, rules ...Rule) Set { return Set{ID: id, Rules: rules} }
-func r(name, src string) Rule      { return Rule{ID: "id-" + name, Name: name, Severity: "high", Source: src} }
+func r(name, src string) Rule {
+	return Rule{ID: "id-" + name, Name: name, Severity: "high", Source: src}
+}
 
 func TestValidateAcceptsMarkerRule(t *testing.T) {
 	if errs := ValidateSet(set("s1", r("fixture_marker", markerRule)), DefaultPolicy); len(errs) != 0 {

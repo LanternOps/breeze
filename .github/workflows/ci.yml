@@ -1740,12 +1740,26 @@ jobs:
             --goos "$GOOS" --goarch "$GOARCH" --version "$BUILD_VERSION" --windowsgui \
             --out "breeze-user-helper-${GOOS}-${GOARCH}${{ matrix.suffix }}"
 
+      # #6263 W02: breeze-yarac (YARA compile policy CLI — W03 server
+      # pre-check, lab benchmark). Not a release artifact; built here so a
+      # cross-compile break and any plaintext signature in the embedded
+      # engine are caught on every platform the agent ships to.
+      - name: Build breeze-yarac
+        shell: bash
+        working-directory: agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o "breeze-yarac-${GOOS}-${GOARCH}${{ matrix.suffix }}" ./cmd/breeze-yarac
+
       # Regression guard (#2797): built agent binaries must not contain
       # plaintext threat-signature strings — AV engines flag them as malware
       # (VT-confirmed Elastic Multi.EICAR on shipped exes).
       - name: Scan built binaries for plaintext threat signatures (#2797)
         run: |
           bins=("agent/breeze-agent-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}")
+          bins+=("agent/breeze-yarac-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}")
           if [ "${{ matrix.goos }}" = "windows" ]; then
             bins+=("agent/breeze-user-helper-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}")
           fi

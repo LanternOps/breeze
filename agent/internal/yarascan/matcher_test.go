@@ -28,7 +28,9 @@ func bundle(id string, rules ...BundleRule) *Bundle {
 
 const marker = `rule fixture_marker : fixture { meta: threat_type = "pup" strings: $a = "breeze_yara_fixture_marker_7f3a" condition: $a }`
 
-func ref(id string) RuleSetRef { return RuleSetRef{ID: id, Version: 1, SHA256: strings.Repeat("a", 64)} }
+func ref(id string) RuleSetRef {
+	return RuleSetRef{ID: id, Version: 1, SHA256: strings.Repeat("a", 64)}
+}
 
 func scanOne(t *testing.T, m Matcher, path string) []Match {
 	t.Helper()

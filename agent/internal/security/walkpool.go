@@ -333,3 +333,35 @@ func produce(ctx context.Context, roots []string, options threatScanOptions, cfg
 	}
 	return nil
 }
+
+// WalkOptions configures WalkAndMatch.
+type WalkOptions struct {
+	Workers     int   // <1 ⇒ the agent default
+	MaxFileSize int64 // bytes; <=0 ⇒ the agent default (25 MiB)
+	Exclusions  []string
+}
+
+// WalkResult is WalkAndMatch's outcome.
+type WalkResult struct {
+	Threats      []Threat
+	FilesScanned int
+	FilesFailed  int
+}
+
+// WalkAndMatch runs the agent's YARA-mode walk (same exclusions, size cap,
+// per-file error policy and background-priority workers) with an arbitrary
+// matcher. It exists for cmd/breeze-yarac's benchmark so the lab numbers
+// measure the code the agent ships, not a copy of it.
+func WalkAndMatch(ctx context.Context, paths []string, m yarascan.Matcher, o WalkOptions) (WalkResult, error) {
+	options := defaultThreatScanOptions()
+	if o.MaxFileSize > 0 {
+		options.MaxFileSize = o.MaxFileSize
+	}
+	options.ExcludePaths = append(options.ExcludePaths, o.Exclusions...)
+	cfg := yaraWalkConfig()
+	if o.Workers > 0 {
+		cfg.Workers = o.Workers
+	}
+	res, err := walkAndMatch(ctx, paths, options, m, cfg)
+	return WalkResult(res), err
+}
