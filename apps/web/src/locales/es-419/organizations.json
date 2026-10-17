@@ -48,6 +48,15 @@
     "devices": {
       "loadError": "No se pudieron cargar los dispositivos de esta organización.",
       "searchPlaceholder": "Buscar dispositivos",
+      "searchLabel": "Buscar dispositivos por nombre de host",
+      "statusFilterLabel": "Filtrar por estado",
+      "siteFilterLabel": "Filtrar por sitio",
+      "noneEnrolled": "Aún no hay dispositivos inscritos en {{orgName}}",
+      "addDevice": "Agregar dispositivo",
+      "noMatches": "Ningún dispositivo coincide",
+      "clearFilters": "Borrar filtros",
+      "capNotice": "Se muestran los primeros {{limit}} dispositivos",
+      "openInDevices": "Abrir en Dispositivos",
       "allStatuses": "Todos los estados",
       "allSites": "Todos los sitios",
       "status": {

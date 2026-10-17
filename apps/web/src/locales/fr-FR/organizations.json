@@ -48,6 +48,15 @@
     "devices": {
       "loadError": "Impossible de charger les appareils de cette organisation.",
       "searchPlaceholder": "Rechercher des appareils",
+      "searchLabel": "Rechercher des appareils par nom d'hôte",
+      "statusFilterLabel": "Filtrer par statut",
+      "siteFilterLabel": "Filtrer par site",
+      "noneEnrolled": "Aucun appareil enrôlé dans {{orgName}} pour l'instant",
+      "addDevice": "Ajouter un appareil",
+      "noMatches": "Aucun appareil ne correspond",
+      "clearFilters": "Effacer les filtres",
+      "capNotice": "Affichage des {{limit}} premiers appareils",
+      "openInDevices": "Ouvrir dans Appareils",
       "allStatuses": "Tous les statuts",
       "allSites": "Tous les sites",
       "status": {

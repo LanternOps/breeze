@@ -48,6 +48,15 @@
     "devices": {
       "loadError": "Bu kuruluşun cihazları yüklenemedi.",
       "searchPlaceholder": "Cihazlarda ara",
+      "searchLabel": "Cihazları ana bilgisayar adına göre ara",
+      "statusFilterLabel": "Duruma göre filtrele",
+      "siteFilterLabel": "Siteye göre filtrele",
+      "noneEnrolled": "{{orgName}} içinde henüz kayıtlı cihaz yok",
+      "addDevice": "Cihaz ekle",
+      "noMatches": "Eşleşen cihaz yok",
+      "clearFilters": "Filtreleri temizle",
+      "capNotice": "İlk {{limit}} cihaz gösteriliyor",
+      "openInDevices": "Cihazlar'da aç",
       "allStatuses": "Tüm durumlar",
       "allSites": "Tüm siteler",
       "status": {

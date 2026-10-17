@@ -1,12 +1,20 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import '@/lib/i18n';
-import OrgDevicesTab from './OrgDevicesTab';
+import OrgDevicesTab, { ORG_DEVICES_LIMIT } from './OrgDevicesTab';
 import { useOrgStore } from '@/stores/orgStore';
 import type { OrgFetch } from './orgRecordFetch';
 import { navigateTo } from '@/lib/navigation';
 
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+
+const applyOrgSwitchMock = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/orgSwitch', () => ({ applyOrgSwitch: applyOrgSwitchMock }));
+
+const granted = vi.hoisted(() => new Set<string>(['organizations:write']));
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
+}));
 
 const RECORD_ORG = 'org-record-1';
 const OTHER_ORG = 'org-other-2';
@@ -50,6 +58,9 @@ describe('OrgDevicesTab', () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.mocked(navigateTo).mockClear();
+    applyOrgSwitchMock.mockReset();
+    granted.clear();
+    granted.add('organizations:write');
   });
 
   it('loads devices through orgFetch (org-pinned) and renders them with forceSingleOrg, while the store points elsewhere', async () => {
@@ -59,7 +70,7 @@ describe('OrgDevicesTab', () => {
       '/orgs/sites': () => jsonResponse({ data: [{ id: 'site-1', name: 'HQ' }] }),
     });
 
-    render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
 
     await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
     // Every call went through the org-pinned fetch, never a bare ambient one —
@@ -89,7 +100,7 @@ describe('OrgDevicesTab', () => {
           ],
         }),
     });
-    return render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
+    return render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
   }
 
   it('row click navigates to the device page', async () => {
@@ -155,13 +166,95 @@ describe('OrgDevicesTab', () => {
 
   it('shows a retryable-looking error state when the devices load fails outright', async () => {
     const { orgFetch } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ error: 'boom' }, false, 500) });
-    render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
     await waitFor(() => expect(screen.getByTestId('org-devices-error')).toBeTruthy());
   });
 
   it('shows the same error state on a malformed 200 devices body, not "no devices" (#5075 W02 review)', async () => {
     const { orgFetch } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: null }) });
-    render(<OrgDevicesTab orgId={RECORD_ORG} orgFetch={orgFetch} />);
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
     await waitFor(() => expect(screen.getByTestId('org-devices-error')).toBeTruthy());
+  });
+  // ---- #9023 ----
+
+  it('names the three filter controls for assistive tech, keeping the visible placeholder', async () => {
+    renderTwoDevices();
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    expect(screen.getByTestId('org-devices-search').getAttribute('aria-label')).toBe('Search devices by hostname');
+    expect(screen.getByTestId('org-devices-search').getAttribute('placeholder')).toBe('Search devices');
+    expect(screen.getByTestId('org-devices-status-filter').getAttribute('aria-label')).toBe('Filter by status');
+    expect(screen.getByTestId('org-devices-site-filter').getAttribute('aria-label')).toBe('Filter by site');
+  });
+
+  it('an org with no devices gets an enrol prompt, not a table with "try adjusting your filters"', async () => {
+    const { orgFetch } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
+
+    const empty = await screen.findByTestId('org-devices-empty');
+    expect(empty.textContent).toContain('No devices enrolled in Acme Dental yet');
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.queryByText(/try adjusting/i)).toBeNull();
+    expect(screen.queryByTestId('org-devices-search')).toBeNull();
+
+    // "Add device" is the existing enrol flow on /devices, in this org's workspace.
+    fireEvent.click(screen.getByTestId('org-devices-add'));
+    expect(applyOrgSwitchMock).toHaveBeenCalledWith(RECORD_ORG, 'Switched to Acme Dental', '/devices#add-device');
+  });
+
+  it('withholds "Add device" from a role that cannot mint an enrolment key', async () => {
+    granted.clear();
+    const { orgFetch } = makeRecordingOrgFetch({ '/devices': () => jsonResponse({ data: [] }) });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
+
+    await screen.findByTestId('org-devices-empty');
+    expect(screen.queryByTestId('org-devices-add')).toBeNull();
+  });
+
+  it('filters that match nothing say so and offer to clear them', async () => {
+    renderTwoDevices();
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('org-devices-search'), { target: { value: 'nothing-like-this' } });
+    fireEvent.change(screen.getByTestId('org-devices-status-filter'), { target: { value: 'offline' } });
+
+    const none = await screen.findByTestId('org-devices-no-matches');
+    expect(none.textContent).toContain('No devices match');
+    expect(screen.queryByTestId('org-devices-empty')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('org-devices-clear-filters'));
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    expect(screen.getByText('acme-desktop-02')).toBeTruthy();
+    expect((screen.getByTestId('org-devices-search') as HTMLInputElement).value).toBe('');
+    expect((screen.getByTestId('org-devices-status-filter') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('hides pagination and the per-page picker when every device fits on one page', async () => {
+    renderTwoDevices();
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    expect(screen.queryByLabelText('Devices per page')).toBeNull();
+    expect(screen.queryByText(/Showing 1 to 2/)).toBeNull();
+  });
+
+  it('says when the 200-device cap cut the list short, and hands off to Devices in this org', async () => {
+    const { orgFetch, calls } = makeRecordingOrgFetch({
+      '/devices': () => jsonResponse({ data: [DEVICE], pagination: { nextCursor: 'next-page', limit: ORG_DEVICES_LIMIT } }),
+    });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
+
+    const notice = await screen.findByTestId('org-devices-cap-notice');
+    expect(notice.textContent).toContain(`Showing the first ${ORG_DEVICES_LIMIT} devices`);
+    expect(calls.find((c) => c.startsWith('/devices'))).toContain(`limit=${ORG_DEVICES_LIMIT}`);
+
+    fireEvent.click(screen.getByTestId('org-devices-open-in-devices'));
+    expect(applyOrgSwitchMock).toHaveBeenCalledWith(RECORD_ORG, 'Switched to Acme Dental', '/devices');
+  });
+
+  it('shows no cap notice when the whole org fit in one request', async () => {
+    const { orgFetch } = makeRecordingOrgFetch({
+      '/devices': () => jsonResponse({ data: [DEVICE], pagination: { nextCursor: null, limit: ORG_DEVICES_LIMIT } }),
+    });
+    render(<OrgDevicesTab orgId={RECORD_ORG} orgName="Acme Dental" orgFetch={orgFetch} />);
+    await waitFor(() => expect(screen.getByText('acme-laptop-01')).toBeTruthy());
+    expect(screen.queryByTestId('org-devices-cap-notice')).toBeNull();
   });
 });

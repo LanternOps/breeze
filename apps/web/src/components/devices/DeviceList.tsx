@@ -554,6 +554,9 @@ type DeviceListProps = {
   // could be viewing this org's record while the switcher points at "All
   // organizations" or a different org entirely.
   forceSingleOrg?: boolean;
+  // The org record's Devices tab (#9023): drop the whole "Showing x to y" /
+  // per-page / pager footer while every row fits on one page. Off by default
+  // so the fleet page keeps its footer at any size.
   // Which persisted column list this instance reads/writes. Read once at mount
   // (like `pageSize`); the org record's Devices tab passes its own so its
   // customisation never leaks into the fleet page.

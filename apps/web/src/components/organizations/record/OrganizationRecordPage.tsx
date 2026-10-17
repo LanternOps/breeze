@@ -420,7 +420,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       )}
       {effectiveTab === 'contacts' && <ContactsCard orgId={orgId} />}
       {effectiveTab === 'sites' && <OrgSitesTab orgId={orgId} orgName={loadedOrg.name} />}
-      {effectiveTab === 'devices' && <OrgDevicesTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'devices' && <OrgDevicesTab orgId={orgId} orgName={loadedOrg.name} orgFetch={orgFetch} />}
       {effectiveTab === 'activity' && <OrgActivityTab orgId={orgId} />}
       {effectiveTab === 'tickets' && <OrgTicketsTab orgId={orgId} orgFetch={orgFetch} />}
       {effectiveTab === 'billing' && <OrgBillingTab orgId={orgId} />}

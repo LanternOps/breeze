@@ -48,6 +48,15 @@
     "devices": {
       "loadError": "Die Geräte dieser Organisation konnten nicht geladen werden.",
       "searchPlaceholder": "Geräte suchen",
+      "searchLabel": "Geräte nach Hostname suchen",
+      "statusFilterLabel": "Nach Status filtern",
+      "siteFilterLabel": "Nach Standort filtern",
+      "noneEnrolled": "In {{orgName}} sind noch keine Geräte registriert",
+      "addDevice": "Gerät hinzufügen",
+      "noMatches": "Keine passenden Geräte",
+      "clearFilters": "Filter zurücksetzen",
+      "capNotice": "Die ersten {{limit}} Geräte werden angezeigt",
+      "openInDevices": "In Geräte öffnen",
       "allStatuses": "Alle Status",
       "allSites": "Alle Standorte",
       "status": {

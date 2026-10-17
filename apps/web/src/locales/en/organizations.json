@@ -48,6 +48,15 @@
     "devices": {
       "loadError": "Couldn't load devices for this organization.",
       "searchPlaceholder": "Search devices",
+      "searchLabel": "Search devices by hostname",
+      "statusFilterLabel": "Filter by status",
+      "siteFilterLabel": "Filter by site",
+      "noneEnrolled": "No devices enrolled in {{orgName}} yet",
+      "addDevice": "Add device",
+      "noMatches": "No devices match",
+      "clearFilters": "Clear filters",
+      "capNotice": "Showing the first {{limit}} devices",
+      "openInDevices": "Open in Devices",
       "allStatuses": "All statuses",
       "allSites": "All sites",
       "status": {
