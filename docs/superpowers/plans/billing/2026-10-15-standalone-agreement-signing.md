@@ -1,4 +1,5 @@
 ---
+tracking_issue: LanternOps/breeze#9075
 spec: docs/superpowers/specs/billing/2026-10-15-standalone-agreement-signing-spec.md
 ---
 # Standalone Agreement Signing — Feature Plan
