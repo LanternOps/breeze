@@ -172,8 +172,9 @@ type DeviceDetailsProps = {
 
 // Sub-line record links: foreground colour plus a quiet resting underline, so
 // they are distinguishable from the plain OS / agent text beside them (#9026).
+// Below md they also get a 32px tap height (#9028).
 const SUBLINE_LINK =
-  "text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground";
+  "text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground max-md:inline-flex max-md:min-h-[32px] max-md:items-center";
 
 // Mirrors the API's DEFAULT_OFFLINE_THRESHOLD_MINUTES (services/deviceLiveness):
 // a sample older than the window a heartbeat must land in is not "current".
@@ -865,20 +866,24 @@ export default function DeviceDetails({
           {t("deviceDetailPage.backToDevices")}
         </button>
       )}
-      <div className="rounded-lg border bg-card p-6 shadow-xs">
+      {/* #9028: below md the card tightens (no icon tile, smaller padding),
+          the title clamps to two lines and the status pills wrap onto their own
+          line, so the header stays ~200px tall at 390px. md+ is unchanged. */}
+      <div className="rounded-lg border bg-card p-4 shadow-xs md:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex items-start gap-4">
-            <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-muted">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="hidden h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-muted md:flex">
               <Monitor className="h-7 w-7 text-muted-foreground" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-3 min-w-0">
+              <div className="flex min-w-0 flex-col items-start gap-1.5 md:flex-row md:items-center md:gap-3">
                 <h1
-                  className="truncate text-xl font-semibold tracking-tight"
+                  className="line-clamp-2 text-xl font-semibold tracking-tight [overflow-wrap:anywhere] md:line-clamp-1"
                   title={deviceName}
                 >
                   {deviceName}
                 </h1>
+                <div className="flex flex-wrap items-center gap-2 md:contents">
                 <span
                   data-testid="device-status-pill"
                   className={`inline-flex shrink-0 items-center rounded-full border px-2.5 py-1 text-xs font-medium ${statusColors[device.status]}`}
@@ -912,6 +917,7 @@ export default function DeviceDetails({
                   rebootDeferralsUsed={device.rebootDeferralsUsed}
                   rebootMaxDeferrals={device.rebootMaxDeferrals}
                 />
+                </div>
               </div>
               {/* One name in the h1; the hostname appears once, here, only when
                   it differs. Org/site links sit in the foreground colour with a
@@ -1003,6 +1009,7 @@ export default function DeviceDetails({
         tabs={overflowTabs}
         activeTab={activeTab}
         onTabChange={(id) => switchTab(id as Tab)}
+        mobileMode="scroll"
       />
 
       {activeTab === "overview" && (

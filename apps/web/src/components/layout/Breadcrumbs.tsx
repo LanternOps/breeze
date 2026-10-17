@@ -40,7 +40,7 @@ export default function Breadcrumbs({ items }: BreadcrumbsProps) {
                 href={item.href}
                 title={item.title}
                 aria-description={item.description}
-                className="truncate hover:text-foreground transition-colors"
+                className="truncate transition-colors hover:text-foreground max-md:min-h-[32px] max-md:leading-8"
               >
                 {item.label}
               </a>

@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceActions from './DeviceActions';
 import type { Device } from './DeviceList';
@@ -487,11 +487,66 @@ describe('DeviceActions — one primary, uniform height, reachable reasons (#902
     }
   });
 
+  it('at md and up an offline device shows all six header buttons', () => {
+    render(<DeviceActions device={offlineDevice} />);
+    expect(headerButtons()).toHaveLength(6);
+  });
+
   it('swallows activation of an aria-disabled Run Script', async () => {
     const onAction = vi.fn();
     render(<DeviceActions device={offlineDevice} onAction={onAction} />);
     await userEvent.click(button(/run script/i));
     expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('DeviceActions — phone width (#9028)', () => {
+  const originalMatchMedia = window.matchMedia;
+  beforeEach(() => {
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('max-width'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
+  });
+  afterEach(() => {
+    window.matchMedia = originalMatchMedia;
+  });
+  const headerButtons = () =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid="device-header-actions"] > button, [data-testid="device-header-actions"] > div > button'),
+    );
+
+  it('online: one primary (Run Script) plus an Actions button — nothing else in the row', () => {
+    render(<DeviceActions device={onlineDevice} />);
+    const buttons = headerButtons();
+    expect(buttons.map((b) => b.textContent?.trim())).toEqual(['Run Script', 'Actions']);
+    expect(buttons[0]!.className).toMatch(/(^|\s)bg-primary(\s|$)/);
+    expect(screen.getByTestId('device-actions-sheet-trigger')).toHaveAttribute('aria-haspopup', 'menu');
+  });
+
+  it('offline: Wake is the primary; the sheet lists every other action with the same disabled reasons', async () => {
+    render(<DeviceActions device={offlineDevice} />);
+    expect(headerButtons().map((b) => b.textContent?.trim())).toEqual(['Wake', 'Actions']);
+    await userEvent.click(screen.getByTestId('device-actions-sheet-trigger'));
+    const sheet = screen.getByTestId('device-actions-sheet');
+    const runScript = screen.getByRole('menuitem', { name: /run script/i });
+    expect(sheet.contains(runScript)).toBe(true);
+    expect(runScript).toHaveAttribute('aria-disabled', 'true');
+    expect(runScript).toHaveTextContent('Device is offline');
+    for (const name of [/connect desktop/i, /remote tools/i, /^reboot/i, /shut ?down/i, /device settings/i, /remove/i]) {
+      expect(screen.getAllByRole('menuitem', { name }).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('the sheet closes on Escape and returns focus to the Actions button', async () => {
+    render(<DeviceActions device={onlineDevice} />);
+    const trigger = screen.getByTestId('device-actions-sheet-trigger');
+    await userEvent.click(trigger);
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByTestId('device-actions-sheet')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 });
 

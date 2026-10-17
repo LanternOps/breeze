@@ -321,7 +321,7 @@ export default function OrgSwitcher() {
         )}
         <span
           data-testid="org-switcher-label"
-          className="hidden min-w-0 truncate md:inline-block md:max-w-40 lg:max-w-[200px]"
+          className="inline-block min-w-0 max-w-[7.5rem] truncate sm:max-w-40 lg:max-w-[200px]"
         >
           {displayText}
         </span>

@@ -325,6 +325,14 @@ describe('OrgSwitcher (unified control)', () => {
     expect(screen.getByTestId('org-switcher-trigger').getAttribute('data-scope')).toBe('org');
   });
 
+  it('keeps the org name in the mobile top bar, truncated rather than hidden (#9028)', () => {
+    stubLocation('/devices');
+    render(<OrgSwitcher />);
+    const label = screen.getByTestId('org-switcher-label');
+    expect(label.className).not.toMatch(/(^|\s)hidden(\s|$)/);
+    expect(label.className).toContain('truncate');
+  });
+
   it('label shows the selection placeholder on a transient null (not fleet view)', () => {
     stubLocation('/devices');
     mockStoreState.currentOrgId = null;

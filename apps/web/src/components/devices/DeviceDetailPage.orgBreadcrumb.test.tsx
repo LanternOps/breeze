@@ -154,6 +154,13 @@ describe('Devices crumb (ui-flow A4)', () => {
     expect(crumb).toHaveAttribute('aria-description', text);
   });
 
+  it('gives crumb links a 32px tap height below md (#9028)', async () => {
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect((await screen.findByRole('link', { name: 'Devices' })).className).toContain('max-md:min-h-[32px]');
+    expect(screen.getByRole('link', { name: 'Acme Corp' }).className).toContain('max-md:min-h-[32px]');
+  });
+
   it('gives the Devices crumb no tooltip when the scopes match (#9027)', async () => {
     useOrgStore.setState({ currentOrgId: 'org-42', allOrgs: false } as never);
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);

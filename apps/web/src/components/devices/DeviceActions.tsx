@@ -27,6 +27,7 @@ import RemoveDeviceDialog from "./RemoveDeviceDialog";
 import { DelegateToOperatorButton } from "../aiOperator/DelegateToOperatorButton";
 import { isInMaintenance } from "../../lib/maintenanceResource";
 import { useCanMoveDeviceOrg } from "@/lib/moveOrgCapability";
+import { useMediaQuery } from "@/lib/useMediaQuery";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -274,13 +275,25 @@ function DropdownRoot({
   );
 }
 
-function DropdownPopup({ children }: { children: ReactNode }) {
+function DropdownPopup({
+  children,
+  className = "absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg",
+  testId,
+  label,
+}: {
+  children: ReactNode;
+  className?: string;
+  testId?: string;
+  label?: string;
+}) {
   const { open, listRef } = useContext(DropdownContext);
   if (!open) return null;
   return (
     <div
       ref={listRef}
       role="menu"
+      aria-label={label}
+      data-testid={testId}
       // aria-disabled items stay focusable so their reason (title) is
       // reachable by keyboard; their activation is swallowed here.
       onClickCapture={(e) => {
@@ -289,7 +302,7 @@ function DropdownPopup({ children }: { children: ReactNode }) {
           e.stopPropagation();
         }
       }}
-      className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border bg-card shadow-lg"
+      className={className}
     >
       {children}
     </div>
@@ -318,6 +331,8 @@ export default function DeviceActions({
   const [loading, setLoading] = useState(false);
   const offlineReasonId = useId();
   const remoteToolsReasonId = useId();
+  // #9028: at phone width the header keeps one primary plus an "Actions" sheet.
+  const isPhone = useMediaQuery("(max-width: 767px)");
 
   // NOTE: `online` gates BOTH live-session buttons (correctly) and queued
   // commands (more strictly than the API requires) — see the category note at
@@ -640,19 +655,236 @@ export default function DeviceActions({
   const remoteToolsUnavailable =
     !online || device.remoteAccessPolicy?.remoteTools === false;
 
+  const reasonSpans = (
+    <>
+      {offlineTitle && (
+        <span id={offlineReasonId} className="sr-only">
+          {offlineTitle}
+        </span>
+      )}
+      {remoteToolsTitle && remoteToolsTitle !== offlineTitle && (
+        <span id={remoteToolsReasonId} className="sr-only">
+          {remoteToolsTitle}
+        </span>
+      )}
+    </>
+  );
+
+  // #9028: phone width — the same primary rule, then one "Actions" button that
+  // opens a bottom sheet listing every other header action. A disabled item
+  // shows its reason as a visible second line (no hover on touch screens).
+  const renderPhoneRow = () => {
+    const sheetItem = (opts: {
+      action: string;
+      label: string;
+      icon: ReactNode;
+      reason?: string;
+      tone?: "warning" | "destructive";
+      testId?: string;
+    }) => (
+      <button
+        key={opts.action}
+        type="button"
+        role="menuitem"
+        tabIndex={-1}
+        data-testid={opts.testId}
+        aria-disabled={opts.reason ? true : undefined}
+        onClick={() => {
+          if (!opts.reason) void handleAction(opts.action);
+        }}
+        className={`flex min-h-11 w-full items-start gap-3 px-4 py-2.5 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:text-muted-foreground aria-disabled:hover:bg-transparent ${
+          opts.tone === "destructive"
+            ? "text-destructive"
+            : opts.tone === "warning"
+              ? "text-warning"
+              : ""
+        }`}
+      >
+        <span className="mt-0.5 shrink-0" aria-hidden="true">
+          {opts.icon}
+        </span>
+        <span className="min-w-0">
+          <span className="block">{opts.label}</span>
+          {opts.reason && <span className="block text-xs text-muted-foreground">{opts.reason}</span>}
+        </span>
+      </button>
+    );
+    const queuedReason = online ? undefined : offlineTitle;
+    return (
+      <div data-testid="device-header-actions" className="flex w-full items-center gap-2">
+        {reasonSpans}
+        {showWake ? (
+          <button
+            type="button"
+            onClick={() => {
+              if (!loading) void handleAction("wake");
+            }}
+            aria-disabled={loading || undefined}
+            title={t("deviceActions.sendAWakeOnLanPacket")}
+            className={`${FILLED_BUTTON} flex-1 justify-center`}
+          >
+            <Zap className="h-4 w-4" aria-hidden="true" />
+            {t("deviceActions.wake")}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              if (online && !loading) void handleAction("run-script");
+            }}
+            aria-disabled={!online || loading ? true : undefined}
+            title={offlineTitle}
+            aria-describedby={offlineTitle ? offlineReasonId : undefined}
+            className={`${online ? FILLED_BUTTON : OUTLINE_BUTTON} flex-1 justify-center`}
+          >
+            <Play className="h-4 w-4" aria-hidden="true" />
+            {t("deviceActions.runScript")}
+          </button>
+        )}
+        <DropdownRoot open={menuOpen} onClose={closeMenus}>
+          <button
+            type="button"
+            ref={moreTriggerRef}
+            data-testid="device-actions-sheet-trigger"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => {
+              if (loading) return;
+              setMenuOpen(!menuOpen);
+            }}
+            aria-disabled={loading ? true : undefined}
+            className={OUTLINE_BUTTON}
+          >
+            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+            {t("common:labels.actions")}
+          </button>
+          {menuOpen && (
+            <div
+              aria-hidden="true"
+              className="fixed inset-0 z-40 bg-background/60"
+              onClick={closeMenus}
+            />
+          )}
+          <DropdownPopup
+            testId="device-actions-sheet"
+            label={t("common:labels.actions")}
+            className="fixed inset-x-0 bottom-0 z-50 max-h-[75vh] overflow-y-auto rounded-t-xl border-t bg-card pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-lg"
+          >
+            {showWake &&
+              sheetItem({
+                action: "run-script",
+                label: t("deviceActions.runScript"),
+                icon: <Play className="h-4 w-4" />,
+                reason: queuedReason,
+              })}
+            <ConnectDesktopButton
+              deviceId={device.id}
+              compact
+              disabled={!online}
+              disabledTitle={offlineTitle}
+              isHeadless={device.isHeadless}
+              desktopAccess={device.desktopAccess}
+              remoteAccessPolicy={device.remoteAccessPolicy}
+              helperLifecycleMode={device.helperLifecycleMode}
+            />
+            {canUseRemoteTools &&
+              sheetItem({
+                action: "remote-tools",
+                label: t("deviceActions.remoteTools"),
+                icon: <Wrench className="h-4 w-4" />,
+                reason: remoteToolsUnavailable ? remoteToolsTitle : undefined,
+              })}
+            <DelegateToOperatorButton
+              orgId={device.orgId}
+              deviceId={device.id}
+              deviceLabel={device.displayName || device.hostname}
+              orgLabel={device.orgName}
+              source={{ kind: "device", id: device.id }}
+              className="flex min-h-11 w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-muted"
+            />
+            <hr className="my-1" />
+            {sheetItem({
+              action: "reboot",
+              label: t("deviceActions.reboot"),
+              icon: <RotateCcw className="h-4 w-4" />,
+              reason: queuedReason,
+            })}
+            {device.os === "windows" &&
+              sheetItem({
+                action: "reboot_safe_mode",
+                label: t("deviceActions.rebootToSafeMode"),
+                icon: <Shield className="h-4 w-4" />,
+                reason: queuedReason,
+                tone: "warning",
+              })}
+            {sheetItem({
+              action: "shutdown",
+              label: t("deviceActions.shutdown"),
+              icon: <Power className="h-4 w-4" />,
+              reason: queuedReason,
+              tone: "destructive",
+            })}
+            {sheetItem({
+              action: "refresh",
+              label: t("deviceActions.refresh"),
+              icon: <RefreshCw className="h-4 w-4" />,
+              reason: queuedReason,
+            })}
+            {sheetItem({
+              action: "maintenance",
+              label: isInMaintenance(device)
+                ? t("deviceActions.exitMaintenance")
+                : t("deviceActions.enterMaintenance"),
+              icon: <Shield className="h-4 w-4" />,
+            })}
+            <hr className="my-1" />
+            {sheetItem({
+              action: "deploy-software",
+              label: t("deviceActions.deploySoftware"),
+              icon: <Package className="h-4 w-4" />,
+            })}
+            {device.os === "macos" &&
+              sheetItem({
+                action: "install-homebrew",
+                label: t("deviceActions.installHomebrew"),
+                icon: <Beer className="h-4 w-4" />,
+                testId: "device-install-homebrew",
+              })}
+            {sheetItem({
+              action: "clear-sessions",
+              label: t("deviceActions.clearSessions"),
+              icon: <XCircle className="h-4 w-4" />,
+            })}
+            {sheetItem({
+              action: "change-site",
+              label: t("deviceActions.changeSite"),
+              icon: <MapPin className="h-4 w-4" />,
+            })}
+            {canMoveOrg &&
+              sheetItem({
+                action: "move-org",
+                label: t("deviceActions.moveOrg"),
+                icon: <ArrowRightLeft className="h-4 w-4" />,
+                testId: "device-action-move-org",
+              })}
+            {sheetItem({
+              action: "settings",
+              label: t("deviceActions.deviceSettings"),
+              icon: <Settings className="h-4 w-4" />,
+            })}
+            <hr className="my-1" />
+            {removeOrRestoreMenuItems}
+          </DropdownPopup>
+        </DropdownRoot>
+      </div>
+    );
+  };
+
   return (
     <>
+      {isPhone ? renderPhoneRow() : (
       <div data-testid="device-header-actions" className="flex flex-wrap items-center gap-2">
-        {offlineTitle && (
-          <span id={offlineReasonId} className="sr-only">
-            {offlineTitle}
-          </span>
-        )}
-        {remoteToolsTitle && remoteToolsTitle !== offlineTitle && (
-          <span id={remoteToolsReasonId} className="sr-only">
-            {remoteToolsTitle}
-          </span>
-        )}
+        {reasonSpans}
         {/* When the device is offline, Wake is the one action that matters —
             promote it to the primary header button instead of burying it in the
             Power dropdown, where every other action is disabled anyway. */}
@@ -925,6 +1157,7 @@ export default function DeviceActions({
             </DropdownPopup>
         </DropdownRoot>
       </div>
+      )}
 
       {modalType === "decommission" ? (
         <RemoveDeviceDialog
