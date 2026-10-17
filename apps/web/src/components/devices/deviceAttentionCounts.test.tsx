@@ -58,6 +58,18 @@ describe('fetchDeviceAttentionCounts', () => {
     fetchMock.mockResolvedValue(json({ error: 'nope' }, false, 400));
     await expect(fetchDeviceAttentionCounts(['a'])).rejects.toThrow(/400/);
   });
+
+  // A malformed 200 must read as "unavailable", never as "nothing open".
+  it.each([
+    ['null body', null],
+    ['no counts key', {}],
+    ['counts: null', { counts: null }],
+    ['counts is an array', { counts: [] }],
+    ['an entry that is not an object', { counts: { a: 3 } }],
+  ])('throws on a malformed 200 (%s)', async (_label, payload) => {
+    fetchMock.mockResolvedValue(json(payload));
+    await expect(fetchDeviceAttentionCounts(['a'])).rejects.toThrow(/malformed/);
+  });
 });
 
 describe('loadDeviceAttentionCounts', () => {
@@ -69,8 +81,26 @@ describe('loadDeviceAttentionCounts', () => {
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(requestedIds(0).sort()).toEqual(['a', 'b']);
-    expect(Object.keys(first)).toEqual(['a']);
-    expect(second.b!.tickets).toBe(1);
+    expect(Object.keys(first.counts)).toEqual(['a']);
+    expect(second.counts.b!.tickets).toBe(1);
+    expect(second.failed.size).toBe(0);
+  });
+
+  it('keeps the chunks that succeeded when one of several requests fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let call = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      call += 1;
+      if (call === 2) return json({}, false, 503);
+      const ids = new URL(url, 'http://x').searchParams.get('ids')!.split(',');
+      return json({ counts: Object.fromEntries(ids.map((id) => [id, { alerts: zeroAlerts, tickets: 1 }])) });
+    });
+    const ids = Array.from({ length: 150 }, (_, i) => `id-${i}`);
+    const { counts, failed } = await loadDeviceAttentionCounts(ids);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(failed.size).toBe(50);
+    expect(Object.keys(counts)).toHaveLength(100);
+    for (const id of failed) expect(counts[id]).toBeUndefined();
   });
 
   it('splits more than 100 ids into requests of at most 100', async () => {
@@ -106,12 +136,26 @@ describe('useDeviceAttentionCounts', () => {
     expect(requestedIds(1)).toEqual(['c']);
   });
 
-  it('does not fetch while disabled', async () => {
+  it('does not fetch while disabled, then fetches once enabled', async () => {
     answerWith(() => null);
-    const { result } = renderHook(() => useDeviceAttentionCounts(['a'], false));
+    const { result, rerender } = renderHook(({ enabled }) => useDeviceAttentionCounts(['a'], enabled), {
+      initialProps: { enabled: false },
+    });
     await new Promise((r) => setTimeout(r, 300));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.current('a')).toEqual({ status: 'loading' });
+
+    // Positive control: the same hook does fetch once the gate opens.
+    rerender({ enabled: true });
+    await waitFor(() => expect(result.current('a')).toEqual({ status: 'ready', counts: null }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads a malformed 200 as unavailable, not as nothing open', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockResolvedValue(json({ error: 'proxy page' }));
+    const { result } = renderHook(() => useDeviceAttentionCounts(['a'], true));
+    await waitFor(() => expect(result.current('a')).toEqual({ status: 'error' }));
   });
 
   it('marks ids as errored and warns once on failure, without throwing', async () => {

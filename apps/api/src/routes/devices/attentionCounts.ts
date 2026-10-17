@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { db } from '../../db';
-import { alerts, devices, tickets } from '../../db/schema';
+import { alerts, devices, tickets, type alertSeverityEnum } from '../../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../../middleware/auth';
 import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { PG_UUID_REGEX } from '../../utils/uuid';
@@ -31,8 +31,10 @@ attentionCountsRoutes.use('*', authMiddleware);
 
 export const MAX_ATTENTION_IDS = 100;
 
-const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
-type Severity = (typeof SEVERITIES)[number];
+// Tied to the DB enum: adding a severity there fails typecheck here (the
+// Record in emptyCounts must name every value) instead of silently dropping
+// those alerts from the column.
+type Severity = (typeof alertSeverityEnum.enumValues)[number];
 
 export type DeviceAttentionCounts = {
   alerts: Record<Severity, number>;
@@ -46,10 +48,6 @@ const countExpr = sql<number>`count(*)`;
 
 function emptyCounts(): DeviceAttentionCounts {
   return { alerts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, tickets: 0 };
-}
-
-function isSeverity(value: unknown): value is Severity {
-  return typeof value === 'string' && (SEVERITIES as readonly string[]).includes(value);
 }
 
 /** Parse `ids`: comma-separated, trimmed, empties dropped, deduped (first-seen order). */
@@ -122,7 +120,9 @@ attentionCountsRoutes.get(
 
     for (const row of alertRows) {
       const n = Number(row.count);
-      if (!row.deviceId || !isSeverity(row.severity) || !(n > 0)) continue;
+      // device_id is nullable on alerts; the inArray filter already excludes
+      // NULLs, so this guard only narrows the type.
+      if (!row.deviceId || !(n > 0)) continue;
       entryFor(row.deviceId).alerts[row.severity] += n;
     }
     for (const row of ticketRows) {

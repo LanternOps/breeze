@@ -27,6 +27,7 @@ const CRIT = '11111111-1111-4111-8111-111111111111';
 const QUIET = '22222222-2222-4222-8222-222222222222';
 const TICKETS_ONLY = '33333333-3333-4333-8333-333333333333';
 const NETWORK = '44444444-4444-4444-8444-444444444444';
+const MANUAL = '66666666-6666-4666-8666-666666666666';
 
 const zeroAlerts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
 
@@ -159,12 +160,14 @@ describe('DeviceList — Attention column (#9038)', () => {
     expect(ids).toHaveLength(10);
   });
 
-  it('does not ask for network rows', async () => {
+  it('does not ask for network or manual rows', async () => {
     respondWithCounts();
     const network = device(NETWORK, 'printer', { deviceClass: 'network' } as Partial<Device>);
-    render(<DeviceList devices={[...devices, network]} pageSize={50} />);
+    const manual = device(MANUAL, 'spare-laptop', { deviceClass: 'manual' } as Partial<Device>);
+    render(<DeviceList devices={[...devices, network, manual]} pageSize={50} />);
     await waitFor(() => expect(attentionCalls()).toHaveLength(1));
     const ids = new URL(attentionCalls()[0]![0] as string, 'http://x').searchParams.get('ids')!.split(',');
-    expect(ids).not.toContain(NETWORK);
+    // Positive control: the agent rows are requested.
+    expect(ids.sort()).toEqual([CRIT, QUIET, TICKETS_ONLY].sort());
   });
 });

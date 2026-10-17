@@ -166,11 +166,32 @@ describe('GET /devices/attention-counts', () => {
     expect(ticketWhere.conditions).toEqual(
       expect.arrayContaining([
         { type: 'inArray', left: 'tickets.deviceId', right: [D1, D2] },
+        // same device-list scope as the alert statement
+        {
+          type: 'and',
+          conditions: [
+            { type: 'orgCondition', col: 'devices.orgId' },
+            { type: 'inArray', left: 'devices.siteId', right: ['site-allowed'] },
+          ],
+        },
         { type: 'isNull', column: 'tickets.deletedAt' },
         { type: 'inArray', left: 'tickets.status', right: ['new', 'open', 'pending', 'on_hold'] },
       ]),
     );
+    // tickets carry no topology site, so no topology gate on that statement
+    expect(ticketWhere.conditions.some((c: { type: string }) => c.type === 'or')).toBe(false);
     expect(ticketChain.groupBy).toHaveBeenCalledWith('tickets.deviceId');
+  });
+
+  it('applies no site narrowing or topology gate for an unrestricted caller', async () => {
+    queueSelects([], []);
+    await app.request(`/devices/attention-counts?ids=${D1}`);
+    const alertWhere = selectMock.mock.results[0]!.value.where.mock.calls[0]![0];
+    expect(alertWhere.conditions).toContainEqual({
+      type: 'and',
+      conditions: [{ type: 'orgCondition', col: 'devices.orgId' }],
+    });
+    expect(alertWhere.conditions.some((c: { type: string }) => c.type === 'or')).toBe(false);
   });
 
   it('returns 400 above 100 ids without querying', async () => {

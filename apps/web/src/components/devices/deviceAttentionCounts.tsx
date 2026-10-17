@@ -47,15 +47,24 @@ function toCount(value: unknown): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-function normalizeEntry(raw: unknown): DeviceAttention | null {
-  if (!raw || typeof raw !== "object") return null;
-  const record = raw as { alerts?: Record<string, unknown>; tickets?: unknown };
-  const alerts = {} as Record<AttentionSeverity, number>;
-  for (const sev of ATTENTION_SEVERITIES) alerts[sev] = toCount(record.alerts?.[sev]);
-  return { alerts, tickets: toCount(record.tickets) };
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-/** One request for at most {@link MAX_ATTENTION_IDS_PER_REQUEST} ids. Throws on a non-OK response. */
+function normalizeEntry(raw: unknown): DeviceAttention | null {
+  if (!isPlainObject(raw)) return null;
+  const rawAlerts = isPlainObject(raw.alerts) ? raw.alerts : {};
+  const alerts = {} as Record<AttentionSeverity, number>;
+  for (const sev of ATTENTION_SEVERITIES) alerts[sev] = toCount(rawAlerts[sev]);
+  return { alerts, tickets: toCount(raw.tickets) };
+}
+
+/**
+ * One request for at most {@link MAX_ATTENTION_IDS_PER_REQUEST} ids. Throws on
+ * a non-OK response AND on a 200 whose body is not the expected shape: a
+ * malformed body must read as "unavailable", never as "nothing open" — a
+ * false all-clear on a triage column is worse than a missing badge.
+ */
 export async function fetchDeviceAttentionCounts(
   ids: readonly string[],
 ): Promise<Record<string, DeviceAttention>> {
@@ -64,19 +73,32 @@ export async function fetchDeviceAttentionCounts(
   if (!response.ok) {
     throw new Error(`attention-counts request failed: HTTP ${response.status}`);
   }
-  const body = (await response.json()) as { counts?: Record<string, unknown> } | null;
+  const body: unknown = await response.json();
+  if (!isPlainObject(body) || !isPlainObject(body.counts)) {
+    throw new Error("attention-counts: malformed response body");
+  }
   const out: Record<string, DeviceAttention> = {};
-  for (const [id, raw] of Object.entries(body?.counts ?? {})) {
+  for (const [id, raw] of Object.entries(body.counts)) {
     const entry = normalizeEntry(raw);
-    if (entry) out[id] = entry;
+    if (!entry) throw new Error(`attention-counts: malformed entry for ${id}`);
+    out[id] = entry;
   }
   return out;
 }
 
+/**
+ * `counts` holds the entries with something open (ids with nothing open get
+ * no key); `failed` lists the ids whose request failed. Never rejects, so a
+ * caller spanning several ≤100-id requests keeps the ones that succeeded.
+ */
+export type AttentionLoadResult = {
+  counts: Record<string, DeviceAttention>;
+  failed: ReadonlySet<string>;
+};
+
 type Waiter = {
   ids: readonly string[];
-  resolve: (counts: Record<string, DeviceAttention>) => void;
-  reject: (error: unknown) => void;
+  resolve: (result: AttentionLoadResult) => void;
 };
 
 let pendingIds = new Set<string>();
@@ -109,29 +131,33 @@ async function flushPending(): Promise<void> {
   });
   // One warning per failed load, not per row or per card. The cells render a
   // quiet dash — a missing badge is not worth a toast.
-  if (firstError) console.warn("[devices] attention counts unavailable", firstError);
+  if (firstError) {
+    console.warn(
+      `[devices] attention counts unavailable for ${failedIds.size} device(s)`,
+      firstError,
+    );
+  }
 
   for (const waiter of waiters) {
-    if (waiter.ids.some((id) => failedIds.has(id))) {
-      waiter.reject(firstError);
-      continue;
+    const counts: Record<string, DeviceAttention> = {};
+    const failed = new Set<string>();
+    for (const id of waiter.ids) {
+      if (failedIds.has(id)) failed.add(id);
+      else if (merged[id]) counts[id] = merged[id];
     }
-    const own: Record<string, DeviceAttention> = {};
-    for (const id of waiter.ids) if (merged[id]) own[id] = merged[id];
-    waiter.resolve(own);
+    waiter.resolve({ counts, failed });
   }
 }
 
 /**
  * Coalesced, chunked load: calls landing within a short window share one id
- * set, fetched as ≤100-id requests. Resolves with the entries for `ids` that
- * have something open (ids with nothing open get no key).
+ * set, fetched as ≤100-id requests. See {@link AttentionLoadResult}.
  */
-export function loadDeviceAttentionCounts(ids: readonly string[]): Promise<Record<string, DeviceAttention>> {
-  if (ids.length === 0) return Promise.resolve({});
-  return new Promise((resolve, reject) => {
+export function loadDeviceAttentionCounts(ids: readonly string[]): Promise<AttentionLoadResult> {
+  if (ids.length === 0) return Promise.resolve({ counts: {}, failed: new Set() });
+  return new Promise((resolve) => {
     for (const id of ids) pendingIds.add(id);
-    pendingWaiters.push({ ids, resolve, reject });
+    pendingWaiters.push({ ids, resolve });
     if (flushTimer === null) {
       flushTimer = setTimeout(() => void flushPending(), COALESCE_WINDOW_MS);
     }
@@ -177,22 +203,16 @@ export function useDeviceAttentionCounts(ids: readonly string[], enabled: boolea
         for (const id of missing) next.delete(id);
         return next;
       });
-      loadDeviceAttentionCounts(missing)
-        .then((counts) => {
-          if (!mounted.current) return;
-          setCache((prev) => {
-            const next = { ...prev };
-            for (const id of missing) next[id] = counts[id] ?? null;
-            return next;
-          });
-        })
-        .catch(() => {
-          if (!mounted.current) return;
-          setFailed((prev) => new Set([...prev, ...missing]));
-        })
-        .finally(() => {
-          for (const id of missing) inFlight.current.delete(id);
+      void loadDeviceAttentionCounts(missing).then(({ counts, failed: failedNow }) => {
+        for (const id of missing) inFlight.current.delete(id);
+        if (!mounted.current) return;
+        setCache((prev) => {
+          const next = { ...prev };
+          for (const id of missing) if (!failedNow.has(id)) next[id] = counts[id] ?? null;
+          return next;
         });
+        if (failedNow.size > 0) setFailed((prev) => new Set([...prev, ...failedNow]));
+      });
     }, ATTENTION_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [idsKey, enabled]);

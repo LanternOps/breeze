@@ -86,9 +86,18 @@ describe('DeviceCard — attention pills (#9038)', () => {
     expect(attentionCalls()).toHaveLength(1);
   });
 
-  it('does not ask for a network card', async () => {
-    render(<DeviceCard device={{ ...base, id: 'net-1', deviceClass: 'network' } as Device} />);
-    await new Promise((r) => setTimeout(r, 300));
-    expect(attentionCalls()).toHaveLength(0);
+  it('does not ask for network or manual cards', async () => {
+    render(
+      <>
+        <DeviceCard device={base} />
+        <DeviceCard device={{ ...base, id: 'net-1', deviceClass: 'network' } as Device} />
+        <DeviceCard device={{ ...base, id: 'manual-1', deviceClass: 'manual' } as Device} />
+      </>,
+    );
+    // Positive control: the agent card's request went out and rendered.
+    await screen.findByTestId('device-device-a-attention-alerts');
+    expect(attentionCalls()).toHaveLength(1);
+    const ids = new URL(attentionCalls()[0]![0] as string, 'http://x').searchParams.get('ids')!.split(',');
+    expect(ids).toEqual(['device-a']);
   });
 });
