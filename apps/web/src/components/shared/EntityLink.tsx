@@ -19,11 +19,36 @@ export function entityHref(kind: EntityKind, id: string, hash?: string): string 
   return `${base}#${hash.startsWith('#') ? hash.slice(1) : hash}`;
 }
 
+/**
+ * Text colour of the link. Colour is reserved for state, so neither tone
+ * changes on hover — only the underline does. `primary` for the record a row
+ * is about (device hostname, ticket), `muted` for secondary context (org and
+ * site cells, metadata lines).
+ */
+export type EntityLinkTone = 'primary' | 'muted';
+
+const TONE_CLASS: Record<EntityLinkTone, string> = {
+  primary: 'text-foreground',
+  muted: 'text-muted-foreground',
+};
+
+// #9033: a quiet, always-visible underline (token colour) so a link inside a
+// cursor-pointer row is distinguishable from plain text at rest; hover/focus
+// make it solid. inline-flex + min-h keeps a 24px target. The name sits in a
+// truncating inner span so a link in a narrow cell still ellipsizes (an
+// overflowing inline-flex box would otherwise be swallowed whole by the
+// parent's ellipsis).
+const LINK_CLASS =
+  'inline-flex max-w-full min-h-[24px] items-center rounded-sm underline underline-offset-4 decoration-border ' +
+  'hover:decoration-current focus-visible:decoration-current focus-visible:outline-none ' +
+  'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
+
 export interface EntityLinkProps {
   kind: EntityKind;
   id: string;
   name: string;
   hash?: string;
+  tone?: EntityLinkTone;
   className?: string;
 }
 
@@ -38,10 +63,10 @@ export interface EntityLinkProps {
  *
  * An empty `id` (the '' sentinel for "no site/org") renders the name as text.
  */
-export function EntityLink({ kind, id, name, hash, className }: EntityLinkProps): JSX.Element {
+export function EntityLink({ kind, id, name, hash, tone = 'primary', className }: EntityLinkProps): JSX.Element {
   // No id, or no name to show: plain text, never an empty/dead tab stop.
   if (id === '' || name === '') {
-    return <span className={className}>{name}</span>;
+    return <span className={cn(TONE_CLASS[tone], className)}>{name}</span>;
   }
 
   const href = entityHref(kind, id, hash);
@@ -57,10 +82,10 @@ export function EntityLink({ kind, id, name, hash, className }: EntityLinkProps)
     <a
       href={href}
       data-testid={`${kind}-record-link`}
-      className={cn('hover:underline', className)}
+      className={cn(LINK_CLASS, TONE_CLASS[tone], className)}
       onClick={handleClick}
     >
-      {name}
+      <span className="min-w-0 truncate">{name}</span>
     </a>
   );
 }

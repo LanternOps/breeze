@@ -867,8 +867,8 @@ export default function DeviceDetails({
                   {t("deviceDetails.agentV")}
                   {device.agentVersion}
                 </span>
-                <EntityLink kind="org" id={device.orgId} name={device.orgName} />
-                <EntityLink kind="site" id={device.siteId} name={device.siteName} />
+                <EntityLink kind="org" id={device.orgId} name={device.orgName} tone="muted" />
+                <EntityLink kind="site" id={device.siteId} name={device.siteName} tone="muted" />
               </div>
             </div>
           </div>

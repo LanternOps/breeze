@@ -319,6 +319,8 @@ export function DeviceAttentionPills({
             id={deviceId}
             hash="alerts"
             name={severityCountLabel(t, top, counts.alerts[top])}
+            // The pill carries the severity colour and the height (#9033).
+            className="min-h-0 text-inherit"
           />
         </span>
       )}
@@ -332,6 +334,7 @@ export function DeviceAttentionPills({
             id={deviceId}
             hash="tickets"
             name={t("deviceList.attention.tickets", { count: tickets })}
+            className="min-h-0 text-inherit"
           />
         </span>
       )}

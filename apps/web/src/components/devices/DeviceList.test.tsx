@@ -386,7 +386,9 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
   // Hostnames of rendered rows, in DOM order. Each fixture uses a unique
   // hostname so order assertions read naturally.
   const rowOrder = (container: HTMLElement) =>
-    Array.from(container.querySelectorAll('tbody tr td:nth-child(2) span')).map(el => el.textContent);
+    // The hostname cell's name span (an EntityLink nests its own label span
+    // inside it since #9033, so a bare `td span` would count each name twice).
+    Array.from(container.querySelectorAll('tbody tr td:nth-child(2) > div > span:first-child')).map(el => el.textContent);
 
   const clickHeader = (title: string) => fireEvent.click(screen.getByTitle(title));
 
@@ -531,7 +533,7 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
 
     clickHeader('Sort by agent version');
     // agentVersion was stored first, so it renders as the first data column.
-    const hostCol = Array.from(container.querySelectorAll('tbody tr td:nth-child(3) span')).map(el => el.textContent);
+    const hostCol = Array.from(container.querySelectorAll('tbody tr td:nth-child(3) > div > span:first-child')).map(el => el.textContent);
     expect(hostCol).toEqual(['host-nine', 'host-ten']);
   });
 

@@ -153,7 +153,7 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
               </span>
               <TicketTypeChip type={ticket.ticketType} testId={`ticket-type-chip-${ticket.id}`} />
               {!hideOrg && ticket.orgName && (
-                <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName} className="truncate" />
+                <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName} tone="muted" />
               )}
               <span className="ml-auto shrink-0 flex items-center gap-2">
                 <SlaChip ticket={ticket} />

@@ -100,7 +100,64 @@ describe('EntityLink', () => {
   });
 
   it('merges className', () => {
-    render(<EntityLink kind="org" id="o1" name="Acme" className="block truncate" />);
-    expect(screen.getByTestId('org-record-link')).toHaveClass('hover:underline', 'block', 'truncate');
+    render(<EntityLink kind="org" id="o1" name="Acme" className="font-medium" />);
+    expect(screen.getByTestId('org-record-link')).toHaveClass('underline', 'font-medium');
+  });
+
+  // #9033: a link inside a cursor-pointer row needs a visible rest affordance,
+  // not just hover:underline.
+  it('has a quiet underline at rest and a solid one on hover/focus', () => {
+    render(<EntityLink kind="device" id="d1" name="web-01" />);
+    const link = screen.getByTestId('device-record-link');
+    expect(link).toHaveClass(
+      'underline',
+      'underline-offset-4',
+      'decoration-border',
+      'hover:decoration-current',
+      'focus-visible:decoration-current',
+    );
+  });
+
+  it('shows a focus-visible ring', () => {
+    render(<EntityLink kind="device" id="d1" name="web-01" />);
+    expect(screen.getByTestId('device-record-link')).toHaveClass(
+      'focus-visible:ring-2',
+      'focus-visible:ring-ring',
+      'focus-visible:ring-offset-2',
+      'rounded-sm',
+    );
+  });
+
+  it('keeps a 24px minimum target', () => {
+    render(<EntityLink kind="device" id="d1" name="web-01" />);
+    expect(screen.getByTestId('device-record-link')).toHaveClass('inline-flex', 'items-center', 'min-h-[24px]');
+  });
+
+  it('defaults to the primary (foreground) tone and does not change colour on hover', () => {
+    render(<EntityLink kind="device" id="d1" name="web-01" />);
+    const link = screen.getByTestId('device-record-link');
+    expect(link).toHaveClass('text-foreground');
+    expect(link.className).not.toMatch(/hover:text-/);
+  });
+
+  it('maps tone="muted" to the muted colour', () => {
+    render(<EntityLink kind="org" id="o1" name="Acme" tone="muted" />);
+    const link = screen.getByTestId('org-record-link');
+    expect(link).toHaveClass('text-muted-foreground');
+    expect(link).not.toHaveClass('text-foreground');
+  });
+
+  it('truncates the name inside the link so a narrow cell still ellipsizes', () => {
+    render(<EntityLink kind="org" id="o1" name="A very long organization name" />);
+    const link = screen.getByTestId('org-record-link');
+    expect(link).toHaveClass('max-w-full');
+    const label = link.firstElementChild as HTMLElement;
+    expect(label).toHaveClass('truncate');
+    expect(label).toHaveTextContent('A very long organization name');
+  });
+
+  it('keeps the tone on the plain-text fallback', () => {
+    render(<EntityLink kind="site" id="" name="Unknown Site" tone="muted" />);
+    expect(screen.getByText('Unknown Site')).toHaveClass('text-muted-foreground');
   });
 });

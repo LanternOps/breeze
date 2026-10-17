@@ -206,11 +206,12 @@ export default function AlertsFeed({
                       kind="device"
                       id={alert.deviceId ?? ''}
                       name={alert.deviceHostname || t('states.unknown')}
+                      tone="muted"
                     />
                     {showOrg && alert.orgName && (
                       <>
                         {' · '}
-                        <EntityLink kind="org" id={alert.orgId ?? ''} name={alert.orgName} />
+                        <EntityLink kind="org" id={alert.orgId ?? ''} name={alert.orgName} tone="muted" />
                       </>
                     )}
                   </span>

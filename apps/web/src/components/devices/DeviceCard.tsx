@@ -666,7 +666,7 @@ export default function DeviceCard({
       )}
 
       <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-        <EntityLink kind="site" id={device.siteId} name={device.siteName} />
+        <EntityLink kind="site" id={device.siteId} name={device.siteName} tone="muted" />
         <span>
           {t("deviceCard.lastSeen")}{" "}
           {formatLastSeen(device.lastSeen, effectiveTimezone)}

@@ -1147,11 +1147,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           )}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName ?? ''} className="hover:text-foreground" />
+          <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName ?? ''} tone="muted" />
           {ticket.deviceHostname && (
             <>
               <span>·</span>
-              <EntityLink kind="device" id={ticket.deviceId ?? ''} name={ticket.deviceHostname} className="hover:text-foreground" />
+              <EntityLink kind="device" id={ticket.deviceId ?? ''} name={ticket.deviceHostname} tone="muted" />
             </>
           )}
           {ticket.requesterContactId && (

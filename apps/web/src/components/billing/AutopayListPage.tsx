@@ -35,7 +35,7 @@ export default function AutopayListPage() {
     checked={selected.includes(row.orgId)} disabled={busy || row.enrollment?.status === 'active'}
     onChange={e => setSelected(current => e.target.checked ? [...current, row.orgId] : current.filter(orgId => orgId !== row.orgId))} />;
   const renderClient = (row: AutopayRow, variant: Variant) => <span data-testid={id(variant, `autopay-client-${row.orgId}`)}>
-    <EntityLink kind="org" id={row.orgId} name={row.orgName} hash="billing" className="font-medium text-primary" /></span>;
+    <EntityLink kind="org" id={row.orgId} name={row.orgName} hash="billing" className="font-medium" /></span>;
   const renderStatus = (row: AutopayRow, variant: Variant) => <>
     <span>{t(/* i18n-dynamic */ `autopay.status.${row.status}`)}</span>
     {deliveryFailed(row) && <p role="alert" data-testid={id(variant, `autopay-delivery-${row.orgId}`)} className="mt-1 text-amber-800 dark:text-amber-200">{t('autopay.requestDeliveryFailed')}</p>}

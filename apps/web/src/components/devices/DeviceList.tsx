@@ -1760,7 +1760,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.orgName}>
-            <EntityLink kind="org" id={device.orgId} name={device.orgName} />
+            <EntityLink kind="org" id={device.orgId} name={device.orgName} tone="muted" />
           </span>
         </td>
       ),
@@ -1773,7 +1773,7 @@ export default function DeviceList({
           className="max-w-[160px] px-3 py-3 text-sm text-muted-foreground"
         >
           <span className="block truncate" title={device.siteName}>
-            <EntityLink kind="site" id={device.siteId} name={device.siteName} />
+            <EntityLink kind="site" id={device.siteId} name={device.siteName} tone="muted" />
           </span>
         </td>
       ),

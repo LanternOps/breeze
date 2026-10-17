@@ -470,7 +470,7 @@ export default function OrgOverviewTab({
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {alert.deviceHostname && (
                       <>
-                        <EntityLink kind="device" id={alert.deviceId ?? ''} name={alert.deviceHostname} />
+                        <EntityLink kind="device" id={alert.deviceId ?? ''} name={alert.deviceHostname} tone="muted" />
                         {' · '}
                       </>
                     )}
