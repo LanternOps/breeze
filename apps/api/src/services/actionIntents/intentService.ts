@@ -89,6 +89,12 @@ import {
   type PlanMembershipResult,
 } from '../aiOperator/planApproval';
 import { isSecretBearingTool } from './secretBearingTools';
+import { callerAction, type CallerBackend } from './callerTarget';
+import { requireCallerVerification } from '../callerVerification/gate';
+import { getEffectivePolicy as getCallerVerificationPolicy } from '../callerVerification/policy';
+import {
+  CallerVerificationRequiredError, CallerVerificationValidationError,
+} from '../callerVerification/errors';
 
 /** Statuses the partial `action_intents_org_idem_uniq` index dedupes on
  * (IMPORTANT-4 — migration 2026-07-18-action-intents.sql). Kept as a single
@@ -213,6 +219,14 @@ export interface CreateActionIntentInput {
    * fields. Absent for every non-comms tool, which is why it is optional.
    */
   binding?: { connectionId: string; tenantId: string };
+  /**
+   * Caller verification W05 (#6354): the AI session whose selected Delegant
+   * connection the protected M365 identity tools (`m365_disable_user`,
+   * `m365_reset_password`) would act through. Internal plumbing set by the SDK
+   * pre-tool path only — never a tool argument. Used solely to choose the
+   * backend whose canonical target (tenant + object id) is pinned at creation.
+   */
+  m365SessionId?: string;
   /**
    * P2-2: explicit target device for an intent minted by a DEVICE-LESS run
    * (sweeps). Agent principal only. Becomes `scope_kind='device'`/
@@ -1905,6 +1919,78 @@ export async function createActionIntent(
     userId: requesterId,
   };
 
+  // -------------------------------------------------------------------------
+  // Caller verification W05 (#6354): `m365_reset_password` / `m365_disable_user`
+  // require a fresh, unused caller verification for the CANONICAL target
+  // before an intent (and its approval fan-out) may exist. The target is
+  // resolved once, through one selected Microsoft connection, and pinned
+  // immutably on the insert below. `check` never consumes: the grant is spent
+  // only at release, after the executing claim.
+  //
+  // A live replay of the same request returns the existing intent without
+  // resolving the UPN again or re-checking (its pin is already fixed); a key
+  // owned by a different requester/request is an idempotency conflict.
+  // -------------------------------------------------------------------------
+  const protectedCallerAction = callerAction(input.toolName);
+  let callerTarget: (CallerBackend & { entraOid: string }) | null = null;
+  if (protectedCallerAction) {
+    const [callerReplay] = await withDbAccessContext(dbContext, () => db.select().from(actionIntents).where(and(
+      eq(actionIntents.orgId, orgId),
+      eq(actionIntents.idempotencyKey, idempotencyKey),
+      inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+    )).limit(1));
+    if (callerReplay) {
+      if (callerReplay.requestedByUserId !== requesterId || callerReplay.requestingAgentRunId
+        || callerReplay.actionName !== input.toolName || callerReplay.source !== input.source
+        || callerReplay.argumentDigest !== argumentDigest) {
+        throw new ActionIntentError('Idempotency key already belongs to a different live request', 'idempotency_conflict');
+      }
+      return withDbAccessContext(dbContext, async () => {
+        const rows = await db.select({ id: approvalRequests.id, userId: approvalRequests.userId })
+          .from(approvalRequests).where(eq(approvalRequests.intentId, callerReplay.id));
+        return toSnapshot(callerReplay, rows.map((row) => row.id),
+          rows.find((row) => row.userId === requesterId)?.id ?? null, []);
+      });
+    }
+    const refuseCaller = async (
+      reason: 'technician_mismatch' | 'subject_unmatched' | 'subject_ambiguous' | 'tenant_mismatch',
+    ): Promise<never> => {
+      const policy = await withSystemDbAccessContext(() => getCallerVerificationPolicy(orgId), 'callerVerification.create.policy');
+      throw new CallerVerificationRequiredError({
+        orgId, contactId: null, action: protectedCallerAction,
+        requiredTier: protectedCallerAction === 'reset_password' ? policy.requiredTierResetPassword : policy.requiredTierDisableUser,
+        reason, latest: null,
+      });
+    };
+    // A verified caller authorizes a HUMAN technician's request, never an agent run.
+    if (agentRun || auth.principal.kind === 'ai_agent') await refuseCaller('technician_mismatch');
+    try {
+      const { resolveM365CallerTarget } = await import('../aiToolsM365');
+      callerTarget = await withDbAccessContext(dbContext, () => resolveM365CallerTarget(
+        auth, orgId, typeof input.input.userIdentifier === 'string' ? input.input.userIdentifier : '', input.m365SessionId,
+      ));
+    } catch (error) {
+      if (error instanceof CallerVerificationValidationError) {
+        if (error.code === 'subject_unmatched' || error.code === 'subject_ambiguous' || error.code === 'tenant_mismatch') {
+          await refuseCaller(error.code);
+        }
+        if (error.code === 'connection_not_ready') {
+          throw new ActionIntentError('No usable Microsoft 365 connection for this organization', 'connection_unavailable');
+        }
+      }
+      throw error;
+    }
+    await requireCallerVerification({
+      orgId, action: protectedCallerAction,
+      target: { entraTenantId: callerTarget!.tenantId, entraOid: callerTarget!.entraOid },
+      backendTenantId: callerTarget!.tenantId,
+      technicianUserId: requesterId,
+      // Not consumed by `check`; the id only orders same-intent candidates.
+      intentId: '00000000-0000-0000-0000-000000000000',
+      mode: 'check',
+    });
+  }
+
   // Resolve eligible approvers (org + partner axis, filtered by
   // approvals:decide, excluding the requester — spec §4 step 4 / CRITICAL-2)
   // BEFORE opening the creation transaction below. resolveIntentApprovers
@@ -2170,6 +2256,11 @@ export async function createActionIntent(
           triggerKey: trigger?.key ?? null,
           orgId,
           partnerId: auth.partnerId ?? null,
+          // Caller verification W05: the canonical target pinned at INSERT
+          // (immutable afterwards — action_intents_caller_target_immutable).
+          targetEntraTenantId: callerTarget?.tenantId ?? null,
+          targetEntraOid: callerTarget?.entraOid ?? null,
+          targetConnectionRef: callerTarget?.connectionId ?? null,
           // Agent intents are requester-less by design (wave 3b): the run is
           // the attribution record, never the agent's synthetic user id.
           requestedByUserId: agentRun ? null : requesterId,

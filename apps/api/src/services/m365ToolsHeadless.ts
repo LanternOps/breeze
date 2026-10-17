@@ -11,6 +11,10 @@
  */
 import { m365WriteActionSchema, type M365WriteActionId } from '@breeze/shared/m365';
 import { executeM365WriteActionByOrg } from './m365ControlPlane/writeActionService';
+import { callerAction } from './actionIntents/callerTarget';
+import { buildAuthContextForIntent } from './actionIntents/actorContext';
+import { CallerVerificationValidationError } from './callerVerification/errors';
+import type { CallerVerificationAction } from './callerVerification/types';
 
 /** Thrown when the org's actions connection is missing/rotated/inactive/rate-limited/executor-down at release. */
 export class M365ConnectionUnavailableError extends Error {
@@ -131,6 +135,10 @@ export async function executeM365ToolHeadless(
     throw new Error(`executeM365ToolHeadless: "${actionName}" is not a headless M365 tool`);
   }
   const input = (args ?? {}) as Record<string, unknown>;
+  const protectedAction = callerAction(actionName);
+  if (protectedAction) {
+    return executeProtectedM365Headless(protectedAction, input, orgId, idempotencyKey);
+  }
   const parsed = m365WriteActionSchema.safeParse(buildWriteAction(actionId, input));
   // The type equality is the runtime proof that only the tool's own mutating
   // arm can pass (buildWriteAction stamps it; a probe arm never can).
@@ -156,4 +164,78 @@ export async function executeM365ToolHeadless(
   // at rest in intent.result and revealed once via
   // POST /action-intents/:id/reveal-secret.
   return JSON.stringify(outcome.result);
+}
+
+/**
+ * Caller verification W05 (#6354): headless release of the two protected
+ * identity actions. The intent's PINNED connection decides the backend — a
+ * direct-Graph or Delegant pin is never switched to the control plane (or vice
+ * versa) — and the mutation goes to the pinned object id only. Every backend
+ * runs `prepareCallerDispatch` immediately before its outbound call; a typed
+ * refusal propagates as `CallerVerificationRequiredError` for the worker to
+ * terminalize without retry.
+ *
+ * `intentId` is the release worker's immutable `intent.id` (it is also the
+ * executor idempotency key). Without it the protected action refuses.
+ */
+async function executeProtectedM365Headless(
+  action: CallerVerificationAction,
+  input: Record<string, unknown>,
+  orgId: string,
+  intentId: string | undefined,
+): Promise<string> {
+  // Lazy: aiToolsM365 imports buildWriteAction from this module.
+  const { loadM365MutationContext, m365DisableUserHandler, m365ResetPasswordHandler } = await import('./aiToolsM365');
+  let loaded;
+  try {
+    loaded = await loadM365MutationContext(orgId, action, intentId);
+  } catch (error) {
+    if (error instanceof CallerVerificationValidationError && error.code === 'connection_not_ready') {
+      // The pinned connection is gone/inactive/re-pointed: nothing was sent.
+      throw new M365ConnectionUnavailableError(JSON.stringify({ error: error.message }));
+    }
+    throw error;
+  }
+  const context = { actionIntentId: loaded.intent.id };
+
+  if (loaded.ctx.backend === 'controlPlane') {
+    const reason = typeof input.reason === 'string' ? input.reason : '';
+    const parsed = m365WriteActionSchema.safeParse({
+      type: action === 'disable_user' ? 'm365.user.disable' : 'm365.user.reset_password',
+      oid: loaded.userId,
+      reason,
+    });
+    if (!parsed.success) {
+      return JSON.stringify({ error: 'Invalid M365 action arguments for headless execution.' });
+    }
+    const outcome = await executeM365WriteActionByOrg(orgId, parsed.data, {
+      actionIntentId: loaded.intent.id,
+      idempotencyKey: loaded.intent.id,
+      ...(loaded.intent.requestedByUserId ? { actorId: loaded.intent.requestedByUserId } : {}),
+    });
+    if (!outcome.ok) {
+      if (CONNECTION_UNAVAILABLE_CODES.has(outcome.code)) {
+        throw new M365ConnectionUnavailableError(JSON.stringify({ error: outcome.message }));
+      }
+      return JSON.stringify({ error: outcome.message });
+    }
+    return JSON.stringify(outcome.result);
+  }
+
+  // Direct Graph / Delegant pins dispatch through the same handlers as the
+  // live chat path, under the rebuilt requester (the worker already re-proved
+  // that actor's current authorization). The broker session id is correlation
+  // only — it never creates a step-up or session context.
+  const auth = await buildAuthContextForIntent(loaded.intent);
+  if (!auth) throw new Error('Intent actor unavailable');
+  if (action === 'disable_user') {
+    return m365DisableUserHandler(input, auth, loaded.intent.id, context);
+  }
+  const result = await m365ResetPasswordHandler(input, auth, loaded.intent.id, context);
+  if (result.kind === 'error') return result.llmText;
+  // `action` is set AFTER the spread so the worker's sealer
+  // (sealActionResultSecrets keys on it) always recognises the credential.
+  return JSON.stringify({
+    ...result.secrets, success: true, forceChangeNextSignIn: true, action: 'm365.user.reset_password',
+  });
 }

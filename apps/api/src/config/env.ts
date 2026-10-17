@@ -176,16 +176,28 @@ export function preAssignmentEnrollmentEnabled(): boolean {
   return envFlag('PRE_ASSIGNMENT_ENROLLMENT_ENABLED', false);
 }
 
-// Caller verification (anti-vishing, #6354). W01 ships the backend dark:
-// every caller-verification route returns 404 `feature_disabled` to an
-// AUTHENTICATED caller (auth runs first, so an anonymous request still gets
-// 401 — routerAuthGate.contract.test.ts requires that of every mounted route)
-// and the release gate refuses with `feature_disabled` while this is off. The
-// cross-wave contract is deliberately stricter than envFlag(): ONLY the exact
-// string 'true' enables it — '1' / 'yes' / 'on' / 'TRUE' stay off. Read at
-// CALL time so a test can flip it per-case without vi.resetModules().
+// Caller verification (anti-vishing, #6354). Default ON as of W05: enforcement
+// ships with the link tier (SMS/email links, callback attestation,
+// administrative). Any explicit value other than the exact string 'true'
+// disables it: every caller-verification route returns 404 `feature_disabled`
+// to an AUTHENTICATED caller (auth runs first, so an anonymous request still
+// gets 401 — routerAuthGate.contract.test.ts requires that of every mounted
+// route), the web surface hides, and the release gate refuses protected
+// execution with `feature_disabled`. The cross-wave contract is deliberately
+// stricter than envFlag(): '' / '1' / 'yes' / 'on' / 'TRUE' all mean OFF; only
+// unset or exactly 'true' means ON. Read at CALL time so a test can flip it
+// per-case without vi.resetModules().
 export function callerVerificationEnabled(): boolean {
-  return process.env.CALLER_VERIFICATION_ENABLED === 'true';
+  return (process.env.CALLER_VERIFICATION_ENABLED ?? 'true') === 'true';
+}
+
+// Caller verification workstation tier (bound-workstation prompt through the
+// agent / Breeze Assist). Code is shipped but DARK: default OFF, exact string
+// 'true' only. While off, the workstation method is reported unavailable
+// (`method_disabled`), start() refuses it, and tier 3 is not policy-selectable
+// (max achievable tier is 2). Read at CALL time.
+export function callerVerificationWorkstationEnabled(): boolean {
+  return process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED === 'true';
 }
 
 // #4442 W04 (AI sweeps act mode). A SUB-flag of

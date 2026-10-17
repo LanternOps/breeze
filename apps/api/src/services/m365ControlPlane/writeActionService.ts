@@ -25,6 +25,9 @@ import {
   loadM365CustomerGraphActionsRuntimeConfig,
 } from './writeActionRuntimeConfig';
 import { consumeM365WriteActionBudget } from './writeActionBudget';
+import { prepareCallerDispatch } from '../callerVerification/dispatch';
+import { requireCallerVerification } from '../callerVerification/gate';
+import { CallerVerificationRequiredError } from '../callerVerification/errors';
 
 const PROFILE = 'customer-graph-actions' as const;
 
@@ -123,8 +126,25 @@ function connectionNotReadyState(
 export async function executeM365WriteActionByOrg(
   orgId: string,
   action: M365WriteAction,
-  opts?: { actorId?: string; auditRequest?: RequestLike; idempotencyKey?: string },
+  opts?: { actorId?: string; auditRequest?: RequestLike; idempotencyKey?: string; actionIntentId?: string },
 ): Promise<M365WriteActionServiceResult> {
+  // Caller verification W05 (#6354): the two protected identity actions only
+  // ever dispatch as the release of a durable intent, by pinned object id,
+  // with the intent id as the executor idempotency key. Refused here (before
+  // any DB/budget/executor work) rather than at the guard so a missing intent
+  // or an identifier-only payload can never reach the executor.
+  const protectedAction = action.type === 'm365.user.disable' ? 'disable_user' as const
+    : action.type === 'm365.user.reset_password' ? 'reset_password' as const : null;
+  if (protectedAction) {
+    const oid = 'oid' in action ? action.oid : undefined;
+    if (!opts?.actionIntentId || opts.idempotencyKey !== opts.actionIntentId || !oid
+      || ('userIdentifier' in action && action.userIdentifier !== undefined)) {
+      throw new CallerVerificationRequiredError({
+        orgId, contactId: null, action: protectedAction, requiredTier: 2,
+        reason: !opts?.actionIntentId ? 'no_fresh_verification' : 'subject_unmatched', latest: null,
+      });
+    }
+  }
   if (!isM365GraphActionsEnabledForOrg(orgId)) {
     return {
       ok: false,
@@ -205,6 +225,23 @@ export async function executeM365WriteActionByOrg(
     actionType: action.type,
     actorId: opts?.actorId,
   };
+
+  // Last check before the executor call: pinned intent, consumed grant, both
+  // fences, and the committed dispatch marker — under the subject locks, with
+  // THIS connection row and tenant. A refusal throws (never a generic result).
+  switch (action.type) {
+    case 'm365.user.disable':
+    case 'm365.user.reset_password':
+      await prepareCallerDispatch({
+        orgId, intentId: opts?.actionIntentId,
+        action: action.type === 'm365.user.disable' ? 'disable_user' : 'reset_password',
+        connectionId: ready.id, backendTenantId: ready.tenantId as string,
+        oid: ('oid' in action ? action.oid : undefined) ?? '',
+      }, requireCallerVerification);
+      break;
+    default:
+      break;
+  }
 
   let result: WriteActionResult;
   try {

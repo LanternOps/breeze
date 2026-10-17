@@ -103,7 +103,7 @@ vi.mock('../auditEvents', async (importActual) => {
   };
 });
 
-import { executeM365MailboxReadByOrg, executeM365ReadAction, executeM365ReadActionByOrg } from './readActionService';
+import { executeM365UserLookupForCallerTarget, executeM365MailboxReadByOrg, executeM365ReadAction, executeM365ReadActionByOrg } from './readActionService';
 import { GraphReadExecutorClientError } from './graphReadExecutorClient';
 import type { AuthContext } from '../../middleware/auth';
 import type { RequestLike } from '../auditEvents';
@@ -527,5 +527,56 @@ describe('executeM365ReadActionByOrg (effect-probe entry, #6170)', () => {
       expect.anything(),
       expect.objectContaining({ actorId: ACTOR_ID }),
     );
+  });
+});
+
+describe('executeM365UserLookupForCallerTarget (#6354 W05)', () => {
+  const OID = '77777777-7777-4777-8777-777777777777';
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbMocks.selectResults.length = 0;
+    runtimeMocks.enabled.mockReturnValue(true);
+    runtimeMocks.loadConfig.mockReturnValue(RUNTIME_CONFIG);
+    budgetMocks.consume.mockResolvedValue({ allowed: true });
+    executorMocks.createClient.mockReturnValue({ executeReadAction: executorMocks.executeReadAction });
+  });
+
+  it('looks the identifier up on the pinned-tenant connection (tenant compared case-insensitively) and audits the actor', async () => {
+    dbMocks.selectResults.push([connectionRow()]);
+    executorMocks.executeReadAction.mockResolvedValue({ success: true, kind: 'resource', resource: { id: OID } });
+    const result = await executeM365UserLookupForCallerTarget(ORG_ID, 'alex@example.com', TENANT_ID.toUpperCase(), ACTOR_ID);
+    expect(result).toMatchObject({ ok: true });
+    expect(executorMocks.executeReadAction).toHaveBeenCalledTimes(1);
+    expect(executorMocks.executeReadAction).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: TENANT_ID, action: { type: 'm365.user.get', userIdOrUpn: 'alex@example.com' },
+    }));
+    expect(contextMocks.system).not.toHaveBeenCalled();
+    expect(contextMocks.withCaller).not.toHaveBeenCalled();
+  });
+
+  it('a tenant mismatch makes zero executor calls', async () => {
+    dbMocks.selectResults.push([connectionRow({ tenantId: '99999999-9999-4999-8999-999999999999' })]);
+    const result = await executeM365UserLookupForCallerTarget(ORG_ID, OID, TENANT_ID, ACTOR_ID);
+    expect(result).toMatchObject({ ok: false, code: 'tenant_mismatch' });
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
+    expect(budgetMocks.consume).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an invalid identifier', () => {}, 'not a user!!', 'invalid_subject', false],
+    ['disabled tools', () => { runtimeMocks.enabled.mockReturnValue(false); }, OID, 'tools_disabled', false],
+    ['a missing connection', () => dbMocks.selectResults.push([]), OID, 'connection_not_ready', true],
+    ['a revoked connection', () => dbMocks.selectResults.push([connectionRow({ status: 'revoked' })]), OID, 'connection_not_ready', true],
+    ['another org\'s row', () => dbMocks.selectResults.push([connectionRow({ orgId: 'other-org' })]), OID, 'connection_not_ready', true],
+  ])('%s makes zero executor calls', async (_label, arrange, identifier, code, _db) => {
+    arrange();
+    const result = await executeM365UserLookupForCallerTarget(ORG_ID, identifier as string, TENANT_ID, ACTOR_ID);
+    expect(result).toMatchObject({ ok: false, code });
+    expect(executorMocks.executeReadAction).not.toHaveBeenCalled();
+  });
+
+  it('refuses an invalid identifier before any DB access', async () => {
+    await executeM365UserLookupForCallerTarget(ORG_ID, '', TENANT_ID, ACTOR_ID);
+    expect(dbMocks.selectSpy).not.toHaveBeenCalled();
   });
 });

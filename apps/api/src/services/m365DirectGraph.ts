@@ -27,6 +27,9 @@ import { decryptForColumn } from './secretCrypto';
 import { acquireClientCredentialsToken, isM365TenantId } from './c2cM365';
 import type { DelegantToolName } from './delegantClient';
 import { captureException } from './sentry';
+import { prepareCallerDispatch } from './callerVerification/dispatch';
+import { requireCallerVerification } from './callerVerification/gate';
+import { CallerVerificationValidationError } from './callerVerification/errors';
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
@@ -130,7 +133,10 @@ export interface GetTokenOptions {
   connection?: LegacyDirectConnection | null;
 }
 
-export async function getToken(orgId: string, opts?: GetTokenOptions): Promise<{ token: string } | DirectInvokeError> {
+/** A Graph token plus the exact connection row it was minted from. */
+export interface DirectGraphToken { token: string; connectionId: string; tenantId: string }
+
+export async function getToken(orgId: string, opts?: GetTokenOptions): Promise<DirectGraphToken | DirectInvokeError> {
   const supplied = opts?.connection !== undefined;
   const row = supplied ? opts!.connection! : await loadLegacyDirectConnection(orgId);
   if (!row) {
@@ -151,21 +157,25 @@ export async function getToken(orgId: string, opts?: GetTokenOptions): Promise<{
     return { kind: 'error', code: 'connection_key_error', message: 'Legacy Microsoft 365 connection has no stored client secret.' };
   }
 
-  const cacheKey = `${orgId}:${row.tenantId}:${row.clientId}`;
+  // The stored tenant id must still be a canonical Entra tenant GUID (the
+  // M365TenantId brand acquireClientCredentialsToken requires); fail closed if
+  // not — checked BEFORE the cache so a re-pointed row is never served a token.
+  const tenantId = row.tenantId;
+  if (!tenantId || !isM365TenantId(tenantId)) {
+    return { kind: 'error', code: 'connection_key_error', message: 'Stored Microsoft 365 tenant id is not a valid tenant GUID.' };
+  }
+  // Keyed by the connection row too: caller verification (#6354 W05) pins the
+  // exact connection a mutation dispatches through, and a token minted for a
+  // replaced row must never be reused for its successor.
+  const cacheKey = `${orgId}:${row.id}:${row.tenantId}:${row.clientId}`;
   const cached = tokenCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
-    return { token: cached.token };
+    return { token: cached.token, connectionId: row.id, tenantId };
   }
 
   const secret = decryptForColumn('m365_connections', 'client_secret', row.clientSecret);
   if (!secret) {
     return { kind: 'error', code: 'connection_key_error', message: 'Could not decrypt the stored client secret.' };
-  }
-  // The stored tenant id must still be a canonical Entra tenant GUID (the
-  // M365TenantId brand acquireClientCredentialsToken requires); fail closed if not.
-  const tenantId = row.tenantId;
-  if (!tenantId || !isM365TenantId(tenantId)) {
-    return { kind: 'error', code: 'connection_key_error', message: 'Stored Microsoft 365 tenant id is not a valid tenant GUID.' };
   }
   try {
     const t = await acquireClientCredentialsToken({
@@ -174,7 +184,7 @@ export async function getToken(orgId: string, opts?: GetTokenOptions): Promise<{
       clientSecret: secret,
     });
     setTokenCacheEntry(cacheKey, t.accessToken, t.expiresIn);
-    return { token: t.accessToken };
+    return { token: t.accessToken, connectionId: row.id, tenantId };
   } catch (err) {
     // Reaching here means we didn't have a live cache hit (a hit above
     // returns before ever calling Azure), so any entry still sitting under
@@ -237,17 +247,41 @@ export async function graphFetch(
 }
 
 /**
+ * Caller verification W05 (#6354) options for `invokeDirect`.
+ *  - `actionIntentId`: the released intent a protected mutation executes. The
+ *    two protected tools refuse without it (no PATCH is sent).
+ *  - `expectedConnection`: the connection a target lookup was pinned to at
+ *    intent creation; a token from any other row/tenant refuses before Graph.
+ */
+export interface DirectInvokeOptions {
+  actionIntentId?: string;
+  expectedConnection?: { connectionId: string; tenantId: string };
+}
+
+/**
  * Map a Delegant tool name + params to a direct Graph call. `userId` may be a UPN
  * or an object id (Graph /users/{key} accepts either); sign-in filtering needs
  * the object id, which the handler resolves first via get_user.
+ *
+ * `disable_user` / `reset_user_password` are gated by caller verification: the
+ * pinned intent, its consumed grant and both fences are re-checked and the
+ * dispatch marker committed (`prepareCallerDispatch`) with the SAME connection
+ * row the token came from, immediately before the PATCH. A typed refusal
+ * propagates as a thrown `CallerVerificationRequiredError` — it is never
+ * folded into a generic Graph error result.
  */
 export async function invokeDirect(
   orgId: string,
   toolName: DelegantToolName,
   params: Record<string, unknown>,
+  opts?: DirectInvokeOptions,
 ): Promise<DirectInvokeResult> {
   const tok = await getToken(orgId);
   if ('kind' in tok) return tok; // error result
+  if (opts?.expectedConnection && (tok.connectionId !== opts.expectedConnection.connectionId
+    || tok.tenantId.toLowerCase() !== opts.expectedConnection.tenantId.toLowerCase())) {
+    throw new CallerVerificationValidationError('tenant_mismatch', 'Direct Microsoft connection changed during target lookup');
+  }
   const token = tok.token;
   const userId = typeof params.userId === 'string' ? params.userId : '';
   const groupId = typeof params.groupId === 'string' ? params.groupId : '';
@@ -279,10 +313,18 @@ export async function invokeDirect(
 
     case 'disable_user':
       if (!userId) return { kind: 'error', code: 'bad_request', message: 'userId is required.' };
+      await prepareCallerDispatch({
+        orgId, intentId: opts?.actionIntentId, action: 'disable_user',
+        connectionId: tok.connectionId, backendTenantId: tok.tenantId, oid: userId,
+      }, requireCallerVerification);
       return graphFetch(token, 'PATCH', `/users/${encodeURIComponent(userId)}`, { accountEnabled: false });
 
     case 'reset_user_password': {
       if (!userId) return { kind: 'error', code: 'bad_request', message: 'userId is required.' };
+      await prepareCallerDispatch({
+        orgId, intentId: opts?.actionIntentId, action: 'reset_password',
+        connectionId: tok.connectionId, backendTenantId: tok.tenantId, oid: userId,
+      }, requireCallerVerification);
       const password = generateTempPassword();
       const res = await graphFetch(token, 'PATCH', `/users/${encodeURIComponent(userId)}`, {
         passwordProfile: { forceChangePasswordNextSignIn: true, password },

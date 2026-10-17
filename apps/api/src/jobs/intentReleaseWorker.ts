@@ -36,6 +36,12 @@ import {
 import { enqueueFixWatchPhase1 } from './fixWatchWorker';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import {
+  callerRefusal,
+  callerRefusalFromPayload,
+  CALLER_VERIFICATION_REQUIRED_CODE,
+  type CallerRefusalPayload,
+} from '../services/callerVerification/refusal';
 import { buildApproverAuthContextForIntent } from '../services/actionIntents/actorContext';
 import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
@@ -950,9 +956,16 @@ async function failIntent(
       await markOperationDispatchFailed(intent.id, errorCode);
     }
   }
+  // A typed caller-verification refusal persists its safe, typed payload as
+  // the intent's result (never a message/stack) so the UI can render "verify
+  // the caller"; no other error code ever sets `result` here.
+  const callerPayload = errorCode === CALLER_VERIFICATION_REQUIRED_CODE
+    ? (options.details?.requiresCallerVerification as CallerRefusalPayload | undefined)
+    : undefined;
   const won = await terminalizeIntent(intent, 'failed', {
     errorCode,
     ...(options.executed ? { executedAt: new Date() } : {}),
+    ...(callerPayload ? { result: callerRefusalFromPayload(callerPayload) } : {}),
   });
   if (!won) {
     // Lost the race — e.g. the stale-executing reaper (jobs/intentExpiryReaper.ts)
@@ -1482,6 +1495,16 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
     }
   } catch (err) {
+    // The backend dispatch guard refused right before the outbound mutation:
+    // nothing was sent, so this is a clean, non-retried terminal failure that
+    // keeps its typed payload (not `executed`, no rethrow).
+    const refusal = callerRefusal(err);
+    if (refusal) {
+      await failIntent(intent, CALLER_VERIFICATION_REQUIRED_CODE, {
+        details: { requiresCallerVerification: refusal.requiresCallerVerification },
+      });
+      return;
+    }
     if (err instanceof GoogleConnectionUnavailableError || err instanceof M365ConnectionUnavailableError) {
       // The org's Google/M365 connection is missing/rotated/inactive (or the
       // M365 write-action ladder refused for a connection-level reason:

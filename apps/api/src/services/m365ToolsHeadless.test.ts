@@ -15,6 +15,26 @@ vi.mock('./m365ControlPlane/readActionService', () => ({
   executeM365ReadAction: vi.fn(),
 }));
 
+// Caller verification W05: the two protected tools resolve their pinned intent
+// through aiToolsM365 (lazy-imported by the headless module). The loader and
+// the two session handlers are mocked; m365ToolTiers stays real for parity.
+const { loadMutation, disableHandler, resetHandler, buildAuth } = vi.hoisted(() => ({
+  loadMutation: vi.fn(),
+  disableHandler: vi.fn(),
+  resetHandler: vi.fn(),
+  buildAuth: vi.fn(),
+}));
+vi.mock('./aiToolsM365', async (orig) => {
+  const actual = await (orig as () => Promise<Record<string, unknown>>)();
+  return {
+    ...actual,
+    loadM365MutationContext: loadMutation,
+    m365DisableUserHandler: disableHandler,
+    m365ResetPasswordHandler: resetHandler,
+  };
+});
+vi.mock('./actionIntents/actorContext', () => ({ buildAuthContextForIntent: buildAuth }));
+
 import {
   M365_HEADLESS_ACTIONS,
   isHeadlessM365Tool,
@@ -23,11 +43,30 @@ import {
 } from './m365ToolsHeadless';
 import { m365ToolTiers } from './aiToolsM365';
 import { M365_WRITE_ACTION_IDS, M365_PROBE_ACTION_IDS } from '@breeze/shared/m365';
+import { CallerVerificationRequiredError, CallerVerificationValidationError } from './callerVerification/errors';
 
 const ORG = '44444444-4444-4444-8444-444444444444';
 
+const OID = '88888888-8888-4888-8888-888888888888';
+const PINNED_INTENT = 'intent-123';
+
+/** A released protected intent pinned to `backend`. */
+function pinned(backend: 'controlPlane' | 'direct' | 'delegant') {
+  return {
+    intent: { id: PINNED_INTENT, requestedByUserId: 'user-1' },
+    ctx: { backend, orgId: ORG, connectionId: 'conn-1' },
+    userId: OID,
+  };
+}
+
 beforeEach(() => {
   execByOrg.mockReset();
+  loadMutation.mockReset();
+  loadMutation.mockImplementation(async () => pinned('controlPlane'));
+  disableHandler.mockReset();
+  resetHandler.mockReset();
+  buildAuth.mockReset();
+  buildAuth.mockResolvedValue({ user: { id: 'user-1' }, orgId: ORG });
 });
 
 describe('M365 headless parity contract', () => {
@@ -46,23 +85,25 @@ describe('M365 headless parity contract', () => {
 });
 
 describe('executeM365ToolHeadless', () => {
+  const DISABLE_INPUT = { userIdentifier: 'a@b.com', reason: 'x' };
+
   it('throws M365ConnectionUnavailableError on connection refusal (fail closed)', async () => {
     execByOrg.mockResolvedValue({ ok: false, code: 'connection_not_ready', message: 'no conn' });
-    await expect(executeM365ToolHeadless('m365_disable_user', { userIdentifier: 'a@b.com', reason: 'x' }, ORG))
+    await expect(executeM365ToolHeadless('m365_disable_user', DISABLE_INPUT, ORG, PINNED_INTENT))
       .rejects.toBeInstanceOf(M365ConnectionUnavailableError);
   });
 
   it('throws for every connection-unavailable refusal code (tools_disabled/write_rate_limited/executor_unavailable)', async () => {
     for (const code of ['tools_disabled', 'write_rate_limited', 'executor_unavailable']) {
       execByOrg.mockResolvedValue({ ok: false, code, message: 'refused' });
-      await expect(executeM365ToolHeadless('m365_disable_user', { userIdentifier: 'a@b.com', reason: 'x' }, ORG))
+      await expect(executeM365ToolHeadless('m365_disable_user', DISABLE_INPUT, ORG, PINNED_INTENT))
         .rejects.toBeInstanceOf(M365ConnectionUnavailableError);
     }
   });
 
   it('returns a JSON error body on a Graph-level failure (→ tool_returned_error)', async () => {
     execByOrg.mockResolvedValue({ ok: false, code: 'user_not_found', message: 'not found' });
-    const out = await executeM365ToolHeadless('m365_disable_user', { userIdentifier: 'ghost@b.com', reason: 'x' }, ORG);
+    const out = await executeM365ToolHeadless('m365_disable_user', DISABLE_INPUT, ORG, PINNED_INTENT);
     const parsed = JSON.parse(out);
     expect(parsed.error).toBeTruthy();
     expect(parsed.success).toBeUndefined();
@@ -70,7 +111,7 @@ describe('executeM365ToolHeadless', () => {
 
   it('returns a success body carrying temporaryPassword for reset', async () => {
     execByOrg.mockResolvedValue({ ok: true, result: { success: true, action: 'm365.user.reset_password', userId: 'u1', temporaryPassword: 'Tmp!23xyz789', forceChangeNextSignIn: true } });
-    const out = await executeM365ToolHeadless('m365_reset_password', { userIdentifier: 'a@b.com', reason: 'x' }, ORG);
+    const out = await executeM365ToolHeadless('m365_reset_password', DISABLE_INPUT, ORG, PINNED_INTENT);
     const parsed = JSON.parse(out);
     expect(parsed.success).toBe(true);
     expect(parsed.temporaryPassword).toBe('Tmp!23xyz789');
@@ -82,21 +123,106 @@ describe('executeM365ToolHeadless', () => {
   });
 
   it('returns a JSON error body (not a throw) for invalid captured arguments', async () => {
-    const out = await executeM365ToolHeadless('m365_disable_user', { userIdentifier: '', reason: '' }, ORG);
+    const out = await executeM365ToolHeadless('m365_disable_user', { userIdentifier: '', reason: '' }, ORG, PINNED_INTENT);
     const parsed = JSON.parse(out);
     expect(parsed.error).toBeTruthy();
     expect(execByOrg).not.toHaveBeenCalled();
   });
 
-  it('threads the idempotencyKey through to executeM365WriteActionByOrg when provided', async () => {
+  it('threads the intent id through as BOTH actionIntentId and idempotencyKey for a control-plane pin', async () => {
     execByOrg.mockResolvedValue({ ok: true, result: { success: true, action: 'm365.user.disable', userId: 'u1' } });
-    const INTENT_ID = 'intent-123';
-    await executeM365ToolHeadless('m365_disable_user', { userIdentifier: 'a@b.com', reason: 'x' }, ORG, INTENT_ID);
+    await executeM365ToolHeadless('m365_disable_user', DISABLE_INPUT, ORG, PINNED_INTENT);
+    expect(execByOrg).toHaveBeenCalledTimes(1);
     expect(execByOrg).toHaveBeenCalledWith(
       ORG,
-      expect.objectContaining({ type: 'm365.user.disable' }),
-      expect.objectContaining({ idempotencyKey: INTENT_ID }),
+      { type: 'm365.user.disable', oid: OID, reason: 'x' },
+      { actionIntentId: PINNED_INTENT, idempotencyKey: PINNED_INTENT, actorId: 'user-1' },
     );
+  });
+});
+
+describe('protected M365 headless release (#6354 W05)', () => {
+  const INPUT = { userIdentifier: 'a@b.com', reason: 'x' };
+
+  it('control-plane pin: the action is oid-only (no userIdentifier) and the handlers are never used', async () => {
+    execByOrg.mockResolvedValue({ ok: true, result: { success: true } });
+    await executeM365ToolHeadless('m365_reset_password', INPUT, ORG, PINNED_INTENT);
+    const sent = execByOrg.mock.calls[0]![1];
+    expect(sent).toEqual({ type: 'm365.user.reset_password', oid: OID, reason: 'x' });
+    expect(sent).not.toHaveProperty('userIdentifier');
+    expect(disableHandler).not.toHaveBeenCalled();
+    expect(resetHandler).not.toHaveBeenCalled();
+    expect(loadMutation).toHaveBeenCalledWith(ORG, 'reset_password', PINNED_INTENT);
+  });
+
+  it.each(['direct', 'delegant'] as const)('%s pin goes through the handler with the intent context and never the control plane', async (backend) => {
+    loadMutation.mockImplementation(async () => pinned(backend));
+    disableHandler.mockResolvedValue(JSON.stringify({ success: true }));
+    const out = await executeM365ToolHeadless('m365_disable_user', INPUT, ORG, PINNED_INTENT);
+    expect(out).toBe(JSON.stringify({ success: true }));
+    expect(execByOrg).not.toHaveBeenCalled();
+    expect(disableHandler).toHaveBeenCalledTimes(1);
+    expect(disableHandler).toHaveBeenCalledWith(INPUT, expect.anything(), PINNED_INTENT, { actionIntentId: PINNED_INTENT });
+    expect(buildAuth).toHaveBeenCalledWith(expect.objectContaining({ id: PINNED_INTENT }));
+  });
+
+  it('direct/delegant reset: a spoofed action key in the secrets cannot override the reset action (set after the spread)', async () => {
+    loadMutation.mockImplementation(async () => pinned('delegant'));
+    resetHandler.mockResolvedValue({
+      kind: 'success', llmText: 'ok',
+      secrets: { temporaryPassword: 'PW-1', action: 'spoofed', success: false },
+    });
+    const out = await executeM365ToolHeadless('m365_reset_password', INPUT, ORG, PINNED_INTENT);
+    const parsed = JSON.parse(out);
+    expect(parsed.action).toBe('m365.user.reset_password');
+    expect(parsed.temporaryPassword).toBe('PW-1');
+    expect(parsed.success).toBe(true);
+    expect(execByOrg).not.toHaveBeenCalled();
+  });
+
+  it('a handler error carrier is returned as its llmText', async () => {
+    loadMutation.mockImplementation(async () => pinned('direct'));
+    resetHandler.mockResolvedValue({ kind: 'error', llmText: '{"error":"x"}' });
+    expect(await executeM365ToolHeadless('m365_reset_password', INPUT, ORG, PINNED_INTENT)).toBe('{"error":"x"}');
+  });
+
+  it('a missing intent id propagates the typed refusal and calls nothing', async () => {
+    loadMutation.mockRejectedValue(new CallerVerificationRequiredError({
+      orgId: ORG, contactId: null, action: 'disable_user', requiredTier: 2, reason: 'no_fresh_verification', latest: null,
+    }));
+    await expect(executeM365ToolHeadless('m365_disable_user', INPUT, ORG)).rejects.toBeInstanceOf(CallerVerificationRequiredError);
+    expect(loadMutation).toHaveBeenCalledWith(ORG, 'disable_user', undefined);
+    expect(execByOrg).not.toHaveBeenCalled();
+    expect(disableHandler).not.toHaveBeenCalled();
+  });
+
+  it('a pinned connection_not_ready becomes M365ConnectionUnavailableError', async () => {
+    loadMutation.mockRejectedValue(new CallerVerificationValidationError('connection_not_ready', 'gone'));
+    await expect(executeM365ToolHeadless('m365_disable_user', INPUT, ORG, PINNED_INTENT))
+      .rejects.toBeInstanceOf(M365ConnectionUnavailableError);
+    expect(execByOrg).not.toHaveBeenCalled();
+  });
+
+  it('other validation errors from the loader are not swallowed', async () => {
+    loadMutation.mockRejectedValue(new CallerVerificationValidationError('tenant_mismatch', 'x'));
+    await expect(executeM365ToolHeadless('m365_disable_user', INPUT, ORG, PINNED_INTENT))
+      .rejects.toBeInstanceOf(CallerVerificationValidationError);
+  });
+
+  it('a guard refusal thrown by the control-plane service propagates (not folded into a result)', async () => {
+    execByOrg.mockRejectedValue(new CallerVerificationRequiredError({
+      orgId: ORG, contactId: null, action: 'disable_user', requiredTier: 2, reason: 'contact_fenced', latest: null,
+    }));
+    await expect(executeM365ToolHeadless('m365_disable_user', INPUT, ORG, PINNED_INTENT))
+      .rejects.toBeInstanceOf(CallerVerificationRequiredError);
+  });
+
+  it('non-protected tools never touch the pinned-intent loader or the handlers', async () => {
+    execByOrg.mockResolvedValue({ ok: true, result: { success: true } });
+    await executeM365ToolHeadless('m365_revoke_sessions', INPUT, ORG, 'intent-9');
+    expect(loadMutation).not.toHaveBeenCalled();
+    expect(disableHandler).not.toHaveBeenCalled();
+    expect(execByOrg).toHaveBeenCalledWith(ORG, expect.objectContaining({ userIdentifier: 'a@b.com' }), { idempotencyKey: 'intent-9' });
   });
 });
 

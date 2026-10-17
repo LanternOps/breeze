@@ -685,8 +685,9 @@ x-api-env: &api-env
   AUTO_MIGRATE: ${AUTO_MIGRATE:-}
   AGENT_AUTO_PROMOTE: ${AGENT_AUTO_PROMOTE:-}
   AGENT_EDITION_AUTO_MIGRATE_ENABLED: ${AGENT_EDITION_AUTO_MIGRATE_ENABLED:-}
-  # Caller verification (#6354): exact-'true' readiness flag, default off.
-  CALLER_VERIFICATION_ENABLED: ${CALLER_VERIFICATION_ENABLED:-false}
+  # Caller verification (#6354): exact true only, default ON (link tier). Workstation tier is dark (default off).
+  CALLER_VERIFICATION_ENABLED: ${CALLER_VERIFICATION_ENABLED:-true}
+  CALLER_VERIFICATION_WORKSTATION_ENABLED: ${CALLER_VERIFICATION_WORKSTATION_ENABLED:-false}
   ENABLE_API_DOCS_UI: ${ENABLE_API_DOCS_UI:-}
   PUBLIC_ACTIVATION_BASE_URL: ${PUBLIC_ACTIVATION_BASE_URL:-}
   # Retention windows, agent ingest quotas / rate limits, screenshot + log-forwarding caps

@@ -153,6 +153,14 @@ describe('probeM365Effect — honest criteria', () => {
     expect(readByOrg).toHaveBeenCalledWith(ORG, { type: 'm365.user.get', userIdOrUpn: 'a@b.com' }, { actorId: 'actor-1' });
   });
 
+  it('disable probes the pinned oid when the action carries one (no identifier)', async () => {
+    readByOrg.mockResolvedValueOnce(userResource({ accountEnabled: false }));
+    const OID = '77777777-7777-4777-8777-777777777777';
+    const r = await probeM365Effect('m365.user.disable', { type: 'm365.user.disable', oid: OID, reason: 'x' } as M365MutatingAction, ctx, clock);
+    expect(r.state).toBe('satisfied');
+    expect(readByOrg).toHaveBeenCalledWith(ORG, { type: 'm365.user.get', userIdOrUpn: OID }, { actorId: 'actor-1' });
+  });
+
   it('group membership: resolves the user id, then reads the targeted membership by GUID', async () => {
     CASES['m365.group.membership.remove'].satisfied();
     await probe('m365.group.membership.remove');

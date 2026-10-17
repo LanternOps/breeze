@@ -20,6 +20,7 @@ vi.mock('../../db', () => {
 
 import { requireCallerVerification } from './gate';
 import { destinationHash } from './destinations';
+import { withPreparedDispatchGate } from './dispatchGateContext';
 
 const input = {
   orgId: '11111111-1111-4111-8111-111111111111', action: 'reset_password' as const,
@@ -64,6 +65,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.results.length = 0;
   vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+  // W02 behaviour is pinned with the (dark-by-default) workstation tier ON;
+  // the link-tier-only cases below turn it off explicitly.
+  vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'true');
   m.policy.mockResolvedValue({ ...policy });
   m.resolve.mockResolvedValue(binding);
   m.eligible.mockResolvedValue(true);
@@ -98,6 +102,46 @@ it('does not elevate unbound workstation even if its stored tier was 3', async (
 it('refuses a moved workstation even for same-intent consumed retry', async () => {
   seed(candidate({ method: 'workstation', consumedAt: new Date(), consumedIntentRef: input.intentId }), false);
   await expect(requireCallerVerification(ok)).rejects.toMatchObject({ payload: { reason: 'target_rebound' } });
+});
+
+it('link-tier-only: a bound workstation grant authorizes only while the workstation tier is enabled', async () => {
+  const bound = candidate({ method: 'workstation', osPrincipalObserved: 'sid' });
+  seed(bound);
+  await expect(requireCallerVerification(ok)).resolves.toEqual({ verificationId: bound.id, tier: 3 });
+  m.results.length = 0;
+  vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'false');
+  seed(bound);
+  await expect(requireCallerVerification(ok)).rejects.toMatchObject({ payload: { reason: 'no_fresh_verification' } });
+  // Unset is dark too (default false), including for a pre-existing grant.
+  m.results.length = 0;
+  vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', undefined as unknown as string);
+  seed(bound);
+  await expect(requireCallerVerification(ok)).rejects.toMatchObject({ payload: { reason: 'no_fresh_verification' } });
+});
+
+it('dispatch context: refuses a mismatched or consuming gate call inside a prepared dispatch', async () => {
+  const pinned = { ...ok, mode: 'check' as const };
+  await expect(withPreparedDispatchGate({ input: pinned, verificationId: 'v', mailboxHashes: null },
+    () => requireCallerVerification({ ...pinned, target: { entraTenantId: 'tenant', entraOid: 'other' } })))
+    .rejects.toThrow('Dispatch gate context does not match the pinned operation');
+  await expect(withPreparedDispatchGate({ input: pinned, verificationId: 'v', mailboxHashes: null },
+    () => requireCallerVerification({ ...pinned, mode: 'consume' })))
+    .rejects.toThrow('Dispatch gate context does not match the pinned operation');
+});
+
+it('dispatch context: uses prefetched mailbox hashes and never reads mailboxes itself', async () => {
+  const pinned = { ...ok, mode: 'check' as const };
+  const row = candidate({ method: 'email', consumedAt: new Date(), consumedIntentRef: input.intentId });
+  seed(row);
+  await expect(withPreparedDispatchGate({ input: pinned, verificationId: row.id, mailboxHashes: new Set([destinationHash('other@example.com')]) },
+    () => requireCallerVerification(pinned))).resolves.toMatchObject({ verificationId: row.id });
+  expect(m.mailboxes).not.toHaveBeenCalled();
+  // Unknown (null) prefetched hashes fail closed for the email grant.
+  m.results.length = 0;
+  seed(row);
+  await expect(withPreparedDispatchGate({ input: pinned, verificationId: row.id, mailboxHashes: null },
+    () => requireCallerVerification(pinned))).rejects.toMatchObject({ payload: { reason: 'subject_mailboxes_unknown' } });
+  expect(m.mailboxes).not.toHaveBeenCalled();
 });
 
 it('email mailbox uncertainty refuses while callback needs no mailbox read', async () => {

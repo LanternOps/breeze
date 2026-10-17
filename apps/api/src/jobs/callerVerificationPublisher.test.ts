@@ -116,3 +116,33 @@ it('leaves the rejection unmarked when one email send fails (at-least-once)', as
   expect(m.capture).toHaveBeenCalledWith(expect.objectContaining({ message: 'smtp' }), undefined, { verificationId: 'v1' });
   expect(m.updates).toEqual([]);
 });
+
+it('publishes an unmarked administrative row as one notification per recipient, never a caller challenge', async () => {
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', contactId: 'c1', reason: 'Confirmed offboarding with the HR manager', deliveryPublishedAt: null })];
+  await publishCallerVerificationEffects();
+  expect(m.deliver).not.toHaveBeenCalled();
+  expect(m.applyDecision).not.toHaveBeenCalled();
+  expect(m.notify).toHaveBeenCalledTimes(2);
+  expect(m.notify).toHaveBeenCalledWith(expect.objectContaining({
+    orgId: ORG, type: 'security', dedupeKey: 'caller-administrative-v1', metadata: { verificationId: 'v1', contactId: 'c1' },
+  }));
+  expect(m.sendEmail).toHaveBeenCalledTimes(2);
+  expect(m.updates.map((u) => Object.keys(u))).toEqual([['deliveryPublishedAt']]);
+});
+
+it('does not republish an administrative row whose marker is set', async () => {
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: new Date() })];
+  await publishCallerVerificationEffects();
+  expect(m.notify).not.toHaveBeenCalled();
+  expect(m.sendEmail).not.toHaveBeenCalled();
+  expect(m.deliver).not.toHaveBeenCalled();
+  expect(m.updates).toEqual([]);
+});
+
+it('leaves an administrative row unmarked when the email transport is unavailable', async () => {
+  m.emailService = null;
+  m.rows = [row({ status: 'verified', method: 'administrative_stepup', deliveryPublishedAt: null })];
+  await publishCallerVerificationEffects();
+  expect(m.updates).toEqual([]);
+  expect(m.capture).toHaveBeenCalled();
+});

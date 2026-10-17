@@ -54,12 +54,20 @@ export type M365ExecutorActionId = M365WriteActionId | M365ProbeActionId;
 export const m365WriteActionSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('m365.user.disable'),
-    userIdentifier: userIdOrUpnSchema,
+    // Exactly one of userIdentifier / oid (enforced in the superRefine below).
+    // oid = the pinned Entra object id; the executor uses it verbatim with no
+    // Graph lookup. userIdentifier stays accepted for rollout compatibility.
+    userIdentifier: userIdOrUpnSchema.optional(),
+    oid: guidSchema.optional(),
     reason: reasonSchema,
   }).strict(),
   z.object({
     type: z.literal('m365.user.reset_password'),
-    userIdentifier: userIdOrUpnSchema,
+    // Exactly one of userIdentifier / oid (enforced in the superRefine below).
+    // oid = the pinned Entra object id; the executor uses it verbatim with no
+    // Graph lookup. userIdentifier stays accepted for rollout compatibility.
+    userIdentifier: userIdOrUpnSchema.optional(),
+    oid: guidSchema.optional(),
     reason: reasonSchema,
   }).strict(),
   z.object({
@@ -124,6 +132,14 @@ export const m365WriteActionSchema = z.discriminatedUnion('type', [
     userIdentifier: userIdOrUpnSchema,
   }).strict(),
 ]).superRefine((value, ctx) => {
+  if (value.type === 'm365.user.disable' || value.type === 'm365.user.reset_password') {
+    if ((value.userIdentifier === undefined) === (value.oid === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'exactly one of userIdentifier or oid is required',
+      });
+    }
+  }
   // z.discriminatedUnion rejects a ZodEffects member, so the auto-reply arm's
   // cross-field rule lives here instead of on the arm.
   if (value.type === 'm365.user.mailbox.auto_reply'

@@ -18,6 +18,7 @@ const SETS = {
   disableUserAuthorizerRoles: ['billing', 'technical', 'escalation', 'admin', 'site', 'after_hours', 'portal'],
 } as const;
 const KEYS = [...Object.keys(NUMERIC), ...Object.keys(BOOLEANS), ...Object.keys(SETS)] as (keyof PolicyValues)[];
+const TIER_KEYS = ['requiredTierResetPassword', 'requiredTierDisableUser'] as const;
 
 export function inheritedDraft(): PolicyDraft {
   return Object.fromEntries(KEYS.map((k) => [k, null])) as PolicyDraft;
@@ -92,6 +93,8 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
   const update = (key: keyof PolicyValues, next: unknown) => setDraft((old) => ({ ...old, [key]: next }));
   const show = (v: unknown) => (Array.isArray(v) ? v.join(', ') || '—' : typeof v === 'boolean' ? (v ? t('policy.yes') : t('policy.no')) : String(v));
   const fieldLabel = (key: string) => t(/* i18n-dynamic */ `policy.fields.${key}`);
+  // Tier 3 needs the workstation tier; the server refuses it while that is dark.
+  const maxTier = data.maxAchievableTier ?? 3;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,7 +102,10 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
     busy.current = true;
     setSaving(true);
     try {
-      const result = await putPolicy(owner, draft);
+      // A stored tier above what is achievable would be refused; send the achievable one.
+      const body = { ...draft };
+      for (const k of TIER_KEYS) if (body[k] !== null && body[k]! > maxTier) body[k] = maxTier;
+      const result = await putPolicy(owner, body);
       setData(result);
       setDraft(draftFrom(result.row));
     } catch (err) {
@@ -130,8 +136,10 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
           const bool = BOOLEANS[key as keyof typeof BOOLEANS];
           const options = SETS[key as keyof typeof SETS];
           const base = data.baseline[key];
+          const isTier = (TIER_KEYS as readonly string[]).includes(key);
+          const cap = isTier ? Math.min(num?.[1] ?? maxTier, maxTier) : undefined;
           const min = num ? (org && num[2] === 'max' ? Math.max(num[0], base as number) : num[0]) : undefined;
-          const max = num ? (org && num[2] === 'min' ? Math.min(num[1], base as number) : num[1]) : undefined;
+          const max = num ? (org && num[2] === 'min' ? Math.min(num[1], base as number) : (cap ?? num[1])) : undefined;
           return (
             <div key={key} className="grid gap-1 border-b pb-3 last:border-0 sm:grid-cols-[1fr_auto] sm:items-start">
               <div className="space-y-1">
@@ -144,7 +152,10 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
                   <output data-testid={`${id}-effective`} className="sr-only">{show(data.effective[key])}</output>
                 </p>
                 {num && (
-                  <NumberField id={id} min={min!} max={max!} value={value(key) as number} onCommit={(n) => update(key, n)} />
+                  <NumberField id={id} min={Math.min(min!, max!)} max={max!} value={isTier ? Math.min(value(key) as number, max!) : (value(key) as number)} onCommit={(n) => update(key, n)} />
+                )}
+                {isTier && maxTier < 3 && (
+                  <p data-testid={`${id}-cap-hint`} className="text-xs text-muted-foreground">{t('policy.tierCapHint', { max: maxTier })}</p>
                 )}
                 {bool && (
                   <select id={id} data-testid={id} value={String(value(key))} className="h-8 rounded-md border bg-background px-2"

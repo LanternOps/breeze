@@ -179,6 +179,7 @@ const STEP_UP_OPERATIONS = [
   'autopay_request_recipient',
   'org_payment_settings_update',
   'migration_window_open',
+  'caller_verification_administrative_disable',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
@@ -313,7 +314,16 @@ export const autopayRequestRecipientStepUpResource = z.object({
   recipientOverride: z.string().email().max(255),
   mode: z.enum(['request', 'reauthorize']).optional(),
 });
-const stepUpResource = z.union([rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource]);
+// Caller verification administrative disable (#6354 W05): mirrors
+// administrativeCallerVerificationSchema's reason bounds; the digest binds the
+// exact Entra subject so a grant cannot be spent against another contact.
+export const callerVerificationAdministrativeStepUpResource = z.object({
+  orgId: z.string().uuid(),
+  entraTenantId: z.string().min(1).max(64),
+  entraOid: z.string().min(1).max(64),
+  reason: z.string().trim().min(20).max(2000),
+}).strict();
+const stepUpResource = z.union([callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

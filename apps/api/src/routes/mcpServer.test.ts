@@ -230,6 +230,7 @@ vi.mock('../modules/mcpInvites', () => ({
 
 import { __loadMcpBootstrapForTests, mcpServerRoutes } from './mcpServer';
 import { GENERIC_TOOL_ERROR_MESSAGE } from '../services/aiToolErrors';
+import { CallerVerificationRequiredError } from '../services/callerVerification/errors';
 
 function setTestApiKey(overrides: Record<string, unknown> = {}) {
   testState.apiKey = {
@@ -813,6 +814,47 @@ describe('MCP transport integration', () => {
     // above).
     expect(ledgerInsertValues).toEqual([]);
     expect(ledgerUpdateSet).not.toHaveBeenCalled();
+  });
+
+  // #6354 W05: a typed caller-verification refusal keeps its payload over MCP
+  // (text-content envelope, isError) instead of collapsing to the generic error.
+  it('serialises a typed caller-verification refusal without sanitising its payload away', async () => {
+    delete process.env.IS_HOSTED;
+    process.env.NODE_ENV = 'development';
+
+    setTestApiKey({ scopes: ['ai:read', 'ai:execute'] });
+    routeMocks.getToolDefinitions.mockReturnValue([{ name: 'execute_command', description: '', input_schema: {} }]);
+    const payload = {
+      orgId: 'org-1', contactId: null, action: 'disable_user' as const,
+      requiredTier: 2, reason: 'subject_unmatched' as const, latest: null,
+    };
+    routeMocks.executeTool.mockRejectedValue(new CallerVerificationRequiredError(payload));
+    routeMocks.getToolTier.mockImplementation((name: string) => (name === 'execute_command' ? 2 : undefined));
+    testState.aiTools = new Map([['execute_command', { deviceArgs: ['deviceId'] }]]);
+    testState.redis = { get: vi.fn(async () => null) };
+    testState.db = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => [{ partnerId: 'partner-1' }] }) }) }),
+      insert: () => ({ values: () => ({ returning: async () => [{ id: 'mcp-exec-caller' }] }) }),
+      update: () => ({ set: () => ({ where: async () => undefined }) }),
+    };
+
+    const res = await mcpServerRoutes.request('/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'execute_command', arguments: { deviceId: 'device-1' } },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toEqual({
+      error: 'Caller verification required',
+      requiresCallerVerification: payload,
+    });
+    expect(body.result.content[0].text).not.toContain(GENERIC_TOOL_ERROR_MESSAGE);
   });
 
   it('enforces stream-byte limit even when content-length is missing/lying', async () => {

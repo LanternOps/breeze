@@ -21,7 +21,7 @@ import { tickets } from '../../db/schema/portal';
 import { devices, deviceCommands } from '../../db/schema/devices';
 import { incidents } from '../../db/schema/incidentResponse';
 import { actionIntents } from '../../db/schema/actionIntents';
-import { callerVerificationEnabled } from '../../config/env';
+import { callerVerificationEnabled, callerVerificationWorkstationEnabled } from '../../config/env';
 import { terminalPayloadErasureSet } from '../sensitiveCommandPayload';
 import type {
   CallerVerificationAction, CallerVerificationActor, CallerVerificationMethod, CallerVerificationStatus,
@@ -39,6 +39,7 @@ import { fencedUntil } from './gate';
 import { recordEffect } from './effects';
 import { handleRejection } from './rejection';
 import { deviceSuggestions } from './deviceSuggestions';
+import { administrativeProofFor } from './administrativeContext';
 
 // ---------------------------------------------------------------------------
 // Cross-wave contracts (fixed by the index plan)
@@ -96,6 +97,8 @@ export type VerificationDetails = VerificationView & {
   usableUntil: string | null;
   incidentId: string | null;
   consumedAction: CallerVerificationAction | null;
+  /** Status of the consumed action intent (org-pinned); null when not consumed or the intent is absent/out-of-org. */
+  consumedIntentStatus: typeof actionIntents.$inferSelect['status'] | null;
   undeliverableReason: 'no_session_for_user' | 'session_not_console' | 'helper_outdated' | 'sms_failed' | 'email_failed' | null;
 };
 
@@ -136,6 +139,7 @@ export function view(r: VerificationRow, userId: string | null, targetContactId:
 export function verificationDetails(
   r: VerificationRow, userId: string | null, targetId: string | null,
   policy: Awaited<ReturnType<typeof getEffectivePolicy>>, attempts: number, incidentId: string | null, actionName: string | null,
+  intentStatus: typeof actionIntents.$inferSelect['status'] | null = null,
 ): VerificationDetails {
   const reason = UNDELIVERABLE_REASONS.find((value) => value === r.reason) ?? null;
   const proofAt = r.method === 'administrative_stepup' ? r.stepupVerifiedAt : r.decidedAt;
@@ -146,6 +150,7 @@ export function verificationDetails(
     incidentId,
     // Never inferred from actionScope='any': a deleted/moved intent yields null.
     consumedAction: !r.consumedAt ? null : actionName === 'm365_reset_password' ? 'reset_password' : actionName === 'm365_disable_user' ? 'disable_user' : null,
+    consumedIntentStatus: r.consumedAt ? intentStatus : null,
     undeliverableReason: r.status === 'undeliverable' ? reason : null,
   };
 }
@@ -157,10 +162,10 @@ export async function projectVerification(r: VerificationRow, userId: string | n
   const [incident] = await db.select({ id: incidents.id }).from(incidents)
     .where(and(eq(incidents.orgId, r.orgId), eq(incidents.sourceType, 'caller_verification'), eq(incidents.sourceRef, r.id))).limit(1);
   const [intent] = r.consumedAt && r.consumedIntentRef
-    ? await db.select({ actionName: actionIntents.actionName }).from(actionIntents)
+    ? await db.select({ actionName: actionIntents.actionName, status: actionIntents.status }).from(actionIntents)
       .where(and(eq(actionIntents.orgId, r.orgId), eq(actionIntents.id, r.consumedIntentRef))).limit(1)
     : [];
-  return verificationDetails(r, userId, targetId, policy, Number(attempts?.count ?? 0), incident?.id ?? null, intent?.actionName ?? null);
+  return verificationDetails(r, userId, targetId, policy, Number(attempts?.count ?? 0), incident?.id ?? null, intent?.actionName ?? null, intent?.status ?? null);
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +205,8 @@ export async function methodsForContact(
     const tier = computeTier({ method, boundPrincipal: bindings.some((r) => !!r.osPrincipal), destinationEstablished: !!destination && isEstablished(destination, p), policy: p });
     let unavailableReason: MethodAvailability['unavailableReason'];
     if (!callerVerificationEnabled()) unavailableReason = 'feature_disabled';
+    // Workstation tier is dark until it ships: checked before any device lookup.
+    else if (method === 'workstation' && !callerVerificationWorkstationEnabled()) unavailableReason = 'method_disabled';
     else if (!p.allowedMethods.includes(method)) unavailableReason = 'method_disabled';
     else if (actionScope !== 'any' && !bindings.some((r) => !!r.entraOid)) unavailableReason = 'no_binding';
     else if (kind && (!destination || !normalizeDestination(kind, contact[kind]))) unavailableReason = 'no_destination';
@@ -262,6 +269,8 @@ export async function freshForTicket(
 
 export async function start(actor: CallerVerificationActor, input: StartInput): Promise<VerificationDetails> {
   if (!callerVerificationEnabled()) throw new Invalid('feature_disabled', 'Caller verification is disabled');
+  // Dark workstation tier: refuse before any DB work, even with a hand-picked device.
+  if (input.method === 'workstation' && !callerVerificationWorkstationEnabled()) throw new Invalid('method_disabled', 'Workstation verification is not available');
   assertInTransaction('startCallerVerification');
   const { orgId, contactId } = input;
   const requester = await reachableContact(actor, orgId, contactId);
@@ -341,21 +350,25 @@ export async function start(actor: CallerVerificationActor, input: StartInput): 
 }
 
 /**
- * W05 administrative factory: an interactive step-up proof (consumed through
- * the injected port) authorizes a disable_user grant without a caller
- * challenge. The contact lock, hourly count and cap-BEFORE-proof-consumption
- * are implemented invariants; only the proof adapter is a W05 seam.
+ * W05 administrative factory: an interactive step-up proof authorizes a
+ * disable_user grant without a caller challenge. The proof (sid + epochs) comes
+ * only from the request-local interactive context, never from the body or the
+ * actor. Order matters: the hourly attempt cap and the live eligibility check
+ * both run BEFORE the single-use Redis grant is consumed, so a refused request
+ * keeps its grant; the consume stamps `stepupVerifiedAt` afterwards.
  */
 export async function createAdministrative(
   actor: CallerVerificationActor,
   input: { orgId: string; targetContactId: string; reason: string; stepUpGrantId: string },
 ): Promise<VerificationDetails> {
   if (!callerVerificationEnabled()) throw new Invalid('feature_disabled', 'Caller verification is disabled');
-  if (input.reason.trim().length < 20) throw new Invalid('invalid_reason', 'Administrative reason must contain at least 20 characters');
+  const proof = administrativeProofFor(actor.userId);
+  const reason = input.reason.trim();
+  if (reason.length < 20 || reason.length > 2000) throw new Invalid('invalid_reason', 'Administrative reason must contain 20 to 2000 characters');
   const target = await reachableContact(actor, input.orgId, input.targetContactId);
   const p = await getEffectivePolicy(input.orgId);
   if (!p.allowAdministrativeDisable) throw new Invalid('administrative_disabled', 'Administrative disable is disabled');
-  const bindings = (await bindingsForContact(input.orgId, target.id)).filter((r) => r.entraOid && r.entraTenantId);
+  const bindings = (await bindingsForContact(input.orgId, target.id)).filter((r) => !r.revokedAt && r.entraOid && r.entraTenantId);
   if (bindings.length !== 1) throw new Invalid('subject_unmatched', 'Canonical target required');
   const binding = bindings[0]!;
   await lockContact(input.orgId, target.id);
@@ -367,16 +380,29 @@ export async function createAdministrative(
       .where(and(eq(v.orgId, input.orgId), eq(v.contactId, target.id), sql`${v.createdAt}>now()-interval '1 hour'`));
     const count = Number(attempts?.count ?? 0);
     if (count >= p.maxAttemptsPerHour) throw new Invalid('attempt_cap', 'Contact attempt limit reached');
-    const proof = await ports.consumeStepUp(actor, {
-      orgId: input.orgId, target: { entraTenantId: binding.entraTenantId!, entraOid: binding.entraOid! },
-      reason: input.reason.trim(), stepUpGrantId: input.stepUpGrantId,
-    });
+    // Lazy: administrative.ts pulls permissions/redis, which the readiness import must not load.
+    const { administrativeEligible } = await import('./administrative');
+    const { consumeStepUpGrant, callerVerificationAdministrativeDigest } = await import('../mfaStepUpGrant');
+    if (!await administrativeEligible({
+      orgId: input.orgId, userId: actor.userId, sid: proof.sid, authEpoch: proof.authEpoch, mfaEpoch: proof.mfaEpoch,
+      verifiedAt: new Date(), ttlMinutes: p.verificationTtlMinutes,
+    })) throw new Invalid('stepup_invalidated', 'Step-up session is no longer valid');
+    const bind = {
+      userId: actor.userId, operation: 'caller_verification_administrative_disable' as const,
+      sid: proof.sid, authEpoch: proof.authEpoch, mfaEpoch: proof.mfaEpoch,
+      resourceDigest: callerVerificationAdministrativeDigest({
+        orgId: input.orgId, entraTenantId: binding.entraTenantId!, entraOid: binding.entraOid!, reason,
+      }),
+    };
+    if (!await consumeStepUpGrant(input.stepUpGrantId, bind)) {
+      throw new Invalid('stepup_invalidated', 'Step-up grant is invalid or already used');
+    }
     const now = new Date();
     const [row] = await db.insert(v).values({
       orgId: input.orgId, contactId: target.id, requesterBindingId: null, targetBindingId: binding.id,
       targetEntraTenantId: binding.entraTenantId, targetEntraOid: binding.entraOid,
       initiatedByUserId: actor.userId, technicianLabel: actor.displayName, actionScope: 'disable_user',
-      targetLabel: binding.upnSnapshot ?? target.name, method: 'administrative_stepup', reason: input.reason.trim(),
+      targetLabel: binding.upnSnapshot ?? target.name, method: 'administrative_stepup', reason,
       stepupSessionId: proof.sid, stepupAuthEpoch: proof.authEpoch, stepupMfaEpoch: proof.mfaEpoch, stepupVerifiedAt: now,
       status: 'verified', tier: 3, tierReason: 'administrative', ...challengeSecrets(),
       attemptNo: count + 1, decidedAt: now, expiresAt: new Date(now.getTime() + p.verificationTtlMinutes * 60000),

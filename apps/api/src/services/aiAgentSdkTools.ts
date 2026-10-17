@@ -24,6 +24,7 @@ import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeUntrustedToolValue } from './aiInputSanitizer';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { callerRefusal, type CallerRefusalPayload } from './callerVerification/refusal';
 import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
@@ -148,7 +149,7 @@ export type PreToolUseCallback = (
    * it is a status message, not a failure, and it never reaches an `error`
    * field on the wire. See services/aiToolHandoff.ts (#5107).
    */
-  | { allowed: false; error: string; handoff?: ToolHandoffStatus }
+  | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload }
 >;
 
 /**
@@ -581,11 +582,16 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  */
 function preToolUseDenialResult(
   toolName: string,
-  check: { error: string; handoff?: ToolHandoffStatus },
+  check: { error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload },
 ): { text: string; isError: boolean } {
   const payload = check.handoff
     ? buildToolHandoffResult(check.handoff, check.error)
-    : { error: check.error };
+    : {
+        error: check.error,
+        ...(check.requiresCallerVerification
+          ? { requiresCallerVerification: check.requiresCallerVerification }
+          : {}),
+      };
   return {
     text: compactToolResultForChat(toolName, JSON.stringify(payload)),
     isError: check.handoff ? handoffIsError(check.handoff) : true,
@@ -765,7 +771,7 @@ function makeToolHandler(
     if (onPreToolUse) {
       let check:
         | { allowed: true; intentId?: string; context?: ToolExecutionContext }
-        | { allowed: false; error: string; handoff?: ToolHandoffStatus };
+        | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
       try {
         check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
       } catch (err) {
@@ -923,8 +929,15 @@ function makeToolHandler(
       // raw Drizzle/postgres.js string carrying the full query and column list.
       // sanitizeThrownToolError logs it server-side and returns a safe generic
       // string for the stream (#2603).
-      const message = sanitizeThrownToolError(toolName, err, { durationMs });
-      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      // A typed caller-verification refusal is a gate outcome, not a fault: it
+      // carries only the gate's typed payload (never a message/stack), so it is
+      // emitted intact — and bypasses compaction, which would otherwise be free
+      // to truncate the payload the UI renders "verify the caller" from.
+      const refusal = callerRefusal(err);
+      const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err, { durationMs });
+      const safeError = refusal
+        ? JSON.stringify(refusal)
+        : compactToolResultForChat(toolName, JSON.stringify({ error: message }));
       await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
@@ -959,6 +972,7 @@ function makeSessionAwareHandler(
     args: Record<string, unknown>,
     auth: AuthContext,
     sessionId: string,
+    context?: ToolExecutionContext,
   ) => Promise<string | SecretToolResult>,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
@@ -988,7 +1002,7 @@ function makeSessionAwareHandler(
     if (onPreToolUse) {
       let check:
         | { allowed: true; intentId?: string }
-        | { allowed: false; error: string; handoff?: ToolHandoffStatus };
+        | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
       try {
         check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
       } catch (err) {
@@ -1043,7 +1057,13 @@ function makeSessionAwareHandler(
       // declares its own `result: string` from `llmText`, so the raw handler
       // return must never share that name.
       const handlerResult = await withToolTimeout(
-        withDbAccessContext(dbContext, () => sessionHandler(args, auth, session.breezeSessionId)),
+        withDbAccessContext(dbContext, () =>
+          sessionHandler(
+            args,
+            auth,
+            session.breezeSessionId,
+            intentId ? { actionIntentId: intentId } : undefined,
+          )),
         toolTimeout,
         toolName,
       );
@@ -1099,8 +1119,15 @@ function makeSessionAwareHandler(
       // raw Drizzle/postgres.js string carrying the full query and column list.
       // sanitizeThrownToolError logs it server-side and returns a safe generic
       // string for the stream (#2603).
-      const message = sanitizeThrownToolError(toolName, err, { durationMs });
-      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      // A typed caller-verification refusal is a gate outcome, not a fault: it
+      // carries only the gate's typed payload (never a message/stack), so it is
+      // emitted intact — and bypasses compaction, which would otherwise be free
+      // to truncate the payload the UI renders "verify the caller" from.
+      const refusal = callerRefusal(err);
+      const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err, { durationMs });
+      const safeError = refusal
+        ? JSON.stringify(refusal)
+        : compactToolResultForChat(toolName, JSON.stringify({ error: message }));
       await safePostToolUse(postToolUse, toolName, args, safeError, true, durationMs);
       return {
         content: [{ type: 'text' as const, text: safeError }],
@@ -1566,7 +1593,7 @@ export function wrapExtraToolWithHooks(
       if (onPreToolUse) {
         let check:
           | { allowed: true; context?: ToolExecutionContext }
-          | { allowed: false; error: string; handoff?: ToolHandoffStatus };
+          | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
         try {
           check = await onPreToolUse(name, args, undefined, sdkToolUseIdFromExtra(extra));
         } catch (err) {

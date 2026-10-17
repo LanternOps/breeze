@@ -82,3 +82,62 @@ describe('generateTemporaryPassword', () => {
     expect(/[a-z]/.test(pw) && /[A-Z]/.test(pw) && /[0-9]/.test(pw)).toBe(true);
   });
 });
+
+describe('executeGraphWriteAction — pinned oid', () => {
+  const OID = '22222222-2222-4222-8222-222222222222';
+
+  it('disable with oid skips the Graph lookup and PATCHes /users/<oid> once', async () => {
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const readResource = vi.fn();
+    const gc = client({ patch, readResource });
+    const result = await executeGraphWriteAction(
+      { type: 'm365.user.disable', oid: OID, reason: 'x' },
+      { accessToken: ACCESS_TOKEN, graphClient: gc },
+    );
+    expect(result).toEqual({ success: true, action: 'm365.user.disable', userId: OID });
+    expect(readResource).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith(expect.objectContaining({
+      path: `/users/${OID}`,
+      body: { accountEnabled: false },
+    }));
+  });
+
+  it('reset_password with oid skips the Graph lookup and PATCHes /users/<oid> once', async () => {
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const readResource = vi.fn();
+    const gc = client({ patch, readResource });
+    const result = await executeGraphWriteAction(
+      { type: 'm365.user.reset_password', oid: OID, reason: 'x' },
+      { accessToken: ACCESS_TOKEN, graphClient: gc },
+    );
+    expect(result.success).toBe(true);
+    if (result.success && result.action === 'm365.user.reset_password') expect(result.userId).toBe(OID);
+    expect(readResource).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith(expect.objectContaining({ path: `/users/${OID}` }));
+  });
+
+  it('identifier-only still resolves through Graph', async () => {
+    const readResource = vi.fn().mockResolvedValue({ id: USER_ID });
+    const patch = vi.fn().mockResolvedValue(undefined);
+    const gc = client({ patch, readResource });
+    await executeGraphWriteAction(
+      { type: 'm365.user.disable', userIdentifier: 'a@b.com', reason: 'x' },
+      { accessToken: ACCESS_TOKEN, graphClient: gc },
+    );
+    expect(readResource).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith(expect.objectContaining({ path: `/users/${USER_ID}` }));
+  });
+
+  it('neither oid nor identifier (bypassing the schema) -> user_not_found, no PATCH', async () => {
+    const patch = vi.fn();
+    const gc = client({ patch });
+    const result = await executeGraphWriteAction(
+      { type: 'm365.user.disable', reason: 'x' },
+      { accessToken: ACCESS_TOKEN, graphClient: gc },
+    );
+    expect(result).toEqual({ success: false, errorCode: 'user_not_found' });
+    expect(patch).not.toHaveBeenCalled();
+  });
+});

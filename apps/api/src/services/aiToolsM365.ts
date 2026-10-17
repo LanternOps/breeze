@@ -43,6 +43,21 @@ import { executeM365ReadAction, type M365ReadActionServiceResult } from './m365C
 import type { AiTool } from './aiTools';
 import type { SecretToolResult } from './actionIntents/secretBearingTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../db';
+import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
+import { m365Connections } from '../db/schema/m365';
+import { delegantM365Connections } from '../db/schema/delegant';
+import { executeM365WriteActionByOrg } from './m365ControlPlane/writeActionService';
+import { executeM365UserLookupForCallerTarget } from './m365ControlPlane/readActionService';
+import {
+  callerAction, loadPinnedCallerBackend, normalizeTenantId, requireResolvedOid, type CallerBackend,
+} from './actionIntents/callerTarget';
+import { prepareCallerDispatch } from './callerVerification/dispatch';
+import { requireCallerVerification } from './callerVerification/gate';
+import { CallerVerificationRequiredError, CallerVerificationValidationError } from './callerVerification/errors';
+import type { CallerVerificationAction } from './callerVerification/types';
+import type { ToolExecutionContext } from './toolExecutionContext';
 
 const env = {
   DELEGANT_BASE_URL, DELEGANT_SERVICE_TOKEN, DELEGANT_PRINCIPAL_SIGNING_KEY, DELEGANT_PRINCIPAL_KID,
@@ -103,8 +118,15 @@ function principals(auth: AuthContext) {
 // Graph backend (self-hosted, the org has its own m365_connections row) or the
 // Delegant broker connection (session.delegantM365ConnectionId). `call()`
 // dispatches on this; every handler stays identical.
+//
+// Caller verification W05 (#6354): the two protected mutations
+// (disable_user / reset_user_password) never use resolveContext — they
+// dispatch through the connection PINNED on their action intent
+// (loadM365MutationContext), which may also be the control-plane Graph
+// actions executor (`controlPlane`).
 type Backend =
-  | { backend: 'direct'; orgId: string }
+  | { backend: 'direct'; orgId: string; connectionId?: string }
+  | { backend: 'controlPlane'; orgId: string; connectionId: string }
   | { backend: 'delegant'; conn: DelegantM365ConnectionRow };
 type ResolvedContext = { error: string } | Backend;
 
@@ -138,12 +160,46 @@ async function call(
   sessionId: string,
   toolName: DelegantToolName,
   parameters: Record<string, unknown>,
+  context?: ToolExecutionContext,
 ): Promise<DelegantInvokeResult> {
   if (ctx.backend === 'direct') {
     // DirectInvokeResult is structurally a subset of DelegantInvokeResult; its
     // error `code` is a plain string (formatResultForLlm reads it for display
-    // only), so the cast is sound.
-    return (await invokeDirect(ctx.orgId, toolName, parameters)) as DelegantInvokeResult;
+    // only), so the cast is sound. invokeDirect itself runs the caller
+    // verification dispatch guard for disable_user / reset_user_password.
+    return (await invokeDirect(ctx.orgId, toolName, parameters, {
+      actionIntentId: context?.actionIntentId,
+    })) as DelegantInvokeResult;
+  }
+  if (ctx.backend === 'controlPlane') {
+    // Only the two protected mutations are ever routed here (by the pinned
+    // intent); the write service runs the dispatch guard before the executor.
+    if (toolName !== 'disable_user' && toolName !== 'reset_user_password') {
+      return { kind: 'error', code: 'bad_request', message: `Unsupported tool: ${toolName}` } as DelegantInvokeResult;
+    }
+    const outcome = await executeM365WriteActionByOrg(ctx.orgId, {
+      type: toolName === 'disable_user' ? 'm365.user.disable' : 'm365.user.reset_password',
+      oid: String(parameters.userId ?? ''),
+      reason: String(parameters.reason ?? ''),
+    }, {
+      actionIntentId: context?.actionIntentId,
+      idempotencyKey: context?.actionIntentId,
+      actorId: auth.user.id,
+    });
+    return (outcome.ok
+      ? { kind: 'ok', data: outcome.result }
+      : { kind: 'error', code: outcome.code, message: outcome.message }) as DelegantInvokeResult;
+  }
+  if (toolName === 'disable_user' || toolName === 'reset_user_password') {
+    // Caller verification: pinned intent, consumed grant, both fences and the
+    // committed dispatch marker — with THIS broker connection and tenant —
+    // immediately before the broker mutation. A refusal throws.
+    await prepareCallerDispatch({
+      orgId: ctx.conn.orgId, intentId: context?.actionIntentId,
+      action: toolName === 'disable_user' ? 'disable_user' : 'reset_password',
+      connectionId: ctx.conn.id, backendTenantId: ctx.conn.m365TenantId,
+      oid: String(parameters.userId ?? ''),
+    }, requireCallerVerification);
   }
   const p = principals(auth);
   return invokeDelegantTool(
@@ -177,6 +233,147 @@ async function resolveUserId(
   // absent. auth_failed / forbidden / 5xx are config/permission/transport
   // errors that must surface as themselves, not as a phantom missing user.
   return { ok: false, error: { code: res.code, message: res.message } };
+}
+
+/**
+ * Caller verification W05 (#6354): the backend and pinned object id a released
+ * protected intent dispatches to. Reads the intent by id under the ambient db
+ * context (the session handler / release worker opens the requester's org
+ * scope). Never re-selects a backend and never resolves a UPN: the mutation
+ * goes to `intent.target_entra_oid` through `intent.target_connection_ref`.
+ * Throws the typed refusal when there is no intent or it is not pinned, and
+ * `CallerVerificationValidationError('connection_not_ready')` when the pinned
+ * connection is gone/inactive or now points at another tenant.
+ */
+export async function loadM365MutationContext(
+  orgId: string,
+  action: CallerVerificationAction,
+  intentId?: string,
+): Promise<{ intent: ActionIntent; ctx: Backend; userId: string }> {
+  const refuse = (reason: 'no_fresh_verification' | 'subject_unmatched' | 'target_rebound'): never => {
+    throw new CallerVerificationRequiredError({ orgId, contactId: null, action, requiredTier: 2, reason, latest: null });
+  };
+  if (!intentId) return refuse('no_fresh_verification');
+  const [intent] = await db.select().from(actionIntents).where(and(
+    eq(actionIntents.id, intentId), eq(actionIntents.orgId, orgId),
+  )).limit(1);
+  if (!intent) return refuse('no_fresh_verification');
+  if (callerAction(intent.actionName) !== action) return refuse('target_rebound');
+  if (!intent.targetConnectionRef || !intent.targetEntraOid || !intent.targetEntraTenantId) return refuse('subject_unmatched');
+  const selected = await loadPinnedCallerBackend(orgId, intent.targetConnectionRef);
+  if (selected.tenantId !== intent.targetEntraTenantId.toLowerCase()) {
+    throw new CallerVerificationValidationError('connection_not_ready', 'The pinned Microsoft connection changed tenant');
+  }
+  if (selected.backend === 'delegant') {
+    const conn = await loadConnection(selected.connectionId);
+    const authz = authorizeConnection(conn, orgId);
+    if (!authz.ok) throw new CallerVerificationValidationError('connection_not_ready', 'The pinned Microsoft connection is unavailable');
+    return { intent, ctx: { backend: 'delegant', conn: authz.conn }, userId: intent.targetEntraOid };
+  }
+  return {
+    intent,
+    ctx: selected.backend === 'direct'
+      ? { backend: 'direct', orgId, connectionId: selected.connectionId }
+      : { backend: 'controlPlane', orgId, connectionId: selected.connectionId },
+    userId: intent.targetEntraOid,
+  };
+}
+
+/**
+ * Caller verification W05 (#6354): choose the ONE Microsoft connection a
+ * protected identity action will act through and resolve the requested user
+ * (UPN or object id) to its canonical tenant + object id through it. Called at
+ * intent creation under the requester's org db context.
+ *
+ * Selection order: the org's active legacy-direct connection; else the
+ * selected AI session's authorised Delegant connection; else the active
+ * customer-graph-actions (control-plane) connection; else exactly one active
+ * Delegant connection (several → ambiguous). The chosen connection id is
+ * pinned on the intent; release never falls back to another.
+ *
+ * Every lookup verifies the credential it actually used belongs to the chosen
+ * connection and tenant, and the connection is re-loaded afterwards: a
+ * re-point during the lookup refuses `tenant_mismatch`.
+ */
+export async function resolveM365CallerTarget(
+  auth: AuthContext,
+  orgId: string,
+  identifier: string,
+  sessionId?: string,
+): Promise<CallerBackend & { entraOid: string }> {
+  if (!auth.canAccessOrg(orgId)) throw new Error('Organization not accessible');
+  if (!identifier) throw new CallerVerificationValidationError('subject_unmatched', 'A user identifier is required');
+  const connections = await db.select({ id: m365Connections.id, profile: m365Connections.profile })
+    .from(m365Connections).where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.status, 'active')));
+  let selectedId = connections.find((c) => c.profile === 'legacy-direct')?.id;
+  if (!selectedId && sessionId) {
+    const session = await loadSession(sessionId);
+    if (session && session.orgId === orgId && session.userId === auth.user.id && session.delegantM365ConnectionId) {
+      const allowed = authorizeConnection(await loadConnection(session.delegantM365ConnectionId), orgId);
+      if (allowed.ok) selectedId = allowed.conn.id;
+    }
+  }
+  selectedId ??= connections.find((c) => c.profile === 'customer-graph-actions')?.id;
+  if (!selectedId) {
+    const brokers = await db.select({ id: delegantM365Connections.id }).from(delegantM365Connections).where(and(
+      eq(delegantM365Connections.orgId, orgId), eq(delegantM365Connections.status, 'active'),
+    ));
+    if (brokers.length > 1) throw new CallerVerificationValidationError('subject_ambiguous', 'Select one Microsoft connection for this session');
+    selectedId = brokers[0]?.id;
+  }
+  if (!selectedId) throw new CallerVerificationValidationError('connection_not_ready', 'No Microsoft 365 connection is available for this organization');
+
+  const selected = await loadPinnedCallerBackend(orgId, selectedId);
+  let resource: unknown;
+  if (selected.backend === 'controlPlane') {
+    const result = await executeM365UserLookupForCallerTarget(orgId, identifier, selected.tenantId, auth.user.id);
+    if (!result.ok) {
+      if (result.code === 'tenant_mismatch') throw new CallerVerificationValidationError('tenant_mismatch', result.message);
+      if (result.code === 'graph_not_found' || result.code === 'invalid_subject') {
+        throw new CallerVerificationValidationError('subject_unmatched', result.message);
+      }
+      throw new Error(`Microsoft target lookup failed: ${result.code}`);
+    }
+    if (result.kind !== 'resource') throw new Error('Microsoft target lookup returned no user');
+    resource = result.resource;
+  } else if (selected.backend === 'direct') {
+    const result = await invokeDirect(orgId, 'get_user', { userId: identifier }, {
+      expectedConnection: { connectionId: selected.connectionId, tenantId: selected.tenantId },
+    });
+    if (result.kind !== 'ok') {
+      if (result.code === 'not_found') throw new CallerVerificationValidationError('subject_unmatched', 'Microsoft 365 user not found');
+      throw new Error(`Microsoft target lookup failed: ${result.code}`);
+    }
+    resource = result.data;
+  } else {
+    const conn = await loadConnection(selected.connectionId);
+    if (!conn || conn.id !== selected.connectionId || conn.orgId !== orgId
+      || normalizeTenantId(conn.m365TenantId) !== selected.tenantId || conn.status !== 'active') {
+      throw new CallerVerificationValidationError('tenant_mismatch', 'Microsoft connection changed during target lookup');
+    }
+    const p = principals(auth);
+    const result = await invokeDelegantTool({
+      connection: conn, toolName: 'get_user', parameters: { userId: identifier },
+      actingUser: p.actingUser, agent: p.agent, sessionId: sessionId ?? 'caller-target',
+    }, { env });
+    if (result.kind !== 'ok') {
+      if (result.code === 'not_found') throw new CallerVerificationValidationError('subject_unmatched', 'Microsoft 365 user not found');
+      throw new Error(`Microsoft target lookup failed: ${result.code}`);
+    }
+    resource = result.data;
+  }
+  const after = await loadPinnedCallerBackend(orgId, selected.connectionId);
+  if (after.tenantId !== selected.tenantId || after.backend !== selected.backend) {
+    throw new CallerVerificationValidationError('tenant_mismatch', 'Microsoft connection changed during target lookup');
+  }
+  return { ...selected, entraOid: requireResolvedOid(resource) };
+}
+
+/** Session handlers: a pinned connection that is gone/inactive is an ordinary tool error. */
+function pinnedConnectionError(error: unknown): string | null {
+  return error instanceof CallerVerificationValidationError && error.code === 'connection_not_ready'
+    ? errorString('connection_not_found', 'The Microsoft 365 connection this action was approved for is no longer available.')
+    : null;
 }
 
 const errorTemplate = (e: { code: string; message: string }): string =>
@@ -270,26 +467,28 @@ export async function m365DisableUserHandler(
   input: Record<string, unknown>,
   auth: AuthContext,
   sessionId: string,
+  context?: ToolExecutionContext,
 ): Promise<string> {
   const ceiling = siteCeilingDenied(auth);
   if (ceiling) return ceiling;
   const reason = requireString(input, 'reason');
   if (!reason) return errorString('missing_reason', 'A reason is required for this action.');
-
-  const ctx = await resolveContext(auth, sessionId);
-  if ('error' in ctx) return ctx.error;
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return errorString('missing_user', 'A user identifier (UPN or object id) is required.');
 
-  const resolved = await resolveUserId(identifier, ctx, auth, sessionId);
-  if (!resolved.ok) {
-    return resolved.error.code === 'not_found'
-      ? unresolvedUser(identifier)
-      : errorTemplate(resolved.error);
+  // Caller verification W05: the target is the intent's PINNED object id on
+  // its pinned connection — never a fresh resolution of `userIdentifier`
+  // (display only), so a UPN rename cannot redirect an approved disable.
+  let pinned;
+  try {
+    pinned = await loadM365MutationContext(auth.orgId ?? '', 'disable_user', context?.actionIntentId);
+  } catch (error) {
+    const message = pinnedConnectionError(error);
+    if (message) return message;
+    throw error;
   }
-  const userId = resolved.userId;
 
-  const result = await call(ctx, auth, sessionId, 'disable_user', { userId, reason });
+  const result = await call(pinned.ctx, auth, sessionId, 'disable_user', { userId: pinned.userId, reason }, context);
   return formatResultForLlm(result, {
     successTemplate: () => `Disabled (blocked sign-in for) M365 user ${identifier}.`,
     errorTemplate,
@@ -300,27 +499,26 @@ export async function m365ResetPasswordHandler(
   input: Record<string, unknown>,
   auth: AuthContext,
   sessionId: string,
+  context?: ToolExecutionContext,
 ): Promise<SecretToolResult> {
   const ceiling = siteCeilingDenied(auth);
   if (ceiling) return { kind: 'error', llmText: ceiling };
   const reason = requireString(input, 'reason');
   if (!reason) return { kind: 'error', llmText: errorString('missing_reason', 'A reason is required for this action.') };
-
-  const ctx = await resolveContext(auth, sessionId);
-  if ('error' in ctx) return { kind: 'error', llmText: ctx.error };
   const identifier = requireString(input, 'userIdentifier');
   if (!identifier) return { kind: 'error', llmText: errorString('missing_user', 'A user identifier (UPN or object id) is required.') };
 
-  const resolved = await resolveUserId(identifier, ctx, auth, sessionId);
-  if (!resolved.ok) {
-    return {
-      kind: 'error',
-      llmText: resolved.error.code === 'not_found' ? unresolvedUser(identifier) : errorTemplate(resolved.error),
-    };
+  // Caller verification W05: pinned target only (see m365DisableUserHandler).
+  let pinned;
+  try {
+    pinned = await loadM365MutationContext(auth.orgId ?? '', 'reset_password', context?.actionIntentId);
+  } catch (error) {
+    const message = pinnedConnectionError(error);
+    if (message) return { kind: 'error', llmText: message };
+    throw error;
   }
-  const userId = resolved.userId;
 
-  const result = await call(ctx, auth, sessionId, 'reset_user_password', { userId, reason });
+  const result = await call(pinned.ctx, auth, sessionId, 'reset_user_password', { userId: pinned.userId, reason }, context);
   if (result.kind !== 'ok') {
     return { kind: 'error', llmText: errorTemplate({ code: result.code, message: result.message }) };
   }

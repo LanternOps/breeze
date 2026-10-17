@@ -170,6 +170,7 @@
       "partner": "Partnerebene",
       "org": "Organisation"
     },
+    "tierCapHint": "Die höchste Stufe ist {{max}}. Stufe 3 erfordert die Arbeitsplatz-Verifizierung, die in dieser Version nicht verfügbar ist.",
     "ignored": "Einige Einstellungen sind lockerer als die Partner-Basis und werden ignoriert: {{fields}}",
     "readOnly": "Sie können diese Richtlinie einsehen, aber nicht ändern.",
     "save": "Richtlinie speichern",

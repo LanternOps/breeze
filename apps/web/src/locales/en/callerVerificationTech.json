@@ -170,6 +170,7 @@
       "partner": "Partner",
       "org": "Organization"
     },
+    "tierCapHint": "Maximum tier is {{max}}. Tier 3 needs workstation verification, which is not available in this release.",
     "ignored": "Some settings are looser than the partner baseline and are ignored: {{fields}}",
     "readOnly": "You can view this policy but not change it.",
     "save": "Save policy",

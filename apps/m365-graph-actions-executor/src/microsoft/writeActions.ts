@@ -79,7 +79,18 @@ export async function resolveUserIdentifier(identifier: string, ctx: GraphWriteA
   return id;
 }
 
-async function resolveUserId(action: { userIdentifier: string }, ctx: GraphWriteActionContext): Promise<string> {
+/**
+ * Protected identity actions may carry a pinned Entra object id (`oid`): it is
+ * used verbatim, with no Graph lookup or UPN resolution. Identifier-only
+ * payloads (older API builds) keep the resolve path. The request schema
+ * guarantees exactly one is present; neither -> the not-found error.
+ */
+async function resolveUserId(
+  action: { userIdentifier?: string; oid?: string },
+  ctx: GraphWriteActionContext,
+): Promise<string> {
+  if (action.oid) return action.oid;
+  if (!action.userIdentifier) throw new GraphClientError('graph_not_found');
   return resolveUserIdentifier(action.userIdentifier, ctx);
 }
 

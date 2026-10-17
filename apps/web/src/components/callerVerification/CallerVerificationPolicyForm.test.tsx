@@ -12,7 +12,7 @@ vi.mock('@/lib/useCallerVerificationEnabled', () => ({ useCallerVerificationEnab
 afterEach(() => { vi.clearAllMocks(); enabled.value = true; });
 
 const orgOwner = { ownerScope: 'organization' as const, orgId: ORG };
-const response = (over: Partial<PolicyResponse> = {}): PolicyResponse => ({ row: null, defaults: policyValues, baseline: policyValues, effective: policy, ...over });
+const response = (over: Partial<PolicyResponse> = {}): PolicyResponse => ({ maxAchievableTier: 3, row: null, defaults: policyValues, baseline: policyValues, effective: policy, ...over });
 
 it('makes no request while the feature is off', () => {
   enabled.value = false;
@@ -142,4 +142,31 @@ it('partner mount makes no request while the feature is off', () => {
   enabled.value = false;
   render(<PartnerCallerVerificationPolicy />);
   expect(getPolicy).not.toHaveBeenCalled();
+});
+
+it('caps the tier selectors at maxAchievableTier and explains why while the workstation tier is dark', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 2 }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierResetPassword')).toHaveAttribute('max', '2');
+  expect(screen.getByTestId('cv-policy-requiredTierDisableUser')).toHaveAttribute('max', '2');
+  expect(screen.getByTestId('cv-policy-requiredTierResetPassword-cap-hint')).toHaveTextContent(/Tier 3 needs workstation verification/);
+  // Other numeric fields keep their own bounds.
+  expect(screen.getByTestId('cv-policy-maxAttemptsPerHour')).toHaveAttribute('max', '100');
+});
+
+it('allows tier 3 and shows no hint when the workstation tier is available', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 3 }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierResetPassword')).toHaveAttribute('max', '3');
+  expect(screen.queryByTestId('cv-policy-requiredTierResetPassword-cap-hint')).toBeNull();
+});
+
+it('sends a stored tier 3 as the achievable tier on save instead of a refused value', async () => {
+  const row = { ...inheritedDraft(), requiredTierResetPassword: 3 } as unknown as PolicyResponse['row'];
+  vi.mocked(getPolicy).mockResolvedValue(response({ maxAchievableTier: 2, row }));
+  vi.mocked(putPolicy).mockResolvedValue(response({ maxAchievableTier: 2, row }));
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  expect(await screen.findByTestId('cv-policy-requiredTierResetPassword')).toHaveValue(2);
+  await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
+  expect(putPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, { ...inheritedDraft(), requiredTierResetPassword: 2 });
 });

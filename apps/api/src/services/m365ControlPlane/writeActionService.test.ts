@@ -14,6 +14,9 @@ import type { M365MutatingAction, M365WriteAction } from '@breeze/shared/m365';
  * referencing a non-"mock"-prefixed outer const throws — same pattern as
  * readActionService.test.ts / connectionService.test.ts in this directory.
  */
+const { prepareMock, gateMock } = vi.hoisted(() => ({ prepareMock: vi.fn(), gateMock: vi.fn() }));
+vi.mock('../callerVerification/dispatch', () => ({ prepareCallerDispatch: prepareMock }));
+vi.mock('../callerVerification/gate', () => ({ requireCallerVerification: gateMock }));
 const {
   enabled, budget, executeWriteAction, connRows, recordEvent, withDbAccessContext, withSystemDbAccessContext,
 } = vi.hoisted(() => ({
@@ -60,12 +63,20 @@ vi.mock('../../middleware/auth', () => ({
 import { executeM365WriteActionByOrg, executeM365WriteActionForAuth } from './writeActionService';
 import { GraphActionsExecutorClientError } from './graphActionsExecutorClient';
 import type { AuthContext } from '../../middleware/auth';
+import { CallerVerificationRequiredError } from '../callerVerification/errors';
 
 const ORG = '44444444-4444-4444-8444-444444444444';
 const TENANT = '22222222-2222-4222-8222-222222222222';
 const GROUP = '55555555-5555-4555-8555-555555555555';
 const GRAPH = '00000003-0000-0000-c000-000000000000';
+const OID = '77777777-7777-4777-8777-777777777777';
+const INTENT = '88888888-8888-4888-8888-888888888888';
+/** Identifier-only (chat-path shaped) protected action: never dispatchable. */
 const action: M365WriteAction = { type: 'm365.user.disable', userIdentifier: 'a@b.com', reason: 'x' };
+/** The only shape the protected tools may dispatch: pinned oid + intent id. */
+const pinned: M365WriteAction = { type: 'm365.user.disable', oid: OID, reason: 'x' };
+const pinnedReset: M365WriteAction = { type: 'm365.user.reset_password', oid: OID, reason: 'x' };
+const intentOpts = { actionIntentId: INTENT, idempotencyKey: INTENT };
 const groupRemove: M365WriteAction = {
   type: 'm365.group.membership.remove', groupId: GROUP, userIdentifier: 'a@b.com', reason: 'offboard',
 };
@@ -100,6 +111,8 @@ function row(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  prepareMock.mockReset();
+  prepareMock.mockResolvedValue(undefined);
   enabled.mockReturnValue(true);
   budget.mockResolvedValue({ allowed: true });
   connRows.mockResolvedValue([row()]);
@@ -118,13 +131,12 @@ describe('executeM365WriteActionByOrg — app-role ladder (spec §7.2)', () => {
 
   it('still executes the two pre-M1 actions on a pre-M1 connection (re-consent is an upgrade, not an outage)', async () => {
     for (const a of [
-      { type: 'm365.user.disable', userIdentifier: 'a@b.com', reason: 'x' },
-      { type: 'm365.user.reset_password', userIdentifier: 'a@b.com', reason: 'x' },
+      pinned, pinnedReset,
     ] as const) {
       executeWriteAction.mockResolvedValueOnce(a.type === 'm365.user.disable'
         ? { success: true, action: a.type, userId: 'u1' }
         : { success: true, action: a.type, userId: 'u1', temporaryPassword: 'p', forceChangeNextSignIn: true });
-      const r = await executeM365WriteActionByOrg(ORG, a);
+      const r = await executeM365WriteActionByOrg(ORG, a, intentOpts);
       expect(r.ok).toBe(true);
     }
     expect(executeWriteAction).toHaveBeenCalledTimes(2);
@@ -132,7 +144,7 @@ describe('executeM365WriteActionByOrg — app-role ladder (spec §7.2)', () => {
 
   it('keeps executing the pre-M1 actions on a kept-stale row whose Retest recorded manifest_stale', async () => {
     connRows.mockResolvedValue([row({ lastErrorCode: 'manifest_stale' })]);
-    expect((await executeM365WriteActionByOrg(ORG, action)).ok).toBe(true);
+    expect((await executeM365WriteActionByOrg(ORG, pinned, intentOpts)).ok).toBe(true);
   });
 
   it('does NOT refuse when the connection has no authoritative grant observation', async () => {
@@ -226,6 +238,12 @@ describe('executeM365WriteActionForAuth', () => {
     expect(connRows).not.toHaveBeenCalled();
   });
 
+  it('the chat path can never dispatch a protected identity action (no intent): typed refusal, no executor', async () => {
+    await expect(executeM365WriteActionForAuth(auth, action)).rejects.toBeInstanceOf(CallerVerificationRequiredError);
+    expect(executeWriteAction).not.toHaveBeenCalled();
+    expect(prepareMock).not.toHaveBeenCalled();
+  });
+
   it('refuses when no org can be resolved', async () => {
     const partner = {
       scope: 'partner', orgId: null, user: { id: 'user-1' },
@@ -242,7 +260,9 @@ describe('executeM365WriteActionForAuth', () => {
   });
 
   it('opens a db access context from the auth (never a system context) and attributes the actor', async () => {
-    const r = await executeM365WriteActionForAuth(auth, action);
+    connRows.mockResolvedValue([row({ permissionManifestVersion: 3, observedGrants: M1_GRANTS })]);
+    executeWriteAction.mockResolvedValue({ success: true, action: 'm365.group.membership.remove', userId: 'u1', groupId: GROUP, noop: false });
+    const r = await executeM365WriteActionForAuth(auth, groupRemove);
     expect(r.ok).toBe(true);
     expect(withDbAccessContext).toHaveBeenCalledTimes(1);
     expect(withDbAccessContext.mock.calls[0]?.[0]).toEqual({ scope: 'organization', orgId: ORG });
@@ -258,7 +278,7 @@ describe('executeM365WriteActionForAuth', () => {
 
 describe('executeM365WriteActionByOrg', () => {
   it('runs the happy path, calls the executor once, and audits ok', async () => {
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toEqual({ ok: true, result: { success: true, action: 'm365.user.disable', userId: 'u1' } });
     expect(executeWriteAction).toHaveBeenCalledTimes(1);
     expect(recordEvent).toHaveBeenCalledWith(
@@ -269,7 +289,7 @@ describe('executeM365WriteActionByOrg', () => {
 
   it('refuses when the flag is off (no DB, no executor)', async () => {
     enabled.mockReturnValue(false);
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'tools_disabled' });
     expect(connRows).not.toHaveBeenCalled();
     expect(budget).not.toHaveBeenCalled();
@@ -279,7 +299,7 @@ describe('executeM365WriteActionByOrg', () => {
 
   it('fails closed when there is no connection row at all', async () => {
     connRows.mockResolvedValue([]);
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'connection_not_ready' });
     expect(budget).not.toHaveBeenCalled();
     expect(executeWriteAction).not.toHaveBeenCalled();
@@ -289,7 +309,7 @@ describe('executeM365WriteActionByOrg', () => {
     connRows.mockResolvedValue([
       { id: 'conn-2', orgId: 'other-org', profile: 'customer-graph-actions', status: 'active', tenantId: TENANT },
     ]);
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'connection_not_ready' });
     expect(budget).not.toHaveBeenCalled();
     expect(executeWriteAction).not.toHaveBeenCalled();
@@ -299,7 +319,7 @@ describe('executeM365WriteActionByOrg', () => {
     connRows.mockResolvedValue([
       { id: 'conn-1', orgId: ORG, profile: 'customer-graph-actions', status: 'revoked', tenantId: TENANT },
     ]);
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'connection_not_ready' });
     expect(budget).not.toHaveBeenCalled();
     expect(executeWriteAction).not.toHaveBeenCalled();
@@ -309,7 +329,7 @@ describe('executeM365WriteActionByOrg', () => {
     connRows.mockResolvedValue([
       { id: 'conn-1', orgId: ORG, profile: 'customer-graph-actions', status: 'degraded', tenantId: TENANT },
     ]);
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'connection_not_ready' });
     expect(executeWriteAction).not.toHaveBeenCalled();
   });
@@ -318,14 +338,14 @@ describe('executeM365WriteActionByOrg', () => {
     connRows.mockResolvedValue([
       { id: 'conn-1', orgId: ORG, profile: 'customer-graph-actions', status: 'active', tenantId: null },
     ]);
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'connection_not_ready' });
     expect(executeWriteAction).not.toHaveBeenCalled();
   });
 
   it('refuses when the budget denies (no executor call)', async () => {
     budget.mockResolvedValue({ allowed: false, retryAfterSeconds: 60 });
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'write_rate_limited', retryAfterSeconds: 60 });
     expect(executeWriteAction).not.toHaveBeenCalled();
     expect(recordEvent).not.toHaveBeenCalled();
@@ -333,7 +353,7 @@ describe('executeM365WriteActionByOrg', () => {
 
   it('reports executor_unavailable and audits it when the executor client throws', async () => {
     executeWriteAction.mockRejectedValue(new GraphActionsExecutorClientError());
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'executor_unavailable' });
     expect(recordEvent).toHaveBeenCalledWith(
       expect.anything(),
@@ -343,12 +363,12 @@ describe('executeM365WriteActionByOrg', () => {
 
   it('rethrows unexpected (non-executor-client) errors instead of swallowing them', async () => {
     executeWriteAction.mockRejectedValue(new Error('boom'));
-    await expect(executeM365WriteActionByOrg(ORG, action)).rejects.toThrow('boom');
+    await expect(executeM365WriteActionByOrg(ORG, pinned, intentOpts)).rejects.toThrow('boom');
   });
 
   it('returns the executor-reported failure code and audits it, never the raw result contents', async () => {
     executeWriteAction.mockResolvedValue({ success: false, errorCode: 'user_not_found' });
-    const r = await executeM365WriteActionByOrg(ORG, action);
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
     expect(r).toMatchObject({ ok: false, code: 'user_not_found' });
     expect(recordEvent).toHaveBeenCalledWith(
       expect.anything(),
@@ -364,13 +384,94 @@ describe('executeM365WriteActionByOrg', () => {
       temporaryPassword: 'SUPER-SECRET-DO-NOT-LOG',
       forceChangeNextSignIn: true,
     });
-    const r = await executeM365WriteActionByOrg(ORG, {
-      type: 'm365.user.reset_password',
-      userIdentifier: 'a@b.com',
-      reason: 'x',
-    });
+    const r = await executeM365WriteActionByOrg(ORG, pinnedReset, intentOpts);
     expect(r).toMatchObject({ ok: true });
     const call = recordEvent.mock.calls[0];
     expect(JSON.stringify(call)).not.toContain('SUPER-SECRET-DO-NOT-LOG');
+  });
+});
+
+
+describe('executeM365WriteActionByOrg — caller verification guard (#6354 W05)', () => {
+  const requiredReason = async (fn: () => Promise<unknown>) => {
+    try { await fn(); } catch (e) { return (e as CallerVerificationRequiredError).payload?.reason; }
+    return undefined;
+  };
+
+  it.each([
+    ['disable', pinned], ['reset_password', pinnedReset],
+  ])('%s without an intent throws no_fresh_verification before any DB/budget/executor work', async (_n, a) => {
+    expect(await requiredReason(() => executeM365WriteActionByOrg(ORG, a))).toBe('no_fresh_verification');
+    expect(await requiredReason(() => executeM365WriteActionByOrg(ORG, a, { actorId: 'u' }))).toBe('no_fresh_verification');
+    expect(connRows).not.toHaveBeenCalled();
+    expect(budget).not.toHaveBeenCalled();
+    expect(executeWriteAction).not.toHaveBeenCalled();
+    expect(prepareMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['disable', action], ['reset_password', { type: 'm365.user.reset_password', userIdentifier: 'a@b.com', reason: 'x' } as M365WriteAction],
+  ])('%s by identifier only throws subject_unmatched before any DB/executor work', async (_n, a) => {
+    expect(await requiredReason(() => executeM365WriteActionByOrg(ORG, a, intentOpts))).toBe('subject_unmatched');
+    expect(connRows).not.toHaveBeenCalled();
+    expect(executeWriteAction).not.toHaveBeenCalled();
+  });
+
+  it('an oid action that also carries a userIdentifier is refused', async () => {
+    const both = { ...pinned, userIdentifier: 'a@b.com' } as unknown as M365WriteAction;
+    expect(await requiredReason(() => executeM365WriteActionByOrg(ORG, both, intentOpts))).toBe('subject_unmatched');
+    expect(executeWriteAction).not.toHaveBeenCalled();
+  });
+
+  it('a mismatched idempotency key throws subject_unmatched before any DB/executor work', async () => {
+    expect(await requiredReason(() => executeM365WriteActionByOrg(ORG, pinned, { actionIntentId: INTENT, idempotencyKey: 'other' })))
+      .toBe('subject_unmatched');
+    expect(await requiredReason(() => executeM365WriteActionByOrg(ORG, pinned, { actionIntentId: INTENT })))
+      .toBe('subject_unmatched');
+    expect(connRows).not.toHaveBeenCalled();
+    expect(executeWriteAction).not.toHaveBeenCalled();
+  });
+
+  it('a guard refusal propagates and the executor is never called', async () => {
+    prepareMock.mockRejectedValueOnce(new CallerVerificationRequiredError({
+      orgId: ORG, contactId: null, action: 'disable_user', requiredTier: 2, reason: 'contact_fenced', latest: null,
+    }));
+    await expect(executeM365WriteActionByOrg(ORG, pinned, intentOpts)).rejects.toBeInstanceOf(CallerVerificationRequiredError);
+    expect(executeWriteAction).not.toHaveBeenCalled();
+    expect(recordEvent).not.toHaveBeenCalled();
+  });
+
+  it('a pass makes exactly one executor call: oid present, no userIdentifier, idempotencyKey = intent id', async () => {
+    const r = await executeM365WriteActionByOrg(ORG, pinned, intentOpts);
+    expect(r.ok).toBe(true);
+    expect(executeWriteAction).toHaveBeenCalledTimes(1);
+    const sent = executeWriteAction.mock.calls[0]![0];
+    expect(sent.idempotencyKey).toBe(INTENT);
+    expect(sent.action).toMatchObject({ type: 'm365.user.disable', oid: OID });
+    expect(sent.action).not.toHaveProperty('userIdentifier');
+    expect(prepareMock).toHaveBeenCalledTimes(1);
+    expect(prepareMock.mock.calls[0]![0]).toEqual({
+      orgId: ORG, intentId: INTENT, action: 'disable_user', connectionId: 'conn-1', backendTenantId: TENANT, oid: OID,
+    });
+    expect(prepareMock.mock.calls[0]![1]).toBe(gateMock);
+  });
+
+  it('reset_password guards as reset_password', async () => {
+    executeWriteAction.mockResolvedValue({ success: true, action: 'm365.user.reset_password', userId: 'u1', temporaryPassword: 'p', forceChangeNextSignIn: true });
+    await executeM365WriteActionByOrg(ORG, pinnedReset, intentOpts);
+    expect(prepareMock.mock.calls[0]![0]).toMatchObject({ action: 'reset_password', oid: OID });
+  });
+
+  it('the guard runs after the budget (a rate-limited call never commits a dispatch marker)', async () => {
+    budget.mockResolvedValue({ allowed: false, retryAfterSeconds: 5 });
+    expect(await executeM365WriteActionByOrg(ORG, pinned, intentOpts)).toMatchObject({ ok: false, code: 'write_rate_limited' });
+    expect(prepareMock).not.toHaveBeenCalled();
+  });
+
+  it('non-protected actions never call the guard', async () => {
+    connRows.mockResolvedValue([row({ permissionManifestVersion: 3, observedGrants: M1_GRANTS })]);
+    executeWriteAction.mockResolvedValue({ success: true, action: 'm365.group.membership.remove', userId: 'u1', groupId: GROUP, noop: false });
+    expect((await executeM365WriteActionByOrg(ORG, groupRemove)).ok).toBe(true);
+    expect(prepareMock).not.toHaveBeenCalled();
   });
 });

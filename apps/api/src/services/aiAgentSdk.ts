@@ -59,6 +59,13 @@ import {
 import { buildActionLabel } from './actionIntents/actionLabel';
 import { publishIntentTerminalOutbox } from './aiOperator/taskOutbox';
 import { revalidateApprovedIntentForRelease } from './actionIntents/revalidateRelease';
+import {
+  callerRefusal,
+  callerRefusalFromPayload,
+  CALLER_VERIFICATION_REQUIRED_CODE,
+  CALLER_VERIFICATION_REQUIRED_ERROR,
+  type CallerRefusalPayload,
+} from './callerVerification/refusal';
 import { requiresDurableRelease } from './actionIntents/durableRelease';
 import {
   APPROVED_FAILED_STATUS,
@@ -330,6 +337,13 @@ function approvalAuditDetails(
  * free-form) goes in `result` instead, never in `error_code`.
  */
 const INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE = 'tool_execution_failed';
+
+/** The exact object `callerRefusal` emits for a thrown typed refusal. */
+function isCallerRefusalResult(result: Record<string, unknown>): boolean {
+  const payload = result.requiresCallerVerification;
+  return result.error === CALLER_VERIFICATION_REQUIRED_ERROR
+    && typeof payload === 'object' && payload !== null;
+}
 
 // SECRET_SEAL_INVARIANT_VIOLATED_ERROR_CODE and MAX_RESULT_BYTES (aliased
 // here as MAX_INLINE_RESULT_BYTES for readability at call sites below) are
@@ -1502,6 +1516,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               // configured interactive approval window, not a fixed 5 min,
               // so the wait below is not cut short by the intent's own expiry.
               chatApprovalWindowMs: session.approvalWaitBudgetMs,
+              // #6354 W05 — the chat session id the caller-verification gate
+              // matches a fresh verification against (protected M365 actions).
+              m365SessionId: session.breezeSessionId,
               // Tool catalog W01 PR B (#5216): a tenant (BYO MCP) tool binds
               // the intent to the exact tool row + revision this session
               // resolved, so release revalidation reloads THAT row and fails
@@ -1519,6 +1536,16 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
                 : {}),
             });
           } catch (err) {
+            // A typed caller-verification refusal is the gate's answer, not a
+            // fault: carry its payload intact instead of the generic wording.
+            const refusal = callerRefusal(err);
+            if (refusal) {
+              return await failMatchedPlanStep({
+                allowed: false,
+                error: refusal.error,
+                requiresCallerVerification: refusal.requiresCallerVerification,
+              });
+            }
             console.error('[AI-SDK] Failed to create action intent:', toolName, err);
             return await failMatchedPlanStep({ allowed: false, error: intentCreationRefusal(toolName, input, err) });
           }
@@ -1810,10 +1837,22 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
           const revalidation = await revalidateApprovedIntentForRelease(intentRow, winningApproval);
           if (!revalidation.ok) {
+            // Only the typed caller-verification payload is surfaced; the rest
+            // of `details` is never exposed for any other code.
+            const requiresCallerVerification =
+              revalidation.errorCode === CALLER_VERIFICATION_REQUIRED_CODE
+                ? (revalidation.details?.requiresCallerVerification as CallerRefusalPayload | undefined)
+                : undefined;
+            const callerRefusalResult = requiresCallerVerification
+              ? callerRefusalFromPayload(requiresCallerVerification)
+              : undefined;
             const revalidationCasWon = await transitionIntentAndPublish(
               intent.id,
               'failed',
-              { errorCode: revalidation.errorCode },
+              {
+                errorCode: revalidation.errorCode,
+                ...(callerRefusalResult ? { result: callerRefusalResult } : {}),
+              },
               session.orgId,
               'intent_failed',
             );
@@ -1832,7 +1871,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             );
             return await failMatchedPlanStep({
               allowed: false,
-              error: 'Authorization for this action could no longer be verified; it was not executed.',
+              error: callerRefusalResult?.error
+                ?? 'Authorization for this action could no longer be verified; it was not executed.',
+              ...(requiresCallerVerification ? { requiresCallerVerification } : {}),
             });
           }
 
@@ -2772,7 +2813,14 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
                 // release worker's vocabulary); the raw tool error text is
                 // unbounded free-form and belongs in `result`, not `error_code`.
                 ...(isError
-                  ? { errorCode: INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE, result: sizedResult }
+                  ? {
+                      // A handler-thrown caller refusal (the backend dispatch
+                      // guard) arrives here as the adapter's refusal object.
+                      errorCode: isCallerRefusalResult(sizedResult)
+                        ? CALLER_VERIFICATION_REQUIRED_CODE
+                        : INLINE_TOOL_EXECUTION_FAILED_ERROR_CODE,
+                      result: sizedResult,
+                    }
                   : { result: sizedResult }),
               },
               session.orgId,

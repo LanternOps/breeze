@@ -10,6 +10,8 @@ import { and, eq, isNull, or } from 'drizzle-orm';
 import { db } from '../../db';
 import { organizations } from '../../db/schema/orgs';
 import { callerVerificationPolicies } from '../../db/schema/callerVerification';
+import { callerVerificationWorkstationEnabled } from '../../config/env';
+import { CallerVerificationValidationError } from './errors';
 import type { PolicyRow } from './types';
 
 export interface EffectiveCallerVerificationPolicy {
@@ -112,6 +114,25 @@ export async function getEffectivePolicy(orgId: string): Promise<EffectiveCaller
 }
 
 /**
+ * Highest tier a policy can actually require. Tier 3 is reachable only through
+ * a bound workstation (administrative grants are not policy-selectable), so
+ * while the workstation tier is dark nothing can satisfy more than tier 2.
+ */
+export function maxAchievableTier(): 2 | 3 {
+  return callerVerificationWorkstationEnabled() ? 3 : 2;
+}
+
+/** Refuses a policy write that requires a tier nothing can currently satisfy. */
+export function assertTiersAchievable(patch: { requiredTierResetPassword?: number | null; requiredTierDisableUser?: number | null }): void {
+  const max = maxAchievableTier();
+  for (const tier of [patch.requiredTierResetPassword, patch.requiredTierDisableUser]) {
+    if (typeof tier === 'number' && tier > max) {
+      throw new CallerVerificationValidationError('tier_unachievable', `Required tier ${tier} is not achievable: the maximum available tier is ${max}`);
+    }
+  }
+}
+
+/**
  * Response projection for GET/PUT policy: the owner's own row, code
  * defaults, the baseline the owner inherits, and the effective result. For
  * the partner owner, `effective` is the baseline itself (no org tightening).
@@ -119,6 +140,7 @@ export async function getEffectivePolicy(orgId: string): Promise<EffectiveCaller
 export function policyResponse(partnerRow: PolicyRow | null, orgRow: PolicyRow | null, owner: 'org' | 'partner') {
   const { provenance: _provenance, ignored: _ignored, ...baseline } = resolveEffectivePolicy(partnerRow, null);
   return {
+    maxAchievableTier: maxAchievableTier(),
     row: owner === 'partner' ? partnerRow : orgRow,
     defaults: structuredClone(CALLER_VERIFICATION_POLICY_DEFAULTS),
     baseline,

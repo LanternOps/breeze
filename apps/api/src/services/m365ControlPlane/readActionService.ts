@@ -521,3 +521,47 @@ export async function executeM365MailboxReadByOrg(
     actorId,
   }) as Promise<M365ReadActionServiceResult>;
 }
+
+export type M365CallerTargetLookupResult =
+  | M365ReadActionServiceResult
+  | { ok: false; code: 'tenant_mismatch' | 'invalid_subject'; message: string };
+
+/**
+ * Caller verification W05 (#6354): resolve the user a protected identity
+ * action names (UPN or object id) to its canonical resource through the
+ * customer-graph-read profile, refusing BEFORE any executor call when the read
+ * connection's tenant is not the tenant of the actions connection the intent
+ * will be pinned to (`expectedTenantId`). Runs under the AMBIENT db context
+ * (the creation path opens the requester's org scope) — never a system scope.
+ */
+export async function executeM365UserLookupForCallerTarget(
+  orgId: string,
+  identifier: string,
+  expectedTenantId: string,
+  actorId: string,
+): Promise<M365CallerTargetLookupResult> {
+  const action = m365ReadActionSchema.safeParse({ type: 'm365.user.get', userIdOrUpn: identifier });
+  if (!action.success) {
+    return { ok: false, code: 'invalid_subject', message: 'A Microsoft 365 user principal name or object id is required.' };
+  }
+  if (!isM365GraphReadToolsEnabledForOrg(orgId)) {
+    return { ok: false, code: 'tools_disabled', message: 'Microsoft 365 Graph read tools are not enabled for this organization.' };
+  }
+  const [connection] = await db.select().from(m365Connections).where(and(
+    eq(m365Connections.orgId, orgId),
+    eq(m365Connections.profile, PROFILE),
+  )).limit(1);
+  const notReady = connection && connection.orgId !== orgId ? 'missing' : connectionNotReadyState(connection);
+  const snapshot = notReady ? null : connectionExecutionSnapshot(connection);
+  if (!snapshot) {
+    return { ok: false, code: 'connection_not_ready', message: connectionNotReadyMessage(notReady ?? 'missing') };
+  }
+  if (snapshot.tenantId.toLowerCase() !== expectedTenantId.toLowerCase()) {
+    return { ok: false, code: 'tenant_mismatch', message: 'The Microsoft 365 read and actions connections are in different tenants.' };
+  }
+  return callGraphReadExecutor(snapshot, action.data, {
+    route: 'read',
+    correlationId: randomUUID(),
+    actorId,
+  }) as Promise<M365ReadActionServiceResult>;
+}

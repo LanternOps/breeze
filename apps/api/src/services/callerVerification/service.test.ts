@@ -103,6 +103,7 @@ it('a site-level manager cannot authorize another account at initiation', async 
 
 describe('workstation availability (#6354 W02)', () => {
   const device = { id: '55555555-5555-4555-8555-555555555555', orgId: org, siteId: null, hostname: 'pc-1' };
+  beforeEach(() => vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'true'));
 
   it('advertises workstation only when one of the contact suggested devices is ready', async () => {
     state.results.push([contact]);
@@ -286,5 +287,65 @@ describe('public not_me window (#6354 W03)', () => {
     state.results.push([row], [row]);
     await applyDecision({ verificationId: user, decision: { kind: 'not_me' }, fromIp: '203.0.113.20' });
     expect(state.calls.some((c) => c.name === 'update')).toBe(false);
+  });
+});
+
+describe('workstation tier dark flag (W05)', () => {
+  const device = { id: '55555555-5555-4555-8555-555555555555', orgId: org, siteId: null, hostname: 'pc-1' };
+
+  it('reports workstation method_disabled without any device lookup while the flag is off', async () => {
+    vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'false');
+    ref.suggestions.mockResolvedValue([{ deviceId: device.id, hostname: 'pc-1', username: 'alex', hasBinding: false, available: true }]);
+    state.results.push([contact]);
+    const rows = await methodsForContact(actor, org, user, 'any');
+    expect(rows.find((m) => m.method === 'workstation')).toMatchObject({ available: false, unavailableReason: 'method_disabled' });
+    expect(ref.suggestions).not.toHaveBeenCalled();
+    // The link tier is unaffected by the workstation flag.
+    expect(rows.find((m) => m.method === 'callback_attestation')).toMatchObject({ available: true });
+  });
+
+  it('unset flag defaults to dark', async () => {
+    delete process.env.CALLER_VERIFICATION_WORKSTATION_ENABLED;
+    state.results.push([contact]);
+    const row = (await methodsForContact(actor, org, user, 'any')).find((m) => m.method === 'workstation');
+    expect(row).toMatchObject({ available: false, unavailableReason: 'method_disabled' });
+  });
+
+  it('start refuses workstation even with a hand-picked deviceId, before any database work', async () => {
+    vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'false');
+    await expect(start(actor, { ...input, method: 'workstation', deviceId: device.id, username: 'alex' })).rejects.toMatchObject({ code: 'method_disabled' });
+    expect(state.calls).toEqual([]);
+    expect(ref.prepare).not.toHaveBeenCalled();
+  });
+
+  it('flag on keeps the hand-picked-device path', async () => {
+    vi.stubEnv('CALLER_VERIFICATION_WORKSTATION_ENABLED', 'true');
+    state.results.push([contact], [contact], [contact], [device], [contact], [contact], [{ count: 0 }], [{ id: user, method: 'workstation' }]);
+    ref.prepare.mockRejectedValueOnce(Object.assign(new Error('No compatible console helper'), { code: 'helper_outdated' }));
+    await expect(start(actor, { ...input, method: 'workstation', deviceId: device.id, username: 'alex' })).rejects.toMatchObject({ code: 'helper_outdated' });
+    expect(ref.prepare).toHaveBeenCalled();
+  });
+});
+
+describe('consumedIntentStatus projection (W05)', () => {
+  const at = new Date('2026-09-19T12:00:00Z');
+  const p = resolveEffectivePolicy(null, null);
+  const base = { id: user, orgId: org, contactId: user, initiatedByUserId: user, method: 'callback_attestation', status: 'verified', createdAt: at, expiresAt: at, decidedAt: at, actionScope: 'any', reason: null } as VerificationRow;
+
+  it('carries the intent status only when consumed', () => {
+    const consumed = { ...base, consumedAt: at } as VerificationRow;
+    expect(verificationDetails(consumed, null, null, p, 0, null, 'm365_reset_password', 'failed').consumedIntentStatus).toBe('failed');
+    expect(verificationDetails(consumed, null, null, p, 0, null, 'm365_reset_password', 'completed').consumedIntentStatus).toBe('completed');
+    expect(verificationDetails(base, null, null, p, 0, null, null, 'failed').consumedIntentStatus).toBeNull();
+    expect(verificationDetails(consumed, null, null, p, 0, null, null).consumedIntentStatus).toBeNull();
+  });
+
+  it('projectVerification selects status from the org-pinned consumed intent; absent intent is null', async () => {
+    const consumed = { ...base, consumedAt: at, consumedIntentRef: '66666666-6666-4666-8666-666666666666' } as VerificationRow;
+    state.results.push([{ count: 0 }], [], [{ actionName: 'm365_disable_user', status: 'failed' }]);
+    const { projectVerification } = await import('./service');
+    expect(await projectVerification(consumed, null, null)).toMatchObject({ consumedAction: 'disable_user', consumedIntentStatus: 'failed' });
+    state.results.push([{ count: 0 }], [], []);
+    expect(await projectVerification(consumed, null, null)).toMatchObject({ consumedAction: null, consumedIntentStatus: null });
   });
 });

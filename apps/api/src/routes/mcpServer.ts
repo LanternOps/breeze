@@ -51,6 +51,7 @@ import { sanitizeAuditPayload, summarizePayload, summarizeToolResult } from '../
 import { compactToolResultForChat, redactAiToolOutputText } from '../services/aiToolOutput';
 import { redactToolOutputFields } from '../services/logRedaction';
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
+import { callerRefusal } from '../services/callerVerification/refusal';
 import { resolveDeprecatedToolAlias } from '../services/aiToolAliases';
 import { MCP_SERVER_INSTRUCTIONS, listMcpPrompts, getMcpPrompt, hasMcpPrompt } from '../services/mcpGuidance';
 import { API_VERSION } from '../version';
@@ -1799,8 +1800,11 @@ async function handleToolsCall(
 
       return { status: 'success', ledgerResult: safeResult, response };
     } catch (err) {
-      const message = sanitizeThrownToolError(toolName, err);
-      const safeError = compactToolResultForChat(toolName, JSON.stringify({ error: message }));
+      // Typed caller-verification refusal: emit the gate's payload intact (no
+      // message/stack, so nothing to sanitise) instead of a generic error.
+      const refusal = callerRefusal(err);
+      const message = refusal ? refusal.error : sanitizeThrownToolError(toolName, err);
+      const safeError = compactToolResultForChat(toolName, JSON.stringify(refusal ?? { error: message }));
       return {
         status: 'failure',
         error: err,

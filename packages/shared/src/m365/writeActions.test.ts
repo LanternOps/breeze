@@ -247,3 +247,43 @@ describe('writeActionResultSchema — M1 arms', () => {
     }).success).toBe(false);
   });
 });
+
+describe('m365WriteActionSchema — pinned oid on protected identity actions', () => {
+  const OID = '22222222-2222-4222-8222-222222222222';
+  for (const type of ['m365.user.disable', 'm365.user.reset_password'] as const) {
+    describe(type, () => {
+      it('accepts an oid-only target and retains the oid', () => {
+        const parsed = m365WriteActionSchema.parse({ type, oid: OID, reason: 'x' });
+        expect(parsed).toMatchObject({ type, oid: OID });
+        expect((parsed as { userIdentifier?: string }).userIdentifier).toBeUndefined();
+      });
+      it('still accepts an identifier-only target (rollout compat)', () => {
+        const parsed = m365WriteActionSchema.parse({ type, userIdentifier: 'a@b.com', reason: 'x' });
+        expect(parsed).toMatchObject({ type, userIdentifier: 'a@b.com' });
+      });
+      it('rejects both userIdentifier and oid', () => {
+        expect(m365WriteActionSchema.safeParse({ type, userIdentifier: 'a@b.com', oid: OID, reason: 'x' }).success).toBe(false);
+      });
+      it('rejects neither', () => {
+        expect(m365WriteActionSchema.safeParse({ type, reason: 'x' }).success).toBe(false);
+      });
+      it('rejects a non-GUID oid', () => {
+        expect(m365WriteActionSchema.safeParse({ type, oid: 'not-a-guid', reason: 'x' }).success).toBe(false);
+      });
+      it('is enforced by the executor request schema too', () => {
+        const base = { correlationId: UUID, tenantId: UUID, idempotencyKey: 'k' };
+        expect(writeActionRequestSchema.safeParse({ ...base, action: { type, oid: OID, reason: 'x' } }).success).toBe(true);
+        expect(writeActionRequestSchema.safeParse({ ...base, action: { type, userIdentifier: 'a@b.com', reason: 'x' } }).success).toBe(true);
+        expect(writeActionRequestSchema.safeParse({ ...base, action: { type, userIdentifier: 'a@b.com', oid: OID, reason: 'x' } }).success).toBe(false);
+        expect(writeActionRequestSchema.safeParse({ ...base, action: { type, reason: 'x' } }).success).toBe(false);
+      });
+    });
+  }
+
+  it('other arms do not accept oid and still require userIdentifier', () => {
+    expect(m365WriteActionSchema.safeParse({ type: 'm365.user.revoke_sessions', oid: OID, reason: 'x' }).success).toBe(false);
+    expect(m365WriteActionSchema.safeParse({ type: 'm365.user.revoke_sessions', userIdentifier: 'a@b.com', oid: OID, reason: 'x' }).success).toBe(false);
+    expect(m365WriteActionSchema.safeParse({ type: 'm365.user.revoke_sessions', reason: 'x' }).success).toBe(false);
+    expect(m365WriteActionSchema.safeParse({ type: 'm365.user.revoke_sessions', userIdentifier: 'a@b.com', reason: 'x' }).success).toBe(true);
+  });
+});

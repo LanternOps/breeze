@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { executeMock, updateMock, addMock, pamAddMock, closeMock } = vi.hoisted(() => ({
+const { executeMock, updateMock, addMock, pamAddMock, closeMock, linkMock } = vi.hoisted(() => ({
+  linkMock: vi.fn(),
   executeMock: vi.fn(),
   updateMock: vi.fn(),
   addMock: vi.fn(),
@@ -59,6 +60,10 @@ vi.mock('../services/bullmqQueue', () => ({
     add: name === 'pam-actuation' ? pamAddMock : addMock,
     close: closeMock,
   })),
+}));
+
+vi.mock('../services/callerVerification/incidentLinks', () => ({
+  linkCallerIntentTerminal: (...args: unknown[]) => linkMock(...(args as [])),
 }));
 
 vi.mock('../services/sentry', () => ({
@@ -318,5 +323,55 @@ describe('intentOutboxPublisher.publishOutboxRows', () => {
     // no-op, not recovery — so keep the span under 2 minutes.
     expect(spanMs).toBeGreaterThan(0);
     expect(spanMs).toBeLessThanOrEqual(2 * 60 * 1000);
+  });
+
+  describe('caller-verification incident linkage (W05)', () => {
+    function claim(eventType: string, intentId = 'intent-9') {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      executeMock.mockResolvedValueOnce({
+        rows: [{ id: 9, intent_id: intentId, event_type: eventType, publish_attempts: 1 }],
+      });
+      updateMock.mockReturnValue({ set: makeUpdateChain().set });
+    }
+
+    it.each([
+      'intent_completed',
+      'intent_failed',
+      'intent_cancelled',
+      'intent_expired',
+      'intent_rejected',
+    ])('links the incident before enqueueing a %s row', async (eventType) => {
+      claim(eventType);
+      const order: string[] = [];
+      linkMock.mockImplementation(async () => { order.push('link'); });
+      addMock.mockImplementation(async () => { order.push('add'); return { id: 'j' }; });
+
+      const result = await publishOutboxRows();
+
+      expect(linkMock).toHaveBeenCalledWith('intent-9');
+      expect(order).toEqual(['link', 'add']);
+      expect(result.published).toBe(1);
+    });
+
+    it('leaves the row unpublished (retried next pass) when linking fails', async () => {
+      claim('intent_cancelled');
+      linkMock.mockRejectedValueOnce(new Error('db down'));
+
+      const result = await publishOutboxRows();
+
+      expect(result).toEqual({ published: 0, skipped: 0 });
+      expect(addMock).not.toHaveBeenCalled();
+      expect(updateMock).not.toHaveBeenCalled();
+      expect(captureException).toHaveBeenCalled();
+    });
+
+    it('does not link non-terminal events', async () => {
+      claim('intent_created');
+
+      const result = await publishOutboxRows();
+
+      expect(linkMock).not.toHaveBeenCalled();
+      expect(result.published).toBe(1);
+    });
   });
 });

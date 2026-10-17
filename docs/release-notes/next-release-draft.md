@@ -23,4 +23,10 @@ Last release: **v0.123.0** (2026-10-17).
 
 ## Features / API
 
+### Caller verification is now enforced for Microsoft 365 identity actions
+
+Password resets and account disables require fresh, single-use verification for the pinned Entra account, using the link tier: SMS and email links, callback attestation, and administrative disable. Verification is checked at release and immediately before direct Graph, Graph executor or Delegant dispatch. Administrative disable uses an interactive MFA step-up bound to the target and reason. "This is not me" opens an incident and fences undispatched actions.
+
+Workstation verification is not part of this release: it ships dark behind `CALLER_VERIFICATION_WORKSTATION_ENABLED` (default `false`), and policies cannot require tier 3 until it is enabled. Establish Entra bindings and attest imported contact destinations. Existing unpinned intents must be recreated. Roll the OID-capable Graph actions executor before the API. `CALLER_VERIFICATION_ENABLED` now defaults to `true`; set and map it in the API service environment. Explicit false hides the workflow and refuses protected actions. A failed dispatch does not restore a consumed verification.
+
 ## Migrations

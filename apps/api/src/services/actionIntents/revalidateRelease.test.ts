@@ -53,6 +53,29 @@ vi.mock('../../config/env', () => ({
 vi.mock('../aiAgents/sweepActMode', () => ({
   checkSweepScheduleBrake: vi.fn(async () => ({ ok: true })),
 }));
+// Caller verification W05 (#6354): the consume step for the two protected M365
+// tools. The gate, policy lookup and pinned-connection loader are mocked at the
+// module boundary (their own behaviour is covered in callerVerification/*);
+// these tests pin what release hands them and the exact failure shapes.
+vi.mock('../../db', async (orig) => {
+  const actual = await (orig as () => Promise<Record<string, unknown>>)();
+  return {
+    ...actual,
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+  };
+});
+vi.mock('../callerVerification/gate', () => ({ requireCallerVerification: vi.fn(async () => undefined) }));
+vi.mock('../callerVerification/policy', () => ({
+  getEffectivePolicy: vi.fn(async () => ({ requiredTierResetPassword: 3, requiredTierDisableUser: 2 })),
+}));
+vi.mock('./callerTarget', async (orig) => {
+  const actual = await (orig as () => Promise<Record<string, unknown>>)();
+  return {
+    ...actual,
+    loadPinnedCallerBackend: vi.fn(async () => ({ backend: 'direct', connectionId: 'conn-1', tenantId: 'tenant-1', orgId: 'org-1' })),
+  };
+});
 
 import { revalidateApprovedIntentForRelease } from './revalidateRelease';
 import { checkToolPermission, checkPermissionRequirements } from '../aiGuardrails';
@@ -65,6 +88,9 @@ import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
 import { buildAuthContextForIntent } from './actorContext';
 import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
+import { requireCallerVerification } from '../callerVerification/gate';
+import { loadPinnedCallerBackend } from './callerTarget';
+import { CallerVerificationRequiredError, CallerVerificationValidationError } from '../callerVerification/errors';
 
 /** Minimal ActionIntent shape the function actually reads. */
 function intentFixture(overrides: Record<string, unknown> = {}) {
@@ -687,6 +713,9 @@ describe('revalidateApprovedIntentForRelease org-wide governance site ceiling', 
     actionName: 'm365_disable_user',
     arguments: args,
     argumentDigest: digest,
+    targetEntraTenantId: '22222222-2222-4222-8222-222222222222',
+    targetEntraOid: '33333333-3333-4333-8333-333333333333',
+    targetConnectionRef: '44444444-4444-4444-8444-444444444444',
     ...overrides,
   });
 
@@ -869,5 +898,154 @@ describe('revalidateApprovedIntentForRelease: decided_via = plan_approval (E4)',
     );
     expect(res).toMatchObject({ ok: false, errorCode: 'digest_mismatch' });
     expect(checkPlanEffectMembershipSystem).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Caller verification W05 (#6354): consume step for m365_disable_user /
+// m365_reset_password, after every other release check passed.
+// ---------------------------------------------------------------------------
+describe('revalidateApprovedIntentForRelease caller verification consume (#6354 W05)', () => {
+  const args = { userIdentifier: 'victim@contoso.test', reason: 'r' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const TENANT = '22222222-2222-4222-8222-222222222222';
+  const OID = '33333333-3333-4333-8333-333333333333';
+  const protectedIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    actionName: 'm365_disable_user',
+    arguments: args,
+    argumentDigest: digest,
+    targetEntraTenantId: TENANT,
+    targetEntraOid: OID,
+    targetConnectionRef: '44444444-4444-4444-8444-444444444444',
+    ...overrides,
+  });
+  const refusalPayload = (reason: string, extra: Record<string, unknown> = {}) => ({
+    orgId: 'org-1', contactId: null, action: 'disable_user' as const, requiredTier: 2,
+    reason: reason as never, latest: null, ...extra,
+  });
+
+  it.each([
+    ['m365_disable_user', 'disable_user', 2],
+    ['m365_reset_password', 'reset_password', 3],
+  ])('%s consumes through the gate with the pinned subject, intent id and the pinned connection tenant', async (actionName, action) => {
+    const result = await revalidateApprovedIntentForRelease(protectedIntent({ actionName }), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: true });
+    expect(requireCallerVerification).toHaveBeenCalledTimes(1);
+    expect(requireCallerVerification).toHaveBeenCalledWith({
+      orgId: 'org-1', action,
+      target: { entraTenantId: TENANT, entraOid: OID },
+      backendTenantId: 'tenant-1',
+      technicianUserId: 'user-1',
+      intentId: 'intent-1',
+      mode: 'consume',
+    });
+    expect(loadPinnedCallerBackend).toHaveBeenCalledWith('org-1', '44444444-4444-4444-8444-444444444444');
+  });
+
+  it('a typed gate refusal returns the exact failure shape carrying the gate payload', async () => {
+    const payload = refusalPayload('no_fresh_verification');
+    vi.mocked(requireCallerVerification).mockRejectedValueOnce(new CallerVerificationRequiredError(payload));
+    const result = await revalidateApprovedIntentForRelease(protectedIntent(), { boundArgumentDigest: digest });
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'caller_verification_required',
+      details: { requiresCallerVerification: payload },
+    });
+  });
+
+  it('RBAC denial returns rbac_denied and never reaches the gate', async () => {
+    vi.mocked(checkToolPermission).mockResolvedValueOnce('Missing permission' as never);
+    const result = await revalidateApprovedIntentForRelease(protectedIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'rbac_denied' });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+    expect(loadPinnedCallerBackend).not.toHaveBeenCalled();
+  });
+
+  it('a digest mismatch never reaches the gate', async () => {
+    const result = await revalidateApprovedIntentForRelease(protectedIntent(), { boundArgumentDigest: 'f'.repeat(64) });
+    expect(result).toMatchObject({ ok: false, errorCode: 'digest_mismatch' });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+  });
+
+  it('a site-ceiling refusal never reaches the gate', async () => {
+    vi.mocked(buildAuthContextForIntent).mockResolvedValueOnce({
+      scope: 'organization', orgId: 'org-1', accessibleOrgIds: ['org-1'],
+      user: { id: 'user-1' }, principal: { kind: 'user_session' }, allowedSiteIds: ['site-1'],
+    } as never);
+    const result = await revalidateApprovedIntentForRelease(protectedIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'site_ceiling' });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+  });
+
+  it('an agent-originated intent refuses technician_mismatch without calling the gate', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      protectedIntent({
+        requestedByUserId: null, requestingAgentRunId: 'run-1', originPrincipalKind: 'ai_agent', source: 'ai_agent',
+      }),
+      { boundArgumentDigest: digest },
+    );
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'caller_verification_required',
+      details: { requiresCallerVerification: refusalPayload('technician_mismatch', { requiredTier: 2 }) },
+    });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+  });
+
+  it('a requester-less intent refuses technician_mismatch without calling the gate', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      protectedIntent({ requestedByUserId: null }),
+      { boundArgumentDigest: digest },
+    );
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'caller_verification_required',
+      details: { requiresCallerVerification: refusalPayload('technician_mismatch', { requiredTier: 2 }) },
+    });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no tenant', { targetEntraTenantId: null }],
+    ['no oid', { targetEntraOid: null }],
+    ['no connection ref', { targetConnectionRef: null }],
+  ])('an unpinned intent (%s) refuses subject_unmatched without calling the gate', async (_label, over) => {
+    const result = await revalidateApprovedIntentForRelease(protectedIntent(over), { boundArgumentDigest: digest });
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'caller_verification_required',
+      details: { requiresCallerVerification: refusalPayload('subject_unmatched', { requiredTier: 2 }) },
+    });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+  });
+
+  it('a pinned connection that is gone is connection_unavailable and does not consume', async () => {
+    vi.mocked(loadPinnedCallerBackend).mockRejectedValueOnce(new CallerVerificationValidationError('connection_not_ready', 'gone'));
+    const result = await revalidateApprovedIntentForRelease(protectedIntent(), { boundArgumentDigest: digest });
+    expect(result).toEqual({ ok: false, errorCode: 'connection_unavailable', details: { reason: 'gone' } });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+  });
+
+  it('an unexpected gate error is rethrown, not folded into a refusal', async () => {
+    vi.mocked(requireCallerVerification).mockRejectedValueOnce(new Error('db down'));
+    await expect(revalidateApprovedIntentForRelease(protectedIntent(), { boundArgumentDigest: digest })).rejects.toThrow('db down');
+  });
+
+  it('non-protected tools never call the gate or load a pinned connection', async () => {
+    const plainArgs = { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' };
+    const plainDigest = computeArgumentDigest(canonicalizeArguments(plainArgs));
+    const result = await revalidateApprovedIntentForRelease(
+      intentFixture({ actionName: 'manage_services', arguments: plainArgs, argumentDigest: plainDigest }),
+      { boundArgumentDigest: plainDigest },
+    );
+    expect(result).toMatchObject({ ok: true });
+    const other = await revalidateApprovedIntentForRelease(
+      protectedIntent({ actionName: 'm365_revoke_sessions' }),
+      { boundArgumentDigest: digest },
+    );
+    expect(other).toMatchObject({ ok: true });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+    expect(loadPinnedCallerBackend).not.toHaveBeenCalled();
   });
 });

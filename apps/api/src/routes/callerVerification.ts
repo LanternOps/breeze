@@ -11,8 +11,9 @@
  * an anonymous request still gets 401 as the router auth-gate contract
  * requires. The feature does not exist for anyone who can reach it.
  *
- * Not mounted in W01: the administrative step-up route (W05) and the public
- * `/verify/:token` link route (W03).
+ * The administrative step-up route (W05) runs the service inside a
+ * request-local interactive proof taken from the verified access token; the
+ * public `/verify/:token` link route (W03) is mounted elsewhere.
  */
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { z } from 'zod';
@@ -20,6 +21,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
   startCallerVerificationSchema, attestCallerVerificationSchema, callerVerificationBindingSchema,
   callerVerificationPolicySchema, callerVerificationFenceOverrideSchema, callerVerificationMethodsQuerySchema,
+  administrativeCallerVerificationSchema,
 } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireScope, requirePermission, requireMfa, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
@@ -36,8 +38,9 @@ import * as service from '../services/callerVerification/service';
 import { bindingsForContact, revokeBinding } from '../services/callerVerification/subjects';
 import { attestDestination, isEstablished } from '../services/callerVerification/destinations';
 import { reachableContact } from '../services/callerVerification/access';
+import { withAdministrativeProof } from '../services/callerVerification/administrativeContext';
 import { fenceOverride } from '../services/callerVerification/rejection';
-import { getEffectivePolicy, resolveEffectivePolicy, getPolicyResponse } from '../services/callerVerification/policy';
+import { getEffectivePolicy, resolveEffectivePolicy, getPolicyResponse, assertTiersAchievable } from '../services/callerVerification/policy';
 import { directoryUsers, syncDirectory } from '../services/callerVerification/directory';
 import { CallerVerificationRequiredError, CallerVerificationValidationError } from '../services/callerVerification/errors';
 import { importDirectoryContact } from '../services/contacts/import';
@@ -93,7 +96,9 @@ async function contactCheck(c: Context) {
 callerVerificationRoutes.onError((e, c) => {
   if (e instanceof CallerVerificationRequiredError) return c.json({ error: 'caller_verification_required', requiresCallerVerification: e.payload }, 409);
   if (e instanceof CallerVerificationValidationError) {
-    const status = e.code === 'not_found' || e.code === 'feature_disabled' ? 404 : e.code === 'attempt_cap' ? 429 : 400;
+    const status = e.code === 'not_found' || e.code === 'feature_disabled' ? 404
+      : e.code === 'attempt_cap' ? 429
+      : e.code === 'stepup_invalidated' || e.code === 'interactive_stepup_required' ? 403 : 400;
     return c.json({ error: e.message, code: e.code }, status);
   }
   throw e;
@@ -105,6 +110,22 @@ callerVerificationRoutes.post(cv, ...base, write, requireMfa(), zValidator('json
   const limit = await rateLimiter(getRedis(), `caller-verification:start:${actor(c).userId}`, 10, 600);
   if (!limit.allowed) return c.json({ error: 'Rate limited' }, 429);
   return c.json({ data: await service.start(actor(c), { ...c.req.valid('json'), orgId: oid(c) }) }, 202);
+});
+// W05: administrative step-up. Must precede `${cv}/:id`. The proof (sid + epochs)
+// is taken from the verified access token only; the body carries no session
+// fields and the strict schema rejects any.
+callerVerificationRoutes.post(`${cv}/administrative`, ...base, write, requireMfa(), zValidator('json', administrativeCallerVerificationSchema), async (c) => {
+  const auth = c.get('auth') as AuthContext;
+  if (auth.principal?.kind !== 'user_session' || !auth.token?.sid
+      || typeof auth.token.aep !== 'number' || typeof auth.token.mep !== 'number') {
+    return c.json({ error: 'Interactive step-up required', code: 'interactive_stepup_required' }, 403);
+  }
+  const body = c.req.valid('json');
+  const data = await withAdministrativeProof(
+    { userId: auth.user.id, sid: auth.token.sid, authEpoch: auth.token.aep, mfaEpoch: auth.token.mep },
+    () => service.createAdministrative(actor(c), { orgId: oid(c), ...body }),
+  );
+  return c.json({ data }, 201);
 });
 // W02: must precede `${cv}/:id` (that route would read 'device-suggestions' as an id).
 registerCallerDeviceSuggestionsRoutes(callerVerificationRoutes, { base, read, actor });
@@ -196,6 +217,8 @@ for (const owner of ['org', 'partner'] as const) {
   callerVerificationRoutes.put(path, ...base, write, requireMfa(), zValidator('json', callerVerificationPolicySchema), async (c) => {
     const a = c.get('auth') as AuthContext;
     if (owner === 'partner' && !canManagePartnerWidePolicies(a)) return c.json({ error: 'Partner-wide administration required' }, 403);
+    // Tier 3 needs the (dark) workstation tier: refuse before any DB work.
+    assertTiersAchievable(c.req.valid('json'));
     const where = await ownerWhere(c);
     await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`caller-policy:${owner}:${ownerId(c)}`}))`);
     const [before] = await db.select().from(p).where(where).limit(1);

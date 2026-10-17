@@ -106,7 +106,8 @@ function wholeSecond(date: Date): number {
 
 const probeDisable: ProbeFn = async (args, ctx, now) => {
   if (args.type !== 'm365.user.disable') throw new Error('unreachable');
-  const u = await readUser(ctx, args.userIdentifier);
+  // Caller verification W05: a released disable carries the pinned object id.
+  const u = await readUser(ctx, args.oid ?? args.userIdentifier ?? '');
   if ('failure' in u) return result('unknown', cannotObserve('The user', u.failure), now);
   if ('notResource' in u) return result('unknown', 'The user read returned an unexpected shape', now);
   if (u.user.accountEnabled === false) return result('satisfied', 'accountEnabled is false: sign-in is blocked', now);
