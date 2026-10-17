@@ -5910,6 +5910,12 @@
         "merge": "Birleştirme başlatılamadı",
         "missingResult": "Birleştirme tamamlandı ancak sonuç verisi döndürmedi. Tekrar deneyin.",
         "mfaRequired": "Kuruluşları birleştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      },
+      "blockers": {
+        "pam_open_actuation": "Birleştirilerek kapatılacak kuruluşta temizliği henüz tamamlanmamış ayrıcalıklı erişim (PAM) oturumları var. Oturumların kapanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
+        "pam_evidence": "Birleştirilerek kapatılacak kuruluşun ayrıcalıklı erişim (PAM) geçmişi var ve PAM geçmişinin kuruluşlar arasında taşınması bu dağıtımda etkin değil. Ters yönde birleştirin veya bu kuruluşları birleştirmeyin.",
+        "payment_in_flight": "Birleştirilerek kapatılacak kuruluşun işlemdeki bir ödemesi var. Ödemenin tamamlanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
+        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak."
       }
     },
     "archive": {

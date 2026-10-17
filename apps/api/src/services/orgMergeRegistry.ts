@@ -36,7 +36,8 @@ export type OrgMergePolicy =
   | { kind: 'derived'; note: string } // trigger-maintained; never written directly
   | { kind: 'follows-parent'; note: string } // no org_id column; rows travel with their parent
   | { kind: 'loser-shell' } // organizations itself
-  | { kind: 'blocks-merge'; note: string }; // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
+  | { kind: 'blocks-merge'; note: string } // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
+  | { kind: 'epoch-frozen'; note: string }; // PAM chain evidence: never written by a merge; stays at its loser epoch (evidence hold). Pre-walk refusal is transfer-mode dependent — see collectMergeBlockers
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
 // deployment_results have no org_id column of their own:
@@ -451,18 +452,27 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   ai_usage_charge_runs: { kind: 'leave-for-erasure', note: 'per-(org, month) close marker; unique (org_id, period_start)' },
 
   // Durable PAM actuation evidence (Track E org-merge contract,
-  // specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md): never
-  // re-tenanted, never destroyed, never bypassed — a loser org holding ANY
-  // row is refused outright. Repoint is physically unreachable
-  // (pam_actuation_results: UPDATE revoked from breeze_app + unconditional
-  // 42501 trigger; the composite (id, org_id) FK chain has no ON UPDATE
-  // CASCADE), and leave-for-erasure would break
-  // pam_actuations(device_id, org_id) -> devices(id, org_id) the moment the
-  // devices repoint runs — which devices_pam_history_move_guard RAISEs 23514
-  // on anyway. The engine refuses BEFORE the walk (collectMergeBlockers), so
-  // neither trigger can fire mid-merge.
-  pam_actuations: { kind: 'blocks-merge', note: 'durable PAM lifecycle evidence is source-frozen; any loser row refuses the merge — devices_pam_history_move_guard applied at org granularity' },
-  pam_actuation_results: { kind: 'blocks-merge', note: 'append-only PAM evidence (UPDATE revoked + unconditional RAISE); cannot exist without a pam_actuations parent — listed for registry completeness and preview counting' },
+  // specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md; PAM
+  // ownership epochs W6 #8208, spec §8): never re-tenanted, never destroyed,
+  // never bypassed. Repoint is physically unreachable (pam_actuation_results:
+  // UPDATE revoked from breeze_app + unconditional 42501 trigger; the chain is
+  // anchored to its ownership epoch by breeze_pam_chain_epoch_guard).
+  //
+  // `epoch-frozen` (non-mutating): the rows stay at the loser's org_id and
+  // epoch and keep the loser as an evidence-hold shell. Pre-walk refusal
+  // (collectMergeBlockers) depends on the transfer mode: OFF — any loser row
+  // refuses, exactly the former blocks-merge; ON (PAM_OWNERSHIP_EPOCH_TRANSFER
+  // + the database switch) — only an actuation that is not
+  // pam_actuation_is_closed() refuses. devices_pam_history_move_guard applies
+  // the same rule per device at the devices repoint (TOCTOU backstop).
+  pam_actuations: { kind: 'epoch-frozen', note: 'durable PAM lifecycle evidence stays at its loser epoch under an evidence hold; refused while any loser actuation is not closed (transfer on) or exists at all (transfer off)' },
+  pam_actuation_results: { kind: 'epoch-frozen', note: 'append-only PAM evidence (UPDATE revoked + unconditional RAISE) follows its actuation: stays with the held loser shell; refusal is decided on pam_actuations (transfer on) or on any row (transfer off)' },
+  // Un-actuated requests follow their device into the survivor (the devices
+  // restamp trigger, cause org_merge) after the resolve half expires the live
+  // ones (OD4); actuated ones are frozen evidence and stay with the held
+  // shell. See orgMergeCustomExecutors.ts resolveElevationRequests.
+  elevation_requests: { kind: 'custom', note: 'resolve: expire live un-actuated loser requests (OD4, ownership_changed); move: none — devices_restamp_unactuated_elevation_requests carries un-actuated rows with their device, actuated rows stay at their epoch under the evidence hold' },
+  elevation_audit: { kind: 'derived', note: 'follows its request: devices_restamp_unactuated_elevation_requests restamps the audit rows of every request it moves (composite (elevation_request_id, org_id) FK, deferred for the merge); rows of requests that stay remain with the held loser shell' },
 
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in
@@ -982,8 +992,7 @@ const REPOINT_TABLES: readonly string[] = [
   "edr_detections",
   "edr_endpoints",
   "edr_tenants",
-  "elevation_audit",
-  "elevation_requests",
+  // elevation_requests / elevation_audit: see SPECIAL (PAM ownership epochs W6).
   // Endpoint live chat (#8743 W03): plain repoints under SET CONSTRAINTS ALL
   // DEFERRED; the (conversation_id, org_id) and (device_id, org_id) composite
   // FKs re-resolve at commit. The only unique keys are (conversation_id,

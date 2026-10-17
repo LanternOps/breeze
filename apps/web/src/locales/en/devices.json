@@ -2941,7 +2941,9 @@
     "submitting": "Working…",
     "cancel": "Cancel",
     "genericError": "Failed to move the device.",
-    "timeout": "The move is taking longer than expected and may still be completing on the server. Wait a minute, then refresh the page to check which organization the device is in before trying again."
+    "timeout": "The move is taking longer than expected and may still be completing on the server. Wait a minute, then refresh the page to check which organization the device is in before trying again.",
+    "pamMoveActive": "This device has a privileged-access (PAM) session that has not finished cleanup. Wait for it to close, then move the device again.",
+    "pamMoveBlocked": "This device has privileged-access (PAM) history, and moving PAM devices between organizations is not enabled on this deployment."
   },
   "networkDeviceDetailPage": {
     "approval": {

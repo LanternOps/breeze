@@ -221,6 +221,61 @@ describe('MergeOrgModal — preview', () => {
   });
 });
 
+describe('MergeOrgModal — localized blockerCodes (PAM ownership epoch)', () => {
+  const COPY: Array<[string, RegExp]> = [
+    ['pam_open_actuation', /privileged-access \(PAM\) sessions that have not finished cleanup/i],
+    ['pam_evidence', /not enabled on this deployment/i],
+    ['payment_in_flight', /payment .* still in flight/i],
+    ['lineage_depth', /merged too many times/i],
+  ];
+
+  for (const [code, copy] of COPY) {
+    it(`renders localized copy for ${code} and keeps the raw server text as detail`, async () => {
+      routeFetch({
+        preview: () => ({ ...PREVIEW_BLOCKED, blockers: ['raw english server text'], blockerCodes: [code] }),
+      });
+      render(
+        <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+      );
+      fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(copy);
+      expect(screen.getByTestId(`org-merge-blocker-${code}`)).toHaveTextContent(copy);
+      expect(screen.getByTestId('org-merge-blocker-raw')).toHaveTextContent('raw english server text');
+      expect(screen.getByTestId('org-merge-submit')).toBeDisabled();
+    });
+  }
+
+  it('toasts localized copy when the merge POST is refused 422 ORG_MERGE_BLOCKED with blockerCodes', async () => {
+    routeFetch({
+      merge: () => ({
+        payload: {
+          error: 'raw english server text',
+          code: 'ORG_MERGE_BLOCKED',
+          blockers: ['raw english server text'],
+          blockerCodes: ['pam_open_actuation'],
+        },
+        status: 422,
+      }),
+    });
+    render(
+      <MergeOrgModal loserOrg={LOSER} orgs={ALL_ORGS} onClose={vi.fn()} onMerged={vi.fn()} onDoneClose={vi.fn()} />,
+    );
+    await selectSurvivorAndTypeName();
+    fireEvent.click(screen.getByTestId('org-merge-submit'));
+
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'error',
+          message: expect.stringMatching(/have not finished cleanup/i),
+        }),
+      ),
+    );
+  });
+});
+
 describe('MergeOrgModal — typed-name confirmation', () => {
   it('keeps the confirm button disabled until the typed name matches exactly (case-sensitive)', async () => {
     routeFetch({});

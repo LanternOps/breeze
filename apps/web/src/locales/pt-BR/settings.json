@@ -5910,6 +5910,12 @@
         "merge": "Falha ao iniciar a mesclagem",
         "missingResult": "A mesclagem terminou, mas não retornou dados de resultado. Tente novamente.",
         "mfaRequired": "Mesclar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
+      },
+      "blockers": {
+        "pam_open_actuation": "A organização que será mesclada (e encerrada) tem sessões de acesso privilegiado (PAM) que ainda não terminaram a limpeza. Aguarde o encerramento delas e tente a mesclagem novamente.",
+        "pam_evidence": "A organização que será mesclada tem histórico de acesso privilegiado (PAM), e mover o histórico PAM entre organizações não está habilitado nesta implantação. Mescle na direção oposta ou não mescle estas organizações.",
+        "payment_in_flight": "Há um pagamento da organização que será mesclada ainda em andamento. Aguarde a conclusão e tente a mesclagem novamente.",
+        "lineage_depth": "Estas organizações já foram mescladas vezes demais, e esta mesclagem excederia a profundidade máxima do histórico de mesclagens."
       }
     },
     "archive": {

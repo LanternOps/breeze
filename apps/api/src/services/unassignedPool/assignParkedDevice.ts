@@ -34,7 +34,11 @@ import {
 import { TicketMoveCurrencyBlockedError } from '../ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../ticketMoveHourBlockGuard';
 import { TicketMoveApprovalPendingError } from '../ticketMoveApprovalGuard';
-import { PamDeviceMoveBlockedError } from '../pamDeviceMoveGuard';
+import {
+  PAM_MOVE_GUARD_CONSTRAINT,
+  PAM_MOVE_OPEN_ACTUATION_CONSTRAINT,
+  PamDeviceMoveBlockedError,
+} from '../pamDeviceMoveGuard';
 import { TicketServiceError } from '../ticketService';
 import { isTransientLockError, pgErrorNode } from '../../utils/pgErrors';
 import {
@@ -88,6 +92,7 @@ export type ParkedAssignRefusalCode =
   | 'HOUR_BLOCK_DRAWN_TIME'
   | 'APPROVAL_REQUEST_PENDING'
   | 'PAM_DEVICE_MOVE_BLOCKED'
+  | 'PAM_DEVICE_MOVE_ACTIVE'
   | 'DELIVERABLE_TICKET_PINNED'
   // Lost a lock race (a bounded lock wait timed out, or a deadlock victim):
   // nothing was written; retrying shortly succeeds.
@@ -110,6 +115,7 @@ const REFUSAL_MESSAGES: Record<ParkedAssignRefusalCode, string> = {
   HOUR_BLOCK_DRAWN_TIME: 'Tickets on this device carry time drawn from a block of prepaid hours',
   APPROVAL_REQUEST_PENDING: 'A ticket on this device has a pending customer approval request',
   PAM_DEVICE_MOVE_BLOCKED: 'This device carries privileged-access history and cannot change organization',
+  PAM_DEVICE_MOVE_ACTIVE: 'This device has a privileged-access session that has not finished cleanup. Try again once it closes',
   DELIVERABLE_TICKET_PINNED: 'A ticket on this device is pinned to a service deliverable',
   ASSIGNMENT_BUSY: 'Another change to this partner\'s devices is in progress. Try again in a moment',
   ASSIGNMENT_FAILED: 'Failed to assign device',
@@ -357,7 +363,7 @@ function engineRefusal(err: unknown): ParkedAssignmentRefusedError | null {
   if (err instanceof TicketMoveCurrencyBlockedError) return new ParkedAssignmentRefusedError('TICKET_MOVE_CURRENCY_BLOCKED');
   if (err instanceof TicketMoveHourBlockError) return new ParkedAssignmentRefusedError('HOUR_BLOCK_DRAWN_TIME');
   if (err instanceof TicketMoveApprovalPendingError) return new ParkedAssignmentRefusedError('APPROVAL_REQUEST_PENDING');
-  if (err instanceof PamDeviceMoveBlockedError) return new ParkedAssignmentRefusedError('PAM_DEVICE_MOVE_BLOCKED');
+  if (err instanceof PamDeviceMoveBlockedError) return new ParkedAssignmentRefusedError(err.code);
   if (err instanceof TicketServiceError && err.code === 'DELIVERABLE_TICKET_PINNED') {
     return new ParkedAssignmentRefusedError('DELIVERABLE_TICKET_PINNED');
   }
@@ -367,8 +373,12 @@ function engineRefusal(err: unknown): ParkedAssignmentRefusedError | null {
   if (isTransientLockError(err)) return new ParkedAssignmentRefusedError('ASSIGNMENT_BUSY');
   const pgNode = pgErrorNode(err);
   // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by pgErrorNode.
-  if (pgNode?.code === '23514' && pgNode.constraint_name === 'devices_pam_history_move_guard') {
+  if (pgNode?.code === '23514' && pgNode.constraint_name === PAM_MOVE_GUARD_CONSTRAINT) {
     return new ParkedAssignmentRefusedError('PAM_DEVICE_MOVE_BLOCKED');
+  }
+  // eslint-disable-next-line breeze/no-direct-sqlstate -- Driver node already unwrapped by pgErrorNode.
+  if (pgNode?.code === '23514' && pgNode.constraint_name === PAM_MOVE_OPEN_ACTUATION_CONSTRAINT) {
+    return new ParkedAssignmentRefusedError('PAM_DEVICE_MOVE_ACTIVE');
   }
   return null;
 }

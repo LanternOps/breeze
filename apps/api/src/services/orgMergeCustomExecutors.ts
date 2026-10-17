@@ -62,6 +62,7 @@ import * as dbModule from '../db';
 import { extractRowCount } from '../db/rowCount';
 import { buildRepoint, keyExpr } from './orgMergeExecutors';
 import { moveBindings, resolveBindingMerge } from './callerVerification/merge';
+import { expireUnactuatedElevationRequests } from './pamDeviceMoveGuard';
 
 export interface MergeTableOutcome {
   moved: number;
@@ -701,6 +702,44 @@ const fenceDiagnosticAccessGrants: CustomMergeExecutor = async (loser) => {
 
 /** diagnostic_access_grants, MOVE half — a no-op; the resolve half did the disposition. */
 const moveDiagnosticAccessGrants: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
+
+// ---------------------------------------------------------------------------
+// elevation_requests — EXPIRE live un-actuated requests (OD4), then let the
+// devices repoint carry the un-actuated ones (PAM ownership epochs W6, #8208,
+// spec §8 merge row).
+//
+// Resolve: every pending/approved/auto_approved/actuating request of the loser
+// that no pam_actuations row references is expired with reason
+// ownership_changed — its approval was made under the loser's policy and must
+// not authorize anything in the survivor (same reasoning as
+// diagnostic_access_grants above).
+//
+// Move: nothing. When the walk repoints the loser's devices (cause org_merge,
+// armed by executeOrgMerge), devices_restamp_unactuated_elevation_requests
+// moves each device's un-actuated requests AND their elevation_audit rows into
+// the survivor, and breeze_pam_chain_epoch_guard re-anchors them to the
+// device's survivor epoch. Actuated requests (epoch-frozen evidence) and
+// requests whose device had already left the loser stay behind with the loser
+// shell, under an evidence hold (writeEvidenceHold). A plain repoint here
+// would 42501 on an actuated row and 23514 on a left-behind one.
+// ---------------------------------------------------------------------------
+const resolveElevationRequests: CustomMergeExecutor = async (loser) => {
+  const expired = await expireUnactuatedElevationRequests(dbModule.db, { orgId: loser });
+  return {
+    moved: 0,
+    dropped: 0,
+    notes: expired > 0
+      ? [
+        `elevation_requests: expired ${expired} pending or approved privileged-access request(s) of the merged-away `
+        + 'org that never reached the device (reason ownership_changed). Their approvals were made under that '
+        + 'org\'s policy and do not carry over; request elevation again under the surviving organization.',
+      ]
+      : [],
+  };
+};
+
+/** elevation_requests, MOVE half — a no-op; the devices restamp trigger moves the un-actuated rows. */
+const moveElevationRequests: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
 // ---------------------------------------------------------------------------
 // plugin_installations — `plugin_installations_org_catalog_unique (org_id,
@@ -1833,6 +1872,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   script_executions: moveScriptExecutionsDetachingAiOrigin,
   script_proposals: moveScriptProposals,
   diagnostic_access_grants: moveDiagnosticAccessGrants,
+  elevation_requests: moveElevationRequests,
   m365_sync_state: moveM365SnapshotTable,
   m365_users: moveM365SnapshotTable,
   m365_intune_devices: moveM365SnapshotTable,
@@ -1869,6 +1909,9 @@ export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecut
   // Must run in resolve: `devices` repoints in the move phase and its trigger
   // restamps grants into the survivor org.
   diagnostic_access_grants: fenceDiagnosticAccessGrants,
+  // Must run in resolve (OD4): the devices repoint in the move phase carries
+  // un-actuated requests into the survivor; a live approval must not arrive.
+  elevation_requests: resolveElevationRequests,
   // Must run in resolve: m365_sync_state's composite FK targets
   // m365_connections (repoint-dedupe) and m365_intune_devices's targets
   // devices (plain repoint) — both parents move in the `move` phase.

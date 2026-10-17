@@ -509,6 +509,18 @@ describe('W6-pre (#8746): an evidence hold scopes erasure to the retained eviden
       INSERT INTO elevation_audit (org_id, elevation_request_id, event_type, actor, details, occurred_at)
       VALUES (${m.loser}::uuid, ${m.epoch1.requestId}::uuid, 'requested', 'system', '{}'::jsonb, now())`);
     expect(Object.keys(await nonRetainedLeftovers(m.loser))).toContain('audit_logs');
+    // W6 (#8208): the kept organizations row must not keep the shell's PII or
+    // SSO secrets. name/slug/settings stay (lineage display + engine keys).
+    await getTestDb().execute(sql`
+      UPDATE organizations
+         SET billing_contact = '{"name":"Pat Example","email":"pat@example.test"}'::jsonb,
+             billing_address_line1 = '1 Example St', billing_address_line2 = 'Suite 2',
+             billing_address_city = 'Exampleville', billing_address_region = 'EX',
+             billing_address_postal_code = '00000', billing_address_country = 'US',
+             tax_id = 'TAX-123', sso_config = '{"clientSecret":"s3cret"}'::jsonb
+       WHERE id = ${m.loser}::uuid`);
+    const [identityBefore] = rowsOf<{ name: string; slug: string }>(await getTestDb().execute(sql`
+      SELECT name, slug FROM organizations WHERE id = ${m.loser}::uuid`));
     const md5Before = await chainMd5(m.loser);
     const retainedBefore = await retainedCounts(m.loser);
     expect(retainedBefore.device_ownership_epochs).toBeGreaterThan(0);
@@ -523,11 +535,28 @@ describe('W6-pre (#8746): an evidence hold scopes erasure to the retained eviden
     expect(await orgState(m.loser)).toEqual({ status: 'merging', deleted: true });
     expect(await holdRow(m.loser)).toBeDefined();
     expect(await scopedMarker(m.loser), 'scoped-erasure marker not stamped').toBeTruthy();
+    const [kept] = rowsOf<Record<string, unknown>>(await getTestDb().execute(sql`
+      SELECT name, slug, billing_contact, billing_address_line1, billing_address_line2, billing_address_city,
+             billing_address_region, billing_address_postal_code, billing_address_country, tax_id, sso_config
+        FROM organizations WHERE id = ${m.loser}::uuid`));
+    expect(kept).toEqual({
+      ...identityBefore,
+      billing_contact: null,
+      billing_address_line1: null,
+      billing_address_line2: null,
+      billing_address_city: null,
+      billing_address_region: null,
+      billing_address_postal_code: null,
+      billing_address_country: null,
+      tax_id: null,
+      sso_config: null,
+    });
     await eventually(async () => {
       const completed = await auditsFor('tenant.erasure.completed', m.loser);
       expect(completed).toHaveLength(1);
       expect(completed[0]!.details).toMatchObject({
         evidenceHoldScoped: true,
+        scoped_hold: true,
         retainedTables: [...EVIDENCE_HOLD_RETAINED_TABLES, 'organizations'],
         survivorOrgId: m.survivor,
       });
@@ -661,5 +690,21 @@ describe('W6-pre (#8746) review follow-ups', () => {
     const otherEvent = await markMergedShell({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor });
     await expect(writeHold({ ...input, mergeEventId: otherEvent })).rejects.toThrow(/already held/);
     expect(await holdRow(m.loser)).toMatchObject({ merge_event_id: m.mergeEventId });
+  });
+
+  it('W6 (#8208): a standing hold naming a different survivor is refused, and the stored hold is unchanged', async () => {
+    const m = await seedHeldMerge();
+    const input = { partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: m.survivor, mergeEventId: m.mergeEventId };
+    expect(await writeHold(input)).toBe('pam_evidence');
+
+    const otherSurvivor = await createOrganization({ partnerId: m.partnerId, name: `other-survivor-${m.loser.slice(0, 8)}` });
+    const otherEvent = await markMergedShell({ partnerId: m.partnerId, loserOrgId: m.loser, survivorOrgId: otherSurvivor.id });
+    // Different survivor with the SAME merge event id, and with a different one:
+    // neither is a retry of the Phase B that wrote the hold.
+    await expect(writeHold({ ...input, survivorOrgId: otherSurvivor.id })).rejects.toThrow(
+      new RegExp(`already held for survivor ${m.survivor}`),
+    );
+    await expect(writeHold({ ...input, survivorOrgId: otherSurvivor.id, mergeEventId: otherEvent })).rejects.toThrow(/already held/);
+    expect(await holdRow(m.loser)).toMatchObject({ survivor_org_id: m.survivor, merge_event_id: m.mergeEventId });
   });
 });

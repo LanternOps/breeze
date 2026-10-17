@@ -219,6 +219,7 @@ export * from './aiUsageCharges';
 export * from './autopay';
 export * from './autopaySetupAttempts';
 export * from './deviceOwnershipEpochs';
+export * from './pamEpochTransferConfig';
 export * from './assetPhysicalPlacements';
 export * from './serviceCatalogs';
 export * from './connectionHealth';

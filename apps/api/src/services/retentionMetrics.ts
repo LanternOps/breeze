@@ -45,6 +45,7 @@ export const RETENTION_JOB_NAMES = [
   'metric_rollup_maintenance',
   'ml_output_retention',
   'monitor_episode_retention',
+  'pam_evidence_retention',
   'playbook_retention',
   'process_sample_retention',
   'reliability_retention',

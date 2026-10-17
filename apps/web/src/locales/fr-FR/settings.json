@@ -5857,6 +5857,12 @@
         "merge": "Échec du démarrage de la fusion",
         "missingResult": "La fusion s'est terminée mais n'a renvoyé aucune donnée de résultat. Réessayez.",
         "mfaRequired": "La fusion d'organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
+      },
+      "blockers": {
+        "pam_open_actuation": "L'organisation absorbée par la fusion a des sessions d'accès privilégié (PAM) dont le nettoyage n'est pas terminé. Attendez leur fermeture, puis relancez la fusion.",
+        "pam_evidence": "L'organisation absorbée par la fusion a un historique d'accès privilégié (PAM), et le déplacement de l'historique PAM entre organisations n'est pas activé sur ce déploiement. Fusionnez dans l'autre sens, ou ne fusionnez pas ces organisations.",
+        "payment_in_flight": "Un paiement de l'organisation absorbée par la fusion est encore en cours. Attendez qu'il soit réglé, puis relancez la fusion.",
+        "lineage_depth": "Ces organisations ont déjà été fusionnées trop de fois ; cette fusion dépasserait la profondeur maximale de l'historique de fusions."
       }
     },
     "archive": {

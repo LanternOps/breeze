@@ -119,6 +119,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('softwareUploadSessionCleanup'),
   consumers('softwareRemediationRequestCleanup'),
   consumers('auditRetention'),
+  consumers('pamEvidenceRetention'),
   consumers('auditChainVerify', ['auditChainVerify'], 'audit_chain_verify_enabled'),
   consumers('auditChainAnchor'),
   consumers('tenantErasure'),

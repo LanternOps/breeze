@@ -5905,6 +5905,12 @@
         "merge": "Failed to start the merge",
         "missingResult": "The merge finished but returned no result data. Try again.",
         "mfaRequired": "Merging organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
+      },
+      "blockers": {
+        "pam_open_actuation": "The organization being merged away has privileged-access (PAM) sessions that have not finished cleanup. Wait for them to close, then try the merge again.",
+        "pam_evidence": "The organization being merged away has privileged-access (PAM) history, and moving PAM history between organizations is not enabled on this deployment. Merge in the opposite direction, or do not merge these organizations.",
+        "payment_in_flight": "A payment for the organization being merged away is still in flight. Wait for it to settle, then try the merge again.",
+        "lineage_depth": "These organizations have been merged too many times already, and this merge would exceed the maximum merge history depth."
       }
     },
     "archive": {

@@ -5905,6 +5905,12 @@
         "merge": "Impossibile avviare l'unione",
         "missingResult": "L'unione è terminata ma non ha restituito dati di risultato. Riprova.",
         "mfaRequired": "L'unione delle organizzazioni richiede l'autenticazione a più fattori. Attiva l'MFA nelle impostazioni di sicurezza del tuo profilo e riprova."
+      },
+      "blockers": {
+        "pam_open_actuation": "L'organizzazione che verrà unita (e dismessa) ha sessioni di accesso privilegiato (PAM) che non hanno ancora completato la pulizia. Attendi che si chiudano, poi riprova l'unione.",
+        "pam_evidence": "L'organizzazione che verrà unita ha una cronologia di accesso privilegiato (PAM) e lo spostamento della cronologia PAM tra organizzazioni non è abilitato in questa distribuzione. Unisci nella direzione opposta, oppure non unire queste organizzazioni.",
+        "payment_in_flight": "Un pagamento dell'organizzazione che verrà unita è ancora in corso. Attendi che si concluda, poi riprova l'unione.",
+        "lineage_depth": "Queste organizzazioni sono già state unite troppe volte e questa unione supererebbe la profondità massima della cronologia delle unioni."
       }
     },
     "archive": {

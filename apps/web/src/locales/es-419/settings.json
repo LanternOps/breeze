@@ -5857,6 +5857,12 @@
         "merge": "No se pudo iniciar la fusión",
         "missingResult": "La fusión terminó pero no devolvió datos de resultado. Vuelva a intentarlo.",
         "mfaRequired": "Fusionar organizaciones requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo."
+      },
+      "blockers": {
+        "pam_open_actuation": "La organización que se fusionará (y dejará de existir) tiene sesiones de acceso privilegiado (PAM) que aún no terminaron de limpiarse. Espere a que se cierren y vuelva a intentar la fusión.",
+        "pam_evidence": "La organización que se fusionará tiene historial de acceso privilegiado (PAM), y mover el historial PAM entre organizaciones no está habilitado en esta implementación. Fusione en la dirección opuesta o no fusione estas organizaciones.",
+        "payment_in_flight": "Hay un pago de la organización que se fusionará que aún está en proceso. Espere a que se complete y vuelva a intentar la fusión.",
+        "lineage_depth": "Estas organizaciones ya se fusionaron demasiadas veces, y esta fusión superaría la profundidad máxima del historial de fusiones."
       }
     },
     "archive": {

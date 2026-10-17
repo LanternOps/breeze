@@ -5857,6 +5857,12 @@
         "merge": "Zusammenführung konnte nicht gestartet werden",
         "missingResult": "Die Zusammenführung wurde abgeschlossen, lieferte aber keine Ergebnisdaten. Versuchen Sie es erneut.",
         "mfaRequired": "Das Zusammenführen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      },
+      "blockers": {
+        "pam_open_actuation": "Die aufzulösende Organisation hat PAM-Sitzungen (privilegierter Zugriff), deren Bereinigung noch nicht abgeschlossen ist. Warten Sie, bis sie beendet sind, und versuchen Sie die Zusammenführung dann erneut.",
+        "pam_evidence": "Die aufzulösende Organisation hat einen PAM-Verlauf (privilegierter Zugriff), und das Verschieben von PAM-Verlauf zwischen Organisationen ist in dieser Bereitstellung nicht aktiviert. Führen Sie die Organisationen in umgekehrter Richtung zusammen oder gar nicht.",
+        "payment_in_flight": "Eine Zahlung der aufzulösenden Organisation ist noch in Bearbeitung. Warten Sie, bis sie abgeschlossen ist, und versuchen Sie die Zusammenführung dann erneut.",
+        "lineage_depth": "Diese Organisationen wurden bereits zu oft zusammengeführt; diese Zusammenführung würde die maximale Tiefe des Zusammenführungsverlaufs überschreiten."
       }
     },
     "archive": {

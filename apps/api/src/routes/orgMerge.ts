@@ -208,6 +208,7 @@ orgMergeRoutes.post(
           error: preview.blockers[0] ?? 'merge blocked by durable evidence',
           code: 'ORG_MERGE_BLOCKED',
           blockers: preview.blockers,
+          blockerCodes: preview.blockerCodes,
         },
         422,
       );

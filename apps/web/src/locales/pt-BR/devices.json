@@ -2941,7 +2941,9 @@
     "submitting": "Processando…",
     "cancel": "Cancelar",
     "genericError": "Não foi possível mover o dispositivo.",
-    "timeout": "A movimentação está demorando mais do que o esperado e talvez ainda esteja sendo concluída no servidor. Aguarde um minuto e atualize a página para verificar em qual organização o dispositivo está antes de tentar novamente."
+    "timeout": "A movimentação está demorando mais do que o esperado e talvez ainda esteja sendo concluída no servidor. Aguarde um minuto e atualize a página para verificar em qual organização o dispositivo está antes de tentar novamente.",
+    "pamMoveActive": "Este dispositivo tem uma sessão de acesso privilegiado (PAM) que ainda não terminou a limpeza. Aguarde o encerramento e mova o dispositivo novamente.",
+    "pamMoveBlocked": "Este dispositivo tem histórico de acesso privilegiado (PAM), e mover dispositivos com PAM entre organizações não está habilitado nesta implantação."
   },
   "networkDeviceDetailPage": {
     "approval": {

@@ -220,6 +220,14 @@ export async function ensureAppRole(): Promise<boolean> {
         IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='pam_ledger_retirements') THEN
           REVOKE INSERT, UPDATE, TRUNCATE ON TABLE pam_ledger_retirements FROM breeze_app;
         END IF;
+        -- PAM ownership-epoch transfer switch (#8208, migrations/2026-12-30-210000):
+        -- the authority the device-move guard trusts over the forgeable
+        -- breeze.* GUCs. The request role must hold NO privilege on it (it
+        -- can claim system scope, so RLS alone would not stop it); it is read
+        -- only through SECURITY DEFINER breeze_pam_epoch_transfer_enabled().
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='pam_epoch_transfer_config') THEN
+          REVOKE ALL ON TABLE pam_epoch_transfer_config FROM breeze_app;
+        END IF;
         -- Backup snapshot id tombstones: ids that may never be issued again.
         -- Only ever appended (by triggers on backup_snapshot_id_reservations
         -- and by storage reclaim); nothing may rewrite or remove one, or an

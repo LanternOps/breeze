@@ -134,6 +134,9 @@ export const JOB_SCHEDULES = {
   'ml-output-retention': '23 8 * * *',
   'user-risk-retention': '43 8 * * *',
   'vulnerability-msrc-sync': '3 9 * * *',
+  // PAM ownership epochs W5 (#8207): held-shell PAM evidence retention. Daily
+  // tier, minute = 3 (mod 5); hour 9 held only :03 and the weekly :18.
+  'pam-evidence-retention': '33 9 * * *',
   'abuse-signals-digest': '18 9 * * 1',
   'vulnerability-nvd-sync': '3 10 * * *',
   // Patch compliance report files past PATCH_REPORT_RETENTION_DAYS (default

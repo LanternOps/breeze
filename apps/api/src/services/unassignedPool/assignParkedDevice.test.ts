@@ -197,6 +197,7 @@ beforeEach(() => {
       alertChildRewrite: null,
       customFieldRehome: { rehomed: 0, dropped: 0 },
       removedTicketLinks: [],
+      expiredElevationRequests: 0,
     };
   });
 });
@@ -273,7 +274,7 @@ describe('assignParkedDevice', () => {
     vi.mocked(moveDeviceOrgInTransaction).mockImplementationOnce(async () => ({
       updated: { id: DEVICE, agentId: 'agent-1' } as any,
       linkGroupDissolved: false, currencyGuard: null, alertChildRewrite: null,
-      customFieldRehome: { rehomed: 0, dropped: 0 }, removedTicketLinks: removed,
+      customFieldRehome: { rehomed: 0, dropped: 0 }, removedTicketLinks: removed, expiredElevationRequests: 0,
     }));
     await single();
     expect(scheduleTicketLinkRemovalNotes).toHaveBeenCalledWith(removed);

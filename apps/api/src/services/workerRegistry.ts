@@ -764,6 +764,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'pamEvidenceRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/pamEvidenceRetention');
+      return { init: m.initializePamEvidenceRetentionWorker, shutdown: m.shutdownPamEvidenceRetentionWorker };
+    },
+  },
+  {
     name: 'auditChainVerify',
     placement: 'global',
     load: async () => {

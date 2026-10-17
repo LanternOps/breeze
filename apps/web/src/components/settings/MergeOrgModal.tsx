@@ -30,6 +30,18 @@ export interface OrgMergePreview {
    *  lifecycle evidence on the loser side) rather than offering a retry
    *  path, so no separate retry copy is rendered alongside it. */
   blockers: string[];
+  /** Machine-readable counterpart of `blockers`, so the UI can localize the
+   *  explanation. Absent on older APIs — fall back to the English text. */
+  blockerCodes?: string[];
+}
+
+/** Blocker codes the UI has localized copy for. */
+const KNOWN_BLOCKER_CODES = ['pam_open_actuation', 'pam_evidence', 'payment_in_flight', 'lineage_depth'] as const;
+type KnownBlockerCode = (typeof KNOWN_BLOCKER_CODES)[number];
+
+function knownBlockerCodes(codes: unknown): KnownBlockerCode[] {
+  if (!Array.isArray(codes)) return [];
+  return codes.filter((c): c is KnownBlockerCode => (KNOWN_BLOCKER_CODES as readonly string[]).includes(c));
 }
 
 export interface OrgMergeRunResult {
@@ -137,7 +149,16 @@ export default function MergeOrgModal({ loserOrg, orgs, onClose, onMerged, onDon
   const survivors = useMemo(() => eligibleSurvivors(orgs, loserOrg), [orgs, loserOrg]);
 
   const mfaFriendly = useCallback(
-    (code: string) => (code === 'MFA_REQUIRED' ? t('organizationsPage.merge.errors.mfaRequired') : undefined),
+    (code: string, _message?: string, body?: unknown) => {
+      if (code === 'MFA_REQUIRED') return t('organizationsPage.merge.errors.mfaRequired');
+      if (code === 'ORG_MERGE_BLOCKED') {
+        const known = knownBlockerCodes((body as { blockerCodes?: unknown } | null)?.blockerCodes);
+        if (known.length > 0) {
+          return known.map((c) => t(/* i18n-dynamic */ `organizationsPage.merge.blockers.${c}`)).join(' ');
+        }
+      }
+      return undefined;
+    },
     [t],
   );
 
@@ -400,9 +421,24 @@ export default function MergeOrgModal({ loserOrg, orgs, onClose, onMerged, onDon
                     data-testid="org-merge-blocked"
                     className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
                   >
-                    {preview.blockers.map((blocker) => (
-                      <p key={blocker}>{blocker}</p>
-                    ))}
+                    {knownBlockerCodes(preview.blockerCodes).length > 0 ? (
+                      <>
+                        {knownBlockerCodes(preview.blockerCodes).map((code) => (
+                          <p key={code} data-testid={`org-merge-blocker-${code}`}>
+                            {t(/* i18n-dynamic */ `organizationsPage.merge.blockers.${code}`)}
+                          </p>
+                        ))}
+                        {preview.blockers.length > 0 && (
+                          <div data-testid="org-merge-blocker-raw" className="mt-2 text-xs text-muted-foreground">
+                            {preview.blockers.map((blocker) => (
+                              <p key={blocker}>{blocker}</p>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      preview.blockers.map((blocker) => <p key={blocker}>{blocker}</p>)
+                    )}
                   </div>
                 ) : preview.verdict === 'too-large' ? (
                   <p data-testid="org-merge-too-large" className="text-destructive">

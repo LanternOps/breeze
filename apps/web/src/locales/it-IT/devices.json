@@ -2941,7 +2941,9 @@
     "submitting": "In corso…",
     "cancel": "Annulla",
     "genericError": "Impossibile spostare il dispositivo.",
-    "timeout": "Lo spostamento sta richiedendo più tempo del previsto e potrebbe essere ancora in corso sul server. Attendi un minuto, quindi aggiorna la pagina per verificare in quale organizzazione si trova il dispositivo prima di riprovare."
+    "timeout": "Lo spostamento sta richiedendo più tempo del previsto e potrebbe essere ancora in corso sul server. Attendi un minuto, quindi aggiorna la pagina per verificare in quale organizzazione si trova il dispositivo prima di riprovare.",
+    "pamMoveActive": "Questo dispositivo ha una sessione di accesso privilegiato (PAM) che non ha ancora completato la pulizia. Attendi che si chiuda, poi sposta di nuovo il dispositivo.",
+    "pamMoveBlocked": "Questo dispositivo ha una cronologia di accesso privilegiato (PAM) e lo spostamento di dispositivi PAM tra organizzazioni non è abilitato in questa distribuzione."
   },
   "networkDeviceDetailPage": {
     "approval": {

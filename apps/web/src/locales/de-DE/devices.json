@@ -2941,7 +2941,9 @@
     "submitting": "Wird ausgeführt…",
     "cancel": "Abbrechen",
     "genericError": "Das Gerät konnte nicht verschoben werden.",
-    "timeout": "Das Verschieben dauert länger als erwartet und wird auf dem Server möglicherweise noch abgeschlossen. Warten Sie eine Minute und laden Sie die Seite dann neu, um zu prüfen, in welcher Organisation sich das Gerät befindet, bevor Sie es erneut versuchen."
+    "timeout": "Das Verschieben dauert länger als erwartet und wird auf dem Server möglicherweise noch abgeschlossen. Warten Sie eine Minute und laden Sie die Seite dann neu, um zu prüfen, in welcher Organisation sich das Gerät befindet, bevor Sie es erneut versuchen.",
+    "pamMoveActive": "Auf diesem Gerät läuft eine Sitzung mit privilegiertem Zugriff (PAM), deren Bereinigung noch nicht abgeschlossen ist. Warten Sie, bis sie beendet ist, und verschieben Sie das Gerät dann erneut.",
+    "pamMoveBlocked": "Dieses Gerät hat einen PAM-Verlauf (privilegierter Zugriff), und das Verschieben von PAM-Geräten zwischen Organisationen ist in dieser Bereitstellung nicht aktiviert."
   },
   "networkDeviceDetailPage": {
     "approval": {
