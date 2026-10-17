@@ -6,6 +6,7 @@ import type { ChatMessage } from '../../../store/aiChatSlice';
 
 import { UserMessage } from './UserMessage';
 import { AiMessage } from './AiMessage';
+import { detectSentUserMessage, distanceFromBottom, isNearBottom, shouldAutoFollow } from './autoFollow';
 
 interface Props {
   messages: ChatMessage[];
@@ -14,8 +15,6 @@ interface Props {
   onPlanDecide?: (messageId: string, approved: boolean) => Promise<string | null>;
   onPlanStop?: (messageId: string) => Promise<string | null>;
 }
-
-const STICK_THRESHOLD_PX = 80;
 
 // Tracks the latest assistant content length so we can re-trigger the
 // auto-scroll effect during streaming without depending on the entire
@@ -34,18 +33,42 @@ export function ConversationList({ messages, inFlightTool, onRetry, onPlanDecide
   const stickToBottom = useRef(true);
   const signature = latestStreamSignature(messages);
 
-  const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+  // Only user-driven scrolls may change `stickToBottom`: the animated
+  // scrollToEnd below emits onScroll events too, and mid-animation they sit far
+  // from the bottom, which would switch following off during the very scroll
+  // that is meant to start it (#8889).
+  const userScrolling = useRef(false);
+
+  const syncStick = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-    const distanceFromBottom =
-      contentSize.height - (contentOffset.y + layoutMeasurement.height);
-    stickToBottom.current = distanceFromBottom <= STICK_THRESHOLD_PX;
+    stickToBottom.current = isNearBottom(
+      distanceFromBottom({
+        contentOffsetY: contentOffset.y,
+        contentHeight: contentSize.height,
+        layoutHeight: layoutMeasurement.height,
+      }),
+    );
   }, []);
 
+  const onScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (userScrolling.current) syncStick(e);
+    },
+    [syncStick],
+  );
+
+  const lastUserId = useRef<string | null>(null);
   useEffect(() => {
-    if (!stickToBottom.current) return;
+    const { sent: sentNewUserMessage, userId } = detectSentUserMessage(messages, lastUserId.current);
+    lastUserId.current = userId;
+    if (!userId) stickToBottom.current = true;
+    if (!shouldAutoFollow({ sentNewUserMessage, nearBottom: stickToBottom.current })) return;
+    // Following the reply from here on, until the user scrolls away again.
+    stickToBottom.current = true;
     requestAnimationFrame(() => {
       ref.current?.scrollToEnd({ animated: true });
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stream signature on purpose
   }, [signature]);
 
   return (
@@ -54,6 +77,17 @@ export function ConversationList({ messages, inFlightTool, onRetry, onPlanDecide
       style={{ flex: 1 }}
       contentContainerStyle={{ paddingTop: spacing[4], paddingBottom: spacing[6] }}
       onScroll={onScroll}
+      onScrollBeginDrag={() => {
+        userScrolling.current = true;
+      }}
+      onScrollEndDrag={(e) => {
+        syncStick(e);
+        if (e.nativeEvent.velocity?.y === 0) userScrolling.current = false;
+      }}
+      onMomentumScrollEnd={(e) => {
+        syncStick(e);
+        userScrolling.current = false;
+      }}
       scrollEventThrottle={64}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="interactive"

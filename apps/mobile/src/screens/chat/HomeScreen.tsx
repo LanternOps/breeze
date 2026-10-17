@@ -5,6 +5,7 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   Text,
   View,
 } from 'react-native';
@@ -94,6 +95,7 @@ const SETTLE_RETRY_MS = 2_500;
 
 export function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const [headerHeight, setHeaderHeight] = useState(0);
   const theme = useApprovalTheme('dark');
   const dispatch = useAppDispatch();
 
@@ -687,22 +689,34 @@ export function HomeScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg0, paddingTop: insets.top }}>
-      <ChatHeader
-        userName={userName}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onOpenHistory={handleOpenHistory}
-        onNewChat={handleNewChat}
-      />
+      <View onLayout={(e) => setHeaderHeight(e.nativeEvent.layout.height)}>
+        <ChatHeader
+          userName={userName}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenHistory={handleOpenHistory}
+          onNewChat={handleNewChat}
+        />
+      </View>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
+        // The KAV sits below the safe-area inset AND the header; offsetting by
+        // the inset alone over-pads by the header height and pushes the cold
+        // strip up over the avatar (#8889).
+        keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + headerHeight : 0}
         style={{ flex: 1 }}
       >
         {isCold ? (
-          <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+          // ScrollView, not a bare flex-end View: when the keyboard leaves less
+          // room than the content needs, a View overflows upward over the
+          // header; this scrolls instead, and flexGrow keeps it bottom-anchored.
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}
+            keyboardShouldPersistTaps="handled"
+          >
             <HomeFleetStrip />
             <ColdOpenChips onPick={handleChip} />
-          </View>
+          </ScrollView>
         ) : (
           <ConversationList
             messages={messages}
