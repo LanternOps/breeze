@@ -6,8 +6,11 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import type { Site } from './SiteList';
 
-// Site address/contact are untyped jsonb on the wire; only strings prefill the form.
-const str = (value: unknown): string => (typeof value === 'string' ? value : '');
+// Site address/contact are untyped jsonb on the wire. Strings prefill the form;
+// finite numbers (e.g. an API-written postal code) are kept as text so saving the
+// form does not blank them; anything else prefills empty.
+const str = (value: unknown): string =>
+  typeof value === 'string' ? value : typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
 
 /**
  * Site CRUD state + handlers, extracted verbatim from `OrganizationsPage`
