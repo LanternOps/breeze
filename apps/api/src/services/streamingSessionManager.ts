@@ -1600,6 +1600,10 @@ export class StreamingSessionManager {
                 orgId: session.orgId,
                 sdkSessionId: sid,
                 startedFrom,
+              }).then((stored) => {
+                // Expected only when retention cleared the pointer while this
+                // query was starting: the chat works, the next resume is fresh.
+                if (!stored) console.warn('[StreamingSessionManager] SDK session pointer changed since this query started (retention scrub?); not stored', { breezeSessionId: session.breezeSessionId });
               }).catch((err) => { captureException(err); console.error('[StreamingSessionManager] Failed to store SDK session ID:', err); });
             }
 

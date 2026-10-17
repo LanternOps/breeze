@@ -22,10 +22,12 @@
  * request-path resolver): one read of every `ai_data_policies` row plus every
  * organization's partner, merged per org by the same pure
  * `mergeAiDataPolicies` the settings routes and the executeTool gate use.
- *   - No partner row  → the code default, 30 days.
- *   - Partner row NULL → keep forever: the org is skipped entirely.
- *   - Org row NULL     → inherit the partner value.
- *   - Org row N        → min(N, partner) — an org may only tighten.
+ *   - No partner row       → the code default, 30 days (an org row N still tightens it).
+ *   - Partner row NULL     → no ceiling ("keep forever"): an org with no row,
+ *                            or a NULL row, is skipped; an org row N applies N.
+ *   - Partner row P        → P, unless the org row is a smaller N.
+ *   - Org row NULL         → inherit the partner value.
+ *   - Org row N above P    → ignored (an org may only tighten; min(N, P)).
  * A value that is not a positive integer skips the org (retain rather than
  * guess). Orgs are not filtered by status: an archived org's outputs age out
  * like any other.
@@ -41,12 +43,15 @@
  *
  * LIVE SESSIONS ARE DEFERRED. A session with any `ai_messages` row inside
  * `LIVE_SESSION_QUIET_MS` may be alive in some API process's memory, where the
- * raw transcript is still in the model's context. It is skipped this run and
- * picked up by a later one. The window is longer than the in-memory idle
- * eviction (`SESSION_IDLE_TIMEOUT_MS`, 2 h, streamingSessionManager.ts). The
- * init handler there only stores an SDK session id over the value its query
- * started from, so a query that resumed an id just before this job cleared it
- * cannot write the id back.
+ * raw transcript is still in the model's context. Its rows are skipped while
+ * they are less than `LIVE_SESSION_MAX_DEFER_MS` past the window, so a later
+ * run picks them up; a session that never goes quiet is scrubbed anyway once
+ * that allowance is used, and its live query (if any) keeps the old context
+ * only until in-memory eviction (24 h at most). The quiet window is longer than
+ * the in-memory idle eviction (`SESSION_IDLE_TIMEOUT_MS`, 2 h,
+ * streamingSessionManager.ts). The init handler there only stores an SDK
+ * session id over the value its query started from, so a query that resumed an
+ * id just before this job cleared it cannot write the id back.
  *
  * A resumed scrubbed session starts a FRESH SDK transcript: the model does not
  * see the earlier conversation; the UI history shows the tombstones.
@@ -76,6 +81,7 @@ import { aiDataPolicies, organizations, type AiDataPolicyRow } from '../db/schem
 import { mergeAiDataPolicies } from '../services/aiDataPolicy';
 import { getBullMQConnection } from '../services/redis';
 import { recordRetentionRun } from '../services/retentionMetrics';
+import { captureMessage } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 import { cronFromEnv } from './scheduleRegistry';
 import { parsePositiveIntEnv, warnOnRetentionBacklog, type BatchedPruneResult } from './retentionBatch';
@@ -92,6 +98,8 @@ export function tombstone(at: Date): AiToolOutputTombstone {
 
 /** Longer than the 2 h in-memory idle eviction, with margin for the eviction tick. See the header. */
 export const LIVE_SESSION_QUIET_MS = 3 * 60 * 60 * 1000;
+/** How far past the window a live session's rows may be deferred before they are scrubbed regardless. */
+export const LIVE_SESSION_MAX_DEFER_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_BATCH_SIZE = 1000;
 const DEFAULT_MAX_BATCHES = 50;
@@ -119,7 +127,9 @@ const inFreshSystemContext = <T>(label: string, fn: () => Promise<T>): Promise<T
 /**
  * `created_at` on both tool tables is `timestamp WITHOUT time zone` holding
  * UTC wall time. Compare against the cutoff converted to UTC wall time, so the
- * result does not depend on the connection's `TimeZone`.
+ * comparison does not depend on the connection's `TimeZone`. (Rows written by
+ * `defaultNow()` are stored in the session `TimeZone`, which is UTC on every
+ * Breeze deployment — the same assumption as jobs/scheduleRegistry.ts.)
  */
 const utcWallTime = (iso: string) => sql`(${iso}::timestamptz AT TIME ZONE 'UTC')`;
 
@@ -134,6 +144,7 @@ async function scrubToolRowsBatch(
   table: ToolTable,
   orgId: string,
   cutoffIso: string,
+  deferUntilIso: string,
   quietSinceIso: string,
   markerJson: string,
   batchSize: number,
@@ -149,10 +160,13 @@ async function scrubToolRowsBatch(
         AND tr.created_at < ${utcWallTime(cutoffIso)}
         AND tr.tool_output IS NOT NULL
         AND tr.tool_output->>'_retention' IS DISTINCT FROM ${AI_TOOL_OUTPUT_SCRUBBED}
-        AND NOT EXISTS (
-          SELECT 1 FROM ai_messages live
-          WHERE live.session_id = tr.session_id
-            AND live.created_at >= ${utcWallTime(quietSinceIso)}
+        AND (
+          tr.created_at < ${utcWallTime(deferUntilIso)}
+          OR NOT EXISTS (
+            SELECT 1 FROM ai_messages live
+            WHERE live.session_id = tr.session_id
+              AND live.created_at >= ${utcWallTime(quietSinceIso)}
+          )
         )
       LIMIT ${batchSize}
       FOR UPDATE OF tr SKIP LOCKED
@@ -166,7 +180,7 @@ async function scrubToolRowsBatch(
       SELECT s.id, s.sdk_session_id
       FROM ai_sessions s
       WHERE s.id IN (SELECT session_id FROM scrubbed) AND s.sdk_session_id IS NOT NULL
-      FOR UPDATE OF s
+      FOR NO KEY UPDATE OF s
     ),
     cleared AS (
       UPDATE ai_sessions s SET sdk_session_id = NULL
@@ -234,11 +248,13 @@ export async function scrubOrgToolOutputs(
   const now = opts.now ?? new Date();
   const cutoffIso = new Date(now.getTime() - retentionDays * DAY_MS).toISOString();
   const quietSinceIso = new Date(now.getTime() - LIVE_SESSION_QUIET_MS).toISOString();
+  // Rows older than this are scrubbed even in a live session (see the header).
+  const deferUntilIso = new Date(now.getTime() - retentionDays * DAY_MS - LIVE_SESSION_MAX_DEFER_MS).toISOString();
   const markerJson = JSON.stringify(tombstone(now));
   const clearedSdkSessionIds: string[] = [];
 
   const scrubTable = (table: ToolTable) => batched(opts.batchSize, opts.maxBatches, async () => {
-    const { scrubbed, cleared } = await scrubToolRowsBatch(table, orgId, cutoffIso, quietSinceIso, markerJson, opts.batchSize);
+    const { scrubbed, cleared } = await scrubToolRowsBatch(table, orgId, cutoffIso, deferUntilIso, quietSinceIso, markerJson, opts.batchSize);
     if (cleared.length > 0) {
       clearedSdkSessionIds.push(...cleared);
       if (opts.onCleared) await opts.onCleared(cleared);
@@ -254,14 +270,22 @@ export async function scrubOrgToolOutputs(
 
 /** Delete one SDK transcript (`<id>.jsonl` + its subagent dir) from this process's projects dir. */
 export const deleteSdkTranscript: TranscriptDeleter = async (sdkSessionId) => {
+  let deleteSession: (id: string) => Promise<void>;
   try {
-    const { deleteSession } = await import('@anthropic-ai/claude-agent-sdk');
+    ({ deleteSession } = await import('@anthropic-ai/claude-agent-sdk'));
+  } catch (err) {
+    // Not "not found": the transcript may well be on this disk.
+    console.warn(`${LOG} Could not load the agent SDK to delete transcript ${sdkSessionId}:`, err);
+    return 'failed';
+  }
+  try {
     await deleteSession(sdkSessionId);
     return 'deleted';
   } catch (err) {
-    // The SDK throws "Session <id> not found in any project directory" when the
-    // file is not on THIS filesystem: expected on a split worker (see header).
-    if (err instanceof Error && /not found/i.test(err.message)) return 'not_found';
+    // The SDK's own messages all start "Session <id> not found" (no projects
+    // dir / not in any project dir) when the file is not on THIS filesystem:
+    // expected on a split worker (see header). Anything else is a failure.
+    if (err instanceof Error && err.message.startsWith(`Session ${sdkSessionId} not found`)) return 'not_found';
     console.warn(`${LOG} Failed to delete SDK transcript ${sdkSessionId}:`, err);
     return 'failed';
   }
@@ -316,7 +340,12 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
   const onCleared = async (ids: string[]) => {
     summary.totals.sessions += ids.length;
     for (const id of ids) {
-      const outcome = await deleteTranscript(id);
+      // The id is already gone from the DB: a throwing deleter must not turn
+      // into a failed org (it would hide the rows this run DID scrub).
+      const outcome = await deleteTranscript(id).catch((err: unknown) => {
+        console.warn(`${LOG} Transcript deleter threw for ${id}:`, err);
+        return 'failed' as const;
+      });
       if (outcome === 'deleted') summary.transcripts.deleted += 1;
       else if (outcome === 'not_found') summary.transcripts.notFound += 1;
       else summary.transcripts.failed += 1;
@@ -353,7 +382,21 @@ export async function runAiToolOutputRetention(opts: ScrubOptions & { deleteTran
   }
 
   // A failed or skipped org certainly still holds expired outputs.
-  if (summary.orgsFailed > 0 || summary.orgsSkipped > 0 || summary.transcripts.failed > 0) summary.incomplete = true;
+  if (summary.orgsFailed > 0 || summary.orgsSkipped > 0 || summary.transcripts.failed > 0) {
+    summary.incomplete = true;
+    // Per-org failures do not fail the BullMQ job (the other orgs were
+    // scrubbed), so attachWorkerObservability never sees them. One bounded
+    // event per run, counts only (no org ids in tags).
+    try {
+      captureMessage(
+        `${LOG} Run left expired AI tool outputs in place: orgsFailed=${summary.orgsFailed} ` +
+        `orgsSkipped=${summary.orgsSkipped} transcriptDeletesFailed=${summary.transcripts.failed}`,
+        { eventCode: 'ai_tool_output_retention_incomplete' },
+      );
+    } catch (err) {
+      console.warn(`${LOG} Failed to report the incomplete run to Sentry:`, err);
+    }
+  }
   summary.durationMs = Date.now() - startedAt;
   const { totals, transcripts } = summary;
   console.log(

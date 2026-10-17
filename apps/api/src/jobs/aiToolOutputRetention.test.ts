@@ -17,6 +17,7 @@ const m = vi.hoisted(() => ({
   recordRetentionRun: vi.fn(),
   warnOnRetentionBacklog: vi.fn(),
   deleteSession: vi.fn(),
+  captureMessage: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -48,6 +49,7 @@ vi.mock('./retentionBatch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./retentionBatch')>()),
   warnOnRetentionBacklog: (...a: unknown[]) => m.warnOnRetentionBacklog(...a),
 }));
+vi.mock('../services/sentry', () => ({ captureMessage: (...a: unknown[]) => m.captureMessage(...a) }));
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ deleteSession: (...a: unknown[]) => m.deleteSession(...a) }));
 
 import {
@@ -140,13 +142,60 @@ describe('runAiToolOutputRetention', () => {
   });
 });
 
+describe('runAiToolOutputRetention: retain-on-doubt branches', () => {
+  const quietOrg = () => {
+    m.execute.mockImplementation(async (q: unknown) => {
+      const s = JSON.stringify(q);
+      if (s.includes('ai_run_artifacts')) return rows([], 0);
+      if (s.includes('ai_tool_executions')) return rows([{ scrubbed: 0, cleared: [] }]);
+      return rows([{ scrubbed: 1, cleared: ['sdk-x'] }]);
+    });
+  };
+
+  it('skips an org with an unusable retention value without touching its rows, and reports it', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], [{ id: 'p', orgId: null, partnerId: PARTNER, toolOutputRetentionDays: 0 }]];
+
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn() });
+
+    expect(summary).toMatchObject({ orgsSkipped: 1, orgsScrubbed: 0, incomplete: true });
+    expect(m.execute).not.toHaveBeenCalled();
+    expect(m.captureMessage).toHaveBeenCalledWith(expect.any(String), { eventCode: 'ai_tool_output_retention_incomplete' });
+  });
+
+  it('a failed transcript delete marks the run incomplete and reports it; a throwing deleter is a failure, not a failed org', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
+    quietOrg();
+    const failing = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => 'failed' as const) });
+    expect(failing).toMatchObject({ orgsFailed: 0, incomplete: true, transcripts: { failed: 1 } });
+    expect(m.captureMessage).toHaveBeenCalledTimes(1);
+
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
+    const throwing = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => { throw new Error('boom'); }) });
+    expect(throwing).toMatchObject({ orgsFailed: 0, orgsScrubbed: 1, incomplete: true, transcripts: { failed: 1 } });
+    expect(throwing.totals.messages).toBe(1);
+  });
+
+  it('a clean run does not report to Sentry', async () => {
+    m.selectResults = [[{ id: ORG_OK, partnerId: PARTNER }], []];
+    quietOrg();
+    const summary = await runAiToolOutputRetention({ batchSize: 100, maxBatches: 5, deleteTranscript: vi.fn(async () => 'not_found' as const) });
+    expect(summary.incomplete).toBe(false);
+    expect(m.captureMessage).not.toHaveBeenCalled();
+  });
+});
+
 describe('deleteSdkTranscript', () => {
   it('classifies deleted / not on this filesystem / failed', async () => {
     m.deleteSession.mockResolvedValueOnce(undefined);
     expect(await deleteSdkTranscript('a')).toBe('deleted');
     m.deleteSession.mockRejectedValueOnce(new Error('Session a not found in any project directory'));
     expect(await deleteSdkTranscript('a')).toBe('not_found');
+    m.deleteSession.mockRejectedValueOnce(new Error('Session a not found (no projects directory)'));
+    expect(await deleteSdkTranscript('a')).toBe('not_found');
     m.deleteSession.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    expect(await deleteSdkTranscript('a')).toBe('failed');
+    // Only the SDK's own message for THIS id counts as "not on this disk".
+    m.deleteSession.mockRejectedValueOnce(new Error('Config file not found'));
     expect(await deleteSdkTranscript('a')).toBe('failed');
   });
 });

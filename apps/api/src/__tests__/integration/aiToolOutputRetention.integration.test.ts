@@ -157,6 +157,10 @@ describe('aiToolOutputRetention (real Postgres, breeze_app pool)', () => {
     for (const row of after) expect((row.toolOutput as { _retention?: string })._retention).toBe('scrubbed');
     // The row the first run scrubbed keeps its ORIGINAL tombstone.
     expect(after.find((r) => r.id === doneFirst[0]!.id)!.toolOutput).toEqual({ _retention: 'scrubbed', at: NOW.toISOString() });
+    // The executions pass completed too (it ran after the capped messages pass).
+    const execs = await getTestDb().select().from(aiToolExecutions).where(inArray(aiToolExecutions.id, pairs.map((p) => p.executionId)));
+    for (const row of execs) expect((row.toolOutput as { _retention?: string })._retention).toBe('scrubbed');
+    expect(resumed.executions.hasMore).toBe(false);
   });
 
   it('does not clear a fresh SDK session started after the scrub (no new rows expired)', async () => {
@@ -172,28 +176,65 @@ describe('aiToolOutputRetention (real Postgres, breeze_app pool)', () => {
     expect((await session(sessionId)).sdkSessionId).toBe('sdk-fresh');
   });
 
-  it('defers a session that is live right now (a message in the quiet window) to a later run', async () => {
-    const sessionId = await insertSession(orgId, 'sdk-live');
-    const old = await insertToolPair(sessionId, daysAgo(40));
-    await getTestDb().insert(aiMessages).values({ sessionId, role: 'user', content: 'still here', createdAt: new Date(NOW.getTime() - 10 * 60_000) });
+  describe('live sessions', () => {
+    const HOUR_MS = 60 * 60 * 1000;
+    const liveSession = async (lastMessageAgoMs: number, outputAgeDays: number) => {
+      const sessionId = await insertSession(orgId, 'sdk-live');
+      const old = await insertToolPair(sessionId, daysAgo(outputAgeDays));
+      await getTestDb().insert(aiMessages).values({ sessionId, role: 'user', content: 'still here', createdAt: new Date(NOW.getTime() - lastMessageAgoMs) });
+      return { sessionId, old };
+    };
 
-    const result = await scrubOrgToolOutputs(orgId, 30, OPTS);
+    it('defers a session with a message inside the 3 h quiet window (2 h 50 m ago)', async () => {
+      // 30.5 days old under a 30-day window: inside the 1-day deferral allowance.
+      const { sessionId, old } = await liveSession(2 * HOUR_MS + 50 * 60_000, 30.5);
 
-    expect(result.messages.deleted).toBe(0);
-    expect(result.executions.deleted).toBe(0);
-    expect((await message(old.messageId)).toolOutput).toEqual({ content: 'C:\\Users\\bob\\secret.txt contents' });
-    expect((await session(sessionId)).sdkSessionId).toBe('sdk-live');
+      const result = await scrubOrgToolOutputs(orgId, 30, OPTS);
+
+      expect(result.messages.deleted).toBe(0);
+      expect(result.executions.deleted).toBe(0);
+      expect((await message(old.messageId)).toolOutput).toEqual({ content: 'C:\\Users\\bob\\secret.txt contents' });
+      expect((await session(sessionId)).sdkSessionId).toBe('sdk-live');
+    });
+
+    it('scrubs once the last message is outside the quiet window (3 h 10 m ago)', async () => {
+      const { sessionId, old } = await liveSession(3 * HOUR_MS + 10 * 60_000, 30.5);
+
+      await scrubOrgToolOutputs(orgId, 30, OPTS);
+
+      expect((await message(old.messageId)).toolOutput).toMatchObject({ _retention: 'scrubbed' });
+      expect((await session(sessionId)).sdkSessionId).toBeNull();
+    });
+
+    it('never defers past one day: a constantly active session is still scrubbed', async () => {
+      const { sessionId, old } = await liveSession(5 * 60_000, 40);
+
+      await scrubOrgToolOutputs(orgId, 30, OPTS);
+
+      expect((await message(old.messageId)).toolOutput).toMatchObject({ _retention: 'scrubbed' });
+      expect((await session(sessionId)).sdkSessionId).toBeNull();
+    });
   });
 
-  it('never touches another org', async () => {
+  it('never touches another org: messages, executions, sessions, captures', async () => {
     const otherOrg = (await createOrganization({ partnerId, name: 'Other Org' })).id;
     const otherSession = await insertSession(otherOrg, 'sdk-other');
     const other = await insertToolPair(otherSession, daysAgo(40));
+    const otherCapture = await insertCapture(otherOrg, otherSession, daysAgo(40));
+    const ownSession = await insertSession(orgId, null);
+    await insertCapture(orgId, ownSession, daysAgo(40));
 
-    await scrubOrgToolOutputs(orgId, 30, OPTS);
+    const first = await scrubOrgToolOutputs(orgId, 30, OPTS);
+    const second = await scrubOrgToolOutputs(orgId, 30, { ...OPTS, now: new Date(NOW.getTime() + 60_000) });
 
+    expect(first.artifacts.deleted).toBe(1);
+    expect(second.artifacts.deleted).toBe(0);
     expect((await message(other.messageId)).toolOutput).toEqual({ content: 'C:\\Users\\bob\\secret.txt contents' });
+    expect((await execution(other.executionId)).toolOutput).toEqual({ content: 'C:\\Users\\bob\\secret.txt contents' });
     expect((await session(otherSession)).sdkSessionId).toBe('sdk-other');
+    const otherArtifact = await artifact(otherCapture);
+    expect(otherArtifact.headPreview).toBe('HEAD secret');
+    expect(otherArtifact.expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it('expires old input_capture artifacts, blanks their previews, and read_artifact on the old handle refuses', async () => {
@@ -305,6 +346,56 @@ describe('aiToolOutputRetention (real Postgres, breeze_app pool)', () => {
       expect(summary.incomplete).toBe(false);
       expect(deleteTranscript.mock.calls.map((c) => c[0]).sort()).toEqual(['sdk-a', 'sdk-c']);
       expect(summary.transcripts).toMatchObject({ deleted: 2, notFound: 0, failed: 0 });
+    });
+
+    it('resolves every partner/org combination per org, never borrowing a sibling org\'s row', async () => {
+      const deleteTranscript = vi.fn(async (_id: string) => 'not_found' as const);
+      const policyOrg = async (partner: string, name: string, orgDays: number | null | undefined) => {
+        const id = (await createOrganization({ partnerId: partner, name })).id;
+        if (orgDays !== undefined) await getTestDb().insert(aiDataPolicies).values({ orgId: id, toolOutputRetentionDays: orgDays });
+        return id;
+      };
+      const outputIn = async (org: string, ageDays: number) => (await insertToolPair(await insertSession(org, null), daysAgo(ageDays))).messageId;
+      const scrubbed = async (messageId: string) => ((await message(messageId)).toolOutput as { _retention?: string })._retention === 'scrubbed';
+
+      // Partner keep-forever ceiling, org sets 14: the org value applies (W01: NULL partner = unbounded).
+      const pForever = (await createPartner()).id;
+      await getTestDb().insert(aiDataPolicies).values({ partnerId: pForever, toolOutputRetentionDays: null });
+      const orgForever14 = await policyOrg(pForever, 'Forever ceiling, org 14', 14);
+      const f20 = await outputIn(orgForever14, 20);
+      const f10 = await outputIn(orgForever14, 10);
+      // Sibling under the same keep-forever partner with no org row: kept.
+      const forever = await policyOrg(pForever, 'Forever sibling', undefined);
+      const fs20 = await outputIn(forever, 20);
+
+      // Partner 10, org row NULL: inherits 10.
+      const p10 = (await createPartner()).id;
+      await getTestDb().insert(aiDataPolicies).values({ partnerId: p10, toolOutputRetentionDays: 10 });
+      const inherit = await policyOrg(p10, 'Inherits 10', null);
+      const i15 = await outputIn(inherit, 15);
+      const i5 = await outputIn(inherit, 5);
+
+      // Partner 30; an org row above the ceiling (90) is ignored, not honoured.
+      const p30 = (await createPartner()).id;
+      await getTestDb().insert(aiDataPolicies).values({ partnerId: p30, toolOutputRetentionDays: 30 });
+      const above = await policyOrg(p30, 'Org above ceiling', 90);
+      const a40 = await outputIn(above, 40);
+      // Sibling of an org that tightened to 5: keeps the partner's 30.
+      await policyOrg(p30, 'Tight sibling', 5);
+      const loose = await policyOrg(p30, 'Loose sibling', undefined);
+      const l10 = await outputIn(loose, 10);
+
+      const summary = await runAiToolOutputRetention({ ...OPTS, deleteTranscript });
+
+      expect(await scrubbed(f20)).toBe(true);
+      expect(await scrubbed(f10)).toBe(false);
+      expect(await scrubbed(fs20)).toBe(false);
+      expect(await scrubbed(i15)).toBe(true);
+      expect(await scrubbed(i5)).toBe(false);
+      expect(await scrubbed(a40)).toBe(true);
+      expect(await scrubbed(l10)).toBe(false);
+      expect(summary.orgsFailed).toBe(0);
+      expect(summary.orgsSkipped).toBe(0);
     });
   });
 });
