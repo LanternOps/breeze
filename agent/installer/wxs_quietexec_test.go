@@ -8,12 +8,13 @@ import (
 
 // #8877: Windows Installer starts an EXE custom action (ExeCommand) with no
 // CREATE_NO_WINDOW, so a console-subsystem child (cmd.exe, powershell.exe,
-// breeze-agent.exe) gets a console window. Deferred Impersonate="no" CAs
-// still flash one on the installing user's desktop, so every install and
-// upgrade showed a run of black windows. Any custom action that starts a
-// process therefore goes through the WiX Util extension's WixQuietExec (or
-// WixSilentExec), which starts the command with CREATE_NO_WINDOW and its
-// output on pipes. #3624 fixed only the immediate KillBreezeProcesses CA.
+// breeze-agent.exe) can get a console window. #3624 fixed only the immediate
+// KillBreezeProcesses CA; windows were still reported during install and
+// upgrade, and the deferred Impersonate="no" CAs were the remaining EXE CAs.
+// Any custom action that starts a process therefore goes through the WiX
+// Util extension's WixQuietExec (or WixSilentExec), which starts the command
+// with CREATE_NO_WINDOW and its output on pipes, so neither the child nor any
+// console grandchild it starts gets a window.
 
 // quietExecCAs lists every deferred/rollback custom action that starts a
 // process, with the execution settings each one had as an EXE CA. Execute,
@@ -53,15 +54,30 @@ func quietExecCmd(t *testing.T, wxs, id string) string {
 
 func TestNoCustomActionFlashesConsoleWindow(t *testing.T) {
 	wxs := readWxs(t)
+	listed := map[string]bool{"KillBreezeProcesses": true} // immediate; TestKillBreezeProcessesRunsWithoutConsoleWindow
+	for _, want := range quietExecCAs {
+		listed[want.id] = true
+	}
 	elRe := regexp.MustCompile(`(?s)<CustomAction\s+Id="([^"]+)"(.*?)/>`)
 	for _, m := range elRe.FindAllStringSubmatch(wxs, -1) {
 		ca := customActionAttrs(wxs, m[1])
 		if _, isExe := ca["ExeCommand"]; isExe {
 			t.Errorf("custom action %s is an EXE custom action (ExeCommand); Windows Installer starts it with a visible console window. Run it through WixQuietExec", m[1])
 		}
+		// A new quiet-exec CA must be added to quietExecCAs so its
+		// execution settings and SetProperty are checked below.
+		if e := ca["DllEntry"]; strings.Contains(e, "QuietExec") || strings.Contains(e, "SilentExec") {
+			if !listed[m[1]] {
+				t.Errorf("custom action %s uses %s but is not listed in quietExecCAs; add it so its settings and command are checked", m[1], e)
+			}
+		}
 	}
 
+	scheduled := customConditions(t, wxs)
 	for _, want := range quietExecCAs {
+		if _, ok := scheduled[want.id]; !ok {
+			t.Errorf("%s has no <Custom Action=%q> entry in InstallExecuteSequence; it would never run", want.id, want.id)
+		}
 		ca := customActionAttrs(wxs, want.id)
 		if ca == nil {
 			t.Errorf("no <CustomAction Id=%q>", want.id)
@@ -84,7 +100,7 @@ func TestNoCustomActionFlashesConsoleWindow(t *testing.T) {
 		}
 		// QuietExec rejects a command that does not start with a quoted
 		// application path ("Command string must begin with quoted
-		// application name"), which with Return="ignore" fails silently.
+		// application name"); with Return="ignore" that is only a log line.
 		cmd := quietExecCmd(t, wxs, want.id)
 		if !strings.HasPrefix(cmd, "&quot;") {
 			t.Errorf("%s command must begin with a quoted application path; got %q", want.id, cmd)
