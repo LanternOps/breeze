@@ -68,7 +68,8 @@ interface Metric {
 interface FleetStat {
   key: 'devices' | 'alerts' | 'tickets';
   label: string;
-  target: StatTarget;
+  /** `null` = deliberately unlinked (no destination scoped to this org). */
+  target: StatTarget | null;
   metrics: Metric[];
   /** Muted copy shown in place of (or after) the numbers: "All online". */
   note?: string;
@@ -85,15 +86,15 @@ interface AccountStat {
 
 const TONE_CLASS: Record<NonNullable<Metric['tone']>, string> = {
   critical: 'text-destructive',
-  // The bright --warning is ~2.3:1 on a light card; the strong variant clears
-  // 4.5:1 as text.
+  // The bright --warning is ~2.3:1 on a light card; --warning-strong is the
+  // amber that passes AA (~4.5:1) as text there.
   high: 'text-warning-strong',
 };
 
 const CRITICAL_ALERTS_PATH = '/alerts?status=active&severity=critical&limit=10';
 const RECENT_ACTIVITY_PATH = '/audit-logs/logs?limit=20&skipCount=true';
 
-/** Feed timestamps: minute precision is what triage needs; seconds are noise. */
+/** Feed timestamps: date plus minute-precision time (no seconds). */
 const FEED_TIME_FORMAT = { dateStyle: 'medium', timeStyle: 'short' } as const;
 
 /** `null` = still loading; `'failed'` = we could not find out; otherwise rows. */
@@ -174,13 +175,14 @@ function StatContainer({
  * Tier 1, the fleet strip, answers "is this customer OK": devices online and
  * offline, open alerts by severity, open tickets. Tier 2, the account row, is
  * the money-and-people context (contracts, outstanding invoices, contacts,
- * portal users) beside the key dates card. Every stat links to where its
- * detail lives.
+ * portal users) beside the key dates card. A stat links to where its detail
+ * lives when this user can open it; Alerts stays unlinked (see its target).
  *
- * A stat whose summary section is ABSENT is not rendered at all — the section
- * is missing because the caller lacks the read permission, and a "0" there
- * would be a confident lie about a customer's fleet. Within a present section a
- * zero reads as muted words ("All online", "No open alerts"), never as a big 0.
+ * A stat whose summary section is ABSENT is not rendered at all — the API omits
+ * sections the caller cannot read, and a "0" there would be a confident lie
+ * about a customer's fleet. Within a present FLEET section a zero reads as
+ * muted words ("All online", "No open alerts"), never as a big 0; the account
+ * row shows its counts as plain small numbers.
  * The two feeds below hold the same line: a failed load says so, rather than
  * rendering the empty state.
  */
@@ -230,8 +232,8 @@ export default function OrgOverviewTab({
   }, [loadFeeds, orgId, archived]);
 
   /** A tab target survives only if this user can open that tab. */
-  const resolveTarget = (target: StatTarget): StatTarget | null =>
-    'tab' in target && !tabs.includes(target.tab) ? null : target;
+  const resolveTarget = (target: StatTarget | null): StatTarget | null =>
+    target && 'tab' in target && !tabs.includes(target.tab) ? null : target;
 
   const fleet: FleetStat[] = [];
   if (summary?.devices) {
@@ -260,8 +262,11 @@ export default function OrgOverviewTab({
     fleet.push({
       key: 'alerts',
       label: t('orgRecord.overview.tiles.alerts'),
-      // No alerts tab on the record — the org-filtered alert list is the detail.
-      target: { href: `/alerts?orgId=${encodeURIComponent(orgId)}` },
+      // Unlinked on purpose: the record has no alerts tab, and `/alerts` scopes
+      // by the header org switcher, not by an `orgId` param — a link would
+      // open whichever org the switcher points at, possibly another
+      // customer's alerts. The critical-alerts feed below is the detail here.
+      target: null,
       metrics,
       note: metrics.length === 0 ? t('orgRecord.overview.fleet.noAlerts') : undefined,
     });
@@ -404,9 +409,9 @@ export default function OrgOverviewTab({
             className="space-y-2 lg:col-span-2"
           >
             <h2 id={accountHeadingId} className="text-sm font-semibold">
-              {t('orgBoard.lens.account')}
+              {t('orgRecord.overview.account.title')}
             </h2>
-            <div className="grid grid-cols-1 gap-1 rounded-lg border bg-card p-1 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-1 rounded-lg border bg-card p-1 sm:grid-cols-2 2xl:grid-cols-4">
               {visibleAccount.map((stat) => (
                 <StatContainer
                   key={stat.key}

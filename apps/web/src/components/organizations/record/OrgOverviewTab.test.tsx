@@ -73,7 +73,7 @@ describe('OrgOverviewTab — fleet strip (#9020)', () => {
     expect(within(stat).getByTestId('org-overview-stat-devices-online').textContent).toContain('7');
     expect(within(stat).getByTestId('org-overview-stat-devices-offline').textContent).toContain('3');
     expect(within(stat).getByTestId('org-overview-stat-devices-total').textContent).toContain('10');
-    // The old tile printed "10" and then "7 of 10 online".
+    // The total appears exactly once — not as a headline AND inside a sub-line.
     expect(stat.textContent?.match(/10/g)?.length).toBe(1);
   });
 
@@ -149,8 +149,28 @@ describe('OrgOverviewTab — fleet strip (#9020)', () => {
     expect(devices.tagName).toBe('A');
     expect(devices).toHaveAttribute('href', '#devices');
     expect(screen.getByTestId('org-overview-stat-tickets')).toHaveAttribute('href', '#tickets');
-    // Alerts have no record tab — the stat opens the alert list filtered to this org.
-    expect(screen.getByTestId('org-overview-stat-alerts')).toHaveAttribute('href', `/alerts?orgId=${ORG_ID}`);
+    // Alerts have no record tab, and /alerts scopes by the org switcher rather
+    // than an orgId param — a link could open another customer's alerts.
+    const alertsStat = screen.getByTestId('org-overview-stat-alerts');
+    expect(alertsStat.tagName).not.toBe('A');
+    expect(alertsStat.closest('a')).toBeNull();
+  });
+
+  it('omits the Online metric — no big 0 — when every device is offline', async () => {
+    renderTab({ ...BASE_SUMMARY, devices: { total: 5, online: 0, offline: 5 } }, fetchFor({}));
+    const stat = await screen.findByTestId('org-overview-stat-devices');
+    expect(within(stat).queryByTestId('org-overview-stat-devices-online')).toBeNull();
+    expect(within(stat).getByTestId('org-overview-stat-devices-offline').textContent).toContain('5');
+    expect(within(stat).getByTestId('org-overview-stat-devices-total').textContent).toContain('5');
+    expect(stat.textContent).not.toContain('All online');
+  });
+
+  it('shows only the awaiting-customer count when no ticket is open on our side', async () => {
+    renderTab({ ...BASE_SUMMARY, tickets: { open: 0, awaitingCustomer: 2 } }, fetchFor({}));
+    const stat = await screen.findByTestId('org-overview-stat-tickets');
+    expect(within(stat).queryByTestId('org-overview-stat-tickets-open')).toBeNull();
+    expect(within(stat).getByTestId('org-overview-stat-tickets-awaiting').textContent).toContain('2');
+    expect(stat.textContent).not.toContain('No open tickets');
   });
 });
 
@@ -208,7 +228,54 @@ describe('OrgOverviewTab — account row (#9020)', () => {
       },
       fetchFor({}),
     );
-    expect((await screen.findByTestId('org-overview-stat-invoices')).textContent).toContain('3 overdue');
+    const stat = await screen.findByTestId('org-overview-stat-invoices');
+    expect(stat.textContent).toContain('3 overdue');
+    // Overdue is the one account sub-line that earns the destructive tone.
+    expect(stat.querySelector('.text-destructive')?.textContent).toBe('3 overdue');
+  });
+
+  it('keeps a not-overdue invoice sub-line muted', async () => {
+    renderTab(ACCOUNT_SUMMARY, fetchFor({}));
+    const stat = await screen.findByTestId('org-overview-stat-invoices');
+    expect(stat.querySelector('.text-destructive')).toBeNull();
+  });
+
+  it('formats a non-USD balance in its own currency', async () => {
+    renderTab(
+      {
+        ...BASE_SUMMARY,
+        invoices: { outstanding: '75.00', currencyCode: 'EUR', nextDueAt: null, overdueCount: 0 },
+      },
+      fetchFor({}),
+    );
+    const stat = await screen.findByTestId('org-overview-stat-invoices');
+    expect(stat.textContent).toContain('€');
+    expect(stat.textContent).not.toContain('$');
+  });
+
+  it('shows the next contract renewal, or says there is none', async () => {
+    const { unmount } = renderTab(ACCOUNT_SUMMARY, fetchFor({}));
+    expect((await screen.findByTestId('org-overview-stat-contracts')).textContent).toContain('Next renewal');
+    unmount();
+    renderTab({ ...ACCOUNT_SUMMARY, contracts: { active: 1, nextRenewalAt: null } }, fetchFor({}));
+    expect((await screen.findByTestId('org-overview-stat-contracts')).textContent).toContain('No upcoming renewal');
+  });
+
+  it('encodes the org id into the portal-users settings link', async () => {
+    render(
+      <OrgOverviewTab orgId="a b/c" orgFetch={fetchFor({})} summary={{ ...BASE_SUMMARY, portalUsers: { count: 1 } }} summaryFailed={false} />,
+    );
+    expect(await screen.findByTestId('org-overview-stat-portalUsers')).toHaveAttribute(
+      'href',
+      '/settings/organizations/a%20b%2Fc#portal',
+    );
+  });
+
+  it('still shows the key dates card when the caller can read no account section', async () => {
+    renderTab(BASE_SUMMARY, fetchFor({}));
+    const tier = await screen.findByTestId('org-overview-account-tier');
+    expect(within(tier).queryByTestId('org-overview-account')).toBeNull();
+    expect(within(tier).getByTestId('org-key-dates')).toBeTruthy();
   });
 
   it('shows the raw outstanding string rather than NaN when it will not parse', async () => {
@@ -339,6 +406,10 @@ describe('OrgOverviewTab — feeds header and timestamps (#9020)', () => {
     await waitFor(() => expect(screen.getByText('Disk full')).toBeTruthy());
     await waitFor(() => expect(screen.getByTestId('org-overview-activity').textContent).toContain('Device'));
     const hms = /\d{1,2}:\d{2}:\d{2}/;
+    const hm = /\d{1,2}:\d{2}/;
+    // Positive half: a time IS rendered, just without seconds.
+    expect(screen.getByTestId('org-overview-activity').textContent).toMatch(hm);
+    expect(screen.getByTestId('org-overview-critical-alerts').textContent).toMatch(hm);
     expect(screen.getByTestId('org-overview-activity').textContent).not.toMatch(hms);
     expect(screen.getByTestId('org-overview-critical-alerts').textContent).not.toMatch(hms);
   });

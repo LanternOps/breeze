@@ -104,6 +104,7 @@
         "noTickets": "Keine offenen Tickets"
       },
       "account": {
+        "title": "Konto",
         "invoices": "Offene Rechnungen"
       }
     },

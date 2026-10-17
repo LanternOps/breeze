@@ -104,6 +104,7 @@
         "noTickets": "Nessun ticket aperto"
       },
       "account": {
+        "title": "Dati commerciali",
         "invoices": "Fatture in sospeso"
       }
     },

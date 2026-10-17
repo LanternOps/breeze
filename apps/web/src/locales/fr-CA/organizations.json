@@ -104,6 +104,7 @@
         "noTickets": "Aucun billet ouvert"
       },
       "account": {
+        "title": "Compte",
         "invoices": "Factures impayées"
       }
     },

@@ -104,6 +104,7 @@
         "noTickets": "Nenhum chamado aberto"
       },
       "account": {
+        "title": "Conta",
         "invoices": "Faturas em aberto"
       }
     },

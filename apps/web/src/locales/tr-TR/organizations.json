@@ -104,6 +104,7 @@
         "noTickets": "Açık bilet yok"
       },
       "account": {
+        "title": "Hesap",
         "invoices": "Ödenmemiş faturalar"
       }
     },
