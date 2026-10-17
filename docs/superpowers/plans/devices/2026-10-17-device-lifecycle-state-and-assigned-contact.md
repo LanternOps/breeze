@@ -73,13 +73,13 @@ on a local test stack, never via `pnpm test`.
 
 | # | Wave | PR title | Depends on | Migration | Tenancy shape | Contract suites that fire |
 |---|---|---|---|---|---|---|
-| 1 | **L1** schema, registrations, service, single routes, Restore guard, removal extraction, detached-row retention | `feat(devices): device lifecycle state — schema, service and API (#8836 L1)` | — | `2026-12-31-100000-device-lifecycle-state.sql` | new Shape 1 table + `devices` columns | rls-coverage, tenantCascade, cascadeDelete, moveOrg.coverage, tenant-export-policy, tenantExportErasureRoundtrip, orgMergeRegistry (+ `orgMerge.test.ts`), orgLifecycleFoundations, devicePublicProjection, selfManagedDbContextRoutes, migrationRlsScope, migrationPartnerExportLocks, autoMigrate, new `deviceChildOrgidExclusions.contract.test.ts`, retentionMetrics, workerReadiness |
+| 1 | **L1** schema, registrations, service, single routes, Restore guard, removal extraction, detached-row retention | `feat(devices): device lifecycle state — schema, service and API (#8836 L1)` | — | `2026-12-31-100000-device-lifecycle-state.sql` | new Shape 1 table + `devices` columns | rls-coverage, tenantCascade, cascadeDelete, moveOrg.coverage, tenant-export-policy, tenantExportErasureRoundtrip, orgMergeRegistry (+ `orgMerge.test.ts`), orgLifecycleFoundations, deviceOwnershipEpochs (exact exclusion set), devicePublicProjection, selfManagedDbContextRoutes, migrationRlsScope, migrationPartnerExportLocks, autoMigrate, new `deviceChildOrgidExclusions.contract.test.ts`, retentionMetrics, workerReadiness |
 | 2 | **L2** web: badge, dialog, Lifecycle card, filter field, group re-evaluation, list column + chips | `feat(web): device lifecycle state on the device page and list (#8836 L2)` | L1, **#7324 W1** (for the column task only) | none | — | filterEngine trust-tier tests, dynamicGroupReevaluation (integration), no-silent-mutations, localeParity, `DeviceList.test.tsx`, columnVisibility |
 | 3 | **L3** bulk route + bulk bar + Remove dialog "Also mark as" | `feat(devices): bulk lifecycle state and Remove-dialog marking (#8836 L3)` | L2 | none | per-device tx | bulkLifecycle.mountorder, selfManagedDbContextRoutes, bulk gating contract (`DeviceList.test.tsx`), no-silent-mutations, localeParity |
 | 4 | **L4** behaviour: offline suppression + re-arm, event payloads, automation trigger, AI filter, Partner API + trigger | `feat(devices): lifecycle-aware offline alerts, automation, AI and Partner API (#8836 L4)` | L1 | `2026-12-31-100100-partner-export-devices-lifecycle.sql` | trigger redefinition | partnerApi dtoSafety + exportSafety.classification, partnerApiExportWatermark (integration), new `partnerExportDevicesTrigger.contract.test.ts`, aiToolsDeviceScope, aiToolsSiteScope, aiToolIndex, migrationPartnerExportLocks, localeParity |
 | 5 | **L5** reports, shared predicate, disposal-register route, docs | `feat(reports): lifecycle in device inventory and hardware lifecycle reports (#8836 L5)` | L1 | none | partner/system read route | report generation tests, routeScope (no new page), new register route test |
 | 6 | **C1** assignment columns, PATCH, DTO, history, move-org clear, contact-delete pre-clear, filter, typeahead, editor, list column | `feat(devices): assigned contact on devices (#8835 C1)` | L1 (events table), L2 (DeviceList merge rule), #7324 W1 | `2026-12-31-100300-device-primary-contact.sql`, `2026-12-31-100400-device-primary-contact-index.sql` (`@no-transaction`) | composite FK on `devices` | tenant-export-policy, tenantExportErasureRoundtrip, tenantCascade (topological), orgLifecycleFoundations, devicePublicProjection, moveOrg.coverage, migrationRlsScope, autoMigrate, dynamicGroupReevaluation, no-silent-mutations, localeParity |
-| 7 | **C2** suggestion engine, `principal_upn` ingest, dismissals table, banner, review drawer, bulk accept | `feat(devices): assignment suggestions and dismissals (#8835 C2)` | C1 | `2026-12-31-100500-device-primary-contact-dismissals.sql` | new Shape 1 table | rls-coverage, tenantCascade, cascadeDelete, moveOrg.coverage, tenant-export-policy, tenantExportErasureRoundtrip, orgMergeRegistry, `deviceChildOrgidExclusions.contract.test.ts`, bulkLifecycle.mountorder, selfManagedDbContextRoutes, localeParity |
+| 7 | **C2** suggestion engine, `principal_upn` ingest, dismissals table, banner, review drawer, bulk accept | `feat(devices): assignment suggestions and dismissals (#8835 C2)` | C1 | `2026-12-31-100500-device-primary-contact-dismissals.sql` | new Shape 1 table | rls-coverage, tenantCascade, cascadeDelete, moveOrg.coverage, tenant-export-policy, tenantExportErasureRoundtrip, orgMergeRegistry, deviceOwnershipEpochs (exact exclusion set), `deviceChildOrgidExclusions.contract.test.ts`, bulkLifecycle.mountorder, selfManagedDbContextRoutes, localeParity |
 | 8 | **C3** bulk assign, contact drawer, reports, AI params, ticket prefill, portal scope, "Clear assigned contact" in lifecycle dialogs | `feat(devices): bulk assign, contact drawer, portal scope and ticket prefill (#8835 C3)` | C2, L3 | none | portal scope | bulk gating contract, aiToolsDeviceScope, aiToolsSiteScope, aiToolIndex, portal device routes, settings rule 9, no-silent-mutations, localeParity |
 | 9 | **C4** Partner API fields + trigger redefinition | `feat(partner-api): assigned contact on the device export (#8835 C4)` | C1, **L4** | `2026-12-31-100600-partner-export-devices-primary-contact.sql` | trigger redefinition | `partnerExportDevicesTrigger.contract.test.ts`, partnerApiExportWatermark, dtoSafety, exportSafety.classification, migrationPartnerExportLocks |
 | 10 | **L6** manual-asset lifecycle parity | `feat(devices): lifecycle state on manual assets (#8836 L6)` | L5 | `2026-12-31-100700-manual-asset-lifecycle-state.sql` | column on Shape 1 table | tenant-export-policy, `mergedListFilter` tests, localeParity |
@@ -132,19 +132,23 @@ Both new tables must stay in the source org (or be deleted) on move-org, so both
 
 | Order | Defined in | `NOT IN` list |
 |---|---|---|
-| 0 | `2026-12-27-170000-pam-org-move-unactuated-elevation-restamp.sql:44` (last on main) | the 12 names there (`ai_agent_runs` … `elevation_requests`) |
+| 0 | `2026-12-27-170000-pam-org-move-unactuated-elevation-restamp.sql:44` (last on main) | the 12 names there (`ai_agent_runs` … `elevation_requests`); 11 of them carry uuid `device_id` + `org_id` (`pam_ledger_retirements` has no `org_id`) |
 | 1 | L1 `…100000…` | 0 + `'device_lifecycle_events'` |
 | 2 | C2 `…100500…` | 1 + `'device_primary_contact_dismissals'` |
 
 Contract tests: `apps/api/src/db/partnerExportDevicesTrigger.contract.test.ts` (created L4, extended C4) and
-`apps/api/src/db/deviceChildOrgidExclusions.contract.test.ts` (created L1, extended C2). Both: find the
+`apps/api/src/db/deviceChildOrgidExclusions.contract.test.ts` (created L1, extended C2). **Existing exact-set pin:**
+`apps/api/src/__tests__/integration/deviceOwnershipEpochs.integration.test.ts:423-449` asserts the *effective* exclusion set
+(tables with uuid `device_id` + `org_id` that the function does not return) with `toEqual` over 11 sorted names. L1 adds
+`'device_lifecycle_events'` and C2 adds `'device_primary_contact_dismissals'` to that array (kept sorted); it reds only in
+the Integration Tests job. Both: find the
 lexicographically-last migration (`localeCompare`, the `autoMigrate` order) that contains
 `FUNCTION public.<name>(`, slice that function's body, parse, and assert. Neither test passes vacuously: each
 asserts a non-zero match count first.
 
 ### 2.3 Lock order (every lifecycle or assignment write)
 
-Move-org takes partner-export org locks, then the device row (`moveDeviceOrgInTransaction.ts:277,447`). The
+Move-org takes partner-export org locks, then the device row (`moveDeviceOrgInTransaction.ts` — order documented near `:11`; device `FOR UPDATE` ~`:443-448`). The
 devices export trigger requests the org lock *after* the row is written (`2026-07-18-…:339`). A writer that locks
 the device row first and then makes a listed column change would deadlock against a concurrent move. So, from the
 wave each writer ships (not from L4/C4), every writer:
@@ -185,7 +189,7 @@ Task L2.4 and land L2.4 as its own PR after #7324 W1 (it is self-contained).
 | `DEVICE_DETACH_DEVICE_ID_TABLES` (`core.ts:208`) | **yes** (`cascadeDelete.test.ts:160` requires exactly one set) | no | — | — | — | — |
 | `CORE_DEVICE_ORG_DENORMALIZED_TABLES` (`core.ts:315`) | **no** — stays in source org; add to `INTENTIONALLY_NO_ORG_ID` (`moveOrg.coverage.test.ts:35`) **and** the comment block in `core.ts` | **no** — deleted before the flip; same two entries | — | — | — | — |
 | `breeze_device_child_orgid_tables()` `NOT IN` | yes (§2.2) | yes (§2.2) | — | — | — | — |
-| move-org explicit step (`moveDeviceOrgInTransaction.ts`, **before** the `UPDATE devices SET org_id` at `:496`, next to the `manual_assets` detach at `:331`) | `UPDATE … SET device_id = NULL` (after writing the C1 `move_org` assignment event, if any) | `DELETE … WHERE device_id = $1` | C1: `primaryContactId: null` in the `:496` statement itself | — | — | — |
+| move-org explicit step (`moveDeviceOrgInTransaction.ts`, **before** the `.update(devices)` org flip at ~`:497`, next to the `manual_assets` detach at ~`:316`) | `UPDATE … SET device_id = NULL` (after writing the C1 `move_org` assignment event, if any) | `DELETE … WHERE device_id = $1` | C1: `primaryContactId: null` in the org-flip statement itself (~`:497`) | — | — | — |
 | `orgMergeRegistry.ts` `REPOINT_TABLES` (`:772`) | plain `repoint` (near `device_ip_history` `:933`) | plain `repoint` (`UNIQUE(device_id, identity)` cannot collide across orgs) | no change (`devices` already repoint, `:960`) | — | — | — |
 | `CORE_TENANT_EXPORT_POLICY` (`services/tenantExportPolicyRegistry.ts`) | new entry, every column `included` | new entry, every column `included` | `devices` (`:438`) `included` += the 4 lifecycle (L1) and 3 contact (C1) columns | `device_sessions` (`:408`) `included` += `principal_upn` | `portal_branding` (`:714`) `included` += `devices_scope` | `manual_assets` `included` += its new columns |
 | `rls-coverage` allowlists | none (Shape 1, auto-discovered) | none | — | — | — | — |
@@ -222,7 +226,7 @@ detach exception's access/retention rules, and the trigger-redefinition ordering
 | Q3b | Strengthen the trigger contract test: three comparison pairs, identical ordered columns, non-zero matches. | §2.2; L4.5 |
 | O1 | `PATCH /devices/:id` admits machine principals; `primaryContactId` cannot be a server-controlled targeting field unless its writers are interactive sessions. | §4 Δ6; C1.3 field-level guard |
 | O2 | `device_sessions` rows are restamped on move, so `device_sessions.org_id = devices.org_id` does not exclude prior-customer evidence. | §4 Δ7; C2.2 lower bound = current `device_ownership_epochs.started_at` |
-| O3 | Accept-suggestion needs the `expectedPrimaryContactId` check under a row lock; PATCH updates by id alone today (`core.ts:2290`). | §2.3 step 2; C1.3, C2.4 |
+| O3 | Accept-suggestion needs the `expectedPrimaryContactId` check under a row lock; PATCH updates by id alone today (`core.ts:2292-2296`). | §2.3 step 2; C1.3, C2.4 |
 | O4 | Extracting removal helpers does not fix DELETE's premature "post-commit" teardown; DELETE must become self-managed too. Re-evaluation uses `requestDeviceGroupReevaluationAfterCommit`. | §4 Δ4; L1.4 |
 | O5 | With nullable contact ids and no snapshots, "erased contact → B" and "unassigned → B" are indistinguishable. | §4 Δ8: `from_contact_present` / `to_contact_present` booleans |
 | O6 | Retention needs a partial index on `detached_at`, worker init/shutdown, readiness and metrics-name registration. | L1.7 |
@@ -286,11 +290,12 @@ three-way control cannot mean "Off" for a portal with self-service on.
 - Modify: `apps/api/src/db/schema/devices.ts` (four columns, near `maintenance_started_by` `:120`)
 - Create: `apps/api/src/__tests__/integration/deviceLifecycleEvents.integration.test.ts`
 - Create: `apps/api/src/db/deviceChildOrgidExclusions.contract.test.ts`
+- Modify: `apps/api/src/__tests__/integration/deviceOwnershipEpochs.integration.test.ts` (`:437` expected exclusion array += `'device_lifecycle_events'`, sorted)
 
 **Interfaces:**
 - Produces: pg types `device_lifecycle_state`, `device_disposal_method`; Drizzle `deviceLifecycleStateEnum`, `deviceDisposalMethodEnum`; `devices.lifecycleState | lifecycleStateChangedAt | lifecycleStateChangedBy | lifecycleNote`; table `device_lifecycle_events` with columns exactly: `id, org_id, device_id, manual_asset_id, subject_label, subject_serial_number, kind, from_state, to_state, note, disposal_method, disposal_reference, disposed_at, from_contact_id, to_contact_id, from_contact_present, to_contact_present, source, actor_user_id, created_at, detached_at`; Drizzle `deviceLifecycleEvents`; exported TS types `DeviceLifecycleState`, `DeviceDisposalMethod`, `DeviceLifecycleEventKind = 'transition'|'correction'|'assignment'`, `DeviceLifecycleEventSource` (the seven sources in Global Constraints) in `packages/shared/src/types/deviceLifecycle.ts`.
 - Constraints (names fixed): `devices_lifecycle_disposed_removed_chk`; `device_lifecycle_events_one_subject_chk` (`num_nonnulls(device_id, manual_asset_id) <= 1`); `device_lifecycle_events_kind_chk`; `device_lifecycle_events_source_chk`; `device_lifecycle_events_kind_shape_chk`:
-  `(kind IN ('transition','correction') AND to_state IS NOT NULL AND from_contact_id IS NULL AND to_contact_id IS NULL AND NOT from_contact_present AND NOT to_contact_present) OR (kind = 'assignment' AND from_state IS NULL AND to_state IS NULL)`;
+  `(kind IN ('transition','correction') AND to_state IS NOT NULL AND from_contact_id IS NULL AND to_contact_id IS NULL AND NOT from_contact_present AND NOT to_contact_present) OR (kind = 'assignment' AND from_state IS NULL AND to_state IS NULL AND disposal_method IS NULL AND disposal_reference IS NULL AND disposed_at IS NULL)` (the disposal-fields CHECK alone evaluates NULL, i.e. passes, when `to_state` is NULL);
   `device_lifecycle_events_correction_chk` (`kind <> 'correction' OR (from_state = 'disposed' AND to_state = 'disposed')`);
   `device_lifecycle_events_disposal_fields_chk` (L§Data model text, unchanged);
   `device_lifecycle_events_contact_present_chk` (`(from_contact_id IS NULL OR from_contact_present) AND (to_contact_id IS NULL OR to_contact_present)`).
@@ -319,7 +324,7 @@ it('composite FKs are DEFERRABLE INITIALLY IMMEDIATE (pg_constraint.condeferrabl
 - [ ] **Step 2: Write the failing static test** `deviceChildOrgidExclusions.contract.test.ts`:
 
 ```ts
-const REQUIRED_EXCLUSIONS = [ /* the 12 names from 2026-12-27-170000 */, 'device_lifecycle_events' ];
+const REQUIRED_EXCLUSIONS = [ /* all 12 NOT IN names from 2026-12-27-170000 */, 'device_lifecycle_events' ];
 it('the last migration defining breeze_device_child_orgid_tables excludes every required table', () => {
   const { file, body } = lastDefinition('breeze_device_child_orgid_tables');   // localeCompare over apps/api/migrations/*.sql
   expect(file).toMatch(/^2026-12-31-100000-/);                                   // update when a later wave redefines it
@@ -333,7 +338,7 @@ it('the last migration defining breeze_device_child_orgid_tables excludes every 
   `pnpm test-stack up`; `cd apps/api && npx vitest run -c vitest.integration.config.ts src/__tests__/integration/deviceLifecycleEvents.integration.test.ts`; `cd apps/api && npx vitest run src/db/deviceChildOrgidExclusions.contract.test.ts`.
 - [ ] **Step 4: Write the migration.** Order: types (`DO … EXCEPTION WHEN duplicate_object`); `ALTER TABLE devices ADD COLUMN IF NOT EXISTS` ×4; drop-if-exists + add `devices_lifecycle_disposed_removed_chk` (validates instantly — every row is `in_service`); table + constraints + indexes; trigger function + `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER`; RLS + policies; the `breeze_device_child_orgid_tables()` redefinition copied verbatim from the last body plus one name. No row writes, no `set_config`.
 - [ ] **Step 5: Drizzle schema** for both; `pnpm db:check-drift` — expect no drift.
-- [ ] **Step 6: Run both tests + `cd apps/api && npx vitest run src/db/migrationRlsScope.test.ts src/db/migrationPartnerExportLocks.test.ts src/db/autoMigrate.test.ts` — expect PASS.**
+- [ ] **Step 6: Run both tests + (stack) `deviceOwnershipEpochs.integration.test.ts` (red until its array gains the new name) + `cd apps/api && npx vitest run src/db/migrationRlsScope.test.ts src/db/migrationPartnerExportLocks.test.ts src/db/autoMigrate.test.ts` — expect PASS.**
 - [ ] **Step 7: Commit** `feat(devices): device_lifecycle_events table, lifecycle columns and disposed⇒removed CHECK`.
 
 ### Task L1.2: Registrations
@@ -411,7 +416,7 @@ it('lifecycleSuppressesOfflineAlerts: spare/pending_disposal true; in_service/lo
 ### Task L1.5: Move-org detach and Restore guard
 
 **Files:**
-- Modify: `apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts` (before `:496`, beside the `manual_assets` detach `:331`), `apps/api/src/services/deviceLifecycle.ts` (`restoreRemovedDevice` `:192`, under its existing `FOR UPDATE`)
+- Modify: `apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts` (before the org flip ~`:497`, beside the `manual_assets` detach ~`:316`), `apps/api/src/services/deviceLifecycle.ts` (`restoreRemovedDevice` `:192`, under its existing `FOR UPDATE`)
 - Test: `apps/api/src/__tests__/integration/deviceLifecycleEvents.integration.test.ts` (extend), `apps/api/src/services/deviceLifecycle.test.ts`
 
 **Interfaces:**
@@ -542,9 +547,9 @@ it('GET /devices and GET /devices/:id include lifecycleState, lifecycleStateChan
 
 **Files:** Modify `apps/web/src/components/devices/RemoveDeviceDialog.tsx` (+ test), `apps/api/src/routes/devices/core.ts` DELETE (accept optional `{ alsoMark?: { state: 'spare'|'pending_disposal'|'disposed', disposal? } }`), locales ×8.
 
-**Interfaces:** DELETE with `alsoMark` runs `decommissionDeviceInTransaction`, then in the **same** transaction `setDeviceLifecycleState({ …, source: 'remove_dialog' })` (device is Removed by then, so `remove` is never passed). Select default *Leave unchanged*; `Disposed` reveals the method (required) field.
+**Interfaces:** DELETE with `alsoMark` first calls `lockDeviceExportOrgs(tx, [orgId])` (§2.3 — `decommissionDeviceInTransaction` UPDATEs the device row, so the export lock must precede it), then runs `decommissionDeviceInTransaction`, then in the **same** transaction `setDeviceLifecycleState({ …, source: 'remove_dialog' })` (device is Removed by then, so `remove` is never passed; its own `lockDeviceExportOrgs` call is a no-op for an already-held org — the SQL function skips held orgs, `2026-07-22-partner-export-lock-upgrade-hardening.sql` `IF org_id = ANY(held_orgs) THEN CONTINUE`). DELETE without `alsoMark` is unchanged. Select default *Leave unchanged*; `Disposed` reveals the method (required) field.
 
-- [ ] **Step 1: Failing tests:** API `it('DELETE with alsoMark=disposed writes one remove_dialog event and leaves decommissioned_at as set by this removal')`; `it('DELETE with alsoMark rolls back the removal when the lifecycle step fails')`; web `it('Leave unchanged is the default and sends no alsoMark')`.
+- [ ] **Step 1: Failing tests:** API `it('DELETE with alsoMark takes the export lock before the decommission UPDATE')` (call order); `it('DELETE with alsoMark=disposed writes one remove_dialog event and leaves decommissioned_at as set by this removal')`; `it('DELETE with alsoMark rolls back the removal when the lifecycle step fails')`; web `it('Leave unchanged is the default and sends no alsoMark')`.
 - [ ] **Step 2–4: FAIL → implement → PASS. Step 5: Commit** `feat(devices): mark lifecycle state from the Remove dialog`.
 
 ### Task L3.3: Bulk bar entry + gating (§2.4 rule applies)
@@ -591,7 +596,7 @@ it('GET /devices and GET /devices/:id include lifecycleState, lifecycleStateChan
 
 **Interfaces:** event `device.lifecycle_state_changed` payload `{ deviceId, orgId, fromState, toState, actorUserId, source, disposalMethod? }`; `query_devices` param `lifecycleState: z.enum(LIFECYCLE_STATES).optional()`; rows gain `lifecycleState`.
 
-- [ ] **Step 1: Failing tests:** `it('publishes device.lifecycle_state_changed only after commit and only when changed')`; `it('device.offline payload carries lifecycleState')`; `it('query_devices filters by lifecycleState')`; AutomationForm option test; `aiToolsDeviceScope.contract.test.ts`, `aiToolsSiteScope.contract.test.ts`, `aiToolIndex.test.ts` stay green.
+- [ ] **Step 1: Failing tests:** `it('publishes device.lifecycle_state_changed only after commit and only when changed')`; `it('device.offline payload carries lifecycleState')`; `it('query_devices filters by lifecycleState')`; `it('get_device_details returns lifecycleState, lifecycleStateChangedAt and lifecycleNote')`; AutomationForm option test; `aiToolsDeviceScope.contract.test.ts`, `aiToolsSiteScope.contract.test.ts`, `aiToolIndex.test.ts` stay green.
 - [ ] **Step 2–4: FAIL → implement → PASS. Step 5: Commit** `feat(devices): lifecycle event, automation trigger and AI filter`.
 
 ### Task L4.4: Partner API field + trigger migration
@@ -609,7 +614,7 @@ it('GET /devices and GET /devices/:id include lifecycleState, lifecycleStateChan
 
 **Interfaces:** `REQUIRED_COLUMNS` = §2.2 order 1 list (18, ordered). Assertions: last defining file is `2026-12-31-100100-…`; the body has exactly 3 `IS DISTINCT FROM` comparisons; each comparison's `old_row.` and `new_row.` ROW lists are equal after stripping the prefix; every list equals `REQUIRED_COLUMNS` in order; match count > 0.
 
-- [ ] **Step 1: Write it pointing at order 1 — FAIL before L4.4's migration exists, PASS after. Step 2: Commit** `test(partner-api): pin the devices export trigger column list`.
+- [ ] **Step 1: Write it before L4.4's migration (do L4.5 Step 1 first, then L4.4)** — run: FAIL (last defining file is `2026-07-18-…`, 16 columns). After L4.4's migration: PASS. **Step 2: Commit** `test(partner-api): pin the devices export trigger column list`.
 
 **L4 release note:** Partner API consumers run one full resync to see `lifecycle` on every device (defaulted rows do not advance the cursor).
 
@@ -678,8 +683,8 @@ it('GET /devices and GET /devices/:id include lifecycleState, lifecycleStateChan
 
 ### Task C1.4: DTO, move-org clear, contact-delete pre-clear, filter field
 
-**Files:** `routes/devices/helpers.ts` (`PUBLIC_DEVICE_FIELDS`), `core.ts` list/detail (`primaryContact: { id, name, email } | { id, restricted: true } | null` via joined lookup like `siteName` `:1793`), `moveDeviceOrgInTransaction.ts` (`primaryContactId: null` in the `:496` statement; before the flip, write a `move_org` assignment event in the source org when an assignment existed — it is then detached with the rest), `services/contacts/crud.ts` (`deleteContact` `:736`: `lockDeviceExportOrgs([orgId])` → `UPDATE devices SET primary_contact_id = NULL WHERE org_id = $org AND primary_contact_id = $contact RETURNING id` → one `contact_deleted` event + audit per device → re-evaluation after commit), `filterEngine.ts` (`primaryContactId` string field, `equals | in | isNull | isNotNull`, server-controlled); tests beside each + `dynamicGroupReevaluation.integration.test.ts`.
-- [ ] Failing tests: `devicePublicProjection.contract.test.ts` new fields; `it('restricted contact renders { id, restricted: true }')`; integration `it('move-org clears the assignment, writes a move_org event in the source org, and the event is detached')`; `it('a site change inside the org leaves the assignment')`; `it('device-list search matches the assignee name and email')` (list search predicate in `core.ts` list handler); `it('deleteContact clears, audits and re-evaluates each device')`; `it('primaryContactId isNull group gains/loses the device on clear/assign')` → implement → PASS → commit.
+**Files:** `routes/devices/helpers.ts` (`PUBLIC_DEVICE_FIELDS`), `core.ts` list/detail (`primaryContact: { id, name, email } | { id, restricted: true } | null` via joined lookup like `siteName` `:1793`), `moveDeviceOrgInTransaction.ts` (`primaryContactId: null` in the org-flip statement ~`:497`; before the flip, write a `move_org` assignment event in the source org when an assignment existed — it is then detached with the rest), `services/contacts/crud.ts` (`deleteContact` `:736`: `lockDeviceExportOrgs([orgId])` → `UPDATE devices SET primary_contact_id = NULL WHERE org_id = $org AND primary_contact_id = $contact RETURNING id` → one `contact_deleted` event + audit per device → re-evaluation after commit), `filterEngine.ts` (`primaryContactId` string field, `equals | in | isNull | isNotNull`, server-controlled); tests beside each + `dynamicGroupReevaluation.integration.test.ts`.
+- [ ] Failing tests: `devicePublicProjection.contract.test.ts` new fields; `it('restricted contact renders { id, restricted: true }')`; integration `it('move-org clears the assignment, writes a move_org event in the source org, and the event is detached')`; `it('a site change inside the org leaves the assignment')`; `it('the move audit records primaryContactCleared: <old id>')`; `it('assigning a parked device (unassignedPool/assignParkedDevice.ts:285, same engine) clears a stale assignment with no extra code')`; `it('device-list search matches the assignee name and email')` (list search predicate in `core.ts` list handler); `it('deleteContact clears, audits and re-evaluates each device')`; `it('primaryContactId isNull group gains/loses the device on clear/assign')` → implement → PASS → commit.
 
 ### Task C1.5: Web — `ContactTypeahead`, device-page editor, list column (§2.4)
 
@@ -694,7 +699,7 @@ it('GET /devices and GET /devices/:id include lifecycleState, lifecycleStateChan
 
 ### Task C2.1: Dismissals table + registrations
 
-**Files:** migration (table per C§Dismissal memory; `UNIQUE (device_id, identity)`; index `(org_id)`; RLS Shape 1, four policies; `breeze_device_child_orgid_tables()` = §2.2 order 2); `db/schema/devicePrimaryContactDismissals.ts`; registrations §2.5 column 2 (cascade order, `CORE_DEVICE_CASCADE_DELETE_TABLES`, `INTENTIONALLY_NO_ORG_ID` + core.ts comment, merge repoint, export); move-org `DELETE` before `:496`; extend `deviceChildOrgidExclusions.contract.test.ts` (`REQUIRED_EXCLUSIONS` += dismissals, last file `…100500…`).
+**Files:** migration (table per C§Dismissal memory; `UNIQUE (device_id, identity)`; index `(org_id)`; RLS Shape 1, four policies; `breeze_device_child_orgid_tables()` = §2.2 order 2); `db/schema/devicePrimaryContactDismissals.ts`; registrations §2.5 column 2 (cascade order, `CORE_DEVICE_CASCADE_DELETE_TABLES`, `INTENTIONALLY_NO_ORG_ID` + core.ts comment, merge repoint, export); move-org `DELETE` before the devices UPDATE; extend `deviceChildOrgidExclusions.contract.test.ts` (`REQUIRED_EXCLUSIONS` += dismissals, last file `…100500…`) and `deviceOwnershipEpochs.integration.test.ts` (expected exclusion array += `'device_primary_contact_dismissals'`, sorted).
 - [ ] Failing: rls-coverage (auto), `devicePrimaryContactDismissalsRls.integration.test.ts` (42501 cross-tenant + positive control), cascadeDelete, moveOrg.coverage, tenantCascade, tenant-export-policy, orgMergeRegistry, the static exclusions test; integration `it('move-org deletes dismissals and the move succeeds')` → implement → PASS → commit.
 
 ### Task C2.2: `principal_upn` ingest + suggestion engine
