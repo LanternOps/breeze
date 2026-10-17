@@ -16,6 +16,9 @@ Last release: **v0.123.0** (2026-10-17).
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **Connection-health digest (#9011)** — on the first deploy that includes it, every admin/owner with an open connection incident receives a digest email at 08:00 partner-local time. Expected one-time burst, not a fault.
+- **AI device file read policy (#8866 W01 + #9010 W02)** — both waves ship together; W02 asserts the partner id in the resolver (W01 alone fails open).
+
 ## Features / API
 
 ## Migrations
