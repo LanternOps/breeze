@@ -8,6 +8,7 @@
       },
       "primaryContact": "Birincil kişi",
       "noPrimaryContact": "Birincil kişi yok",
+      "addContactLink": "Kişi ekle",
       "billingAddress": "Fatura adresi",
       "noBillingAddress": "Fatura adresi yok",
       "billingSettingsLink": "Faturalandırma ayarlarından ekleyin",

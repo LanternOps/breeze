@@ -8,6 +8,7 @@
       },
       "primaryContact": "Contacto principal",
       "noPrimaryContact": "Sin contacto principal",
+      "addContactLink": "Agregar contacto",
       "billingAddress": "Dirección de facturación",
       "noBillingAddress": "Sin dirección de facturación",
       "billingSettingsLink": "Agregar en la configuración de facturación",

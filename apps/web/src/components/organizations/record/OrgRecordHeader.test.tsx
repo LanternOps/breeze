@@ -66,10 +66,13 @@ describe('OrgRecordHeader', () => {
     expect(screen.getByRole('link', { name: /dana@acme.test/ }).getAttribute('href')).toBe('mailto:dana@acme.test');
   });
 
-  it('says so explicitly when a loaded summary has no primary contact', () => {
+  it('says so explicitly when a loaded summary has no primary contact, with a way to add one', () => {
     renderHeader({ summary: { ...SUMMARY, contacts: { count: 0, primary: null } } });
     expect(screen.queryByTestId('org-record-primary-contact')).toBeNull();
-    expect(screen.getByText('No primary contact')).toBeTruthy();
+    // #9024: symmetric with "No billing address · Add in Billing settings".
+    const empty = screen.getByTestId('org-record-no-primary-contact');
+    expect(empty.textContent).toBe('No primary contact · Add contact');
+    expect(screen.getByTestId('org-record-primary-contact-link').getAttribute('href')).toBe('#contacts');
   });
 
   it('stays quiet about contacts while the summary is still null', () => {
@@ -96,9 +99,21 @@ describe('OrgRecordHeader', () => {
     expect(screen.queryByTestId('org-record-billing-address-link')).toBeNull();
   });
 
+  it('drops the country when it matches the partner\'s own, and keeps it otherwise (#9024)', () => {
+    const org = { ...ORG, billingAddressCity: 'Springfield', billingAddressRegion: 'IL', billingAddressCountry: 'US' };
+    const { unmount } = renderHeader({ org, partnerCountry: 'US' });
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain('Springfield, IL');
+    expect(screen.getByTestId('org-record-billing-address').textContent).not.toContain('US');
+    unmount();
+    renderHeader({ org, partnerCountry: 'CA' });
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain('Springfield, IL · US');
+  });
+
   it('offers the billing settings tab when every address field is empty', () => {
     renderHeader();
-    expect(screen.getByText('No billing address')).toBeTruthy();
+    expect(screen.getByTestId('org-record-no-billing-address').textContent).toBe(
+      'No billing address · Add in Billing settings',
+    );
     expect(screen.getByTestId('org-record-billing-address-link').getAttribute('href')).toBe(
       '/settings/organizations/org-1#billing',
     );

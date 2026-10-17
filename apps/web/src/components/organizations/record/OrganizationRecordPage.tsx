@@ -211,6 +211,28 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
   const org = state.kind === 'loaded' ? state.org : null;
   const archived = isArchiveLifecycleOrg(org);
 
+  // The partner's own billing country (#9024): the header leaves a matching
+  // country off the address. Asked for only when there is a country to drop
+  // and only by partner sessions (the route is partner-scope); any failure
+  // just leaves the country on — the address is still correct, only noisier.
+  const isPartnerScope = claims.status === 'resolved' && claims.claims.scope === 'partner';
+  const orgCountry = org?.billingAddressCountry?.trim() || null;
+  const [partnerCountry, setPartnerCountry] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isPartnerScope || !orgCountry) return;
+    let cancelled = false;
+    void orgFetch('/orgs/partners/me')
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`partner load failed: ${res.status}`);
+        const body = (await res.json()) as { billingAddressCountry?: unknown };
+        if (!cancelled) setPartnerCountry(typeof body?.billingAddressCountry === 'string' ? body.billingAddressCountry : null);
+      })
+      .catch((err) => console.warn('[OrganizationRecordPage] partner country unavailable; showing the full address', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [orgFetch, isPartnerScope, orgCountry]);
+
   const handleWorkHere = () => {
     if (!org) return;
     // Switch and STAY (#9019): the record's own URL, tab hash included. Every
@@ -367,6 +389,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         archived={archived}
         mismatchedScopeOrgName={scopeOrgId && scopeOrgId !== orgId ? scopeOrgName : null}
         workingHere={scopeOrgId === orgId}
+        partnerCountry={partnerCountry}
         onWorkHere={handleWorkHere}
         onOpenSettings={() => void navigateTo(`/settings/organizations/${orgId}`)}
         onArchive={archived ? undefined : () => setModal('archive')}

@@ -22,6 +22,17 @@ describe('formatAddress', () => {
     expect(formatAddress({ line1: '', city: null })).toBe('');
   });
 
+  // #9024: "· US" on every customer of a US partner is noise.
+  it('omits the country when it is the home country passed in (case-insensitive), and only then', () => {
+    const parts = { line1: '1 Main St', city: 'Springfield', region: 'IL', country: 'US' };
+    expect(formatAddress(parts, { homeCountry: 'us' })).toBe('1 Main St · Springfield, IL');
+    expect(formatAddress(parts, { homeCountry: 'CA' })).toBe('1 Main St · Springfield, IL · US');
+    expect(formatAddress(parts, { homeCountry: null })).toBe('1 Main St · Springfield, IL · US');
+    expect(formatAddress(parts)).toBe('1 Main St · Springfield, IL · US');
+    // A country-only address is still an address: it never collapses to ''.
+    expect(formatAddress({ country: 'US' }, { homeCountry: 'US' })).toBe('US');
+  });
+
   it('skips empty parts without dangling separators', () => {
     expect(formatAddress({ city: 'Springfield', country: 'US' })).toBe('Springfield · US');
     expect(formatAddress({ region: 'IL', postalCode: '62701' })).toBe('IL 62701');

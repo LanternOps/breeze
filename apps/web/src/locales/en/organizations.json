@@ -8,6 +8,7 @@
       },
       "primaryContact": "Primary contact",
       "noPrimaryContact": "No primary contact",
+      "addContactLink": "Add contact",
       "billingAddress": "Billing address",
       "noBillingAddress": "No billing address",
       "billingSettingsLink": "Add in Billing settings",

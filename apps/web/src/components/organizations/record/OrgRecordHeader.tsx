@@ -18,6 +18,8 @@ export interface OrgRecordHeaderProps {
   mismatchedScopeOrgName: string | null;
   /** The OrgSwitcher already points at this record's org. */
   workingHere?: boolean;
+  /** The partner's own billing country: the address leaves a matching country off. */
+  partnerCountry?: string | null;
   onWorkHere: () => void;
   onOpenSettings: () => void;
   /** Omitted (with `onMerge`) while the record is read-only. */
@@ -44,6 +46,7 @@ export default function OrgRecordHeader({
   archived,
   mismatchedScopeOrgName,
   workingHere = false,
+  partnerCountry = null,
   onWorkHere,
   onOpenSettings,
   onArchive,
@@ -124,7 +127,7 @@ export default function OrgRecordHeader({
     region: org.billingAddressRegion,
     postalCode: org.billingAddressPostalCode,
     country: org.billingAddressCountry,
-  });
+  }, { homeCountry: partnerCountry });
   const hasLifecycleActions = !archived && (onArchive || onMerge);
 
   return (
@@ -149,7 +152,7 @@ export default function OrgRecordHeader({
               {org.type && (
                 <span
                   data-testid="org-record-type"
-                  className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                  className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-foreground"
                 >
                   {org.type === 'internal' ? t('orgRecord.header.type.internal') : t('orgRecord.header.type.customer')}
                 </span>
@@ -200,7 +203,14 @@ export default function OrgRecordHeader({
               </div>
             ) : (
               summary && (
-                <p className="mt-1 text-sm text-muted-foreground">{t('orgRecord.header.noPrimaryContact')}</p>
+                // #9024: the same "missing · fix it" shape as the billing line below.
+                <p data-testid="org-record-no-primary-contact" className="mt-1 text-sm text-muted-foreground">
+                  {t('orgRecord.header.noPrimaryContact')}
+                  <span aria-hidden="true"> · </span>
+                  <a data-testid="org-record-primary-contact-link" href="#contacts" className="text-primary hover:underline">
+                    {t('orgRecord.header.addContactLink')}
+                  </a>
+                </p>
               )
             )}
 
@@ -213,12 +223,13 @@ export default function OrgRecordHeader({
                 <span>{billingAddress}</span>
               </div>
             ) : (
-              <p className="mt-1 text-sm text-muted-foreground">
+              <p data-testid="org-record-no-billing-address" className="mt-1 text-sm text-muted-foreground">
                 {t('orgRecord.header.noBillingAddress')}
+                <span aria-hidden="true"> · </span>
                 <a
                   data-testid="org-record-billing-address-link"
                   href={`/settings/organizations/${org.id}#billing`}
-                  className="ml-2 text-primary hover:underline"
+                  className="text-primary hover:underline"
                 >
                   {t('orgRecord.header.billingSettingsLink')}
                 </a>

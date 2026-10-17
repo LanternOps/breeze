@@ -473,6 +473,109 @@ describe('OverflowTabs', () => {
       render(<OverflowTabs tabs={mixed} activeTab="a" onTabChange={() => {}} testIdPrefix="t-" mobileMode="scroll" />);
       expect(screen.getAllByRole('tab').map((t) => t.id)).toEqual(['t-a']);
       expect(screen.getByRole('tablist').className).not.toContain('overflow-x-auto');
+
+  // #9024: the org record's strip visibly flipped 9 → 7 → 9 across measure
+  // passes. A re-measure must never put a different tab set on screen, and a
+  // burst of container resizes must settle into ONE computation.
+  describe('stable visible count across re-measures and resize bursts (#9024)', () => {
+    const manyTabs: OverflowTab[] = Array.from({ length: 6 }, (_, i) => ({
+      id: `t${i}`,
+      label: `Tab ${i}`,
+      icon: <span />,
+    }));
+    let containerWidth = 340;
+
+    beforeEach(() => {
+      containerWidth = 340;
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 50 });
+      Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => containerWidth });
+    });
+
+    afterEach(() => {
+      restoreLayout();
+      delete (document as unknown as { fonts?: unknown }).fonts;
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it('a re-measure with identical widths never renders a different tab set, or hides the strip', async () => {
+      let resolveReady: () => void = () => {};
+      const ready = new Promise<void>((resolve) => {
+        resolveReady = resolve;
+      });
+      (document as unknown as { fonts: { ready: Promise<void> } }).fonts = { ready };
+
+      render(<OverflowTabs tabs={manyTabs} activeTab="t0" onTabChange={() => {}} testIdPrefix="x-" />);
+      const before = screen.getAllByRole('tab').map((tab) => tab.id);
+      expect(before.length).toBeGreaterThan(1);
+      expect(before.length).toBeLessThan(manyTabs.length);
+
+      const tablist = screen.getByRole('tablist');
+      const strip = tablist.parentElement!;
+      const records: MutationRecord[] = [];
+      const observer = new MutationObserver((batch) => records.push(...batch));
+      observer.observe(strip, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+
+      await act(async () => {
+        resolveReady();
+        await ready;
+      });
+      records.push(...observer.takeRecords());
+      observer.disconnect();
+
+      expect(screen.getAllByRole('tab').map((tab) => tab.id)).toEqual(before);
+      // Nothing that a user (or AT) could perceive as a tab was added mid-pass…
+      const addedTabs = records
+        .flatMap((r) => Array.from(r.addedNodes))
+        .flatMap((n) => (n instanceof HTMLElement ? [n, ...Array.from(n.querySelectorAll('*'))] : []))
+        .filter((el) => el.getAttribute('role') === 'tab');
+      expect(addedTabs).toEqual([]);
+      // …and the strip itself never went invisible for the pass.
+      expect(records.filter((r) => r.type === 'attributes' && r.target === strip)).toEqual([]);
+    });
+
+    it('debounces a burst of container resizes into one computation on the settled width', () => {
+      vi.useFakeTimers();
+      let roCallback: () => void = () => {};
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          constructor(cb: () => void) {
+            roCallback = cb;
+          }
+          observe() {}
+          disconnect() {}
+          unobserve() {}
+        },
+      );
+
+      render(<OverflowTabs tabs={manyTabs} activeTab="t0" onTabChange={() => {}} />);
+      const before = screen.getAllByRole('tab').length;
+
+      // A transient widening (e.g. a scrollbar disappearing mid-load) and back.
+      act(() => {
+        containerWidth = 2000;
+        roCallback();
+      });
+      expect(screen.getAllByRole('tab').length).toBe(before);
+      act(() => {
+        containerWidth = 340;
+        roCallback();
+      });
+      act(() => {
+        vi.runAllTimers();
+      });
+      expect(screen.getAllByRole('tab').length).toBe(before);
+
+      // A real, lasting resize still lands once it settles.
+      act(() => {
+        containerWidth = 2000;
+        roCallback();
+      });
+      act(() => {
+        vi.runAllTimers();
+      });
+      expect(screen.getAllByRole('tab').length).toBe(manyTabs.length);
     });
   });
 });

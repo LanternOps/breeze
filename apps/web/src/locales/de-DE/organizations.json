@@ -8,6 +8,7 @@
       },
       "primaryContact": "Hauptansprechpartner",
       "noPrimaryContact": "Kein Hauptansprechpartner",
+      "addContactLink": "Ansprechpartner hinzufügen",
       "billingAddress": "Rechnungsadresse",
       "noBillingAddress": "Keine Rechnungsadresse",
       "billingSettingsLink": "In den Abrechnungseinstellungen hinzufügen",

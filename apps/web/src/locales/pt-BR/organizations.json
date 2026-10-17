@@ -8,6 +8,7 @@
       },
       "primaryContact": "Contato principal",
       "noPrimaryContact": "Sem contato principal",
+      "addContactLink": "Adicionar contato",
       "billingAddress": "Endereço de cobrança",
       "noBillingAddress": "Sem endereço de cobrança",
       "billingSettingsLink": "Adicionar nas configurações de cobrança",

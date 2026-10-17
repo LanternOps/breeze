@@ -326,6 +326,31 @@ describe('OrganizationRecordPage — happy path', () => {
   });
 });
 
+describe('OrganizationRecordPage — billing address country (#9024)', () => {
+  it("drops the billing country from the header when it is the partner's own", async () => {
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      '/orgs/partners/me': () => json({ id: 'p1', billingAddressCountry: 'US' }),
+      [`/orgs/organizations/${RECORD_ORG}`]: () =>
+        json({ ...ORG_BODY, billingAddressCity: 'Springfield', billingAddressCountry: 'US' }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(requestedUrls.some((u) => u.includes('/orgs/partners/me'))).toBe(true));
+    await waitFor(() => expect(screen.getByTestId('org-record-billing-address').textContent).not.toContain('US'));
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain('Springfield');
+  });
+
+  it('does not ask for the partner at all when the org has no billing country', async () => {
+    routeFetch({
+      '/summary': () => json(SUMMARY_BODY),
+      [`/orgs/organizations/${RECORD_ORG}`]: () => json({ ...ORG_BODY, billingAddressCity: 'Springfield' }),
+    });
+    render(<OrganizationRecordPage orgId={RECORD_ORG} />);
+    await waitFor(() => expect(screen.getByTestId('org-record-billing-address')).toBeTruthy());
+    expect(requestedUrls.some((u) => u.includes('/orgs/partners/me'))).toBe(false);
+  });
+});
+
 describe('OrganizationRecordPage — archive (#8371)', () => {
   it('refreshes the global org store after archiving so the header switcher drops the org', async () => {
     routeFetch({

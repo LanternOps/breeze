@@ -66,6 +66,9 @@ export function overflowPanelId(id: string, testIdPrefix?: string): string {
   return testIdPrefix ? `${testIdPrefix}${id}-panel` : `tab-${id}-panel`;
 }
 
+/** How long the container's width must hold still before the strip reflows. */
+const RESIZE_SETTLE_MS = 120;
+
 export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobileMode }: {
   tabs: OverflowTab[];
   activeTab: string;
@@ -91,6 +94,12 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobil
   const secondaryTabs = tabs.filter(t => t.secondary);
   const [visibleCount, setVisibleCount] = useState(primaryTabs.length);
   const [measured, setMeasured] = useState(false);
+  // True once the first pass has put a slice on screen. Every later pass
+  // (webfonts settling, a count badge arriving) keeps that slice where it is
+  // and measures the overflowed tabs as hidden ghosts instead, so a re-measure
+  // can never flash a different tab set (#9024: 9 → 7 → 9 at 1366px).
+  const [everMeasured, setEverMeasured] = useState(false);
+  const ghostRef = useRef<HTMLDivElement>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
@@ -116,9 +125,12 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobil
   useLayoutEffect(() => {
     const nav = navRef.current;
     if (!nav || measured) return;
-    const buttons = nav.querySelectorAll<HTMLButtonElement>(':scope > span > button, :scope > button');
+    const tabButtons = (root: Element | null) =>
+      root ? Array.from(root.querySelectorAll<HTMLButtonElement>(':scope > span > button, :scope > button')) : [];
+    // Live tabs first, then the ghosts: together they are `primaryTabs` in order.
+    const buttons = [...tabButtons(nav), ...tabButtons(ghostRef.current)];
     // Measure each tab's total width including any preceding separator
-    tabWidths.current = Array.from(buttons).map(b => {
+    tabWidths.current = buttons.map(b => {
       const wrapper = b.parentElement;
       if (wrapper && wrapper.tagName === 'SPAN') {
         // Wrapper with display:contents — measure the separator too if present
@@ -128,6 +140,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobil
       return b.offsetWidth;
     });
     setMeasured(true);
+    setEverMeasured(true);
   }, [measured]);
 
   // Self-hosted webfonts (Plus Jakarta Sans, `font-display: swap`) paint the
@@ -191,13 +204,27 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobil
     computeVisible();
   }, [measured, computeVisible]);
 
+  // Trailing debounce: a burst of container resizes (a scrollbar appearing
+  // and vanishing while the page below loads, a sidebar animating) computes
+  // ONCE on the settled width instead of stepping the strip through every
+  // intermediate width (#9024). The visible count holds until then.
   useEffect(() => {
     if (!measured) return;
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => computeVisible());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ro = new ResizeObserver(() => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        computeVisible();
+      }, RESIZE_SETTLE_MS);
+    });
     ro.observe(container);
-    return () => ro.disconnect();
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+      ro.disconnect();
+    };
   }, [measured, computeVisible]);
 
   // Scroll strip: keep the active tab in view (e.g. a deep link to #alerts).
@@ -235,10 +262,13 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobil
   }, [moreOpen, closeMenu]);
 
   // Secondary tabs are pinned into "More"; primaries spill in after them
-  // when the row is too narrow. Before measurement every primary is rendered
-  // (invisibly) so its width can be read.
-  const showAllPrimaries = scrollMode || !measured;
+  // when the row is too narrow. Before the FIRST measurement every primary is
+  // rendered (invisibly) so its width can be read; later passes measure the
+  // spilled ones as ghosts (`ghostTabs`) and leave the live slice alone. In
+  // the phone scroll strip every primary is always rendered (no ghosts).
+  const showAllPrimaries = scrollMode || !everMeasured;
   const visibleTabs = showAllPrimaries ? primaryTabs : primaryTabs.slice(0, visibleCount);
+  const ghostTabs = !scrollMode && everMeasured && !measured ? primaryTabs.slice(visibleCount) : [];
   // Overflow is ordered group-first (groups in the order they first appear in
   // `tabs`, ungrouped first), so a primary that spilled for width lands in
   // its own section of "More" instead of forming a stray run at the top that
@@ -344,12 +374,12 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobil
     }`;
 
   return (
-    <div ref={containerRef} className="border-b">
+    <div ref={containerRef} className="relative border-b">
       {/* The "More" trigger is a menu-disclosure button, not a tab, so it
           must sit as a sibling of the tablist rather than inside it — a
           role="tablist" is only allowed to contain role="tab" children
           (axe: aria-required-children). */}
-      <div className={`-mb-px flex items-center gap-3 ${measured || scrollMode ? '' : 'invisible'}`}>
+      <div className={`-mb-px flex items-center gap-3 ${everMeasured || scrollMode ? '' : 'invisible'}`}>
         <nav
           ref={navRef as React.RefObject<HTMLElement>}
           role="tablist"
@@ -467,6 +497,28 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix, mobil
           </div>
         )}
       </div>
+      {ghostTabs.length > 0 && (
+        // Measurement-only copies of the spilled tabs (see `everMeasured`):
+        // out of flow, invisible, hidden from AT and focus, and gone again in
+        // the same layout pass that reads them.
+        <div
+          ref={ghostRef}
+          aria-hidden="true"
+          className="pointer-events-none invisible absolute left-0 top-0 flex items-center gap-3 whitespace-nowrap"
+        >
+          {ghostTabs.map((tab) => (
+            <span key={tab.id} className="contents">
+              {tab.separator && <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />}
+              <button type="button" tabIndex={-1} className={tabClass(activeTab === tab.id)}>
+                {tab.icon}
+                {tab.label}
+                <CountBadge count={tab.count} />
+                {tab.dot && <span className="h-2 w-2 rounded-full bg-green-500" />}
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
