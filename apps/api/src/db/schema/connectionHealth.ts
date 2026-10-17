@@ -36,6 +36,8 @@ export const connectionHealthIncidents = pgTable('connection_health_incidents', 
   resolution: text('resolution'),
   pendingNotice: text('pending_notice'),
   notifiedUserIds: uuid('notified_user_ids').array().notNull().default(sql`'{}'::uuid[]`),
+  /** W5 event outbox: what event consumers were last told ('opened' | 'resolved'), NULL = never. */
+  eventState: text('event_state'),
 }, (t) => ({
   openUniq: uniqueIndex('connection_health_incidents_open_uniq')
     .on(t.sourceKind, t.sourceId)
@@ -52,4 +54,7 @@ export const connectionHealthIncidents = pgTable('connection_health_incidents', 
   orgIdx: index('connection_health_incidents_org_idx')
     .on(t.orgId)
     .where(sql`${t.orgId} IS NOT NULL`),
+  eventDueIdx: index('connection_health_incidents_event_due_idx')
+    .on(t.id)
+    .where(sql`${t.orgId} IS NOT NULL AND ${t.openedAt} IS NOT NULL AND ((${t.resolvedAt} IS NULL AND ${t.eventState} IS DISTINCT FROM 'opened') OR (${t.resolvedAt} IS NOT NULL AND ${t.eventState} = 'opened'))`),
 }));

@@ -110,6 +110,9 @@ export async function applyActions(
           firstFailedAt: now,
           openedAt: now,
           pendingNotice: a.notify ? 'opened' : null,
+          // A seed (no notice) is a silent event baseline too: no opened event
+          // (W5 plan D8). Otherwise NULL, so the event outbox publishes it.
+          eventState: a.notify ? null : 'opened',
         });
         counts.opened += 1;
         break;
@@ -119,6 +122,7 @@ export async function applyActions(
           openedAt: now,
           healthyStreak: 0,
           pendingNotice: a.notify ? 'opened' : null,
+          eventState: a.notify ? null : 'opened',
         }).where(and(eq(chi.id, a.incidentId), isNull(chi.openedAt)));
         counts.opened += 1;
         break;

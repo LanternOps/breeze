@@ -3,6 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
 import { sendOpsAlert } from '../opsAlerts';
 import { getRedis } from '../redis';
+import { publishPendingEvents, type EventPublishCounts } from './events';
 import { deliverPendingNotices, type DeliveryCounts } from './notifier';
 import { HEALTH_SOURCES } from './sources';
 import { applyActions, deleteExpiredResolved, hasIncidentsForKind, loadTracked } from './store';
@@ -11,7 +12,7 @@ import { reopenWindowMs, type HealthSource } from './types';
 
 // The connection health reconciler (spec 2026-10-15 §1.2, §1.3, §8). One run:
 // every due kind in its own system transaction, then the notice outbox, then
-// retention. Redis only remembers cadence, the seed flag and failure streaks.
+// the event outbox (W5), then retention. Redis only remembers cadence, the seed flag and failure streaks.
 // A seed run opens incidents without notifying; it happens only when Redis
 // has no seeded key for the kind AND the kind has no incident rows (checked
 // inside the kind's transaction; retention always keeps each kind's newest row,
@@ -56,6 +57,7 @@ export type ReconcileDeps = {
   budgetMs: number;
   runKind: (source: HealthSource, now: Date, seed: SeedMode) => Promise<KindCounts | typeof KIND_LOCKED | typeof KIND_DEFERRED>;
   deliver: (now: Date) => Promise<DeliveryCounts>;
+  publishEvents: (now: Date) => Promise<EventPublishCounts>;
   retention: (now: Date) => Promise<number>;
   alert: (msg: { title: string; body: string }) => Promise<boolean>;
 };
@@ -112,6 +114,7 @@ function resolveDeps(overrides: Partial<ReconcileDeps>): ReconcileDeps {
     budgetMs: overrides.budgetMs ?? RUN_BUDGET_MS,
     runKind: overrides.runKind ?? runKindInSystemScope,
     deliver: overrides.deliver ?? ((now) => deliverPendingNotices(now)),
+    publishEvents: overrides.publishEvents ?? ((now) => publishPendingEvents(now)),
     retention: overrides.retention ?? ((now) => runOutsideDbContext(() => withSystemDbAccessContext(
       () => deleteExpiredResolved(now),
       'connectionHealth.retention',
@@ -184,6 +187,7 @@ async function recordFailure(d: ReconcileDeps, kind: string, message: string) {
 export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Promise<{
   kinds: KindResult[];
   notices: DeliveryCounts;
+  events: EventPublishCounts;
   retained: number;
 }> {
   const d = resolveDeps(overrides);
@@ -231,15 +235,21 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
     }
   }
 
-  // After every kind committed, outside any DB context (both helpers open their own).
-  // A failure in either still lets the other run, then fails the job without a heartbeat.
+  // After every kind committed, outside any DB context (each helper opens its own).
+  // A failure in one still lets the others run, then fails the job without a heartbeat.
   const failures: Array<{ step: string; err: unknown }> = [];
   let notices: DeliveryCounts = { delivered: 0, failed: 0, zeroRecipients: 0 };
+  let events: EventPublishCounts = { published: 0, failed: 0 };
   let retained = 0;
   try {
     notices = await d.deliver(d.now());
   } catch (err) {
     failures.push({ step: 'deliver', err });
+  }
+  try {
+    events = await d.publishEvents(d.now());
+  } catch (err) {
+    failures.push({ step: 'events', err });
   }
   try {
     retained = await d.retention(d.now());
@@ -255,13 +265,14 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
     durationMs: finished.getTime() - started.getTime(),
     kinds,
     notices,
+    events,
     retained,
     skippedBudget,
     skippedLocked,
     failedKinds: kinds.filter((k) => k.status === 'failed').length,
     ...(failures.length ? { errors: failures.map((f) => ({ step: f.step, error: errorMessage(f.err) })) } : {}),
   };
-  if (failures.length || skippedBudget || skippedLocked || summary.failedKinds) console.warn(JSON.stringify(summary));
+  if (failures.length || skippedBudget || skippedLocked || summary.failedKinds || events.failed) console.warn(JSON.stringify(summary));
   else console.info(JSON.stringify(summary));
 
   if (failures.length) throw failures[0]!.err;
@@ -270,5 +281,5 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
     const redis = d.redis;
     await tryRedis('heartbeat', () => redis.set(HEARTBEAT_KEY, finished.toISOString(), 'EX', HEARTBEAT_TTL_S), null);
   }
-  return { kinds, notices, retained };
+  return { kinds, notices, events, retained };
 }
