@@ -2,11 +2,14 @@ package pamlifetime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/breeze-rmm/agent/internal/elevaccount"
 )
 
 type recoveryWindows struct {
@@ -356,5 +359,66 @@ func TestRecoveredActiveMarkerRequiresFreshNegativeEvidence(t *testing.T) {
 	// A failure code alone is never equivalent to verified cleanup evidence.
 	if verifiedCleanupOutcome(Result{State: ResultFailed, FailureCode: "reconciled_account_absent"}) {
 		t.Fatal("failure code without measured negatives restored availability")
+	}
+}
+
+// writeLedger puts a hand-built entry on disk, as an older agent left it.
+func writeLedger(t *testing.T, path string, entry LedgerEntry) {
+	t.Helper()
+	raw, err := json.Marshal(ledgerFile{Entries: map[string]LedgerEntry{entry.ActuationID: entry}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An active entry with no process identity, left by an apply that failed
+// before launch on an agent without failBeforeLaunch.
+func TestStuckActiveEntryOnRestart(t *testing.T) {
+	now := time.Now().UTC()
+	stuck := LedgerEntry{
+		ActuationID: testActuationID, RequestID: testRequestID, DeviceID: testDeviceID, OrgID: testOrgID,
+		Generation: 1, DesiredState: DesiredActive, CreatedAt: now, UpdatedAt: now,
+	}
+	partial := stuck
+	partial.JobName = JobName(testActuationID, 1) // something got partway: stays ambiguous
+
+	tests := []struct {
+		name          string
+		entry         LedgerEntry
+		orphan        bool
+		wantAvailable bool
+		wantCode      string
+	}{
+		{"no identity recovers", stuck, false, true, "reconciled_account_absent"},
+		{"no identity with orphan token stays closed", stuck, true, false, "privileged_token_verification_failed"},
+		{"partial identity stays closed", partial, false, false, "reconcile_identity_unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ledger.json")
+			writeLedger(t, path, tt.entry)
+			var order []string
+			manager := newLifecycleManager(NewStore(path),
+				&recoveryWindows{fakeWindowsPrimitives: &fakeWindowsPrimitives{order: &order}, jobAbsent: true, orphan: tt.orphan},
+				&fakeAccountLifecycle{order: &order}, nil)
+
+			results := manager.Reconcile(context.Background())
+
+			if manager.Available() != tt.wantAvailable {
+				t.Fatalf("Available() = %v, want %v; results: %+v", manager.Available(), tt.wantAvailable, results)
+			}
+			if len(results) != 1 || results[0].FailureCode != tt.wantCode {
+				t.Fatalf("results = %+v, want failure code %s", results, tt.wantCode)
+			}
+			if tt.wantAvailable {
+				entry, _ := NewStore(path).Entry(testActuationID)
+				if entry.DesiredState != DesiredCleanup || !entry.RecoveredFromActive {
+					t.Fatalf("recovered entry not tombstoned: %+v", entry)
+				}
+			}
+		})
 	}
 }

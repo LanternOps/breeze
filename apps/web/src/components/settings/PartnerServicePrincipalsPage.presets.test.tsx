@@ -142,3 +142,23 @@ describe('scope preset + description copy', () => {
     expect(JSON.stringify([presets, descriptions])).not.toMatch(/weavestream/i);
   });
 });
+
+describe('PartnerServicePrincipalsPage create dialog scrolling (#8524)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.fetchWithAuth.mockResolvedValue(listResponse([]));
+  });
+
+  it('caps the panel to the viewport, scrolls the body, and keeps Save outside the scrolling body', async () => {
+    await openCreate();
+    const panel = screen.getByTestId('principal-dialog');
+    expect(panel.className).toMatch(/max-h-\[calc\(100vh-/);
+    expect(panel.className).toContain('flex-col');
+    const body = screen.getByTestId('principal-dialog-body');
+    expect(body.className).toContain('overflow-y-auto');
+    expect(panel.contains(body)).toBe(true);
+    const save = screen.getByTestId('save-principal');
+    expect(panel.contains(save)).toBe(true);
+    expect(body.contains(save)).toBe(false);
+  });
+});

@@ -1,0 +1,68 @@
+---
+title: Trust Center
+description: Publish a public, telemetry-backed security page for each customer organization, with controls evaluated from live Breeze data.
+sidebar:
+  order: 7
+  label: Trust Center
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The Trust Center lets you publish a public page for an organization that summarizes its security posture from live Breeze telemetry. It is an evidence summary, **not a certification**. Manage it from the organization record, in the **Trust Center** tab.
+
+## What the page shows
+
+- A set of security controls grouped by category, each marked Met, Needs attention, Not met, or Not assessed.
+- Optional percentages, an optional device count, and an optional "Managed by" block naming your company.
+- An introduction, a security contact email, and a website that you write.
+- Documents you explicitly choose to share. Nothing is shared by default, and each document is confirmed before it is added.
+- A "How this page is verified" section that states the method used.
+
+## What it never shows
+
+- Device names, hostnames, users, IP addresses, or any other per-device detail.
+- A single overall posture score. The page reports individual controls only.
+
+## How controls are evaluated
+
+Each control is evaluated against the devices (or accounts) it applies to:
+
+- **Eligible**: the units the control applies to.
+- **Assessed**: eligible units that reported evidence inside the evidence window.
+- **Passing**: assessed units that meet the control.
+
+The rules are fixed and shown on the public page:
+
+- Evidence older than **30 days** is not counted.
+- A control is evaluated only when at least **80%** of eligible units were assessed (the coverage floor). Below that, it reads **Not assessed**, never 0%.
+- A control reads Met at **95%** or higher, Needs attention at **80%** or higher, and Not met otherwise.
+
+Controls are re-evaluated every hour while a page is published, and again when you publish. The hourly refresh re-reads the evidence only: your page settings, introduction, contact details and document list stay as they were at the last publish. Edits you save in the Trust Center tab reach the public page when you publish again. Removing a document from the page still takes it off the public page at the next refresh.
+
+## Who can publish
+
+Publishing is limited to partners whose account is trusted. A new account must first earn trust, and a restricted account cannot publish. The Trust Center tab explains the reason when publishing is unavailable.
+
+To publish or unpublish you need the `organizations:write` permission and a session with multi-factor authentication. Viewers without write permission can see the tab but cannot change it.
+
+### Customer authorization
+
+When you publish a customer's page you must confirm that the customer authorized it and record who gave that authorization (name and role). Breeze stores the attestation with the date. A partner's own page needs no customer authorization, so only your own internal organization can be marked as the partner page.
+
+## Framework references
+
+Controls can show references to safeguards in frameworks such as CIS Controls v8 and the Essential Eight. These are indicative mappings, never a statement of compliance. Each public page carries the required attribution. CIS Controls are a registered trademark of the Center for Internet Security, Inc.
+
+## Badge
+
+A published page offers a live status badge you can embed on your website. The badge links to the public page and goes dark when the page is unpublished.
+
+<Aside type="note">
+Unpublishing takes effect immediately: the public link stops working and the badge goes dark. You can publish again at any time.
+</Aside>
+
+## Self-hosting
+
+Nothing to configure. Trust pages are served under `/portal/trust/...`, which your existing reverse-proxy rule for `/portal` already covers. The public API lives under `/api/v1/trust/`. Proxies that already forward `X-Forwarded-Proto` and `X-Forwarded-Host` (Caddy's default) need nothing; if yours strips them, canonical URLs fall back to the internal origin.
+
+`PARTNER_TRUST_MODE` applies only to hosted installs; self-hosted installs skip the trust gate.

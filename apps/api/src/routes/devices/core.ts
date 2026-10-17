@@ -89,6 +89,7 @@ import {
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
 import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
 import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requireCapability } from '../../services/partnerTrust';
 import {
@@ -2284,6 +2285,27 @@ coreRoutes.patch(
         .where(eq(devices.id, deviceId))
         .returning();
       updated = row;
+    }
+
+    // Dynamic groups store membership, so a rule on any field this PATCH wrote
+    // is stale until a re-evaluation runs (#8832). Custom-field values are not
+    // listed: persistDeviceCustomFieldValues requests `custom.<key>` itself for
+    // the keys that actually changed. `siteId` makes the worker re-evaluate
+    // every dynamic group, which a move needs (site rules + site-scoped groups).
+    const groupFilterFields = [
+      ...(data.tags !== undefined ? ['tags'] : []),
+      ...(data.displayName !== undefined ? ['displayName'] : []),
+      ...(data.deviceRole !== undefined ? ['deviceRole'] : []),
+      ...(siteChanged ? ['siteId'] : []),
+    ];
+    if (groupFilterFields.length > 0) {
+      requestDeviceGroupReevaluationAfterCommit({
+        deviceId,
+        orgId: device.orgId,
+        eventType: 'device.updated',
+        changedFields: groupFilterFields,
+        reason: 'device_patch',
+      });
     }
 
     if (siteChanged) {

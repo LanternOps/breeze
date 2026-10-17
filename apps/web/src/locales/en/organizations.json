@@ -34,6 +34,7 @@
       "billing": "Contracts & Billing",
       "service": "Service",
       "documents": "Documents",
+      "trust": "Trust Center",
       "activity": "Activity"
     },
     "comingSoon": {
@@ -151,6 +152,164 @@
         "invoices": "Invoices",
         "quotes": "Quotes",
         "agreements": "Agreements"
+      }
+    },
+    "trust": {
+      "title": "Trust Center",
+      "subtitle": "A public page showing this organization's security posture, generated from live Breeze telemetry.",
+      "loading": "Loading Trust Center…",
+      "loadFailed": "Could not load the Trust Center page.",
+      "retry": "Try again",
+      "status": {
+        "unpublished": "Unpublished",
+        "published": "Published {{date}}",
+        "publicUrl": "Public page",
+        "copy": "Copy link",
+        "copied": "Link copied",
+        "copyFailed": "Could not copy the link.",
+        "lastEvaluated": "Controls last evaluated {{date}}",
+        "gate": {
+          "probation_default_deny": "Your account is still in its trial period. Publishing opens once your account is trusted.",
+          "probation_enrollment_cap": "Your account has reached the limit for its trial period. Publishing opens once your account is trusted.",
+          "restricted": "Your account is restricted, so publishing is turned off.",
+          "partner_unresolved": "We could not determine the partner account for this organization.",
+          "generic": "Publishing is turned off for this account right now."
+        }
+      },
+      "publish": {
+        "button": "Publish",
+        "republish": "Publish update",
+        "title": "Publish Trust Center page",
+        "intro": "This makes the page visible to anyone with the link{{indexable}}. Controls are evaluated again when you publish.",
+        "indexableSuffix": ", and search engines may index it",
+        "attestationCheckbox": "The customer has authorized publication of this page",
+        "authorizedBy": "Authorized by (name, role)",
+        "authorizedByPlaceholder": "Jane Doe, COO",
+        "recorded": "Authorized by {{name}} on {{date}}",
+        "change": "Change",
+        "partnerHomeNote": "This is the partner's own page, so no customer authorization is needed.",
+        "confirm": "Publish",
+        "publishing": "Publishing…",
+        "cancel": "Cancel",
+        "success": "Trust Center page published.",
+        "failed": "Could not publish the Trust Center page.",
+        "disabledNoWrite": "You need permission to edit organizations to publish.",
+        "disabledSlug": "Fix the page address before publishing."
+      },
+      "unpublish": {
+        "button": "Unpublish",
+        "title": "Unpublish Trust Center page",
+        "message": "The public link will stop working immediately and the badge will go dark. You can publish again at any time.",
+        "confirm": "Unpublish",
+        "success": "Trust Center page unpublished.",
+        "failed": "Could not unpublish the Trust Center page."
+      },
+      "preview": {
+        "button": "Preview",
+        "failed": "Could not open the preview.",
+        "popupBlocked": "Your browser blocked the preview window. Allow pop-ups for this site and try again."
+      },
+      "partnerHome": {
+        "label": "Use as the partner's own Trust Center page",
+        "description": "Shows this page at your partner address instead of a customer address. It needs no customer authorization.",
+        "success": "Partner page setting saved.",
+        "failed": "Could not change the partner page setting."
+      },
+      "slug": {
+        "warningTitle": "This page's address is not valid yet",
+        "openSettings": "Edit in organization settings",
+        "partner_slug": "The partner slug is not valid for a public address.",
+        "org_slug": "The organization slug is not valid for a public address.",
+        "unknown": "The page address has a problem ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "Publishing is not available yet. {{reason}}",
+        "readOnly": "You can view this page but need permission to edit organizations to change or publish it."
+      },
+      "errors": {
+        "revisionMismatch": "This page changed since you loaded it. Reload and try again.",
+        "authorizationRequired": "Record who authorized publication.",
+        "mfaRequired": "Publishing requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+        "trustProbation": "Publishing opens once your account is trusted.",
+        "trustRestricted": "Publishing opens once your account is trusted.",
+        "slugInvalid": "The page address is not valid. Fix the slug in organization settings.",
+        "introTooLong": "The introduction is too long.",
+        "partnerWideRequired": "Only partner-wide administrators can change the partner page.",
+        "partnerHomeInternalOnly": "Only your own (internal) organization can be the partner page.",
+        "partnerHomeUnpublishFirst": "This page is live without a recorded customer authorization. Unpublish it before turning off the partner page setting."
+      },
+      "controls": {
+        "republishBanner": "Changes apply to the public page when you publish again.",
+        "saveFailed": "Could not save the change.",
+        "unavailable": "Control results are unavailable right now.",
+        "assessedCount": "{{assessed}} of {{eligible}} assessed",
+        "shown": "Shown",
+        "hidden": "Hidden",
+        "toggles": {
+          "showPercentages": {
+            "label": "Show percentages",
+            "description": "Display the percentage for each control on the public page."
+          },
+          "showDeviceCount": {
+            "label": "Show device count",
+            "description": "Display how many devices are covered."
+          },
+          "showManagedBy": {
+            "label": "Show \"Managed by\"",
+            "description": "Name your company as the managing provider."
+          },
+          "searchIndexable": {
+            "label": "Allow search engines",
+            "description": "Let search engines index the public page."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Introduction",
+        "contactLabel": "Security contact email",
+        "contactInvalid": "Enter a valid email address.",
+        "websiteLabel": "Website",
+        "websiteInvalid": "Enter a full https:// address.",
+        "save": "Save content",
+        "saved": "Content saved.",
+        "saveFailed": "Could not save the content."
+      },
+      "documents": {
+        "description": "Documents you choose to share on the public page. Only documents you explicitly approve are shown.",
+        "upload": "Upload a document",
+        "library": "Document library",
+        "libraryEmpty": "No more documents available.",
+        "libraryFailed": "Could not load the document library.",
+        "add": "Add",
+        "linked": "On the public page ({{count}} of {{max}})",
+        "linkedEmpty": "No documents selected.",
+        "remove": "Remove",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "superseded": "Superseded — relink the newer version",
+        "save": "Save documents",
+        "saved": "Documents saved.",
+        "saveFailed": "Could not save the documents.",
+        "unavailable": "These documents are no longer available: {{titles}}. Remove or relink them.",
+        "disclosureTitle": "Publish this document?",
+        "disclosureMessage": "\"{{title}}\" will be visible to anyone with the public page link.",
+        "disclosureCheckbox": "I confirm this document is approved for public release",
+        "disclosureConfirm": "Add document"
+      },
+      "sections": {
+        "controlsHeading": "Security controls",
+        "contentHeading": "Page content",
+        "documentsHeading": "Documents"
+      },
+      "badge": {
+        "title": "Badge",
+        "description": "Embed a live status badge on your website. It links to the public page.",
+        "unpublishedNote": "The badge shows once the page is published.",
+        "snippet": "Badge HTML",
+        "alt": "Security posture badge",
+        "copy": "Copy snippet",
+        "copied": "Snippet copied",
+        "copyFailed": "Could not copy the snippet."
       }
     },
     "documents": {

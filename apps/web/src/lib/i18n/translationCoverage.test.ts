@@ -471,7 +471,7 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-FR.
     'monitoring.json': 7,
-    'organizations.json': 11, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
+    'organizations.json': 12, // +1 Trust Center: sections.documentsHeading "Documents" is a fr-FR cognate; W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
     // +1 W03 account board: "PSA" is a locale-invariant acronym.
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
@@ -667,7 +667,7 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-CA.
     'monitoring.json': 7,
-    'organizations.json': 10, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
+    'organizations.json': 11, // +1 Trust Center: sections.documentsHeading "Documents" is a fr-CA cognate; W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
     // +1 W03 account board: "PSA" is a locale-invariant acronym.
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
     // here) made titles.scripts an intentional cognate ("Script" is the

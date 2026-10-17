@@ -1367,7 +1367,7 @@
       "unknown": "Breeze Assist is enabled but not installed (since {{since}})."
     },
     "watchdogInstall": {
-      "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run `breeze-agent service install --watchdog` on the host to retry.",
+      "gaveUp": "The watchdog could not be installed automatically (since {{since}}): {{reason}}. Run <code>breeze-agent service install --watchdog</code> on the host to retry.",
       "unsupported": "Automatic watchdog install is not supported on this host (since {{since}}).",
       "reason": {
         "network": "the download could not be reached",
@@ -4085,7 +4085,7 @@
       "offNote": "Runtimes are always detected, but workload listing is off until a policy enables it.",
       "enabled": "List workloads",
       "runtimesHeading": "Runtimes to list",
-      "laterRelease": "Hyper-V and Proxmox VE listing arrives with a later agent release; these toggles take effect then.",
+      "agentSupport": "Hyper-V and Proxmox VE toggles only take effect on agents that include these drivers; older agents ignore them.",
       "interval": "Collection interval (minutes)",
       "invalidInterval": "Interval must be a whole number of minutes between {{min}} and {{max}}."
     },

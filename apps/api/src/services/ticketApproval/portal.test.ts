@@ -79,3 +79,32 @@ describe('toPortalApprovalView', () => {
     expect(v.decidedAt).toEqual(NOW);
   });
 });
+
+describe('portal ticket number (customer-facing)', () => {
+  // Fake db: records the select shape and resolves each column reference to a value, so the
+  // test asserts which ticket column feeds the customer-visible number.
+  function fakeDb(tickets: typeof import('../../db/schema').tickets) {
+    const values = new Map<unknown, unknown>([
+      [tickets.ticketNumber, 'KQ04YOHZ-N'],
+      [tickets.internalNumber, 'T-2026-0003'],
+      [tickets.subject, 'Server migration'],
+    ]);
+    let shape: Record<string, unknown> = {};
+    const chain: Record<string, unknown> = {};
+    for (const m of ['from', 'innerJoin', 'where', 'orderBy']) chain[m] = () => chain;
+    chain.limit = async () => [Object.fromEntries(
+      Object.entries(shape).map(([k, col]) => [k, k === 'request' ? row() : (values.get(col) ?? null)]),
+    )];
+    return { select: (s: Record<string, unknown>) => { shape = s; return chain; } };
+  }
+
+  it('list and detail show tickets.ticket_number, the number the portal Support pages use', async () => {
+    const { tickets } = await import('../../db/schema');
+    const { listPortalApprovals, findPortalApproval } = await import('./portal');
+    const db = fakeDb(tickets);
+    const list = await listPortalApprovals(db as never, { orgId: 'o1', email: 'approver@example.test', pendingOnly: false, now: NOW });
+    expect(list[0]!.ticketNumber).toBe('KQ04YOHZ-N');
+    const one = await findPortalApproval(db as never, { orgId: 'o1', requestId: 'r1', email: 'approver@example.test', now: NOW });
+    expect(one!.ticketNumber).toBe('KQ04YOHZ-N');
+  });
+});

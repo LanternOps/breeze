@@ -46,11 +46,19 @@ beforeEach(() => { vi.clearAllMocks(); entry.props = null; });
 
 it('mounts the launcher and badge for a ticket with a requester contact', async () => {
   mockTicket(ticket({ requesterContactId: 'contact-1' }));
-  render(<TicketWorkbench ticketId="tk-1" />);
+  render(<TicketWorkbench ticketId="tk-1" expanded />);
   const badge = await screen.findByTestId('cv-badge-stub');
   expect(badge).toHaveAttribute('data-org', 'org-1');
   expect(badge).toHaveAttribute('data-ticket', 'tk-1');
   expect(entry.props).toMatchObject({ orgId: 'org-1', initialContactId: 'contact-1', lockContact: true, ticketId: 'tk-1', hash: 'caller-verification' });
+});
+
+it('gives the launcher no hash in the /tickets split pane, where the queue owns the hash (#8576 sweep)', async () => {
+  mockTicket(ticket({ requesterContactId: 'contact-1' }));
+  render(<TicketWorkbench ticketId="tk-1" />);
+  await screen.findByTestId('cv-entry-stub');
+  expect(entry.props).toMatchObject({ orgId: 'org-1', ticketId: 'tk-1' });
+  expect(entry.props!.hash).toBeUndefined();
 });
 
 it('re-reads the badge after the modal reports a change', async () => {

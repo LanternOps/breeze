@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backup/providers"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/httputil"
 )
 
@@ -187,6 +188,9 @@ func leaseDurationFrom(expiresAt, now time.Time) time.Duration {
 
 // controlClient never follows redirects (a redirected control-plane call
 // would carry both credentials to the redirect target) and keeps no cookies.
+// Its default transport is the control-plane one: a DefaultTransport clone
+// whose TLS goes through the shared ECH dialer, so the calls still reach
+// server_url behind an SNI filter (#8869).
 func controlClient(injected *http.Client, clientTLS *tls.Config) *http.Client {
 	c := &http.Client{Timeout: 60 * time.Second, CheckRedirect: noFollow}
 	if injected != nil {
@@ -196,11 +200,11 @@ func controlClient(injected *http.Client, clientTLS *tls.Config) *http.Client {
 		}
 		return c
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	var tlsCfg *tls.Config
 	if clientTLS != nil {
-		transport.TLSClientConfig = clientTLS.Clone()
+		tlsCfg = clientTLS.Clone()
 	}
-	c.Transport = transport
+	c.Transport = ech.NewTransport(tlsCfg)
 	return c
 }
 

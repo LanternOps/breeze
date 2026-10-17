@@ -39,11 +39,13 @@ vi.mock('./partnerTrust.repo', () => ({
   partnerForDevice: vi.fn(async () => 'p1'),
 }));
 vi.mock('./partnerTrustPromotion', () => ({ tryAutoPromote }));
+vi.mock('./trustPage/servingSet', () => ({ scheduleServingRefreshForPartner: vi.fn() }));
 
 import { partnerTrustMode } from '../config/partnerTrustMode';
 import {
   evaluateCapability,
   evaluateCapabilityContinuation,
+  evaluateCapabilityContinuationForState,
   GATED_COMMAND_TYPES,
   isLifecycleCommand,
   LIFECYCLE_COMMAND_TYPES,
@@ -51,6 +53,7 @@ import {
   unresolvedPartnerDecision,
 } from './partnerTrust';
 import { readTrust, writeTrust } from './partnerTrust.repo';
+import { scheduleServingRefreshForPartner } from './trustPage/servingSet';
 
 function sourceFilesUnder(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -172,6 +175,7 @@ function agentDispatcherCommandTypes(): { commandTypes: string[]; unresolvedCons
 
 beforeEach(() => {
   audit.mockClear();
+  vi.mocked(scheduleServingRefreshForPartner).mockClear();
   publish.mockClear();
   tryAutoPromote.mockClear();
   vi.mocked(writeTrust).mockClear();
@@ -214,6 +218,35 @@ describe('setTrustState', () => {
     expect(result).toBe(false);
     expect(publish).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
+    expect(scheduleServingRefreshForPartner).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the trust page serving set for the partner after a landed change', async () => {
+    await setTrustState('p1', 'restricted', 'abuse', 'user-1');
+
+    expect(scheduleServingRefreshForPartner).toHaveBeenCalledWith('p1', 'partner.trust');
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'partner.trust.restricted' }));
+  });
+
+  it('a failing serving-set refresh never fails the trust-state change', async () => {
+    vi.mocked(scheduleServingRefreshForPartner).mockImplementationOnce(() => { throw new Error('redis down'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(setTrustState('p1', 'restricted', 'abuse', 'user-1')).resolves.toBe(true);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'partner.trust.restricted' }));
+    warn.mockRestore();
+  });
+});
+
+describe('trust_page_publish capability', () => {
+  const ctx = { partnerId: 'p1' };
+  it('denies probation (default deny) and restricted, allows trusted', () => {
+    expect(evaluateCapabilityContinuationForState('trust_page_publish', ctx, { trustState: 'probation', probationEnrollments: 0 }))
+      .toEqual({ allow: false, code: 'TRUST_PROBATION', capability: 'trust_page_publish', reason: 'probation_default_deny' });
+    expect(evaluateCapabilityContinuationForState('trust_page_publish', ctx, { trustState: 'restricted', probationEnrollments: 0 }))
+      .toEqual({ allow: false, code: 'TRUST_RESTRICTED', capability: 'trust_page_publish', reason: 'restricted' });
+    expect(evaluateCapabilityContinuationForState('trust_page_publish', ctx, { trustState: 'trusted', probationEnrollments: 0 }))
+      .toEqual({ allow: true });
   });
 });
 

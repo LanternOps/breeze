@@ -1367,7 +1367,7 @@
       "unknown": "Breeze Assist è abilitato ma non installato (dal {{since}})."
     },
     "watchdogInstall": {
-      "gaveUp": "Non è stato possibile installare automaticamente il watchdog (dal {{since}}): {{reason}}. Esegui `breeze-agent service install --watchdog` sull’host per riprovare.",
+      "gaveUp": "Non è stato possibile installare automaticamente il watchdog (dal {{since}}): {{reason}}. Esegui <code>breeze-agent service install --watchdog</code> sull’host per riprovare.",
       "unsupported": "L’installazione automatica del watchdog non è supportata su questo host (dal {{since}}).",
       "reason": {
         "network": "il download non era raggiungibile",
@@ -4085,7 +4085,7 @@
       "offNote": "I runtime vengono sempre rilevati, ma l’elenco dei carichi di lavoro resta disattivato finché un criterio non lo abilita.",
       "enabled": "Elenca i carichi di lavoro",
       "runtimesHeading": "Runtime da elencare",
-      "laterRelease": "L’elenco di Hyper-V e Proxmox VE arriverà con una release successiva dell’agente; questi interruttori avranno effetto allora.",
+      "agentSupport": "Gli interruttori Hyper-V e Proxmox VE hanno effetto solo sugli agent che includono questi driver; gli agent meno recenti li ignorano.",
       "interval": "Intervallo di raccolta (minuti)",
       "invalidInterval": "L’intervallo deve essere un numero intero di minuti compreso tra {{min}} e {{max}}."
     },
