@@ -854,6 +854,10 @@ export interface BrandingConfig {
   enablePatchDetail?: boolean;
   /** Visibility W06 (#7736): MSP turned sensitive per-host CVE detail on for this org. */
   enableVulnerabilityDetail?: boolean;
+  /** Trust Center W3d: per-USER capability, not an org flag — true only when the org
+   *  turned trust-page editing on AND this portal user is an org-scoped admin
+   *  contact. The API re-checks it on every trust-page request. */
+  canEditTrustPage?: boolean;
   /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
    *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
   chromeAccent?: string | null;
