@@ -35,7 +35,8 @@ describe('get_trust_page_status', () => {
 
   it('is a tier-1 read-only tool with a bounded description and an orgId-only input', () => {
     expect(tool.tier).toBe(1);
-    expect(tool.definition.description.length).toBeLessThanOrEqual(300);
+    expect(tool.definition.description?.length ?? 0).toBeGreaterThan(0);
+    expect(tool.definition.description!.length).toBeLessThanOrEqual(300);
     const schema = tool.definition.input_schema as { properties: Record<string, { description: string }>; required: string[] };
     expect(Object.keys(schema.properties)).toEqual(['orgId']);
     expect(schema.required).toEqual(['orgId']);
