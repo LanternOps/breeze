@@ -8,10 +8,12 @@
  */
 import './setup';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { readFileSync } from 'node:fs';
+import { eq, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { connectionHealthIncidents } from '../../db/schema';
 import { createOrganization, createPartner } from './db-utils';
+import { getTestDb } from './setup';
 import { applyActions } from '../../services/connectionHealth/store';
 import { publishPendingEvents } from '../../services/connectionHealth/events';
 import { healthEventId } from '../../services/connectionHealth/eventPayload';
@@ -167,5 +169,81 @@ describe('connection health events', () => {
     await drain();
     expect(published()[0]!.payload).toMatchObject({ sourceKind: 'oauth_grant', sourceId: null });
     expect(JSON.stringify(published())).not.toContain('owner-user');
+  });
+
+  it('resolve then reopen inside the window before a drain is a no-op for consumers (already told opened)', async () => {
+    await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs(), notify: true }], T0));
+    await drain();
+    const id = (await row()).id;
+    await asSystem(() => applyActions([{ type: 'resolve', incidentId: id, resolution: 'recovered' }], T1));
+    await asSystem(() => applyActions([{ type: 'reopen', incidentId: id, obs: obs({ observedAt: T2 }), escalated: false }], T2));
+    publish.mockClear();
+    expect(await drain()).toEqual({ published: 0, failed: 0 });
+    expect((await row()).eventState).toBe('opened');
+  });
+
+  it('a reopen\'s opened event is stamped now, not with the stale opened_at', async () => {
+    await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs(), notify: true }], T0));
+    await drain();
+    expect(published()[0]!.options).toMatchObject({ occurredAt: T0.toISOString() });
+    const id = (await row()).id;
+    await asSystem(() => applyActions([{ type: 'resolve', incidentId: id, resolution: 'recovered' }], T1));
+    await drain();
+    await asSystem(() => applyActions([{ type: 'reopen', incidentId: id, obs: obs({ observedAt: T2 }), escalated: false }], T2));
+    publish.mockClear();
+    await drain();
+    expect(published()[0]!.options.occurredAt).toBeUndefined();
+  });
+});
+
+describe('event outbox migration baseline (2026-12-30-120000)', () => {
+  const migrationSql = readFileSync(
+    new URL('../../../migrations/2026-12-30-120000-connection-health-event-outbox.sql', import.meta.url),
+    'utf8',
+  );
+  const replay = () => getTestDb().transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+    await tx.execute(sql.raw(migrationSql));
+  });
+  const dropColumn = () => getTestDb().transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('breeze.scope', 'system', true)`);
+    await tx.execute(sql.raw('ALTER TABLE public.connection_health_incidents DROP COLUMN IF EXISTS event_state CASCADE'));
+  });
+
+  beforeEach(async () => {
+    publish.mockReset();
+    publish.mockResolvedValue('ok');
+    P = (await createPartner()).id;
+    ORG = (await createOrganization({ partnerId: P })).id;
+    await asSystem(() => db.delete(connectionHealthIncidents));
+  });
+
+  it('baselines existing rows once when the column is added, and a re-run never acknowledges a newly due row', async () => {
+    await asSystem(() => applyActions([
+      { type: 'insertOpen', obs: obs({ sourceId: 'open' }), notify: true },
+      { type: 'insertOpen', obs: obs({ sourceId: 'resolved' }), notify: true },
+      { type: 'insertOpen', obs: obs({ sourceId: 'partner-wide', orgId: null, sourceKind: 'huntress' }), notify: true },
+      { type: 'insertPending', obs: obs({ sourceId: 'pending', severity: 'transient' }) },
+    ], T0));
+    const resolvedId = (await row('resolved')).id;
+    await asSystem(() => applyActions([{ type: 'resolve', incidentId: resolvedId, resolution: 'recovered' }], T1));
+
+    try {
+      await dropColumn();
+      await replay();
+      expect((await row('open')).eventState).toBe('opened');
+      expect((await row('resolved')).eventState).toBe('resolved');
+      expect((await row('partner-wide')).eventState).toBeNull();
+      expect((await row('pending')).eventState).toBeNull();
+      expect(await drain()).toEqual({ published: 0, failed: 0 }); // no deploy burst
+
+      await asSystem(() => applyActions([{ type: 'insertOpen', obs: obs({ sourceId: 'after-deploy' }), notify: true }], T2));
+      await replay();
+      expect((await row('after-deploy')).eventState).toBeNull();
+      expect(await drain()).toEqual({ published: 1, failed: 0 });
+    } finally {
+      // Leave the schema as setup.ts migrated it, even on failure.
+      await replay();
+    }
   });
 });

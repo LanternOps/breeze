@@ -37,7 +37,8 @@ type LoadState =
   | { kind: 'loading' }
   | { kind: 'hidden' }
   | { kind: 'error' }
-  | { kind: 'ready'; data: SettingsResponse };
+  /** `forOrg` ties the data to the org it was loaded for (see the post-save reload). */
+  | { kind: 'ready'; data: SettingsResponse; forOrg: string | null };
 
 const isSettings = (b: unknown): b is SettingsResponse => {
   const s = b as Partial<SettingsResponse> | null;
@@ -61,16 +62,19 @@ export default function ConnectionHealthSettingsCard({ orgId }: { orgId: string 
       if (!res.ok) throw new Error(String(res.status));
       const body: unknown = await res.json();
       if (!isSettings(body)) throw new Error('unexpected response');
-      return { kind: 'ready', data: body };
+      return { kind: 'ready', data: body, forOrg: orgId };
     } catch (err) {
       console.error('[ConnectionHealthSettingsCard] failed to load settings', err);
       return { kind: 'error' };
     }
   }, [orgId]);
 
+  // A reload for the SAME org keeps the current controls while it runs; a
+  // different org starts from loading. The cancel flag drops a stale result
+  // when the org changes mid-flight.
   useEffect(() => {
     let cancelled = false;
-    setState({ kind: 'loading' });
+    setState((s) => (s.kind === 'ready' && s.forOrg === orgId ? s : { kind: 'loading' }));
     void load().then((next) => { if (!cancelled) setState(next); });
     return () => { cancelled = true; };
   }, [load, reloadKey]);
@@ -82,7 +86,8 @@ export default function ConnectionHealthSettingsCard({ orgId }: { orgId: string 
   ) => {
     if (state.kind !== 'ready' || saving) return;
     const previous = state.data;
-    setState({ kind: 'ready', data: optimistic(previous) });
+    const forOrg = state.forOrg;
+    setState({ kind: 'ready', data: optimistic(previous), forOrg });
     setSaving(true);
     try {
       await runAction({
@@ -95,9 +100,11 @@ export default function ConnectionHealthSettingsCard({ orgId }: { orgId: string 
         errorFallback: t('connectionHealthSettings.saveFailed'),
       });
       // The inherited value and its source can change with either level.
-      setState(await load());
+      // Reloaded through the effect, so an org switched mid-save is never
+      // overwritten by this org's result.
+      setReloadKey((k) => k + 1);
     } catch (err) {
-      setState({ kind: 'ready', data: previous });
+      setState((s) => (s.kind === 'ready' && s.forOrg === forOrg ? { kind: 'ready', data: previous, forOrg } : s));
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: t('connectionHealthSettings.saveFailed') });
@@ -105,7 +112,7 @@ export default function ConnectionHealthSettingsCard({ orgId }: { orgId: string 
     } finally {
       setSaving(false);
     }
-  }, [state, saving, load, t]);
+  }, [state, saving, t]);
 
   if (state.kind === 'hidden') return null;
 

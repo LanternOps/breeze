@@ -22,38 +22,43 @@ export type ResolvedCustomerAdminsNotified = {
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/**
- * The stored boolean, or null when unset. Anything that is not a boolean is
- * treated as unset (it can only arrive through the system-scope wholesale
- * settings PATCH, which skips validation) and falls through to the next level.
- */
-export function readStoredCustomerAdminsNotified(settings: unknown, where?: string): boolean | null {
-  if (!isRecord(settings)) return null;
+type Stored = { value: boolean | null; invalid: boolean };
+
+function readStored(settings: unknown, where: string): Stored {
+  if (!isRecord(settings)) return { value: null, invalid: false };
   const block = settings.connectionHealth;
-  if (!isRecord(block) || !('customerAdminsNotified' in block)) return null;
+  if (!isRecord(block) || !('customerAdminsNotified' in block)) return { value: null, invalid: false };
   const v = block.customerAdminsNotified;
-  if (typeof v === 'boolean') return v;
-  if (v !== null && v !== undefined) {
-    console.warn(JSON.stringify({
-      event: 'connection_health_setting_invalid',
-      key: 'customerAdminsNotified',
-      where: where ?? 'unknown',
-    }));
-  }
-  return null;
+  if (typeof v === 'boolean') return { value: v, invalid: false };
+  if (v === null || v === undefined) return { value: null, invalid: false };
+  // Only the system-scope wholesale settings PATCH, which skips validation, can store this.
+  console.warn(JSON.stringify({ event: 'connection_health_setting_invalid', key: 'customerAdminsNotified', where }));
+  return { value: null, invalid: true };
 }
 
+/** The stored boolean, or null when unset or invalid (for display). */
+export function readStoredCustomerAdminsNotified(settings: unknown, where = 'unknown'): boolean | null {
+  return readStored(settings, where).value;
+}
+
+/**
+ * Precedence: org → partner → off. An invalid value never widens delivery: an
+ * invalid ORG value resolves off for that org (it must not inherit a partner
+ * "on" the org may have meant to override), and an invalid partner value
+ * counts as unset, which is off.
+ */
 export function resolveCustomerAdminsNotifiedFrom(
   partnerSettings: unknown,
   orgSettings: unknown,
 ): ResolvedCustomerAdminsNotified {
-  const partner = readStoredCustomerAdminsNotified(partnerSettings, 'partner');
+  const partner = readStored(partnerSettings, 'partner').value;
   const inheritedEnabled = partner ?? false;
   const inheritedSource = partner === null ? 'default' : 'partner';
-  const org = readStoredCustomerAdminsNotified(orgSettings, 'organization');
-  return org === null
+  const org = readStored(orgSettings, 'organization');
+  if (org.invalid) return { enabled: false, source: 'org', inheritedEnabled, inheritedSource };
+  return org.value === null
     ? { enabled: inheritedEnabled, source: inheritedSource, inheritedEnabled, inheritedSource }
-    : { enabled: org, source: 'org', inheritedEnabled, inheritedSource };
+    : { enabled: org.value, source: 'org', inheritedEnabled, inheritedSource };
 }
 
 /**

@@ -46,10 +46,12 @@ describe('resolveCustomerAdminsNotifiedFrom', () => {
     });
   });
 
-  it('ignores a non-boolean stored value and falls through to the next level', () => {
+  it('an invalid org value fails closed to off (never inherits a partner "on"); an invalid partner value is unset', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(resolveCustomerAdminsNotifiedFrom(block(true), block('yes'))).toMatchObject({ enabled: true, source: 'partner' });
+    expect(resolveCustomerAdminsNotifiedFrom(block(true), block('false'))).toMatchObject({ enabled: false, source: 'org', inheritedEnabled: true });
+    expect(resolveCustomerAdminsNotifiedFrom(block(true), block(0))).toMatchObject({ enabled: false, source: 'org' });
     expect(resolveCustomerAdminsNotifiedFrom(block(1), block(null))).toMatchObject({ enabled: false, source: 'default' });
+    expect(resolveCustomerAdminsNotifiedFrom(block('yes'), {})).toMatchObject({ enabled: false, source: 'default' });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });

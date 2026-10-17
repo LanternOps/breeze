@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
 import { sendOpsAlert } from '../opsAlerts';
+import { captureException } from '../sentry';
 import { getRedis } from '../redis';
 import { publishPendingEvents, type EventPublishCounts } from './events';
 import { deliverPendingNotices, type DeliveryCounts } from './notifier';
@@ -274,6 +275,16 @@ export async function runReconcile(overrides: Partial<ReconcileDeps> = {}): Prom
   };
   if (failures.length || skippedBudget || skippedLocked || summary.failedKinds || events.failed) console.warn(JSON.stringify(summary));
   else console.info(JSON.stringify(summary));
+
+  // Per-row publish failures leave rows due and never fail the job (like
+  // notices), so a drain that published nothing while failing is paged here:
+  // otherwise integration.health_* consumers could go quiet behind a healthy
+  // heartbeat.
+  if (events.failed > 0 && events.published === 0) {
+    captureException(new Error('connection_health_events_degraded'), undefined, {
+      failed: String(events.failed),
+    }, { fingerprint: ['connection_health_events_degraded'] });
+  }
 
   if (failures.length) throw failures[0]!.err;
 

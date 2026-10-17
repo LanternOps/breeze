@@ -144,4 +144,25 @@ describe('ConnectionHealthSettingsCard', () => {
     await waitFor(() => expect(partnerToggle().checked).toBe(true));
     err.mockRestore();
   });
+
+  it('switching org while a save is in flight never shows the old org\'s state for the new org', async () => {
+    const ORG_B = '22222222-2222-4222-8222-222222222222';
+    let releasePut: (v: unknown) => void = () => {};
+    mocks.fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) => {
+      if (init?.method === 'PUT') return new Promise((r) => { releasePut = r; });
+      if (url.includes(ORG_B)) return Promise.resolve(res(settings({ org: orgBlock({ orgId: ORG_B, customerAdminsNotified: true, enabled: true, source: 'org' }), canManageOrg: true })));
+      return Promise.resolve(res(settings({ org: orgBlock({ customerAdminsNotified: false, enabled: false, source: 'org' }), canManageOrg: true })));
+    });
+    const { rerender } = render(<ConnectionHealthSettingsCard orgId={ORG} />);
+    await waitFor(() => expect(orgSelect().value).toBe('off'));
+    await userEvent.selectOptions(orgSelect(), 'inherit');
+    rerender(<ConnectionHealthSettingsCard orgId={ORG_B} />);
+    await waitFor(() => expect(orgSelect().value).toBe('on'));
+    releasePut(res({ org: {} }));
+    // The finished save for org A must not overwrite org B's state.
+    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => expect(orgSelect().value).toBe('on'));
+    const gets = mocks.fetchWithAuth.mock.calls.filter((c) => !c[1]?.method).map((c) => c[0] as string);
+    expect(gets.at(-1)).toContain(ORG_B);
+  });
 });

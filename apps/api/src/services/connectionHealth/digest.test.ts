@@ -470,6 +470,47 @@ describe('runDigest', () => {
       expect(sentTo()).toEqual(['admin@example.test']);
     });
 
+    it('mixed orgs in one run: on for A, off for B; the customer admin of both hears only about A', async () => {
+      const ORG_B = 'org-b';
+      store.loadPartnerIncidents.mockResolvedValue([
+        orgRow(),
+        row({ id: 'inc-b', orgId: ORG_B, orgName: 'Org B', displayName: 'DNS filter', fixHref: '/dns-security' }),
+      ]);
+      loadCustomerAdmins.mockResolvedValue(new Map([[ORG, true], [ORG_B, false]]));
+      setHolders({
+        [`organizations:write|${ORG}`]: [ADMIN], [`organizations:read|${ORG}`]: [ADMIN],
+        [`organizations:write|${ORG_B}`]: [ADMIN], [`organizations:read|${ORG_B}`]: [ADMIN],
+      });
+      orgHolders = {
+        ...orgHolders,
+        [`organizations:write|${ORG_B}`]: [ADMIN, CUSTOMER],
+        [`organizations:read|${ORG_B}`]: [ADMIN, CUSTOMER],
+      };
+      await runDigest(NOW);
+      expect(resolveOrgUsers.mock.calls.every((c) => c[0] === ORG)).toBe(true);
+      const customerClaim = store.claimDelivery.mock.calls.find((c) => c[0] === CUSTOMER)!;
+      expect(customerClaim[2]).toEqual(['inc-o']);
+      const adminClaim = store.claimDelivery.mock.calls.find((c) => c[0] === ADMIN)!;
+      expect([...adminClaim[2]].sort()).toEqual(['inc-b', 'inc-o']);
+    });
+
+    it('an org-scope grant owner gets the customer mail on the partner lane even with the setting off', async () => {
+      store.loadPartnerIncidents.mockResolvedValue([
+        orgRow(),
+        row({ id: 'inc-g', orgId: ORG, orgName: 'Org A', ownerUserId: CUSTOMER, displayName: 'Agent app',
+          condition: 'grant_revoked_reuse', fixHref: '/settings/connected-apps', ownerFixHref: '/account/connected-apps',
+          viewPermission: 'connected_apps:read', repairPermission: 'connected_apps:manage' }),
+      ]);
+      await runDigest(NOW);
+      expect(resolveOrgUsers).not.toHaveBeenCalled();
+      const msg = customerMsg()!;
+      expect(msg.purpose).toBe('customer.connection_health_digest');
+      expect(msg.partnerId).toBe(P);
+      expect(msg.text).toContain('/account/connected-apps');
+      expect(msg.text).not.toContain('M365'); // the org incident did not widen to them
+      expect(msg.text).not.toContain('in Breeze');
+    });
+
     it('turning it off takes effect on the next send (recomputed, never snapshotted)', async () => {
       loadCustomerAdmins.mockResolvedValue(new Map([[ORG, true]]));
       await runDigest(NOW);

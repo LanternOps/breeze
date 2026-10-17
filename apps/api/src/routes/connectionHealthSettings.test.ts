@@ -21,20 +21,28 @@ let orgRows: Array<Record<string, unknown>> = [];
 let partnerRows: Array<Record<string, unknown>> = [];
 let updates: Array<{ table: string; set: Record<string, unknown> }> = [];
 let updateReturning: Array<Record<string, unknown>> = [{ id: 'row' }];
+const selectWheres: Array<{ table: string; where: unknown }> = [];
+const updateWheres: Array<{ table: string; where: unknown }> = [];
 
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({
       from: vi.fn((table: { __t: string }) => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(async () => (table.__t === 'org' ? orgRows : partnerRows)),
-        })),
+        where: vi.fn((w: unknown) => {
+          selectWheres.push({ table: table.__t, where: w });
+          return { limit: vi.fn(async () => (table.__t === 'org' ? orgRows : partnerRows)) };
+        }),
       })),
     })),
     update: vi.fn((table: { __t: string }) => ({
       set: vi.fn((set: Record<string, unknown>) => {
         updates.push({ table: table.__t, set });
-        return { where: vi.fn(() => ({ returning: vi.fn(async () => updateReturning) })) };
+        return {
+          where: vi.fn((w: unknown) => {
+            updateWheres.push({ table: table.__t, where: w });
+            return { returning: vi.fn(async () => updateReturning) };
+          }),
+        };
       }),
     })),
   },
@@ -97,6 +105,8 @@ beforeEach(() => {
   partnerRows = [{ settings: {} }];
   updates = [];
   updateReturning = [{ id: 'row' }];
+  selectWheres.length = 0;
+  updateWheres.length = 0;
   auditLog.length = 0;
   currentAuth = partnerAuth();
   currentPerms = perms([PERMISSIONS.ORGS_READ, PERMISSIONS.ORGS_WRITE]);
@@ -109,6 +119,12 @@ const get = (q = '') => app.request(`/settings${q}`);
 const put = (path: string, body: unknown) =>
   app.request(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 const setSql = (i = 0) => new PgDialect().sqlToQuery(updates[i]!.set.settings as SQL);
+// The mocked schema's columns are plain strings, so keep only the bound uuids.
+const whereParams = (w: unknown) => new PgDialect().sqlToQuery(w as SQL).params
+  .filter((p) => typeof p === 'string' && /^[0-9a-f]{8}-/.test(p));
+const systemAuth = (over: Record<string, unknown> = {}) => partnerAuth({
+  scope: 'system', partnerId: null, partnerOrgAccess: undefined, accessibleOrgIds: [ORG, UNCOVERED_ORG], ...over,
+});
 
 describe('GET /settings', () => {
   it('partner default only: reports the stored value, the effective default and canManagePartner', async () => {
@@ -252,5 +268,37 @@ describe('PUT /settings/orgs/:orgId', () => {
     currentAuth = partnerAuth({ scope: 'organization', orgId: ORG });
     expect((await put(`/settings/orgs/${ORG}`, { customerAdminsNotified: true })).status).toBe(403);
     expect(updates).toHaveLength(0);
+  });
+});
+
+describe('partner pinning and system scope', () => {
+  it('reads the partner default of the org\'s own partner (partner scope pins it to the caller)', async () => {
+    await get(`?orgId=${ORG}`);
+    const partnerRead = selectWheres.find((w) => w.table === 'partner')!;
+    expect(whereParams(partnerRead.where)).toEqual([PARTNER]);
+  });
+
+  it('system scope: GET needs an org, and then reads that org\'s partner', async () => {
+    currentAuth = systemAuth();
+    expect((await get()).status).toBe(400);
+    orgRows = [{ settings: {}, partnerId: OTHER_PARTNER }];
+    const res = await get(`?orgId=${ORG}`);
+    expect(res.status).toBe(200);
+    expect(whereParams(selectWheres.find((w) => w.table === 'partner')!.where)).toEqual([OTHER_PARTNER]);
+    expect((await res.json()).canManagePartner).toBe(false);
+  });
+
+  it('system scope: may set an org override (unpinned by partner) but never the partner default', async () => {
+    currentAuth = systemAuth();
+    expect((await put(`/settings/orgs/${ORG}`, { customerAdminsNotified: true })).status).toBe(200);
+    expect(whereParams(updateWheres[0]!.where)).toEqual([ORG]);
+    expect(auditLog[0]).toMatchObject({ orgId: ORG, partnerId: null });
+    expect((await put('/settings/partner', { customerAdminsNotified: true })).status).toBe(403);
+    expect(updates).toHaveLength(1);
+  });
+
+  it('partner scope: the org write is pinned to the caller\'s partner', async () => {
+    await put(`/settings/orgs/${ORG}`, { customerAdminsNotified: true });
+    expect(whereParams(updateWheres[0]!.where)).toEqual([ORG, PARTNER]);
   });
 });
