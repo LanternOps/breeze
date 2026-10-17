@@ -22,6 +22,7 @@ import {
 import { handleChatMessageResult, handleChatOpenResult } from '../../services/endpointMessaging/chatResults';
 import { recordChatReply } from '../../services/endpointMessaging/chatReplies';
 import { findConversationForCaller, listDeviceConversations, readConversationMessages } from '../../services/endpointMessaging/chatReads';
+import { runEndpointChatRetentionOnce } from '../../jobs/endpointMessageRetention';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -338,5 +339,50 @@ describe('endpoint chat flow (real Postgres)', () => {
     expect(all).toHaveLength(1);
     const after = await asOrg(f.orgA, f.partnerId, () => readConversationMessages(id, new Date(all[0]!.createdAt)));
     expect(after).toEqual([]);
+  });
+
+  it('retention: idle chats expire, unconfirmed opens time out, old bodies purge, old history deletes; the agent is told', async () => {
+    const now = new Date();
+    const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);
+    const daysAgo = (d: number) => new Date(now.getTime() - d * 86_400_000);
+    const insertConv = (deviceId: string, status: 'opening' | 'open' | 'closed', at: Date) => sys(async () => {
+      const [c] = await db.insert(endpointConversations).values({
+        orgId: f.orgA, deviceId, status, allowUserReply: true, lastActivityAt: at, createdAt: at,
+      }).returning({ id: endpointConversations.id });
+      await db.insert(endpointConversationMessages).values({
+        conversationId: c!.id, orgId: f.orgA, deviceId, direction: 'to_user', body: 'hello', bodyLength: 5,
+        clientNonce: randomUUID(), createdAt: at,
+      });
+      return c!.id;
+    });
+    const idle = await insertConv(f.devA, 'open', minutesAgo(31));
+    const fresh = await insertConv(f.devA2, 'open', minutesAgo(5));
+    const stuck = await insertConv(f.devMac, 'opening', minutesAgo(3));
+    const old = await insertConv(f.devA, 'closed', daysAgo(91));
+    const ancient = await insertConv(f.devA, 'closed', daysAgo(400));
+
+    const closes: Array<{ deviceId: string; payload: Record<string, unknown>; expectedOrgId: string }> = [];
+    const result = await runEndpointChatRetentionOnce(now, async (deviceId, payload, expectedOrgId) => {
+      closes.push({ deviceId, payload, expectedOrgId });
+    });
+    expect(result).toEqual({ idleExpired: 1, opensTimedOut: 1, bodiesPurged: 1, conversationsDeleted: 1 });
+
+    expect(await conv(idle)).toMatchObject({ status: 'expired', closeReason: 'idle' });
+    expect((await conv(idle))?.closedAt).toBeInstanceOf(Date);
+    expect(await conv(fresh)).toMatchObject({ status: 'open' });
+    expect(await conv(stuck)).toMatchObject({ status: 'failed', errorCode: 'open_timeout' });
+    const [oldMsg] = await msgs(old);
+    expect(oldMsg).toMatchObject({ body: null, bodyLength: 5 });
+    expect(oldMsg!.bodyPurgedAt).toBeInstanceOf(Date);
+    expect(await conv(ancient)).toBeUndefined();
+    expect(await msgs(ancient)).toEqual([]);
+    // Recent bodies are untouched.
+    expect((await msgs(fresh))[0]?.body).toBe('hello');
+
+    expect(closes.map((c) => c.payload.conversationId).sort()).toEqual([idle, stuck].sort());
+    expect(closes.find((c) => c.payload.conversationId === idle)).toMatchObject({ deviceId: f.devA, expectedOrgId: f.orgA, payload: { reason: 'idle' } });
+
+    const again = await runEndpointChatRetentionOnce(now, async () => {});
+    expect(again).toEqual({ idleExpired: 0, opensTimedOut: 0, bodiesPurged: 0, conversationsDeleted: 0 });
   });
 });

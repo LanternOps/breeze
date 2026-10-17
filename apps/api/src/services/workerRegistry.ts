@@ -251,8 +251,11 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     // #8742 W02: endpoint message body purge, expiry close-out, history delete.
+    // #8743 W03: also the live-chat idle close, which tells the agent
+    // (chat_close) — command dispatch reaches socket-local delivery, so this
+    // entry is socket-owner (workerEntrypointClosure.contract.test.ts).
     name: 'endpointMessageRetention',
-    placement: 'global',
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/endpointMessageRetention');
       return {
