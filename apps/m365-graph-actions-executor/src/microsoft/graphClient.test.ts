@@ -624,3 +624,129 @@ describe('graph read methods', () => {
     })).rejects.toMatchObject({ code: 'graph_response_invalid' });
   });
 });
+
+describe('graph mutation methods (patch / post / del)', () => {
+  function mutationClient(response: () => Response | Promise<Response>) {
+    const fetchStub = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => response());
+    const graph = createMicrosoftGraphClient(
+      { applicationId: APPLICATION_ID },
+      { fetch: fetchStub as unknown as typeof fetch },
+    );
+    return { graph, fetchStub };
+  }
+  const status = (code: number, body: unknown = {}, headers: Record<string, string> = {}) => () =>
+    new Response(JSON.stringify(body), { status: code, headers: { 'content-type': 'application/json', ...headers } });
+
+  // Characterisation of the shipped patch behaviour — the refactor onto a shared
+  // helper must not change any of it (these pass before AND after).
+  it('patch sends PATCH with json body, bearer token, redirect:error and resolves on 204', async () => {
+    const { graph, fetchStub } = mutationClient(() => new Response(null, { status: 204 }));
+    await expect(graph.patch({ accessToken: ACCESS_TOKEN, path: '/users/u1', body: { a: 1 } })).resolves.toBeUndefined();
+    const [url, init] = fetchStub.mock.calls[0]!;
+    expect(url).toBe('https://graph.microsoft.com/v1.0/users/u1');
+    expect(init).toMatchObject({
+      method: 'PATCH',
+      redirect: 'error',
+      body: JSON.stringify({ a: 1 }),
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, 'content-type': 'application/json' },
+    });
+  });
+
+  it('patch maps non-2xx through readFailure and rejects a relative path without fetching', async () => {
+    await expect(mutationClient(status(403)).graph.patch({ accessToken: ACCESS_TOKEN, path: '/u', body: {} }))
+      .rejects.toMatchObject({ code: 'graph_permission_missing' });
+    const { graph, fetchStub } = mutationClient(status(204));
+    await expect(graph.patch({ accessToken: ACCESS_TOKEN, path: 'u', body: {} }))
+      .rejects.toMatchObject({ code: 'graph_request_invalid' });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it('post sends POST with json body, bearer token and redirect:error', async () => {
+    const { graph, fetchStub } = mutationClient(status(201, { id: 'new' }));
+    await graph.post({ accessToken: ACCESS_TOKEN, path: '/users', body: { displayName: 'A' } });
+    const [url, init] = fetchStub.mock.calls[0]!;
+    expect(url).toBe('https://graph.microsoft.com/v1.0/users');
+    expect(init).toMatchObject({
+      method: 'POST',
+      redirect: 'error',
+      body: JSON.stringify({ displayName: 'A' }),
+      headers: { authorization: `Bearer ${ACCESS_TOKEN}`, 'content-type': 'application/json' },
+    });
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('post returns the parsed object on 201 and null on 204', async () => {
+    await expect(mutationClient(status(201, { id: 'new', userPrincipalName: 'a@b.com' })).graph
+      .post({ accessToken: ACCESS_TOKEN, path: '/users', body: {} }))
+      .resolves.toEqual({ id: 'new', userPrincipalName: 'a@b.com' });
+    await expect(mutationClient(() => new Response(null, { status: 204 })).graph
+      .post({ accessToken: ACCESS_TOKEN, path: '/users/u/revokeSignInSessions', body: {} }))
+      .resolves.toBeNull();
+  });
+
+  it('post rejects a 2xx body that is not a JSON object with graph_response_invalid', async () => {
+    await expect(mutationClient(() => new Response('not json', { status: 200 })).graph
+      .post({ accessToken: ACCESS_TOKEN, path: '/users', body: {} }))
+      .rejects.toMatchObject({ code: 'graph_response_invalid' });
+  });
+
+  it.each([
+    [403, {}, {}, { code: 'graph_permission_missing' }],
+    [404, {}, {}, { code: 'graph_not_found' }],
+    [429, {}, { 'retry-after': '17' }, { code: 'graph_throttled', retryAfterSeconds: 17 }],
+    [400, {}, {}, { code: 'graph_provider_rejected' }],
+    [500, {}, {}, { code: 'graph_provider_rejected' }],
+  ])('post and del map HTTP %i identically through readFailure', async (code, body, headers, expected) => {
+    await expect(mutationClient(status(code, body, headers)).graph
+      .post({ accessToken: ACCESS_TOKEN, path: '/x', body: {} })).rejects.toMatchObject(expected);
+    await expect(mutationClient(status(code, body, headers)).graph
+      .del({ accessToken: ACCESS_TOKEN, path: '/x' })).rejects.toMatchObject(expected);
+  });
+
+  it('post and del map an aborted request to graph_request_timeout and a thrown fetch to graph_transport_failed', async () => {
+    for (const call of ['post', 'del'] as const) {
+      const hanging = vi.fn((_u: string | URL | Request, init?: RequestInit) => new Promise<Response>((_res, rej) => {
+        init!.signal!.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')));
+      }));
+      const slow = createMicrosoftGraphClient(
+        { applicationId: APPLICATION_ID, timeoutMs: 5 },
+        { fetch: hanging as unknown as typeof fetch },
+      );
+      const run = call === 'post'
+        ? slow.post({ accessToken: ACCESS_TOKEN, path: '/x', body: {} })
+        : slow.del({ accessToken: ACCESS_TOKEN, path: '/x' });
+      await expect(run).rejects.toMatchObject({ code: 'graph_request_timeout' });
+
+      const broken = createMicrosoftGraphClient(
+        { applicationId: APPLICATION_ID },
+        { fetch: (async () => { throw new TypeError('boom'); }) as unknown as typeof fetch },
+      );
+      const run2 = call === 'post'
+        ? broken.post({ accessToken: ACCESS_TOKEN, path: '/x', body: {} })
+        : broken.del({ accessToken: ACCESS_TOKEN, path: '/x' });
+      await expect(run2).rejects.toMatchObject({ code: 'graph_transport_failed' });
+    }
+  });
+
+  it('post and del reject a path without a leading slash without fetching', async () => {
+    const { graph, fetchStub } = mutationClient(status(204));
+    await expect(graph.post({ accessToken: ACCESS_TOKEN, path: 'users', body: {} }))
+      .rejects.toMatchObject({ code: 'graph_request_invalid' });
+    await expect(graph.del({ accessToken: ACCESS_TOKEN, path: 'users' }))
+      .rejects.toMatchObject({ code: 'graph_request_invalid' });
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it('del sends DELETE with no body and resolves on 204', async () => {
+    const { graph, fetchStub } = mutationClient(() => new Response(null, { status: 204 }));
+    await expect(graph.del({ accessToken: ACCESS_TOKEN, path: '/groups/g/members/u/$ref' })).resolves.toBeUndefined();
+    const [, init] = fetchStub.mock.calls[0]!;
+    expect(init).toMatchObject({ method: 'DELETE', redirect: 'error', headers: { authorization: `Bearer ${ACCESS_TOKEN}` } });
+    expect(init?.body).toBeUndefined();
+  });
+
+  it('del surfaces 404 as a thrown graph_not_found (the caller decides if that is a no-op)', async () => {
+    await expect(mutationClient(status(404)).graph.del({ accessToken: ACCESS_TOKEN, path: '/x' }))
+      .rejects.toMatchObject({ code: 'graph_not_found' });
+  });
+});
