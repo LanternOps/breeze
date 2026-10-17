@@ -865,7 +865,9 @@
     "loadingDevice": "Carregando dispositivo...",
     "backToDevices": "Voltar para dispositivos",
     "goBack": "Voltar",
-    "devices": "Dispositivos"
+    "devices": "Dispositivos",
+    "devicesCrumbOtherOrg": "Abre a aba Dispositivos de {{deviceOrg}}; sua organização de trabalho continua sendo {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Abre a aba Dispositivos de {{deviceOrg}}; sua organização de trabalho não muda"
   },
   "deviceDetails": {
     "overview": "Visão geral",
@@ -953,7 +955,11 @@
     "workloads": "Cargas de trabalho",
     "workloadsTitle": "Contêineres e máquinas virtuais neste host",
     "offlineLastSeen": "Offline · visto pela última vez {{ago}}",
-    "locatedIn": "em <org/> › <site/>"
+    "locatedIn": "em <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Você está vendo um dispositivo de {{org}}",
+      "switch": "Mudar para {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Falha ao isolar o dispositivo",

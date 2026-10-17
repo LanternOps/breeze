@@ -35,6 +35,7 @@ import { useAiStore } from "@/stores/aiStore";
 import { navigateTo } from "@/lib/navigation";
 import { useOrgStore } from "@/stores/orgStore";
 import { deviceListCrumbHref } from "./deviceListCrumbHref";
+import { applyOrgSwitch } from "@/lib/orgSwitch";
 import { deviceScriptsHash } from "@/lib/deviceScriptsLink";
 import { runAction, ActionError } from "@/lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -343,6 +344,28 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
   }, [device?.id, device?.orgId, recentName, recentsUserId, recordRecentDevice]);
 
   const devicesHref = device ? deviceListCrumbHref(currentOrgId, device.orgId) : "/devices";
+  // #9027: when the crumb leaves the working org (it opens the device org's
+  // Devices tab), say so — the working org itself does not change.
+  const workingOrgName = useOrgStore(
+    (s) => s.organizations.find((o) => o.id === s.currentOrgId)?.name ?? null,
+  );
+  const crossOrgCrumb = devicesHref !== "/devices" && device != null;
+  const devicesCrumbHint = crossOrgCrumb
+    ? workingOrgName
+      ? t("deviceDetailPage.devicesCrumbOtherOrg", { deviceOrg: device.orgName, workingOrg: workingOrgName })
+      : t("deviceDetailPage.devicesCrumbOtherOrgUnnamed", { deviceOrg: device.orgName })
+    : undefined;
+  // Switch the working org to the device's org and stay on this record. No
+  // hash: a same-path navigation carrying one is a scroll-to-anchor for the
+  // router, so the switch (and its toast) would never settle.
+  const handleSwitchToDeviceOrg = () => {
+    if (!device?.orgId) return;
+    void applyOrgSwitch(
+      device.orgId,
+      t("common:layout.org.toast.switched", { name: device.orgName }),
+      `/devices/${device.id}`,
+    );
+  };
   // Back returns to wherever the tech came from (list filters, scroll, org);
   // a fresh tab / deep link has no history to pop, so fall to the org-aware
   // Devices crumb instead.
@@ -768,7 +791,12 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
           ...(device.orgId
             ? [{ label: device.orgName, href: `/organizations/${device.orgId}` }]
             : []),
-          { label: t("deviceDetailPage.devices"), href: devicesHref },
+          {
+            label: t("deviceDetailPage.devices"),
+            href: devicesHref,
+            title: devicesCrumbHint,
+            description: devicesCrumbHint,
+          },
           // #9026: one name — the leaf matches the h1; hostname on hover.
           {
             label: device.displayName || device.hostname || "Device",
@@ -780,6 +808,8 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
       <DeviceDetails
         device={device}
         metricsSampledAt={metricsSampledAt}
+        workingOrgId={currentOrgId}
+        onSwitchToDeviceOrg={handleSwitchToDeviceOrg}
         onBack={handleBack}
         onAction={handleAction}
       />

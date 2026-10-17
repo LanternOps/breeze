@@ -865,7 +865,9 @@
     "loadingDevice": "Cargando dispositivo...",
     "backToDevices": "Volver a dispositivos",
     "goBack": "Volver",
-    "devices": "Dispositivos"
+    "devices": "Dispositivos",
+    "devicesCrumbOtherOrg": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo sigue siendo {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo no cambia"
   },
   "deviceDetails": {
     "overview": "Descripción general",
@@ -953,7 +955,11 @@
     "workloads": "Cargas de trabajo",
     "workloadsTitle": "Contenedores y máquinas virtuales en este host",
     "offlineLastSeen": "Sin conexión · visto por última vez {{ago}}",
-    "locatedIn": "en <org/> › <site/>"
+    "locatedIn": "en <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Estás viendo un dispositivo de {{org}}",
+      "switch": "Cambiar a {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "No se pudo aislar el dispositivo",

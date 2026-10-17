@@ -865,7 +865,9 @@
     "loadingDevice": "Cihaz yükleniyor...",
     "backToDevices": "Cihazlara geri dön",
     "goBack": "Geri dön",
-    "devices": "Cihazlar"
+    "devices": "Cihazlar",
+    "devicesCrumbOtherOrg": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz {{workingOrg}} olarak kalır",
+    "devicesCrumbOtherOrgUnnamed": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz değişmez"
   },
   "deviceDetails": {
     "overview": "Genel Bakış",
@@ -953,7 +955,11 @@
     "workloads": "İş yükleri",
     "workloadsTitle": "Bu ana makinedeki kapsayıcılar ve sanal makineler",
     "offlineLastSeen": "Çevrimdışı · son görülme {{ago}}",
-    "locatedIn": "<org/> › <site/> içinde"
+    "locatedIn": "<org/> › <site/> içinde",
+    "scopeCue": {
+      "viewing": "{{org}} cihazını görüntülüyorsunuz",
+      "switch": "{{org}} kuruluşuna geç"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Cihaz yalıtılamadı",

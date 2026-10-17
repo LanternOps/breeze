@@ -17,7 +17,7 @@ import { navigateTo } from '@/lib/navigation';
 import { usePermissions } from '@/lib/permissions';
 import { useMediaQuery } from '@/lib/useMediaQuery';
 import OrgSwitcherPane from './OrgSwitcherPane';
-import { visibleDestinations } from './orgSwitcherDestinations';
+import { recordStayDestination, visibleDestinations } from './orgSwitcherDestinations';
 import { useOrgSummaryCache } from './useOrgSummaryCache';
 import { useTranslation } from 'react-i18next';
 
@@ -263,7 +263,13 @@ export default function OrgSwitcher() {
         data-highlighted={highlighted ? 'true' : undefined}
         tabIndex={highlighted && !isRecent ? 0 : -1}
         aria-current={isSelected ? 'true' : undefined}
-        onClick={() => void applyContext(org.id)}
+        // #9027: from a record page, a name click switches and stays put.
+        onClick={() =>
+          void applyContext(
+            org.id,
+            isSelected ? undefined : recordStayDestination(window.location.pathname, window.location.search),
+          )
+        }
         onMouseEnter={() => setHighlightedOrgId(org.id)}
         onFocus={() => setHighlightedOrgId(org.id)}
         className={cn(

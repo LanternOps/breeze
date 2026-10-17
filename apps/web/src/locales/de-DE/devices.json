@@ -865,7 +865,9 @@
     "loadingDevice": "Gerät wird geladen...",
     "backToDevices": "Zurück zu den Geräten",
     "goBack": "Zurück",
-    "devices": "Geräte"
+    "devices": "Geräte",
+    "devicesCrumbOtherOrg": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation bleibt {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation ändert sich nicht"
   },
   "deviceDetails": {
     "overview": "Übersicht",
@@ -953,7 +955,11 @@
     "workloads": "Workloads",
     "workloadsTitle": "Container und virtuelle Maschinen auf diesem Host",
     "offlineLastSeen": "Offline · zuletzt gesehen {{ago}}",
-    "locatedIn": "bei <org/> › <site/>"
+    "locatedIn": "bei <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Sie sehen ein Gerät von {{org}}",
+      "switch": "Zu {{org}} wechseln"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Das Gerät konnte nicht isoliert werden",

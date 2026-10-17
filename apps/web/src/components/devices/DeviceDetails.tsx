@@ -164,6 +164,10 @@ type DeviceDetailsProps = {
    * the caller cannot say, so only the offline rule applies (#9026).
    */
   metricsSampledAt?: string | null;
+  /** The user's working org (null = fleet view); drives the scope cue (#9027). */
+  workingOrgId?: string | null;
+  /** Switch the working org to this device's org and stay on the record. */
+  onSwitchToDeviceOrg?: () => void;
 };
 
 // Sub-line record links: foreground colour plus a quiet resting underline, so
@@ -388,7 +392,13 @@ export default function DeviceDetails({
   onBack,
   onAction,
   metricsSampledAt,
+  workingOrgId,
+  onSwitchToDeviceOrg,
 }: DeviceDetailsProps) {
+  // #9027: the record is in another org than the one the user is working in
+  // (fleet view has no working org, so it never shows the cue).
+  const scopeMismatch =
+    workingOrgId != null && device.orgId !== "" && workingOrgId !== device.orgId;
   const { t } = useTranslation("devices");
   usePageItemName(device.displayName || device.hostname);
   const deviceName = device.displayName || device.hostname;
@@ -950,6 +960,29 @@ export default function DeviceDetails({
                   />
                 </span>
               </p>
+              {/* #9027: same idea as the org record's "Workspace: X" chip. Not
+                  a live region — it describes the page, it is not an event. */}
+              {scopeMismatch && (
+                <p
+                  data-testid="device-scope-cue"
+                  className="mt-2 flex flex-wrap items-center gap-x-1.5 text-sm text-muted-foreground"
+                >
+                  <span>{t("deviceDetails.scopeCue.viewing", { org: device.orgName })}</span>
+                  {onSwitchToDeviceOrg && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        data-testid="device-scope-switch"
+                        onClick={onSwitchToDeviceOrg}
+                        className="font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+                      >
+                        {t("deviceDetails.scopeCue.switch", { org: device.orgName })}
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">

@@ -865,7 +865,9 @@
     "loadingDevice": "Loading device...",
     "backToDevices": "Back to devices",
     "goBack": "Go back",
-    "devices": "Devices"
+    "devices": "Devices",
+    "devicesCrumbOtherOrg": "Opens {{deviceOrg}}'s Devices tab; your working org stays {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Opens {{deviceOrg}}'s Devices tab; your working organization does not change"
   },
   "deviceDetails": {
     "overview": "Overview",
@@ -953,7 +955,11 @@
     "workloads": "Workloads",
     "workloadsTitle": "Containers and virtual machines on this host",
     "offlineLastSeen": "Offline · last seen {{ago}}",
-    "locatedIn": "in <org/> › <site/>"
+    "locatedIn": "in <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Viewing a {{org}} device",
+      "switch": "Switch to {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",

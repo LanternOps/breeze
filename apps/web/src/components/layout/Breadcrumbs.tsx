@@ -10,6 +10,8 @@ interface BreadcrumbItem {
   href?: string;
   /** Hover text, e.g. the hostname behind a device's display name. */
   title?: string;
+  /** Extra context for assistive tech (rendered as `aria-description`). */
+  description?: string;
 }
 
 interface BreadcrumbsProps {
@@ -37,6 +39,7 @@ export default function Breadcrumbs({ items }: BreadcrumbsProps) {
               <a
                 href={item.href}
                 title={item.title}
+                aria-description={item.description}
                 className="truncate hover:text-foreground transition-colors"
               >
                 {item.label}

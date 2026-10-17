@@ -183,20 +183,27 @@ describe('OrgSwitcher (unified control)', () => {
     fireEvent.click(orgButtons[0]);
   }
 
-  it('redirects to /devices when switching orgs from a device-detail page', async () => {
-    const { reloadMock, hrefSetter } = stubLocation('/devices/abc123');
+  // #9027: a name click from a record page switches the working org and keeps
+  // the user on the record instead of bouncing them to the (possibly empty)
+  // list. Sub-item destinations keep their explicit targets.
+  it.each(['/devices/abc123', '/organizations/org-z', '/tickets/t-1'])(
+    'stays on the record when switching orgs by name from %s',
+    async (path) => {
+      const { reloadMock, hrefSetter } = stubLocation(path);
 
-    render(<OrgSwitcher />);
+      render(<OrgSwitcher />);
 
-    openDropdownAndClickOrg('Org B');
+      openDropdownAndClickOrg('Org B');
 
-    expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
-    // Navigation is gated behind await waitForPendingRefresh() (#950 race guard).
-    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/devices', { replace: true }));
-    expect(reloadMock).not.toHaveBeenCalled();
-    expect(hrefSetter).not.toHaveBeenCalled();
-    expect(waitForPendingRefreshMock).toHaveBeenCalled();
-  });
+      expect(selectOrganizationMock).toHaveBeenCalledWith('org-b');
+      // Navigation is gated behind await waitForPendingRefresh() (#950 race guard).
+      await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith(path, { replace: false }));
+      expect(navigateToMock).not.toHaveBeenCalledWith('/devices', expect.anything());
+      expect(reloadMock).not.toHaveBeenCalled();
+      expect(hrefSetter).not.toHaveBeenCalled();
+      expect(waitForPendingRefreshMock).toHaveBeenCalled();
+    },
+  );
 
   it('soft-navigates in place (no reload) when switching orgs from a non-detail page', async () => {
     const { reloadMock, hrefSetter } = stubLocation('/devices');

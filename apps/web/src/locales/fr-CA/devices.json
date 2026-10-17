@@ -865,7 +865,9 @@
     "loadingDevice": "Dispositif de chargement...",
     "backToDevices": "Retour aux appareils",
     "goBack": "Retourne",
-    "devices": "Dispositifs"
+    "devices": "Dispositifs",
+    "devicesCrumbOtherOrg": "Ouvre l’onglet Appareils de {{deviceOrg}}; votre organisation de travail reste {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Ouvre l’onglet Appareils de {{deviceOrg}}; votre organisation de travail ne change pas"
   },
   "deviceDetails": {
     "overview": "Aperçu",
@@ -953,7 +955,11 @@
     "workloads": "Charges de travail",
     "workloadsTitle": "Conteneurs et machines virtuelles sur cet hôte",
     "offlineLastSeen": "Hors ligne · vu pour la dernière fois {{ago}}",
-    "locatedIn": "chez <org/> › <site/>"
+    "locatedIn": "chez <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Vous consultez un appareil de {{org}}",
+      "switch": "Passer à {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
