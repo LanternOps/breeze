@@ -362,6 +362,11 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'PATCH /api/v1/topology/templates/:templateId': 'equivalent check: hasPermission(topology+devices write) in templateLibrary service',
   'POST /api/v1/topology/templates/:templateId/versions': 'equivalent check: hasPermission(topology+devices write) in templateLibrary service',
   'POST /api/v1/topology/templates/:templateId/versions/:versionId/publish': 'equivalent check: hasPermission(topology+devices write) in templateLibrary service',
+  // routes/trustAccessPublic.ts (Trust Center W02d) — anonymous by design: no staff JWT exists on these requests
+  'POST /api/v1/trust/access/requests': 'public: anonymous gated-document access request; rate-limited per IP/address/page, generic 202/404 (spec trust-center §12)',
+  'POST /api/v1/trust/access/verify': 'public: one-shot hashed email-verification token in the POST body is the credential; rate-limited, generic 404',
+  'POST /api/v1/trust/access/grant': 'public: hashed download token in the POST body is the credential; read-only grant view; rate-limited, generic 404',
+  'POST /api/v1/trust/access/download': 'public: hashed download token in the POST body + approved, unexpired grant re-checked per call; rate-limited, generic 404',
   // routes/tunnels.ts
   'POST /api/v1/tunnels/:id/ws-ticket': 'equivalent check: requireMfa + owner check + authorizeRemoteSessionContinuation (REMOTE_ACCESS/DEVICES_EXECUTE)',
   'POST /api/v1/tunnels/:id/http-ticket': 'equivalent check: requireMfa + owner check + authorizeRemoteSessionContinuation (REMOTE_ACCESS/DEVICES_EXECUTE)',
