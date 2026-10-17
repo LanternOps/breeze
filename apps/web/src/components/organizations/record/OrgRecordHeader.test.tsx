@@ -208,6 +208,24 @@ describe('OrgRecordHeader - Send message is gated on endpoint_messages:send', ()
       expect(screen.getByTestId('org-record-more')).toHaveFocus();
     });
 
+    it('activating an item hands focus back to the trigger and fires the action', async () => {
+      const user = userEvent.setup();
+      const onArchive = vi.fn();
+      renderHeader({ onArchive });
+      await user.click(screen.getByTestId('org-record-more'));
+      await user.keyboard('{Enter}');
+      expect(onArchive).toHaveBeenCalled();
+      expect(screen.getByTestId('org-record-more')).toHaveFocus();
+    });
+
+    it('Tab closes the menu', async () => {
+      const user = userEvent.setup();
+      renderHeader();
+      await user.click(screen.getByTestId('org-record-more'));
+      await user.keyboard('{Tab}');
+      expect(screen.queryByRole('menu')).toBeNull();
+    });
+
     it('Escape with focus still on the trigger also closes', async () => {
       const user = userEvent.setup();
       renderHeader();

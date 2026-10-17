@@ -262,6 +262,7 @@ export default function OrgRecordHeader({
               {menuOpen && (
                 <div
                   role="menu"
+                  aria-label={t('orgRecord.actions.more')}
                   onKeyDown={handleMenuKeyDown}
                   className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-md border bg-popover py-1 shadow-md"
                 >
@@ -271,7 +272,7 @@ export default function OrgRecordHeader({
                       role="menuitem"
                       data-testid="org-record-archive"
                       onClick={() => {
-                        setMenuOpen(false);
+                        closeMenu(true);
                         onArchive();
                       }}
                       className="block w-full px-3 py-1.5 text-left text-sm hover:bg-accent"
@@ -285,7 +286,7 @@ export default function OrgRecordHeader({
                       role="menuitem"
                       data-testid="org-record-merge"
                       onClick={() => {
-                        setMenuOpen(false);
+                        closeMenu(true);
                         onMerge();
                       }}
                       className="block w-full px-3 py-1.5 text-left text-sm hover:bg-accent"
