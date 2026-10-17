@@ -338,6 +338,10 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/portal/tickets/:id/comments': 'portal session: portal session auth (portalAuthMiddleware)',
   'PATCH /api/v1/portal/tickets/:id/comments/:commentId': 'portal session: portal session auth (portalAuthMiddleware)',
   'DELETE /api/v1/portal/tickets/:id/comments/:commentId': 'portal session: portal session auth (portalAuthMiddleware)',
+  // routes/portal/trustPage.ts (Trust Center W3d)
+  'PUT /api/v1/portal/trust-page': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
+  'POST /api/v1/portal/trust-page/preview-token': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
+  'POST /api/v1/portal/trust-page/unpublish': 'portal session: portal session auth + requirePortalTrustPageEditor (org-admin contact role, flag)',
   // routes/quotesPublic.ts
   'POST /api/v1/quotes/public/:token/accept': 'public: Signed public quote link token; single-use claims checked in resolve()',
   'POST /api/v1/quotes/public/:token/decline': 'public: Signed public quote link token; single-use claims checked in resolve()',
