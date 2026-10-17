@@ -357,6 +357,12 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_workload_runtimes', 'device_workloads',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
+  // Endpoint live chat (#8743 W03): chat history follows the device (the
+  // breeze_cascade_device_org_id() trigger restamps both tables; their
+  // composite FKs are DEFERRABLE INITIALLY DEFERRED for exactly that).
+  // moveDeviceOrgInTransaction.ts first ends a live conversation in the
+  // source org (close_reason 'device_moved').
+  'endpoint_conversation_messages', 'endpoint_conversations',
   // Endpoint messaging (#8742 W02): delivery/receipt history follows the
   // device. moveDeviceOrgInTransaction.ts first detaches
   // endpoint_message_id (the message stays with the source org); the
@@ -750,6 +756,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // Endpoint messaging (#8742 W02): receipts before deliveries (receipts ->
   // deliveries FK, ON DELETE CASCADE either way).
   'endpoint_message_receipts', 'endpoint_message_deliveries',
+  // Endpoint live chat (#8743 W03): messages before conversations (messages ->
+  // conversations FK, ON DELETE CASCADE either way).
+  'endpoint_conversation_messages', 'endpoint_conversations',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',

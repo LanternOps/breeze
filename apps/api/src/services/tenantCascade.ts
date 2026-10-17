@@ -629,6 +629,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'edr_tenants',
   'elevation_audit',
   'elevation_requests',
+  // Endpoint live chat (#8743 W03). messages -> conversations (conversation_id,
+  // org_id) FK is ON DELETE CASCADE; both also cascade from devices.
+  'endpoint_conversation_messages',
+  'endpoint_conversations',
   // Endpoint messaging (#8742 W02). receipts -> deliveries -> endpoint_messages
   // FKs are all ON DELETE CASCADE; topologicalCascadeOrder() orders the live
   // FK graph regardless of position.
