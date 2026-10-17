@@ -42,8 +42,10 @@ import { SecurityAgentsLinkWriteError } from './securityAgentsLinkWrite';
  * Authorization lives with the callers, not here: this file is allowlisted in
  * the partner-wide and site-ceiling write-coverage contract tests on the
  * grounds that its only request-path callers (the feature-link route and the
- * config-policy AI tool) run both capability gates before the link write. A new
- * caller must gate the same way, or the allowlist reasons become false.
+ * config-policy AI tool) run the site-ceiling gate and, for a partner-wide
+ * config policy, the partner-wide gate before the link write. A new caller
+ * must gate the same way, or the allowlist reasons become false; the caller set
+ * is pinned by managedPolicyGenerator.callers.contract.test.ts.
  */
 
 type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
