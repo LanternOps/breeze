@@ -57,9 +57,11 @@ type ScanOutcome struct {
 	Partial      bool
 
 	// #6263 W02. Engine is the matcher that actually ran ("yara" or
-	// "legacy"). EngineError is set when a YARA matcher was supplied but
-	// could not start, so the scan fell back to the legacy signatures — the
-	// caller reports that as a degraded run, never as a clean YARA scan.
+	// "legacy"). EngineError marks a degraded run the caller must report,
+	// never as a clean YARA scan: either the YARA matcher could not start or
+	// lost every worker (Engine is then "legacy" — the scan fell back to the
+	// built-in signatures), or it failed on at least as many files as it
+	// scanned (Engine stays "yara").
 	Engine      string
 	EngineError string
 	// FilesFailed counts files the YARA walk could not read (locked,
@@ -145,12 +147,22 @@ func (s *SecurityScanner) ScanWithContext(ctx context.Context, scanType string, 
 	if s.Matcher != nil {
 		engine = s.Matcher.Engine()
 		res, scanErr = walkAndMatch(scanCtx, targets, options, s.Matcher, yaraWalkConfig())
-		if errors.Is(scanErr, ErrNoScanWorkers) {
+		switch {
+		case errors.Is(scanErr, ErrNoScanWorkers):
 			// Fallback = the legacy signatures, recorded as a degraded run.
-			log.Warn("IOC scan engine could not start; scanning with built-in signatures", "error", scanErr.Error())
+			// YARA hits found before the engine was lost are kept.
+			log.Warn("IOC scan engine unavailable; scanning with built-in signatures", "error", scanErr.Error())
 			engine, engineErr = yarascan.EngineLegacy, scanErr.Error()
-			res.Threats, res.FilesScanned, scanErr = detectThreatsCtx(scanCtx, targets, options)
+			partial := res.Threats
+			var legacyThreats []Threat
+			legacyThreats, res.FilesScanned, scanErr = detectThreatsCtx(scanCtx, targets, options)
+			res.Threats = append(partial, legacyThreats...)
 			res.FilesFailed = 0
+		case scanErr == nil && res.FilesFailed > 0 && res.FilesFailed >= res.FilesScanned:
+			// The engine ran but failed on at least as many files as it
+			// scanned: never let that read as a clean YARA scan.
+			engineErr = fmt.Sprintf("the YARA engine failed on %d of %d files", res.FilesFailed, res.FilesFailed+res.FilesScanned)
+			log.Warn("IOC scan degraded", "filesFailed", res.FilesFailed, "filesScanned", res.FilesScanned)
 		}
 	} else {
 		res.Threats, res.FilesScanned, scanErr = detectThreatsCtx(scanCtx, targets, options)
@@ -216,10 +228,23 @@ func (s *SecurityScanner) autoQuarantine(threats []Threat) {
 			th.QuarantinedTo, th.QuarantineFailed = dest, dest == ""
 			continue
 		}
-		if th.SHA256 != "" && fileSHA256(th.Path) != th.SHA256 {
-			log.Warn("skipping auto-quarantine: file changed since it was scanned", "path", th.Path, "name", th.Name)
+		if th.hashFailed {
+			log.Warn("skipping auto-quarantine: the file could not be hashed when it matched", "path", th.Path, "name", th.Name)
 			done[th.Path], th.QuarantineFailed = "", true
 			continue
+		}
+		if th.SHA256 != "" {
+			cur, err := fileSHA256(th.Path)
+			if err != nil {
+				log.Warn("skipping auto-quarantine: file unreadable at quarantine time", "path", th.Path, "name", th.Name, "error", err.Error())
+				done[th.Path], th.QuarantineFailed = "", true
+				continue
+			}
+			if cur != th.SHA256 {
+				log.Warn("skipping auto-quarantine: file changed since it was scanned", "path", th.Path, "name", th.Name)
+				done[th.Path], th.QuarantineFailed = "", true
+				continue
+			}
 		}
 		dest, qErr := QuarantineThreat(*th, dir)
 		if qErr != nil {

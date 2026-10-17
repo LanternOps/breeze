@@ -137,6 +137,54 @@ func TestLoadMatcherAllFailReturnsNil(t *testing.T) {
 	}
 }
 
+func TestLoadMatcherRecompilesAfterTamperedCacheEntry(t *testing.T) {
+	f := &fakeFetcher{bundles: map[string]*Bundle{"s1": bundle("s1", BundleRule{ID: "r1", Name: "fixture_marker", Severity: "high", Source: marker})}}
+	c := newCache(t, DefaultEntries)
+	if m, errs := LoadMatcher(context.Background(), []RuleSetRef{ref("s1")}, f, c); m == nil || len(errs) != 0 {
+		t.Fatalf("first load: %+v", errs)
+	}
+	entries, _ := filepath.Glob(filepath.Join(c.Dir, "*.byrc"))
+	if len(entries) != 1 {
+		t.Fatalf("want one cache entry, got %d", len(entries))
+	}
+	raw, _ := os.ReadFile(entries[0])
+	raw[len(raw)-40] ^= 0xFF
+	_ = os.WriteFile(entries[0], raw, 0o600)
+	before, _ := os.Stat(entries[0])
+
+	m, errs := LoadMatcher(context.Background(), []RuleSetRef{ref("s1")}, f, c)
+	if m == nil || len(errs) != 0 {
+		t.Fatalf("tampered entry must be recompiled, got %+v", errs)
+	}
+	if got := scanOne(t, m, "testdata/files/fixture-a.bin"); len(got) != 1 {
+		t.Fatalf("recompiled matcher wrong: %+v", got)
+	}
+	if f.calls.Load() != 2 {
+		t.Fatalf("want a fresh fetch per load, got %d", f.calls.Load())
+	}
+	after, err := os.Stat(entries[0])
+	if err != nil || after.ModTime().Before(before.ModTime()) {
+		t.Fatal("the recompiled entry must be written back")
+	}
+	if got, err := c.Load(CacheKey([]string{strings.Repeat("a", 64) + "@s1"})); got == nil || err != nil {
+		t.Fatalf("rewritten entry must load cleanly: %v", err)
+	}
+}
+
+func TestLoadMatcherCompilesWhenCacheDirUnusable(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "file")
+	_ = os.WriteFile(blocker, []byte("x"), 0o600)
+	c := &Cache{Dir: filepath.Join(blocker, "cache"), MaxEntries: DefaultEntries} // parent is a regular file
+	f := &fakeFetcher{bundles: map[string]*Bundle{"s1": bundle("s1", BundleRule{ID: "r1", Name: "fixture_marker", Severity: "high", Source: marker})}}
+	m, errs := LoadMatcher(context.Background(), []RuleSetRef{ref("s1")}, f, c)
+	if m == nil || len(errs) != 0 {
+		t.Fatalf("an unusable cache must not stop the scan: %+v", errs)
+	}
+	if got := scanOne(t, m, "testdata/files/fixture-a.bin"); len(got) != 1 {
+		t.Fatalf("matcher wrong: %+v", got)
+	}
+}
+
 func TestLoadMatcherWorksWithoutCache(t *testing.T) {
 	f := &fakeFetcher{bundles: map[string]*Bundle{"s1": bundle("s1", BundleRule{ID: "r1", Name: "fixture_marker", Severity: "high", Source: marker})}}
 	m, errs := LoadMatcher(context.Background(), []RuleSetRef{ref("s1")}, f, nil)

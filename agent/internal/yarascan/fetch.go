@@ -8,10 +8,16 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // BundleContentType is the media type the W03 fetch route serves (C2).
 const BundleContentType = "application/vnd.breeze.yara-bundle+json"
+
+// bundleFetchTimeout replaces the shared heartbeat client's short overall
+// timeout for this request: a bundle can be up to 16 MiB, and the caller's
+// context (the rule-set load deadline) still bounds the whole load.
+const bundleFetchTimeout = 2 * time.Minute
 
 // Fetcher retrieves and verifies one rule-set bundle. Every failure is a
 // per-set *RuleSetError, never a scan failure.
@@ -65,6 +71,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, ref RuleSetRef) (*Bundle, *Rule
 	req.Header.Set("Accept", BundleContentType)
 
 	client := *f.Client // copy: never mutate the shared heartbeat client
+	client.Timeout = bundleFetchTimeout
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return errors.New("redirects are not followed for rule bundles")
 	}

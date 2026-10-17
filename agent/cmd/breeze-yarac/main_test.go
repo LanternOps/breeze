@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	yx "github.com/niallnsec/yaraxwasm"
+
+	"github.com/breeze-rmm/agent/internal/yarascan/yarac"
 )
 
 const goldenPath = "../../internal/yarascan/testdata/bundle-v1.golden.json"
@@ -131,6 +133,26 @@ func TestScanReportsMatchesAndSummary(t *testing.T) {
 	}
 	if _, ok := s["peakRssMb"]; !ok {
 		t.Fatal("summary missing peakRssMb")
+	}
+}
+
+func TestScanOfNothingIsNotSuccess(t *testing.T) {
+	code, out, _ := runCLI([]string{"scan", "--bundle", goldenPath, filepath.Join(t.TempDir(), "does-not-exist")}, nil)
+	if code != exitUsage || !strings.Contains(out, "no files were scanned") {
+		t.Fatalf("a scan of nothing must exit 2, got %d %s", code, out)
+	}
+}
+
+func TestRulesExitCodeEngineFailureIsNotARuleError(t *testing.T) {
+	var errb bytes.Buffer
+	if got := rulesExitCode([]yarac.RuleError{{Code: yarac.CodeEngine, Message: "guest failed"}}, &errb); got != exitUsage {
+		t.Fatalf("engine failure must exit 2, got %d", got)
+	}
+	if got := rulesExitCode([]yarac.RuleError{{Code: yarac.CodeCompile}}, &errb); got != exitRules {
+		t.Fatalf("rule error must exit 1, got %d", got)
+	}
+	if got := rulesExitCode(nil, &errb); got != exitOK {
+		t.Fatalf("no errors must exit 0, got %d", got)
 	}
 }
 

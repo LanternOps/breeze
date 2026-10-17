@@ -279,7 +279,18 @@ func readRules(plain []byte) (rules *yx.Rules, err error) {
 	return yx.ReadFrom(bytes.NewReader(plain))
 }
 
+// staleTmpAge: a *.tmp older than this is debris from a crash between
+// CreateTemp and Rename (a live Store renames within milliseconds).
+const staleTmpAge = time.Hour
+
 func (c *Cache) prune() {
+	if tmps, err := filepath.Glob(filepath.Join(c.Dir, "*.tmp")); err == nil {
+		for _, p := range tmps {
+			if st, err := os.Lstat(p); err == nil && time.Since(st.ModTime()) > staleTmpAge {
+				c.discard(p, "stale temp file")
+			}
+		}
+	}
 	if c.MaxEntries <= 0 {
 		return
 	}

@@ -103,6 +103,22 @@ func TestWalkPoolHonoursDeadlineWithSlowWorker(t *testing.T) {
 	}
 }
 
+// Deadline firing after the producer queued its last file: the dropped
+// queued files must still surface as a deadline error (partial scan).
+func TestWalkPoolDeadlineAfterProducerFinishedIsReported(t *testing.T) {
+	dir := tree(t, 6) // fits the channel buffer: produce returns immediately
+	m := &stubMatcher{delay: 80 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	res, err := walkAndMatch(ctx, []string{dir}, defaultThreatScanOptions(), m, yaraCfg(2))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("dropped queued files must report the deadline, got %v (scanned %d)", err, res.FilesScanned)
+	}
+	if res.FilesScanned >= 6 {
+		t.Fatalf("expected queued files to be dropped, scanned %d", res.FilesScanned)
+	}
+}
+
 func TestWalkPoolHonoursExclusions(t *testing.T) {
 	dir := tree(t, 5)
 	sub := filepath.Join(dir, "skip")
@@ -139,8 +155,8 @@ func TestWalkPoolFileErrorsNonFatalForYara(t *testing.T) {
 	if err != nil {
 		t.Fatalf("per-file errors must not fail a YARA walk: %v", err)
 	}
-	if res.FilesFailed != 2 || len(res.Threats) != 1 || res.FilesScanned != 10 {
-		t.Fatalf("want 2 failed, 1 threat, 10 scanned; got %+v", res)
+	if res.FilesFailed != 2 || len(res.Threats) != 1 || res.FilesScanned != 8 {
+		t.Fatalf("want 2 failed, 1 threat, 8 scanned (failures are not scans); got %+v", res)
 	}
 	// Legacy (W01) semantics: non-permission file errors are joined into the
 	// error; permission errors are skipped silently.
@@ -192,10 +208,53 @@ func TestLegacyMatcherKeepsW01ThreatShape(t *testing.T) {
 	}
 }
 
-func TestFileSHA256HonoursCap(t *testing.T) {
+func TestFileSHA256ReportsErrors(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f")
 	_ = os.WriteFile(p, []byte("x"), 0o600)
-	if fileSHA256(p) == "" || fileSHA256(filepath.Join(t.TempDir(), "missing")) != "" {
-		t.Fatal("fileSHA256 basic behaviour wrong")
+	if sum, err := fileSHA256(p); err != nil || sum == "" {
+		t.Fatalf("hash of a readable file failed: %q %v", sum, err)
+	}
+	if sum, err := fileSHA256(filepath.Join(t.TempDir(), "missing")); err == nil || sum != "" {
+		t.Fatal("an unreadable file must be an error, never an empty 'verified' hash")
+	}
+}
+
+// A worker whose engine dies mid-scan retires; the others finish the scan.
+func TestWalkPoolRetiresWorkerThatLosesItsEngine(t *testing.T) {
+	dir := tree(t, 40)
+	m := &stubMatcher{fileErr: map[string]error{"f005": fmt.Errorf("%w: reinit failed", yarascan.ErrWorkerUnavailable)}, hits: map[string]bool{"f039": true}}
+	res, err := walkAndMatch(context.Background(), []string{dir}, defaultThreatScanOptions(), m, yaraCfg(2))
+	if err != nil {
+		t.Fatalf("one healthy worker must finish the scan: %v", err)
+	}
+	if res.FilesFailed != 1 || res.FilesScanned != 39 || len(res.Threats) != 1 {
+		t.Fatalf("want 1 failed, 39 scanned, 1 threat; got %+v", res)
+	}
+}
+
+// Every worker losing its engine is ErrNoScanWorkers, with threats found
+// before that preserved, and no deadlock.
+func TestWalkPoolAllWorkersLostKeepsPartialThreats(t *testing.T) {
+	dir := tree(t, 50)
+	lost := fmt.Errorf("%w: reinit failed", yarascan.ErrWorkerUnavailable)
+	errs := map[string]error{}
+	for i := 10; i < 50; i++ {
+		errs[fmt.Sprintf("f%03d", i)] = lost
+	}
+	m := &stubMatcher{fileErr: errs, hits: map[string]bool{"f000": true}}
+	done := make(chan struct{})
+	var res walkResult
+	var err error
+	go func() {
+		res, err = walkAndMatch(context.Background(), []string{dir}, defaultThreatScanOptions(), m, yaraCfg(1))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("walk deadlocked after every worker lost its engine")
+	}
+	if !errors.Is(err, ErrNoScanWorkers) || len(res.Threats) != 1 {
+		t.Fatalf("want ErrNoScanWorkers with the f000 threat kept, got %v %+v", err, res)
 	}
 }

@@ -125,10 +125,23 @@ func cmdValidate(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if code := writeJSON(stdout, stderr, validateResult{OK: len(errs) == 0, Errors: errs}); code != exitOK {
 		return code
 	}
-	if len(errs) > 0 {
-		return exitRules
+	return rulesExitCode(errs, stderr)
+}
+
+// rulesExitCode: 1 for rule errors, but 2 when the ENGINE failed — the
+// server pre-check must never tell a rule author their rules are invalid
+// because the compiler itself could not run.
+func rulesExitCode(errs []yarac.RuleError, stderr io.Writer) int {
+	if len(errs) == 0 {
+		return exitOK
 	}
-	return exitOK
+	for _, e := range errs {
+		if e.Code == yarac.CodeEngine {
+			_, _ = fmt.Fprintf(stderr, "YARA engine failure: %s\n", e.Message)
+			return exitUsage
+		}
+	}
+	return exitRules
 }
 
 func loadBundles(paths []string) ([]*yarascan.Bundle, error) {
@@ -170,8 +183,10 @@ func compileBundles(bundles []*yarascan.Bundle, stdout, stderr io.Writer) (*yara
 		for _, b := range bundles {
 			all = append(all, setErrs[b.RuleSetID]...)
 		}
-		writeJSON(stdout, stderr, validateResult{Errors: all})
-		return nil, exitRules
+		if code := writeJSON(stdout, stderr, validateResult{Errors: all}); code != exitOK {
+			return nil, code
+		}
+		return nil, rulesExitCode(all, stderr)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "compile: %v\n", err)
@@ -320,8 +335,11 @@ func cmdScan(args []string, stdout, stderr io.Writer) int {
 	enc := json.NewEncoder(stdout)
 	enc.SetEscapeHTML(false)
 	for _, th := range res.Threats {
-		_ = enc.Encode(scanMatch{Path: th.Path, RuleSetID: th.RuleSetID, RuleName: th.RuleName, RuleID: th.RuleID,
-			Severity: th.Severity, Type: th.Type, SHA256: th.SHA256, MatchedStrings: th.MatchedStrings})
+		if err := enc.Encode(scanMatch{Path: th.Path, RuleSetID: th.RuleSetID, RuleName: th.RuleName, RuleID: th.RuleID,
+			Severity: th.Severity, Type: th.Type, SHA256: th.SHA256, MatchedStrings: th.MatchedStrings}); err != nil {
+			_, _ = fmt.Fprintf(stderr, "write output: %v\n", err)
+			return exitUsage
+		}
 	}
 	effWorkers := *workers
 	if effWorkers == 0 {
@@ -330,6 +348,11 @@ func cmdScan(args []string, stdout, stderr io.Writer) int {
 	sum := scanSummary{FilesScanned: res.FilesScanned, FilesFailed: res.FilesFailed, Matches: len(res.Threats),
 		CompileMs: compileMs, DurationMs: duration.Milliseconds(), Workers: effWorkers,
 		PeakGoSysMb: peakSys.Load() >> 20, PeakRssMb: peakRSSBytes() >> 20, Engine: m.Engine()}
+	if scanErr == nil && res.FilesScanned == 0 {
+		// Nothing scanned (bad path, everything excluded or unreadable):
+		// a benchmark must not read that as a clean run.
+		scanErr = fmt.Errorf("no files were scanned (%d failed)", res.FilesFailed)
+	}
 	if scanErr != nil {
 		sum.Error = scanErr.Error()
 	}

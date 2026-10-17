@@ -2,6 +2,7 @@ package yarascan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,6 +63,11 @@ type Matcher interface {
 	Close()
 }
 
+// ErrWorkerUnavailable: this worker's engine instance is gone and could not
+// be re-created; the walk retires the worker instead of failing every
+// remaining file on it.
+var ErrWorkerUnavailable = errors.New("YARA scan worker unavailable")
+
 type yaraMatcher struct{ entry *CacheEntry }
 
 func (m *yaraMatcher) Engine() string { return EngineYARA }
@@ -100,7 +106,11 @@ func (w *yaraWorker) dropScanner() {
 		return
 	}
 	func() {
-		defer func() { _ = recover() }()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Warn("YARA scanner teardown panicked", "panic", fmt.Sprint(r))
+			}
+		}()
 		w.s.Destroy()
 	}()
 	w.s = nil
@@ -110,7 +120,7 @@ func (w *yaraWorker) Close() { w.dropScanner() }
 
 func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 	if err := w.ensureScanner(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrWorkerUnavailable, err)
 	}
 	var size int64
 	if st, statErr := os.Stat(path); statErr == nil {
@@ -172,6 +182,7 @@ func (w *yaraWorker) ScanFile(path string) (out []Match, err error) {
 func collectStrings(path string, rule *yx.Rule) []MatchedString {
 	f, err := os.Open(path)
 	if err != nil {
+		log.Warn("could not re-read a matched file for evidence; reporting the match without matched strings", "path", path, "error", err.Error())
 		return nil
 	}
 	defer func() { _ = f.Close() }()

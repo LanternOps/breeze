@@ -44,6 +44,9 @@ type Threat struct {
 	// autoQuarantine is the matching rule set's own opt-in (spec D7): a YARA
 	// hit is auto-quarantined only when the policy AND its set allow it.
 	autoQuarantine bool
+	// hashFailed: the file matched but could not be hashed at scan time, so
+	// its identity cannot be re-verified and it is never auto-quarantined.
+	hashFailed bool
 }
 
 const (

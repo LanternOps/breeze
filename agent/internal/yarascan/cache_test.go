@@ -211,6 +211,28 @@ func TestCachePrunesLRU(t *testing.T) {
 	}
 }
 
+func TestCachePruneRemovesStaleTempFiles(t *testing.T) {
+	c := newCache(t, DefaultEntries)
+	if err := c.ensureDir(); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(c.Dir, "dead.123.tmp")
+	fresh := filepath.Join(c.Dir, "live.456.tmp")
+	_ = os.WriteFile(stale, []byte("x"), 0o600)
+	_ = os.WriteFile(fresh, []byte("x"), 0o600)
+	old := time.Now().Add(-2 * staleTmpAge)
+	_ = os.Chtimes(stale, old, old)
+	if err := c.Store(CacheKey([]string{"aa@s1"}), compiledFixture(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("stale temp file not removed")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatal("a fresh temp file (possibly a concurrent Store) must be left alone")
+	}
+}
+
 func TestCacheRejectsInvalidKey(t *testing.T) {
 	c := newCache(t, DefaultEntries)
 	if err := c.Store("../escape", compiledFixture(t)); err == nil {

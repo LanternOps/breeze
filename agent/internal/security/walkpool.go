@@ -24,10 +24,12 @@ const maxHashBytes = 256 << 20
 // are only counted (ScanOutcome.FilesFailed).
 const maxLoggedFileErrors = 20
 
-// ErrNoScanWorkers is returned by walkAndMatch when not one worker could
-// start its matcher (e.g. the YARA engine failed to instantiate). Callers
-// fall back to the legacy matcher rather than reporting a clean scan.
-var ErrNoScanWorkers = errors.New("no IOC scan worker could start")
+// ErrNoScanWorkers is returned by walkAndMatch when every worker is gone —
+// none could start its matcher, or all lost their engine mid-scan (e.g. the
+// YARA engine failed to instantiate or re-instantiate). The walkResult still
+// carries any threats found before that. Callers fall back to the legacy
+// matcher rather than reporting a clean scan.
+var ErrNoScanWorkers = errors.New("no IOC scan worker available")
 
 func defaultScanWorkers() int {
 	n := runtime.NumCPU() / 2
@@ -95,7 +97,7 @@ func (c *errCollector) file(path string, err error) {
 	c.failed++
 	if c.logged < maxLoggedFileErrors {
 		c.logged++
-		log.Debug("IOC scan could not read a file", "path", path, "error", err.Error())
+		log.Warn("IOC scan could not scan a file", "path", path, "error", err.Error())
 	}
 }
 
@@ -127,7 +129,17 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 		scanned  int
 		alive    = cfg.Workers
 		initErrs []error
+		lostErrs []error
+		skipped  int // queued files dropped because the scan was cancelled
 	)
+	// retire removes a worker from the pool; when the last one goes the
+	// producer is stopped so it never blocks on a channel nobody reads.
+	retire := func() {
+		alive--
+		if alive == 0 {
+			cancelWork()
+		}
+	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < cfg.Workers; i++ {
@@ -144,22 +156,36 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 			if err != nil {
 				mu.Lock()
 				initErrs = append(initErrs, err)
-				alive--
-				if alive == 0 {
-					cancelWork()
-				}
+				retire()
 				mu.Unlock()
 				return // do NOT drain: healthy workers own the remaining jobs
 			}
 			defer w.Close()
 			for job := range jobs {
 				if workCtx.Err() != nil {
+					mu.Lock()
+					skipped++
+					mu.Unlock()
 					continue // drain without scanning so the producer unblocks
 				}
 				matches, err := w.ScanFile(job.path)
-				mu.Lock()
-				scanned++
-				mu.Unlock()
+				// W01 counted every file offered to the matcher; the YARA walk
+				// counts only files actually scanned (failures are FilesFailed).
+				if err == nil || cfg.FileErrorsFatal {
+					mu.Lock()
+					scanned++
+					mu.Unlock()
+				}
+				if errors.Is(err, yarascan.ErrWorkerUnavailable) {
+					// This worker's engine is gone for good: count the file,
+					// leave the remaining jobs to the healthy workers.
+					ec.file(job.path, err)
+					mu.Lock()
+					lostErrs = append(lostErrs, err)
+					retire()
+					mu.Unlock()
+					return
+				}
 				if err != nil {
 					// W01 (fatal mode) skips permission-denied files silently;
 					// the non-fatal mode counts every unreadable file.
@@ -171,9 +197,12 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 				if len(matches) == 0 {
 					continue
 				}
-				sum := ""
+				sum, hashErr := "", error(nil)
 				if job.size <= maxHashBytes {
-					sum = fileSHA256(job.path)
+					sum, hashErr = fileSHA256(job.path)
+					if hashErr != nil {
+						log.Warn("could not hash a matched file; it will not be auto-quarantined", "path", job.path, "error", hashErr.Error())
+					}
 				}
 				mu.Lock()
 				for _, mt := range matches {
@@ -182,7 +211,9 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 						continue
 					}
 					seen[key] = struct{}{}
-					threats = append(threats, threatFromMatch(mt, job.path, sum))
+					th := threatFromMatch(mt, job.path, sum)
+					th.hashFailed = hashErr != nil
+					threats = append(threats, th)
 				}
 				mu.Unlock()
 			}
@@ -193,11 +224,22 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 	close(jobs)
 	wg.Wait()
 
-	if len(initErrs) == cfg.Workers {
-		return walkResult{}, fmt.Errorf("%w: %w", ErrNoScanWorkers, errors.Join(initErrs...))
+	if alive == 0 {
+		// Every worker failed to start or lost its engine. Keep whatever was
+		// found before that; the caller falls back to the legacy matcher.
+		return walkResult{Threats: threats, FilesScanned: scanned, FilesFailed: ec.failed},
+			fmt.Errorf("%w: %w", ErrNoScanWorkers, errors.Join(append(initErrs, lostErrs...)...))
+	}
+	for _, err := range lostErrs {
+		log.Warn("IOC scan worker lost its engine; continuing with fewer workers", "error", err.Error())
 	}
 	for _, err := range initErrs {
 		log.Warn("IOC scan worker failed to start; continuing with fewer workers", "error", err.Error())
+	}
+	if walkErr == nil && skipped > 0 && ctx.Err() != nil {
+		// The producer finished before the deadline, but queued files were
+		// dropped when it fired: that is still a timed-out, partial scan.
+		walkErr = ctx.Err()
 	}
 	if walkErr != nil {
 		// Report the caller's own deadline/cancel, not workCtx's.
@@ -237,18 +279,25 @@ func threatFromMatch(mt yarascan.Match, path, sum string) Threat {
 	return t
 }
 
-func fileSHA256(p string) string {
+var errHashTooLarge = errors.New("file exceeds the hashing cap")
+
+// fileSHA256 hashes p (at most maxHashBytes). An error means the file could
+// not be identified, which callers must not treat as "verified".
+func fileSHA256(p string) (string, error) {
 	f, err := os.Open(p)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	n, err := io.Copy(h, io.LimitReader(f, maxHashBytes+1))
-	if err != nil || n > maxHashBytes {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	if n > maxHashBytes {
+		return "", errHashTooLarge
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // produce walks roots and feeds regular files to jobs. The walk rules are
