@@ -27,6 +27,7 @@ describe('TrustExportMenu', () => {
     render(<TrustExportMenu {...props} />);
     fireEvent.click(screen.getByTestId('trust-export-csv'));
     await waitFor(() => expect(exp.downloadTrustQuestionnaire).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect((screen.getByTestId('trust-export-json') as HTMLButtonElement).disabled).toBe(false));
     expect(exp.downloadTrustQuestionnaire.mock.calls[0]![0]).toBe('csv');
     expect(exp.downloadTrustQuestionnaire.mock.calls[0]![1]).toMatchObject({ partnerSlug: 'nw', orgSlug: 'acme', isPartnerHome: false, pageUrl: props.pageUrl });
     fireEvent.click(screen.getByTestId('trust-export-json'));

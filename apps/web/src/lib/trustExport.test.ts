@@ -48,6 +48,21 @@ describe('trustExport', () => {
     await expect(fetchPublishedTrustPayload(ctx)).rejects.toThrow(/500/);
   });
 
+  it('a stored v1 payload is normalized (no declared controls) and exports', async () => {
+    const { schemaVersion: _v, locale: _l, declaredControls: _d, frameworks: _f, subprocessors: _s, faq: _q, history: _h, access: _a, ...rest } = payload;
+    const v1 = { ...rest, schemaVersion: 1, documents: [] };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: { payload: v1, lastEvaluatedAt: AT, stale: false } }), { status: 200 }));
+    const r = await fetchPublishedTrustPayload(ctx);
+    expect(r!.payload.schemaVersion).toBe(2);
+    expect(r!.payload.declaredControls).toEqual([]);
+    expect(r!.payload.controls).toHaveLength(1);
+  });
+
+  it('a malformed v1 payload throws', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: { payload: { schemaVersion: 1, bogus: true }, lastEvaluatedAt: null, stale: false } }), { status: 200 }));
+    await expect(fetchPublishedTrustPayload(ctx)).rejects.toThrow();
+  });
+
   it('a payload that fails the published schema throws', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: { payload: { schemaVersion: 9 }, lastEvaluatedAt: null, stale: false } }), { status: 200 }));
     await expect(fetchPublishedTrustPayload(ctx)).rejects.toThrow();
@@ -72,6 +87,31 @@ describe('trustExport', () => {
       expect(blobs[0]!.type).toBe('text/csv;charset=utf-8');
       expect(clicked[0]!.download).toBe('trust-questionnaire-acme-2026-10-17.csv');
       expect(await blobs[0]!.text()).toContain('"control_id","category"');
+    });
+
+    it('does not revoke the object URL synchronously after click (async download starts)', async () => {
+      vi.useFakeTimers();
+      try {
+        fetchMock.mockResolvedValueOnce(ok());
+        await downloadTrustQuestionnaire('csv', ctx);
+        expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+        vi.runAllTimers();
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:x');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stale and lastEvaluatedAt flow through to verification_paused and the JSON document', async () => {
+      const stale = () => new Response(JSON.stringify({ data: { payload, lastEvaluatedAt: null, stale: true } }), { status: 200 });
+      fetchMock.mockResolvedValueOnce(stale());
+      expect(await fetchPublishedTrustPayload(ctx)).toMatchObject({ stale: true, lastEvaluatedAt: null });
+      fetchMock.mockResolvedValueOnce(stale());
+      await downloadTrustQuestionnaire('csv', ctx);
+      expect(await blobs[0]!.text()).toContain('"true"');
+      fetchMock.mockResolvedValueOnce(stale());
+      await downloadTrustQuestionnaire('json', ctx);
+      expect(JSON.parse(await blobs[1]!.text())).toMatchObject({ stale: true, lastEvaluatedAt: null });
     });
 
     it('json creates an application/json Blob with a .json name', async () => {

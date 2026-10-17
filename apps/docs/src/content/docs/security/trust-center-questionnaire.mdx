@@ -42,6 +42,8 @@ Each row is one control shown on the page, in page order: telemetry controls fir
 - Not assessed → `Not assessed`, with the reason in `reason`
 - A current declared control → `Yes`; an expired declaration → `Not assessed`
 
+When the page's evidence is stale, the answers keep the last verified values and every row carries `verification_paused` = `true`. Check that column before relying on an answer.
+
 Declared controls are statements made by a named person at your company. They are labeled as declared in `basis` and are never presented as measured.
 
 ## JSON

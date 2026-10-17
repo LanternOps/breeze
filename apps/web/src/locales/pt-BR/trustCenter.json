@@ -5,6 +5,6 @@
     "json": "Baixar JSON",
     "unpublishedNote": "Publique a página para ativar a exportação.",
     "failed": "Não foi possível baixar a exportação. Tente novamente.",
-    "publishedOnlyNote": "Exporta o que a sua página pública exibe."
+    "publishedOnlyNote": "Exporte o que a página pública exibe."
   }
 }

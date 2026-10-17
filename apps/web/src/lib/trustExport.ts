@@ -12,6 +12,8 @@ import {
 
 const API_BASE = (import.meta.env.PUBLIC_API_URL || '').trim().replace(/\/+$/, '');
 
+const REVOKE_DELAY_MS = 60_000;
+
 export type TrustExportFormat = 'csv' | 'json';
 
 export interface TrustExportContext {
@@ -40,6 +42,7 @@ export async function fetchPublishedTrustPayload(ctx: TrustExportContext): Promi
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Trust payload request failed (${res.status})`);
   const body = (await res.json()) as { data?: { payload?: unknown; lastEvaluatedAt?: string | null; stale?: boolean } };
+  // The API already normalizes to v2; the v1 branch is a defensive fallback for an older deployment.
   const raw = body.data?.payload as { schemaVersion?: number } | undefined;
   const payload = raw?.schemaVersion === 1
     ? normalizeTrustPagePayload(trustPagePublicPayloadV1Schema.parse(raw))
@@ -71,7 +74,8 @@ export async function downloadTrustQuestionnaire(
     a.click();
     a.remove();
   } finally {
-    URL.revokeObjectURL(url);
+    // Some browsers start the download asynchronously; revoking in the same tick can yield an empty file.
+    setTimeout(() => URL.revokeObjectURL(url), REVOKE_DELAY_MS);
   }
   return true;
 }

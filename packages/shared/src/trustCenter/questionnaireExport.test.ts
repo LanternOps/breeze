@@ -97,6 +97,7 @@ describe('trust questionnaire export', () => {
   });
 
   it('neutralizes formula prefixes in every column', () => {
+    // Free text that can lead a cell is the page URL; mid-cell text (declaredBy inside basis) cannot.
     const p = payload({
       controls: [control({ frameworkRefs: [{ framework: 'cis_v8', ref: '+1' }] })],
       declaredControls: [{
@@ -105,17 +106,11 @@ describe('trust questionnaire export', () => {
         evidenceDocumentId: null, frameworkRefs: [],
       }],
     });
-    const csv = trustQuestionnaireCsv(input(p, { pageUrl: '=evil' }));
-    expect(csv).toContain(`"'=evil"`);
-    expect(csv).toContain(`"Declared by =HYPERLINK`); // not at cell start, so not a formula
-    // no cell in any row begins with a formula character
-    for (const line of csv.split('\n')) expect(line).not.toMatch(/(^|,)"[=+\-@]/);
-  });
-
-  it('neutralizes a formula-prefixed org-derived cell (page_url, framework ref start)', () => {
-    const p = payload({ controls: [control({ frameworkRefs: [{ framework: 'cis_v8', ref: '+1' }] })] });
-    const csv = trustQuestionnaireCsv(input(p, { pageUrl: '@evil' }));
-    expect(csv).toContain(`"'@evil"`);
+    for (const lead of ['=evil', '+evil', '-evil', '@evil']) {
+      const csv = trustQuestionnaireCsv(input(p, { pageUrl: lead }));
+      expect(csv).toContain(`"'${lead}"`);
+      for (const line of csv.split('\n')) expect(line).not.toMatch(/(^|,)"[=+\-@]/);
+    }
   });
 
   it('JSON document validates its own shape and carries the exact disclaimer', () => {
