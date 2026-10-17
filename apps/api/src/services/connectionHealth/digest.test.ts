@@ -24,6 +24,8 @@ vi.mock('../usersWithPermission', () => ({
   resolvePartnerUsersWithPermission: (...a: unknown[]) => resolvePartnerUsers(...a),
 }));
 vi.mock('../email', () => ({ getEmailService: () => emailService.current }));
+const captureException = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException: (...a: unknown[]) => captureException(...a) }));
 vi.mock('../../db', () => ({
   runOutsideDbContext: <T>(fn: () => T) => fn(),
   withSystemDbAccessContext: <T>(fn: () => T) => fn(),
@@ -88,7 +90,7 @@ beforeEach(() => {
   store.deleteOldDeliveries.mockResolvedValue(0);
   store.loadCandidatePartners.mockResolvedValue([{ id: P, timezone: 'UTC' }]);
   store.loadPartnerIncidents.mockResolvedValue([row()]);
-  store.loadActiveUsers.mockImplementation(async (ids: string[]) => ids.filter((id) => emails[id]).map((id) => ({ id, email: emails[id]! })));
+  store.loadActiveUsers.mockImplementation(async (ids: string[]) => ids.filter((id) => emails[id]).map((id) => ({ id, email: emails[id]!, partnerId: P })));
   store.loadOptedOut.mockResolvedValue(new Set());
   store.loadLedgerForDate.mockResolvedValue(new Set());
   store.loadRecentSent.mockResolvedValue(new Map());
@@ -125,7 +127,7 @@ describe('runDigest', () => {
     expect(msg.headers['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
     expect(msg.html).toContain('Sync failed: upstream 502');
     // Claimed for the partner-local date, then marked sent.
-    expect(store.claimDelivery).toHaveBeenCalledWith(ADMIN, '2026-10-16', ['inc-p'], NOW);
+    expect(store.claimDelivery).toHaveBeenCalledWith(ADMIN, '2026-10-16', ['inc-p'], expect.any(Date));
     expect(store.markDeliverySent).toHaveBeenCalledWith('claim-1', expect.any(Date));
   });
 
@@ -161,7 +163,7 @@ describe('runDigest', () => {
     const bySel = sendEmail.mock.calls.find((c) => (c[0] as { to: string }).to === 'selected@example.test')![0] as { html: string };
     expect(bySel.html).toContain('Covered Co');
     expect(bySel.html).not.toContain('Other Co');
-    expect(store.claimDelivery).toHaveBeenCalledWith(SELECTED, '2026-10-16', ['inc-a'], NOW);
+    expect(store.claimDelivery).toHaveBeenCalledWith(SELECTED, '2026-10-16', ['inc-a'], expect.any(Date));
   });
 
   it('partner-wide incidents use the no-org resolution (orgAccess = all only)', async () => {
@@ -198,7 +200,7 @@ describe('runDigest', () => {
   it('an inactive owner gets nothing', async () => {
     store.loadPartnerIncidents.mockResolvedValue([row({ ownerUserId: OWNER, ownerFixHref: '/account/connected-apps' })]);
     store.loadActiveUsers.mockImplementation(async (ids: string[]) =>
-      ids.filter((id) => id !== OWNER && emails[id]).map((id) => ({ id, email: emails[id]! })));
+      ids.filter((id) => id !== OWNER && emails[id]).map((id) => ({ id, email: emails[id]!, partnerId: P })));
     await runDigest(NOW);
     expect(sentTo()).toEqual(['admin@example.test']);
   });
@@ -253,7 +255,7 @@ describe('runDigest', () => {
     store.loadPartnerIncidents.mockResolvedValue([row({ openedAt: new Date('2026-10-01T00:00:00Z') })]);
     const r = await runDigest(NOW);
     expect(sendEmail).not.toHaveBeenCalled();
-    expect(store.insertSkippedEmpty).toHaveBeenCalledWith(ADMIN, '2026-10-16', NOW);
+    expect(store.insertSkippedEmpty).toHaveBeenCalledWith(ADMIN, '2026-10-16', expect.any(Date));
     expect(r.skippedEmpty).toBe(1);
   });
 
@@ -263,7 +265,7 @@ describe('runDigest', () => {
     await runDigest(NOW);
     const msg = sendEmail.mock.calls[0]![0] as { subject: string };
     expect(msg.subject).toBe('Connection health: 1 connection restored');
-    expect(store.claimDelivery).toHaveBeenCalledWith(ADMIN, '2026-10-16', ['inc-r'], NOW);
+    expect(store.claimDelivery).toHaveBeenCalledWith(ADMIN, '2026-10-16', ['inc-r'], expect.any(Date));
   });
 
   it('email not configured: no ledger writes at all', async () => {
@@ -285,14 +287,110 @@ describe('runDigest', () => {
     expect(r.sent).toBe(1);
   });
 
-  it('no unsubscribe secret in production: no claim, counted as failed, no send', async () => {
+  it('no unsubscribe secret in production: the job fails loudly before any claim or send', async () => {
     vi.stubEnv('APP_ENCRYPTION_KEY', '');
     vi.stubEnv('SECRET_ENCRYPTION_KEY', '');
     vi.stubEnv('NODE_ENV', 'production');
-    const r = await runDigest(NOW);
+    await expect(runDigest(NOW)).rejects.toThrow(/APP_ENCRYPTION_KEY/);
     expect(store.claimDelivery).not.toHaveBeenCalled();
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('a failed sent-marker after a successful send is counted as sent, never resent or failed', async () => {
+    store.markDeliverySent.mockRejectedValue(new Error('db blip'));
+    const r = await runDigest(NOW);
+    expect(r.sent).toBe(1);
+    expect(r.failed).toBe(0);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed failed-marker after a send failure still counts one failure and no resend', async () => {
+    sendEmail.mockRejectedValue(new Error('provider 500'));
+    store.markDeliveryFailed.mockRejectedValue(new Error('db blip'));
+    const r = await runDigest(NOW);
     expect(r.failed).toBe(1);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('a pre-claim error is counted as errored, not failed, and leaves no claim', async () => {
+    store.insertSkippedEmpty.mockRejectedValue(new Error('db blip'));
+    store.loadPartnerIncidents.mockResolvedValue([row({ openedAt: new Date('2026-10-01T00:00:00Z') })]);
+    const r = await runDigest(NOW);
+    expect(r.errored).toBe(1);
+    expect(r.failed).toBe(0);
+    expect(store.claimDelivery).not.toHaveBeenCalled();
+  });
+
+  it('a user who is a recipient in two due partners gets ONE merged digest', async () => {
+    const Q = 'partner-2';
+    store.loadCandidatePartners.mockResolvedValue([{ id: P, timezone: 'UTC' }, { id: Q, timezone: 'Europe/London' }]);
+    store.loadPartnerIncidents.mockImplementation(async (id: string) =>
+      id === P ? [row({ id: 'inc-p' })] : [row({ id: 'inc-q', partnerId: Q, displayName: 'UniFi' })]);
+    const r = await runDigest(NOW);
+    expect(r.partners).toBe(2);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(store.claimDelivery).toHaveBeenCalledTimes(1);
+    const ids = store.claimDelivery.mock.calls[0]![2] as string[];
+    expect([...ids].sort()).toEqual(['inc-p', 'inc-q']);
+  });
+
+  it('an owner who no longer belongs to the incident partner gets nothing for it', async () => {
+    store.loadPartnerIncidents.mockResolvedValue([row({ ownerUserId: OWNER, ownerFixHref: '/account/connected-apps' })]);
+    store.loadActiveUsers.mockImplementation(async (ids: string[]) =>
+      ids.filter((id) => emails[id]).map((id) => ({ id, email: emails[id]!, partnerId: id === OWNER ? 'another-partner' : P })));
+    await runDigest(NOW);
+    expect(sentTo()).toEqual(['admin@example.test']);
+  });
+
+  it('a maintenance failure does not block delivery and is reported', async () => {
+    store.expireStaleClaims.mockRejectedValue(new Error('lock timeout'));
+    store.deleteOldDeliveries.mockRejectedValue(new Error('statement timeout'));
+    const r = await runDigest(NOW);
+    expect(r.sent).toBe(1);
+    expect(r.maintenanceFailures).toBe(2);
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a degraded run when nothing was delivered', async () => {
+    sendEmail.mockRejectedValue(new Error('provider down'));
+    await runDigest(NOW);
+    expect(captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection_health_digest_degraded' }),
+      undefined,
+      expect.objectContaining({ sent: '0', failed: '1' }),
+      expect.anything(),
+    );
+  });
+
+  it('a healthy run reports nothing', async () => {
+    await runDigest(NOW);
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('catch-up window: 11:09 local sends, 12:09 does not', async () => {
+    expect((await runDigest(new Date('2026-10-16T11:09:00Z'))).sent).toBe(1);
+    sendEmail.mockClear();
+    const late = await runDigest(new Date('2026-10-16T12:09:00Z'));
+    expect(late.partners).toBe(0);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('keys the ledger on the partner-local date, not the UTC date', async () => {
+    // 03:09Z on the 16th is 08:39 on the 16th in Kolkata, but 23:09 on the 15th in New York.
+    store.loadCandidatePartners.mockResolvedValue([{ id: P, timezone: 'Asia/Kolkata' }]);
+    await runDigest(new Date('2026-10-16T03:09:00Z'));
+    expect(store.claimDelivery).toHaveBeenCalledWith(ADMIN, '2026-10-16', ['inc-p'], expect.any(Date));
+    // Pacific/Auckland at 21:09Z on the 16th is 10:09 on the 17th.
+    store.claimDelivery.mockClear();
+    store.loadCandidatePartners.mockResolvedValue([{ id: P, timezone: 'Pacific/Auckland' }]);
+    await runDigest(new Date('2026-10-16T21:09:00Z'));
+    expect(store.claimDelivery).toHaveBeenCalledWith(ADMIN, '2026-10-17', expect.any(Array), expect.any(Date));
+  });
+
+  it('an invalid partner timezone is treated as UTC', async () => {
+    store.loadCandidatePartners.mockResolvedValue([{ id: P, timezone: 'Not/AZone' }]);
+    await runDigest(NOW);
+    expect(store.claimDelivery).toHaveBeenCalledWith(ADMIN, '2026-10-16', ['inc-p'], expect.any(Date));
   });
 
   it('runs ledger retention with a 90-day cutoff', async () => {

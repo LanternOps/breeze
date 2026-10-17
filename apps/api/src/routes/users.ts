@@ -759,7 +759,10 @@ userRoutes.patch('/me/email-preferences', zValidator('json', updateEmailPreferen
   if (connectionHealthDigest) {
     await clearEmailOptOut(auth.user.id, 'connection_health_digest');
   } else {
-    await setEmailOptOut(auth.user.id, 'connection_health_digest', 'settings');
+    const { userExists } = await setEmailOptOut(auth.user.id, 'connection_health_digest', 'settings');
+    // The request context must see the caller's own users row; if it cannot,
+    // nothing was written and the toggle must not report success.
+    if (!userExists) throw new HTTPException(500, { message: 'Could not save email preferences' });
   }
   writeRouteAudit(c, {
     orgId: auth.orgId ?? null,

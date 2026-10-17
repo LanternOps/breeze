@@ -3,7 +3,7 @@ import { Hono, type Context } from 'hono';
 import { runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { setEmailOptOut } from '../services/emailOptouts';
-import { UNSUBSCRIBE_PATH, verifyUnsubscribeToken } from '../services/emailUnsubscribeToken';
+import { UNSUBSCRIBE_PATH, unsubscribeSigningConfigured, verifyUnsubscribeToken } from '../services/emailUnsubscribeToken';
 import { rateLimiter } from '../services/rate-limit';
 import { getRedis } from '../services/redis';
 
@@ -58,7 +58,19 @@ function page(c: Context, status: 200 | 400 | 429 | 500 | 503, title: string, bo
 </html>`, status);
 }
 
-const invalidLink = (c: Context) => page(
+const unavailable = (c: Context) =>
+  page(c, 503, 'Please try again shortly', '<p>We could not process this request right now.</p>');
+
+/** A null verification is a bad link — unless the server cannot verify anything, which is a server fault. */
+function invalidLink(c: Context) {
+  if (!unsubscribeSigningConfigured()) {
+    console.error('[email-unsubscribe] no signing secret configured (APP_ENCRYPTION_KEY); every link reads as invalid');
+    return unavailable(c);
+  }
+  return badLink(c);
+}
+
+const badLink = (c: Context) => page(
   c,
   400,
   'This link is not valid',
@@ -69,10 +81,16 @@ async function limited(c: Context): Promise<Response | null> {
   const redis = getRedis();
   if (!redis) {
     console.error('[email-unsubscribe] rate limit unavailable: redis client missing');
-    return page(c, 503, 'Please try again shortly', '<p>We could not process this request right now.</p>');
+    return unavailable(c);
   }
   const ip = getTrustedClientIp(c, 'unknown');
-  const r = await rateLimiter(redis, `email-unsubscribe:${rateLimitIpKey(ip)}`, RATE_LIMIT, RATE_WINDOW_SECONDS);
+  let r: { allowed: boolean };
+  try {
+    r = await rateLimiter(redis, `email-unsubscribe:${rateLimitIpKey(ip)}`, RATE_LIMIT, RATE_WINDOW_SECONDS);
+  } catch (err) {
+    console.error('[email-unsubscribe] rate limit check failed:', err instanceof Error ? err.message : String(err));
+    return unavailable(c);
+  }
   if (!r.allowed) return page(c, 429, 'Too many requests', '<p>Please wait a minute and try again.</p>');
   return null;
 }

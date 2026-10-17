@@ -156,6 +156,21 @@ describe('rate limiting (per IP)', () => {
     expect(rateLimiter).toHaveBeenCalledWith(redis.current, expect.stringMatching(/^email-unsubscribe:/), 30, 60);
   });
 
+  it('503 (not a raw 500) when the limiter itself errors', async () => {
+    rateLimiter.mockRejectedValue(new Error('redis multi failed'));
+    expect((await oneClick(token)).status).toBe(503);
+    expect(setEmailOptOut).not.toHaveBeenCalled();
+  });
+
+  it('503, not "invalid link", when the server has no signing secret', async () => {
+    vi.stubEnv('APP_ENCRYPTION_KEY', '');
+    vi.stubEnv('SECRET_ENCRYPTION_KEY', '');
+    vi.stubEnv('NODE_ENV', 'production');
+    expect((await oneClick(token)).status).toBe(503);
+    expect((await app.request(url(token))).status).toBe(503);
+    expect(setEmailOptOut).not.toHaveBeenCalled();
+  });
+
   it('503 when Redis is unavailable (fail closed)', async () => {
     redis.current = null;
     expect((await oneClick(token)).status).toBe(503);

@@ -72,6 +72,9 @@ describe('EmailNotificationSettings', () => {
     render(<EmailNotificationSettings />);
     const retry = await screen.findByRole('button', { name: /retry/i });
     expect(screen.getByRole('alert')).toBeTruthy();
+    // The real state is unknown: never show the default "subscribed".
+    expect(toggle().checked).toBe(false);
+    expect(toggle().disabled).toBe(true);
     await userEvent.click(retry);
     await waitFor(() => expect(mocks.fetchWithAuth).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(toggle().disabled).toBe(false));

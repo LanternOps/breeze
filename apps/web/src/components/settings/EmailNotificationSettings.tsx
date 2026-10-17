@@ -30,7 +30,8 @@ export default function EmailNotificationSettings() {
         const body = (await res.json()) as { connectionHealthDigest?: unknown };
         if (typeof body?.connectionHealthDigest !== 'boolean') throw new Error('unexpected response');
         if (!cancelled) setEnabled(body.connectionHealthDigest);
-      } catch {
+      } catch (err) {
+        console.error('[EmailNotificationSettings] failed to load email preferences', err);
         if (!cancelled) setLoadFailed(true);
       } finally {
         if (!cancelled) setLoading(false);
@@ -96,7 +97,8 @@ export default function EmailNotificationSettings() {
         <input
           type="checkbox"
           className="mt-1 h-4 w-4"
-          checked={enabled}
+          // Unknown state (loading, or the load failed) renders unchecked, never a guessed default.
+          checked={enabled && !loading && !loadFailed}
           disabled={loading || saving || loadFailed}
           onChange={(e) => void handleToggle(e.target.checked)}
           data-testid="email-digest-toggle"

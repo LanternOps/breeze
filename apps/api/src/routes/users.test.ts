@@ -4300,6 +4300,13 @@ describe('/me/email-preferences', () => {
     }));
   });
 
+  it('PATCH false is a 500, not a false success, when nothing could be written', async () => {
+    emailOptoutMocks.setEmailOptOut.mockResolvedValue({ userExists: false });
+    const res = await patch({ connectionHealthDigest: false });
+    expect(res.status).toBe(500);
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
   it('PATCH true re-subscribes (clears the opt-out)', async () => {
     const res = await patch({ connectionHealthDigest: true });
     expect(res.status).toBe(200);

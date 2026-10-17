@@ -53,6 +53,10 @@ wave: W03 (#8847)
 | D13 | **The confirmation page sets its own CSP** (`default-src 'none'; style-src 'sha256-…'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`) with a hashed `<style>` block, no script | The global CSP blocks inline style in production; a hash keeps the page legible without loosening anything. |
 | D14 | **Opt-out topics are a closed list** (`connection_health_digest`), enforced by a CHECK and by `EMAIL_OPTOUT_TOPICS` | A new topic is a deliberate migration. |
 | D15 | **Ledger retention: rows older than 90 days**, deleted in batches of 1000 by the hourly run | Matches incident retention; the 30-day restored lookback and decay need far less. |
+| D16 | **One merged digest per user per run** across every due partner (added after PR review) | All partners due in one run show a local hour in 08–11 at the same instant, so they share one local date. A user who is a recipient in two due partners would otherwise lose one partner's incidents to the `(user_id, digest_date)` claim. Partners far apart in time can still collide on one date; deferred (rare: multi-partner staff). |
+| D17 | **A failed send is never retried**, so it uses up the user's digest for that day (review confirmed this as a deliberate choice) | A provider timeout can still mean the mail was delivered. At most once wins (§2.3). The 08–11 catch-up window covers missed runs, not failed sends. Pre-claim errors (`errored`) leave no row and retry next hour. |
+| D18 | **The owner must still belong to the incident's partner** (`users.partner_id`) | D6 drops the view-permission check for the owner, not the membership check. Added after review. |
+| D19 | **Degraded runs page:** a missing signing secret fails the job. A run with partner or maintenance failures, or one that delivered nothing despite failures, calls `captureException('connection_health_digest_degraded')`. Housekeeping failures never block delivery | Silent-failure review: a notifier that never sends is the worst failure mode (§8). |
 
 ## Review Focus
 

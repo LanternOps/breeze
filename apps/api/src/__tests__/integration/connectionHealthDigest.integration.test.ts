@@ -160,6 +160,8 @@ describe('runDigest end to end (real DB, fake email provider)', () => {
   let P: string;
   let admin: { id: string; email: string };
   let writerOnly: { id: string; email: string };
+  let fullRoleId: string;
+  let incidentId: string;
 
   beforeEach(async () => {
     sendEmail.mockReset().mockResolvedValue(undefined);
@@ -171,6 +173,7 @@ describe('runDigest end to end (real DB, fake email provider)', () => {
     await asSystem(() => db.delete(connectionHealthIncidents));
 
     const fullRole = await createRole({ scope: 'partner', partnerId: P, name: 'digest-full' });
+    fullRoleId = fullRole.id;
     await grantRolePermissions(fullRole.id, [
       { resource: 'organizations', action: 'read' },
       { resource: 'organizations', action: 'write' },
@@ -183,7 +186,7 @@ describe('runDigest end to end (real DB, fake email provider)', () => {
     writerOnly = await createUser({ partnerId: P, email: email() });
     await assignUserToPartner(writerOnly.id, P, writeOnlyRole.id, 'all');
 
-    await asSystem(() => db.insert(connectionHealthIncidents).values({
+    const [inc] = await asSystem(() => db.insert(connectionHealthIncidents).values({
       partnerId: P,
       sourceKind: 'huntress',
       sourceId: `huntress-${Date.now()}`,
@@ -197,7 +200,8 @@ describe('runDigest end to end (real DB, fake email provider)', () => {
       firstFailedAt: new Date('2026-10-15T09:00:00Z'),
       openedAt: new Date('2026-10-15T09:30:00Z'),
       lastObservedAt: new Date('2026-10-16T08:00:00Z'),
-    }));
+    }).returning({ id: connectionHealthIncidents.id }));
+    incidentId = inc!.id;
   });
 
   const sentTo = () => sendEmail.mock.calls.map((c) => (c[0] as { to: string }).to);
@@ -243,5 +247,159 @@ describe('runDigest end to end (real DB, fake email provider)', () => {
     const r = await runDigest(NOW);
     expect(r.partners).toBe(0);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  runDb('restored flow: a recovery the user was told about appears in the next day\'s digest only', async () => {
+    expect((await runDigest(NOW)).sent).toBe(1);
+    // sent_at is stamped with the wall clock; pin it to the simulated send time.
+    await asSystem(() => db.update(ledger).set({ sentAt: new Date(NOW.getTime() + 60_000) }).where(eq(ledger.userId, admin.id)));
+    await asSystem(() => db.update(connectionHealthIncidents)
+      .set({ resolvedAt: new Date('2026-10-16T15:00:00Z'), resolution: 'recovered' })
+      .where(eq(connectionHealthIncidents.id, incidentId)));
+    sendEmail.mockClear();
+    // Saturday 08:09 UTC.
+    const day2 = await runDigest(new Date('2026-10-17T08:09:00Z'));
+    expect(day2.sent).toBe(1);
+    const msg = sendEmail.mock.calls[0]![0] as { to: string; subject: string; text: string };
+    expect(msg.to).toBe(admin.email);
+    expect(msg.subject).toBe('Connection health: 1 connection restored');
+    expect(msg.text).toContain('Restored since your last digest');
+    // Day 3: already reported as restored — nothing new to say.
+    sendEmail.mockClear();
+    const day3 = await runDigest(new Date('2026-10-18T08:09:00Z'));
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(day3.skippedEmpty).toBe(1);
+    const [skipRow] = await asSystem(() => db.select().from(ledger)
+      .where(and(eq(ledger.userId, admin.id), eq(ledger.digestDate, '2026-10-18'))));
+    expect(skipRow!.status).toBe('skipped_empty');
+  });
+
+  runDb('a retired incident never produces a restored line', async () => {
+    expect((await runDigest(NOW)).sent).toBe(1);
+    await asSystem(() => db.update(connectionHealthIncidents)
+      .set({ resolvedAt: new Date('2026-10-16T15:00:00Z'), resolution: 'retired' })
+      .where(eq(connectionHealthIncidents.id, incidentId)));
+    sendEmail.mockClear();
+    await runDigest(new Date('2026-10-17T08:09:00Z'));
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  runDb('an existing claimed or failed row for today blocks any send (crash-after-claim stays at most once)', async () => {
+    await asSystem(() => db.insert(ledger).values({ userId: admin.id, digestDate: '2026-10-16', status: 'claimed', claimedAt: NOW }));
+    const r = await runDigest(new Date('2026-10-16T09:09:00Z'));
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(r.alreadyHandled).toBe(1);
+    await asSystem(() => db.update(ledger).set({ status: 'failed', error: 'x' }).where(eq(ledger.userId, admin.id)));
+    await runDigest(new Date('2026-10-16T10:09:00Z'));
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  runDb('a skipped_empty row blocks the later catch-up hours too', async () => {
+    const { insertSkippedEmpty } = await import('../../services/connectionHealth/digestStore');
+    expect(await asSystem(() => insertSkippedEmpty(admin.id, '2026-10-16', NOW))).toBe(true);
+    expect(await asSystem(() => insertSkippedEmpty(admin.id, '2026-10-16', NOW))).toBe(false);
+    expect(await asSystem(() => claimDelivery(admin.id, '2026-10-16', [], NOW))).toBeNull();
+    await runDigest(NOW);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  runDb('a disabled user gets nothing', async () => {
+    await asSystem(() => db.update(users).set({ status: 'disabled' }).where(eq(users.id, admin.id)));
+    await runDigest(NOW);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  runDb('a deleted partner, or one whose only incident is retired, is not a candidate', async () => {
+    const { loadCandidatePartners } = await import('../../services/connectionHealth/digestStore');
+    const since = new Date(NOW.getTime() - 30 * 86_400_000);
+    const ids = async () => (await asSystem(() => loadCandidatePartners(since))).map((p) => p.id);
+    expect(await ids()).toContain(P);
+    await asSystem(() => db.update(connectionHealthIncidents)
+      .set({ resolvedAt: new Date('2026-10-15T12:00:00Z'), resolution: 'retired' })
+      .where(eq(connectionHealthIncidents.id, incidentId)));
+    expect(await ids()).not.toContain(P);
+    await asSystem(() => db.update(connectionHealthIncidents)
+      .set({ resolution: 'recovered' })
+      .where(eq(connectionHealthIncidents.id, incidentId)));
+    expect(await ids()).toContain(P);
+    const { partners } = await import('../../db/schema');
+    await asSystem(() => db.update(partners).set({ deletedAt: new Date() }).where(eq(partners.id, P)));
+    expect(await ids()).not.toContain(P);
+  });
+
+  runDb('org incidents: a selected-access user hears only about covered orgs (org name joined)', async () => {
+    const orgA = await createOrganization({ partnerId: P, name: 'Covered Dental' });
+    const orgB = await createOrganization({ partnerId: P, name: 'Other Clinic' });
+    const selected = await createUser({ partnerId: P, email: email() });
+    const pu = await assignUserToPartner(selected.id, P, fullRoleId, 'selected');
+    await asSystem(() => db.update(partnerUsers).set({ orgIds: [orgA.id] }).where(eq(partnerUsers.id, pu.id)));
+    await asSystem(() => db.delete(connectionHealthIncidents).where(eq(connectionHealthIncidents.id, incidentId)));
+    for (const [org, name] of [[orgA, 'DNS filter'], [orgB, 'M365']] as const) {
+      await asSystem(() => db.insert(connectionHealthIncidents).values({
+        partnerId: P, orgId: org.id, sourceKind: 'dns_filter', sourceId: `src-${org.id}`,
+        condition: 'sync_failed', severity: 'transient', displayName: name, fixHref: '/dns-security',
+        viewPermission: 'organizations:read', repairPermission: 'organizations:write',
+        firstFailedAt: new Date('2026-10-15T09:00:00Z'), openedAt: new Date('2026-10-15T09:30:00Z'),
+        lastObservedAt: NOW,
+      }));
+    }
+    await runDigest(NOW);
+    const bySelected = sendEmail.mock.calls.find((c) => (c[0] as { to: string }).to === selected.email)![0] as { html: string };
+    expect(bySelected.html).toContain('Covered Dental');
+    expect(bySelected.html).not.toContain('Other Clinic');
+    const byAdmin = sendEmail.mock.calls.find((c) => (c[0] as { to: string }).to === admin.email)![0] as { html: string };
+    expect(byAdmin.html).toContain('Covered Dental');
+    expect(byAdmin.html).toContain('Other Clinic');
+  });
+
+  runDb('owner path: the grant owner gets their own link without the view permission; an owner from another partner does not', async () => {
+    const owner = await createUser({ partnerId: P, email: email() });
+    const outsider = (await createPartner()).id;
+    const strayOwner = await createUser({ partnerId: outsider, email: email() });
+    await asSystem(() => db.delete(connectionHealthIncidents).where(eq(connectionHealthIncidents.id, incidentId)));
+    for (const ownerId of [owner.id, strayOwner.id]) {
+      await asSystem(() => db.insert(connectionHealthIncidents).values({
+        partnerId: P, ownerUserId: ownerId, sourceKind: 'oauth_grant', sourceId: `grant-${ownerId}`,
+        condition: 'grant_revoked_reuse', severity: 'permanent', displayName: 'Example Agent (OAuth app)',
+        fixHref: '/settings/connected-apps', ownerFixHref: '/account/connected-apps',
+        viewPermission: 'connected_apps:read', repairPermission: 'connected_apps:manage',
+        firstFailedAt: new Date('2026-10-15T09:00:00Z'), openedAt: new Date('2026-10-15T09:30:00Z'),
+        lastObservedAt: NOW,
+      }));
+    }
+    await runDigest(NOW);
+    const to = sendEmail.mock.calls.map((c) => (c[0] as { to: string }).to);
+    expect(to).toContain(owner.email);
+    expect(to).not.toContain(strayOwner.email);
+    const msg = sendEmail.mock.calls.find((c) => (c[0] as { to: string }).to === owner.email)![0] as { html: string };
+    expect(msg.html).toContain('https://app.example.test/account/connected-apps');
+  });
+
+  runDb('ledger retention deletes only rows past the cutoff, in batches', async () => {
+    const { deleteOldDeliveries } = await import('../../services/connectionHealth/digestStore');
+    await asSystem(() => db.insert(ledger).values([
+      { userId: admin.id, digestDate: '2026-07-01', status: 'skipped_empty', claimedAt: NOW },
+      { userId: admin.id, digestDate: '2026-07-02', status: 'skipped_empty', claimedAt: NOW },
+      { userId: admin.id, digestDate: '2026-10-10', status: 'skipped_empty', claimedAt: NOW },
+    ]));
+    expect(await asSystem(() => deleteOldDeliveries('2026-07-18', 1))).toBe(1);
+    expect(await asSystem(() => deleteOldDeliveries('2026-07-18', 1000))).toBe(1);
+    expect(await asSystem(() => deleteOldDeliveries('2026-07-18', 1000))).toBe(0);
+    const left = await asSystem(() => db.select({ d: ledger.digestDate }).from(ledger).where(eq(ledger.userId, admin.id)));
+    expect(left.map((r) => r.d)).toEqual(['2026-10-10']);
+  });
+
+  runDb('markDeliveryFailed truncates the error and never touches a sent row', async () => {
+    const { markDeliveryFailed } = await import('../../services/connectionHealth/digestStore');
+    const id = await asSystem(() => claimDelivery(admin.id, '2026-10-16', [], NOW));
+    await asSystem(() => markDeliveryFailed(id!, 'x'.repeat(2000)));
+    const [failedRow] = await asSystem(() => db.select().from(ledger).where(eq(ledger.id, id!)));
+    expect(failedRow!.status).toBe('failed');
+    expect(failedRow!.error!.length).toBe(500);
+    const sentId = await asSystem(() => claimDelivery(admin.id, '2026-10-17', [], NOW));
+    await asSystem(() => markDeliverySent(sentId!, NOW));
+    await asSystem(() => markDeliveryFailed(sentId!, 'late'));
+    const [sentRow] = await asSystem(() => db.select().from(ledger).where(eq(ledger.id, sentId!)));
+    expect(sentRow!.status).toBe('sent');
   });
 });

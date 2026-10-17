@@ -103,10 +103,12 @@ export async function loadPartnerIncidents(partnerId: string, since: Date): Prom
   return rows.map((r) => ({ ...r, openedAt: r.openedAt as Date }));
 }
 
-export async function loadActiveUsers(ids: readonly string[]): Promise<Array<{ id: string; email: string }>> {
+export async function loadActiveUsers(
+  ids: readonly string[],
+): Promise<Array<{ id: string; email: string; partnerId: string }>> {
   if (ids.length === 0) return [];
   return db
-    .select({ id: users.id, email: users.email })
+    .select({ id: users.id, email: users.email, partnerId: users.partnerId })
     .from(users)
     .where(and(inArray(users.id, [...ids]), eq(users.status, 'active')));
 }

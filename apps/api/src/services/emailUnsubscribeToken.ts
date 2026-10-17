@@ -29,6 +29,16 @@ function appSecret(): string {
   return TEST_ONLY_SECRET;
 }
 
+/** False when no signing secret is available (production without APP_ENCRYPTION_KEY): nothing can be signed or verified. */
+export function unsubscribeSigningConfigured(): boolean {
+  try {
+    appSecret();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function signingKey(): Buffer {
   return Buffer.from(hkdfSync('sha256', appSecret(), HKDF_SALT, HKDF_INFO, 32));
 }
