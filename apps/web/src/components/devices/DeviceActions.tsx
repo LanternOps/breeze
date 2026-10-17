@@ -779,11 +779,12 @@ export default function DeviceActions({
             aria-label={t("deviceActions.moreActions")}
             title={t("deviceActions.moreActions")}
             onClick={() => {
+              if (loading) return;
               setMenuOpen(!menuOpen);
               setPowerMenuOpen(false);
             }}
-            disabled={loading}
-            className="flex h-10 w-10 items-center justify-center rounded-md border bg-background transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            aria-disabled={loading ? true : undefined}
+            className="flex h-10 w-10 items-center justify-center rounded-md border bg-background transition hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
           >
             <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>

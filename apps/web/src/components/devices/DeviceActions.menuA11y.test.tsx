@@ -46,7 +46,7 @@ describe.each([
     const user = userEvent.setup();
     setup();
     await user.click(getTrigger());
-    const items = screen.getAllByRole('menuitem').filter((i) => !(i as HTMLButtonElement).disabled);
+    const items = screen.getAllByRole('menuitem');
     expect(document.activeElement).toBe(items[0]);
     await user.keyboard('{ArrowDown}');
     expect(document.activeElement).toBe(items[1]);
@@ -84,5 +84,16 @@ describe('unavailable menu items (#9025)', () => {
     expect(document.activeElement).toBe(reboot);
     await user.click(reboot);
     expect(onAction).not.toHaveBeenCalled();
+  });
+});
+
+describe('focus after choosing an item (#9025)', () => {
+  it('stays on the "…" trigger (not body) when an action starts loading', async () => {
+    const user = userEvent.setup();
+    render(<DeviceActions device={device} onAction={() => new Promise(() => {})} />);
+    const trigger = screen.getByTestId('device-actions-menu');
+    await user.click(trigger);
+    await user.click(screen.getByRole('menuitem', { name: /refresh/i }));
+    expect(document.activeElement).toBe(trigger);
   });
 });
