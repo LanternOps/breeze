@@ -20,7 +20,8 @@
 --   *_user_id → users(id)                                     ON DELETE SET NULL
 --   org_id → organizations(id)                                NO ACTION (org erasure deletes children first)
 --
--- SCOPE: this file DELETEs unconfirmed trust_page_documents rows (step 3), so it elects system scope first;
+-- SCOPE: this file DELETEs unconfirmed trust_page_documents rows (step 3) and re-stamps empty intros (step 4),
+-- so it elects system scope first;
 -- under FORCE RLS an unscoped DELETE would silently match zero rows (migrations/README.md, #4518).
 -- Idempotent; no inner BEGIN/COMMIT.
 
@@ -59,6 +60,16 @@ ALTER TABLE trust_pages ALTER COLUMN show_percentages DROP NOT NULL, ALTER COLUM
 ALTER TABLE trust_pages ALTER COLUMN show_device_count DROP NOT NULL, ALTER COLUMN show_device_count DROP DEFAULT;
 ALTER TABLE trust_pages ALTER COLUMN show_managed_by DROP NOT NULL, ALTER COLUMN show_managed_by DROP DEFAULT;
 ALTER TABLE trust_pages ALTER COLUMN hidden_control_ids DROP NOT NULL, ALTER COLUMN hidden_control_ids DROP DEFAULT;
+-- intro_html changes MEANING (not type): W1 stored "no intro" as NULL, W2 reads NULL as "inherit the template's
+-- intro" and '' as "explicitly no intro". Re-stamp every pre-W2 NULL as '' so an existing page that had no intro
+-- keeps having none once a partner template exists (pages created after this migration start NULL = inherit).
+DO $$
+DECLARE n integer;
+BEGIN
+  UPDATE trust_pages SET intro_html = '' WHERE intro_html IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN RAISE NOTICE 'trust_pages: kept % pre-W2 empty intros explicit (NULL -> '''')', n; END IF;
+END $$;
 ALTER TABLE trust_pages ADD COLUMN IF NOT EXISTS framework_view TEXT[];
 ALTER TABLE trust_pages ADD COLUMN IF NOT EXISTS show_history BOOLEAN;
 ALTER TABLE trust_pages ADD COLUMN IF NOT EXISTS nda_text TEXT;

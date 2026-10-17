@@ -19,6 +19,7 @@ import {
   trustPageSubprocessors, trustPageDocuments,
 } from '../../db/schema';
 import { createOrganization, createPartner, createUser } from './db-utils';
+import { replayMigration } from './replayMigration';
 
 const RUN = !!process.env.DATABASE_URL;
 const HOURS_365_DAYS = 8760;
@@ -187,5 +188,16 @@ describe.skipIf(!RUN)('trust center W2 tables', () => {
       const err = await sys(() => db.insert(trustPageDocuments).values({ trustPageId: page.id, documentId, orgId: page.orgId, visibility })).catch((e) => e);
       expect(pgCode(err), visibility).toBe('23514');
     }
+  });
+
+  it("migration: a pre-W2 page with no intro (NULL) keeps meaning 'no intro' ('' after the migration), an explicit intro is untouched", async () => {
+    const empty = await newPage();
+    const withIntro = await newPage();
+    await sys(() => db.update(trustPages).set({ introHtml: '<p>Kept</p>' }).where(eq(trustPages.id, withIntro.page.id)));
+    expect(empty.page.introHtml).toBeNull();
+    await replayMigration('2026-12-30-100300-trust-center-w2.sql');
+    const rows = await sys(() => db.select({ id: trustPages.id, introHtml: trustPages.introHtml }).from(trustPages)
+      .where(sql`${trustPages.id} IN (${empty.page.id}, ${withIntro.page.id})`));
+    expect(Object.fromEntries(rows.map((r) => [r.id, r.introHtml]))).toEqual({ [empty.page.id]: '', [withIntro.page.id]: '<p>Kept</p>' });
   });
 });

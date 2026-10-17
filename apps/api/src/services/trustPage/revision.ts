@@ -25,6 +25,8 @@ export async function withTrustPageRevision<T>(
     const [bumped] = await tx.update(trustPages).set({
       publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(), updatedByUserId: args.actorUserId,
     }).where(eq(trustPages.id, args.pageId)).returning({ publicationRevision: trustPages.publicationRevision });
-    return { result, publicationRevision: bumped?.publicationRevision ?? locked.rev + 1 };
+    // The row is locked in this transaction, so the bump always matches; never report a guessed revision.
+    if (!bumped) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
+    return { result, publicationRevision: bumped.publicationRevision };
   });
 }

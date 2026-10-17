@@ -16,6 +16,7 @@ import type { TrustPageRow } from '../../db/schema/trustPages';
 import { partnerTrustMode } from '../../config/partnerTrustMode';
 import { loadPostureEvidence, TRUST_PAGE_EVIDENCE_POLICY, type PostureEvidence } from '../postureEvidence';
 import { resolvePartnerDocumentLocale } from '../documentLocale';
+import { captureException } from '../sentry';
 import { isEdrVisibilityEnabled } from '../portal/edrVisibility';
 import { buildTrustPagePayload, payloadSha256, projectPayloadDocuments, type LiveTrustDocument } from './payloadBuilder';
 import { buildSections, freezeSections } from './sections';
@@ -356,7 +357,10 @@ export async function refreshPublishedPage(pageId: string): Promise<{ rebuilt: b
     if (!page) return { outcome: { rebuilt: false, snapshotId: null }, built: null };
     const frozen = trustPublishedConfigSchema.safeParse(page.publishedConfig);
     if (!frozen.success) {
-      console.warn('[trustPage] published page has no valid published_config; refresh skipped (republish to repair)', { pageId: page.id });
+      // Not silent: the page keeps serving its last snapshot (evidence, withdrawal and expiry stop updating), so this
+      // must reach Sentry, not just a log line the hourly sweep repeats.
+      console.error('[trustPage] published page has no valid published_config; refresh skipped (republish to repair)', { pageId: page.id, issues: frozen.error.issues.slice(0, 5) });
+      captureException(new Error(`trust page ${page.id}: invalid published_config, refresh skipped`));
       return { outcome: { rebuilt: false, snapshotId: null }, built: null };
     }
     const [current] = await db.select({ id: trustPageSnapshots.id, sha: trustPageSnapshots.payloadSha256 }).from(trustPageSnapshots)

@@ -112,9 +112,10 @@ trustPageRoutes.put('/:orgId/trust-page', scopes, orgWrite, zValidator('param', 
       const [r] = Object.keys(patch).length > 0
         ? await tx.update(trustPages).set(patch).where(eq(trustPages.id, page.id)).returning()
         : await tx.select().from(trustPages).where(eq(trustPages.id, page.id)).limit(1);
-      return r ?? null;
+      // Throwing inside the callback rolls the revision bump back with it.
+      if (!r) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
+      return r;
     });
-    if (!row) return notFound(c);
     // The row was read before the helper's bump; report the committed revision.
     const updated = { ...row, publicationRevision };
     const fields = Object.keys(body).filter((k) => k !== 'expectedRevision');

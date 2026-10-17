@@ -147,7 +147,7 @@ export const trustPageAccessRequests = pgTable('trust_page_access_requests', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
   uniqueIndex('trust_page_access_requests_id_org_uq').on(t.id, t.orgId),
-  index('trust_page_access_requests_page_status_idx').on(t.trustPageId, t.status, t.createdAt),
+  index('trust_page_access_requests_page_status_idx').on(t.trustPageId, t.status, t.createdAt.desc()),
   index('trust_page_access_requests_org_idx').on(t.orgId),
   index('trust_page_access_requests_updated_idx').on(t.updatedAt),
 ]);

@@ -17,7 +17,7 @@ describe('TrustPublishDialog', () => {
   it('a recorded attestation is shown and reused; Change reopens the fields', async () => {
     api.publishTrustPage.mockResolvedValue(json({ data: { page: page(), snapshotId: 's' } }));
     const onPublished = vi.fn();
-    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} page={page({ publicationAuthorizedBy: 'Jane Doe, COO', publicationAuthorizedAt: '2026-09-01T00:00:00Z' })} onPublished={onPublished} onStale={vi.fn(async () => undefined)} />);
+    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} searchIndexable={false} page={page({ publicationAuthorizedBy: 'Jane Doe, COO', publicationAuthorizedAt: '2026-09-01T00:00:00Z' })} onPublished={onPublished} onStale={vi.fn(async () => undefined)} />);
     expect(screen.getByText(/Jane Doe, COO/)).toBeInTheDocument();
     expect(screen.queryByTestId('trust-publish-authorized-by')).toBeNull();
     fireEvent.click(screen.getByTestId('trust-publish-confirm'));
@@ -26,7 +26,7 @@ describe('TrustPublishDialog', () => {
   });
   it('Change demands a new checkbox + name and sends them', async () => {
     api.publishTrustPage.mockResolvedValue(json({ data: { page: page(), snapshotId: 's' } }));
-    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} page={page({ publicationAuthorizedBy: 'Jane Doe, COO', publicationAuthorizedAt: '2026-09-01T00:00:00Z' })} onPublished={vi.fn()} onStale={vi.fn(async () => undefined)} />);
+    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} searchIndexable={false} page={page({ publicationAuthorizedBy: 'Jane Doe, COO', publicationAuthorizedAt: '2026-09-01T00:00:00Z' })} onPublished={vi.fn()} onStale={vi.fn(async () => undefined)} />);
     fireEvent.click(screen.getByTestId('trust-publish-change'));
     expect(screen.getByTestId('trust-publish-confirm')).toBeDisabled();
     fireEvent.click(screen.getByTestId('trust-publish-authorized-checkbox'));
@@ -34,9 +34,13 @@ describe('TrustPublishDialog', () => {
     fireEvent.click(screen.getByTestId('trust-publish-confirm'));
     await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 5, authorization: { authorizedBy: 'Sam Lee, CEO' } }));
   });
+  it('W2: the indexing notice follows the EFFECTIVE value, even when the page column is null (inherited)', () => {
+    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} searchIndexable page={page({ isPartnerHome: true, searchIndexable: null })} onPublished={vi.fn()} onStale={vi.fn(async () => undefined)} />);
+    expect(screen.getByText(/search engines may index it/)).toBeInTheDocument();
+  });
   it('a partner-home page has no attestation fields and sends no authorization', async () => {
     api.publishTrustPage.mockResolvedValue(json({ data: { page: page(), snapshotId: 's' } }));
-    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} page={page({ isPartnerHome: true })} onPublished={vi.fn()} onStale={vi.fn(async () => undefined)} />);
+    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} searchIndexable={false} page={page({ isPartnerHome: true })} onPublished={vi.fn()} onStale={vi.fn(async () => undefined)} />);
     expect(screen.queryByTestId('trust-publish-authorized-checkbox')).toBeNull();
     fireEvent.click(screen.getByTestId('trust-publish-confirm'));
     await waitFor(() => expect(api.publishTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { expectedRevision: 5 }));
@@ -51,7 +55,7 @@ describe('TrustPublishDialog', () => {
     ['INTRO_TOO_LONG', 422, /too long/],
   ])('maps %s to friendly copy', async (code, status, re) => {
     api.publishTrustPage.mockResolvedValue(json({ error: 'The page address is not valid', code }, status));
-    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} page={page({ isPartnerHome: true })} onPublished={vi.fn()} onStale={vi.fn(async () => undefined)} />);
+    render(<TrustPublishDialog open onClose={vi.fn()} orgId="o1" orgFetch={orgFetch} searchIndexable={false} page={page({ isPartnerHome: true })} onPublished={vi.fn()} onStale={vi.fn(async () => undefined)} />);
     fireEvent.click(screen.getByTestId('trust-publish-confirm'));
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(re) })));
   });
@@ -59,7 +63,7 @@ describe('TrustPublishDialog', () => {
     api.publishTrustPage.mockResolvedValue(json({ error: 'stale', code: 'REVISION_MISMATCH' }, 409));
     const onStale = vi.fn(async () => undefined);
     const onClose = vi.fn();
-    render(<TrustPublishDialog open onClose={onClose} orgId="o1" orgFetch={orgFetch} page={page({ isPartnerHome: true })} onPublished={vi.fn()} onStale={onStale} />);
+    render(<TrustPublishDialog open onClose={onClose} orgId="o1" orgFetch={orgFetch} searchIndexable={false} page={page({ isPartnerHome: true })} onPublished={vi.fn()} onStale={onStale} />);
     fireEvent.click(screen.getByTestId('trust-publish-confirm'));
     await waitFor(() => expect(onStale).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
