@@ -202,6 +202,23 @@ export function sanitizeUntrustedText(
 }
 
 /**
+ * Neutralize one field of tool output that originated on a device (file
+ * contents, command/script output, registry data, log text) before it enters
+ * model context (#8852 W04, the per-field fence in `aiToolOutput.ts`).
+ *
+ * Same filter as `sanitizeUntrustedText` plus forged fence markers, but it
+ * NEVER clips: size belongs to the output compactor, which marks its cuts and
+ * honours character windows (`stdoutNextOffset`/`nextOffset`). A cap here
+ * would silently drop text the model was told it had already seen.
+ */
+export function sanitizeUntrustedToolText(value: string, flags?: string[]): string {
+  const sink = flags ?? [];
+  const unfenced = value.replace(UNTRUSTED_FENCE, '[filtered]');
+  if (unfenced !== value) addFlag(sink, 'fence_forgery');
+  return sanitizeField(unfenced, unfenced.length, sink);
+}
+
+/**
  * Render untrusted text as a clearly-delimited UNTRUSTED DATA block so the model
  * treats it as data, not instructions (prompt-injection defense).
  *
