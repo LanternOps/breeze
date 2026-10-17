@@ -22,6 +22,7 @@ import {
   approveAccessRequest, createAccessRequest, openGrantedDocument, readGrant, revokeAccessGrant, verifyAccessRequest,
 } from '../../services/trustPage/access/requests';
 import { resolvePublishedTrustPage } from '../../services/trustPage/resolve';
+import { pruneTrustAccessData } from '../../services/trustPage/access/retention';
 import { normalizeTrustPagePayload } from '@breeze/shared';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -120,6 +121,32 @@ describe('trust access requests (real DB)', () => {
       expect(results[1]!.status).toBe('fulfilled');
       expect(live).toHaveLength(0);
     }
+  });
+
+  it('retention: a 366-day-old denied request is deleted with its tokens; a live approved grant is kept whatever its age', async () => {
+    const denied = await requestAndVerify(s, `old-denied-${Date.now()}@example.test`);
+    const granted = await requestAndVerify(s, `old-granted-${Date.now()}@example.test`);
+    await sys(() => approveAccessRequest({ requestId: granted, orgId: s.orgId, actorUserId: s.userId, note: null, now: new Date() }));
+    await getTestDb().execute(sql`UPDATE trust_page_access_requests SET status = 'denied', updated_at = now() - interval '366 days' WHERE id = ${denied}`);
+    await getTestDb().execute(sql`UPDATE trust_page_access_requests SET updated_at = now() - interval '400 days' WHERE id = ${granted}`);
+    const before = await sys(() => db.select().from(trustPageAccessTokens).where(eq(trustPageAccessTokens.requestId, denied)));
+    expect(before.length).toBeGreaterThan(0);
+
+    const out = await pruneTrustAccessData(new Date());
+    expect(out.requests).toBeGreaterThanOrEqual(1);
+    const left = await sys(() => db.select({ id: trustPageAccessRequests.id }).from(trustPageAccessRequests).where(eq(trustPageAccessRequests.trustPageId, s.pageId)));
+    expect(left.map((r) => r.id)).toEqual([granted]);
+    expect(await sys(() => db.select().from(trustPageAccessTokens).where(eq(trustPageAccessTokens.requestId, denied)))).toHaveLength(0);
+    expect(await liveDownloadTokens(granted)).toHaveLength(1);
+  });
+
+  it('retention: tokens 30+ days past expiry are deleted, recent ones kept', async () => {
+    const id = await requestAndVerify(s, `old-token-${Date.now()}@example.test`);
+    await getTestDb().execute(sql`UPDATE trust_page_access_tokens SET expires_at = now() - interval '31 days' WHERE request_id = ${id}`);
+    const out = await pruneTrustAccessData(new Date());
+    expect(out.tokens).toBeGreaterThanOrEqual(1);
+    expect(await sys(() => db.select().from(trustPageAccessTokens).where(eq(trustPageAccessTokens.requestId, id)))).toHaveLength(0);
+    expect(await statusOf(id)).toBe('pending_approval');
   });
 
   it('two concurrent approvals: one wins, the other 409s, and exactly one download token exists', async () => {
