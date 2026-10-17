@@ -747,6 +747,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   // W02b anchor: 'trustPageDeclarations.ts': { exempt: 'human_only_trust_material', note: 'Declared controls are attestations made by a named MSP user; human-only.' },
   //
   // W02d anchor: 'trustPageAccess.ts': { exempt: 'human_only_approval', note: 'Approving release of gated documents to an outside party; human-only, MFA.' }, 'trustAccessPublic.ts': { exempt: 'portal', note: 'Anonymous gated-document request/verify/download for end customers.' },
+  'trustAccessPublic.ts': { exempt: 'portal', note: 'Anonymous gated-document request/verify/download for end customers.' },
   //
   // W02f anchor: 'trustPageContent.ts': { exempt: 'tool_in_later_wave', note: 'Trust page FAQ/subprocessor editing; read access arrives via get_trust_page_status (#8770 W02i).' },
   //
