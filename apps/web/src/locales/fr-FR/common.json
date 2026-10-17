@@ -699,7 +699,23 @@
       "noSelection": "Sélectionner une organisation",
       "searchOrganizations": "Rechercher des organisations…",
       "noMatches": "Aucune organisation ne correspond",
-      "legacyFilterNotice": "Le filtrage par organisation suit désormais le sélecteur d’en-tête."
+      "legacyFilterNotice": "Le filtrage par organisation suit désormais le sélecteur d’en-tête.",
+      "recent": "Récents",
+      "pane": {
+        "destinations": {
+          "overview": "Aperçu",
+          "devices": "Appareils",
+          "tickets": "Demandes",
+          "alerts": "Alertes",
+          "sites": "Emplacements",
+          "billing": "Facturation"
+        },
+        "offlineCount": "{{count}} hors ligne",
+        "openCount": "{{count}} ouverts",
+        "criticalCount": "{{count}} critiques",
+        "noCritical": "aucune",
+        "hint": "Cliquez sur un nom pour changer · cliquez sur une page pour changer et y aller"
+      }
     },
     "header": {
       "menu": "Menu",
