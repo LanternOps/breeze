@@ -547,7 +547,7 @@
       "embed": {
         "title": "Incorporar no seu site",
         "description": "Mostre um cartão compacto e atualizado da postura de segurança no seu próprio site, dentro de um iframe. Apenas os sites listados aqui podem exibi-lo; a página de confiança completa nunca pode ser incorporada.",
-        "liveNote": "As alterações entram em vigor em até um minuto; não é preciso republicar.",
+        "liveNote": "As alterações valem no próximo carregamento do cartão incorporado; não é preciso republicar.",
         "unpublishedNote": "O cartão incorporado aparece depois que a página for publicada.",
         "originLabel": "Endereço do site (somente https, sem caminho)",
         "add": "Adicionar site",

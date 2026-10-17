@@ -547,7 +547,7 @@
       "embed": {
         "title": "Incorpora nel tuo sito web",
         "description": "Mostra una scheda compatta e aggiornata della postura di sicurezza sul tuo sito, all’interno di un iframe. Solo i siti elencati qui possono visualizzarla; la pagina di fiducia completa non può mai essere incorporata.",
-        "liveNote": "Le modifiche si applicano entro un minuto; non serve ripubblicare.",
+        "liveNote": "Le modifiche si applicano al prossimo caricamento della scheda incorporata; non serve ripubblicare.",
         "unpublishedNote": "La scheda incorporata compare dopo la pubblicazione della pagina.",
         "originLabel": "Indirizzo del sito (solo https, senza percorso)",
         "add": "Aggiungi sito",

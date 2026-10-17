@@ -547,7 +547,7 @@
       "embed": {
         "title": "Insertar en tu sitio web",
         "description": "Muestra una tarjeta compacta y actualizada de la postura de seguridad en tu propio sitio web, dentro de un iframe. Solo los sitios indicados aquí pueden mostrarla; la página de confianza completa nunca se puede insertar.",
-        "liveNote": "Los cambios se aplican en menos de un minuto; no hace falta volver a publicar.",
+        "liveNote": "Los cambios se aplican la próxima vez que se cargue la tarjeta insertada; no hace falta volver a publicar.",
         "unpublishedNote": "La tarjeta insertada aparece cuando la página está publicada.",
         "originLabel": "Dirección del sitio (solo https, sin ruta)",
         "add": "Agregar sitio",

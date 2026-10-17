@@ -547,7 +547,7 @@
       "embed": {
         "title": "Intégrer sur votre site web",
         "description": "Affichez une carte compacte et à jour de la posture de sécurité sur votre propre site, dans une iframe. Seuls les sites listés ici peuvent l’afficher ; la page de confiance complète ne peut jamais être intégrée.",
-        "liveNote": "Les modifications s’appliquent en moins d’une minute ; aucune republication n’est nécessaire.",
+        "liveNote": "Les modifications s’appliquent au prochain chargement de la carte intégrée ; aucune republication n’est nécessaire.",
         "unpublishedNote": "La carte intégrée s’affiche une fois la page publiée.",
         "originLabel": "Adresse du site (https uniquement, sans chemin)",
         "add": "Ajouter un site",

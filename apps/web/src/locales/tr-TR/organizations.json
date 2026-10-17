@@ -547,7 +547,7 @@
       "embed": {
         "title": "Web sitenize yerleştirin",
         "description": "Kendi web sitenizde bir iframe içinde kompakt, güncel bir güvenlik durumu kartı gösterin. Bunu yalnızca burada listelenen web siteleri görüntüleyebilir; tam güven sayfasının kendisi hiçbir zaman yerleştirilemez.",
-        "liveNote": "Değişiklikler bir dakika içinde geçerli olur; yeniden yayımlamaya gerek yoktur.",
+        "liveNote": "Değişiklikler, yerleştirilen kart bir sonraki yüklendiğinde geçerli olur; yeniden yayımlamaya gerek yoktur.",
         "unpublishedNote": "Yerleştirilen kart, sayfa yayımlandıktan sonra görünür.",
         "originLabel": "Web sitesi adresi (yalnızca https, yol olmadan)",
         "add": "Web sitesi ekle",

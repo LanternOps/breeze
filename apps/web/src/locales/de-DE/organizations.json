@@ -547,7 +547,7 @@
       "embed": {
         "title": "Auf Ihrer Website einbetten",
         "description": "Zeigen Sie eine kompakte, aktuelle Karte zur Sicherheitslage in einem iframe auf Ihrer eigenen Website an. Nur die hier aufgeführten Websites dürfen sie anzeigen; die vollständige Vertrauensseite selbst lässt sich nie einbetten.",
-        "liveNote": "Änderungen gelten innerhalb einer Minute; eine erneute Veröffentlichung ist nicht nötig.",
+        "liveNote": "Änderungen gelten beim nächsten Laden der eingebetteten Karte; eine erneute Veröffentlichung ist nicht nötig.",
         "unpublishedNote": "Die eingebettete Karte erscheint, sobald die Seite veröffentlicht ist.",
         "originLabel": "Website-Adresse (nur https, ohne Pfad)",
         "add": "Website hinzufügen",

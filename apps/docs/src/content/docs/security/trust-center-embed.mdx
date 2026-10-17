@@ -60,11 +60,15 @@ Browsers check every frame above the card, not only the one that contains it. If
 
 ## The full page is never framable
 
-Only `/portal/trust/embed/...` can be framed. The full trust page, previews and gated-document links always answer with `frame-ancestors 'none'` and `X-Frame-Options: DENY`.
+Only `/portal/trust/embed/...` can be framed. The full trust page, previews and gated-document links always answer with `X-Frame-Options: DENY`, and in production also with `frame-ancestors 'none'`.
+
+<Aside type="note" title="Local development">
+  The portal's development server drops the Content-Security-Policy header unless `CSP_STRICT_DEV=1` is set. Without that CSP the embed keeps `X-Frame-Options: DENY`, so it cannot be framed in local development. This is deliberate, so a missing CSP never leaves the card framable by anyone.
+</Aside>
 
 ## Behind your own reverse proxy
 
-The portal sets the framing headers itself. A proxy in front of Breeze that adds its own `X-Frame-Options` or a second `Content-Security-Policy` to `/portal/trust/embed/` responses breaks the embed, because browsers apply every policy they receive. See the note in [TLS and reverse proxies](/deploy/tls/#nginx-alternative).
+The portal sets the framing headers itself: `frame-ancestors` lists your websites and `X-Frame-Options` is removed. A proxy in front of Breeze that adds a second `Content-Security-Policy` to `/portal/trust/embed/` responses breaks the embed, because browsers enforce every CSP they receive. A proxy-added `X-Frame-Options: DENY` is ignored by modern browsers when `frame-ancestors` is present, but it still blocks the card in older browsers. Keep both off that path; see the note in [TLS and reverse proxies](/deploy/tls/#nginx-alternative).
 
 <Aside type="tip" title="Prefer a badge?">
   If you only need a small "verified by Breeze" link, the **Badge** section of the same tab gives you an image badge that works on any website, with no allowlist.

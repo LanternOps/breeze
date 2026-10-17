@@ -144,7 +144,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
       framable = true;
     } catch (err) {
       // Fail closed: an origin that is not a normalized https origin never reaches a header.
-      console.error('[portal] refusing an invalid trust embed origin; keeping frame-ancestors none', err);
+      console.error('[portal] refusing an invalid trust embed origin; keeping frame-ancestors none', { pathname, err });
       headers.set('Content-Security-Policy', withFrameAncestors(decision.value, []));
     }
   } else {

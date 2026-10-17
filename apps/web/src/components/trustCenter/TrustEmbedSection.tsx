@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { normalizeEmbedOrigin, TRUST_EMBED_ORIGINS_MAX } from '@breeze/shared';
 import { showToast } from '@/components/shared/Toast';
-import { handleActionError, runAction } from '@/lib/runAction';
+import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { trustPublicUrl, updateTrustEmbedOrigins, type TrustSectionProps } from '@/lib/api/trustPage';
 import { escapeHtmlAttr } from './TrustBadgeSnippet';
 
@@ -67,6 +67,9 @@ export default function TrustEmbedSection({ orgId, orgFetch, state, canWrite }: 
       setSaved(stored);
       setDraft(stored);
     } catch (err) {
+      // runAction already toasted an ActionError; anything else (e.g. a malformed 200 body) gets the fallback toast
+      // here, so keep the real error for debugging.
+      if (!(err instanceof ActionError)) console.error('[TrustEmbedSection] save failed', err);
       handleActionError(err, tr('saveFailed'));
     } finally {
       setBusy(false);

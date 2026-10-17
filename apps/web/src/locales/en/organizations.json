@@ -547,7 +547,7 @@
       "embed": {
         "title": "Embed on your website",
         "description": "Show a compact, live security posture card on your own website in an iframe. Only the websites listed here may display it; the full trust page itself can never be embedded.",
-        "liveNote": "Changes apply within a minute; no republish needed.",
+        "liveNote": "Changes apply the next time the embed loads; no republish needed.",
         "unpublishedNote": "The embed card shows once the page is published.",
         "originLabel": "Website address (https only, no path)",
         "add": "Add website",

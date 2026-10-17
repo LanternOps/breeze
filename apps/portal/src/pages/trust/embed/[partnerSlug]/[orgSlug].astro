@@ -4,17 +4,12 @@
 // unknown page, a fetch failure or an empty allowlist is a plain 404 (frame-ancestors 'none', DENY, no-store).
 import TrustEmbedLayout from '../../../../layouts/TrustEmbedLayout.astro';
 import TrustEmbedCard from '../../../../components/trust/TrustEmbedCard.astro';
-import { getTrustEmbedCard, trustEmbedFullPagePath } from '../../../../lib/trustEmbed';
-import { publicServerApiConfig } from '../../../../lib/server';
-import { withBase } from '../../../../lib/basePath';
-import { publicOriginFor } from '../../../../lib/publicOrigin';
+import { loadTrustEmbedPage } from '../../../../lib/trustEmbed';
 
 const { partnerSlug, orgSlug } = Astro.params;
-const card = await getTrustEmbedCard(partnerSlug!, orgSlug!, { ...publicServerApiConfig(Astro.request), timeoutMs: 3000 });
-if (!card || card.frameAncestors.length === 0) return new Response('Not Found', { status: 404 });
-Astro.locals.trustEmbedOrigins = card.frameAncestors;
-const fullPageUrl = new URL(withBase(trustEmbedFullPagePath(partnerSlug!, orgSlug!)), publicOriginFor(Astro.request, Astro.url)).toString();
+const embed = await loadTrustEmbedPage(Astro, partnerSlug!, orgSlug!);
+if (!embed) return new Response('Not Found', { status: 404 });
 ---
-<TrustEmbedLayout title={card.title} canonicalUrl={fullPageUrl} accent={card.primaryColor}>
-  <TrustEmbedCard card={card} fullPageUrl={fullPageUrl} />
+<TrustEmbedLayout title={embed.card.title} canonicalUrl={embed.fullPageUrl} accent={embed.card.primaryColor}>
+  <TrustEmbedCard card={embed.card} fullPageUrl={embed.fullPageUrl} />
 </TrustEmbedLayout>
