@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import type { commandResultSchema } from '../routes/agents/schemas';
+import { parseRestorePointOutcome, type commandResultSchema } from '../routes/agents/schemas';
 import { redactSecretsFromOutput } from './secretRedaction';
 import { isRawStdoutArtifactCommand } from './commandAudit';
 import { collapseAgentReportedTimeoutStatus } from './commandResultAcceptance';
@@ -46,5 +46,16 @@ export function buildStoredCommandResult(
     // A machine code from a closed vocabulary, not free text: nothing to
     // redact. Absent for agents that predate it.
     errorCode: result.errorCode,
+    // #4609 W06: the validated checkpoint outcome, only when the agent sent
+    // one and it parsed (unknown keys stripped; an invalid outcome is not
+    // persisted). Its free-text message/description are redacted by the parse
+    // (classifyRestorePointOutcome). Absent key -> nothing added, so results from every
+    // agent shipped to date store exactly what they did before.
+    ...(result.restorePoint !== undefined ? restorePointStoredField(result.restorePoint) : {}),
   };
+}
+
+function restorePointStoredField(raw: unknown) {
+  const outcome = parseRestorePointOutcome(raw);
+  return outcome ? { restorePoint: outcome } : {};
 }

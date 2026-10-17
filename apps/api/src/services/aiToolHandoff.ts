@@ -73,6 +73,7 @@ import {
   type AiToolHandoffStatus,
 } from '@breeze/shared';
 import { stripMcpPrefix } from './mcpToolNames';
+import { sanitizeUntrustedToolStdout, sanitizeUntrustedToolText } from './aiInputSanitizer';
 
 /** Approved and still running — the one non-failure, non-success outcome. */
 export const APPROVED_EXECUTING_STATUS = AI_TOOL_APPROVED_EXECUTING;
@@ -205,7 +206,9 @@ function truncate(reason: string): string {
 export function intentTerminalReason(snapshot: IntentOutcomeSnapshot): string {
   const resultError = snapshot.result?.error;
   if (typeof resultError === 'string' && resultError.trim().length > 0) {
-    return truncate(resultError.trim());
+    // Device/OS error text (#8852 W04): this reason reaches the model under
+    // the denial `message`, outside compactToolResultForChat's field fence.
+    return truncate(sanitizeUntrustedToolText(resultError.trim()));
   }
   switch (snapshot.status) {
     case 'rejected':
@@ -230,7 +233,8 @@ export function intentTerminalReason(snapshot: IntentOutcomeSnapshot): string {
  * output left the model unable to see data it was approved to read, so it
  * re-ran the query and cost the operator more approvals. Explicit allowlist,
  * default-deny — anything unlisted (file_read, secret-bearing tools, unknown
- * input) keeps the generic completion text. Plain strings: this module is a leaf.
+ * input) keeps the generic completion text. Plain strings: this module is a
+ * leaf (aiInputSanitizer, imported for the #8852 W04 fence, has no imports).
  */
 const SPLICEABLE_READ_COMMAND_TYPES: readonly string[] = ['event_logs_query'];
 
@@ -281,8 +285,12 @@ export function describeIntentOutcome(
   if (snapshot.status === 'completed') {
     const stdout = spliceableStdout(snapshot.result, call);
     if (stdout !== null) {
-      const truncated = stdout.length > MAX_SPLICED_RESULT_CHARS;
-      const body = truncated ? stdout.slice(0, MAX_SPLICED_RESULT_CHARS) : stdout;
+      // Device text (#8852 W04): fenced here because the denial result carries
+      // it under `message`, a key compactToolResultForChat's fence never sees.
+      // Fence the WHOLE stdout first (decoding the agent's JSON), then cut.
+      const fenced = sanitizeUntrustedToolStdout(stdout);
+      const truncated = fenced.length > MAX_SPLICED_RESULT_CHARS;
+      const body = truncated ? fenced.slice(0, MAX_SPLICED_RESULT_CHARS) : fenced;
       return {
         handoff: APPROVED_COMPLETED_STATUS,
         message:

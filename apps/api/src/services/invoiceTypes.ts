@@ -77,6 +77,8 @@ export type InvoiceServiceErrorCode =
   | 'ALL_MISSING_RATE'
   | 'NO_VISIBLE_LINES'
   | 'SOURCE_ALREADY_BILLED'
+  /** 409 — #4617: a draft's source time is now held for customer approval; it cannot be invoiced until released. */
+  | 'SOURCE_AWAITING_APPROVAL'
   // B10 (#3774): a line's source row no longer exists (or belongs to another
   // org) when re-validated under lock at issue time.
   | 'SOURCE_NOT_FOUND'

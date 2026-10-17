@@ -33,8 +33,10 @@ import OrgDefaultsEditor from './OrgDefaultsEditor';
 import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinSelectors';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
+import { CallerVerificationPolicyForm } from '../callerVerification/CallerVerificationPolicyForm';
 import OrgAiProcessingToggle from './OrgAiProcessingToggle';
 import OrgMlFeaturesCard from './OrgMlFeaturesCard';
+import OrgAiDataPolicyCard from './OrgAiDataPolicyCard';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgModelDefaultsCard from './aiModels/OrgModelDefaultsCard';
@@ -675,6 +677,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
                 onSaved={() => void fetchOrgDetails()}
               />
             </div>
+            {/* Caller verification (#6354): tighten-only override of the
+                partner baseline; self-saving, hidden unless the flag is on. */}
+            <div className="mt-4">
+              <CallerVerificationPolicyForm owner={{ ownerScope: 'organization', orgId: effectiveOrgId }} />
+            </div>
           </>
         );
       case 'approval-security':
@@ -706,6 +713,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
               settings={(orgDetails?.settings ?? {}) as Record<string, unknown>}
               onSaved={() => void fetchOrgDetails()}
             />
+            <OrgAiDataPolicyCard orgId={effectiveOrgId} />
           </>
         );
       case 'event-logs':

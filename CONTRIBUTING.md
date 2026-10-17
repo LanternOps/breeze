@@ -44,8 +44,12 @@ docker compose -f docker-compose.yml -f docker-compose.override.yml.dev up -d po
 pnpm db:migrate
 pnpm db:seed
 
-# Start dev servers
-pnpm dev
+# Start dev servers (api + web + portal)
+pnpm dev:app
+
+# `pnpm dev` runs every package's dev task, including the Office add-ins. Those need the
+# Windows or macOS certificate store (office-addin-dev-certs), so on Linux/WSL they skip
+# themselves with a message rather than failing the run.
 
 # When you're done: stop the infrastructure (nothing stops it for you).
 # Add -v to also drop the database volumes.
@@ -75,7 +79,10 @@ make build-all # Cross-platform builds
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feat/my-feature`)
-3. Make your changes
+3. Make your changes, **with tests**. New functionality ships with automated
+   tests that cover it, in the same PR. A bug fix adds a test that fails
+   without the fix. Tests sit alongside the source they cover (Vitest for
+   TypeScript, Go `testing` for the agent); see `docs/agents/testing.md`.
 4. Mirror the CI gate locally before pushing.
 
    **Security gates** (`.github/workflows/security.yml` + the `security-audit`

@@ -46,6 +46,14 @@ it('does not label partial bulk failure as success and shows both requested coun
   const call = vi.mocked(fetchWithAuth).mock.calls.find(([, init]) => init?.method === 'POST')!;
   expect(JSON.parse(call[1]!.body as string)).toEqual({ orgIds: [id, requestedId] });
 });
+it('links the client name to the org record billing tab (ui-flow W03)', async () => {
+  render(<AutopayListPage />);
+  const row = await screen.findByTestId(`autopay-row-${id}`);
+  const link = within(row).getByTestId('org-record-link');
+  expect(link).toHaveAttribute('href', `/organizations/${id}#billing`);
+  expect(link).toHaveTextContent('Example client');
+  expect(within(row).getByTestId(`autopay-client-${id}`)).toBeInTheDocument();
+});
 it('shows failed email delivery on the list and allows resending',async()=>{
  vi.mocked(fetchWithAuth).mockImplementation(async()=>Response.json({data:[{orgId:id,orgName:'Example',status:'requested',enrollment:{status:'requested'},method:null,requestNoticeStatus:'failed'}]}));
  render(<AutopayListPage/>);

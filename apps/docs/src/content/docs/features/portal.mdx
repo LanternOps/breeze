@@ -49,9 +49,32 @@ The service-insight sections — Dashboard, Security, Backups, Reports, support 
 | **Backups** | Off | Backup coverage, verification, restore tests, and readiness |
 | **Reports** | Off | The ability to generate and download approved reports |
 | **Support usage** | Off | Month-to-date billable support-time totals, and SLA badges in the ticket list |
+| **Support hours** | Off | A read-only card inside the Support section showing prepaid block hours used and remaining. Requires **Support usage**. Not turned on by **Enable all visibility** -- switch it on per customer |
+| **Patch detail** | Off | A read-only list of each device's pending, installed and failed patches (title, severity, version, vendor KB link). **Sensitive:** every portal login for the organization sees which machines are missing patches, so **Enable all visibility** deliberately leaves it off -- switch it on per customer. It never shows error text, failure counts, or anything about your patch policies, approvals or jobs, and patches the agent no longer reports (or that you skipped) are left out |
+| **Vulnerability detail** | Off | A read-only list of each device's open CVE findings with the CVE ID, description, severity, CVSS score, whether a patch is available, status and dates. **Sensitive:** every portal login for the organization sees which machines are vulnerable and how severe each finding is, so **Enable all visibility** deliberately leaves it off -- switch it on per customer. It never shows exploit-intelligence data (known-exploited and exploit-likelihood flags), CVSS vectors, reference links, raw scanner records, your risk-acceptance notes or who accepted a finding, linked tickets, risk scores, or anything about remediation |
 | **Service** | Off | Scheduled deliverables, what was delivered, and key dates (v0.113.0+) |
 | **Documents** | Off | The documents you have shared with them, for download (v0.113.0+) |
 | **Hardware lifecycle** | Off | The live replacement plan for the customer's machines — see [Hardware Lifecycle](#hardware-lifecycle) below |
+| **Hardware health** | Off (v0.122.1+) | Component health, hardware events, disks and battery for their machines — API only for now, see [Hardware and performance data](#hardware-and-performance-data) |
+| **Hardware inventory** | Off (v0.122.1+) | Per-device make, model, processor, memory and network adapters — API only for now |
+| **Performance metrics** | Off (v0.122.1+) | Read-only CPU, memory, disk and network trends — API only for now |
+| **Software inventory** | Off (v0.122.1+) | Installed software name, version, vendor, install date and last seen — API only for now, and **not** turned on by **Enable all visibility** |
+
+#### Advanced visibility families (complete)
+
+The advanced visibility feature adds six read-only families, each behind its own per-organization toggle and each off by default (a missing or non-`true` setting is refused with `403`):
+
+| Toggle | Setting | Enable all visibility |
+|--------|---------|-----------------------|
+| Hardware health | `enableHardwareHealth` | Turns it on |
+| Hardware inventory | `enableHardwareInventory` | Turns it on |
+| Performance | `enablePerformanceMetrics` | Turns it on |
+| Software inventory | `enableSoftwareInventory` | Turns it on |
+| Endpoint protection (EDR) | `enableEdrVisibility` | Turns it on |
+| Patch detail | `enablePatchDetail` | **Sensitive: left off** |
+| Vulnerability detail | `enableVulnerabilityDetail` | **Sensitive: left off** |
+
+Patch detail and Vulnerability detail point at weaknesses (missing patches and open CVEs), and every portal login for the organization sees them, so they are never switched on by **Enable all visibility**. Turn them on per customer.
 
 To change them:
 
@@ -61,7 +84,7 @@ To change them:
 
 2. Open the **Customer Portal** tab (under **Portal & Branding**).
 
-3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns them all on at once.
+3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns them all on at once, except **Software inventory** and **Network alerts**, which you switch on individually.
 
 4. Save. The customer's next page load reflects the change.
 
@@ -193,6 +216,8 @@ The device list is controlled by its own **Devices** visibility toggle (v0.114.0
 
 With **Network** visibility on, the customer sees a summary of their discovered network assets: total assets, how many are verified online or offline, how many SNMP devices are being polled, and how many monitors are currently down. Online and offline counts don't have to add up to the total — an asset whose reachability hasn't been verified yet counts in neither figure. If discovery hasn't found any assets for the organization yet, the page says so instead of showing an empty table.
 
+Below the summary, the network assets table can be filtered by type and status and, when the organization's assets span more than one site, by **Site**. The selected filters are kept in the page link, so a filtered view can be bookmarked or shared.
+
 This toggle is separate from the [Network Topology](/features/discovery/#site-map) partner module — it surfaces discovery/monitoring data, not the topology map itself.
 
 ---
@@ -232,6 +257,19 @@ A **Refresh** button regenerates the plan on demand. Device names link back to t
 
 ---
 
+## Hardware and performance data
+
+**Hardware health**, **Hardware inventory**, **Performance metrics** and **Software inventory** are visibility toggles for the customer's hardware and performance data. In v0.122.1 each one opens a read-only portal API for that organization; the customer portal does not have pages for them yet. Turning a toggle on today does not change what the customer sees in the portal's navigation, so you can enable them ahead of the pages shipping, or leave them off until then.
+
+- **Hardware health** returns per-device component health, hardware events, disks and battery. Health is worked out from the components the customer can see; serial numbers, firmware and internal collector detail are never returned.
+- **Hardware inventory** returns per-device make, model, processor, memory, network adapters and connection counts.
+- **Performance metrics** returns CPU, memory, disk and network trends over the last 24 hours, 7 days or 30 days.
+- **Software inventory** returns installed software (name, version, vendor, install date, last seen) for the organization and per device. It is deliberately left out of **Enable all visibility**; switch it on individually for each organization that should have it.
+
+Like every other visibility toggle, each starts **off**, and an organization with the toggle off gets a **403** from the matching endpoints. See [Hardware and performance](#hardware-and-performance) in the API reference below.
+
+---
+
 ## Service
 
 With **Service** visibility on, the customer sees the [service deliverables](/features/contracts/#service-deliverables) you have marked **Show in customer portal**: what is scheduled, what was delivered and when, and the organization's upcoming key dates. It is the "what am I paying you for" view at the level of individual commitments — the monthly patch report, the quarterly review — rather than a dashboard summary.
@@ -261,7 +299,7 @@ Portal users can submit support tickets, track their status, and add comments to
 4. Submit the ticket. A unique ticket number is auto-generated.
 </Steps>
 
-Tickets are automatically associated with the submitter's portal user account and organization. Each ticket receives a unique alphanumeric ticket number for easy reference.
+Tickets are automatically associated with the submitter's portal user account and organization. Each ticket receives a unique alphanumeric ticket number for easy reference. The ticket list and detail show the ticket's [type](/features/ticketing/#ticket-types) (Incident, Service request, Problem or Change) as a label beside the number; customers cannot choose it, so a portal ticket starts as an Incident until a technician changes it.
 
 ### Ticket Comments
 
@@ -280,6 +318,16 @@ Requesters who only ever email you (no portal login) should **reply to the email
 ### SLA badges and support usage
 
 Turning on **Support usage** visibility adds two things to the customer's view: an SLA badge on tickets in the list (the ticket detail always shows one), and a month-to-date total of billable support time. Use it with customers on a block-hours or time-and-materials arrangement who would otherwise find the invoice a surprise; leave it off for customers on a flat-rate agreement, where a running time total invites the wrong conversation.
+
+### Support hours (block hours)
+
+If a customer has a [Block hours](/features/contracts/#block-hours) line on an active contract, you can show them their balance. Turn on **Support hours** in the organization's portal settings (Org, Portal; it needs **Support usage** on as well, and **Enable all visibility** deliberately leaves it off). The card appears above the support-time table and shows:
+
+- hours used against the block (the included hours plus anything carried over), the hours remaining, or the hours over the block;
+- the current billing period; and
+- the contracted overage rate and when an overage would be billed.
+
+It does not show a calculated overage amount, only hours and the rate from the contract. Time that has not been approved yet counts toward the hours used, matching how the block is drawn down. While the setting is on, support time the block covers is listed under **Covered by your support hours** instead of **To be billed**; with it off, the page reads exactly as before and the customer is never told a block exists. A paused, draft or ended contract, or a retired block, shows no card.
 
 ### External Ticket Integration
 
@@ -434,6 +482,20 @@ All portal endpoints are mounted under `/api/v1/portal`. Public routes (branding
 | `GET` | `/reports/runs/:id/pdf` | Yes | Download a finished run as PDF |
 | `GET` | `/reports/runs/:id/csv` | Yes | Download a finished run as CSV |
 
+### Hardware and performance
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/hardware-health/overview` | Yes | Hardware health summary. Requires **Hardware health** visibility |
+| `GET` | `/hardware-health/devices` | Yes | Per-device hardware health (paginated). Requires **Hardware health** visibility |
+| `GET` | `/hardware-health/devices/:deviceId` | Yes | One device's components, events, disks and battery. Requires **Hardware health** visibility |
+| `GET` | `/hardware-inventory/devices` | Yes | Per-device hardware inventory (paginated). Requires **Hardware inventory** visibility |
+| `GET` | `/hardware-inventory/devices/:deviceId` | Yes | One device's hardware inventory. Requires **Hardware inventory** visibility |
+| `GET` | `/performance/overview` | Yes | Performance summary; `range` is `24h` (default), `7d` or `30d`. Requires **Performance metrics** visibility |
+| `GET` | `/performance/devices/:deviceId` | Yes | One device's performance series for the same ranges. Requires **Performance metrics** visibility |
+| `GET` | `/software/summary` | Yes | Software installed across the organization (paginated). Requires **Software inventory** visibility |
+| `GET` | `/software/devices/:deviceId` | Yes | Software installed on one device (paginated). Requires **Software inventory** visibility |
+
 <Aside type="note">
   Every endpoint marked "Requires … visibility" answers **403** when the organization has that section turned off — including when the organization has no portal settings saved at all. There is no partial response and no silent fallback.
 </Aside>
@@ -447,6 +509,11 @@ All portal endpoints are mounted under `/api/v1/portal`. Public routes (branding
 | `GET` | `/tickets/:id` | Yes | Get ticket details with public comments |
 | `POST` | `/tickets/:id/comments` | Yes | Add a comment to a ticket |
 | `GET` | `/tickets/usage` | Yes | Month-to-date billable support time. Requires **Support usage** visibility |
+| `GET` | `/support-usage/hour-block` | Yes | The live block-hours balance for the organization, or `null`. Requires **Support usage** and **Support hours** visibility |
+| `GET` | `/patches/summary` | Yes | Per-patch counts of pending, failed and installed devices for the organization. Requires **Patch detail** visibility |
+| `GET` | `/patches/devices/:deviceId` | Yes | One device's pending, installed and failed patches. Requires **Patch detail** visibility |
+| `GET` | `/vulnerabilities/summary` | Yes | Per-CVE counts of affected devices, worst severity first. Takes a `status` filter (`open` by default; also `patched`, `mitigated`, `accepted`). Requires **Vulnerability detail** visibility |
+| `GET` | `/vulnerabilities/findings` | Yes | Per-device CVE findings, worst severity first. Takes `status` (default `open`) and an optional `deviceId` filter. Requires **Vulnerability detail** visibility |
 
 ### Invoices
 

@@ -5,6 +5,7 @@ import {
   applyTicketChildLockOrder,
   TICKET_CHILD_ORG_REWRITE_LOCK_ORDER,
   TICKET_ORG_DENORMALIZED_TABLES,
+  TICKET_ORG_MOVE_DELETE_TABLES,
 } from './ticketOrgMoveLockOrder';
 
 /**
@@ -36,8 +37,11 @@ const project = (subject: readonly string[], keep: ReadonlySet<string>): string[
 
 const canonical = [...TICKET_CHILD_ORG_REWRITE_LOCK_ORDER];
 const canonicalSet = new Set<string>(canonical);
-const deviceAxis = [...CUSTOM_ORG_REWRITE_TABLES] as string[];
-const ticketAxis = [...TICKET_ORG_DENORMALIZED_TABLES] as string[];
+// Each axis re-stamps its rewrite list first and then runs the delete-only
+// tail (TICKET_ORG_MOVE_DELETE_TABLES, #7900 W02: ticket_links) — both lists
+// are part of the axis' lock sequence, in that order.
+const deviceAxis = [...CUSTOM_ORG_REWRITE_TABLES, ...TICKET_ORG_MOVE_DELETE_TABLES] as string[];
+const ticketAxis = [...TICKET_ORG_DENORMALIZED_TABLES, ...TICKET_ORG_MOVE_DELETE_TABLES] as string[];
 
 describe('ticket child-table org-rewrite lock order (#4657)', () => {
   it('the ticket-move and device-move paths agree on every table they share', () => {
@@ -96,6 +100,17 @@ describe('ticket child-table org-rewrite lock order (#4657)', () => {
       'TICKET_CHILD_ORG_REWRITE_LOCK_ORDER names a table no mover touches — ' +
         'drop it, or add the missing rewrite.',
     ).toEqual([]);
+  });
+
+  it('ticket_links is a delete-only tail, LAST in the canonical order on both axes (#7900 W02)', () => {
+    // It has no ticket_id column (two legs), so neither rewrite list can carry
+    // it; both movers DELETE every link touching a moved ticket instead. Last,
+    // after ticket_approval_requests, so it extends rather than reorders the
+    // shared order.
+    expect([...TICKET_ORG_MOVE_DELETE_TABLES]).toEqual(['ticket_links']);
+    expect(canonical[canonical.length - 1]).toBe('ticket_links');
+    expect(TICKET_ORG_DENORMALIZED_TABLES as readonly string[]).not.toContain('ticket_links');
+    expect(CUSTOM_ORG_REWRITE_TABLES as readonly string[]).not.toContain('ticket_links');
   });
 
   it('lists each table once per axis', () => {
@@ -157,6 +172,7 @@ describe('org-merge walk order honors the canonical ticket child-table lock orde
       'ticket_checklist_items',
       'ticket_attachments',
       'ticket_approval_requests',
+      'ticket_links',
       'ticket_alert_links',
       'users',
     ];
@@ -166,11 +182,11 @@ describe('org-merge walk order honors the canonical ticket child-table lock orde
     expect(fixed[0]).toBe('organizations');
     expect(fixed[1]).toBe('tickets');
     expect(fixed[2]).toBe('unrelated_table');
-    expect(fixed[13]).toBe('users');
+    expect(fixed[14]).toBe('users');
 
-    // The ten ticket-child slots (indices 3-12) now read out in canonical
+    // The eleven ticket-child slots (indices 3-13) now read out in canonical
     // relative order.
-    expect(fixed.slice(3, 13)).toEqual(canonical);
+    expect(fixed.slice(3, 14)).toEqual(canonical);
 
     // Same multiset of tables — nothing added, nothing dropped.
     expect([...fixed].sort()).toEqual([...walkOrder].sort());

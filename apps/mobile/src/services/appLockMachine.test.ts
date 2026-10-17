@@ -381,3 +381,95 @@ describe('unlock attempts', () => {
     expect(state.unlockFailed).toBe(false);
   });
 });
+
+describe('our own biometric prompt', () => {
+  // iOS flips the app to `inactive` while the Face ID / LocalAuthentication
+  // sheet is up. Covering on that made every Approve tap flash the full-screen
+  // wordmark between the sheet and the app.
+  const started: LockEvent = { type: 'biometricPromptStarted' };
+  const ended = (lifecycle: AppLifecycle): LockEvent => ({ type: 'biometricPromptEnded', lifecycle });
+  const unlocked = () => run([boot({ stampedAt: T0 - 1_000, locked: false }, 'active')]).state;
+
+  it('does not raise the cover for inactive while our prompt is up', () => {
+    const { state } = run([started, life('active', 'inactive', T0)], unlocked());
+    expect(state.obscured).toBe(false);
+  });
+
+  it('does not raise the cover across the whole approve round-trip', () => {
+    const { state } = run(
+      [started, life('active', 'inactive', T0), life('inactive', 'active', T0 + 2_000), ended('active')],
+      unlocked()
+    );
+    expect(state.obscured).toBe(false);
+    expect(state.phase).toBe('unlocked');
+  });
+
+  it('does not raise the cover when the prompt resolves before iOS reports active', () => {
+    const { state } = run([started, life('active', 'inactive', T0), ended('inactive')], unlocked());
+    expect(state.obscured).toBe(false);
+  });
+
+  it('still raises the cover for inactive once the prompt has ended', () => {
+    const { state } = run(
+      [started, life('active', 'inactive', T0), life('inactive', 'active', T0 + 1), ended('active'),
+        life('active', 'inactive', T0 + 2)],
+      unlocked()
+    );
+    expect(state.obscured).toBe(true);
+  });
+
+  it('a real background during the prompt still covers and arms the lock clock', () => {
+    const { state } = run(
+      [started, life('active', 'inactive', T0), life('inactive', 'background', T0 + 1),
+        ended('background'), life('background', 'active', T0 + 1 + LOCK_GRACE_MS)],
+      unlocked()
+    );
+    expect(state.phase).toBe('locked');
+  });
+
+  it('a real background during the prompt raises the cover', () => {
+    const { state } = run([started, life('active', 'background', T0)], unlocked());
+    expect(state.obscured).toBe(true);
+    expect(state.backgroundedAt).toBe(T0);
+  });
+
+  it('ending the prompt never lowers a cover that is already up', () => {
+    const { state } = run(
+      [life('active', 'background', T0), started, ended('background')],
+      unlocked()
+    );
+    expect(state.obscured).toBe(true);
+  });
+
+  it('ending the prompt while backgrounded raises the cover even if that event was missed', () => {
+    const { state } = run([started, ended('background')], unlocked());
+    expect(state.obscured).toBe(true);
+  });
+
+  it('keeps an existing cover up for inactive during the prompt', () => {
+    // background -> inactive on the way back in, with a prompt already up:
+    // whatever was covered stays covered.
+    const { state } = run(
+      [life('active', 'background', T0), started, life('background', 'inactive', T0 + 1)],
+      unlocked()
+    );
+    expect(state.obscured).toBe(true);
+  });
+
+  it('still stamps the record and never starts the clock on prompt-driven inactive', () => {
+    const { state, lastWrite } = run([started, life('active', 'inactive', T0)], unlocked());
+    expect(lastWrite).toEqual({ stampedAt: T0, locked: false });
+    expect(state.backgroundedAt).toBeNull();
+  });
+
+  it('prompt events write nothing', () => {
+    const s = unlocked();
+    expect(reduceLock(s, started, LOCK_GRACE_MS).persist).toBeNull();
+    expect(reduceLock(s, ended('active'), LOCK_GRACE_MS).persist).toBeNull();
+  });
+
+  it('a cold-launch check that lands mid-prompt in inactive does not raise the cover', () => {
+    const { state } = run([started, boot({ stampedAt: T0 - 1_000, locked: false }, 'inactive')]);
+    expect(state.obscured).toBe(false);
+  });
+});

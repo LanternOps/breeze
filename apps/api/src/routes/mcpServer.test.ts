@@ -97,6 +97,7 @@ vi.mock('../db', () => ({
     get: (_target, property) => testState.db[property as string],
   }),
   withDbAccessContext: vi.fn((_ctx: any, fn: any) => fn()),
+  hasDbAccessContext: vi.fn(() => false),
   withSystemDbAccessContext: vi.fn(),
   runOutsideDbContext: vi.fn((fn: () => any) => fn()),
 }));

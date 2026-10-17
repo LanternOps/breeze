@@ -21,7 +21,7 @@ index — `get_feature_status` before starting any wave). Branch per wave:
 | Wave | Plan | PRs | Depends on |
 |---|---|---|---|
 | W01 | [Framework core + Bitdefender GravityZone read path](2026-10-01-edr-w01-framework-bitdefender.md) | 2 (W01a tenancy/migration, W01b framework + adapter + sync + routes) | — |
-| W02 | Surfacing (plan written at wave start) | 2 (API, web) | W01 |
+| W02 | [Surfacing — incidents feed, UI, portal, alerts, read-only AI tools](2026-10-01-edr-provider-framework-w02-surfacing.md) | 2 (API, web) | W01 |
 | W03 | Actions + AI + push hints (GravityZone first) | 2 (actions + AI, webhook/push) | W01 (W02 recommended first for the UI buttons) |
 | W04 | Emsisoft cloud EMC adapter — **gated on #7436 confirmation** | 1 | W01 (+W03 for actions) |
 | W05 | Sophos Central adapter | 1 | W01 (+W03 for actions) |

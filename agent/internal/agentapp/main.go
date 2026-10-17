@@ -21,6 +21,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/internal/heartbeat"
@@ -64,12 +65,12 @@ func (t *unifiAuthTransport) RoundTrip(req *http.Request) (*http.Response, error
 }
 
 // newUnifiAPIClient builds an http.Client that authenticates to the Breeze API
-// as this agent and refuses redirects (token-leak guard).
+// as this agent and refuses redirects (token-leak guard). It backs the UniFi
+// collector config/telemetry calls and the workspace-index client, so its TLS
+// goes through the shared ECH dialer like the heartbeat's (#8869); tlsCfg may
+// be nil.
 func newUnifiAPIClient(token *secmem.SecureString, tlsCfg *tls.Config) *http.Client {
-	tr := &http.Transport{}
-	if tlsCfg != nil {
-		tr.TLSClientConfig = tlsCfg
-	}
+	tr := ech.NewTransport(tlsCfg)
 	return &http.Client{
 		Timeout:       30 * time.Second,
 		Transport:     &unifiAuthTransport{base: tr, token: token},
@@ -320,7 +321,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is /etc/breeze/agent.yaml)")
 	rootCmd.PersistentFlags().StringVar(&serverURL, "server", "", "Breeze server URL")
 	enrollCmd.Flags().StringVar(&enrollmentSecret, "enrollment-secret", "", "Enrollment secret (AGENT_ENROLLMENT_SECRET on the server)")
-	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Site ID to enroll into (optional, overrides enrollment key default)")
+	enrollCmd.Flags().StringVar(&enrollSiteID, "site-id", "", "Deprecated and ignored; the site comes from the enrollment key")
+	if err := enrollCmd.Flags().MarkDeprecated("site-id", siteIDDeprecationNotice); err != nil {
+		panic(err) // only fails if the flag above is not registered
+	}
 	enrollCmd.Flags().StringVar(&enrollDeviceRole, "device-role", "", "Device role override (e.g. workstation, server)")
 	enrollCmd.Flags().BoolVar(&forceEnroll, "force", false, "Re-enroll even if already enrolled; replaces AgentID/AuthToken on success (no-op on failure)")
 	enrollCmd.Flags().BoolVar(&quietEnroll, "quiet", false, "Suppress stdout progress output (errors still go to stderr). Intended for unattended installs.")
@@ -407,7 +411,9 @@ func Main(v string) {
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		// 1 unless the command asked for a specific code (ExitCodeError,
+		// e.g. `service install --strict-watchdog` → 78).
+		os.Exit(exitCodeFor(err))
 	}
 }
 
@@ -829,7 +835,7 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			AgentID:      cfg.AgentID,
 			AuthToken:    secureToken,
 			AgentVersion: version,
-			HTTPClient:   nil, // will use default
+			HTTPClient:   newShipperHTTPClient(),
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  authMon,
 			// Restores a set_log_level override across restarts (#7416).
@@ -978,6 +984,12 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 	// Start heartbeat - this implements the main agent run loop
 	hb := heartbeat.NewWithVersion(cfg, version, secureToken, tlsCfg)
 	hb.SetAuthMonitor(authMon)
+	// #8619: a server-signalled watchdog target on a host whose watchdog is
+	// not registered is installed through the bounded, persisted Ensure path
+	// instead of the legacy swap. Never in a support session.
+	if !cfg.SupportMode {
+		hb.EnableWatchdogEnsure()
+	}
 
 	// Bare-metal recovery W04a: if the rebuild engine left a marker on this
 	// disk (i.e. this agent booted up as the RESULT of a bare-metal
@@ -1461,6 +1473,11 @@ func applyEnrollResponseIdentity(cfg *config.Config, enrollResp *api.EnrollRespo
 	cfg.OrgID = enrollResp.OrgID
 	cfg.SiteID = enrollResp.SiteID
 	cfg.DeviceID = enrollResp.DeviceID
+	// #8206 — a new enrollment is a new device row, which starts at ownership
+	// epoch 1; the previous device's epoch must not carry over (a stale higher
+	// epoch would never be acknowledged and PAM would stay closed). 0 = none
+	// received yet; SaveEnrollment writes it from this config.
+	cfg.OwnershipEpoch = 0
 }
 
 // assertHostnameNonEmpty enforces the #439 contract: enrollment must
@@ -1534,8 +1551,16 @@ func enrollDevice(enrollmentKey string) {
 	}
 
 	cfg, err := config.Load(cfgFile)
+	// One-shot ECH is armed only now, with the loaded config, so an existing
+	// `ech: false` opt-out or a stored server kill switch is honoured. Nothing
+	// above touches the network (env, trimming, config-folder reclaim and the
+	// config read are all local). A failed load leaves the shared dialer's
+	// flags as they are (initially both on), not config.Default().
 	if err != nil {
+		enableOneShotECH(nil)
 		cfg = config.Default()
+	} else {
+		enableOneShotECH(cfg)
 	}
 
 	if serverURL != "" {
@@ -1561,6 +1586,7 @@ func enrollDevice(enrollmentKey string) {
 	initEnrollLogging(cfg, quietEnroll)
 
 	enrollLog := logging.L("enroll")
+	warnIgnoredSiteID(enrollLog, enrollSiteID)
 
 	// Clear any stale enroll-last-error.txt from a previous failed
 	// attempt BEFORE any validation or early return. Every attempt
@@ -2133,6 +2159,9 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		slog.Warn("helper config load failed; helper log shipping disabled", "error", err)
 		cfg = config.Default()
 	}
+	// Long-lived process: configure the shared ECH dialer for the log shipper
+	// (no one-shot mode).
+	ech.Configure(cfg.ECH, cfg.ECHServerEnabled)
 
 	socketPath := ipc.DefaultSocketPath()
 	if cfg.IPCSocketPath != "" {
@@ -2166,6 +2195,7 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 			AgentID:      cfg.AgentID,
 			AuthToken:    helperToken,
 			AgentVersion: version + "-helper",
+			HTTPClient:   newShipperHTTPClient(),
 			MinLevel:     cfg.LogShippingLevel,
 			AuthMonitor:  helperAuthMon,
 			// Follows the agent's set_log_level override (#7416).

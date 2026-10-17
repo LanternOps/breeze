@@ -189,8 +189,11 @@ pnpm db:studio
 **3. Start development servers:**
 
 ```bash
-# Start all services (web + API)
-pnpm dev
+# Start the app services (api + web + portal)
+pnpm dev:app
+
+# `pnpm dev` runs every package, including the Office add-ins, which need the Windows or
+# macOS certificate store; on Linux/WSL they skip themselves with a message.
 ```
 
 | Service | URL |

@@ -21,9 +21,10 @@ import { fetchWithAuth } from "../../stores/auth";
 import { usePermissions } from "../../lib/permissions";
 import { acquire, DEFAULT_FETCH_LIMIT } from "@/lib/fetchLimiter";
 import { formatLastSeen } from "@/lib/formatTime";
-import { asRecord, toPercentNullable } from "@/lib/deviceUtils";
+import { asRecord, toPercent, toPercentNullable } from "@/lib/deviceUtils";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { EntityLink } from "@/components/shared/EntityLink";
 
 type DeviceCardProps = {
   device: Device;
@@ -304,6 +305,9 @@ export default function DeviceCard({
   // ("Device is quarantined") rather than a blanket "Device is not online".
   const commandQueueable = isCommandQueueable(device.status);
   const online = device.status === "online";
+  // Round once: the row may carry a raw float; text and thresholds use the same value.
+  const cpuPercent = toPercent(device.cpuPercent);
+  const ramPercent = toPercent(device.ramPercent);
   const liveSessionTitle = notOnlineTitle(device.status, t);
   // UX gate; the terminal session (routes/remote) requires remote.access.
   const { can } = usePermissions();
@@ -587,14 +591,14 @@ export default function DeviceCard({
           <div>
             <div className="mb-1 flex items-center justify-between text-xs">
               <span className="text-muted-foreground">CPU</span>
-              <span className="font-medium">{device.cpuPercent}%</span>
+              <span className="font-medium">{cpuPercent}%</span>
             </div>
             {historyState === "ready" ? (
               <div
                 className={
-                  device.cpuPercent > 80
+                  cpuPercent > 80
                     ? "text-destructive"
-                    : device.cpuPercent > 60
+                    : cpuPercent > 60
                       ? "text-warning"
                       : "text-success"
                 }
@@ -617,14 +621,14 @@ export default function DeviceCard({
           <div>
             <div className="mb-1 flex items-center justify-between text-xs">
               <span className="text-muted-foreground">RAM</span>
-              <span className="font-medium">{device.ramPercent}%</span>
+              <span className="font-medium">{ramPercent}%</span>
             </div>
             {historyState === "ready" ? (
               <div
                 className={
-                  device.ramPercent > 80
+                  ramPercent > 80
                     ? "text-destructive"
-                    : device.ramPercent > 60
+                    : ramPercent > 60
                       ? "text-warning"
                       : "text-success"
                 }
@@ -648,7 +652,7 @@ export default function DeviceCard({
       )}
 
       <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-        <span>{device.siteName}</span>
+        <EntityLink kind="site" id={device.siteId} name={device.siteName} />
         <span>
           {t("deviceCard.lastSeen")}{" "}
           {formatLastSeen(device.lastSeen, effectiveTimezone)}

@@ -4397,6 +4397,165 @@
       "docs": [
         "deploy/custom-sender-addresses.mdx"
       ]
+    },
+    {
+      "pattern": "apps/api/src/services/diagnosticAccess/**",
+      "docs": [
+        "features/diagnostic-file-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/aiToolsDiagnosticAccess.ts",
+      "docs": [
+        "features/diagnostic-file-access.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/remote/tools/diagaccess_*.go",
+      "docs": [
+        "features/diagnostic-file-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/edr/**",
+      "docs": [
+        "features/edr-integrations.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/partnerApi/**",
+      "docs": [
+        "reference/api.mdx",
+        "reference/api-keys.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/remote/clipboard/**",
+      "docs": [
+        "features/remote-access.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/devices/placement.ts",
+      "docs": [
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/discoveryAssetPlacement.ts",
+      "docs": [
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/ech/**",
+      "docs": [
+        "agents/advanced-install.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/agentapp/oneshot_ech.go",
+      "docs": [
+        "agents/advanced-install.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/agents/heartbeatSettingsDecision.ts",
+      "docs": [
+        "deploy/environment.mdx",
+        "agents/advanced-install.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/admission/**",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/config/tunnelOrigin.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/migrationWindowLimits.ts",
+      "docs": [
+        "deploy/environment.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/ticketType.ts",
+      "docs": [
+        "features/ticketing.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/ticketLinkService.ts",
+      "docs": [
+        "features/ticketing.mdx",
+        "reference/api.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/ticketApproval/**",
+      "docs": [
+        "features/ticket-customer-approval.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tickets/approvals.ts",
+      "docs": [
+        "features/ticket-customer-approval.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/tickets/approvalSettings.ts",
+      "docs": [
+        "features/ticket-customer-approval.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/edrProviders/**",
+      "docs": [
+        "features/edr-provider-framework.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/workloads/**",
+      "docs": [
+        "features/workload-inventory.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/services/imageCurrency/**",
+      "docs": [
+        "features/workload-inventory.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/trustPage.ts",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/trustPagePublic.ts",
+      "docs": [
+        "security/trust-center.mdx"
+      ]
+    },
+    {
+      "pattern": "apps/api/src/routes/orgContactResponsibilities.ts",
+      "docs": [
+        "reference/organizations-and-sites.mdx"
+      ]
+    },
+    {
+      "pattern": "agent/internal/workloads/**",
+      "docs": [
+        "features/workload-inventory.mdx"
+      ]
     }
   ]
 }

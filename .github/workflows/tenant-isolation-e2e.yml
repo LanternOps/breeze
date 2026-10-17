@@ -1,0 +1,145 @@
+# Cross-tenant isolation through the browser (e2e-tests/tests/tenant-isolation.spec.ts).
+#
+# Signs in as one tenant and probes a second, unrelated tenant's pages and API
+# resources, with a positive control (the owning tenant) for every probe.
+# The RLS and route integration suites cover the database and API layers; this
+# covers the path a real signed-in user takes.
+#
+# Not part of the PR merge gate (it brings up a full stack). It runs nightly on
+# main, on PRs that change the test itself, and on demand at an exact commit:
+# /release requires it green at the SHA being tagged:
+#   gh workflow run tenant-isolation-e2e.yml -f ref=<sha>
+name: Tenant Isolation E2E
+
+on:
+  schedule:
+    - cron: '41 7 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, tag or branch to test
+        required: true
+        default: main
+  pull_request:
+    branches: [main]
+    paths:
+      - 'e2e-tests/tests/tenant-isolation.spec.ts'
+      - 'e2e-tests/seed-tenant-isolation.sql'
+      - '.github/workflows/tenant-isolation-e2e.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PNPM_VERSION: '10.34.5'
+
+permissions:
+  contents: read
+
+jobs:
+  tenant-isolation:
+    name: Tenant Isolation E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Record the commit under test
+        run: echo "### Tenant isolation at $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+
+      # Throwaway values for an ephemeral CI stack; same shape as ci.yml's
+      # portal-dev-e2e job. No real credentials.
+      - name: Create .env for the dev stack
+        run: |
+          cat > .env <<'ENVEOF'
+          BREEZE_VERSION=ci-tenant-isolation-e2e
+          POSTGRES_USER=breeze
+          POSTGRES_PASSWORD=breeze
+          POSTGRES_DB=breeze
+          REDIS_PASSWORD=ci-tenant-isolation-e2e-redis-pw
+          JWT_SECRET=ci-tenant-isolation-e2e-k7x9Qm4pR2vL8nW5jT3yF6hB0cA1dE4gI7
+          PARTNER_API_CURSOR_SIGNING_KEY=nJ4B7uS2xielQGyxLoBLcPCPey5FyilPeVQbGL10CDo=
+          AGENT_ENROLLMENT_SECRET=ci-tenant-isolation-e2e-agent-enrollment-Hy4Bz9Mp2Wq6
+          APP_ENCRYPTION_KEY=e9367714341ea19491ff7cd095d1a97e15ae3f7962416723ecfb29a89ed71eb9
+          MFA_ENCRYPTION_KEY=e86f8b88f2c058d428de55c4abec1b50a3cd960a7205dffdb65be8130abbb777
+          ENROLLMENT_KEY_PEPPER=ci-tenant-isolation-e2e-enrollment-pepper-Hy4Bz9Mp2W
+          MFA_RECOVERY_CODE_PEPPER=ci-tenant-isolation-e2e-mfa-recovery-pepper-Nq8Zx2
+          TURN_SECRET=ci-tenant-isolation-e2e-turn-secret
+          EVENT_PERMISSION_EPOCH_MODE=compat
+          REMOTE_ACCESS_ADMISSION_MODE=open
+          REMOTE_WS_AUTH_MODE=post_upgrade
+          REMOTE_WS_REDIS_TOPOLOGY=standalone-single-primary
+          FORCE_HTTPS=false
+          BREEZE_WORKSPACE_ENABLED=false
+          BREEZE_AI_AGENTS_ENABLED=true
+          AI_OPERATOR_TASKS_ENABLED=true
+          AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED=true
+          MFA_FORCE_FOR_PARTNER_ADMIN=false
+          EMAIL_DOMAINS_PROVIDER=fake
+          E2E_MODE=true
+          BREEZE_API_IMAGE_REF=ghcr.io/lanternops/breeze/api:latest
+          BREEZE_WEB_IMAGE_REF=ghcr.io/lanternops/breeze/web:latest
+          BREEZE_PORTAL_IMAGE_REF=ghcr.io/lanternops/breeze/portal:latest
+          BREEZE_BINARIES_IMAGE_REF=ghcr.io/lanternops/breeze/binaries:latest
+          CADDY_IMAGE_REF=caddy:2-alpine
+          POSTGRES_IMAGE_REF=pgvector/pgvector:pg16
+          REDIS_IMAGE_REF=redis:7-alpine
+          COTURN_IMAGE_REF=coturn/coturn:latest
+          ENVEOF
+
+      - name: Install e2e-tests dependencies
+        working-directory: e2e-tests
+        run: pnpm install --ignore-workspace
+
+      - name: Install Chromium
+        uses: ./.github/actions/install-chromium
+        with:
+          run-prefix: pnpm exec
+          working-directory: e2e-tests
+
+      - name: Bring up the dev-mode stack
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts up --rebuild
+
+      - name: Run the tenant isolation spec
+        run: ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts test -- tests/tenant-isolation.spec.ts
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: tenant-isolation-playwright-report
+          path: |
+            e2e-tests/playwright-report
+            e2e-tests/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Container logs on failure
+        if: failure()
+        run: |
+          for c in $(docker ps -aq); do
+            echo "===== $(docker inspect -f '{{ .Name }}' "${c}") ====="
+            docker logs --tail 200 "${c}" 2>&1 || true
+          done
+
+      - name: Teardown
+        if: always()
+        run: |
+          if [ -f .env.stack ]; then
+            ./e2e-tests/node_modules/.bin/tsx scripts/dev/wt-stack/cli.ts down || true
+          fi

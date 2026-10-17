@@ -7,7 +7,7 @@ package mgmtdetect
 func AllSignatures() []Signature {
 	return []Signature{
 		// =====================================================================
-		// RMM — Remote Monitoring & Management (11 tools)
+		// RMM — Remote Monitoring & Management (12 tools)
 		// =====================================================================
 
 		// ConnectWise Automate (LabTech)
@@ -154,8 +154,19 @@ func AllSignatures() []Signature {
 			},
 		},
 
+		// OpenFrame
+		{
+			Name: "OpenFrame", Category: CategoryRMM,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "com.openframe.client", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "openframe-client.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\OpenFrame\bin\openframe-client.exe`, OS: "windows"},
+			},
+		},
+
 		// =====================================================================
-		// Remote Access (7 tools)
+		// Remote Access (12 tools)
 		// =====================================================================
 
 		// TeamViewer
@@ -191,8 +202,10 @@ func AllSignatures() []Signature {
 			Checks: []Check{
 				{Type: CheckServiceRunning, Value: "SplashtopRemoteService", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "SRService.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "SRManager.exe", OS: "windows"},
 				{Type: CheckProcessRunning, Value: "SplashtopStreamer", OS: "darwin"},
 				{Type: CheckFileExists, Value: `C:\Program Files (x86)\Splashtop\Splashtop Remote\Server\SRService.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Splashtop\Splashtop Remote\Server\SRService.exe`, OS: "windows"},
 				{Type: CheckFileExists, Value: "/Applications/Splashtop Streamer.app", OS: "darwin"},
 			},
 		},
@@ -246,6 +259,69 @@ func AllSignatures() []Signature {
 				{Type: CheckProcessRunning, Value: "RustDesk", OS: "darwin"},
 				{Type: CheckFileExists, Value: `C:\Program Files\RustDesk\rustdesk.exe`, OS: "windows"},
 				{Type: CheckFileExists, Value: "/Applications/RustDesk.app", OS: "darwin"},
+			},
+		},
+
+		// SimpleHelp (JWrapper-packaged; the install directory carries the
+		// deployment brand, so only the reported default path is probed).
+		{
+			Name: "SimpleHelp", Category: CategoryRemoteAccess,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "Remote Access Service", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "SimpleService.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\ProgramData\JWrapper-Remote Access\JWAppsSharedConfig\restricted\SimpleService.exe`, OS: "windows"},
+			},
+		},
+
+		// MeshCentral (Mesh Agent). Tactical RMM bundles the stock Mesh Agent,
+		// so Tactical hosts report both rows; that is accurate, not a dupe.
+		{
+			Name: "MeshCentral", Category: CategoryRemoteAccess,
+			OS: []string{"windows", "darwin"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "Mesh Agent", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "MeshAgent.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "meshagent", OS: "darwin"},
+				{Type: CheckFileExists, Value: `C:\Program Files\Mesh Agent\MeshAgent.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: "/usr/local/mesh_services/meshagent/meshagent", OS: "darwin"},
+			},
+		},
+
+		// TightVNC
+		{
+			Name: "TightVNC", Category: CategoryRemoteAccess,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "tvnserver", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "tvnserver.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\TightVNC\tvnserver.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\TightVNC\tvnserver.exe`, OS: "windows"},
+			},
+		},
+
+		// RealVNC (VNC Server)
+		{
+			Name: "RealVNC", Category: CategoryRemoteAccess,
+			OS: []string{"windows", "darwin"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "vncserver", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "vncserver.exe", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "vncserver", OS: "darwin"},
+				{Type: CheckFileExists, Value: `C:\Program Files\RealVNC\VNC Server\vncserver.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: "/Library/vnc/vncserver", OS: "darwin"},
+			},
+		},
+
+		// UltraVNC
+		{
+			Name: "UltraVNC", Category: CategoryRemoteAccess,
+			OS: []string{"windows"},
+			Checks: []Check{
+				{Type: CheckServiceRunning, Value: "uvnc_service", OS: "windows"},
+				{Type: CheckProcessRunning, Value: "winvnc.exe", OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files\uvnc bvba\UltraVNC\winvnc.exe`, OS: "windows"},
+				{Type: CheckFileExists, Value: `C:\Program Files (x86)\uvnc bvba\UltraVNC\winvnc.exe`, OS: "windows"},
 			},
 		},
 

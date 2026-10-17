@@ -1,10 +1,14 @@
 import TopologyEntry from '../topology/TopologyEntry';
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useHashState } from "@/lib/useHashState";
+import { usePermissions } from "@/lib/permissions";
+import { ENABLE_ENDPOINT_MESSAGING } from "@/lib/featureFlags";
+import DeviceChatPanel from "../endpointMessages/DeviceChatPanel";
 import { fetchWithAuth } from "../../stores/auth";
 import { asList } from "@/lib/asList";
 import {
   Monitor,
+  Container,
   Cpu,
   Database,
   MemoryStick,
@@ -34,6 +38,7 @@ import {
   Cloud,
   History,
   Bot,
+  MessageSquare,
 } from "lucide-react";
 import { formatPercent } from "@/lib/i18n/format";
 import { formatUptime } from "../../lib/utils";
@@ -66,7 +71,10 @@ import DeviceChangeHistoryTab from "./DeviceChangeHistoryTab";
 import DeviceBootPerformanceTab from "./DeviceBootPerformanceTab";
 import DevicePlaybookHistory from "./DevicePlaybookHistory";
 import DevicePeripheralsTab from "./DevicePeripheralsTab";
+import DeviceWorkloadsTab from "./DeviceWorkloadsTab";
+import DeviceRestorePointAttempts from "./DeviceRestorePointAttempts";
 import DeviceWarrantyCard from "./DeviceWarrantyCard";
+import { EntityLink } from "@/components/shared/EntityLink";
 import DeviceBillingCard from "./DeviceBillingCard";
 import DeviceUserIdleStat from "./DeviceUserIdleStat";
 import MacOSPermissionsBanner from "./MacOSPermissionsBanner";
@@ -87,6 +95,7 @@ import DeviceComplianceTab from "./DeviceComplianceTab";
 import DeviceLinkedProfilesTab from "./DeviceLinkedProfilesTab";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import ContactResponsibilitiesCard from "../shared/ContactResponsibilitiesCard";
 import { Puzzle } from "lucide-react";
 import ExtensionSlotHost, {
   useExtensionSlotDescriptors,
@@ -119,10 +128,13 @@ type CoreTab =
   | "boot-performance"
   | "playbooks"
   | "peripherals"
+  | "workloads"
+  | "system-restore"
   | "backup"
   | "linked-profiles"
   | "tickets"
-  | "operator-tasks";
+  | "operator-tasks"
+  | "chat";
 
 /**
  * Extension-contributed `device.detail.tabs` tab id:
@@ -218,10 +230,13 @@ const VALID_TABS: CoreTab[] = [
   "boot-performance",
   "playbooks",
   "peripherals",
+  "workloads",
+  "system-restore",
   "backup",
   "linked-profiles",
   "tickets",
   "operator-tasks",
+  "chat",
 ];
 
 // Mirrors the character set an `ExtensionSlotDescriptor.key` can contain:
@@ -405,8 +420,15 @@ export default function DeviceDetails({
   // about linkage, so a `#linked-profiles` deep link on an unlinked device
   // would otherwise select a tab that has no button and no panel — a blank
   // content area. Resolve it back to Overview here, where linkage is known.
+  // Chat (#8743) is hidden unless the build enables endpoint messaging AND the
+  // user may send (UX gate; every chat route re-checks server-side). A
+  // `#chat/<conversationId>` deep link without access falls back to Overview.
+  const { can } = usePermissions();
+  const canChat = ENABLE_ENDPOINT_MESSAGING && can("endpoint_messages", "send");
   const activeTab: Tab =
-    hashTab === "linked-profiles" && !isLinked ? "overview" : hashTab;
+    (hashTab === "linked-profiles" && !isLinked) || (hashTab === "chat" && !canChat)
+      ? "overview"
+      : hashTab;
 
   // "Needs attention" counts per signal tab (GET /devices/:id/tab-counts).
   // Drives the badges and the promotion of by-default-empty tabs (Anomalies,
@@ -611,6 +633,35 @@ export default function DeviceDetails({
       icon: <Usb className="h-4 w-4" />,
       title: t("deviceDetails.usbBluetoothAndConnectedDevices"),
     },
+    // Workload hosts only (#8193): hostsWorkloads is true once any container
+    // or VM runtime is detected. A `#workloads` deep link still mounts the
+    // panel on other devices — it explains "no runtime" / "agent too old"
+    // rather than leaving a blank content area.
+    ...(device.hostsWorkloads
+      ? [
+          {
+            id: "workloads" as Tab,
+            group: groups.inventory,
+            label: t("deviceDetails.workloads"),
+            icon: <Container className="h-4 w-4" />,
+            title: t("deviceDetails.workloadsTitle"),
+          },
+        ]
+      : []),
+    // Windows only (#4759): System Restore request ledger. A `#system-restore`
+    // deep link still mounts the panel on other devices, where the explicit
+    // empty state explains there is nothing recorded.
+    ...(device.os === "windows"
+      ? [
+          {
+            id: "system-restore" as Tab,
+            group: groups.management,
+            label: t("deviceDetails.systemRestore"),
+            icon: <History className="h-4 w-4" />,
+            title: t("deviceDetails.systemRestore"),
+          },
+        ]
+      : []),
     // --- Management ---
     {
       id: "scripts",
@@ -647,6 +698,17 @@ export default function DeviceDetails({
       label: t("deviceDetails.security"),
       icon: <Shield className="h-4 w-4" />,
     },
+    ...(canChat
+      ? [
+          {
+            id: "chat" as Tab,
+            group: groups.management,
+            label: t("endpointChat.tabLabel"),
+            icon: <MessageSquare className="h-4 w-4" />,
+            title: t("endpointChat.tabTitle"),
+          },
+        ]
+      : []),
     {
       id: "playbooks",
       group: groups.management,
@@ -790,7 +852,8 @@ export default function DeviceDetails({
                   {t("deviceDetails.agentV")}
                   {device.agentVersion}
                 </span>
-                <span>{device.siteName}</span>
+                <EntityLink kind="org" id={device.orgId} name={device.orgName} />
+                <EntityLink kind="site" id={device.siteId} name={device.siteName} />
               </div>
             </div>
           </div>
@@ -817,6 +880,7 @@ export default function DeviceDetails({
       {activeTab === "overview" && (
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div className="min-w-0 flex-1 space-y-6">
+            <ContactResponsibilitiesCard orgId={device.orgId} siteId={device.siteId} deviceId={device.id} />
             {/* Two groups — Health (CPU/RAM/Uptime) and Activity (Last Seen/
                 User/Idle) — side by side on ≥xl (stacked and wrapping below,
                 since the Activity rail narrows this card at lg). Stats are
@@ -986,6 +1050,17 @@ export default function DeviceDetails({
         />
       )}
 
+      {activeTab === "workloads" && (
+        <DeviceWorkloadsTab
+          deviceId={device.id}
+          timezone={effectiveTimezone}
+        />
+      )}
+
+      {activeTab === "system-restore" && (
+        <DeviceRestorePointAttempts deviceId={device.id} />
+      )}
+
       {activeTab === "peripherals" && (
         <DevicePeripheralsTab
           deviceId={device.id}
@@ -1018,6 +1093,14 @@ export default function DeviceDetails({
       )}
 
       {activeTab === "tickets" && <DeviceTicketsTab deviceId={device.id} />}
+
+      {activeTab === "chat" && (
+        <DeviceChatPanel
+          deviceId={device.id}
+          osType={device.os}
+          agentVersion={device.agentVersion}
+        />
+      )}
 
       {activeTab === "operator-tasks" && (
         <OperatorTaskActivityFeed deviceId={device.id} />

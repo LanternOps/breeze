@@ -174,6 +174,43 @@ The watchdog reads its configuration from the same config directory as the agent
 
 ---
 
+## Automatic repair of a missing watchdog
+
+If the watchdog could not be installed during `breeze-agent service install` (for example because the download failed), an enrolled, running agent installs it later by itself. It does this only when the Breeze server offers a watchdog version for the device, which the server already does for devices with no watchdog and which honours any watchdog version pin. The agent downloads the watchdog through its normal authenticated update path (signed release manifest, SHA-256 checksum, and the same network policy as agent updates), runs that verified binary's own `service install`, and counts the install as successful only once the watchdog service is registered and running. On Linux the download is staged under `/var/lib/breeze/watchdog-stage` and the install runs through a `systemd-run` transient service.
+
+Retries are bounded and persisted across agent restarts. After a failure the agent waits about 5 minutes, then 15 minutes, 45 minutes, 2 hours 15 minutes, and then 6 hours between attempts (with ±20% jitter), for 8 attempts in total. After that it checks once a day. Failures that retrying cannot fix (a signature, checksum, or network-policy refusal) stop immediately and are re-checked only once a week. Upgrading the agent to a new version allows one fresh round of attempts. The retry state is kept in `watchdog-install.state` in the agent's config directory. It is safe to delete, which resets the retry budget but never removes an opt-out. If the file is corrupt, the agent waits a day rather than retrying immediately.
+
+The agent does nothing when its `auto_update` setting is off, when it is a development build, when the host is not yet enrolled (it waits for enrollment), when the host's init system is unsupported (Linux without systemd), or when the operator opted out with `service install --no-watchdog`. See [Installing the agent](/agents/installation#what-gets-installed) for how to opt out and re-enable.
+
+### Retry timeline
+
+| Attempt | Waits before the next attempt after a failure |
+|---|---|
+| 1 | about 5 minutes |
+| 2 | about 15 minutes |
+| 3 | about 45 minutes |
+| 4 | about 2 hours 15 minutes |
+| 5–7 | about 6 hours |
+| 8 | gives up; one probe attempt per day afterwards |
+| Signature, checksum or network-policy failure (any attempt) | gives up at once; one probe attempt per week afterwards |
+
+The first attempt happens on the first heartbeat after enrollment in which the server offers a watchdog version. All waits have ±20% jitter.
+
+### Troubleshooting a watchdog that is not installed
+
+The device's **Info** tab shows a banner when the watchdog could not be installed:
+
+- **Gave up**: the attempts above are used up, or a failure that retrying cannot fix occurred. The banner names the reason (for example a failed download, a signature or integrity check, or a failed install command) and the date it started.
+- **Not supported**: the host cannot run the watchdog service, for example Linux without systemd.
+
+A host that is still retrying, that opted out with `--no-watchdog`, or whose `auto_update` setting is off shows no banner. For those, check the agent log or the device's diagnostic logs.
+
+To retry right away, run `service install --watchdog` on the host (`sudo breeze-agent service install --watchdog` on Linux and macOS, `breeze-agent.exe service install --watchdog` on Windows). It clears any opt-out, resets the retry state, and installs the watchdog now. Fix the cause first when the reason is a signature, integrity or network-policy failure, otherwise the next attempt fails the same way. Deleting `watchdog-install.state` from the agent's config directory also resets the retry budget without installing anything.
+
+The banner clears when the agent stops reporting the failure. `service install --watchdog` restarts an enrolled agent, so the banner clears after its next heartbeat. If you install the watchdog another way (for example `breeze-watchdog service install`), restart the agent service afterwards to clear the banner.
+
+---
+
 ## Watchdog Logs API
 
 Watchdog diagnostic logs are queryable through a dedicated API endpoint that filters specifically for watchdog-component logs.

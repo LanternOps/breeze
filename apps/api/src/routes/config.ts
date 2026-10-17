@@ -7,6 +7,7 @@ import { isS3Configured } from '../services/s3Storage';
 import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import { resolveAllMlFeatureFlagsForOrg } from '../services/mlFeatureFlags';
 import { isCallerVerificationEnabled } from '../services/callerVerification/gate';
+import { ERROR_CODES } from '@breeze/shared';
 
 export const configRoutes = new Hono();
 
@@ -72,10 +73,10 @@ configRoutes.get(
     const orgId = query.orgId ?? auth.orgId;
 
     if (!orgId) {
-      return c.json({ error: 'Organization context required' }, 400);
+      return c.json({ error: 'Organization context required', code: ERROR_CODES.ACCESS_DENIED }, 400);
     }
     if (!auth.canAccessOrg(orgId)) {
-      return c.json({ error: 'Organization not found or access denied' }, 403);
+      return c.json({ error: 'Organization not found or access denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
     }
 
     const flags = await resolveAllMlFeatureFlagsForOrg(orgId);

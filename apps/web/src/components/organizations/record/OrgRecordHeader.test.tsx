@@ -2,6 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@/lib/i18n';
+
+const granted = vi.hoisted(() => new Set<string>());
+const flags = vi.hoisted(() => ({ ENABLE_ENDPOINT_MESSAGING: true }));
+vi.mock('@/lib/featureFlags', async (orig) => ({
+  ...(await orig<typeof import('@/lib/featureFlags')>()),
+  get ENABLE_ENDPOINT_MESSAGING() { return flags.ENABLE_ENDPOINT_MESSAGING; },
+}));
+vi.mock('@/lib/permissions', () => ({
+  usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
+}));
 import OrgRecordHeader from './OrgRecordHeader';
 import type { OrgRecordOrg, OrgSummary } from './orgRecordFetch';
 
@@ -68,6 +78,43 @@ describe('OrgRecordHeader', () => {
     expect(screen.queryByText('No primary contact')).toBeNull();
   });
 
+  it('renders the billing address on its own line under the contact line', () => {
+    renderHeader({
+      org: {
+        ...ORG,
+        billingAddressLine1: '1 Main St',
+        billingAddressLine2: 'Suite 200',
+        billingAddressCity: 'Springfield',
+        billingAddressRegion: 'IL',
+        billingAddressPostalCode: '62701',
+        billingAddressCountry: 'US',
+      },
+    });
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain(
+      '1 Main St, Suite 200 · Springfield, IL 62701 · US',
+    );
+    expect(screen.queryByTestId('org-record-billing-address-link')).toBeNull();
+  });
+
+  it('offers the billing settings tab when every address field is empty', () => {
+    renderHeader();
+    expect(screen.getByText('No billing address')).toBeTruthy();
+    expect(screen.getByTestId('org-record-billing-address-link').getAttribute('href')).toBe(
+      '/settings/organizations/org-1#billing',
+    );
+  });
+
+  it('renders a partial address rather than the empty state', () => {
+    renderHeader({ org: { ...ORG, billingAddressCountry: 'US' } });
+    expect(screen.getByTestId('org-record-billing-address').textContent).toContain('US');
+    expect(screen.queryByText('No billing address')).toBeNull();
+  });
+
+  it('shows the address even while the summary is still null', () => {
+    renderHeader({ summary: null, org: { ...ORG, billingAddressCity: 'Austin' } });
+    expect(screen.getByTestId('org-record-billing-address')).toBeTruthy();
+  });
+
   it('drops every write affordance when the org is archived', () => {
     renderHeader({ archived: true });
     expect(screen.queryByTestId('org-record-work-here')).toBeNull();
@@ -95,5 +142,34 @@ describe('OrgRecordHeader', () => {
     unmount();
     renderHeader({ mismatchedScopeOrgName: null });
     expect(screen.queryByTestId('org-record-scope-chip')).toBeNull();
+  });
+});
+
+describe('OrgRecordHeader - Send message is gated on endpoint_messages:send', () => {
+  it('hides the button without the permission even when a handler is passed', () => {
+    granted.clear();
+    renderHeader({ onSendMessage: vi.fn() });
+    expect(screen.queryByTestId('org-record-send-message')).toBeNull();
+  });
+
+  it('shows the button with the permission', () => {
+    granted.clear();
+    granted.add('endpoint_messages:send');
+    renderHeader({ onSendMessage: vi.fn() });
+    expect(screen.getByTestId('org-record-send-message')).toBeTruthy();
+  });
+
+  // #8968: the rollout flag cannot be switched on from any UI yet, so the
+  // entry point stays hidden until the build enables endpoint messaging.
+  it('hides the button when the build-time endpoint messaging flag is off', () => {
+    flags.ENABLE_ENDPOINT_MESSAGING = false;
+    try {
+      granted.clear();
+      granted.add('endpoint_messages:send');
+      renderHeader({ onSendMessage: vi.fn() });
+      expect(screen.queryByTestId('org-record-send-message')).toBeNull();
+    } finally {
+      flags.ENABLE_ENDPOINT_MESSAGING = true;
+    }
   });
 });

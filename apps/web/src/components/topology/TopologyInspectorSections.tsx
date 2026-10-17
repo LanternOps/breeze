@@ -59,12 +59,17 @@ export function NodeIdentity({ graph, node, onSelectNode, sharedAddressCount = 0
 }
 
 /** A grouped card or gateway tile: what it is, how it was grouped, who reported it, and its members. */
-export function GroupSummary({ graph, group, onSelectNode }: { graph: GraphResponse; group: PresentationNode; onSelectNode?: (id: string) => void }) {
+export function GroupSummary({ graph, group, onSelectNode, siteName }: { graph: GraphResponse; group: PresentationNode; onSelectNode?: (id: string) => void; siteName?: string }) {
   const { t } = useTranslation('topology');
   const g = group.group!;
   const label = (id: string) => graph.nodes.find((node) => node.id === id)?.label ?? t('outsideProjection');
   const unverified = g.members.filter((member) => member.placement === 'address_match').length;
   const cacheSeen = g.members.filter((member) => member.placement === 'neighbor_seen').length;
+  const site = siteName || t('grouped.thisSite');
+  const declaration = g.declaration;
+  const declarationNote = !declaration ? null : g.basis === 'declared_site_network' ? t('grouped.declaredEmpty', { site })
+    : declaration.state === 'undeclared' ? t('grouped.notDeclared', { site })
+    : declaration.sources.length > 1 ? t('grouped.declaredBoth') : declaration.sources[0] === 'network_baseline' ? t('grouped.declaredBaseline') : t('grouped.declaredDiscovery');
   const macConflict = g.conflictBasis?.includes('gateway_mac') ?? false;
   const addressConflict = !g.conflictBasis?.length || g.conflictBasis.includes('gateway_address');
   if (g.kind === 'gateway') {
@@ -90,6 +95,7 @@ export function GroupSummary({ graph, group, onSelectNode }: { graph: GraphRespo
   }
   return <div data-testid="topology-group-summary" className="space-y-3 text-sm">
     <p>{g.kind === 'unidentified' ? t('grouped.unidentifiedExplanation') : t('grouped.networkExplanation', { prefix: g.prefix, count: g.observerCount })}</p>
+    {declarationNote && <p data-testid="topology-declaration" className="text-muted-foreground">{declarationNote}</p>}
     {g.kind === 'network' && g.networkClass !== 'lan' && <p className="text-muted-foreground">{t(/* i18n-dynamic */ `grouped.class.${g.networkClass}`)}</p>}
     {g.gatewayAddresses.length > 0 && <p>{t('grouped.via', { gateways: g.gatewayAddresses.join(', ') })}</p>}
     {g.conflict && addressConflict && <p className="text-muted-foreground">{t('grouped.conflict')}</p>}

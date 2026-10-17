@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const {
@@ -125,7 +125,8 @@ vi.mock('../../services/aiAgentSdkTools', () => ({
   createBreezeMcpServer: vi.fn(() => ({ type: 'sdk', name: 'breeze' })),
 }));
 
-vi.mock('../../services/aiInputSanitizer', () => ({
+vi.mock('../../services/aiInputSanitizer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../services/aiInputSanitizer')>()),
   sanitizeUserMessage: vi.fn(() => ({ sanitized: 'hello', flags: [] })),
 }));
 
@@ -175,6 +176,9 @@ vi.mock('../../services/llm/llmConfigResolver', () => ({
     }
   },
 }));
+
+const callerHelperBrandingMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/callerVerification/helperBranding', () => ({ callerHelperBranding: callerHelperBrandingMock }));
 
 vi.mock('../../services/sentry', () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...args),
@@ -385,6 +389,39 @@ describe('helper routes permission derivation', () => {
     const body = await res.json();
     expect(body.permissionLevel).toBe('extended');
     expect(resolveHelperPermissionLevelForDevice).toHaveBeenCalledWith('device-1', 'basic');
+  });
+
+  describe('caller verification branding (#6354 W02)', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('adds partner branding for the authenticated device org while the feature is live', async () => {
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+      mockHelperAuthDevice();
+      callerHelperBrandingMock.mockResolvedValueOnce({ partnerName: 'Northwind', logoUrl: null });
+      const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).branding).toEqual({ partnerName: 'Northwind', logoUrl: null });
+      expect(callerHelperBrandingMock).toHaveBeenCalledWith('org-1');
+    });
+
+    it('sends null branding and does no lookup while the feature is dark', async () => {
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'false');
+      mockHelperAuthDevice();
+      callerHelperBrandingMock.mockClear();
+      const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).branding).toBeNull();
+      expect(callerHelperBrandingMock).not.toHaveBeenCalled();
+    });
+
+    it('never fails the config response over branding', async () => {
+      vi.stubEnv('CALLER_VERIFICATION_ENABLED', 'true');
+      mockHelperAuthDevice();
+      callerHelperBrandingMock.mockRejectedValueOnce(new Error('db down'));
+      const res = await app.request('/helper/config', { headers: { Authorization: 'Bearer brz_agent_token' } });
+      expect(res.status).toBe(200);
+      expect((await res.json()).branding).toBeNull();
+    });
   });
 
   it('refuses /helper/config with helper_disabled when the effective setting is off', async () => {

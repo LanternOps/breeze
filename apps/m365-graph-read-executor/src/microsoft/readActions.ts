@@ -125,6 +125,15 @@ export async function executeGraphReadAction(
         }, fields);
       }
 
+      // Caller verification (#6354 W03): the target's mailbox set, object id only.
+      case 'm365.user.mailboxes': {
+        return await projectedResource(graphClient, {
+          accessToken,
+          path: `/users/${encodeURIComponent(action.userId)}`,
+          select: fields,
+        }, fields);
+      }
+
       case 'm365.signins.list': {
         const pageSize = action.pageSize ?? DEFAULT_PAGE_SIZE;
         const sinceHours = action.sinceHours ?? DEFAULT_SIGNIN_HOURS;

@@ -430,3 +430,69 @@ Monitoring data can accumulate over time, especially on busy systems.
 5. Restart the affected containers after configuration changes.
 
 </Steps>
+
+## Hot-path cache
+
+The agent heartbeat and UniFi collector poll serve a few per-org and global
+values from small in-process caches (agent update config, topology flags, the helper flag, the
+policy probe, the PAM fallback, the manifest trust keyset and delegations, and
+UniFi collector absence). When one API instance writes a change, it announces
+the change over Redis and every other instance drops its entry within about a
+second. The message carries the cache name and an id (or none, for the whole
+cache), never a value.
+
+| Metric | Type | Description |
+|---|---|---|
+| `breeze_hot_path_cache_lookups_total{cache,result}` | Counter | Lookups by `result`: `hit`, `miss`, or `bypass` (a read inside a database transaction, which never uses the cache) |
+| `breeze_hot_path_cache_entries{cache}` | Gauge | Entries currently held, read at scrape time |
+| `breeze_cluster_cache_invalidations_published_total{cache,outcome}` | Counter | Invalidations this instance announced. `outcome` is `published`, `unavailable` (no Redis) or `failed` (error, or no reply within 1 s) |
+| `breeze_cluster_cache_invalidations_received_total{cache,result}` | Counter | Messages handled: `applied`, `self` (this instance's own echo), `unknown_cache`, `malformed`, or `error` (the cache failed to drop the entry; it keeps it until the TTL) |
+| `breeze_cluster_cache_invalidation_lag_seconds{cache}` | Histogram | Time from publish to apply for `applied` messages |
+| `breeze_cluster_cache_subscriber_up` | Gauge | `1` while this instance is subscribed |
+| `breeze_cluster_cache_resyncs_total` | Counter | Full local cache clears after the subscriber reconnected (messages sent during the gap are lost, so every cache is dropped once) |
+
+A healthy instance shows `breeze_cluster_cache_subscriber_up 1`, a lag p99 well
+under one second, and a flat `published_total{outcome="failed"}`. Without
+Redis the caches still work: each entry simply lives until its TTL (60 seconds,
+or 5 minutes for collector absence), which was the behaviour before
+cross-instance invalidation existed. The subscriber waits at most one second at
+boot and keeps retrying in the background.
+
+## Agent capacity KPIs
+
+The `breeze-capacity-kpis` rule group in `monitoring/rules/breeze-rules.yml` and the **Breeze RMM - Agent Capacity** dashboard (`monitoring/grafana/dashboards/breeze-agent-capacity.json`, uid `breeze-agent-capacity`) report what an agent costs the API, per region and per API instance. The number of online agents is the count of agent WebSockets owned by each API process.
+
+| KPI | Definition | Recording rule | M1 / M2 / M3 target |
+|---|---|---|---|
+| Agent cost | API process CPU-ms per agent-minute | `breeze:agent_cost_cpu_ms_per_agent_minute:region` and `:instance` | 60 / 25 / 15 |
+| Heartbeat latency | p50, p95, p99 of `POST /agents/:id/heartbeat`, server histogram | `breeze:heartbeat_latency_seconds:p50_region`, `:p95_region`, `:p99_region`, `:p95_instance` | none set |
+| DB intensity | Committed transactions per agent-minute | `breeze:db_tx_per_agent_minute:region` | 8 at M1, 4 at M3 |
+| Request mix | Agent requests per agent-minute | `breeze:agent_requests_per_agent_minute:region` | none set |
+| Online agents | Agent sockets owned by API processes | `breeze:agent_ws_connections:instance` and `:region` | n/a |
+
+Event-loop utilization and lag, pool wait, prologue-deadline expiries and the admission level are on the dashboard's Saturation row and have no targets.
+
+### New series
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `breeze_process_cpu_seconds_total` | Counter | `mode` = `user` or `system` | CPU time of the process, read from `process.cpuUsage()` at scrape time |
+| `breeze_agent_ws_connections` | Gauge | none | Agent WebSockets owned by this process. The worker role publishes `0` |
+
+### Requirements
+
+- **`region` label.** The rules aggregate `by (region)`. Every scrape job on the Prometheus that evaluates them needs a `region` label, including `postgres-exporter`: the DB intensity rule joins the exporter's `pg_stat_database_xact_commit` to the API socket count on `region`. `deploy/prometheus-remote-scrape.example.yml` shows the API jobs; the placeholder values are `eu` and `us`.
+- **Single-host stacks.** The dashboard's `region` and `instance` variables default to All (`allValue: ".*"`), and that matcher also matches an absent label, so a stack without a `region` label still renders. The per-instance rules also work without it; the region DB rule does not.
+- **Database name.** The DB rule filters `datname="breeze"`, the Compose default. Edit it in `breeze-rules.yml` if you renamed the database.
+- **Empty fleet.** The rules divide by `(... > 0)`, so zero online agents gives "no data", not `+Inf`.
+
+### Caveats
+
+- **Per-instance cost is approximate with more than one API instance.** HTTP requests spread across instances; sockets do not. The region figure is the one to trust.
+- **Event-loop "lag p99" is approximated.** `breeze_nodejs_eventloop_lag_max_seconds` is a gauge, not a histogram. The Event-loop lag panel plots the raw gauge, `max_over_time` over 5 minutes and `quantile_over_time(0.99)` over 15 minutes.
+- **Two heartbeat p95 figures exist.** The dashboard uses the server histogram, which starts at the handler. The perf gate uses the simulator's client-side p95, which also includes queueing before the handler, so it is higher under load.
+- **The lab baseline overstates production cost.** The perf gate runs one `role: all`, dev-mode API container that also runs the BullMQ workers, so its CPU-ms per agent-minute is above what the production `api` role costs. It is a regression reference for that profile, not a production figure.
+
+### Perf regression gate
+
+A nightly or manually dispatched workflow measures these KPIs on fixed hardware and fails on a regression of more than 15% against a committed baseline. See `load-tests/perf/README.md` for what it gates, how to run it and how to read a failure.

@@ -216,7 +216,10 @@ describe('evaluatePatchInstallEligibility — the decision, with a reason for ev
     expect(res.eligible.map((e) => e.patchId)).toEqual([P2]);
   });
 
-  it('a POLICY app rule still denies a manually approved patch when the ring has no rules', async () => {
+  // The evaluator keeps enforcing the legacy `apps` key: a job snapshotted
+  // before the W02 cutover carries its rules only there (#8186). The LIVE
+  // resolver no longer populates it (see resolveDevicePatchEvaluationConfig).
+  it('a legacy `apps` rule (frozen pre-cutover snapshot) still denies a manually approved patch', async () => {
     const config = ringConfig({
       ringAppRules: [],
       apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
@@ -290,6 +293,35 @@ describe('evaluatePatchInstallEligibility — the decision, with a reason for ev
       { patchId: P3, reason: 'not_outstanding' },
     ]));
     expect(res.ineligible).toHaveLength(3);
+  });
+
+  it('ringReferenceInvalid denies every outstanding candidate, manual approvals included (#8186)', async () => {
+    mockEvaluatorReads(
+      [row({ patchId: P1 }), row({ patchId: P2, status: 'installed' })],
+      [{ patchId: P1, status: 'approved', ringId: null }],
+    );
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG, patchIds: [P1, P2],
+      config: ringConfig({ ringId: null, ringPartnerId: null, ringReferenceInvalid: true }),
+    });
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toEqual([
+      { patchId: P2, reason: 'not_outstanding' },
+      { patchId: P1, reason: 'ring_reference_invalid' },
+    ]);
+    // No approvals read: the decision never reaches the manual-approval step.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+  });
+
+  it("a ring owned by ANOTHER partner fails closed like any invalid reference — even a partner-wide manual approval is denied (#8186)", async () => {
+    mockEvaluatorReads([row({ patchId: P1 })], [{ patchId: P1, status: 'approved', ringId: null }]);
+    const res = await evaluatePatchInstallEligibility({
+      deviceId: DEV, orgId: ORG, patchIds: [P1],
+      config: ringConfig({ ringPartnerId: 'someone-else', ringAppRules: [] }),
+    });
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'ring_reference_invalid' }]);
+    expect(res.ringId).toBeNull();
   });
 
   it('reports no_ring_resolved when the device matches no ring and nothing is manually approved', async () => {
@@ -450,22 +482,43 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
     expect(res.ringId).toBeNull();
     expect(res.eligible).toEqual([]);
-    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'no_ring_resolved' }]);
+    // Treating it as "no ring" would drop the ring's app rules, the only rules
+    // there are after the cutover — deny instead (#8186).
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'ring_reference_invalid' }]);
     expect(captureException).toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
 
-  it('treats an invalid ring reference as no ring, keeping the policy sources/app rules', async () => {
+  it('an invalid ring reference fails CLOSED: even a manually approved patch is denied ring_reference_invalid (#8186)', async () => {
     mockDevice(true);
     vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal({
-      ring: { classification: 'missing_target', valid: false, ringId: null, ringName: null, categoryRules: [], categories: [], excludeCategories: [], autoApprove: {} },
+      ring: { classification: 'missing_target', valid: false, ringId: null, ringName: null, categoryRules: [], categories: [], excludeCategories: [], autoApprove: {}, appRules: [] },
     }) as never);
-    mockEvaluatorReads([row({ patchId: P1, source: 'third_party' })], [{ patchId: P1, status: 'approved', ringId: null }]);
+    mockEvaluatorReads([row({ patchId: P1 }), row({ patchId: P2 })], [{ patchId: P1, status: 'approved', ringId: null }]);
+    const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG, patchIds: [P1, P2, P3] });
+    expect(res.ringId).toBeNull();
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toEqual([
+      { patchId: P3, reason: 'not_outstanding' },
+      { patchId: P1, reason: 'ring_reference_invalid' },
+      { patchId: P2, reason: 'ring_reference_invalid' },
+    ]);
+  });
+
+  it('a policy with NO ring keeps manual approvals: still approved `manual` (#8186)', async () => {
+    mockDevice(true);
+    vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal({
+      featurePolicyId: null,
+      ring: { classification: 'null', valid: true, ringId: null, ringName: null, categoryRules: [], categories: [], excludeCategories: [], autoApprove: {}, appRules: [] },
+    }) as never);
+    mockEvaluatorReads([row({ patchId: P1 }), row({ patchId: P2 })], [{ patchId: P1, status: 'approved', ringId: null }]);
     const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
     expect(res.ringId).toBeNull();
-    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_source' }]);
+    expect(res.eligible.map((e) => [e.patchId, e.approvalReason])).toEqual([[P1, 'manual']]);
+    expect(res.ineligible).toEqual([{ patchId: P2, reason: 'no_ring_resolved' }]);
   });
 
   it("threads the resolved ring's app rules into the live evaluation (#8184)", async () => {
@@ -493,12 +546,10 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     );
     const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
     expect(res.ringId).toBe(RING);
-    // Ring rule (P1) and policy rule (P2) both enforced; the unruled app passes.
-    expect(res.ineligible).toEqual([
-      { patchId: P1, reason: 'blocked_by_app_rule' },
-      { patchId: P2, reason: 'blocked_by_app_rule' },
-    ]);
-    expect(res.eligible.map((e) => e.patchId)).toEqual([P3]);
+    // Cutover (#8186): only the ring's rule (P1) is enforced. The policy's own
+    // inline rule (P2) is no longer read — the backfill moved it to the ring.
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'blocked_by_app_rule' }]);
+    expect(res.eligible.map((e) => e.patchId)).toEqual([P2, P3]);
   });
 });
 
@@ -523,25 +574,39 @@ describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => 
     vi.mocked(resolvePatchConfigPolicyForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
   });
 
-  it('carries ring rules as ringAppRules and policy rules as apps, side by side', async () => {
+  it('carries the ring rules as ringAppRules and no longer reads the policy rules (#8186 cutover)', async () => {
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
     vi.mocked(db.select).mockReturnValueOnce(chain('limit', [{ deferralDays: 0, partnerId: PARTNER }]) as never);
     const config = await resolveDevicePatchEvaluationConfig(DEV);
     expect(config.ringAppRules).toEqual([{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }]);
-    expect(config.apps).toEqual([{ source: 'custom', packageId: 'acme.tool', action: 'block' }]);
+    expect(config.apps ?? []).toEqual([]);
+    expect(config.ringReferenceInvalid).toBeFalsy();
   });
 
-  it('an invalid ring reference carries no ring rules but keeps the policy rules', async () => {
+  it('a policy with no ring has no app rules at all and is not marked invalid', async () => {
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
-      classification: 'missing_target', valid: false, ringId: null, ringName: null, appRules: [],
+      classification: 'null', valid: true, ringId: null, ringName: null, appRules: [],
     })) as never);
     const config = await resolveDevicePatchEvaluationConfig(DEV);
     expect(config.ringId).toBeNull();
-    expect(config.ringAppRules).toEqual([]);
-    expect(config.apps).toHaveLength(1);
+    expect(config.apps ?? []).toEqual([]);
+    expect(config.ringAppRules ?? []).toEqual([]);
+    expect(config.ringReferenceInvalid).toBeFalsy();
   });
 
-  it('a ring that vanishes mid-resolution fails closed: no ring rules, policy rules kept', async () => {
+  it('an invalid ring reference is marked ringReferenceInvalid and carries no rules', async () => {
+    for (const classification of ['missing_target', 'legacy_patch_policy', 'config_policy_uuid']) {
+      vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution({
+        classification, valid: false, ringId: null, ringName: null, appRules: [],
+      })) as never);
+      const config = await resolveDevicePatchEvaluationConfig(DEV);
+      expect(config.ringId, classification).toBeNull();
+      expect(config.ringReferenceInvalid, classification).toBe(true);
+      expect(config.apps ?? [], classification).toEqual([]);
+    }
+  });
+
+  it('a ring that vanishes mid-resolution fails closed: marked invalid, no rules', async () => {
     vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(local(ringResolution()) as never);
     vi.mocked(db.select).mockReturnValueOnce(chain('limit', []) as never);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -551,8 +616,9 @@ describe('resolveDevicePatchEvaluationConfig — ring app rules (#8184)', () => 
       message: expect.stringContaining('vanished between resolution and read'),
     }));
     expect(config.ringId).toBeNull();
-    expect(config.ringAppRules).toEqual([]);
-    expect(config.apps).toHaveLength(1);
+    expect(config.ringAppRules ?? []).toEqual([]);
+    expect(config.apps ?? []).toEqual([]);
+    expect(config.ringReferenceInvalid).toBe(true);
     warn.mockRestore();
   });
 });

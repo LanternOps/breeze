@@ -75,7 +75,8 @@ export const webhookEventOptions = [
   { value: 'ticket.commented', label: 'Ticket Commented', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.label', description: 'Triggered when a comment or note is added to a ticket.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCommented.description' },
   { value: 'ticket.status_changed', label: 'Ticket Status Changed', labelKey: 'longTail.webhooks.WebhookForm.events.ticketStatusChanged.label', description: 'Triggered when a ticket changes status.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketStatusChanged.description' },
   { value: 'ticket.updated', label: 'Ticket Updated', labelKey: 'longTail.webhooks.WebhookForm.events.ticketUpdated.label', description: 'Triggered when ticket fields are edited.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketUpdated.description' },
-  { value: 'ticket.assigned', label: 'Ticket Assigned', labelKey: 'longTail.webhooks.WebhookForm.events.ticketAssigned.label', description: 'Triggered when a ticket is assigned or unassigned.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketAssigned.description' }
+  { value: 'ticket.assigned', label: 'Ticket Assigned', labelKey: 'longTail.webhooks.WebhookForm.events.ticketAssigned.label', description: 'Triggered when a ticket is assigned or unassigned.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketAssigned.description' },
+  { value: 'migration.window_closed', label: 'Migration Window Closed', labelKey: 'longTail.webhooks.WebhookForm.events.migrationWindowClosed.label', description: 'Triggered once per organization when a ticket migration window closes, with the counts it imported.', descriptionKey: 'longTail.webhooks.WebhookForm.events.migrationWindowClosed.description' }
 ];
 
 const generateSecret = (length = 32) => {

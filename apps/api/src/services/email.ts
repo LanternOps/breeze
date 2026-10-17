@@ -1189,6 +1189,31 @@ function buildSignupAttemptOnExistingAccountTemplate(
 /** Mirrors INVITE_TOKEN_TTL_SECONDS (routes/auth/schemas.ts): 7 days. */
 const DEFAULT_INVITE_EXPIRES_DAYS = 7;
 
+/**
+ * Caller verification (#6354 W03) link email to the CONTACT. Names the exact
+ * request and offers "This is not me"; never carries a challenge number or the
+ * reverse code (those exist only on the anonymous page). Partner-supplied text
+ * is escaped. Sent on the partner support stream
+ * (`security.caller_verification_link`).
+ */
+export function buildCallerVerificationTemplate(p: {
+  partnerName: string; technicianLabel: string; requestLabel: string; url: string;
+}): EmailTemplate {
+  const subject = 'Review a support request';
+  const request = `${p.technicianLabel} from ${p.partnerName} wants to ${p.requestLabel}.`;
+  const caution = `If you are not sure, hang up and call ${p.partnerName} on the number you already have.`;
+  const body = `<p style="${BODY_PARA}">${escapeHtml(request)}</p>
+    ${renderButton('Review request', p.url)}
+    <p style="${MUTED_PARA}">The page shows the request and lets you choose “This is not me”. This link expires in 10 minutes.</p>
+    <p style="${MUTED_PARA}">${escapeHtml(caution)}</p>`;
+  return {
+    subject,
+    html: renderLayout({ title: subject, preheader: request, heading: subject, body, brandName: p.partnerName }),
+    text: [request, `Review request: ${p.url}`, 'The link expires in 10 minutes.',
+      'Choose “This is not me” if you did not request this.', caution].join('\n\n'),
+  };
+}
+
 export function buildStaffInviteTemplate(params: InviteEmailParams): EmailTemplate {
   const name = params.name?.trim() || 'there';
   const inviter = params.inviterName?.trim() || 'A teammate';

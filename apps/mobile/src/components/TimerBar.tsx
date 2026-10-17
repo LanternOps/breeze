@@ -35,6 +35,7 @@ import {
   readLocalTimer,
   stampNow,
   writeLocalTimer,
+  localProvenance,
 } from '../services/localTimer';
 import {
   makeReconciledSender,
@@ -215,6 +216,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
             ticketId: adopted.ticketId,
             startedAt: plan.adopt.startedAt,
             description: adopted.description,
+            ...localProvenance(adopted),
           })
         );
       }
@@ -341,6 +343,7 @@ export function TimerBar({ onOpenTimesheet }: { onOpenTimesheet?: () => void } =
             ticketId: localTimer.ticketId,
             startedAt: localTimer.startedAtWall,
             description: localTimer.description,
+            ...localProvenance(localTimer),
           })
         );
       }

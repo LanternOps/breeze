@@ -22,6 +22,8 @@ describe('classifyCommandFailure — typed agent errorCode (#4026)', () => {
     trash_metadata_too_large: 'trash metadata exceeds maximum size of 65536 bytes',
     unsupported_encoding: 'unsupported encoding: rot13',
     invalid_argument: 'destPath is required',
+    scan_in_progress:
+      'filesystem analysis already in progress on this device (command 6f1c, running for 1m35s); not starting a second scan',
   };
 
   it.each(AGENT_COMMAND_ERROR_CODES.map((code) => [code]))(

@@ -30,6 +30,8 @@ type PamDispatchRow = Record<string, unknown> & {
   desired_state: 'active' | 'cleanup';
   current_command_id: string | null;
   pam_lifetime_protocol_version: number | null;
+  ownership_epoch: number;
+  agent_identity_epoch_ack: number | null;
   device_org_type: string | null;
   target_executable_path: string;
   target_executable_hash: string | null;
@@ -40,6 +42,15 @@ type PamDispatchRow = Record<string, unknown> & {
 function rows<T>(result: unknown): T[] {
   const value = (result as { rows?: T[] }).rows ?? result;
   return Array.isArray(value) ? value : [];
+}
+
+/** NULL ack counts as acknowledged only at ownership epoch 1 (#8206). */
+export function agentIdentityEpochAcknowledged(device: {
+  ownership_epoch: number;
+  agent_identity_epoch_ack: number | null;
+}): boolean {
+  const ack = device.agent_identity_epoch_ack ?? (device.ownership_epoch === 1 ? 1 : null);
+  return ack !== null && ack === device.ownership_epoch;
 }
 
 export async function processPamActuationEvent(input: PamActuationJobData): Promise<PamActuationDispatchResult> {
@@ -53,7 +64,8 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
              a.current_command_id, a.target_executable_path,
              a.target_executable_hash, a.subject_username, a.expires_at,
              r.org_id AS request_org_id, d.org_id AS device_org_id,
-             d.pam_lifetime_protocol_version, o.type AS device_org_type
+             d.pam_lifetime_protocol_version, d.ownership_epoch,
+             d.agent_identity_epoch_ack, o.type AS device_org_type
       FROM pam_actuations a
       JOIN elevation_requests r ON r.id = a.elevation_request_id
       JOIN devices d ON d.id = a.device_id
@@ -83,6 +95,24 @@ export async function processPamActuationEvent(input: PamActuationJobData): Prom
         WHERE id = ${actuation.id} AND generation = ${actuation.generation}
       `);
       return 'unsupported';
+    }
+
+    // PAM ownership epochs W4 (#8206): an apply goes out only once the agent
+    // has reported holding the identity of the device's current ownership
+    // epoch (devices.agent_identity_epoch_ack, written by the heartbeat after
+    // the signed identity assertion v2 and restart). NULL counts as
+    // acknowledged only at epoch 1, so never-moved devices keep working with
+    // agents that report no epoch. Nothing re-drives a skipped actuation, so
+    // this fails closed and visibly, like the protocol gate above. Cleanup is
+    // never held back: it only removes access, and an agent that does not
+    // hold the identity refuses it anyway.
+    if (actuation.desired_state === 'active' && !agentIdentityEpochAcknowledged(actuation)) {
+      await tx.execute(sql`
+        UPDATE pam_actuations SET observed_state = 'failed',
+          failure_code = 'agent_identity_epoch_unacknowledged', updated_at = now()
+        WHERE id = ${actuation.id} AND generation = ${actuation.generation}
+      `);
+      return 'blocked';
     }
 
     const expiresAt = actuation.expires_at instanceof Date

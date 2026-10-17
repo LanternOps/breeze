@@ -1,12 +1,14 @@
 import '@/lib/i18n';
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceDetailPage from './DeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
+import { useOrgStore } from '@/stores/orgStore';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../../hooks/useEventStream', () => ({ useEventStream: () => ({ subscribe: vi.fn() }) }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: () => vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
@@ -23,7 +25,9 @@ vi.mock('../../services/deviceActions', () => ({
   WakeCommandError: class WakeCommandError extends Error {},
   wakeFriendlyErrorMessage: vi.fn(),
 }));
-vi.mock('./DeviceDetails', () => ({ default: () => null }));
+vi.mock('./DeviceDetails', () => ({
+  default: ({ onBack }: { onBack: () => void }) => <button onClick={onBack}>back</button>,
+}));
 vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
 // The real dialog pulls in the org store, which needs more of stores/auth than this suite mocks.
@@ -40,6 +44,7 @@ const DEVICE_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 describe('DeviceDetailPage organization breadcrumb (#3839)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
   });
 
   it('links the organization name in the breadcrumb to the org settings page', async () => {
@@ -79,5 +84,44 @@ describe('DeviceDetailPage organization breadcrumb (#3839)', () => {
 
     await screen.findByText('alpha-01');
     expect(screen.queryByRole('link', { name: 'Unknown Org' })).not.toBeInTheDocument();
+  });
+});
+
+describe('Devices crumb (ui-flow A4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
+      id: DEVICE_ID,
+      hostname: 'alpha-01',
+      osType: 'windows',
+      status: 'online',
+      orgId: 'org-42',
+      orgName: 'Acme Corp',
+      siteId: 'site-1',
+      siteName: 'HQ',
+    }), { status: 200 }));
+  });
+
+  it('goes to /devices in fleet view', async () => {
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect(await screen.findByRole('link', { name: 'Devices' })).toHaveAttribute('href', '/devices');
+  });
+
+  it('goes to /devices when the working org is the device org', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-42', allOrgs: false } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect(await screen.findByRole('link', { name: 'Devices' })).toHaveAttribute('href', '/devices');
+  });
+
+  it("goes to the device org's Devices tab when the working org differs, and so does Back", async () => {
+    useOrgStore.setState({ currentOrgId: 'org-99', allOrgs: false } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect(await screen.findByRole('link', { name: 'Devices' })).toHaveAttribute(
+      'href',
+      '/organizations/org-42#devices',
+    );
+    fireEvent.click(screen.getByText('back'));
+    expect(navigateTo).toHaveBeenCalledWith('/organizations/org-42#devices');
   });
 });

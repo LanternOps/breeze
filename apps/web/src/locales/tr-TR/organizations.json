@@ -8,6 +8,9 @@
       },
       "primaryContact": "Birincil kişi",
       "noPrimaryContact": "Birincil kişi yok",
+      "billingAddress": "Fatura adresi",
+      "noBillingAddress": "Fatura adresi yok",
+      "billingSettingsLink": "Faturalandırma ayarlarından ekleyin",
       "sites_one": "{{count}} site",
       "sites_other": "{{count}} site",
       "scopeChip": "Çalışma alanı: {{orgName}}",
@@ -22,7 +25,8 @@
       "archive": "Arşivle",
       "merge": "Birleştir",
       "restore": "Geri yükle",
-      "retry": "Tekrar dene"
+      "retry": "Tekrar dene",
+      "sendMessage": "Mesaj gönder"
     },
     "tabs": {
       "overview": "Genel bakış",
@@ -33,6 +37,7 @@
       "billing": "Sözleşmeler ve Faturalandırma",
       "service": "Hizmet",
       "documents": "Belgeler",
+      "trust": "Güven Merkezi",
       "activity": "Etkinlik"
     },
     "comingSoon": {
@@ -150,6 +155,338 @@
         "invoices": "Faturalar",
         "quotes": "Alıntılar",
         "agreements": "Anlaşmalar"
+      }
+    },
+    "trust": {
+      "declarations": {
+        "description": "Breeze'in ölçemediği, ekibinizin beyan ettiği uygulamalar. Her beyan 365 gün geçerlidir ve herkese açık sayfada doğrulanmış olarak değil, beyan edilmiş olarak gösterilir.",
+        "loadFailed": "Beyan edilen kontroller yüklenemedi.",
+        "notDeclared": "Beyan edilmedi",
+        "current": "Geçerli",
+        "expired": "Süresi doldu",
+        "declaredBy": "{{partner}} tarafından {{date}} tarihinde beyan edildi · bitiş {{expires}}",
+        "expiredOn": "Beyanın süresi {{date}} tarihinde doldu",
+        "expiresIn_one": "{{count}} gün içinde sona eriyor",
+        "expiresIn_other": "{{count}} gün içinde sona eriyor",
+        "onPublicPage": "Herkese açık sayfada",
+        "republishNeeded": "Değişiklikler yeniden yayımladıktan sonra görünür",
+        "declare": "Beyan et",
+        "redeclare": "Yeniden beyan et",
+        "withdraw": "Geri çek",
+        "dialogTitle": "Beyan et: {{control}}",
+        "statementLabel": "Beyan",
+        "statementHelp": "Ekibinizin yaptığını sade bir dille yazın (10–1000 karakter). Metin herkese açık sayfada yazıldığı gibi görünür.",
+        "evidenceLabel": "Kanıt belgesi (isteğe bağlı)",
+        "evidenceNone": "Kanıt belgesi yok",
+        "evidenceHelp": "Yalnızca bu belge güven sayfasına da bağlıysa herkese açık sayfada gösterilir.",
+        "confirm": "Bu beyanın doğru olduğunu ve {{partner}} adına beyanda bulunmaya yetkili olduğumu onaylıyorum.",
+        "submit": "Beyanı kaydet",
+        "cancel": "İptal",
+        "saved": "Beyan kaydedildi. Herkese açık sayfada göstermek için yeniden yayımlayın.",
+        "saveFailed": "Beyan kaydedilemedi.",
+        "withdrawTitle": "Bu beyan geri çekilsin mi?",
+        "withdrawMessage": "{{control}} bir sonraki yenilemede herkese açık sayfadan kaldırılacak.",
+        "withdrawConfirm": "Geri çek",
+        "withdrawn": "Beyan geri çekildi.",
+        "withdrawFailed": "Beyan geri çekilemedi.",
+        "evidenceUnavailable": "Bu kanıt belgesi artık kullanılamıyor. Güncel bir belge seçin.",
+        "mfaRequired": "Kontrol beyan etmek çok faktörlü kimlik doğrulama gerektirir. Profilinizin güvenlik ayarlarından MFA'yı etkinleştirip tekrar deneyin.",
+        "historyTitle": "Önceki beyanlar",
+        "historySuperseded": "{{date}} tarihinde değiştirildi",
+        "historyWithdrawn": "{{date}} tarihinde geri çekildi",
+        "title": "Beyan edilen kontroller"
+      },
+      "frameworks": {
+        "description": "Herkese açık sayfanın kontrollerini hangi güvenlik çerçeveleriyle eşleştireceğini seçin. Eşleştirmeler yol göstericidir, uygunluk beyanı değildir.",
+        "source": {
+          "page": "Bu sayfada ayarlandı.",
+          "template": "İş ortağı şablonundan devralındı.",
+          "default": "Yerleşik varsayılan kullanılıyor."
+        },
+        "suggested": "Bölgeniz için önerilir",
+        "cisLocked": "CIS lisansı doğrulandığında kullanılabilir",
+        "useDefault": "Varsayılanı kullan",
+        "save": "Kaydet",
+        "saved": "Çerçeve görünümü kaydedildi.",
+        "saveFailed": "Çerçeve görünümü kaydedilemedi.",
+        "revisionChanged": "Sayfa siz açtıktan sonra değişti. Yeniden yükleyip tekrar deneyin.",
+        "title": "Çerçeve görünümü"
+      },
+      "subprocessors": {
+        "title": "Alt işleyiciler"
+      },
+      "faq": {
+        "title": "Sıkça sorulan sorular"
+      },
+      "history": {
+        "title": "Zaman içinde karşılanan kontroller"
+      },
+      "access": {
+        "description": "Herkese açık sayfanın ziyaretçileri \"Talep üzerine erişilebilir\" olarak işaretlenen belgeleri talep edebilir. Önce e-posta adreslerini doğrularlar; ardından her talebi siz onaylar veya reddedersiniz. Onaylanan talep sahibi 7 gün geçerli bir indirme bağlantısı alır.",
+        "unpublishedBanner": "Talepler, sayfa yayımlandığında açılır.",
+        "noGatedHint": "Henüz talep üzerine sunulan bir belge yok. Talepleri kabul etmek için bağlı bir belgeyi \"Talep üzerine erişilebilir\" yapın.",
+        "ndaLabel": "Gizlilik koşulları (isteğe bağlı)",
+        "ndaHelp": "Talep sahipleri talep göndermeden önce bu koşulları kabul etmelidir. Düz metin olarak gösterilir ve her talep ile birlikte kaydedilir. Değişiklikler yayımladığınızda herkese açık sayfaya yansır.",
+        "ndaCount": "{{count}} / {{max}} karakter",
+        "ticketLabel": "Onaylanan her talep için bir bilet oluştur",
+        "save": "Erişim ayarlarını kaydet",
+        "saved": "Erişim ayarları kaydedildi.",
+        "saveFailed": "Erişim ayarları kaydedilemedi.",
+        "requestsHeading": "Talepler",
+        "filterLabel": "Göster",
+        "filterAll": "Tüm talepler",
+        "empty": "Henüz talep yok.",
+        "loadFailed": "Talepler yüklenemedi.",
+        "ndaAccepted": "Gizlilik koşulları kabul edildi",
+        "downloads": "İndirme sayısı: {{count}}",
+        "expired": "Süresi doldu",
+        "status": {
+          "pending_verification": "E-posta onayı bekleniyor",
+          "pending_approval": "Kararınız bekleniyor",
+          "approved": "Onaylandı",
+          "denied": "Reddedildi",
+          "revoked": "İptal edildi"
+        },
+        "columns": {
+          "status": "Durum",
+          "requester": "Talep sahibi",
+          "company": "Şirket",
+          "purpose": "Amaç",
+          "requested": "Talep tarihi",
+          "expires": "Bitiş tarihi",
+          "actions": "İşlemler"
+        },
+        "approve": "Onayla",
+        "approved": "Talep onaylandı. Talep sahibine e-posta ile bir indirme bağlantısı gönderildi.",
+        "approveFailed": "Talep onaylanamadı.",
+        "deny": "Reddet",
+        "denyTitle": "Bu talep reddedilsin mi?",
+        "denyMessage": "{{name}} kişisine ({{company}}) talebin reddedildiği bildirilecek; not eklerseniz o da iletilecek.",
+        "denyNoteLabel": "Talep sahibine not (isteğe bağlı)",
+        "denyConfirm": "Talebi reddet",
+        "denied": "Talep reddedildi.",
+        "denyFailed": "Talep reddedilemedi.",
+        "revoke": "Erişimi iptal et",
+        "revokeTitle": "Erişim iptal edilsin mi?",
+        "revokeMessage": "{{name}} kişisine gönderilen indirme bağlantısı hemen çalışmayı durdurur.",
+        "revokeConfirm": "Erişimi iptal et",
+        "revoked": "Erişim iptal edildi.",
+        "revokeFailed": "Erişim iptal edilemedi.",
+        "resend": "Bağlantıyı yeniden gönder",
+        "resent": "Yeni bir indirme bağlantısı e-posta ile gönderildi. Önceki bağlantı artık çalışmaz.",
+        "resendFailed": "Bağlantı yeniden gönderilemedi.",
+        "errors": {
+          "mfaRequired": "Onaylamak veya yeniden göndermek için çok faktörlü kimlik doğrulama gerekir. Profil güvenlik ayarlarınızdan MFA'yı etkinleştirip tekrar deneyin.",
+          "invalidState": "Bu talep, yüklediğinizden beri değişti. Listeyi yenileyin.",
+          "noGatedDocuments": "Yayımlanan sayfada talep üzerine sunulan belge yok. Birini \"Talep üzerine erişilebilir\" yapıp yayımlayın.",
+          "pageNotPublished": "Talepleri onaylamadan önce Güven Merkezi sayfasını yayımlayın.",
+          "grantExpired": "Bu erişim hakkının süresi doldu. Talep sahibinden yeni bir talep göndermesini isteyin."
+        },
+        "title": "Belge erişim talepleri"
+      },
+      "inheritance": {
+        "sources": {
+          "page": "Bu kuruluş için ayarlandı",
+          "template": "İş ortağı şablonu",
+          "default": "Breeze varsayılanı"
+        },
+        "reset": "Devralınan değere sıfırla",
+        "intro": {
+          "template": "İş ortağı şablonunun girişini kullan",
+          "none": "Giriş yok",
+          "custom": "Özel",
+          "inheritedAfterSave": "Bu sayfanın şu anda kendi girişi var. Devralınan girişe geçmek için kaydedin.",
+          "inheritedEmpty": "Hiçbir şey devralınmıyor, bu yüzden sayfada giriş gösterilmez."
+        },
+        "template": {
+          "heading": "Güven Merkezi varsayılanları",
+          "description": "Tüm müşteri güven sayfaları için varsayılanlar. Bir kuruluşun kendisi için seçtiği ayar her zaman geçerlidir. Yayımlanmış sayfalar değişiklikleri bir sonraki yeniden yayımlamada alır.",
+          "readOnly": "Bu varsayılanları yalnızca tüm kuruluşlara erişimi olan iş ortağı yöneticileri değiştirebilir.",
+          "loadFailed": "Güven Merkezi varsayılanları yüklenemedi.",
+          "inheritOption": "Breeze varsayılanı ({{value}})",
+          "on": "Açık",
+          "off": "Kapalı",
+          "introLabel": "Varsayılan giriş",
+          "introHint": "Giriş olmaması için boş bırakın.",
+          "hiddenLabel": "Varsayılan olarak gizlenen kontroller",
+          "hiddenDefault": "Breeze varsayılanı (tüm kontrolleri göster)",
+          "hiddenCustom": "Seçtiğim kontrolleri gizle",
+          "frameworksLabel": "Çerçeve görünümü",
+          "frameworksCustom": "Seçtiğim çerçeveleri göster",
+          "showHistoryLabel": "90 günlük geçmişi göster",
+          "showHistoryDescription": "Son 90 günde kaç kontrolün karşılandığını gösteren bir grafik.",
+          "save": "Varsayılanları kaydet",
+          "saved": "Güven Merkezi varsayılanları kaydedildi",
+          "saveFailed": "Güven Merkezi varsayılanları kaydedilemedi",
+          "mfaRequired": "Bu varsayılanları değiştirmek için çok faktörlü kimlik doğrulama gerekir. Profil güvenlik ayarlarınızda MFA’yı etkinleştirip tekrar deneyin.",
+          "revisionMismatch": "Bu varsayılanları başka biri değiştirdi. Değişiklikleri görmek için yeniden yükleyin."
+        },
+        "title": "Devralınan ayarlar"
+      },
+      "title": "Güven Merkezi",
+      "subtitle": "Bu kuruluşun güvenlik duruşunu gösteren, Breeze'in canlı telemetrisinden oluşturulan herkese açık bir sayfa.",
+      "loading": "Güven Merkezi yükleniyor…",
+      "loadFailed": "Güven Merkezi sayfası yüklenemedi.",
+      "retry": "Tekrar dene",
+      "status": {
+        "unpublished": "Yayımlanmadı",
+        "published": "{{date}} tarihinde yayımlandı",
+        "publicUrl": "Herkese açık sayfa",
+        "copy": "Bağlantıyı kopyala",
+        "copied": "Bağlantı kopyalandı",
+        "copyFailed": "Bağlantı kopyalanamadı.",
+        "lastEvaluated": "Kontroller en son {{date}} tarihinde değerlendirildi",
+        "gate": {
+          "probation_default_deny": "Hesabınız hâlâ deneme döneminde. Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
+          "probation_enrollment_cap": "Hesabınız deneme döneminin sınırına ulaştı. Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
+          "restricted": "Hesabınız kısıtlanmış olduğundan yayımlama kapalı.",
+          "partner_unresolved": "Bu kuruluşun iş ortağı hesabı belirlenemedi.",
+          "generic": "Bu hesap için yayımlama şu anda kapalı."
+        }
+      },
+      "publish": {
+        "button": "Yayımla",
+        "republish": "Güncellemeyi yayımla",
+        "title": "Güven Merkezi sayfasını yayımla",
+        "intro": "Bu işlem, sayfayı bağlantıya sahip herkese görünür yapar{{indexable}}. Kontroller yayımlarken yeniden değerlendirilir.",
+        "indexableSuffix": " ve arama motorları dizine ekleyebilir",
+        "attestationCheckbox": "Müşteri bu sayfanın yayımlanmasına izin verdi",
+        "authorizedBy": "Yetkilendiren (ad, görev)",
+        "authorizedByPlaceholder": "Ayşe Yılmaz, operasyon direktörü",
+        "recorded": "{{name}} tarafından {{date}} tarihinde yetkilendirildi",
+        "change": "Değiştir",
+        "partnerHomeNote": "Bu, iş ortağının kendi sayfasıdır; bu nedenle müşteri yetkisi gerekmez.",
+        "confirm": "Yayımla",
+        "publishing": "Yayımlanıyor…",
+        "cancel": "İptal",
+        "success": "Güven Merkezi sayfası yayımlandı.",
+        "failed": "Güven Merkezi sayfası yayımlanamadı.",
+        "disabledNoWrite": "Yayımlamak için kuruluşları düzenleme izni gerekir.",
+        "disabledSlug": "Yayımlamadan önce sayfa adresini düzeltin."
+      },
+      "unpublish": {
+        "button": "Yayından kaldır",
+        "title": "Güven Merkezi sayfasını yayından kaldır",
+        "message": "Herkese açık bağlantı hemen çalışmayı durdurur ve rozet devre dışı kalır. İstediğiniz zaman yeniden yayımlayabilirsiniz.",
+        "confirm": "Yayından kaldır",
+        "success": "Güven Merkezi sayfası yayından kaldırıldı.",
+        "failed": "Güven Merkezi sayfası yayından kaldırılamadı."
+      },
+      "preview": {
+        "button": "Önizleme",
+        "failed": "Önizleme açılamadı.",
+        "popupBlocked": "Tarayıcınız önizleme penceresini engelledi. Bu site için açılır pencerelere izin verip tekrar deneyin."
+      },
+      "partnerHome": {
+        "label": "İş ortağının kendi Güven Merkezi sayfası olarak kullan",
+        "description": "Bu sayfayı bir müşteri adresi yerine iş ortağı adresinde gösterir. Müşteri yetkisi gerektirmez.",
+        "success": "İş ortağı sayfası ayarı kaydedildi.",
+        "failed": "İş ortağı sayfası ayarı değiştirilemedi."
+      },
+      "slug": {
+        "warningTitle": "Bu sayfanın adresi henüz geçerli değil",
+        "openSettings": "Kuruluş ayarlarında düzenle",
+        "partner_slug": "İş ortağı slug değeri herkese açık bir adres için geçerli değil.",
+        "org_slug": "Kuruluş slug değeri herkese açık bir adres için geçerli değil.",
+        "unknown": "Sayfa adresinde bir sorun var ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "Yayımlama henüz kullanılamıyor. {{reason}}",
+        "readOnly": "Bu sayfayı görüntüleyebilirsiniz, ancak değiştirmek veya yayımlamak için kuruluşları düzenleme izni gerekir."
+      },
+      "errors": {
+        "revisionMismatch": "Bu sayfa siz yükledikten sonra değişti. Yenileyip tekrar deneyin.",
+        "authorizationRequired": "Yayımlamayı kimin yetkilendirdiğini kaydedin.",
+        "mfaRequired": "Yayımlamak için çok faktörlü kimlik doğrulama gerekir. Profilinizin güvenlik ayarlarında MFA'yı etkinleştirin ve tekrar deneyin.",
+        "trustProbation": "Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
+        "trustRestricted": "Hesabınız güvenilir hâle geldiğinde yayımlama açılır.",
+        "slugInvalid": "Sayfa adresi geçerli değil. Slug değerini kuruluş ayarlarında düzeltin.",
+        "introTooLong": "Giriş metni çok uzun.",
+        "partnerWideRequired": "İş ortağı sayfasını yalnızca iş ortağı genelindeki yöneticiler değiştirebilir.",
+        "partnerHomeInternalOnly": "Yalnızca kendi (dahili) kuruluşunuz iş ortağı sayfası olabilir.",
+        "partnerHomeUnpublishFirst": "Bu sayfa kayıtlı bir müşteri yetkisi olmadan yayında. İş ortağı sayfası ayarını kapatmadan önce yayından kaldırın."
+      },
+      "controls": {
+        "republishBanner": "Değişiklikler, yeniden yayımladığınızda herkese açık sayfaya uygulanır.",
+        "saveFailed": "Değişiklik kaydedilemedi.",
+        "unavailable": "Kontrol sonuçları şu anda kullanılamıyor.",
+        "assessedCount": "{{eligible}} içinden {{assessed}} değerlendirildi",
+        "shown": "Gösteriliyor",
+        "hidden": "Gizli",
+        "toggles": {
+          "showPercentages": {
+            "label": "Yüzdeleri göster",
+            "description": "Herkese açık sayfada her kontrolün yüzdesini gösterir."
+          },
+          "showDeviceCount": {
+            "label": "Cihaz sayısını göster",
+            "description": "Kaç cihazın kapsandığını gösterir."
+          },
+          "showManagedBy": {
+            "label": "“Yöneten” bilgisini göster",
+            "description": "Şirketinizi yönetim hizmetini sağlayan sağlayıcı olarak belirtir."
+          },
+          "searchIndexable": {
+            "label": "Arama motorlarına izin ver",
+            "description": "Arama motorlarının herkese açık sayfayı dizine eklemesine izin verir."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Giriş",
+        "contactLabel": "Güvenlik iletişim e-postası",
+        "contactInvalid": "Geçerli bir e-posta adresi girin.",
+        "websiteLabel": "Web sitesi",
+        "websiteInvalid": "https:// ile başlayan tam bir adres girin.",
+        "save": "İçeriği kaydet",
+        "saved": "İçerik kaydedildi.",
+        "saveFailed": "İçerik kaydedilemedi."
+      },
+      "documents": {
+        "visibilityLabel": "Kimler indirebilir",
+        "visibilityPublic": "Herkese açık",
+        "visibilityGated": "Talep üzerine erişilebilir",
+        "reconfirm": "Onayla",
+        "reconfirmNeeded": "Kaydetmeden önce yeni görünürlük için ifşa onayını verin.",
+        "disclosureTitleGated": "Bu belge talep üzerine sunulsun mu?",
+        "disclosureMessageGated": "\"{{title}}\" herkese açık sayfada listelenecek. Yalnızca onayladığınız talep sahipleri indirebilir.",
+        "disclosureCheckboxGated": "Bu belgenin onaylı talep sahipleriyle paylaşılması için onaylandığını doğruluyorum",
+        "disclosureConfirmChange": "Değişikliği onayla",
+        "description": "Herkese açık sayfada paylaşmayı seçtiğiniz belgeler. Yalnızca açıkça onayladığınız belgeler gösterilir.",
+        "upload": "Belge yükle",
+        "library": "Belge kitaplığı",
+        "libraryEmpty": "Başka belge yok.",
+        "libraryFailed": "Belge kitaplığı yüklenemedi.",
+        "add": "Ekle",
+        "linked": "Herkese açık sayfada ({{max}} içinden {{count}})",
+        "linkedEmpty": "Seçili belge yok.",
+        "remove": "Kaldır",
+        "moveUp": "Yukarı taşı",
+        "moveDown": "Aşağı taşı",
+        "superseded": "Yerine yenisi geçti — daha yeni sürümü yeniden bağlayın",
+        "save": "Belgeleri kaydet",
+        "saved": "Belgeler kaydedildi.",
+        "saveFailed": "Belgeler kaydedilemedi.",
+        "unavailable": "Bu belgeler artık kullanılamıyor: {{titles}}. Kaldırın veya yeniden bağlayın.",
+        "disclosureTitle": "Bu belge yayımlansın mı?",
+        "disclosureMessage": "“{{title}}”, herkese açık sayfa bağlantısına sahip herkese görünür olacak.",
+        "disclosureCheckbox": "Bu belgenin herkese açık yayın için onaylandığını doğruluyorum",
+        "disclosureConfirm": "Belgeyi ekle"
+      },
+      "sections": {
+        "controlsHeading": "Güvenlik kontrolleri",
+        "contentHeading": "Sayfa içeriği",
+        "documentsHeading": "Belgeler"
+      },
+      "badge": {
+        "title": "Rozet",
+        "description": "Web sitenize canlı bir durum rozeti ekleyin. Rozet herkese açık sayfaya bağlanır.",
+        "unpublishedNote": "Rozet, sayfa yayımlandığında görünür.",
+        "snippet": "Rozet HTML'si",
+        "alt": "Güvenlik duruşu rozeti",
+        "copy": "Parçayı kopyala",
+        "copied": "Parça kopyalandı",
+        "copyFailed": "Parça kopyalanamadı."
       }
     },
     "documents": {

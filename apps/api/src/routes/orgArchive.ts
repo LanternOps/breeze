@@ -4,6 +4,7 @@
  * This router is mounted separately under `/orgs`, so it owns the same auth
  * middleware and mutation gates as the main organization router.
  */
+import { scheduleServingRefreshForPartner } from '../services/trustPage/servingSet';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -195,6 +196,8 @@ orgArchiveRoutes.post(
         retentionDays,
         actor: auth.user.id,
       });
+      // Trust Center (Ruling 26): the org leaves the live set, so its public trust page must stop being admitted.
+      scheduleServingRefreshForPartner(authz.partnerId, 'organization.archive');
 
       const archiveDetails = {
         retentionDays: retentionDays === undefined ? 'default' : retentionDays,
@@ -256,6 +259,7 @@ orgArchiveRoutes.post(
     try {
       const { status, recreateRequired, aborted, uninstallsCancelled } =
         await restoreOrgFromArchive({ orgId, actor: auth.user.id });
+      scheduleServingRefreshForPartner(authz.partnerId, 'organization.restore');
 
       // `status` is the PRE-archive status, not always 'active' — a suspended
       // org restores suspended, a trial org restores to trial.

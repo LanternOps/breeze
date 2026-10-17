@@ -285,6 +285,7 @@ const (
 	CmdActuateElevation = "actuate_elevation"
 	CmdPamApplyV2       = "pam_apply_v2"
 	CmdPamCleanupV2     = "pam_cleanup_v2"
+	CmdPamReconcileV2   = "pam_reconcile_v2"
 )
 
 // CommandResult represents the result of a command execution

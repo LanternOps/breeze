@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { envStr } from '../utils/envStr';
+import { EDR_PROVIDER_KEYS } from '../services/edrProviders/providerKeys';
 
 export const incidentSeveritySchema = z.enum(['p1', 'p2', 'p3', 'p4']);
 export const incidentStatusSchema = z.enum(['detected', 'analyzing', 'contained', 'recovering', 'closed']);
@@ -24,7 +25,7 @@ export const createIncidentSchema = z.object({
   assignedTo: z.string().guid().optional(),
   detectedAt: z.string().datetime({ offset: true }).optional(),
   status: z.enum(['detected', 'analyzing']).optional(),
-  sourceType: z.enum(['huntress_incident', 's1_threat']).optional(),
+  sourceType: z.enum(['huntress_incident', 's1_threat', 'edr_detection']).optional(),
   sourceRef: z.string().min(1).max(128).optional(),
 });
 
@@ -43,7 +44,9 @@ export const listIncidentsSchema = z.object({
 export const listIncidentFeedSchema = z.object({
   orgId: z.string().guid().optional(),
   kind: z.enum(['tracked', 'finding']).optional(),
-  source: z.enum(['breeze', 'huntress', 's1']).optional(),
+  // Legacy literals plus every EDR-framework provider key (#8166): one feed leg
+  // per framework provider row, keyed by `edr_detections.provider`.
+  source: z.enum(['breeze', 'huntress', 's1', ...EDR_PROVIDER_KEYS]).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(25),
 });

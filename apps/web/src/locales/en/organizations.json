@@ -8,6 +8,9 @@
       },
       "primaryContact": "Primary contact",
       "noPrimaryContact": "No primary contact",
+      "billingAddress": "Billing address",
+      "noBillingAddress": "No billing address",
+      "billingSettingsLink": "Add in Billing settings",
       "sites_one": "{{count}} site",
       "sites_other": "{{count}} sites",
       "scopeChip": "Workspace: {{orgName}}",
@@ -22,7 +25,8 @@
       "archive": "Archive",
       "merge": "Merge",
       "restore": "Restore",
-      "retry": "Try again"
+      "retry": "Try again",
+      "sendMessage": "Send message"
     },
     "tabs": {
       "overview": "Overview",
@@ -33,6 +37,7 @@
       "billing": "Contracts & Billing",
       "service": "Service",
       "documents": "Documents",
+      "trust": "Trust Center",
       "activity": "Activity"
     },
     "comingSoon": {
@@ -150,6 +155,338 @@
         "invoices": "Invoices",
         "quotes": "Quotes",
         "agreements": "Agreements"
+      }
+    },
+    "trust": {
+      "declarations": {
+        "description": "Practices Breeze cannot measure, stated by your team. Each declaration lasts 365 days and is labeled as declared on the public page, never as verified.",
+        "loadFailed": "Could not load the declared controls.",
+        "notDeclared": "Not declared",
+        "current": "Current",
+        "expired": "Expired",
+        "declaredBy": "Declared by {{partner}} on {{date}} · expires {{expires}}",
+        "expiredOn": "Declaration expired on {{date}}",
+        "expiresIn_one": "Expires in {{count}} day",
+        "expiresIn_other": "Expires in {{count}} days",
+        "onPublicPage": "On the public page",
+        "republishNeeded": "Changes appear after you publish again",
+        "declare": "Declare",
+        "redeclare": "Re-declare",
+        "withdraw": "Withdraw",
+        "dialogTitle": "Declare: {{control}}",
+        "statementLabel": "Statement",
+        "statementHelp": "What your team does, in plain words (10–1000 characters). It appears on the public page as written.",
+        "evidenceLabel": "Evidence document (optional)",
+        "evidenceNone": "No evidence document",
+        "evidenceHelp": "Shown on the public page only if this document is also linked to the trust page.",
+        "confirm": "I confirm this statement is accurate and I am authorized to make it on behalf of {{partner}}.",
+        "submit": "Save declaration",
+        "cancel": "Cancel",
+        "saved": "Declaration saved. Publish again to show it on the public page.",
+        "saveFailed": "Could not save the declaration.",
+        "withdrawTitle": "Withdraw this declaration?",
+        "withdrawMessage": "{{control}} will be removed from the public page at its next refresh.",
+        "withdrawConfirm": "Withdraw",
+        "withdrawn": "Declaration withdrawn.",
+        "withdrawFailed": "Could not withdraw the declaration.",
+        "evidenceUnavailable": "That evidence document is no longer available. Choose a current document.",
+        "mfaRequired": "Declaring controls requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+        "historyTitle": "Earlier declarations",
+        "historySuperseded": "Replaced on {{date}}",
+        "historyWithdrawn": "Withdrawn on {{date}}",
+        "title": "Declared controls"
+      },
+      "frameworks": {
+        "description": "Choose which security frameworks the public page maps its controls to. Mappings are indicative, not a statement of compliance.",
+        "source": {
+          "page": "Set on this page.",
+          "template": "Inherited from the partner template.",
+          "default": "Using the built-in default."
+        },
+        "suggested": "Suggested for your region",
+        "cisLocked": "Available once CIS licensing is confirmed",
+        "useDefault": "Use default",
+        "save": "Save",
+        "saved": "Framework view saved.",
+        "saveFailed": "Could not save the framework view.",
+        "revisionChanged": "The page changed since you opened it. Reload and try again.",
+        "title": "Framework view"
+      },
+      "subprocessors": {
+        "title": "Subprocessors"
+      },
+      "faq": {
+        "title": "Frequently asked questions"
+      },
+      "history": {
+        "title": "Controls met over time"
+      },
+      "access": {
+        "description": "Visitors to the public page can ask for documents marked \"Available on request\". They confirm their email address first; then you approve or deny each request. An approved requester gets a download link that works for 7 days.",
+        "unpublishedBanner": "Requests open once the page is published.",
+        "noGatedHint": "No document is offered on request yet. Set a linked document to \"Available on request\" to accept requests.",
+        "ndaLabel": "Non-disclosure terms (optional)",
+        "ndaHelp": "Requesters must accept these terms before they can send a request. They are shown as plain text and recorded with each request. Changes reach the public page when you publish.",
+        "ndaCount": "{{count}} / {{max}} characters",
+        "ticketLabel": "Create a ticket for each confirmed request",
+        "save": "Save access settings",
+        "saved": "Access settings saved.",
+        "saveFailed": "Could not save the access settings.",
+        "requestsHeading": "Requests",
+        "filterLabel": "Show",
+        "filterAll": "All requests",
+        "empty": "No requests yet.",
+        "loadFailed": "Could not load the requests.",
+        "ndaAccepted": "NDA accepted",
+        "downloads": "Downloads: {{count}}",
+        "expired": "Expired",
+        "status": {
+          "pending_verification": "Awaiting email confirmation",
+          "pending_approval": "Awaiting your decision",
+          "approved": "Approved",
+          "denied": "Denied",
+          "revoked": "Revoked"
+        },
+        "columns": {
+          "status": "Status",
+          "requester": "Requester",
+          "company": "Company",
+          "purpose": "Purpose",
+          "requested": "Requested",
+          "expires": "Expires",
+          "actions": "Actions"
+        },
+        "approve": "Approve",
+        "approved": "Request approved. The requester was emailed a download link.",
+        "approveFailed": "Could not approve the request.",
+        "deny": "Deny",
+        "denyTitle": "Deny this request?",
+        "denyMessage": "{{name}} ({{company}}) will be told the request was declined, with your note if you add one.",
+        "denyNoteLabel": "Note to the requester (optional)",
+        "denyConfirm": "Deny request",
+        "denied": "Request denied.",
+        "denyFailed": "Could not deny the request.",
+        "revoke": "Revoke",
+        "revokeTitle": "Revoke access?",
+        "revokeMessage": "The download link sent to {{name}} stops working immediately.",
+        "revokeConfirm": "Revoke access",
+        "revoked": "Access revoked.",
+        "revokeFailed": "Could not revoke access.",
+        "resend": "Resend link",
+        "resent": "A new download link was emailed. The previous link no longer works.",
+        "resendFailed": "Could not resend the link.",
+        "errors": {
+          "mfaRequired": "Approving or resending requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+          "invalidState": "This request changed since you loaded it. Reload the list.",
+          "noGatedDocuments": "The published page offers no document on request. Set one to \"Available on request\" and publish.",
+          "pageNotPublished": "Publish the trust page before approving requests.",
+          "grantExpired": "This grant has expired. Ask the requester to send a new request."
+        },
+        "title": "Document access requests"
+      },
+      "inheritance": {
+        "sources": {
+          "page": "Set for this organization",
+          "template": "Partner template",
+          "default": "Breeze default"
+        },
+        "reset": "Reset to inherited",
+        "intro": {
+          "template": "Use the partner template intro",
+          "none": "No intro",
+          "custom": "Custom",
+          "inheritedAfterSave": "This page has its own intro now. Save to switch it to the inherited one.",
+          "inheritedEmpty": "Nothing is inherited, so the page shows no intro."
+        },
+        "template": {
+          "heading": "Trust Center defaults",
+          "description": "Defaults for every customer trust page. A setting an organization chooses for itself always wins. Published pages pick up changes the next time they are republished.",
+          "readOnly": "Only partner admins with access to every organization can change these defaults.",
+          "loadFailed": "Couldn't load the Trust Center defaults.",
+          "inheritOption": "Breeze default ({{value}})",
+          "on": "On",
+          "off": "Off",
+          "introLabel": "Default intro",
+          "introHint": "Leave blank for no intro.",
+          "hiddenLabel": "Controls hidden by default",
+          "hiddenDefault": "Breeze default (show every control)",
+          "hiddenCustom": "Hide the controls I pick",
+          "frameworksLabel": "Framework view",
+          "frameworksCustom": "Show the frameworks I pick",
+          "showHistoryLabel": "Show the 90-day history",
+          "showHistoryDescription": "A chart of how many controls were met over the last 90 days.",
+          "save": "Save defaults",
+          "saved": "Trust Center defaults saved",
+          "saveFailed": "Couldn't save the Trust Center defaults",
+          "mfaRequired": "Changing these defaults requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+          "revisionMismatch": "Someone else changed these defaults. Reload to see their changes."
+        },
+        "title": "Inherited settings"
+      },
+      "title": "Trust Center",
+      "subtitle": "A public page showing this organization's security posture, generated from live Breeze telemetry.",
+      "loading": "Loading Trust Center…",
+      "loadFailed": "Could not load the Trust Center page.",
+      "retry": "Try again",
+      "status": {
+        "unpublished": "Unpublished",
+        "published": "Published {{date}}",
+        "publicUrl": "Public page",
+        "copy": "Copy link",
+        "copied": "Link copied",
+        "copyFailed": "Could not copy the link.",
+        "lastEvaluated": "Controls last evaluated {{date}}",
+        "gate": {
+          "probation_default_deny": "Your account is still in its trial period. Publishing opens once your account is trusted.",
+          "probation_enrollment_cap": "Your account has reached the limit for its trial period. Publishing opens once your account is trusted.",
+          "restricted": "Your account is restricted, so publishing is turned off.",
+          "partner_unresolved": "We could not determine the partner account for this organization.",
+          "generic": "Publishing is turned off for this account right now."
+        }
+      },
+      "publish": {
+        "button": "Publish",
+        "republish": "Publish update",
+        "title": "Publish Trust Center page",
+        "intro": "This makes the page visible to anyone with the link{{indexable}}. Controls are evaluated again when you publish.",
+        "indexableSuffix": ", and search engines may index it",
+        "attestationCheckbox": "The customer has authorized publication of this page",
+        "authorizedBy": "Authorized by (name, role)",
+        "authorizedByPlaceholder": "Jane Doe, COO",
+        "recorded": "Authorized by {{name}} on {{date}}",
+        "change": "Change",
+        "partnerHomeNote": "This is the partner's own page, so no customer authorization is needed.",
+        "confirm": "Publish",
+        "publishing": "Publishing…",
+        "cancel": "Cancel",
+        "success": "Trust Center page published.",
+        "failed": "Could not publish the Trust Center page.",
+        "disabledNoWrite": "You need permission to edit organizations to publish.",
+        "disabledSlug": "Fix the page address before publishing."
+      },
+      "unpublish": {
+        "button": "Unpublish",
+        "title": "Unpublish Trust Center page",
+        "message": "The public link will stop working immediately and the badge will go dark. You can publish again at any time.",
+        "confirm": "Unpublish",
+        "success": "Trust Center page unpublished.",
+        "failed": "Could not unpublish the Trust Center page."
+      },
+      "preview": {
+        "button": "Preview",
+        "failed": "Could not open the preview.",
+        "popupBlocked": "Your browser blocked the preview window. Allow pop-ups for this site and try again."
+      },
+      "partnerHome": {
+        "label": "Use as the partner's own Trust Center page",
+        "description": "Shows this page at your partner address instead of a customer address. It needs no customer authorization.",
+        "success": "Partner page setting saved.",
+        "failed": "Could not change the partner page setting."
+      },
+      "slug": {
+        "warningTitle": "This page's address is not valid yet",
+        "openSettings": "Edit in organization settings",
+        "partner_slug": "The partner slug is not valid for a public address.",
+        "org_slug": "The organization slug is not valid for a public address.",
+        "unknown": "The page address has a problem ({{problem}})."
+      },
+      "notice": {
+        "cannotPublish": "Publishing is not available yet. {{reason}}",
+        "readOnly": "You can view this page but need permission to edit organizations to change or publish it."
+      },
+      "errors": {
+        "revisionMismatch": "This page changed since you loaded it. Reload and try again.",
+        "authorizationRequired": "Record who authorized publication.",
+        "mfaRequired": "Publishing requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
+        "trustProbation": "Publishing opens once your account is trusted.",
+        "trustRestricted": "Publishing opens once your account is trusted.",
+        "slugInvalid": "The page address is not valid. Fix the slug in organization settings.",
+        "introTooLong": "The introduction is too long.",
+        "partnerWideRequired": "Only partner-wide administrators can change the partner page.",
+        "partnerHomeInternalOnly": "Only your own (internal) organization can be the partner page.",
+        "partnerHomeUnpublishFirst": "This page is live without a recorded customer authorization. Unpublish it before turning off the partner page setting."
+      },
+      "controls": {
+        "republishBanner": "Changes apply to the public page when you publish again.",
+        "saveFailed": "Could not save the change.",
+        "unavailable": "Control results are unavailable right now.",
+        "assessedCount": "{{assessed}} of {{eligible}} assessed",
+        "shown": "Shown",
+        "hidden": "Hidden",
+        "toggles": {
+          "showPercentages": {
+            "label": "Show percentages",
+            "description": "Display the percentage for each control on the public page."
+          },
+          "showDeviceCount": {
+            "label": "Show device count",
+            "description": "Display how many devices are covered."
+          },
+          "showManagedBy": {
+            "label": "Show \"Managed by\"",
+            "description": "Name your company as the managing provider."
+          },
+          "searchIndexable": {
+            "label": "Allow search engines",
+            "description": "Let search engines index the public page."
+          }
+        }
+      },
+      "content": {
+        "introLabel": "Introduction",
+        "contactLabel": "Security contact email",
+        "contactInvalid": "Enter a valid email address.",
+        "websiteLabel": "Website",
+        "websiteInvalid": "Enter a full https:// address.",
+        "save": "Save content",
+        "saved": "Content saved.",
+        "saveFailed": "Could not save the content."
+      },
+      "documents": {
+        "visibilityLabel": "Who can download",
+        "visibilityPublic": "Public",
+        "visibilityGated": "Available on request",
+        "reconfirm": "Confirm",
+        "reconfirmNeeded": "Confirm the disclosure for the new visibility before saving.",
+        "disclosureTitleGated": "Offer this document on request?",
+        "disclosureMessageGated": "\"{{title}}\" will be listed on the public page. Only requesters you approve can download it.",
+        "disclosureCheckboxGated": "I confirm this document is approved for release to approved requesters",
+        "disclosureConfirmChange": "Confirm",
+        "description": "Documents you choose to share on the public page. Only documents you explicitly approve are shown.",
+        "upload": "Upload a document",
+        "library": "Document library",
+        "libraryEmpty": "No more documents available.",
+        "libraryFailed": "Could not load the document library.",
+        "add": "Add",
+        "linked": "On the public page ({{count}} of {{max}})",
+        "linkedEmpty": "No documents selected.",
+        "remove": "Remove",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "superseded": "Superseded — relink the newer version",
+        "save": "Save documents",
+        "saved": "Documents saved.",
+        "saveFailed": "Could not save the documents.",
+        "unavailable": "These documents are no longer available: {{titles}}. Remove or relink them.",
+        "disclosureTitle": "Publish this document?",
+        "disclosureMessage": "\"{{title}}\" will be visible to anyone with the public page link.",
+        "disclosureCheckbox": "I confirm this document is approved for public release",
+        "disclosureConfirm": "Add document"
+      },
+      "sections": {
+        "controlsHeading": "Security controls",
+        "contentHeading": "Page content",
+        "documentsHeading": "Documents"
+      },
+      "badge": {
+        "title": "Badge",
+        "description": "Embed a live status badge on your website. It links to the public page.",
+        "unpublishedNote": "The badge shows once the page is published.",
+        "snippet": "Badge HTML",
+        "alt": "Security posture badge",
+        "copy": "Copy snippet",
+        "copied": "Snippet copied",
+        "copyFailed": "Could not copy the snippet."
       }
     },
     "documents": {

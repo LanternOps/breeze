@@ -210,6 +210,44 @@ export async function buildApproverAuthContextForIntent(
   });
 }
 
+/**
+ * Recipe Library E4 (#6169): a HUMAN AuthContext for a named user in a task's
+ * org, used by the AI Operator coordinator to mint the two human-shaped
+ * intents of plan approval (plan D-E4-2): the `operator_plan` intent under the
+ * task's REQUESTER, and each child effect under the plan's APPROVER.
+ *
+ * It runs exactly the revalidation a release does (`buildUserOwnedAuthContext`:
+ * account active, CURRENT permissions still reach the org, org-axis scope,
+ * live `allowedSiteIds`) — there is deliberately no second user rebuild. The
+ * principal is `user_session` because a human is the authority on both
+ * intents; the AI origin travels on `aiOrigin` so the dispatch is still
+ * attributed to the AI Operator. `null` ⇒ the caller must not mint.
+ */
+export async function buildTaskActorAuthContext(args: {
+  orgId: string;
+  partnerId: string | null;
+  userId: string;
+}): Promise<AuthContext | null> {
+  // Only the fields `buildUserOwnedAuthContext` reads. `arguments: {}` makes
+  // the tenant-mutation widening a no-op; the ai_origin columns attribute the
+  // context to the AI agent lane without naming a run.
+  const pseudoIntent = {
+    id: '00000000-0000-0000-0000-000000000000',
+    orgId: args.orgId,
+    partnerId: args.partnerId,
+    actionName: 'operator_plan',
+    arguments: {},
+    originPrincipalKind: 'user_session',
+    originPrincipalId: null,
+    requestingAgentRunId: null,
+    aiOriginKind: 'ai_agent',
+    aiOriginSessionId: null,
+    aiOriginAgentRunId: null,
+  } as unknown as ActionIntent;
+  return runOutsideDbContext(() =>
+    buildUserOwnedAuthContext(pseudoIntent, args.userId, { principal: { kind: 'user_session' } }));
+}
+
 async function buildUserOwnedAuthContext(
   intent: ActionIntent,
   userId: string,

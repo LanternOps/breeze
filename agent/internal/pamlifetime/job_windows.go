@@ -17,6 +17,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -329,19 +330,55 @@ func (*nativeWindowsPrimitives) VerifyProcessIdentityGone(ctx context.Context, p
 }
 
 func (*nativeWindowsPrimitives) VerifyNoPrivilegedToken(ctx context.Context, username string) (bool, error) {
-	// Do NOT special-case "no such account" here, however tempting it looks:
-	// an unresolvable name is not on its own proof that no token exists. A
-	// Windows process keeps its token, and therefore the elevated SID, after
-	// the account behind it is deleted, so on a host that HAS actuated, this
-	// error can be the only trace of exactly the orphaned elevated process
-	// this scan exists to catch. The one context where absence is genuinely
-	// proof — an agent whose ledger has never recorded an actuation, so the
-	// account was never created — is handled by the caller, which knows that:
-	// see verifyAccountClean's neverActuated parameter in manager.go (#4587).
+	// Name absence alone cannot prove token absence: deleting a Windows account
+	// does not invalidate processes holding its SID. The caller can tolerate
+	// absence only with an empty readable actuation history or the independent
+	// job, process and orphan-token probes in recoverAbsentAccountEntry.
 	targetSID, _, _, err := windows.LookupSID("", username)
 	if err != nil {
 		return false, err
 	}
+	return scanAccountTokens(ctx, func(sid *windows.SID) (bool, error) {
+		return windows.EqualSid(sid, targetSID), nil
+	})
+}
+
+// VerifyJobAbsent never terminates a job: recovery requires positive absence,
+// not merely a name whose process identity cannot be reopened.
+func (*nativeWindowsPrimitives) VerifyJobAbsent(ctx context.Context, name string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	handle, _, err := openOwnedJob(name, jobOwnership{})
+	if errors.Is(err, ErrJobObjectAbsent) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	windows.CloseHandle(handle)
+	return false, nil
+}
+
+// A deleted account SID no longer resolves to a name, but its tokens still
+// survive. An absent account therefore requires a full token identity scan;
+// unresolved principals (and any uninspectable process) remain fail-closed.
+// LookupAccount can require a domain controller for a domain user's token. If
+// that controller is unreachable, recovery deliberately stays unavailable;
+// this is not evidence of token absence. The ledger does not retain the deleted
+// account's SID, so ignoring unresolved SIDs (or matching only a remembered
+// account name) could miss a surviving token belonging to the deleted account.
+func (*nativeWindowsPrimitives) VerifyNoOrphanedAccountToken(ctx context.Context) (bool, error) {
+	return scanAccountTokens(ctx, func(sid *windows.SID) (bool, error) {
+		name, _, _, err := sid.LookupAccount("")
+		if err != nil {
+			return false, err
+		}
+		return strings.EqualFold(name, elevaccount.AccountName), nil
+	})
+}
+
+func scanAccountTokens(ctx context.Context, matches func(*windows.SID) (bool, error)) (bool, error) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return false, err
@@ -355,25 +392,35 @@ func (*nativeWindowsPrimitives) VerifyNoPrivilegedToken(ctx context.Context, use
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		process, openErr := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, entry.ProcessID)
-		if openErr == nil {
-			var token windows.Token
-			if tokenErr := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); tokenErr == nil {
-				user, userErr := token.GetTokenUser()
-				token.Close()
-				windows.CloseHandle(process)
-				if userErr != nil {
-					return false, userErr
+		// Windows refuses OpenProcess for its kernel System process. Its fixed
+		// PID, absent parent and kernel snapshot identity prove it cannot be a
+		// user-mode process launched with an elevation-account token. Names or
+		// access-denied errors alone never exempt a process from inspection.
+		if !isKernelSystemIdentity(entry.ProcessID, entry.ParentProcessID, windows.UTF16ToString(entry.ExeFile[:])) {
+			process, openErr := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, entry.ProcessID)
+			if openErr == nil {
+				var token windows.Token
+				if tokenErr := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); tokenErr == nil {
+					user, userErr := token.GetTokenUser()
+					token.Close()
+					windows.CloseHandle(process)
+					if userErr != nil {
+						return false, userErr
+					}
+					matched, matchErr := matches(user.User.Sid)
+					if matchErr != nil {
+						return false, matchErr
+					}
+					if matched {
+						return true, nil
+					}
+				} else {
+					windows.CloseHandle(process)
+					return false, tokenInspectionFailure(entry.ProcessID, tokenErr)
 				}
-				if windows.EqualSid(user.User.Sid, targetSID) {
-					return true, nil
-				}
-			} else {
-				windows.CloseHandle(process)
-				return false, tokenInspectionFailure(entry.ProcessID, tokenErr)
+			} else if entry.ProcessID != 0 {
+				return false, fmt.Errorf("open process %d while verifying PAM token absence: %w", entry.ProcessID, openErr)
 			}
-		} else if entry.ProcessID != 0 {
-			return false, fmt.Errorf("open process %d while verifying PAM token absence: %w", entry.ProcessID, openErr)
 		}
 		if err := windows.Process32Next(snapshot, &entry); err != nil {
 			if errors.Is(err, syscall.ERROR_NO_MORE_FILES) {

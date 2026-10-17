@@ -2,7 +2,9 @@ package agentapp
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -151,6 +153,30 @@ func TestClassifyEnrollError_NetworkError(t *testing.T) {
 	}
 	if !strings.Contains(friendly, "server unreachable") {
 		t.Errorf("friendly = %q, should contain 'server unreachable'", friendly)
+	}
+}
+
+// TestClassifyEnrollError_FilterSignature: an ISP gateway filter that answers
+// the TLS ClientHello with plaintext HTTP is not "server unreachable"; the
+// hint names the filter. The error is shaped as the one-shot ECH dialer
+// returns it (the filter's RecordHeaderError wrapped with the fallback
+// reason) inside net/http's *url.Error.
+func TestClassifyEnrollError_FilterSignature(t *testing.T) {
+	filterErr := tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake", RecordHeader: [5]byte{'H', 'T', 'T', 'P', '/'}}
+	dialErr := fmt.Errorf("%w (encrypted client hello fallback: config fetch failed: doh: rcode 2)", filterErr)
+	urlErr := &url.Error{Op: "Post", URL: "https://rmm.example/api/v1/agents/enroll", Err: dialErr}
+
+	cat, friendly := classifyEnrollError(urlErr, "https://rmm.example")
+	if cat != catNetwork {
+		t.Errorf("category = %v, want catNetwork", cat)
+	}
+	for _, want := range []string{"network security filter", "plaintext HTTP", "https://rmm.example", "ISP"} {
+		if !strings.Contains(friendly, want) {
+			t.Errorf("friendly = %q, missing %q", friendly, want)
+		}
+	}
+	if strings.Contains(friendly, "server unreachable") {
+		t.Errorf("friendly = %q, must not give the firewall/DNS advice for a filter", friendly)
 	}
 }
 

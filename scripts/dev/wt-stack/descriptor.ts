@@ -7,6 +7,8 @@ export interface StackDescriptor {
   apiUrl: string;
   portalUrl: string;
   webPort: number;
+  /** #8718 — true when caddy's host port was fixed via BREEZE_WT_CADDY_PORT, so it survives `docker restart`. */
+  caddyPortPinned: boolean;
   pgContainer: string;
   redisContainer: string;
   admin: { email: string; password: string };

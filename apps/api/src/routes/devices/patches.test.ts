@@ -134,6 +134,13 @@ vi.mock('../../services/sentry', () => ({
   captureException: vi.fn()
 }));
 
+// W06 image term — the real SQL is covered by
+// services/workloads/imageCompliance.integration.test.ts. Default: the device
+// has no workload rows, so the response must be exactly what it was before.
+vi.mock('../../services/workloads/imageCompliance', () => ({
+  containerImageComplianceTerms: vi.fn(async () => new Map())
+}));
+
 import { db } from '../../db';
 import { devicePatches, patches } from '../../db/schema';
 import { getDeviceWithOrgAndSiteCheck } from './helpers';
@@ -141,6 +148,7 @@ import { queueCommandForExecution } from '../../services/commandQueue';
 import { resolvePartnerIdForOrg } from '../patches/helpers';
 import { loadDevicePatchApprovalView } from '../../services/devicePatchApprovalView';
 import { captureException } from '../../services/sentry';
+import { containerImageComplianceTerms } from '../../services/workloads/imageCompliance';
 import { getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 
 function selectWhereResult(rows: unknown[]) {
@@ -315,6 +323,56 @@ describe('device patch routes', () => {
     expect(body.data.compliancePercent).toBe(50);
     expect(body.data.lastPatchScanAt).toBe('2026-02-09T10:00:00.000Z');
     expect(body.data.lastPatchScanStatus).toBe('completed');
+  });
+
+  describe('container image term (W06)', () => {
+    const patchRows = () => [
+      { id: 'dp-1', patchId: '11111111-1111-4111-8111-111111111111', status: 'pending', installedAt: null,
+        lastCheckedAt: null, failureCount: 0, lastError: null, externalId: 'apple:A:1', title: 'A', description: null,
+        severity: 'important', category: 'system', source: 'apple', releaseDate: null, requiresReboot: false },
+      { id: 'dp-3', patchId: '33333333-3333-4333-8333-333333333333', status: 'installed', installedAt: '2026-02-08T10:00:00.000Z',
+        lastCheckedAt: null, failureCount: 0, lastError: null, externalId: 'apple:B:1', title: 'B', description: null,
+        severity: 'important', category: 'system', source: 'apple', releaseDate: null, requiresReboot: false },
+    ];
+    const request = async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectPatchStatusResult(patchRows()) as any)
+        .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
+        .mockReturnValueOnce(selectWhereResult([]) as any);
+      const res = await app.request(`/devices/${DEVICE_ID}/patches`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      return (await res.json()).data;
+    };
+
+    it('leaves the response untouched for a device with no workload rows', async () => {
+      const data = await request();
+      expect(containerImageComplianceTerms).toHaveBeenCalledWith({ deviceIds: [DEVICE_ID] });
+      expect(data.compliancePercent).toBe(50);
+      expect(Object.keys(data)).not.toContain('containerImages');
+    });
+
+    it('folds stale images in as pending items and current images as installed items; unknowns stay out', async () => {
+      vi.mocked(containerImageComplianceTerms).mockResolvedValueOnce(
+        new Map([[DEVICE_ID, { stale: 2, current: 1, unknown: 3 }]]),
+      );
+      const data = await request();
+      // (1 installed + 1 current) / (2 OS items + 2 stale + 1 current)
+      expect(data.compliancePercent).toBe(40);
+      expect(data.containerImages).toEqual({ stale: 2, current: 1, unknown: 3 });
+      // the OS patch lists are not padded with images
+      expect(data.pending).toHaveLength(1);
+      expect(data.installed).toHaveLength(1);
+    });
+
+    it('never lets unknown images change the percentage', async () => {
+      vi.mocked(containerImageComplianceTerms).mockResolvedValueOnce(
+        new Map([[DEVICE_ID, { stale: 0, current: 0, unknown: 9 }]]),
+      );
+      const data = await request();
+      expect(data.compliancePercent).toBe(50);
+      expect(data.containerImages).toEqual({ stale: 0, current: 0, unknown: 9 });
+    });
   });
 
   // #7625 — a patch the linked update ring auto-approves used to read

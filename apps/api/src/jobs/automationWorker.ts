@@ -25,6 +25,7 @@ import {
 import { type BreezeEvent } from '../services/eventBus';
 import {
   type AutomationTrigger,
+  type AutomationTargetDiagnostics,
   type AutomationTriggerContext,
   checkAutomationTargetsWithinSiteScope,
   createAutomationRunRecord,
@@ -530,6 +531,7 @@ async function admitTriggerSchedule(
   // CURRENT target set here, dropping anything outside it, before the run is
   // created. An unrestricted creator (no allowedSiteIds) is unaffected.
   let boundDeviceIds: string[] | undefined;
+  let boundTargetDiagnostics: AutomationTargetDiagnostics | undefined;
   if (automation.createdBy) {
     const perms = await getUserPermissions(automation.createdBy, {
       orgId: automation.orgId ?? undefined,
@@ -553,6 +555,8 @@ async function admitTriggerSchedule(
         // decision above was actually based on.
         const outOfScope = new Set(check.outOfScopeDeviceIds);
         boundDeviceIds = check.targetDeviceIds.filter((id) => !outOfScope.has(id));
+        // #8598 — a broken group target must still fail the run visibly.
+        boundTargetDiagnostics = check.targetDiagnostics;
 
         writeAuditEvent(requestLikeFromSnapshot({}), {
           orgId: automation.orgId ?? null,
@@ -567,7 +571,7 @@ async function admitTriggerSchedule(
           },
         });
 
-        if (boundDeviceIds.length === 0) {
+        if (boundDeviceIds.length === 0 && !boundTargetDiagnostics?.problems.length) {
           return { skipped: 'schedule_targets_all_outside_site_ceiling' };
         }
       }
@@ -586,6 +590,7 @@ async function admitTriggerSchedule(
       scanAt: data.scanAt,
     },
     ...(boundDeviceIds ? { boundDeviceIds } : {}),
+    ...(boundDeviceIds && boundTargetDiagnostics ? { targetDiagnostics: boundTargetDiagnostics } : {}),
     occurrenceKey: `schedule:${data.slotKey}`,
   });
 

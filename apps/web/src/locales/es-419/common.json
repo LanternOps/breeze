@@ -110,7 +110,12 @@
     "timeSync": "Sincronización de hora",
     "aiModels": "Modelos de IA",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Incidentes",
+    "ticketsServiceRequests": "Solicitudes de servicio",
+    "ticketsProblems": "Problemas",
+    "ticketsChanges": "Cambios",
+    "endpointMessages": "Mensajes"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -311,6 +316,17 @@
       "target": "Objetivo",
       "time": "Tiempo"
     },
+    "recentlyViewed": {
+      "title": "Continúa donde lo dejaste",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organización",
+        "ticket": "Ticket",
+        "alert": "Alerta",
+        "site": "Sitio",
+        "page": "Página"
+      }
+    },
     "alerts": {
       "title": "Alertas recientes",
       "viewAll": "Ver todo",
@@ -408,7 +424,9 @@
       "unratedPending": "{{count}} parches sin calificar pendientes (no se aprobarán automáticamente)",
       "unratedPending_one": "{{count}} parche sin calificar pendiente (no se aprobará automáticamente)",
       "unratedPending_other": "{{count}} parches sin calificar pendientes (no se aprobarán automáticamente)",
-      "empty": "Aún no hay datos de parches"
+      "empty": "Aún no hay datos de parches",
+      "imagesNotChecked_one": "{{count}} imagen de contenedor sin verificar",
+      "imagesNotChecked_other": "{{count}} imágenes de contenedor sin verificar"
     },
     "vuln": {
       "title": "Vulnerabilidades",
@@ -494,7 +512,9 @@
       "noGroups": "No hay grupos de dispositivos disponibles",
       "deviceCount": "dispositivos {{count}}",
       "loadSaved": "Cargar filtro guardado:",
-      "select": "Seleccionar"
+      "select": "Seleccionar",
+      "dynamic": "Dinámico",
+      "refusedGroup": "No disponible como destino: las reglas de este grupo se basan en campos que el propio dispositivo informa ({{fields}})."
     },
     "preview": {
       "title": "Dispositivos coincidentes",
@@ -680,7 +700,23 @@
       "noSelection": "Seleccionar organización",
       "searchOrganizations": "Buscar organizaciones…",
       "noMatches": "Ninguna organización coincide",
-      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado."
+      "legacyFilterNotice": "El filtrado por organización ahora sigue el selector del encabezado.",
+      "recent": "Recientes",
+      "pane": {
+        "destinations": {
+          "overview": "Resumen",
+          "devices": "Dispositivos",
+          "tickets": "Tickets",
+          "alerts": "Alertas",
+          "sites": "Sitios",
+          "billing": "Facturación"
+        },
+        "offlineCount": "{{count}} sin conexión",
+        "openCount": "{{count}} abiertos",
+        "criticalCount": "{{count}} críticas",
+        "noCritical": "ninguna",
+        "hint": "Haz clic en un nombre para cambiar · haz clic en una página para cambiar e ir"
+      }
     },
     "header": {
       "menu": "Menú",
@@ -797,9 +833,9 @@
       "expand": "Expandir barra lateral",
       "collapseSections": "Contraer todas las secciones",
       "closeMenu": "Cerrar menú",
-      "recentDevices": "Dispositivos recientes",
-      "hideRecentDevices": "Ocultar dispositivos recientes",
-      "showRecentDevices": "Mostrar dispositivos recientes"
+      "recent": "Recientes",
+      "hideRecent": "Ocultar recientes",
+      "showRecent": "Mostrar recientes"
     },
     "orgRequired": {
       "title": "Selecciona una organización",
@@ -1323,6 +1359,10 @@
           "ticketAssigned": {
             "description": "Se activa cuando un ticket se asigna o se desasigna.",
             "label": "Ticket asignado"
+          },
+          "migrationWindowClosed": {
+            "description": "Se activa una vez por organización cuando se cierra una ventana de migración de tickets, con los conteos importados.",
+            "label": "Ventana de migración cerrada"
           }
         },
         "fields": {
@@ -1705,7 +1745,8 @@
         "deleteEntry": "Eliminar entrada {{id}}",
         "deleteConfirmTitle": "¿Eliminar entrada de tiempo?",
         "deleteConfirmMessage": "Esto elimina de forma permanente la entrada de {{duration}} del ticket {{ticket}}. No se puede deshacer.",
-        "deleteConfirmMessageNoTicket": "Esto elimina de forma permanente la entrada de {{duration}}. No se puede deshacer."
+        "deleteConfirmMessageNoTicket": "Esto elimina de forma permanente la entrada de {{duration}}. No se puede deshacer.",
+        "noteInvoiceCue": "Los clientes ven esta nota en su factura, a menos que tu configuración de facturación oculte las notas."
       },
       "sourceBadge": {
         "timer": "Temporizador",
@@ -2192,7 +2233,8 @@
         "viewInSource": "Ver en {{source}}",
         "promoteFromEdr": "Promocionar desde la vista EDR",
         "pagination": "Página {{page}} de {{totalPages}} ({{total}} total)",
-        "previous": "Anterior"
+        "previous": "Anterior",
+        "genericEdrProvider": "Proveedor de EDR"
       },
       "IncidentDetailPage": {
         "errors": {

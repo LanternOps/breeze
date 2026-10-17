@@ -77,6 +77,9 @@ describe('EmailTemplatesTab', () => {
       'card_expiring',
       'payment_reminder', 'payment_overdue',
       'payment_receipt', 'payment_failed',
+      'ticket_approval_requested_approver',
+      'ticket_approval_requested_notify',
+      'ticket_approval_decided',
     ]);
     expect(screen.getByTestId('autopay-email-template-group').contains(screen.getByTestId('email-template-row-invoice_autopay'))).toBe(true);
     const newIds = new Set(['autopay_request', 'autopay_enrolled', 'autopay_stopped','autopay_paused','autopay_resumed', 'card_expiring']);
@@ -84,6 +87,17 @@ describe('EmailTemplatesTab', () => {
       const row = screen.getByTestId(newIds.has(id) ? `autopay-email-template-${id}` : id === 'payment_reminder' || id === 'payment_overdue' ? `autopay-template-${id}` : `email-template-row-${id}`);
       expect(row.textContent).toContain(emailTemplateLabel(id));
       expect(screen.getByTestId(`email-template-status-${id}`).textContent).toContain('Using default');
+    }
+  });
+
+  it('lists the work approval templates in the support group', async () => {
+    routeFetch();
+    render(<EmailTemplatesTab />);
+
+    await screen.findByTestId('email-templates-list');
+    const supportGroup = screen.getByTestId('email-template-other-group');
+    for (const id of ['ticket_approval_requested_approver', 'ticket_approval_requested_notify', 'ticket_approval_decided'] as const) {
+      expect(supportGroup.contains(screen.getByTestId(`email-template-row-${id}`))).toBe(true);
     }
   });
 

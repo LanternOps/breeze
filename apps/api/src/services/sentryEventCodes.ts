@@ -337,6 +337,12 @@ export const SENTRY_EVENT_CODES = [
   /** Auto edition migration (#5016): an org's canary device was dispatched and has not come back on the target edition, so the rest of the org is held. */
   'agent_edition_auto_migration_canary_unresolved',
 
+  // --- restore checkpoint ledger (#4757) --------------------------------
+  /** An agent reported a restore-point status this API does not know (agent/API version skew); the ledger row stays `requested`. */
+  'restore_point_outcome_unknown_status',
+  /** An agent reported a restore-point outcome (other than skipped_disabled) for a request id the ledger has no row for. */
+  'restore_point_outcome_unrequested',
+
   // --- mcp transport ----------------------------------------------------
   /** A principal presented an `Mcp-Session-Id` owned by someone else (MED-1). */
   'mcp_session_principal_mismatch',
@@ -350,6 +356,13 @@ export const SENTRY_EVENT_CODES = [
    * job can prune it — raise the job's batch-size / max-batches knobs.
    */
   'retention_backlog_remaining',
+  /**
+   * #8855: a nightly AI tool output retention run finished with orgs that
+   * failed or were skipped, or transcript deletes that failed, so expired tool
+   * outputs (or SDK transcripts) remain. Per-org errors are in the worker log
+   * (`[AiToolOutputRetention]`).
+   */
+  'ai_tool_output_retention_incomplete',
 
   // --- server-side i18n (#3860) -----------------------------------------
   /** `tApi` was asked for a key no bundle defines — the raw key string is
@@ -393,6 +406,10 @@ export const SENTRY_EVENT_CODES = [
    *  (ACCEPT_CHECKOUT_TIMEOUT_MS) and sent the customer to the invoice page.
    *  A run of these means Stripe (or the partner's account) is slow. */
   'quote_accept_checkout_timeout',
+  /** #8603: a partner's stored `timezone` is not a zone Intl knows, so invoice
+   *  line work dates were computed in UTC instead (assembly never blocks on
+   *  it). Fix the partner's timezone setting; near-midnight lines may be a day off. */
+  'invoice_work_date_invalid_timezone',
 ] as const;
 
 /**

@@ -20,7 +20,9 @@ import { requestPathLogger } from './middleware/requestPathLogger';
 import { agentAdmission } from './middleware/agentAdmission';
 import { startAdmissionControl, stopAdmissionControl } from './services/admission/admissionRuntime';
 import { createGlobalBodyLimitMiddleware } from './middleware/bodyLimitGate';
-import { globalRateLimit } from './middleware/globalRateLimit';
+import { globalRateLimit, registerGlobalRateLimitSkipPrefix } from './middleware/globalRateLimit';
+import { exceptTunnelSurface, isTunnelSurface, tunnelHostClassifier, tunnelHostDispatch } from './middleware/tunnelHostDispatch';
+import { tunnelHostRoutes } from './routes/tunnelHost';
 import { authRoutes } from './routes/auth';
 import { accountDeletionAdminRoutes } from './routes/auth/accountDeletion';
 import { configRoutes } from './routes/config';
@@ -37,6 +39,7 @@ import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
 import { callerVerificationRoutes } from './routes/callerVerification';
+import { endpointMessageRoutes } from './routes/endpointMessages';
 import { mailboxRoutes } from './routes/tickets/mailboxConnect';
 import { catalogRoutes } from './routes/catalog';
 import { emailWebhookRoutes } from './routes/tickets/emailWebhook';
@@ -49,10 +52,12 @@ import { stripeWebhookRoutes } from './routes/webhooks/stripe';
 import { quickbooksWebhookRoutes } from './routes/webhooks/quickbooks';
 import { xeroWebhookRoutes } from './routes/webhooks/xero';
 import { resendWebhookRoutes } from './routes/webhooks/emailProvider';
+import { edrWebhookRoutes } from './routes/webhooks/edr';
 import { invoiceAssemblyRoutes } from './routes/invoices/assembly';
 import { invoiceSettingsRoutes } from './routes/invoices/settings';
 import { billingPaymentSettingsRoutes } from './routes/billingPaymentSettings';
 import { ticketApprovalSettingsRoutes } from './routes/tickets/approvalSettings';
+import { ticketApprovalRoutes } from './routes/tickets/approvals';
 import { autopayRoutes } from './routes/autopay';
 import { mountAutopayChargingRoutes } from './routes/autopay/mount';
 import { publicAutopayRoutes } from './routes/autopay/public';
@@ -74,6 +79,16 @@ import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
 import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
 import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates';
 import { orgDocumentRoutes } from './routes/orgDocuments';
+import { trustPageRoutes } from './routes/trustPage';
+import { trustPagePublicRoutes } from './routes/trustPagePublic';
+import { trustPageAttestationRoutes } from './routes/trustPageAttestation';
+import { byTrustCrossOriginPath } from './middleware/trustCrossOrigin';
+// Trust Center W2 (#8770) — W02a stub routers, filled by W02b/d/f/g.
+import { trustPageDeclarationRoutes } from './routes/trustPageDeclarations';
+import { trustPageContentRoutes } from './routes/trustPageContent';
+import { trustPageAccessRoutes } from './routes/trustPageAccess';
+import { trustAccessPublicRoutes } from './routes/trustAccessPublic';
+import { trustPageTemplateRoutes } from './routes/trustPageTemplate';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
 import { wellKnownRoutes } from './routes/oauthWellKnown';
@@ -85,6 +100,8 @@ import { permissionsCatalogRoutes } from './routes/permissionsCatalog';
 import { auditLogRoutes } from './routes/auditLogs';
 import { backupRoutes } from './routes/backup';
 import { edrRoutes } from './routes/edr';
+import { connectionHealthRoutes } from './routes/connectionHealth';
+import { emailUnsubscribeRoutes } from './routes/emailUnsubscribe';
 import { reportRoutes } from './routes/reports';
 import { incidentRoutes } from './routes/incidents';
 import { searchRoutes } from './routes/search';
@@ -93,10 +110,12 @@ import { remoteRoutes } from './routes/remote';
 import { apiKeyRoutes } from './routes/apiKeys';
 import { servicePrincipalRoutes } from './routes/servicePrincipals';
 import { partnerServicePrincipalRoutes } from './routes/partnerServicePrincipals';
+import { migrationWindowRoutes } from './routes/migrationWindows';
 import { partnerApiRoutes } from './routes/partnerApi';
 import { enrollmentKeyRoutes, publicEnrollmentRoutes, publicShortLinkRoutes } from './routes/enrollmentKeys';
 import { installerRoutes } from './routes/installer';
 import { supportPublicRoutes } from './routes/supportPublic';
+import { callerVerifyPublicRoutes } from './routes/callerVerifyPublic';
 import { ssoRoutes } from './routes/sso';
 import { partnerLoginBrandingRoutes } from './routes/partnerLoginBranding';
 import { preAssignmentRoutes } from './routes/preAssignment';
@@ -169,6 +188,8 @@ import { aiRoutes } from './routes/ai';
 import { aiScriptProposalRoutes } from './routes/ai/scriptProposals';
 import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
 import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
+import { aiDataPolicyRoutes } from './routes/ai/dataPolicy';
+import { partnerAiDataPolicyRoutes } from './routes/partnerAiDataPolicy';
 import { aiModelsRoutes } from './routes/aiModels';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
@@ -291,6 +312,7 @@ import { registerTopologyPhysicalAuthorities } from './services/topology/physica
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
+import { getClusterCacheBus } from './services/clusterCacheBus';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
 import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
@@ -331,6 +353,7 @@ import { webhookDeliveries } from './db/schema';
 import { resolveFallbackOrgId } from './services/auditFallbackOrg';
 import { ne, sql } from 'drizzle-orm';
 import { envInt } from './utils/envInt';
+import { registerAllEffectProbes } from './services/aiOperator/effectProbes/bootstrap';
 import {
   createReadinessEvaluator,
   type WorkerInitPhase
@@ -461,6 +484,10 @@ app.use('*', requestPathLogger());
 // and any body read. O(1), no I/O, never inside a DB context. A pass-through
 // until the admission controller starts, and in BREEZE_ADMISSION_MODE=off.
 app.use('*', agentAdmission());
+// Network Proxy host mode (spec 2026-10-06 §3): classify by Host + the Caddy
+// tunnel-site assertion. Runs after metrics/logging (they cover tunnel traffic)
+// and before every app header/CORS middleware (those skip tunnel surfaces).
+app.use('*', tunnelHostClassifier());
 
 // The tunnel-http proxy route (routes/tunnelHttp.ts) sets its own response
 // headers on every request — a restrictive sandboxed CSP that intentionally
@@ -471,7 +498,9 @@ app.use('*', agentAdmission());
 // wrong for that one route: applied on top, they silently won the merge over
 // the route's own response and broke iframe embedding entirely (the route's
 // sandbox CSP never reached the browser). Skip only the conflicting header
-// output for that path prefix; every other route keeps it unchanged.
+// output for that path prefix; every other route keeps it unchanged. Tunnel
+// hosts (host mode) are exempted the same way via `exceptTunnelSurface` /
+// `skipHeadersWhen`.
 //
 // `securityMiddleware()` also enforces FORCE_HTTPS redirect and
 // canonical-Host rejection, which have nothing to do with the CSP conflict
@@ -479,23 +508,32 @@ app.use('*', agentAdmission());
 // its own `skipHeadersPathPrefix` option (headers only), not via
 // `exceptTunnelHttp`, which would drop that transport enforcement as well.
 const TUNNEL_HTTP_PATH_PREFIX = '/api/v1/tunnel-http/';
-const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, mw);
+const exceptTunnelHttp = (mw: MiddlewareHandler) => exceptPathPrefix(TUNNEL_HTTP_PATH_PREFIX, exceptTunnelSurface(mw));
 
+const SECURE_HEADERS_OPTIONS = {
+  // Override defaults to match Breeze security policy:
+  // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
+  strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
+  // - X-Frame-Options: DENY (default is SAMEORIGIN)
+  xFrameOptions: 'DENY',
+  // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
+  referrerPolicy: 'strict-origin-when-cross-origin',
+} as const;
+
+// Trust Center W3b: the public badge and the attestation/JWKS paths get the same headers except
+// `Cross-Origin-Resource-Policy: cross-origin` (middleware/trustCrossOrigin.ts), so other origins can load them.
+// It must be chosen here, not in the handlers: secureHeaders writes its headers after next() and would
+// overwrite a handler's CORP.
 app.use(
   '*',
   exceptTunnelHttp(
-    secureHeaders({
-      // Override defaults to match Breeze security policy:
-      // - HSTS: 1 year (secureHeaders default is 180 days / 15552000s)
-      strictTransportSecurity: 'max-age=31536000; includeSubDomains; preload',
-      // - X-Frame-Options: DENY (default is SAMEORIGIN)
-      xFrameOptions: 'DENY',
-      // - Referrer-Policy: strict-origin-when-cross-origin (default is no-referrer)
-      referrerPolicy: 'strict-origin-when-cross-origin',
-    })
+    byTrustCrossOriginPath(
+      secureHeaders({ ...SECURE_HEADERS_OPTIONS }),
+      secureHeaders({ ...SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' }),
+    )
   )
 );
-app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX }));
+app.use('*', securityMiddleware({ skipHeadersPathPrefix: TUNNEL_HTTP_PATH_PREFIX, skipHeadersWhen: isTunnelSurface }));
 app.use(
   '*',
   createGlobalBodyLimitMiddleware({
@@ -504,6 +542,9 @@ app.use(
   })
 );
 app.use('*', globalRateLimit());
+// Tunnel hosts end here: the body limit (fixed policy on tunnel surfaces, not
+// path-keyed), rate limit (tunnel bucket, no path skips), metrics and logging ran; no app route, auth, prettyJSON or CORS is reachable on a tunnel host.
+app.use('*', tunnelHostDispatch(tunnelHostRoutes));
 app.use('*', prettyJSON());
 app.use(
   '*',
@@ -750,6 +791,18 @@ api.use('*', async (c, next) => {
 
 api.route('/auth', authRoutes);
 api.route('/config', configRoutes);
+// Public trust pages (Trust Center W1, no auth). Mounted before every root-mounted
+// router so no `.use('*')` auth middleware can run ahead of these unauthenticated
+// GETs. /trust/card/* is skip-listed from the global limiter (portal SSR shares one
+// IP) and is DB-free on a serving-set miss; /trust/public/* has its own isolated
+// 'trustpublic' bucket. Unrelated to /partner/trust (partnerTrustRoutes).
+registerGlobalRateLimitSkipPrefix('/api/v1/trust/card/');
+// Signed attestation + JWKS (Trust Center W3b): public like the W1 block above and mounted ahead of it for the same
+// reason; its own 'trustattest' bucket; CORP cross-origin comes from byTrustCrossOriginPath above.
+api.route('/trust/attestation', trustPageAttestationRoutes);
+// Gated-document access flow (Trust Center W2, no auth): before /trust so its paths are never read as slugs.
+api.route('/trust/access', trustAccessPublicRoutes);
+api.route('/trust', trustPagePublicRoutes);
 api.route('/', externalServicesRoutes);
 api.route('/agents', agentRoutes);
 api.route('/devices', deviceRoutes);
@@ -772,11 +825,19 @@ api.route('/alert-templates', alertTemplateRoutes);
 // authMiddleware) gate (the Microsoft admin-consent redirect carries no Bearer
 // token). The callback authenticates via signed state + binding cookie instead.
 api.route('/tickets/mailbox', mailboxRoutes);
+// Customer work approval staff routes (#4617 W03): absolute paths spanning
+// /tickets/:id/approval-*, /ticket-approval-requests/:id/* and
+// /time-entries/:id/write-off-held, each with its own authMiddleware. Mounted
+// BEFORE the /tickets and /time-entries hubs so these paths are matched here
+// first and never fall through those hubs' .use('*') chains.
+api.route('/', ticketApprovalRoutes);
 api.route('/tickets', ticketsRoutes);
 // Caller verification (#6354 W01): mounted at the root because its paths
 // span /orgs/:orgId/…, /partner/… and /orgs/:orgId/tickets/:ticketId/…; the
 // router gates itself (404 while CALLER_VERIFICATION_ENABLED !== 'true').
 api.route('/', callerVerificationRoutes);
+// Endpoint messaging (#8741 W1): technician -> end-user message fan-out.
+api.route('/endpoint-messages', endpointMessageRoutes);
 api.route('/catalog', catalogRoutes);
 // Public, token-gated invoice view-and-pay (no auth) — MUST precede the
 // auth-gated /invoices router so the unauthenticated /invoices/public/* sub-path
@@ -825,6 +886,11 @@ api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5
 api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
 api.route('/ticket-checklist-templates', ticketChecklistTemplateRoutes); // (#5783 W02)
 api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
+api.route('/orgs', trustPageRoutes); // /orgs/:orgId/trust-page/* (Trust Center W1)
+api.route('/orgs', trustPageDeclarationRoutes); // /orgs/:orgId/trust-page/declarations/* (Trust Center W2, W02b)
+api.route('/orgs', trustPageContentRoutes); // /orgs/:orgId/trust-page/{faq,subprocessors}/* (Trust Center W2, W02f)
+api.route('/orgs', trustPageAccessRoutes); // /orgs/:orgId/trust-page/access/* (Trust Center W2, W02d)
+api.route('/trust-page-template', trustPageTemplateRoutes); // partner-wide template (Trust Center W2, W02g)
 api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
@@ -832,6 +898,9 @@ api.route('/permissions', permissionsCatalogRoutes);
 api.route('/audit-logs', auditLogRoutes);
 api.route('/backup', backupRoutes);
 api.route('/edr', edrRoutes); // EDR provider framework (#8164 W01b)
+api.route('/connection-health', connectionHealthRoutes);
+// Unauthenticated RFC 8058 one-click unsubscribe (signed token; per-IP rate limited in the router).
+api.route('/email', emailUnsubscribeRoutes);
 api.route('/reports', reportRoutes);
 api.route('/incidents', incidentRoutes);
 api.route('/search', searchRoutes);
@@ -848,6 +917,8 @@ api.route('/remote', remoteRoutes);
 api.route('/api-keys', apiKeyRoutes);
 api.route('/service-principals', servicePrincipalRoutes);
 api.route('/partner-service-principals', partnerServicePrincipalRoutes);
+// Ticket migration windows (#8313): partner-wide admin grants of import mode.
+api.route('/migration-windows', migrationWindowRoutes);
 api.route('/partner-api', partnerApiRoutes);
 api.route('/enrollment-keys', publicEnrollmentRoutes); // Public download (no auth) — must precede auth-protected routes
 api.route('/enrollment-keys', enrollmentKeyRoutes);
@@ -856,6 +927,11 @@ api.route('/installer', installerRoutes);
 // Guarded by ~44 bits of code entropy, a 15-minute TTL, per-IP rate limits
 // and a single atomic pending->claimed transition.
 api.route('/support', supportPublicRoutes);
+// Public caller-verification card (#6354 W03) — the 32-byte SMS/email link
+// token is the only credential (no bearer). 404 while CALLER_VERIFICATION_ENABLED
+// is off, before any Redis/DB work; per-IP, per-token and miss budgets; one
+// hash lookup in a short system context. See routes/callerVerifyPublic.ts.
+api.route('/verify', callerVerifyPublicRoutes);
 api.route('/sso', ssoRoutes);
 // Mounted directly at /partners (not nested under /orgs' /partners/me or the
 // legacy singular /partner router) — final URL /api/v1/partners/me/login-branding
@@ -895,6 +971,13 @@ api.route('/webhooks', xeroWebhookRoutes);
 // sit in front of it. NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: there is no ambient
 // auth transaction to opt out of on an unauthenticated route.
 api.route('/webhooks', resendWebhookRoutes);
+// EDR vendor push hints (W03 PR-B, #8167) — no session auth; the per-connection
+// secret the vendor echoes in Authorization is verified in the handler.
+// partnerGuard skips the exact /webhooks/edr/<uuid> path so that secret is never
+// parsed as a JWT; the global body gate caps it at 256 KB and it has its own
+// isolated per-IP bucket. NOT under /edr (whose authMiddleware covers `*`) and
+// NOT in SELF_MANAGED_DB_CONTEXT_ROUTES: no ambient auth transaction exists here.
+api.route('/webhooks', edrWebhookRoutes);
 api.route('/policies', policyRoutes);
 api.route('/configuration-policies', configPolicyRoutes);
 api.route('/psa', psaRoutes);
@@ -980,6 +1063,7 @@ api.route('/integrations', integrationRoutes);
 api.route('/partner/trust', partnerTrustRoutes);
 // W04 (#5612): the partner CEILING for the unattended script lane.
 api.route('/partner/ai/script-policy', partnerAiScriptPolicyRoutes);
+api.route('/partner/ai/data-policy', partnerAiDataPolicyRoutes);
 // W03 (partner sending domains). MUST stay above the catch-all `/partner`
 // mount below, the same ordering `/partner/trust` relies on — Hono matches in
 // registration order, so a later specific mount is never reached.
@@ -1025,6 +1109,7 @@ api.route('/ai/script-proposals', aiScriptProposalRoutes);
 // registered ahead of '/ai' so the literal paths never fall into a sibling
 // param route.
 api.route('/ai', aiScriptPolicyRoutes);
+api.route('/ai', aiDataPolicyRoutes);
 // BEFORE /ai: aiRoutes owns broad paths. There is no /ai/agents mount here —
 // the per-run artifact LIST lives inside aiAgentsRoutes itself (see
 // routes/aiAgents.ts, above its /runs/:runId), so no second router shares
@@ -1451,6 +1536,8 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
         shutdownAgentCommandRelayWorker,
       ],
     },
+    // 3b. W05: the cluster cache subscriber owns its own duplicate connection.
+    { name: 'cluster-cache-bus', tasks: [() => getClusterCacheBus().stop()] },
     // 4. Event bus releases its borrowed connection reference (no quit — Task 2).
     { name: 'eventbus', tasks: [async () => getEventBus().close()] },
     // 5. The ONLY owner of the Redis quits.
@@ -1717,6 +1804,8 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Platform admin bootstrap failed (non-fatal):', err);
   }
 
+  registerAllEffectProbes(); // Recipe Library E4: provider effect probes, registered once
+
   await runStartupChecks();
 
   // #6452 — Redis memory watchdog. Started after runStartupChecks so the
@@ -1883,6 +1972,13 @@ async function bootstrap(): Promise<void> {
   // was disconnected or re-keyed/re-pointed (on any replica) since it was
   // issued. Installed before serving, so no request can dial without it.
   registerGatewayConnectionCheck();
+
+  // W05 (#8144): subscribe to cluster cache invalidations before serving, so a
+  // write on another instance reaches this one's hot-path caches. Bounded at
+  // 1 s and never throws; without Redis the caches stay TTL-only.
+  const clusterCacheOutcome = startupChecks.redisOk ? await getClusterCacheBus().start() : 'unavailable';
+  if (clusterCacheOutcome === 'subscribed') console.log('[clusterCache] subscriber subscribed');
+  else console.warn(`[clusterCache] subscriber ${clusterCacheOutcome}: hot-path caches on this instance are TTL-only until it subscribes`);
 
   // W08: start sampling only after migrations and boot work, so their stalls
   // never enter the controller's history. Admission never affects /ready.

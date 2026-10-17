@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const dbState = vi.hoisted(() => ({
   inContext: false,
   deferred: [] as Array<() => unknown>,
+  // Commit-only work (runAfterDbContextCommit): flush to model COMMIT, discard to model ROLLBACK.
+  committed: [] as Array<() => unknown>,
   scope: undefined as 'system' | 'organization' | 'partner' | undefined,
   ctx: undefined as Record<string, unknown> | undefined,
 }));
@@ -16,9 +18,16 @@ vi.mock('../db', () => ({
     if (dbState.inContext) dbState.deferred.push(work);
     else work();
   },
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => {
+    if (dbState.inContext) dbState.committed.push(work);
+    else work();
+  },
 }));
 
 import { DeferredCacheFills, HotPathTtlCache, fillScopeIsCacheable, __resetHotPathCachesForTests } from './hotPathCache';
+import { ClusterCacheBus, __setClusterCacheBusForTests } from './clusterCacheBus';
+import { getClusterCacheTarget } from './clusterCacheRegistry';
+import { metricsRegistry } from './metricsRegistry';
 
 const T0 = Date.parse('2026-10-07T12:00:00Z');
 
@@ -441,5 +450,152 @@ describe('DeferredCacheFills — sub-org keys and shouldCache (#7970)', () => {
     const cache = deviceCache();
     expect(await throughInOrgContext(cache, `${ORG}:dev-1`, true, { keyOrgId: ORG, shouldCache: (present) => !present })).toBe(true);
     expect(cache.peek(`${ORG}:dev-1`)).toBeUndefined();
+  });
+});
+
+describe('HotPathTtlCache cluster option (W05, #8144)', () => {
+  let published: Array<[string, string | null]>;
+  let bus: ClusterCacheBus;
+
+  function recordingBus(): ClusterCacheBus {
+    const b = new ClusterCacheBus({ origin: 'unit', getPublisher: () => null, createSubscriber: () => null });
+    vi.spyOn(b, 'publish').mockImplementation(async (cache: string, key: string | null) => {
+      published.push([cache, key]);
+      return 'published';
+    });
+    return b;
+  }
+
+  function clusterCache(name = 'test-cluster') {
+    return new HotPathTtlCache<string, string>({ name, ttlMs: 60_000, maxEntries: 100, cluster: { bus } });
+  }
+
+  async function seed(cache: HotPathTtlCache<string, string>, key: string, value = 'v') {
+    await cache.getOrLoad(key, async () => value);
+  }
+
+  beforeEach(() => {
+    published = [];
+    bus = recordingBus();
+    dbState.inContext = false;
+    dbState.deferred = [];
+    dbState.committed = [];
+    dbState.scope = undefined;
+    dbState.ctx = undefined;
+  });
+  afterEach(() => __setClusterCacheBusForTests(null));
+
+  it('invalidate() stays local: it publishes nothing', async () => {
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    cache.invalidate('org-1');
+    expect(cache.peek('org-1')).toBeUndefined();
+    expect(published).toEqual([]);
+  });
+
+  it('invalidateAroundCommit(key) outside a context drops locally and publishes once', async () => {
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    cache.invalidateAroundCommit('org-1');
+    expect(cache.peek('org-1')).toBeUndefined();
+    expect(published).toEqual([['test-cluster', 'org-1']]);
+  });
+
+  it('invalidateAroundCommit() publishes key null', () => {
+    clusterCache().invalidateAroundCommit();
+    expect(published).toEqual([['test-cluster', null]]);
+  });
+
+  it('inside a context publishes only on COMMIT', async () => {
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    dbState.inContext = true;
+    cache.invalidateAroundCommit('org-1');
+    expect(published).toEqual([]);
+    dbState.inContext = false;
+    for (const w of dbState.committed.splice(0)) w();
+    expect(published).toEqual([['test-cluster', 'org-1']]);
+  });
+
+  it('a ROLLBACK publishes nothing but the local entry is still dropped', async () => {
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    dbState.inContext = true;
+    cache.invalidateAroundCommit('org-1');
+    dbState.inContext = false;
+    dbState.committed = []; // rollback discards commit-only work
+    for (const w of dbState.deferred.splice(0)) w(); // exit-work still runs
+    expect(published).toEqual([]);
+    expect(cache.peek('org-1')).toBeUndefined();
+  });
+
+  it('a non-cluster cache never publishes', () => {
+    __setClusterCacheBusForTests(bus);
+    new HotPathTtlCache<string, string>({ name: 'plain', ttlMs: 1_000, maxEntries: 10 }).invalidateAroundCommit('k');
+    expect(published).toEqual([]);
+  });
+
+  it('a non-string key on a cluster cache clears the whole cache and publishes null, without throwing', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cache = clusterCache();
+    await seed(cache, 'org-1');
+    await seed(cache, 'org-2');
+    expect(() => cache.invalidateAroundCommit(42 as never)).not.toThrow();
+    expect(cache.size).toBe(0);
+    expect(published).toEqual([['test-cluster', null]]);
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('cluster: true registers by name and publishes through the bus installed after construction (D12)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = new HotPathTtlCache<string, string>({ name: 'late-bound', ttlMs: 1_000, maxEntries: 10, cluster: true });
+    const second = new HotPathTtlCache<string, string>({ name: 'late-bound', ttlMs: 1_000, maxEntries: 10, cluster: true });
+    expect(getClusterCacheTarget('late-bound')).toBe(second);
+    expect(first).not.toBe(second);
+    __setClusterCacheBusForTests(bus);
+    second.invalidateAroundCommit('org-9');
+    expect(published).toEqual([['late-bound', 'org-9']]);
+    warn.mockRestore();
+  });
+
+  it('counts hit, miss and bypass lookups per cache', async () => {
+    const cache = new HotPathTtlCache<string, string>({ name: 'lookup-count', ttlMs: 60_000, maxEntries: 10 });
+    await cache.getOrLoad('k', async () => 'v'); // miss
+    await cache.getOrLoad('k', async () => 'v'); // hit
+    dbState.inContext = true;
+    await cache.getOrLoad('k', async () => 'v'); // bypass
+    dbState.inContext = false;
+    const text = await metricsRegistry.getSingleMetricAsString('breeze_hot_path_cache_lookups_total');
+    expect(text).toContain('cache="lookup-count",result="miss"} 1');
+    expect(text).toContain('cache="lookup-count",result="hit"} 1');
+    expect(text).toContain('cache="lookup-count",result="bypass"} 1');
+  });
+
+  it('DeferredCacheFills.through counts hit, cacheable miss and uncacheable bypass', async () => {
+    const cache = new HotPathTtlCache<string, string>({ name: 'through-count', ttlMs: 60_000, maxEntries: 10 });
+    const fills = new DeferredCacheFills();
+    dbState.inContext = true;
+    dbState.scope = 'system';
+    await fills.through(cache, 'org-1', async () => 'v'); // miss (cacheable)
+    dbState.inContext = false;
+    fills.flush();
+    dbState.inContext = true;
+    await fills.through(cache, 'org-1', async () => 'v'); // hit
+    dbState.scope = 'partner';
+    await fills.through(cache, 'org-2', async () => 'v'); // bypass (not cacheable)
+    dbState.inContext = false;
+    const text = await metricsRegistry.getSingleMetricAsString('breeze_hot_path_cache_lookups_total');
+    expect(text).toContain('cache="through-count",result="miss"} 1');
+    expect(text).toContain('cache="through-count",result="hit"} 1');
+    expect(text).toContain('cache="through-count",result="bypass"} 1');
+  });
+
+  it('reports its size on the entries gauge', async () => {
+    const cache = new HotPathTtlCache<string, string>({ name: 'size-gauge', ttlMs: 60_000, maxEntries: 10 });
+    await seed(cache, 'a');
+    await seed(cache, 'b');
+    const text = await metricsRegistry.getSingleMetricAsString('breeze_hot_path_cache_entries');
+    expect(text).toContain('breeze_hot_path_cache_entries{cache="size-gauge"} 2');
   });
 });

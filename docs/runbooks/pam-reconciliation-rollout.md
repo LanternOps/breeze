@@ -69,3 +69,29 @@ promotion. Stop immediately when any of these occur:
 Stopping promotion does not authorize a ledger reset. Any manual recovery must
 follow `docs/runbooks/pam-reconciliation-ledger-reset.md` under its own approved
 incident/change record.
+
+## Known native UAC dialog limitation
+
+UAC capture observes Microsoft-Windows-LUA event 15028 after Windows starts the
+native consent flow. An initial native UAC prompt can therefore appear before
+the Breeze dialog. Capture does not intercept elevation before Windows displays
+its prompt.
+
+The current pending-request flow also leaves the native prompt open while the
+Breeze dialog waits for technician approval. This persistent parallel dialog is
+a separate limitation from the initial appearance: `RunPamFlow` does not cancel
+the native request when it enters the remote-approval state, and `pam_apply_v2`
+launches through the managed token/job lifecycle independently of that prompt.
+The legacy log message mentioning `actuate_elevation` in the wait state does not
+identify the command actually dispatched; verify `commandType=pam_apply_v2` in
+agent logs to confirm v2 execution.
+
+A safe handoff needs a locally retained binding from the captured request to
+the exact native consent process and window, including the requesting session
+and process creation identity. Cancellation must revalidate that binding, refuse
+ambiguous or reused identities, and confirm the native request was cancelled
+without treating that as elevation proof. Preserve the captured target and its
+approval-time integrity checks for the later managed launch. The current
+newest-consent-process attribution and foreground Escape dismissal do not
+provide this request binding. Do not suppress arbitrary consent windows, kill
+all consent processes, or disable Windows UAC as a workaround.

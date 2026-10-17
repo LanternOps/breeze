@@ -243,4 +243,11 @@ describe('DiscoveryProfileForm scan agent (#7969)', () => {
   });
 });
 
+describe('DiscoveryProfileForm topology note (site location W2)', () => {
+  it('says the subnets also identify the site\'s networks on the topology map', () => {
+    render(<DiscoveryProfileForm initialValues={baseProfile} sites={[]} onSubmit={vi.fn()} />);
+    expect(screen.getByText("Subnets here also identify this site's networks on the topology map.")).toBeInTheDocument();
+  });
+});
+
 import '@/lib/i18n';

@@ -70,6 +70,11 @@ const OPTIONS: sanitizeHtml.IOptions = {
   ...LINK_OPTIONS,
 };
 
+const FLOW_OPTIONS: sanitizeHtml.IOptions = {
+  allowedTags: [...RICH_TEXT_FLOW_TAGS],
+  ...LINK_OPTIONS,
+};
+
 const INLINE_OPTIONS: sanitizeHtml.IOptions = {
   allowedTags: [...INLINE_RICH_TEXT_ALLOWED_TAGS],
   ...LINK_OPTIONS,
@@ -255,6 +260,12 @@ function sanitizeWithReport(
  * (defense in depth + covers rows written before this module existed). */
 export function sanitizeRichTextHtml(html: string): string {
   return normalizeTableCells(sanitizeHtml(html ?? '', OPTIONS));
+}
+
+/** Flow subset WITHOUT tables — the trust page intro (spec trust-center §6, §19.3).
+ * Same hardened link rules as sanitizeRichTextHtml; table tags are discarded. */
+export function sanitizeFlowRichTextHtml(html: string): string {
+  return sanitizeHtml(html ?? '', FLOW_OPTIONS);
 }
 
 /** `sanitizeRichTextHtml` + a report of the tags it discarded. Use on WRITE

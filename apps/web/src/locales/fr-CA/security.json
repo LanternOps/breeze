@@ -207,6 +207,77 @@
     "sentineloneThreats": "SentinelOne Menaces",
     "threatsAndIncidentsAcrossYourFleetFrom": "Menaces et incidents dans votre flotte, de SentinelOne et Huntress."
   },
+  "securityOtherEdr": {
+    "tabLabel": "Autre EDR",
+    "statusError": "Impossible de vérifier la présence d'autres fournisseurs EDR.",
+    "title": "Détections des autres EDR",
+    "loading": "Chargement des détections...",
+    "showing": "Affichage de {{from}} à {{to}} sur {{total}}",
+    "refresh": "Actualiser",
+    "filters": {
+      "severity": "Gravité",
+      "status": "Statut",
+      "provider": "Fournisseur",
+      "allSeverities": "Toutes les gravités",
+      "allProviders": "Tous les fournisseurs",
+      "openDefault": "Ouvertes (par défaut)",
+      "allStatuses": "Tous les statuts"
+    },
+    "severities": {
+      "critical": "Critique",
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "info": "Info",
+      "unknown": "Inconnue"
+    },
+    "statuses": {
+      "open": "Ouverte",
+      "in_progress": "En cours",
+      "mitigated": "Atténuée",
+      "resolved": "Résolue",
+      "false_positive": "Faux positif",
+      "dismissed": "Rejetée",
+      "unknown": "Inconnu"
+    },
+    "connectionStatuses": {
+      "connected": "Connecté",
+      "error": "Erreur",
+      "reauth_required": "Réauthentification requise"
+    },
+    "tenants": {
+      "stale": "Locataires périmés",
+      "failed": "Locataires en échec",
+      "pending": "Locataires en attente",
+      "unmapped": "Locataires non associés"
+    },
+    "openDetections": "Détections ouvertes",
+    "endpoints": "Terminaux",
+    "linkedEndpoints": "Terminaux liés",
+    "unhealthyEndpoints": "Terminaux en mauvais état",
+    "lastDetectionSync": "Dernière synchronisation des détections",
+    "never": "Jamais",
+    "coverageHeading": "Information sur la couverture",
+    "emptyPartial": "Aucune détection retournée. La couverture est incomplète - voir les notes ci-dessus.",
+    "empty": "Aucune détection ne correspond à vos filtres.",
+    "table": {
+      "provider": "Fournisseur",
+      "detection": "Détection",
+      "severity": "Gravité",
+      "status": "Statut",
+      "device": "Appareil",
+      "detected": "Détectée",
+      "actions": "Actions"
+    },
+    "unnamedDetection": "Détection",
+    "detached": "Dissocié",
+    "promoteToIncident": "Promouvoir en incident",
+    "promoted": "Promue",
+    "alreadyPromoted": "Déjà promue",
+    "promoteFailed": "Échec de la création de l'incident",
+    "previous": "Précédent",
+    "next": "Suivant"
+  },
   "securityEdrSummaryPanel": {
     "edrStatusUnavailable": "Le statut EDR n’a pas pu être chargé. Rafraîchissez pour réessayer.",
     "endpointDetectionAndAmpResponse": "Détection et réponse sur les terminaux",

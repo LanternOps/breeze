@@ -1,5 +1,6 @@
 // Custom field DEFINITION catalog (issue #6594): the device list column
-// picker, the advanced filter's field dropdown, and the filter chip labeler
+// picker, the advanced filter's field dropdown, the filter chip labeler, and
+// the device-group rule builder / card chips (via useDeviceFilterFields, #8843)
 // all need to know which custom fields exist for the current org/partner
 // scope. GET /custom-fields already returns exactly that, scoped correctly
 // by the request's auth context (same endpoint DeviceInfoTab uses to render

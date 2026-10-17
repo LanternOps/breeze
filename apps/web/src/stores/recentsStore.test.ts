@@ -4,6 +4,7 @@ import {
   MAX_RECENT_PAGES,
   isRecordablePagePath,
   recentsStorageKey,
+  selectRecentEntries,
   useRecentsStore,
 } from './recentsStore';
 
@@ -164,5 +165,92 @@ describe('recentsStore — page item names', () => {
     s.recordPage({ path: quote, title: 'Quote' });
     s.namePage(quote, '   ');
     expect(useRecentsStore.getState().pages[0].name).toBeUndefined();
+  });
+});
+
+const dev = (id: string, name: string, openedAt: number) => ({ id, name, openedAt });
+const page = (path: string, name: string | undefined, visitedAt: number) => ({ path, title: 'T', name, visitedAt });
+
+describe('recents caps', () => {
+  it('raises both caps to 10', () => {
+    expect(MAX_RECENT_DEVICES).toBe(10);
+    expect(MAX_RECENT_PAGES).toBe(10);
+  });
+});
+
+describe('selectRecentEntries', () => {
+  it('merges devices and named pages newest first with a kind per path', () => {
+    const r = selectRecentEntries(
+      {
+        devices: [dev('d1', 'LAPTOP-01', 3000)],
+        pages: [
+          page('/organizations/o1', 'Acme Dental', 4000),
+          page('/tickets/t1', 'T-0042 Printer', 2000),
+          page('/alerts/a1', 'CPU high', 1000),
+          page('/settings/sites/s1', 'Main office', 500),
+          page('/scripts/x1', 'Reboot', 400),
+        ],
+      },
+      '/',
+    );
+    expect(r.map((e) => e.href)).toEqual([
+      '/organizations/o1',
+      '/devices/d1',
+      '/tickets/t1',
+      '/alerts/a1',
+      '/settings/sites/s1',
+      '/scripts/x1',
+    ]);
+    expect(r.map((e) => e.kind)).toEqual(['org', 'device', 'ticket', 'alert', 'site', 'page']);
+    expect(r[0]).toEqual({ kind: 'org', href: '/organizations/o1', label: 'Acme Dental', at: 4000 });
+  });
+
+  it('never lists a page without an item name (hub and list pages)', () => {
+    const r = selectRecentEntries(
+      { devices: [], pages: [{ path: '/devices', title: 'Devices', visitedAt: 9000 }, page('/tickets/t1', 'T-1', 1)] },
+      '/',
+    );
+    expect(r.map((e) => e.href)).toEqual(['/tickets/t1']);
+  });
+
+  it('treats a blank name as unnamed', () => {
+    expect(selectRecentEntries({ devices: [], pages: [page('/tickets/t1', '   ', 1)] }, '/')).toEqual([]);
+  });
+
+  it('excludes the open page by pathname and keeps the query on other hrefs', () => {
+    const r = selectRecentEntries(
+      { devices: [], pages: [page('/tickets/t1?tab=notes', 'T-1', 2), page('/tickets/t2?tab=notes', 'T-2', 1)] },
+      '/tickets/t1',
+    );
+    expect(r.map((e) => e.href)).toEqual(['/tickets/t2?tab=notes']);
+  });
+
+  it('only a single id segment makes a record kind', () => {
+    const r = selectRecentEntries(
+      { devices: [], pages: [page('/alerts/monitors/m1', 'M', 2), page('/organizations/o1/x', 'X', 1)] },
+      '/',
+    );
+    expect(r.map((e) => e.kind)).toEqual(['page', 'page']);
+  });
+
+  it('de-duplicates by href, keeping the newest', () => {
+    const r = selectRecentEntries(
+      { devices: [], pages: [page('/tickets/t1', 'old', 1), page('/tickets/t1', 'new', 2)] },
+      '/',
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0].label).toBe('new');
+  });
+
+  it('caps at 10 by default and honours limit', () => {
+    const devices = Array.from({ length: 12 }, (_, i) => dev(`d${i}`, `n${i}`, i));
+    const r = selectRecentEntries({ devices, pages: [] }, '/');
+    expect(r).toHaveLength(10);
+    expect(r[0].href).toBe('/devices/d11');
+    expect(selectRecentEntries({ devices, pages: [] }, '/', 8)).toHaveLength(8);
+  });
+
+  it('returns [] for an empty store', () => {
+    expect(selectRecentEntries({ devices: [], pages: [] }, '/')).toEqual([]);
   });
 });

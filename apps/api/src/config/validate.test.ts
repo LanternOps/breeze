@@ -1651,6 +1651,28 @@ describe('validateConfig', () => {
     });
   });
 
+  // ---- #8616 heartbeat retain-state kill switch. Default on; 'false' makes
+  // the heartbeat answer every agent with the legacy payload.
+  describe('HEARTBEAT_RETAIN_STATE_ENABLED', () => {
+    it('defaults to true when unset', () => {
+      withEnv(validEnv, () => {
+        expect(validateConfig().HEARTBEAT_RETAIN_STATE_ENABLED).toBe('true');
+      });
+    });
+
+    it('accepts an explicit false', () => {
+      withEnv({ ...validEnv, HEARTBEAT_RETAIN_STATE_ENABLED: 'false' }, () => {
+        expect(validateConfig().HEARTBEAT_RETAIN_STATE_ENABLED).toBe('false');
+      });
+    });
+
+    it('boot-refuses an invalid value instead of silently staying on', () => {
+      withEnv({ ...validEnv, HEARTBEAT_RETAIN_STATE_ENABLED: 'off' }, () => {
+        expect(() => validateConfig()).toThrow('HEARTBEAT_RETAIN_STATE_ENABLED');
+      });
+    });
+  });
+
   // ---- Security remediation Wave 6, Task 9 (approved deviation D1) —
   // managed-software destination policy mode. compat is the default and the
   // safe state (Task 5 always fails closed on a private destination for a
@@ -3909,6 +3931,21 @@ describe('execution-plane env (W01): BREEZE_REGION / BREEZE_AI_WORKSPACE_ENABLED
         });
       },
     );
+  });
+
+  it('refuses boot when TUNNEL_ORIGIN_TEMPLATE shares the app registrable domain', () => {
+    withEnv({ ...validEnv, PUBLIC_APP_URL: 'https://us.breeze-app.test', TUNNEL_ORIGIN_TEMPLATE: 'https://{id}.tunnel.breeze-app.test' }, () => {
+      expect(() => validateConfig()).toThrow(/TUNNEL_ORIGIN_TEMPLATE/);
+    });
+  });
+
+  it('boots with a tunnel template on a separate registrable domain', () => {
+    withEnv({
+      ...validEnv, PUBLIC_APP_URL: 'https://us.breeze-app.test',
+      TUNNEL_ORIGIN_TEMPLATE: 'https://{id}.us.breezetunnel.test', TUNNEL_FRAME_ANCESTOR: 'https://us.breeze-app.test',
+    }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
   });
 });
 

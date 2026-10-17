@@ -214,11 +214,13 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_dr_execution_status',
   // W01 (#6755) follow-up
   'get_dr_plan_details',
+  'get_edr_status', // EDR provider framework (#8166) Tier-1 read
   'get_effective_configuration',
   // W01 (#6755)
   'get_elevation_history',
   // W01 (#6755) follow-up
   'get_executive_summary',
+  'get_fleet_device_stats',
   'get_fleet_findings',
   'get_fleet_health',
   'get_huntress_incidents',
@@ -265,10 +267,12 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_sla_breaches',
   'get_sla_compliance_report',
   'get_software_compliance',
+  'get_ticket_approval_status', // #8196 W05 Tier-1 read-only (no decide/write-off tool exists)
   'get_timesheet', // A-W06 Tier-1 read
   'get_topology', // M4 Task 1 (#6000) bounded topology graph, Tier 1 read
   'get_topology_impact', // M3 Task 10 topology read
   'get_topology_monitoring_status', // M3-D12 (#5999) one-site monitoring status, Tier 1 read
+  'get_trust_page_status', // Trust Center W2 (Ruling 15): Tier 1 read of the org's trust page status
   'get_user_experience_metrics',
   // W01 (#6755)
   'get_vault_status',
@@ -284,6 +288,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_configuration_policies',
   'list_contracts',
   'list_deliverable_templates',
+  'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',
   // W01 (#6755)
@@ -342,6 +347,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'query_compliance_policies',
   // W01 (#6755) follow-up
   'query_custom_fields',
+  'query_device_workloads',
   'query_devices',
   // W01 (#6755) follow-up
   'query_dr_plans',

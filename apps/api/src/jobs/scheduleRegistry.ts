@@ -99,6 +99,9 @@ export const JOB_SCHEDULES = {
   'partner-api-idempotency-retention': '18 4 * * *',
   'audit-chain-verify': '13 4 * * *',
   'pax8-sync': '28 4 * * *',
+  // AI device file read policy W03 (#8855): nightly scrub of AI tool outputs
+  // past each org's retention window. Daily tier, minute ≡ 3 (mod 5).
+  'ai-tool-output-retention': '33 4 * * *',
   'audit-chain-anchor': '48 4 * * *',
   'contract-billing-sweep': '8 5 * * *',
   // Service deliverables W02 (#5573 spec §5.1). Daily tier, minute ≡ 3 (mod 5).
@@ -150,6 +153,9 @@ export const JOB_SCHEDULES = {
   'exchange-rate-sync': '13 17 * * *',
   'ai-unattended-exposure-retention': '8 18 * * *',
   'ai-invocation-retention': '13 18 * * *',
+  // #4120: daily fold of expired llm_egress_events rows into daily rollups.
+  // Hour 18 daily (≡3 mod 5) lane held 8/13/28/33/48; :38 was free.
+  'llm-egress-retention': '38 18 * * *',
   // P2-5 (#4192, Task A2-3): daily graduation eligibility sweep. Runs after
   // the evidence-window's day has fully closed, same lane as its sibling
   // retention slot below (same queue/worker — Deviation #10).
@@ -182,6 +188,11 @@ export const JOB_SCHEDULES = {
   // never pruned). Hour 20 was entirely free; :03 keeps it in the
   // daily = 3 (mod 5) lane.
   'monitor-episode-retention': '3 20 * * *',
+  // #8164 (EDR provider framework, W02) — daily prune of terminal
+  // edr_detections rows (resolved/dismissed/false_positive/mitigated) past 180
+  // days; open/in_progress/unknown are never pruned. Hour 20 held :03 and :27;
+  // :08 keeps the daily = 3 (mod 5) lane.
+  'edr-detection-retention': '8 20 * * *',
   // Partner sending domains W03 (spec §6.4). ONE daily job doing two things:
   // the hosted drift report (listDomains vs local rows + outbox) and, on a
   // `static` instance, the re-check that a domain the operator removed from
@@ -203,6 +214,9 @@ export const JOB_SCHEDULES = {
   // it, or the two co-fire once a day (that was the #3793 128-second pool hold).
   'vulnerability-risk-score-refresh': '0 * * * *',
   'security-posture-scan': '7 * * * *',
+  // Runs 4 minutes after `security-posture-scan` (:07) so the hourly trust-page
+  // refresh sees the posture evidence that scan just wrote.
+  'trust-page-snapshot': '11 * * * *',
   // Share the :12 lane on alternate six-hour slots; no coarse collision.
   'script-verify-reconcile': '12 0,6,12,18 * * *',
   'snmp-retention': '12 1,7,13,19 * * *',
@@ -231,11 +245,19 @@ export const JOB_SCHEDULES = {
   'parked-device-expiry': '21 * * * *',
   // Autopay collection: :26 is free in every hour; the mod-5 sub-daily lane is full.
   'autopay-collection-run': '26 * * * *',
+  // Connection health W3 (#8847) — hourly daily-digest pass; each partner is due
+  // while its local hour is 08–11. The spec asked for the ≡2 (mod 5) lane, which
+  // is full; :09 is free in every hour and outside the ≡0 (mod 5) ticks.
+  'connection-health-digest': '9 * * * *',
   // Helper screenshot cleanup — sweeps ai_screenshots rows (and their files)
   // past their 24h retention. 4x/day is plenty against a 24h TTL; minute 27
   // on hours 1,7,13,19 is unused by any existing hour/minute combination in
   // this lane.
   'helper-screenshot-retention': '27 1,7,13,19 * * *',
+  // Endpoint messaging W02 (#8742) — body purge (90 d), past-expiry delivery
+  // close-out and 13-month history delete. 4x/day keeps the expiry view within
+  // ~6 h; minute 29 on hours 2,8,14,20 is unused in this lane.
+  'endpoint-message-retention': '29 2,8,14,20 * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

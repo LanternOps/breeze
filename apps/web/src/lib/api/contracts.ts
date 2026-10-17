@@ -13,9 +13,12 @@
 
 import { fetchWithAuth } from '../../stores/auth';
 import type { StatusPillRole } from '../../components/billing/shared/statusPillRoles';
-import type { ContractLineType } from '@breeze/shared';
+import type { ContractLineType, HourBlockEstimate } from '@breeze/shared';
 
 export type { ContractLineType };
+
+/** #4547: what happens to unused block hours at period end. */
+export type RolloverPolicy = 'none' | 'carry_forward';
 
 export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expired';
 export type ContractBillingTiming = 'advance' | 'arrears';
@@ -93,6 +96,8 @@ export interface ContractEstimate {
   lines: ContractEstimateLine[];
   uncoveredDevices: UncoveredDevices | null;
   overages: OverageSummary[];
+  /** #4547: live figures for the open period of the contract's live block line, else null. */
+  hourBlock?: HourBlockEstimate | null;
 }
 
 export interface ContractLine {
@@ -118,6 +123,14 @@ export interface ContractLine {
   taxable: boolean;
   sortOrder: number;
   createdAt: string;
+  // #4547 block hours. Optional so existing fixtures that build literals keep compiling.
+  rolloverPolicy?: RolloverPolicy | null;
+  rolloverCapHours?: string | null;
+  hourBlockAlertPct?: number | null;
+  hourBlockFirstPeriodStart?: string | null;
+  hourBlockRetiredAt?: string | null;
+  /** Block lines only: the same predicate that decides retire-vs-delete on the server. */
+  hourBlockHasHistory?: boolean;
 }
 
 export interface ContractBillingPeriod {
@@ -290,12 +303,35 @@ export interface UpdateContractLinePatch {
   includedQuantity?: string | null;
   overageMode?: OverageMode | null;
   overageUnitPrice?: string | null;
+  // #4547 block hours
+  rolloverPolicy?: RolloverPolicy;
+  rolloverCapHours?: string | null;
+  hourBlockAlertPct?: number | null;
 }
 
 export function updateContractLine(id: string, lineId: string, body: UpdateContractLinePatch): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}/lines/${lineId}`, {
     method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body),
   });
+}
+
+/** One closed block period from GET /contracts/:id/hour-periods (#4547 W03). Hours are numeric strings. */
+export interface HourPeriodRow {
+  id: string; contractLineId: string; periodStart: string; periodEnd: string;
+  includedHours: string; carriedInHours: string; consumedHours: string; overageHours: string; carriedOutHours: string;
+  foreignCurrencyHours: string; entryCount: number; overageUnitPrice: string; currencyCode: string;
+  overageInvoiceId: string | null; closeSource: 'billing_run' | 'close_out'; closedAt: string;
+}
+
+export function listContractHourPeriods(contractId: string, query: { limit?: number; cursor?: string } = {}): Promise<Response> {
+  const params = new URLSearchParams();
+  if (query.limit != null) params.set('limit', String(query.limit));
+  if (query.cursor) params.set('cursor', query.cursor);
+  const qs = params.toString();
+  // The route's query schema is .strict() and the contract is resolved by id
+  // under the caller's tenant access, so the switcher's ambient `?orgId=` would
+  // 400 ("Unrecognized key") — and is meaningless for an id-scoped read.
+  return fetchWithAuth(`/contracts/${contractId}/hour-periods${qs ? `?${qs}` : ''}`, { skipOrgIdInjection: true });
 }
 
 /** Body of `POST /contracts/:id/currency`. The stamped currency is only ever

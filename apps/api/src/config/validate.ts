@@ -12,6 +12,7 @@ import {
 } from '../services/releaseSource';
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import { parsePlayIntegrityServiceAccount } from '../services/attestation/playIntegrity';
+import { parseTunnelOriginConfig } from './tunnelOrigin';
 import {
   canonicalCfAccessTeamDomain,
   decodePartnerApiCursorSigningKey,
@@ -565,6 +566,19 @@ const envObjectSchema = z
     // FORCE_HTTPS is off, so this must not retroactively boot-refuse existing
     // deployments that don't force HTTPS.
     PUBLIC_API_URL: z.string().optional(),
+    // Network Proxy host mode (spec 2026-10-06 §2). Unset = path mode only.
+    // Validated in the superRefine below (shape + registrable-domain separation).
+    TUNNEL_ORIGIN_TEMPLATE: z.string().optional(),
+    TUNNEL_FRAME_ANCESTOR: z.string().optional(),
+    // Read by the tunnel-origin validator to derive the frame ancestor and to
+    // compare registrable domains; used unvalidated elsewhere.
+    PUBLIC_APP_URL: z.string().optional(),
+    DASHBOARD_URL: z.string().optional(),
+    PUBLIC_PORTAL_URL: z.string().optional(),
+    PUBLIC_WEB_URL: z.string().optional(),
+    PUBLIC_URL: z.string().optional(),
+    API_URL: z.string().optional(),
+    WEBAUTHN_ORIGIN: z.string().optional(),
     TRUST_PROXY_HEADERS: z.string().optional(),
     // Whether CF-Connecting-IP is trusted for client-IP resolution
     // (services/clientIp.ts). Boolean-ish; unset/empty means off. Format is
@@ -1014,6 +1028,15 @@ const envObjectSchema = z
     // staying on the safe default — see docs/operations/agent-network-and-manifest-rollout.md.
     AGENT_REQUIRE_MANIFEST_SIGNING_KEY_ID: z.enum(['true', 'false']).default('false'),
 
+    // #8616 heartbeat retain-state kill switch (routes/agents/
+    // heartbeatSettingsDecision.ts). Default on: a beat that advertises
+    // securityCapabilities.retainStateProtocolVersion 1 gets `retainState`
+    // for features with no decision this beat. 'false' answers every agent
+    // with the legacy payload, as an older API would. Strict enum so a typo
+    // boot-refuses instead of silently staying on.
+    HEARTBEAT_RETAIN_STATE_ENABLED: z.enum(['true', 'false']).default('true'),
+    AGENT_ECH_ENABLED: z.enum(['true', 'false']).default('true'),
+
     // Phase 2 of per-partner LLM BYOK (#3922), Task 3.1 — gates catalog-mode
     // routing (partner_ai_connections.catalog_entry_id). Off by default so a
     // rolling deploy or rollback never exposes catalog selection ahead of
@@ -1304,6 +1327,16 @@ const envSchema = envObjectSchema
             }
           }
         }
+      }
+    }
+
+    // Network Proxy tunnel origin (spec 2026-10-06 §2): refuse boot on a
+    // malformed template or one sharing a registrable domain with any app origin,
+    // in every NODE_ENV — a same-site tunnel origin is a tenant-isolation bug.
+    const tunnelOrigin = parseTunnelOriginConfig(data);
+    if (!tunnelOrigin.ok) {
+      for (const issue of tunnelOrigin.issues) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [issue.path], message: `${issue.path} ${issue.message}` });
       }
     }
 

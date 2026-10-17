@@ -25,6 +25,7 @@ import {
   type CountedAttempt, type FixOwner,
 } from './aggregate';
 import { signatureForSource, sourceRefFor } from './signatureLoader';
+import { EVIDENCE_HOLD_SCOPED_ERASURE_KEY } from '../orgEvidenceHold';
 
 export type TerminalTransition = { to: 'verified' | 'failed' | 'recurred' | 'inconclusive' | 'cancelled'; reason: string };
 export type OutcomeTransition =
@@ -263,8 +264,19 @@ function noPendingErasureRequest(): SQL {
  * already GONE. The tenant cascade deletes `organizations` last, after the org's
  * fix_outcomes deletions have committed. So an org found absent here has no
  * outcomes left in any snapshot taken after this statement, including the
- * contribution read that follows. Requests live on partner rows only (org rows
- * are deleted by the org cascade), so this needs no partnerScope subquery.
+ * contribution read that follows.
+ *
+ * A merged-away shell under a PAM evidence hold keeps its organizations row
+ * (#8746): its erasure is scoped and stamps
+ * settings.<EVIDENCE_HOLD_SCOPED_ERASURE_KEY> only after the walk, which
+ * deleted its fix_outcomes, has committed. That stamp is the same guarantee,
+ * so such an org counts as gone too; without it the request could not be
+ * satisfied until the hold is released. The stamp counts only while the hold
+ * row stands (it is an engine-owned key a client cannot write, but a stray
+ * copy on a live org must not satisfy anything).
+ *
+ * Requests live on partner rows only (org rows are deleted by the org
+ * cascade), so this needs no partnerScope subquery.
  * Table-qualified, unaliased: the Drizzle column references render as "fix_memory"."…".
  */
 async function erasedPendingOrgIds(identity: IdentityKey): Promise<string[]> {
@@ -276,7 +288,14 @@ async function erasedPendingOrgIds(identity: IdentityKey): Promise<string[]> {
       AND ${fixMemory.signatureKey} = ${identity.signatureKey}
       AND ${fixMemory.osType} = ${identity.osType}
       AND ${fixMemory.fixIdentity} = ${identity.fixIdentity}
-      AND NOT EXISTS (SELECT 1 FROM organizations o WHERE o.id = pending.org_id)`);
+      AND NOT EXISTS (
+        SELECT 1 FROM organizations o
+         WHERE o.id = pending.org_id
+           AND NOT (
+             COALESCE(o.settings, '{}'::jsonb) ? ${EVIDENCE_HOLD_SCOPED_ERASURE_KEY}::text
+             AND EXISTS (SELECT 1 FROM org_evidence_holds h WHERE h.loser_org_id = o.id)
+           )
+      )`);
   return [...rows].map((r) => r.org_id).filter((id): id is string => typeof id === 'string');
 }
 

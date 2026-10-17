@@ -54,3 +54,8 @@ it('payment methods requires login and active account, public tokens do not', ()
   expect(requiresAccountStatusGuard('/payment-methods')).toBe(true);
   expect(isProtectedPath('/autopay/opaque-token/stop')).toBe(false);
 });
+
+it('approvals requires login and active account (#8200)', () => {
+  expect(isProtectedPath('/approvals')).toBe(true);
+  expect(requiresAccountStatusGuard('/approvals')).toBe(true);
+});

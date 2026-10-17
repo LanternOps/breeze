@@ -150,6 +150,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Site location W2 (#7886) — presence read-model evaluation (never moves a device).
+    name: 'topologyPresenceWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyPresenceWorker');
+      return { init: m.initializeTopologyPresenceWorker, shutdown: m.shutdownTopologyPresenceWorker };
+    },
+  },
+  {
     name: 'alertWorkers',
     placement: 'global',
     load: async () => {
@@ -206,6 +215,22 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'connectionHealthReconcileWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/connectionHealthReconcile');
+      return { init: m.initializeConnectionHealthReconcileWorker, shutdown: m.shutdownConnectionHealthReconcileWorker };
+    },
+  },
+  {
+    name: 'connectionHealthDigestWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/connectionHealthDigest');
+      return { init: m.initializeConnectionHealthDigestWorker, shutdown: m.shutdownConnectionHealthDigestWorker };
+    },
+  },
+  {
     name: 'aiArtifactSweeper',
     placement: 'global',
     load: async () => {
@@ -221,6 +246,21 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return {
         init: m.initializeHelperScreenshotRetentionWorker,
         shutdown: m.shutdownHelperScreenshotRetentionWorker,
+      };
+    },
+  },
+  {
+    // #8742 W02: endpoint message body purge, expiry close-out, history delete.
+    // #8743 W03: also the live-chat idle close, which tells the agent
+    // (chat_close) — command dispatch reaches socket-local delivery, so this
+    // entry is socket-owner (workerEntrypointClosure.contract.test.ts).
+    name: 'endpointMessageRetention',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/endpointMessageRetention');
+      return {
+        init: m.initializeEndpointMessageRetentionWorker,
+        shutdown: m.shutdownEndpointMessageRetentionWorker,
       };
     },
   },
@@ -246,6 +286,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/mlOutputRetention');
       return { init: m.initializeMlOutputRetention, shutdown: m.shutdownMlOutputRetention };
+    },
+  },
+  {
+    // #8852 W03 (#8855): nightly AI tool output retention. db + services only.
+    name: 'aiToolOutputRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiToolOutputRetention');
+      return { init: m.initializeAiToolOutputRetention, shutdown: m.shutdownAiToolOutputRetention };
     },
   },
   {
@@ -385,6 +434,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/securityPostureWorker');
       return { init: m.initializeSecurityPostureWorker, shutdown: m.shutdownSecurityPostureWorker };
+    },
+  },
+  {
+    // Hourly trust-page snapshot refresh + serving-set self-heal + snapshot prune.
+    name: 'trustPageSnapshotWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/trustPageSnapshotWorker');
+      return { init: m.initializeTrustPageSnapshotWorker, shutdown: m.shutdownTrustPageSnapshotWorker };
     },
   },
   {
@@ -643,6 +701,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/enrollmentKeyCleanup');
       return { init: m.initializeEnrollmentKeyCleanupWorker, shutdown: m.shutdownEnrollmentKeyCleanupWorker };
+    },
+  },
+  {
+    name: 'migrationWindowSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/migrationWindowSweep');
+      return { init: m.initializeMigrationWindowSweepWorker, shutdown: m.shutdownMigrationWindowSweepWorker };
     },
   },
   {
@@ -959,9 +1025,9 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // EDR provider framework W01 (#8164). 'global': its import closure reaches no socket-local
-    // dispatch (no alerts/events until W02 — re-verify placement then with
-    // workerEntrypointClosure.contract.test.ts).
+    // EDR provider framework (#8164). 'global': its import closure reaches no socket-local
+    // dispatch. Re-verified in W02 (#8166) after the Phase 4 notifier added alertService +
+    // eventBus imports: workerEntrypointClosure.contract.test.ts stays green.
     name: 'edrProviderSyncWorker',
     placement: 'global',
     load: async () => {
@@ -1385,13 +1451,28 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
     // Caller verification (#6354 W01) — post-commit publisher: rejection
     // notifications (in-app + email) and W02/W03 challenge delivery/timeouts,
-    // driven off scalar markers on the verification row. 'global': no
-    // agent-socket-local dependency.
+    // driven off scalar markers on the verification row. 'socket-owner'
+    // since W02: workstation delivery claims the pre-created caller_verify
+    // command through the same claim-time eligibility as the heartbeat
+    // (commandDispatch), whose closure reaches socket-local dispatch.
     name: 'callerVerificationPublisher',
-    placement: 'global',
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/callerVerificationPublisher');
       return { init: m.initializeCallerVerificationPublisher, shutdown: m.shutdownCallerVerificationPublisher };
+    },
+  },
+  {
+    // Caller verification (#6354 W02) — repairs workstation decisions the
+    // transports could not finish (terminal command results, late "not me"
+    // receipts) through the same leaf result handler. 'socket-owner': the
+    // caller-verification service graph includes workstation delivery, which
+    // claims commands through commandDispatch (same as the publisher).
+    name: 'callerVerificationReconciliation',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/callerVerificationReconciliation');
+      return { init: m.initializeCallerVerificationReconciliation, shutdown: m.shutdownCallerVerificationReconciliation };
     },
   },
   {
@@ -1498,6 +1579,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiInvocationRetention');
       return { init: m.initializeAiInvocationRetention, shutdown: m.shutdownAiInvocationRetention };
+    },
+  },
+  {
+    // #4120: daily fold of expired `llm_egress_events` rows into
+    // `llm_egress_daily_rollups`. db + services only — `global`.
+    name: 'llmEgressRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/llmEgressRetention');
+      return { init: m.initializeLlmEgressRetention, shutdown: m.shutdownLlmEgressRetention };
     },
   },
   {
@@ -1685,6 +1776,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8164 (EDR provider framework, W02) — daily prune of terminal
+    // edr_detections rows past the 180-day retention window.
+    name: 'edrDetectionRetentionWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/edrDetectionRetention');
+      return {
+        init: m.initializeEdrDetectionRetention,
+        shutdown: m.shutdownEdrDetectionRetention,
+      };
+    },
+  },
+  {
     // #4248 W03 (AI Scorecard #5757) — 15-minute sweep over unsettled
     // report_run_deliveries: re-attempts pending narrative emails the
     // finalizer never reached, marks stale claims `unknown` (never resends).
@@ -1743,6 +1847,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/aiModelDiscoveryWorker');
       return { init: m.initializeAiModelDiscoveryWorker, shutdown: m.shutdownAiModelDiscoveryWorker };
+    },
+  },
+  // Workload image currency W05 (#8194): 30-minute registry pass. `global`:
+  // its closure is db + services/imageCurrency (urlSafety), never routes or
+  // socket-local dispatch (workerEntrypointClosure.contract.test.ts).
+  {
+    name: 'imageCurrencyWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/imageCurrencyWorker');
+      return { init: m.initializeImageCurrencyWorker, shutdown: m.shutdownImageCurrencyWorker };
     },
   },
 ];

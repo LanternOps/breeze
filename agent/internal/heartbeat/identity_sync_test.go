@@ -137,7 +137,7 @@ func TestVerifyIdentityAssertionRejects(t *testing.T) {
 		"org that is not a UUID":     {mutate: func(a *IdentityAssertion) { a.OrgID = "not-a-uuid" }, keepSigning: true},
 		"line break in a field":      {mutate: func(a *IdentityAssertion) { a.SiteID = identityTestSiteB + "\nx" }},
 		"empty field":                {mutate: func(a *IdentityAssertion) { a.KeyID = "" }},
-		"unknown version":            {mutate: func(a *IdentityAssertion) { a.Version = 2 }},
+		"unknown version":            {mutate: func(a *IdentityAssertion) { a.Version = 3 }},
 		"tampered field":             {mutate: func(a *IdentityAssertion) { a.OrgID = identityTestOrgA }},
 		"signature from an unpinned key": {mutate: func(a *IdentityAssertion) {
 			canonical, _ := a.canonicalBytes()
@@ -174,6 +174,7 @@ type identitySeams struct {
 	persisted  atomic.Int32
 	restarted  chan struct{}
 	org, site  string
+	epoch      uint64
 	markerPath string
 	now        time.Time
 	restartErr error
@@ -184,9 +185,9 @@ func withIdentitySeams(t *testing.T, persistErr error) *identitySeams {
 	s := &identitySeams{restarted: make(chan struct{}, 4), markerPath: filepath.Join(t.TempDir(), identityRestartMarkerFile)}
 	prevPersist, prevRestart, prevNow := persistServerIdentityFn, restartForIdentityFn, identitySyncNow
 	prevMarker, prevJitter, prevPoll := identityRestartMarkerPath, identityRestartJitter, identityRestartPollInterval
-	persistServerIdentityFn = func(_ string, org, site string) error {
+	persistServerIdentityFn = func(_ string, org, site string, epoch uint64) error {
 		s.persisted.Add(1)
-		s.org, s.site = org, site
+		s.org, s.site, s.epoch = org, site, epoch
 		return persistErr
 	}
 	restartForIdentityFn = func() error {
@@ -294,15 +295,26 @@ func TestApplyIdentityAssertionDoesNotRestartWhenPersistFails(t *testing.T) {
 		t.Fatal("reported a restart although the new identity was never persisted")
 	}
 	expectNoRestart(t, s, 50*time.Millisecond)
+	// #8623 — retried after the write backoff (about one beat), not before.
+	h.applyIdentityAssertion(goldenAssertion())
+	if s.persisted.Load() != 1 {
+		t.Fatalf("retried the persist inside the backoff: %d", s.persisted.Load())
+	}
+	s.now = s.now.Add(identityWriteRetryMin)
 	h.applyIdentityAssertion(goldenAssertion())
 	if s.persisted.Load() != 2 {
-		t.Fatalf("next beat did not retry the persist: %d", s.persisted.Load())
+		t.Fatalf("the beat after the backoff did not retry the persist: %d", s.persisted.Load())
+	}
+	if got := h.identityRejectionForBeat(); got != nil {
+		t.Fatalf("a local write failure was reported to the server: %+v", got)
 	}
 }
 
 // Without a marker nothing bounds the restarts: a new process would see no
 // marker, count attempt 1 and restart again, forever, for an identity that an
 // environment override keeps from taking effect. So no marker, no restart.
+// #8623 — but the failure is local, so the identity is tried again after the
+// backoff rather than given up on (identity_sync_write_retry_test.go).
 func TestApplyIdentityAssertionDoesNotRestartWithoutARestartMarker(t *testing.T) {
 	s := withIdentitySeams(t, nil)
 	s.markerPath = filepath.Join(t.TempDir(), "missing-dir", identityRestartMarkerFile)
@@ -315,9 +327,14 @@ func TestApplyIdentityAssertionDoesNotRestartWithoutARestartMarker(t *testing.T)
 	if s.persisted.Load() != 1 {
 		t.Fatalf("the new identity should still be persisted for the next start: %d", s.persisted.Load())
 	}
-	// The gate is released and the same identity is not retried in this process.
-	if h.applyIdentityAssertion(goldenAssertion()) || s.persisted.Load() != 1 {
-		t.Fatalf("retried an identity whose restart cannot be bounded: persisted=%d", s.persisted.Load())
+	// The gate is released; the next try, after the backoff, still cannot
+	// record the marker and still does not restart.
+	if h.identitySync.restartRequested.Load() {
+		t.Fatal("the restart gate stayed closed after the marker write failed")
+	}
+	s.now = s.now.Add(identityWriteRetryMin)
+	if h.applyIdentityAssertion(goldenAssertion()) || s.persisted.Load() != 2 {
+		t.Fatalf("retry after the backoff: persisted=%d", s.persisted.Load())
 	}
 	expectNoRestart(t, s, 50*time.Millisecond)
 }
@@ -545,8 +562,9 @@ func TestHeartbeatDeclaresIdentitySyncAndReportsIdentity(t *testing.T) {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if got := decoded.SecurityCapabilities["identitySyncProtocolVersion"]; got != float64(1) {
-		t.Fatalf("identitySyncProtocolVersion = %v, want 1", got)
+	// #8206: v2 adds the ownership epoch to the signed assertion.
+	if got := decoded.SecurityCapabilities["identitySyncProtocolVersion"]; got != float64(2) {
+		t.Fatalf("identitySyncProtocolVersion = %v, want 2", got)
 	}
 	want := map[string]string{"deviceId": identityTestDeviceID, "orgId": identityTestOrgA, "siteId": identityTestSiteA, "nonce": second.Nonce}
 	for k, v := range want {

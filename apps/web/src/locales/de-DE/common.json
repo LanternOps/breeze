@@ -110,7 +110,12 @@
     "timeSync": "Zeitsynchronisierung",
     "aiModels": "KI-Modelle",
     "autopay": "Autopay",
-    "payments": "Payments"
+    "payments": "Payments",
+    "ticketsIncidents": "Störungen",
+    "ticketsServiceRequests": "Serviceanfragen",
+    "ticketsProblems": "Probleme",
+    "ticketsChanges": "Änderungen",
+    "endpointMessages": "Nachrichten"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -311,6 +316,17 @@
       "target": "Ziel",
       "time": "Zeit"
     },
+    "recentlyViewed": {
+      "title": "Weitermachen, wo Sie aufgehört haben",
+      "kind": {
+        "device": "Gerät",
+        "org": "Organisation",
+        "ticket": "Vorgang",
+        "alert": "Alarm",
+        "site": "Standort",
+        "page": "Seite"
+      }
+    },
     "alerts": {
       "title": "Letzte Warnmeldungen",
       "viewAll": "Alle anzeigen",
@@ -408,7 +424,9 @@
       "unratedPending": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
       "unratedPending_one": "{{count}} unbewerteter Patch ausstehend (wird nicht automatisch genehmigt)",
       "unratedPending_other": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
-      "empty": "Noch keine Patch-Daten"
+      "empty": "Noch keine Patch-Daten",
+      "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft"
     },
     "vuln": {
       "title": "Schwachstellen",
@@ -494,7 +512,9 @@
       "noGroups": "Keine Gerätegruppen verfügbar",
       "deviceCount": "{{count}} Geräte",
       "loadSaved": "Gespeicherten Filter laden:",
-      "select": "Auswählen"
+      "select": "Auswählen",
+      "dynamic": "Dynamisch",
+      "refusedGroup": "Als Ziel nicht verfügbar: Die Regeln dieser Gruppe beruhen auf Feldern, die ein Gerät selbst meldet ({{fields}})."
     },
     "preview": {
       "title": "Übereinstimmende Geräte",
@@ -680,7 +700,23 @@
       "noSelection": "Organisation auswählen",
       "searchOrganizations": "Organisationen durchsuchen…",
       "noMatches": "Keine passenden Organisationen",
-      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl."
+      "legacyFilterNotice": "Die Organisationsfilterung folgt jetzt der Kopfzeilen-Auswahl.",
+      "recent": "Zuletzt",
+      "pane": {
+        "destinations": {
+          "overview": "Übersicht",
+          "devices": "Geräte",
+          "tickets": "Support-Tickets",
+          "alerts": "Warnungen",
+          "sites": "Standorte",
+          "billing": "Abrechnung"
+        },
+        "offlineCount": "{{count}} nicht erreichbar",
+        "openCount": "{{count}} offen",
+        "criticalCount": "{{count}} kritisch",
+        "noCritical": "keine",
+        "hint": "Namen anklicken zum Wechseln · Seite anklicken zum Wechseln und Öffnen"
+      }
     },
     "header": {
       "menu": "Menü",
@@ -797,9 +833,9 @@
       "expand": "Seitenleiste ausklappen",
       "collapseSections": "Alle Bereiche einklappen",
       "closeMenu": "Menü schließen",
-      "recentDevices": "Zuletzt geöffnete Geräte",
-      "hideRecentDevices": "Zuletzt geöffnete Geräte ausblenden",
-      "showRecentDevices": "Zuletzt geöffnete Geräte anzeigen"
+      "recent": "Zuletzt",
+      "hideRecent": "Zuletzt geöffnete ausblenden",
+      "showRecent": "Zuletzt geöffnete anzeigen"
     },
     "orgRequired": {
       "title": "Organisation auswählen",
@@ -1323,6 +1359,10 @@
           "ticketAssigned": {
             "description": "Wird ausgelöst, wenn ein Ticket zugewiesen oder die Zuweisung aufgehoben wird.",
             "label": "Ticket zugewiesen"
+          },
+          "migrationWindowClosed": {
+            "description": "Wird einmal pro Organisation ausgelöst, wenn ein Ticket-Migrationsfenster geschlossen wird, mit den importierten Zählungen.",
+            "label": "Migrationsfenster geschlossen"
           }
         },
         "fields": {
@@ -1705,7 +1745,8 @@
         "deleteEntry": "Eintrag {{id}} löschen",
         "deleteConfirmTitle": "Zeiteintrag löschen?",
         "deleteConfirmMessage": "Damit wird der Eintrag über {{duration}} im Ticket {{ticket}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden.",
-        "deleteConfirmMessageNoTicket": "Damit wird der Eintrag über {{duration}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden."
+        "deleteConfirmMessageNoTicket": "Damit wird der Eintrag über {{duration}} endgültig entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "noteInvoiceCue": "Kunden sehen diese Notiz auf ihrer Rechnung, sofern Ihre Abrechnungseinstellungen Notizen nicht ausblenden."
       },
       "sourceBadge": {
         "timer": "Timer",
@@ -2192,7 +2233,8 @@
         "viewInSource": "Ansicht in {{source}}",
         "promoteFromEdr": "Aus EDR-Ansicht übernehmen",
         "pagination": "Seite {{page}} von {{totalPages}} ({{total}} insgesamt)",
-        "previous": "Zurück"
+        "previous": "Zurück",
+        "genericEdrProvider": "EDR-Anbieter"
       },
       "IncidentDetailPage": {
         "errors": {

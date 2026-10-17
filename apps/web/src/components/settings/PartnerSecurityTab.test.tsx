@@ -31,6 +31,14 @@ describe('currentIpCovered', () => {
   });
 });
 
+describe('PartnerSecurityTab session timeout (#6111)', () => {
+  it('allows up to 720 minutes (12 hours)', () => {
+    const { container } = render(<PartnerSecurityTab data={{ sessionTimeout: 60 }} onChange={vi.fn()} />);
+    const input = container.querySelector('input[type="number"][min="15"]')!;
+    expect(input.getAttribute('max')).toBe('720');
+  });
+});
+
 describe('PartnerSecurityTab allowlist textarea', () => {
   // The API only clears a stored allowlist when `ipAllowlist` is present in the
   // write (routes/orgs.ts preserves it when the key is omitted), so emptying the

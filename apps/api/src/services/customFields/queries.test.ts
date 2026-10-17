@@ -10,7 +10,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../db', () => ({
   db: {
     select: vi.fn(),
+    insert: vi.fn(),
   },
+}));
+
+vi.mock('../../jobs/deviceGroupJobs', () => ({
+  requestDeviceGroupReevaluationAfterCommit: vi.fn(),
 }));
 
 vi.mock('../../db/schema', async (importOriginal) => {
@@ -19,10 +24,13 @@ vi.mock('../../db/schema', async (importOriginal) => {
 });
 
 import { db } from '../../db';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 import {
   loadScriptWritableDefinitions,
   loadVisibleCustomFieldDefinitions,
+  persistDeviceCustomFieldValues,
   valueColumnsFor,
+  type CustomFieldValueWrite,
 } from './queries';
 
 interface FixtureDefinition {
@@ -217,5 +225,101 @@ describe('valueColumnsFor', () => {
     expect(valueColumnsFor('boolean', null)).toEqual(EMPTY);
     expect(valueColumnsFor('dropdown', null)).toEqual(EMPTY);
     expect(valueColumnsFor('date', null)).toEqual(EMPTY);
+  });
+});
+
+// #8832: every custom-field VALUE write funnels through
+// persistDeviceCustomFieldValues (device PATCH, PATCH /custom-fields, the CSV
+// importer, script write-back), so it is the one place that can promise a
+// dynamic group keyed on `custom.<key>` is re-evaluated. Only keys whose value
+// actually changed (the upsert's setWhere let the UPDATE through and RETURNING
+// produced a row) are requested — a fleet-wide script re-asserting unchanged
+// values must not enqueue a re-evaluation per device.
+describe('persistDeviceCustomFieldValues → dynamic group re-evaluation (#8832)', () => {
+  const DEVICE_ID = 'device-1';
+
+  function write(fieldKey: string, value: string): CustomFieldValueWrite {
+    return { definitionId: `def-${fieldKey}`, fieldKey, type: 'text', value };
+  }
+
+  /** One upsert per write; `changed[i]` decides whether RETURNING yields a row. */
+  function rigUpserts(changed: boolean[]) {
+    for (const didChange of changed) {
+      const returning = vi.fn().mockImplementation(async () => []);
+      const onConflictDoUpdate = vi.fn().mockReturnValue({ returning });
+      const values = vi.fn().mockImplementation((row: { fieldKey: string }) => {
+        returning.mockResolvedValue(didChange ? [{ fieldKey: row.fieldKey }] : []);
+        return { onConflictDoUpdate };
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as never);
+    }
+  }
+
+  beforeEach(() => {
+    vi.mocked(db.insert).mockReset();
+    vi.mocked(requestDeviceGroupReevaluationAfterCommit).mockReset();
+  });
+
+  it('requests a re-evaluation for custom.<key> of every key whose value changed', async () => {
+    rigUpserts([true, false, true]);
+
+    const changed = await persistDeviceCustomFieldValues(
+      DEVICE_ID,
+      ORG_ID,
+      [write('asset_disposition', 'retired'), write('owner', 'same'), write('location', 'hq')],
+      'manual',
+    );
+
+    expect(changed).toEqual(['asset_disposition', 'location']);
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledTimes(1);
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith({
+      deviceId: DEVICE_ID,
+      orgId: ORG_ID,
+      eventType: 'device.updated',
+      changedFields: ['custom.asset_disposition', 'custom.location'],
+      reason: 'custom_field_write:manual',
+    });
+  });
+
+  it('requests nothing when every upsert was skipped as unchanged', async () => {
+    rigUpserts([false, false]);
+
+    const changed = await persistDeviceCustomFieldValues(
+      DEVICE_ID,
+      ORG_ID,
+      [write('a', '1'), write('b', '2')],
+      'script',
+    );
+
+    expect(changed).toEqual([]);
+    expect(requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
+  });
+
+  it('requests nothing for an empty write set', async () => {
+    await persistDeviceCustomFieldValues(DEVICE_ID, ORG_ID, [], 'import');
+
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
+  });
+
+  it('issues the upserts on the supplied executor and still requests the re-evaluation', async () => {
+    const returning = vi.fn().mockResolvedValue([{ fieldKey: 'asset_disposition' }]);
+    const onConflictDoUpdate = vi.fn().mockReturnValue({ returning });
+    const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
+    const executor = { insert: vi.fn().mockReturnValue({ values }) };
+
+    await persistDeviceCustomFieldValues(
+      DEVICE_ID,
+      ORG_ID,
+      [write('asset_disposition', 'retired')],
+      'import',
+      executor as never,
+    );
+
+    expect(executor.insert).toHaveBeenCalledTimes(1);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith(
+      expect.objectContaining({ changedFields: ['custom.asset_disposition'], reason: 'custom_field_write:import' }),
+    );
   });
 });

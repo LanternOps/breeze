@@ -70,6 +70,13 @@ type Config struct {
 	// key set. Construction sites copy it from config.Config alongside
 	// PinnedManifestPubKeys.
 	RequireManifestSigningKeyID bool
+
+	// TempDir, when non-empty, is the directory downloaded artifacts are
+	// written to (os.CreateTemp's dir argument). Empty means the OS temp dir.
+	// The watchdog install reconcile points it at a private, root-owned
+	// per-attempt directory so the verified file it later executes is never
+	// in a world-writable location.
+	TempDir string
 }
 
 // Updater handles agent auto-updates
@@ -836,31 +843,31 @@ func (u *Updater) requireSigningKeyID() bool {
 func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyID string) error {
 	keyed, unkeyed, err := u.manifestTrustKeys()
 	if err != nil {
-		return err
+		return asTrustError(ErrManifestKey, err)
 	}
 
 	if id := strings.TrimSpace(signingKeyID); id != "" {
 		// Never echo an unvalidated ID: it is control-plane supplied and
 		// reaches log lines through the caller's error reporting.
 		if !config.ValidManifestKeyID(id) {
-			return fmt.Errorf("update manifest signing key id is malformed")
+			return trustErrorf(ErrManifestKey, "update manifest signing key id is malformed")
 		}
 		key, ok := keyed[id]
 		if !ok {
-			return fmt.Errorf("unknown update manifest signing key id %q", id)
+			return trustErrorf(ErrManifestKey, "unknown update manifest signing key id %q", id)
 		}
 		if !ed25519.Verify(key, payload, signature) {
-			return fmt.Errorf("update manifest signature verification failed for signing key id %q", id)
+			return trustErrorf(ErrManifestSignature, "update manifest signature verification failed for signing key id %q", id)
 		}
 		return nil
 	}
 
 	if u.requireSigningKeyID() {
-		return fmt.Errorf("manifest signing key ID required")
+		return trustErrorf(ErrManifestKey, "manifest signing key ID required")
 	}
 
 	if len(keyed) == 0 && len(unkeyed) == 0 {
-		return fmt.Errorf("no trusted update manifest public keys configured")
+		return trustErrorf(ErrManifestKey, "no trusted update manifest public keys configured")
 	}
 
 	for _, key := range keyed {
@@ -879,7 +886,7 @@ func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyI
 			return nil
 		}
 	}
-	return fmt.Errorf("update manifest signature verification failed")
+	return ErrManifestSignature
 }
 
 func normalizePreflightErr(err error) error {
@@ -1168,7 +1175,7 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 			return downloadInfo{}, fmt.Errorf("download info missing url or checksum")
 		}
 		if info.Manifest == "" || info.ManifestSignature == "" {
-			return downloadInfo{}, fmt.Errorf("download info missing signed release manifest")
+			return downloadInfo{}, trustErrorf(ErrManifestSignature, "download info missing signed release manifest")
 		}
 		return info, nil
 
@@ -1205,14 +1212,14 @@ func (u *Updater) parseDownloadInfo(resp *http.Response) (downloadInfo, error) {
 		}
 
 	default:
-		return downloadInfo{}, fmt.Errorf("download info request failed with status %d", resp.StatusCode)
+		return downloadInfo{}, httpStatusErrorf(resp.StatusCode, "download info request failed with status %d", resp.StatusCode)
 	}
 }
 
 func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updateManifest, error) {
 	signature, err := base64.StdEncoding.DecodeString(info.ManifestSignature)
 	if err != nil || len(signature) != ed25519.SignatureSize {
-		return updateManifest{}, fmt.Errorf("invalid update manifest signature encoding")
+		return updateManifest{}, trustErrorf(ErrManifestSignature, "invalid update manifest signature encoding")
 	}
 
 	payload := []byte(info.Manifest)
@@ -1491,6 +1498,14 @@ func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte
 
 	manifest, err := u.verifyUpdateManifest(info, version)
 	if err != nil {
+		// Every verifyUpdateManifest failure is a trust decision about this
+		// release (bad/absent signature, or signed content that does not
+		// describe the requested artifact). Key-set problems are already
+		// tagged ErrManifestKey; tag the rest so callers can classify them as
+		// permanent without matching text.
+		if !errors.Is(err, ErrManifestKey) {
+			err = asTrustError(ErrManifestSignature, err)
+		}
 		return "", updateManifest{}, nil, err
 	}
 	// info.Manifest is now signature-verified; capture it for the macOS .pkg
@@ -1515,7 +1530,7 @@ func (u *Updater) downloadBinary(version string) (string, updateManifest, []byte
 		}
 		if stat.Size() != manifest.Size {
 			removeCleanup(tempPath)
-			return "", updateManifest{}, nil, fmt.Errorf("downloaded binary size mismatch: expected %d, got %d", manifest.Size, stat.Size())
+			return "", updateManifest{}, nil, trustErrorf(ErrChecksumMismatch, "downloaded binary size mismatch: expected %d, got %d", manifest.Size, stat.Size())
 		}
 	}
 
@@ -1537,7 +1552,7 @@ func (u *Updater) verifyChecksum(path, expectedChecksum string) error {
 
 	actualChecksum := hex.EncodeToString(hasher.Sum(nil))
 	if actualChecksum != expectedChecksum {
-		return fmt.Errorf("checksum mismatch: expected %s, got %s", expectedChecksum, actualChecksum)
+		return fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, expectedChecksum, actualChecksum)
 	}
 
 	return nil
@@ -1821,10 +1836,12 @@ func (u *Updater) downloadFromURL(rawURL string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("binary download failed with status %d", resp.StatusCode)
+		return "", httpStatusErrorf(resp.StatusCode, "binary download failed with status %d", resp.StatusCode)
 	}
 
-	tempFile, err := os.CreateTemp("", "breeze-agent-dev-*")
+	// TempDir (when set) keeps the artifact inside a caller-owned private
+	// directory; "" is the OS temp dir, as before.
+	tempFile, err := os.CreateTemp(u.config.TempDir, "breeze-agent-dev-*")
 	if err != nil {
 		return "", err
 	}

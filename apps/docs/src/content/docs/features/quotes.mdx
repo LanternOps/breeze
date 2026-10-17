@@ -137,14 +137,14 @@ When a customer accepts a quote that has a deposit, Breeze issues the invoice wi
 
 When a customer accepts a quote, Breeze turns it into the documents that bill it:
 
-- **One-time lines** become an **invoice** (with the deposit due first, if one was set). The customer is taken straight to that invoice's own view-and-pay page, and unless you turn it off in **Settings → Billing**, Breeze emails them the invoice with the same link right away.
+- **One-time lines** become an **invoice** (with the deposit due first, if one was set). When you take [online payments](/features/online-payments/) and money is due on acceptance, the customer's accept button reads **Sign & pay** (or **Sign & pay deposit**) with the amount, and signing goes straight to Stripe checkout. Otherwise, or if checkout can't be opened at that moment, the customer is taken straight to that invoice's own view-and-pay page, and unless you turn it off in **Settings → Billing**, Breeze emails them the invoice with the same link right away.
 - **Recurring lines** become one or more **draft contracts** -- monthly and annual lines split into separate drafts, one billing cadence each -- that you review and activate. See [Recurring Contracts → From an Accepted Quote](/features/contracts/#from-an-accepted-quote).
 
 If the accepted quote contains **Pax8-backed** catalog items, acceptance also **stages a Pax8 order** for those items alongside the invoice and contracts. Acceptance doesn't submit anything to Pax8; you complete the commitment and provisioning details and submit it afterward. See [Distributor Integrations → Complete an order staged from a quote](/features/distributor-integrations/#complete-an-order-staged-from-a-quote).
 
 ### Ordering What You Sold
 
-Once a quote is won (accepted or converted), its detail view grows a **To be ordered** procurement breakdown of the SKU-bearing lines — item, SKU, part number, vendor, quantity, and (if you can see margin) unit cost, extended cost, and markup — so you can place vendor orders without re-deriving a purchase order from the pricing tables. Lines are grouped by vendor, with cost totals per group.
+Once a quote is won (accepted or converted), its detail view grows a **To be ordered** procurement breakdown (the parts order) of the lines that carry a SKU or part number — item, SKU, part number, vendor, quantity, and (if you can see margin) unit cost, extended cost, and markup — so you can place vendor orders without re-deriving a purchase order from the pricing tables. Lines are grouped by vendor, with cost totals per group. Product lines with neither a SKU nor a part number are left out and listed as **Not in this order**; the line editor and the **Send** dialog warn about such lines before the quote goes out.
 
 - **Mark ordered** — select lines and record the order against them: vendor, order reference, tracking number, expected arrival date, notes, and per-line quantities. Partial quantities are supported, so a line can be split across orders.
 - **Mark received** — record arrivals as they land; lines track **Ordered → Partly received → Received**, and order lines can be cancelled.
@@ -224,7 +224,7 @@ A quote is priced in the customer organization's billing currency, which it inhe
 
 ## Document themes and content blocks
 
-Quotes and contracts render as branded documents. Under **Settings → Partner → Branding** you choose a **document theme** — fonts, colors, and cover treatment — and every quote, contract, and PDF you generate uses it. Set it once and customer-facing documents stay consistent.
+Quotes and contracts render as branded documents. Under **Settings → Partner → Branding** you choose a **document theme** — fonts, colors, and cover treatment — and every quote, contract, and PDF you generate uses it. Set it once and customer-facing documents stay consistent. Quote PDFs match the web proposal the customer sees and use your Branding logo and colors. In the quote editor's **Cover page** section, **Show a cover page** adds a title page, and **Add a contents list to the PDF** adds a contents list.
 
 Beyond priced line items, a quote body can contain content blocks that turn it into a full proposal:
 

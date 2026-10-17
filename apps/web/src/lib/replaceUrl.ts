@@ -9,10 +9,19 @@
  * `lib/__tests__/no-wipe-history-state.test.ts`.
  */
 
+/**
+ * `history.replaceState` fires neither `hashchange` nor `popstate`, so anything
+ * that mirrors the URL outside the component that wrote it (the sidebar's
+ * active-entry highlight) would go stale. `replaceUrl` therefore announces
+ * every in-place rewrite with this event on `window`.
+ */
+export const URL_CHANGE_EVENT = 'breeze:urlchange';
+
 /** Rewrite the current URL in place (no new entry), preserving `history.state`. */
 export function replaceUrl(url: string): void {
   if (typeof window === 'undefined') return;
   window.history.replaceState(window.history.state, '', url);
+  window.dispatchEvent(new CustomEvent(URL_CHANGE_EVENT));
 }
 
 /**

@@ -10,6 +10,10 @@ import { Hono } from 'hono';
 // mock those at the helper boundary instead of standing up real Drizzle
 // mocks for every downstream query.
 
+// PATCH /devices/:id requests a dynamic-group re-evaluation after commit (#8832);
+// the db mock has no runAfterDbContextCommit, so stub the producer.
+vi.mock('../../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
+
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -156,10 +160,30 @@ function rigDeviceThenSiteLookup(device: unknown, targetSite: unknown) {
   const updateWhere = vi.fn().mockReturnValue({ returning: updateReturning });
   const updateSet = vi.fn().mockReturnValue({ where: updateWhere });
 
+  // Drop once-values a previous test left unconsumed (a 403 before the lock read leaves it queued).
+  vi.mocked(db.select).mockReset();
   vi.mocked(db.select)
     .mockReturnValueOnce({ from: deviceFrom } as never)
-    .mockReturnValueOnce({ from: siteFrom } as never);
+    .mockReturnValueOnce({ from: siteFrom } as never)
+    .mockReturnValueOnce(siteMoveLock((device as { siteId?: string } | null)?.siteId) as never)
+    .mockReturnValueOnce(sourceSiteName() as never);
   vi.mocked(db.update).mockReturnValue({ set: updateSet } as never);
+}
+
+/**
+ * PATCH /devices/:id site moves lock the device row and re-read its site before any write
+ * (`select().from(devices).where(...).for('update')`, site location W1):
+ * this is that read, returning the unchanged site.
+ */
+function siteMoveLock(siteId: string | undefined) {
+  const forUpdate = vi.fn().mockResolvedValue(siteId ? [{ siteId }] : []);
+  const where = vi.fn().mockReturnValue({ for: forUpdate });
+  return { from: vi.fn().mockReturnValue({ where }) };
+}
+/** …followed by the source site's name for the `device.site_move` audit. */
+function sourceSiteName() {
+  const limit = vi.fn().mockResolvedValue([{ name: 'Main Office' }]);
+  return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit }) }) };
 }
 
 function rigPlainUpdate(updatedRow: unknown) {
@@ -742,7 +766,9 @@ describe('Device routes — permission / site / MFA gates (security-launch-fixes
           from: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([siteA2Row]) }),
           }),
-        } as never);
+        } as never)
+        .mockReturnValueOnce(siteMoveLock(siteAllowed) as never)
+        .mockReturnValueOnce(sourceSiteName() as never);
       rigPatchTransaction({ ...deviceInSiteAllowed, siteId: siteA2 });
 
       const res = await app.request(`/devices/${ACCESSIBLE_DEVICE.id}`, {

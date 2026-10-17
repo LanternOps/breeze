@@ -30,6 +30,7 @@ import { db } from '../db';
 import { backupJobs, backupSnapshotIdReservations, backupStorageSessionUploads, backupStorageSessions } from '../db/schema';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { parseBackupObjectKey } from './backupObjectKey';
+import { snapshotKeyRootOf, type SnapshotKeyRoot } from './backupKeyLayout';
 
 /** The unique violation every ownership refusal is reported under. */
 export const SNAPSHOT_ID_RESERVATION_CONSTRAINT = 'backup_snapshot_id_reservations_pkey';
@@ -75,9 +76,21 @@ export type SnapshotIdReservation = typeof backupSnapshotIdReservations.$inferSe
  * the caller's transaction usable; it is retried once with a new id.
  */
 export async function reserveNewSnapshotId(
-  input: { orgId: string; deviceId: string; configId: string; storageIdentity: string; jobId: string },
+  input: {
+    orgId: string;
+    deviceId: string;
+    configId: string;
+    storageIdentity: string;
+    jobId: string;
+    /** Key root the id's objects are written under; immutable once reserved (#7081). */
+    keyRoot: SnapshotKeyRoot;
+  },
   opts: { now?: Date; random?: (n: number) => Buffer } = {},
 ): Promise<string> {
+  // Only a root readers can read is ever recorded.
+  if (!snapshotKeyRootOf({ keyLayout: input.keyRoot.layout, keyPrefix: input.keyRoot.prefix })) {
+    throw new Error('reserveNewSnapshotId: refusing to record an unreadable key root');
+  }
   for (let attempt = 0; ; attempt++) {
     const snapshotId = mintSnapshotId(opts.now ?? new Date(), opts.random ?? randomBytes);
     try {
@@ -92,6 +105,8 @@ export async function reserveNewSnapshotId(
           state: 'reserved',
           currentJobId: input.jobId,
           writeGeneration: 1,
+          keyLayout: input.keyRoot.layout,
+          keyPrefix: input.keyRoot.prefix,
         }),
       );
       return snapshotId;
@@ -207,6 +222,24 @@ export async function loadReservation(
 }
 
 /**
+ * The (key_layout, key_prefix) pair recorded on an id's reservation (#7081),
+ * verbatim — validate it with snapshotKeyRootOf. Null when no reservation is
+ * visible in the caller's context. Publication copies it onto the snapshot
+ * row; the backup_snapshots insert trigger refuses a row that does not carry
+ * it.
+ */
+export async function loadReservationKeyRoot(
+  snapshotId: string,
+): Promise<{ keyLayout: string; keyPrefix: string | null } | null> {
+  const [row] = await db
+    .select({ keyLayout: backupSnapshotIdReservations.keyLayout, keyPrefix: backupSnapshotIdReservations.keyPrefix })
+    .from(backupSnapshotIdReservations)
+    .where(eq(backupSnapshotIdReservations.snapshotId, snapshotId))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
  * For storage reconcile (system scope): which of these ids are reserved to
  * another organization, which server-issued ids are still being written or
  * sealed by a live backup job (never adoptable — the job's own result
@@ -217,11 +250,18 @@ export async function loadReservation(
 export async function loadSnapshotIdClaims(
   snapshotIds: string[],
   orgId: string,
-): Promise<{ foreign: Set<string>; live: Set<string>; currentJobs: Map<string, string> }> {
+): Promise<{
+  foreign: Set<string>;
+  live: Set<string>;
+  currentJobs: Map<string, string>;
+  /** The key root recorded on each id's reservation (#7081), verbatim. */
+  roots: Map<string, { keyLayout: string; keyPrefix: string | null }>;
+}> {
   const foreign = new Set<string>();
   const live = new Set<string>();
   const currentJobs = new Map<string, string>();
-  if (snapshotIds.length === 0) return { foreign, live, currentJobs };
+  const roots = new Map<string, { keyLayout: string; keyPrefix: string | null }>();
+  if (snapshotIds.length === 0) return { foreign, live, currentJobs, roots };
   const rows = await db
     .select({
       snapshotId: backupSnapshotIdReservations.snapshotId,
@@ -230,6 +270,8 @@ export async function loadSnapshotIdClaims(
       source: backupSnapshotIdReservations.source,
       currentJobId: backupSnapshotIdReservations.currentJobId,
       jobStatus: backupJobs.status,
+      keyLayout: backupSnapshotIdReservations.keyLayout,
+      keyPrefix: backupSnapshotIdReservations.keyPrefix,
     })
     .from(backupSnapshotIdReservations)
     .leftJoin(backupJobs, eq(backupJobs.id, backupSnapshotIdReservations.currentJobId))
@@ -244,8 +286,9 @@ export async function loadSnapshotIdClaims(
       live.add(row.snapshotId);
     }
     if (row.source === 'server_minted' && row.currentJobId) currentJobs.set(row.snapshotId, row.currentJobId);
+    roots.set(row.snapshotId, { keyLayout: row.keyLayout, keyPrefix: row.keyPrefix });
   }
-  return { foreign, live, currentJobs };
+  return { foreign, live, currentJobs, roots };
 }
 
 // ── Storage reclaim (jobs/backupRetention.ts, system context) ──────────────
@@ -264,13 +307,22 @@ export async function loadSnapshotIdClaims(
 export async function loadReservationGcState(
   nowMs: number,
   abandonedGraceMs: number,
-): Promise<{ protectedIds: Set<string>; reclaimable: Array<{ snapshotId: string; storageIdentity: string }> }> {
+): Promise<{
+  protectedIds: Set<string>;
+  /**
+   * `root` is the key root the id's objects were written under (#7081), null
+   * when unreadable — storage reclaim then never proves the prefix gone.
+   */
+  reclaimable: Array<{ snapshotId: string; storageIdentity: string; root: SnapshotKeyRoot | null }>;
+}> {
   const rows = await db
     .select({
       snapshotId: backupSnapshotIdReservations.snapshotId,
       state: backupSnapshotIdReservations.state,
       storageIdentity: backupSnapshotIdReservations.storageIdentity,
       updatedAt: backupSnapshotIdReservations.updatedAt,
+      keyLayout: backupSnapshotIdReservations.keyLayout,
+      keyPrefix: backupSnapshotIdReservations.keyPrefix,
     })
     .from(backupSnapshotIdReservations)
     .where(and(
@@ -278,12 +330,16 @@ export async function loadReservationGcState(
       inArray(backupSnapshotIdReservations.state, ['reserved', 'sealing', 'abandoned']),
     ));
   const protectedIds = new Set<string>();
-  const reclaimable: Array<{ snapshotId: string; storageIdentity: string }> = [];
+  const reclaimable: Array<{ snapshotId: string; storageIdentity: string; root: SnapshotKeyRoot | null }> = [];
   for (const row of rows) {
     if (row.state !== 'abandoned' || nowMs - row.updatedAt.getTime() < abandonedGraceMs) {
       protectedIds.add(row.snapshotId);
     } else if (row.storageIdentity) {
-      reclaimable.push({ snapshotId: row.snapshotId, storageIdentity: row.storageIdentity });
+      reclaimable.push({
+        snapshotId: row.snapshotId,
+        storageIdentity: row.storageIdentity,
+        root: snapshotKeyRootOf({ keyLayout: row.keyLayout, keyPrefix: row.keyPrefix }),
+      });
     }
   }
   return { protectedIds, reclaimable };

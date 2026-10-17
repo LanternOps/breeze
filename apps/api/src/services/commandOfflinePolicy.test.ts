@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommandTypes } from './commandTypes';
 import { createCommandSchema, bulkCommandSchema } from '../routes/devices/schemas';
+import { GATED_COMMAND_TYPES, LIFECYCLE_COMMAND_TYPES } from './partnerTrust';
 import {
   COMMAND_OFFLINE_POLICY_REGISTRY,
   EXPLICITLY_CLASSIFIED_COMMAND_TYPES,
@@ -210,5 +211,31 @@ describe('commandOfflinePolicy registry (#5128 W1)', () => {
     expect(deliveryTtlMs('live_only')).toBe(5 * 60 * 1000);
     vi.stubEnv('DEVICE_COMMAND_QUEUE_LIVE_ONLY_TTL_MINUTES', '0');
     expect(deliveryTtlMs('live_only')).toBe(15 * 60 * 1000);
+  });
+
+  it('registers notify_user as a standard queueable type and keeps it partner-trust gated (#8293)', () => {
+    expect(Object.values(CommandTypes)).toContain('notify_user');
+    expect(EXPLICITLY_CLASSIFIED_COMMAND_TYPES).toContain('notify_user');
+    const policy = defaultOfflinePolicy('notify_user');
+    expect(policy.kind).toBe('queue');
+    expect(policy.kind === 'queue' && policy.deliverWithinMs).toBe(deliveryTtlMs('standard'));
+    expect(GATED_COMMAND_TYPES).toContain('notify_user');
+    expect(LIFECYCLE_COMMAND_TYPES).not.toContain('notify_user');
+  });
+
+  it('registers the endpoint chat types as live (never queued for an offline device) (#8743)', () => {
+    for (const type of ['chat_open', 'chat_message', 'chat_close']) {
+      expect(Object.values(CommandTypes)).toContain(type);
+      expect(EXPLICITLY_CLASSIFIED_COMMAND_TYPES).toContain(type);
+      // A chat line delivered hours later, to whoever is signed in by then,
+      // is worse than a refused send: offline is refused, never queued.
+      expect(defaultOfflinePolicy(type)).toEqual({ kind: 'reject' });
+    }
+    // Operator content is partner-trust gated; closing carries none.
+    expect(GATED_COMMAND_TYPES).toContain('chat_open');
+    expect(GATED_COMMAND_TYPES).toContain('chat_message');
+    expect(LIFECYCLE_COMMAND_TYPES).toContain('chat_close');
+    expect(LIFECYCLE_COMMAND_TYPES).not.toContain('chat_open');
+    expect(LIFECYCLE_COMMAND_TYPES).not.toContain('chat_message');
   });
 });

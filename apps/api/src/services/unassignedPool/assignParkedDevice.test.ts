@@ -72,6 +72,7 @@ vi.mock('../deviceIdentityCollisionAlert', () => ({
 vi.mock('../auditEvents', () => ({ writeAuditEvent: vi.fn() }));
 vi.mock('../../jobs/peripheralJobs', () => ({ schedulePeripheralPolicyDevice: vi.fn(async () => 'job') }));
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../ticketLinkMoveNotes', () => ({ scheduleTicketLinkRemovalNotes: vi.fn() }));
 
 import {
   assignParkedDevice,
@@ -86,6 +87,7 @@ import {
 } from '../deviceOrgMove/moveDeviceOrgInTransaction';
 import { TicketMoveCurrencyBlockedError } from '../ticketMoveCurrencyGuard';
 import { TicketMoveHourBlockError } from '../ticketMoveHourBlockGuard';
+import { TicketMoveApprovalPendingError } from '../ticketMoveApprovalGuard';
 import { PamDeviceMoveBlockedError } from '../pamDeviceMoveGuard';
 import { TicketServiceError } from '../ticketService';
 import { admitPartnerDeviceCapacity, previewPartnerDeviceCapacity } from '../partnerDeviceCapacity';
@@ -94,6 +96,7 @@ import { consumeStepUpGrant } from '../mfaStepUpGrant';
 import { isDeviceUninstallDraining } from '../deviceUninstallDrain';
 import { requestDeviceGroupReevaluation } from '../../jobs/deviceGroupJobs';
 import { captureException } from '../sentry';
+import { scheduleTicketLinkRemovalNotes } from '../ticketLinkMoveNotes';
 import { invalidateOrgDeviceCount } from '../agentOrgRateLimit';
 import { disconnectAgent } from '../../routes/agentWs';
 import { raiseDeviceIdentityCollisionAlert } from '../deviceIdentityCollisionAlert';
@@ -193,6 +196,7 @@ beforeEach(() => {
       currencyGuard: null,
       alertChildRewrite: null,
       customFieldRehome: { rehomed: 0, dropped: 0 },
+      removedTicketLinks: [],
     };
   });
 });
@@ -262,6 +266,17 @@ describe('assignParkedDevice', () => {
       actorId: 'user-1',
       details: expect.objectContaining({ possessionConfirmed: true, fromOrgId: HOLDING_ORG, method: 'manual', stepUp: 'grant' }),
     }));
+  });
+
+  it('after commit: schedules the ticket-link removal notes the move returned (#7900 W02)', async () => {
+    const removed = [{ orgId: HOLDING_ORG, sourceTicketId: 't1', targetTicketId: 't2', linkType: 'related' as const, sourceMoved: true, targetMoved: false }];
+    vi.mocked(moveDeviceOrgInTransaction).mockImplementationOnce(async () => ({
+      updated: { id: DEVICE, agentId: 'agent-1' } as any,
+      linkGroupDissolved: false, currencyGuard: null, alertChildRewrite: null,
+      customFieldRehome: { rehomed: 0, dropped: 0 }, removedTicketLinks: removed,
+    }));
+    await single();
+    expect(scheduleTicketLinkRemovalNotes).toHaveBeenCalledWith(removed);
   });
 
   it('refuses a device that is not parked, without consuming the grant', async () => {
@@ -385,6 +400,7 @@ describe('assignParkedDevice', () => {
     expect(await single()).toMatchObject({ ok: false, code: 'PARTNER_DEVICE_LIMIT_REACHED' });
     expect(ledgerRows).toEqual([]);
     expect(writeAuditEvent).not.toHaveBeenCalled();
+    expect(scheduleTicketLinkRemovalNotes).not.toHaveBeenCalled();
   });
 
   it('refuses when the grant cannot be consumed inside the transaction', async () => {
@@ -489,6 +505,7 @@ describe('assignParkedDevice — refusals raised by the move engine', () => {
     ['holding org gone', new OrgVanishedDuringMoveError('source'), 'DEVICE_NOT_FOUND'],
     ['currency block', new TicketMoveCurrencyBlockedError('m', {} as any), 'TICKET_MOVE_CURRENCY_BLOCKED'],
     ['block-drawn time', new TicketMoveHourBlockError({ drawnTimeEntries: 1 }), 'HOUR_BLOCK_DRAWN_TIME'],
+    ['pending customer approval', new TicketMoveApprovalPendingError({ pendingApprovalRequests: 1 }), 'APPROVAL_REQUEST_PENDING'],
     ['PAM evidence', new PamDeviceMoveBlockedError(), 'PAM_DEVICE_MOVE_BLOCKED'],
     ['PAM evidence (database guard)', pgPamViolation, 'PAM_DEVICE_MOVE_BLOCKED'],
     ['a lock timeout', Object.assign(new Error('canceling statement due to lock timeout'), { cause: { code: '55P03' } }), 'ASSIGNMENT_BUSY'],

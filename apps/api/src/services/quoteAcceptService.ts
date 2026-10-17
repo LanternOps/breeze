@@ -21,7 +21,7 @@ import { buildContractSpecsFromQuote, type QuoteLineForContract } from './quoteT
 import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
 import { captureException } from './sentry';
-import { isQuoteLineSiteDeleted } from '@breeze/shared';
+import { isQuoteLineSiteDeleted, stampInvoiceLineDetail } from '@breeze/shared';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { stampedPresentation, quotePresentationAsInvoiceSource } from './invoicePresentation';
@@ -356,6 +356,9 @@ export async function acceptQuote(
       // #3205 W07: read alongside the other issue-time partner defaults so the
       // appendix stamp below costs no extra query.
       invoiceDeviceAppendix: partners.invoiceDeviceAppendix,
+      // #8604: line itemization defaults, frozen below beside the appendix.
+      invoiceLineGrouping: partners.invoiceLineGrouping, invoiceLineShowDate: partners.invoiceLineShowDate,
+      invoiceLineShowNote: partners.invoiceLineShowNote, invoiceLineShowWorkedTime: partners.invoiceLineShowWorkedTime,
       // #6227: fallback for the invoice presentation stamp when the quote
       // carries no presentation snapshot (legacy pre-snapshot quotes).
       documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
@@ -554,6 +557,8 @@ export async function acceptQuote(
     // through issueInvoice), so the appendix choice is frozen here too — the
     // same reason documentLocale is stamped on this line.
     issueFields.deviceAppendix = invoice!.deviceAppendix ?? partner?.invoiceDeviceAppendix ?? false;
+    // #8604: same issue moment, same freeze for the line itemization.
+    Object.assign(issueFields, stampInvoiceLineDetail(invoice!, partner));
     // #6227 presentation snapshot: this IS the issue moment, so freeze the
     // theme / page size here too — from the accepted quote's own send-time
     // presentationSnapshot (the proposal the customer signed), the same rule

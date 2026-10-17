@@ -48,4 +48,17 @@ describe('PatchComplianceCard', () => {
 
     expect(screen.queryByText(/unratedPending/)).not.toBeInTheDocument();
   });
+
+  it('shows container images not checked next to the percentage when the API reports them (W06)', () => {
+    render(<PatchComplianceCard patch={loaded({ ...basePatch, containerImages: { stale: 1, current: 2, unknown: 3 } })} />);
+    expect(screen.getByText('dashboard.patch.imagesNotChecked:3')).toBeInTheDocument();
+  });
+
+  it('shows no image text without container images, or when every image was checked', () => {
+    const { unmount } = render(<PatchComplianceCard patch={loaded(basePatch)} />);
+    expect(screen.queryByText(/imagesNotChecked/)).not.toBeInTheDocument();
+    unmount();
+    render(<PatchComplianceCard patch={loaded({ ...basePatch, containerImages: { stale: 1, current: 2, unknown: 0 } })} />);
+    expect(screen.queryByText(/imagesNotChecked/)).not.toBeInTheDocument();
+  });
 });

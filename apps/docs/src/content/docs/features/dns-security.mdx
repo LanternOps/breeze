@@ -385,6 +385,8 @@ Each entry includes the domain, its threat category, the block count, and the nu
 
 <Aside>
   All DNS security endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data. Creating and deleting integrations additionally require MFA verification.
+
+  DNS policies apply to the whole organization, so creating a policy or changing its domains is refused (`403`) for users limited to specific sites or devices. Ask an administrator without a site or device restriction to make the change.
 </Aside>
 
 ---
@@ -396,6 +398,11 @@ After creating an integration, an initial sync job is enqueued via BullMQ. If th
 
 **Policy sync stuck in `pending` status.**
 Policy syncs are dispatched through BullMQ. If BullMQ is down or backlogged, the sync will remain in `pending` state. Restart the DNS sync worker and check the `syncError` field on the policy for specific error details. If the provider API returns an authentication error, verify the integration's API credentials.
+
+Policy changes left `pending` by an earlier release are **not** pushed automatically after upgrading: only new edits queue a sync, and an edit pushes just its own additions and removals. To push domains that were pending before the upgrade, remove them from the policy and add them again (or re-create the policy).
+
+**Sync error: "Host resolves to a private/blocked address".**
+The integration's host (for example a Pi-hole address) resolves to a private or blocked network address that the Breeze server will not connect to. The integration's `lastSyncError` (or the policy's `syncError`) shows this message and the sync stops there. Use a host the Breeze server can reach on a public address.
 
 **Stats endpoint returning unexpected results.**
 For time windows longer than 7 days, statistics are sourced from the `dns_event_aggregations` table rather than raw events. Aggregations are computed periodically and may lag behind real-time data. The `source` field in the response (`raw` or `aggregated`) indicates which data source was used. For the most current data over short periods, use a time window of 7 days or less.

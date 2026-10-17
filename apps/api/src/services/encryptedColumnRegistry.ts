@@ -57,6 +57,7 @@ export const SETTINGS_SECRET_JSON_PATHS: readonly (readonly string[])[] = [
 
 export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'billing_link_tokens', column: 'token_ct', kind: 'text', aadBinding: 'row', description: 'Autopay bearer link token, encrypted and bound to its row id' },
+  { table: 'caller_verifications', column: 'sealed_link_token', kind: 'text', aadBinding: 'row', description: 'Caller verification SMS/email link token (#6354 W03), sealed for post-commit (re)delivery and bound to its row id' },
 
   { table: 'sso_providers', column: 'client_secret', kind: 'text', description: 'OIDC client secret' },
   { table: 'user_sso_identities', column: 'access_token', kind: 'text', description: 'SSO access token' },
@@ -115,6 +116,7 @@ export const encryptedColumnRegistry: EncryptedColumnSpec[] = [
   { table: 'edr_connections', column: 'credentials_encrypted', kind: 'text', aadBinding: 'row', description: 'EDR vendor console credential JSON (#8164 W01) — AAD bound to the row id' },
   { table: 'edr_connections', column: 'webhook_secret_encrypted', kind: 'text', aadBinding: 'row', description: 'EDR push/webhook shared secret Breeze generates (#8164 W03) — AAD bound to the row id' },
   { table: 'edr_tenants', column: 'installer_secret_encrypted', kind: 'text', aadBinding: 'row', description: 'per-vendor-tenant installer token / link (#8164 W06) — AAD bound to the row id' },
+  { table: 'trust_signing_keys', column: 'private_key_enc', kind: 'text', description: 'Trust attestation ES256 private JWK (W3b)' },
   // Sealed/opened by the column type itself (db/schema/backup.ts); listed here
   // so key rotation re-seals it.
   BACKUP_PROVIDER_CONFIG_COLUMN,

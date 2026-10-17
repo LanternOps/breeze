@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/eventlog"
 	"github.com/breeze-rmm/agent/pkg/api"
 )
@@ -245,6 +246,13 @@ func classifyEnrollError(err error, serverURL string) (enrollErrCategory, string
 		return catNetwork, friendly
 	}
 
+	// An ISP gateway filter that hijacks the connection by SNI answers the TLS
+	// handshake with plaintext HTTP. That is a network-layer failure too, but
+	// "check firewall, DNS" sends the admin the wrong way: name the filter.
+	if friendly, ok := filterSignatureHint(err, serverURL); ok {
+		return catNetwork, friendly
+	}
+
 	// Network-layer errors come through as *url.Error wrapping dial/DNS/TLS/timeout.
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
@@ -254,4 +262,18 @@ func classifyEnrollError(err error, serverURL string) (enrollErrCategory, string
 	}
 
 	return catUnknown, err.Error()
+}
+
+// filterSignatureHint reports whether err carries the plaintext-HTTP-on-TLS
+// fingerprint of a network security filter (ech.IsFilterSignature) and, if
+// so, the friendly message for it.
+func filterSignatureHint(err error, serverURL string) (string, bool) {
+	if !ech.IsFilterSignature(err) {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"a network security filter answered the TLS handshake to %s with plaintext HTTP instead of the server — "+
+			"this is usually an ISP or home/office gateway security feature (for example an ISP \"advanced security\" or \"security shield\" "+
+			"option) blocking the server's domain. Allow the domain in that feature or turn it off for this network, or install from a different network, then retry",
+		serverURL), true
 }

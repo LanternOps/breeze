@@ -283,8 +283,8 @@ describe('command delivery to a parked device (real Postgres)', () => {
       await getTestDb().update(devices).set({ agentTokenHash: hash, status: 'online' }).where(eq(devices.id, id));
     }
 
-    await expect(isAgentDeviceStillAuthorized(parked.agentId!, hash)).resolves.toBe(false);
-    await expect(isAgentDeviceStillAuthorized(control.agentId!, hash)).resolves.toBe(true);
+    await expect(isAgentDeviceStillAuthorized(parked.agentId!, hash)).resolves.toBe('denied');
+    await expect(isAgentDeviceStillAuthorized(control.agentId!, hash)).resolves.toBe('authorized');
   });
 
   /** Seeds an approved elevation request + a pending apply actuation for `deviceId`. */

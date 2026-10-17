@@ -39,7 +39,9 @@ import AccountingProviderCards from "./AccountingProviderCards";
 import StripePaymentsIntegration from "./StripePaymentsIntegration";
 import UnifiIntegration from "./UnifiIntegration";
 import BackupProvidersIntegration from "./BackupProvidersIntegration";
+import EdrProvidersIntegration from "./EdrProvidersIntegration";
 import AccessDenied from "../shared/AccessDenied";
+import ConnectionHealthPanel from "./ConnectionHealthPanel";
 import { usePermissions } from "../../lib/permissions";
 import { getJwtClaims } from "../../lib/authScope";
 import { useHelpStore, rebaseDocsUrl } from "../../stores/helpStore";
@@ -65,7 +67,7 @@ type TabId =
   | "accounting"
   | "unifi"
   | "backup";
-type SecuritySubTab = "sentinelone" | "huntress";
+type SecuritySubTab = "sentinelone" | "huntress" | "edr";
 type CloudTenantsSubTab = "google" | "m365";
 type DistributorSubTab = "pax8" | "tdsynnex" | "tdsynnex-ec" | "tdsynnex-sftp";
 type AccountingSubTab = AccountingProviderId | "stripe";
@@ -102,6 +104,7 @@ const tabs: { id: TabId; labelKey: string; icon: typeof Activity }[] = [
 const securitySubTabs: { id: SecuritySubTab; labelKey: string }[] = [
   { id: "sentinelone", labelKey: "integrationsPage.sentinelone" },
   { id: "huntress", labelKey: "integrationsPage.huntress" },
+  { id: "edr", labelKey: "integrationsPage.edrProviders" },
 ];
 
 const cloudTenantsSubTabs: { id: CloudTenantsSubTab; labelKey: string }[] = [
@@ -517,6 +520,8 @@ export default function IntegrationsPage({
         }
       />
 
+      <ConnectionHealthPanel />
+
       {/* Top-level tabs */}
       <div className="flex flex-wrap gap-3">
         {visibleTabs.map((tab) => {
@@ -661,6 +666,9 @@ export default function IntegrationsPage({
       )}
       {activeTab === "security" && securitySubTab === "huntress" && (
         <HuntressIntegration />
+      )}
+      {activeTab === "security" && securitySubTab === "edr" && (
+        <EdrProvidersIntegration />
       )}
       {activeTab === "monitoring" && <MonitoringIntegration />}
       {activeTab === "cloud-tenants" && cloudTenantsSubTab === "google" && (

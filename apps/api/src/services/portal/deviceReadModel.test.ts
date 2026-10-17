@@ -30,6 +30,12 @@ vi.mock('../../db', () => ({
   },
 }));
 
+const edrFlag = vi.hoisted(() => ({ on: false }));
+vi.mock('./edrVisibility', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./edrVisibility')>();
+  return { ...actual, isEdrVisibilityEnabled: vi.fn(async () => edrFlag.on) };
+});
+
 import {
   devicesCsvForOrg,
   enrichedDevicesForOrg,
@@ -39,6 +45,7 @@ const ORG_ID = '11111111-1111-4111-8111-111111111111';
 
 describe('deviceReadModel', () => {
   beforeEach(() => {
+    edrFlag.on = false;
     state.rows.length = 0;
     state.selections.length = 0;
     state.leftJoins.length = 0;
@@ -179,6 +186,41 @@ describe('deviceReadModel', () => {
     );
     expect(orderBy[0]).toContain('"devices"."last_seen_at" desc');
     expect(orderBy[1]).toContain('"devices"."id" desc');
+  });
+
+  // #8166: the devices list classifies protection exactly like the security page.
+  describe('EDR visibility flag', () => {
+    const edrOnlyRow = {
+      id: 'd-2', hostname: 'WS', displayName: null, osType: 'windows', osVersion: '11', status: 'online',
+      lastSeenAt: null, lastPatchAt: null, realTimeProtection: null, provider: null, avProducts: null,
+      securityUpdatedAt: null, hasS1Agent: false, hasHuntressAgent: false, hasEdrEndpoint: true,
+      encryption: null, lastBackupAt: null, warrantyEndsAt: null,
+    };
+
+    it('flag off: no EDR column selected and an EDR-only device is not protected', async () => {
+      state.rows.push([{ count: 1 }], [edrOnlyRow]);
+      const out = await enrichedDevicesForOrg(ORG_ID, { page: 1, limit: 50, timezone: 'UTC' });
+      expect(state.selections[1]).not.toHaveProperty('hasEdrEndpoint');
+      expect(out.data[0]!.protection).toBe('unknown');
+    });
+
+    it('flag on: a healthy+online linked endpoint makes the device protected (org-scoped predicate)', async () => {
+      edrFlag.on = true;
+      state.rows.push([{ count: 1 }], [edrOnlyRow]);
+      const out = await enrichedDevicesForOrg(ORG_ID, { page: 1, limit: 50, timezone: 'UTC' });
+      const query = new PgDialect().sqlToQuery(state.selections[1]!.hasEdrEndpoint as SQL);
+      expect(query.sql).toContain("e.health = 'healthy'");
+      expect(query.sql).toContain('e.online is true');
+      expect(query.params).toContain(ORG_ID);
+      expect(out.data[0]!.protection).toBe('protected');
+    });
+
+    it('flag on: an unhealthy endpoint (predicate false) never upgrades the device', async () => {
+      edrFlag.on = true;
+      state.rows.push([{ count: 1 }], [{ ...edrOnlyRow, hasEdrEndpoint: false }]);
+      const out = await enrichedDevicesForOrg(ORG_ID, { page: 1, limit: 50, timezone: 'UTC' });
+      expect(out.data[0]!.protection).toBe('unknown');
+    });
   });
 
   it('streams the UI projection and neutralizes spreadsheet formulas', async () => {

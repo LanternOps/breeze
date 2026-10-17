@@ -34,6 +34,9 @@ export const MONITOR_KINDS = [
   'hardware_health',
   // W02 (time sync): root-only, evaluates accepted time-sync snapshot findings.
   'time_sync',
+  // W06 (workload inventory, #8195): root-only, server-evaluated from the
+  // upstream_* columns the image-currency pass writes on device_workloads.
+  'container_image_currency',
 ] as const;
 export type MonitorKind = (typeof MONITOR_KINDS)[number];
 export const monitorKindSchema = z.enum(MONITOR_KINDS);
@@ -247,6 +250,13 @@ const leafConditionSchemas = {
     .object({
       findings: z.array(z.enum(TIME_SYNC_FINDING_CODES)).min(1),
       consecutiveSnapshots: z.number().int().min(1).max(10).default(2),
+    })
+    .strict(),
+  // One subject per image repository:tag on the device; breaching once the
+  // image has been `behind` for at least `minDaysBehind` days (behind_since).
+  container_image_currency: z
+    .object({
+      minDaysBehind: z.number().int().min(0).max(365).default(7),
     })
     .strict(),
 } satisfies Record<Exclude<MonitorKind, 'composite'>, z.ZodTypeAny>;

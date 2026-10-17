@@ -19,6 +19,7 @@ import { formatPercent } from '../i18n/format';
 
 export type CatalogItemType = 'hardware' | 'software' | 'service';
 export type CatalogBillingType = 'one_time' | 'recurring';
+export type CatalogBillingFrequency = 'monthly' | 'annual';
 
 /** A row from `GET /catalog` / `GET /catalog/:id`.`item`. */
 export interface CatalogItem {
@@ -29,6 +30,9 @@ export interface CatalogItem {
   sku: string | null;
   description: string | null;
   billingType: CatalogBillingType;
+  /** Set only for a recurring item; null for one-time. */
+  billingFrequency: CatalogBillingFrequency | null;
+  commitmentTermMonths: number | null;
   costBasis: string | null;
   /** ISO 4217 code `costBasis` is denominated in (NOT NULL server-side). */
   costCurrency: string;

@@ -35,32 +35,32 @@ export async function loadPolicySources(policyId: string, executor: DbExecutor =
     .from(configurationPolicies).where(eq(configurationPolicies.id, policyId)).limit(1);
   if (!policy) return null;
 
-  const links = await executor.select().from(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.configPolicyId, policyId));
+  const links = await executor.select().from(configPolicyFeatureLinks).where(eq(configPolicyFeatureLinks.configPolicyId, policyId)).orderBy(configPolicyFeatureLinks.id);
   const link = (t: string) => links.find((l) => l.featureType === t) ?? null;
   const alertRuleLink = link('alert_rule'); const monitoringLink = link('monitoring'); const monitorsLink = link('monitors');
 
   const inlineRules = alertRuleLink
-    ? await executor.select().from(configPolicyAlertRules).where(and(eq(configPolicyAlertRules.featureLinkId, alertRuleLink.id), isNull(configPolicyAlertRules.retiredAt))).orderBy(configPolicyAlertRules.sortOrder)
+    ? await executor.select().from(configPolicyAlertRules).where(and(eq(configPolicyAlertRules.featureLinkId, alertRuleLink.id), isNull(configPolicyAlertRules.retiredAt))).orderBy(configPolicyAlertRules.sortOrder, configPolicyAlertRules.id)
     : [];
   // Re-keying may leave the old settings row when the monitors link already
   // owns one. Both rows still contain legacy sources that must be swept.
   const settingsLinkIds = links.filter((l) => l.featureType === 'monitoring' || l.featureType === 'monitors').map((l) => l.id);
   const settings = settingsLinkIds.length
-    ? await executor.select().from(configPolicyMonitoringSettings).where(inArray(configPolicyMonitoringSettings.featureLinkId, settingsLinkIds))
+    ? await executor.select().from(configPolicyMonitoringSettings).where(inArray(configPolicyMonitoringSettings.featureLinkId, settingsLinkIds)).orderBy(configPolicyMonitoringSettings.id)
     : [];
   const watches = settings.length
-    ? await executor.select().from(configPolicyMonitoringWatches).where(and(inArray(configPolicyMonitoringWatches.settingsId, settings.map((s) => s.id)), isNull(configPolicyMonitoringWatches.retiredAt))).orderBy(configPolicyMonitoringWatches.sortOrder)
+    ? await executor.select().from(configPolicyMonitoringWatches).where(and(inArray(configPolicyMonitoringWatches.settingsId, settings.map((s) => s.id)), isNull(configPolicyMonitoringWatches.retiredAt))).orderBy(configPolicyMonitoringWatches.sortOrder, configPolicyMonitoringWatches.id)
     : [];
   const automationLink = link('automation');
   const policyAutomations = automationLink
-    ? (await executor.select().from(configPolicyAutomations).where(and(eq(configPolicyAutomations.featureLinkId, automationLink.id), isNull(configPolicyAutomations.retiredAt))))
+    ? (await executor.select().from(configPolicyAutomations).where(and(eq(configPolicyAutomations.featureLinkId, automationLink.id), isNull(configPolicyAutomations.retiredAt))).orderBy(configPolicyAutomations.id))
         .filter((a) => a.triggerType === 'event' && a.eventType === 'alert.triggered')
     : [];
 
   const ruleIds = new Set(inlineRules.map((r) => r.id));
   const ownerCondition = policy.orgId ? eq(automations.orgId, policy.orgId) : and(isNull(automations.orgId), eq(automations.partnerId, policy.partnerId!));
   const candidates = ruleIds.size > 0
-    ? await executor.select().from(automations).where(and(ownerCondition, isNull(automations.retiredAt), isNull(automations.managedByMonitorId)))
+    ? await executor.select().from(automations).where(and(ownerCondition, isNull(automations.retiredAt), isNull(automations.managedByMonitorId))).orderBy(automations.id)
     : [];
   const standaloneAutomations = candidates.filter((a) => {
     try {

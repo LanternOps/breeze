@@ -295,9 +295,29 @@ func TestInstallFileInterruptionLeavesDestinationIntact(t *testing.T) {
 // flight at the first miss and how long before it the last one returned, so
 // the next failure distinguishes a stall mid-rename from a removal.
 //
+// #8491 was that next failure (merge-queue run 38384135590): 25 dense misses
+// over 103ms, 4 publishes in flight at the first miss, none returning inside
+// the absence, and the last successful one returning at the same instant as
+// the first miss. In the success path the only operation that touches the
+// destination name is the rename syscall itself (setRenameInformation), so a
+// name that goes missing while renames are entered and not yet returned is the
+// kernel (NTFS, or a filter driver on the runner) exposing an in-progress
+// replace to a concurrent by-name lookup — not a gap the publisher opened, and
+// not one any user-mode publisher could close: a POSIX-semantics replace is
+// already the strongest primitive Windows offers. So the test also records
+// every rename SYSCALL (ntSetRenameInformation) and excuses an absence that a
+// rename syscall spans from before the first miss to after the last one
+// (renamesSpanning), under the same lookupLagBudget and absenceCeiling. It is
+// measured at the syscall, not at publishTemporary, on purpose: a gap opened
+// outside the syscall (a delete or rename-away before it, however long) is
+// never spanned by one, so …DoesNotExcuseASustainedGap stays red. What this
+// excuse cannot see is a future regression that stalls INSIDE the rename
+// syscall; a regression that gaps on every publish still fails the transient
+// budget, and a second long absence in one run fails lookupLagBudget.
+//
 // The budgets keep the assertion discriminating, and two controls prove it
 // (…DetectsAPublicationGap for the budgets, …DoesNotExcuseASustainedGap for the
-// excuse): a real
+// excuses): a real
 // publication gap (a regression to delete-then-rename, or copy-into-place)
 // opens a window on every one of the 200 publishes, and the tight reader loop
 // observes it far more than transientMissBudget times. rename(2) on unix IS
@@ -311,10 +331,63 @@ const (
 // publishFunc is publishTemporary's signature.
 type publishFunc = func(handle, parent windows.Handle, name string) error
 
-// publishLog records every publishTemporary call made during a test.
+// publishLog records every publishTemporary call, and every rename syscall
+// underneath it, made during a test.
 type publishLog struct {
 	mu      sync.Mutex
 	records []publishRecord
+	renames []renameCall
+}
+
+// ntSetInformationFunc is ntSetRenameInformation's signature.
+type ntSetInformationFunc = func(handle windows.Handle, iosb *windows.IO_STATUS_BLOCK, buf *byte, length uint32, class uint32) error
+
+// wrapRename records each rename syscall from the moment it is entered, so an
+// absence can be checked against renames that have not returned yet. The
+// stamps bracket the syscall from user mode, so a goroutine descheduled just
+// before entering or just after returning widens the interval slightly; that
+// errs toward excusing, and is bounded by lookupLagBudget and absenceCeiling.
+func (l *publishLog) wrapRename(call ntSetInformationFunc) ntSetInformationFunc {
+	return func(handle windows.Handle, iosb *windows.IO_STATUS_BLOCK, buf *byte, length uint32, class uint32) error {
+		l.mu.Lock()
+		i := len(l.renames)
+		l.renames = append(l.renames, renameCall{start: time.Now(), class: class})
+		l.mu.Unlock()
+		err := call(handle, iosb, buf, length, class)
+		end := time.Now()
+		l.mu.Lock()
+		l.renames[i].end, l.renames[i].done, l.renames[i].failed = end, true, err != nil
+		l.mu.Unlock()
+		return err
+	}
+}
+
+func (l *publishLog) renameSnapshot() []renameCall {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]renameCall(nil), l.renames...)
+}
+
+// renameClasses names the information classes of calls, e.g. "class 65 x3".
+func renameClasses(calls []renameCall) string {
+	counts := map[uint32]int{}
+	for _, c := range calls {
+		counts[c.class]++
+	}
+	var parts []string
+	for _, class := range []uint32{fileRenameInformationEx, windows.FileRenameInformation} {
+		if n := counts[class]; n > 0 {
+			parts = append(parts, fmt.Sprintf("class %d x%d", class, n))
+			delete(counts, class)
+		}
+	}
+	for class, n := range counts {
+		parts = append(parts, fmt.Sprintf("class %d x%d", class, n))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (l *publishLog) wrap(publish publishFunc) publishFunc {
@@ -336,13 +409,17 @@ func (l *publishLog) snapshot() []publishRecord {
 }
 
 // excuse is the absenceExcuse for the concurrency test: an absence is not a
-// publication gap when a successful publish returned inside it.
+// publication gap when a successful publish returned inside it (#6176), or when
+// a rename syscall was executing across all of it (#8491).
 func (l *publishLog) excuse(firstMiss, lastMiss time.Time) (string, bool) {
-	n := publishesCompletedWithin(l.snapshot(), firstMiss, lastMiss)
-	if n == 0 {
-		return "", false
+	if n := publishesCompletedWithin(l.snapshot(), firstMiss, lastMiss); n > 0 {
+		return fmt.Sprintf("lookup missed after %d publish(es) had returned inside the absence", n), true
 	}
-	return fmt.Sprintf("lookup missed after %d publish(es) had returned inside the absence", n), true
+	if spanning := renamesSpanning(l.renameSnapshot(), firstMiss, lastMiss); len(spanning) > 0 {
+		return fmt.Sprintf("lookup missed while %d rename syscall(s) entered before the first miss were still executing (%s)",
+			len(spanning), renameClasses(spanning)), true
+	}
+	return "", false
 }
 
 // describe says what the publishers were doing around an unexcused absence.
@@ -362,8 +439,15 @@ func (l *publishLog) describe(firstMiss, lastMiss time.Time) string {
 	if !lastSuccess.IsZero() {
 		since = fmt.Sprintf("the last successful publish returned %v before it", firstMiss.Sub(lastSuccess))
 	}
-	return fmt.Sprintf("%d publish(es) in flight when the first miss was issued, %d returned inside the absence, %s",
-		inFlight, publishesCompletedWithin(records, firstMiss, lastMiss), since)
+	inKernel := 0
+	renames := l.renameSnapshot()
+	for _, c := range renames {
+		if c.start.Before(firstMiss) && (!c.done || c.end.After(firstMiss)) {
+			inKernel++
+		}
+	}
+	return fmt.Sprintf("%d publish(es) in flight when the first miss was issued (%d inside a rename syscall), %d returned inside the absence, %s; rename syscalls this run: %s",
+		inFlight, inKernel, publishesCompletedWithin(records, firstMiss, lastMiss), since, renameClasses(renames))
 }
 
 // replacementRun is what one concurrent-replacement scenario observed.
@@ -394,6 +478,9 @@ func runConcurrentReplacement(t *testing.T, writers, perWriter int, mutate func(
 		publish = mutate(dest, orig)
 	}
 	publishTemporary = run.log.wrap(publish)
+	origRename := ntSetRenameInformation
+	t.Cleanup(func() { ntSetRenameInformation = origRename })
+	ntSetRenameInformation = run.log.wrapRename(origRename)
 
 	stop := make(chan struct{})
 	var readerWG sync.WaitGroup
@@ -772,6 +859,56 @@ func TestEnsurePrivateDirTightensAPermissiveProtectedDACL(t *testing.T) {
 	if strings.Contains(got.String(), "(A;OICI;FA;;;WD)") {
 		t.Fatalf("permissive Everyone ACE survived EnsurePrivateDir: %s", got.String())
 	}
+}
+
+// The in-flight excuse (#8491) is only as good as the rename-syscall record
+// under it: a call must be visible from the moment it is entered, its outcome
+// recorded when it returns, and the seam must really be on installFile's
+// publish path — otherwise the excuse silently never fires and the flake
+// returns looking exactly like before.
+func TestPublishLogRecordsRenameSyscalls(t *testing.T) {
+	var log publishLog
+	entered := make(chan struct{})
+	release := make(chan error)
+	fake := log.wrapRename(func(windows.Handle, *windows.IO_STATUS_BLOCK, *byte, uint32, uint32) error {
+		close(entered)
+		return <-release
+	})
+	returned := make(chan error)
+	go func() { returned <- fake(0, nil, nil, 0, fileRenameInformationEx) }()
+	<-entered
+	mid := log.renameSnapshot()
+	if len(mid) != 1 || mid[0].done || mid[0].start.IsZero() || mid[0].class != fileRenameInformationEx {
+		t.Fatalf("a rename still executing must be recorded as entered and not done, got %+v", mid)
+	}
+	failure := errors.New("injected")
+	release <- failure
+	if err := <-returned; !errors.Is(err, failure) {
+		t.Fatalf("wrapRename must return the syscall's error, got %v", err)
+	}
+	after := log.renameSnapshot()
+	if len(after) != 1 || !after[0].done || !after[0].failed || after[0].end.Before(after[0].start) {
+		t.Fatalf("a returned rename must be recorded as done and failed, got %+v", after)
+	}
+
+	// The seam is on the real publish path.
+	var real publishLog
+	orig := ntSetRenameInformation
+	t.Cleanup(func() { ntSetRenameInformation = orig })
+	ntSetRenameInformation = real.wrapRename(orig)
+	base := t.TempDir()
+	if _, err := InstallFile(base, "file.txt", writeSource(t, "payload"), 0, time.Time{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	calls := real.renameSnapshot()
+	if len(calls) == 0 {
+		t.Fatal("InstallFile published without passing through ntSetRenameInformation")
+	}
+	last := calls[len(calls)-1]
+	if !last.done || last.failed {
+		t.Fatalf("the publishing rename must be recorded as done and successful, got %+v", calls)
+	}
+	t.Logf("InstallFile published through %s", renameClasses(calls))
 }
 
 // The publish primitive on its own. installFile's other steps all worked on the
