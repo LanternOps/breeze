@@ -129,3 +129,47 @@ describe('TrustPageEditor (Trust Center W3d)', () => {
     expect(buttons.some((t) => /^publish/i.test(t))).toBe(false);
   });
 });
+
+describe('TrustPageEditor — review fixes', () => {
+  it('a 409 whose reload fails keeps the form and says to reload, not "review"', async () => {
+    api.save.mockResolvedValue({ statusCode: 409, code: 'REVISION_MISMATCH', error: 'changed' });
+    api.get.mockResolvedValue({ statusCode: 500, error: 'boom' });
+    renderEditor();
+    fireEvent.change(screen.getByTestId('trust-editor-email'), { target: { value: 'me@example.com' } });
+    fireEvent.click(screen.getByTestId('trust-editor-save'));
+    expect((await screen.findByTestId('trust-editor-error')).textContent).toMatch(/reload this page/i);
+    expect(screen.queryByText('Your provider changed this page; review and save again.')).toBeNull();
+    expect((screen.getByTestId('trust-editor-email') as HTMLInputElement).value).toBe('me@example.com');
+  });
+
+  it('a 409 that is not a revision mismatch is shown as an error, with no reload', async () => {
+    api.save.mockResolvedValue({ statusCode: 409, code: 'SOMETHING_ELSE', error: 'Conflict elsewhere' });
+    renderEditor();
+    fireEvent.change(screen.getByTestId('trust-editor-email'), { target: { value: 'me@example.com' } });
+    fireEvent.click(screen.getByTestId('trust-editor-save'));
+    expect((await screen.findByTestId('trust-editor-error')).textContent).toContain('Conflict elsewhere');
+    expect(api.get).not.toHaveBeenCalled();
+  });
+
+  it('with no organization name, withdrawal falls back to typing UNPUBLISH', async () => {
+    api.unpublish.mockResolvedValue({ statusCode: 200, data: { data: { changed: true, page: { ...PAGE, publishedAt: null } } } });
+    render(<TrustPageEditor initialPage={PAGE} orgName="" />);
+    fireEvent.click(screen.getByTestId('trust-editor-unpublish'));
+    expect(screen.getByText('Type UNPUBLISH to confirm')).toBeTruthy();
+    const confirm = screen.getByTestId('trust-editor-unpublish-confirm') as HTMLButtonElement;
+    fireEvent.change(screen.getByTestId('trust-editor-unpublish-name'), { target: { value: 'UNPUBLISH' } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.unpublish).toHaveBeenCalledTimes(1));
+  });
+
+  it('withdrawing a page the provider already unpublished says so instead of "Withdrawn"', async () => {
+    api.unpublish.mockResolvedValue({ statusCode: 200, data: { data: { changed: false, page: { ...PAGE, publishedAt: null, publicationRevision: 9 } } } });
+    renderEditor();
+    fireEvent.click(screen.getByTestId('trust-editor-unpublish'));
+    fireEvent.change(screen.getByTestId('trust-editor-unpublish-name'), { target: { value: 'Acme Dental' } });
+    fireEvent.click(screen.getByTestId('trust-editor-unpublish-confirm'));
+    expect((await screen.findByTestId('trust-editor-already-withdrawn')).textContent).toMatch(/already/i);
+    expect(screen.queryByTestId('trust-editor-withdrawn')).toBeNull();
+  });
+});

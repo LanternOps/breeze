@@ -12,6 +12,7 @@ const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
 const m = vi.hoisted(() => ({
   decide: vi.fn(),
   apply: vi.fn(),
+  withdraw: vi.fn(),
   preview: vi.fn(),
   schedule: vi.fn(),
   resolveSettings: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('../../services/portal/trustPageEditor', () => ({
 vi.mock('../../services/trustPage/draftPatch', async (orig) => ({
   ...(await orig<typeof import('../../services/trustPage/draftPatch')>()),
   applyTrustPageDraftPatch: m.apply,
+  withdrawTrustPageFromPortal: m.withdraw,
 }));
 vi.mock('../../services/trustPage/previewToken', () => ({
   createTrustPreviewToken: m.preview,
@@ -122,6 +124,7 @@ beforeEach(() => {
   });
   m.preview.mockResolvedValue('preview-token');
   m.apply.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...PAGE, ...patch, publicationRevision: 5 }));
+  m.withdraw.mockResolvedValue({ changed: true, row: { ...PAGE, publishedAt: null, publicationRevision: 5 }, partnerId: PARTNER_ID });
 });
 
 describe('portal trust page: auth and gate', () => {
@@ -264,36 +267,110 @@ describe('POST /portal/trust-page/unpublish', () => {
       const res = await req('POST', '/unpublish', bearer(), body);
       expect(res.status).toBe(400);
     }
-    expect(m.txSets).toHaveLength(0);
+    expect(m.withdraw).not.toHaveBeenCalled();
   });
 
-  it('clears published_at, bumps the revision, removes the serving member after commit, audits portal.trust_page.unpublish', async () => {
+  it('withdraws this org\'s page, refreshes the serving set after commit, audits portal.trust_page.unpublish', async () => {
     const res = await req('POST', '/unpublish', bearer(), { confirm: true });
     expect(res.status).toBe(200);
-    expect(m.txSets).toHaveLength(1);
-    expect(m.txSets[0]).toMatchObject({ publishedAt: null });
-    expect(m.txSets[0]!.publicationRevision).toBeDefined();
-    expect(m.txSets[0]).not.toHaveProperty('updatedByUserId');
+    expect(m.withdraw).toHaveBeenCalledWith(PAGE_ID);
     expect(m.schedule).toHaveBeenCalledWith(PARTNER_ID, 'trust_page.portal_unpublish');
     expect(m.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'portal.trust_page.unpublish', actorId: 'pu-1', resourceId: PAGE_ID, details: { publicationRevision: 5 },
     }));
-    expect((await res.json()).data.page).toMatchObject({ publishedAt: null, publicationRevision: 5 });
+    const body = await res.json();
+    expect(body.data).toMatchObject({ changed: true, page: { publishedAt: null, publicationRevision: 5 } });
+    for (const leak of ['publishedConfig', 'publicationAuthorized', 'msp-user', PAGE_ID, PARTNER_ID]) expect(JSON.stringify(body)).not.toContain(leak);
   });
 
-  it('an unpublished page is a no-op 200 (no write, no audit)', async () => {
-    m.txLockRows = [{ rev: 4, isPartnerHome: false, partnerId: PARTNER_ID, publishedAt: null }];
+  it('an unpublished page is a no-op 200 that says so (changed: false; no refresh, no audit)', async () => {
+    m.withdraw.mockResolvedValue({ changed: false, row: { ...PAGE, publishedAt: null, publicationRevision: 9 }, partnerId: PARTNER_ID });
     const res = await req('POST', '/unpublish', bearer(), { confirm: true });
     expect(res.status).toBe(200);
-    expect(m.txSets).toHaveLength(0);
+    expect((await res.json()).data).toMatchObject({ changed: false, page: { publicationRevision: 9 } });
     expect(m.schedule).not.toHaveBeenCalled();
     expect(m.audit).not.toHaveBeenCalled();
   });
 
-  it('partner-home page → 403 and nothing is written', async () => {
+  it('partner-home page → 403 and nothing is withdrawn', async () => {
     m.pageRows = [{ ...PAGE, isPartnerHome: true }];
     const res = await req('POST', '/unpublish', bearer(), { confirm: true });
     expect(res.status).toBe(403);
-    expect(m.txSets).toHaveLength(0);
+    expect((await res.json()).code).toBe('PORTAL_TRUST_EDITOR_REQUIRED');
+    expect(m.withdraw).not.toHaveBeenCalled();
+  });
+
+  it('no trust page → 404 NOT_FOUND', async () => {
+    m.pageRows = [];
+    const res = await req('POST', '/unpublish', bearer(), { confirm: true });
+    expect(res.status).toBe(404);
+    expect(m.withdraw).not.toHaveBeenCalled();
+  });
+
+  it('POST without the CSRF header (cookie auth) → 403', async () => {
+    const res = await req('POST', '/unpublish', cookie(), { confirm: true });
+    expect(res.status).toBe(403);
+    expect(m.withdraw).not.toHaveBeenCalled();
+  });
+});
+
+describe('partner-home and missing-page refusals on the other mutations', () => {
+  it('PUT on the partner-home page → 403, apply never runs', async () => {
+    m.pageRows = [{ ...PAGE, isPartnerHome: true }];
+    const res = await req('PUT', '', bearer(), { expectedRevision: 4, websiteUrl: null });
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe('PORTAL_TRUST_EDITOR_REQUIRED');
+    expect(m.apply).not.toHaveBeenCalled();
+  });
+
+  it('preview-token on the partner-home page → 403, no token minted', async () => {
+    m.pageRows = [{ ...PAGE, isPartnerHome: true }];
+    const res = await req('POST', '/preview-token', bearer(), {});
+    expect(res.status).toBe(403);
+    expect(m.preview).not.toHaveBeenCalled();
+  });
+
+  it('preview-token with no trust page → 404', async () => {
+    m.pageRows = [];
+    const res = await req('POST', '/preview-token', bearer(), {});
+    expect(res.status).toBe(404);
+    expect(m.preview).not.toHaveBeenCalled();
+  });
+});
+
+describe('CSRF for cookie sessions', () => {
+  const withCookie = (token: string, header?: string) => ({
+    ...cookie(),
+    cookie: `breeze_portal_csrf_token=${token}`,
+    ...(header !== undefined ? { 'x-breeze-csrf': header } : {}),
+  });
+
+  it('a matching double-submit token passes (positive control)', async () => {
+    const res = await req('PUT', '', withCookie('csrf-ok', 'csrf-ok'), { expectedRevision: 4, websiteUrl: null });
+    expect(res.status).toBe(200);
+    expect(m.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it('a mismatched token → 403', async () => {
+    const res = await req('PUT', '', withCookie('csrf-ok', 'csrf-other'), { expectedRevision: 4, websiteUrl: null });
+    expect(res.status).toBe(403);
+    expect(m.apply).not.toHaveBeenCalled();
+  });
+
+  it('a non-JSON body → 415 before parsing', async () => {
+    const res = await app().request('/portal/trust-page/unpublish', {
+      method: 'POST', headers: { ...bearer(), 'content-type': 'text/plain' }, body: 'confirm=true',
+    });
+    expect(res.status).toBe(415);
+    expect(m.withdraw).not.toHaveBeenCalled();
+  });
+});
+
+describe('a failure building the response after a write', () => {
+  it('PUT: no audit entry is written for a request that then fails', async () => {
+    m.resolveSettings.mockRejectedValue(new Error('template read failed'));
+    const res = await req('PUT', '', bearer(), { expectedRevision: 4, websiteUrl: null });
+    expect(res.status).toBe(500);
+    expect(m.audit).not.toHaveBeenCalled();
   });
 });

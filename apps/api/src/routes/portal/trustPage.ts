@@ -1,11 +1,11 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { z } from 'zod';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { zValidator } from '../../lib/validation';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations, partners, trustPages, type TrustPageRow } from '../../db/schema';
 import { resolveTrustPageSettings, TrustPageError } from '../../services/trustPage/publication';
-import { applyTrustPageDraftPatch, trustPagePortalDraftPatchSchema } from '../../services/trustPage/draftPatch';
+import { applyTrustPageDraftPatch, trustPagePortalDraftPatchSchema, withdrawTrustPageFromPortal } from '../../services/trustPage/draftPatch';
 import { createTrustPreviewToken, TRUST_PREVIEW_TTL_SECONDS } from '../../services/trustPage/previewToken';
 import { scheduleServingRefreshForPartner } from '../../services/trustPage/servingSet';
 import { captureException } from '../../services/sentry';
@@ -106,6 +106,9 @@ portalTrustPageRoutes.put('/', mutationGuard, zValidator('json', trustPagePortal
     if (!page) return c.json(NOT_FOUND, 404);
     if (page.isPartnerHome) return c.json(PARTNER_HOME_REFUSED, 403);
     const updated = await applyTrustPageDraftPatch(page.id, body, { kind: 'portal_user', id: auth.user.id });
+    // Build the response before auditing: if it throws, the request transaction rolls the write back and no
+    // audit entry may describe a change that never committed.
+    const view = await toPortalView(updated, auth.user.orgId);
     writePortalAudit(c, {
       orgId: auth.user.orgId,
       actorType: 'user',
@@ -116,7 +119,7 @@ portalTrustPageRoutes.put('/', mutationGuard, zValidator('json', trustPagePortal
       resourceId: page.id,
       details: { fields: Object.keys(body).filter((k) => k !== 'expectedRevision'), publicationRevision: updated.publicationRevision },
     });
-    return c.json({ data: { page: await toPortalView(updated, auth.user.orgId) } });
+    return c.json({ data: { page: view } });
   } catch (err) { return handleError(c, err); }
 });
 
@@ -131,29 +134,16 @@ portalTrustPageRoutes.post('/preview-token', mutationGuard, async (c) => {
   } catch (err) { return handleError(c, err); }
 });
 
-// Withdrawal of consent. Same effect as the staff unpublish (W1 unpublishTrustPage), done locally because that
-// helper stamps updated_by_user_id with a users.id and a portal user is not one (follow-up: let it take a
-// portal actor). The serving-set removal runs only after the request transaction commits (W1 Ruling 28).
+// Withdrawal of consent (withdrawTrustPageFromPortal: lock, refuse partner home, clear published_at, bump the
+// revision). The serving-set removal runs only after the request transaction commits (W1 Ruling 28).
 portalTrustPageRoutes.post('/unpublish', mutationGuard, zValidator('json', unpublishSchema), async (c) => {
   const auth = c.get('portalAuth');
   try {
     const page = await loadOrgPage(auth.user.orgId);
     if (!page) return c.json(NOT_FOUND, 404);
     if (page.isPartnerHome) return c.json(PARTNER_HOME_REFUSED, 403);
-    const result = await db.transaction(async (tx) => {
-      const [locked] = await tx.select({
-        rev: trustPages.publicationRevision, isPartnerHome: trustPages.isPartnerHome,
-        partnerId: trustPages.partnerId, publishedAt: trustPages.publishedAt,
-      }).from(trustPages).where(eq(trustPages.id, page.id)).for('update');
-      if (!locked) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
-      if (locked.isPartnerHome) throw new TrustPageError(PARTNER_HOME_REFUSED.error, 403, PARTNER_HOME_REFUSED.code);
-      if (!locked.publishedAt) return { changed: false as const, row: page };
-      const [row] = await tx.update(trustPages).set({
-        publishedAt: null, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date(),
-      }).where(eq(trustPages.id, page.id)).returning();
-      if (!row) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
-      return { changed: true as const, row, partnerId: locked.partnerId };
-    });
+    const result = await withdrawTrustPageFromPortal(page.id);
+    const view = await toPortalView(result.row, auth.user.orgId);
     if (result.changed) {
       scheduleServingRefreshForPartner(result.partnerId, 'trust_page.portal_unpublish');
       writePortalAudit(c, {
@@ -167,6 +157,7 @@ portalTrustPageRoutes.post('/unpublish', mutationGuard, zValidator('json', unpub
         details: { publicationRevision: result.row.publicationRevision },
       });
     }
-    return c.json({ data: { page: await toPortalView(result.row, auth.user.orgId) } });
+    // changed: false = it was not published (e.g. the provider already unpublished it).
+    return c.json({ data: { changed: result.changed, page: view } });
   } catch (err) { return handleError(c, err); }
 });

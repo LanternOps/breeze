@@ -4,7 +4,7 @@ import { SQL } from 'drizzle-orm';
 const dbm = vi.hoisted(() => ({ transaction: vi.fn() }));
 vi.mock('../../db', () => ({ db: dbm, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() }));
 
-import { applyTrustPageDraftPatch, trustPagePortalDraftPatchSchema } from './draftPatch';
+import { applyTrustPageDraftPatch, trustPagePortalDraftPatchSchema, withdrawTrustPageFromPortal } from './draftPatch';
 
 /** Thenable query-builder stand-in: every builder method returns itself; awaiting it yields `result`. */
 function chain(result: unknown): unknown {
@@ -114,5 +114,47 @@ describe('applyTrustPageDraftPatch', () => {
     expect(err).toBeInstanceOf(Error);
     expect(String(err)).toContain('introHtml');
     expect(dbm.transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('withdrawTrustPageFromPortal', () => {
+  const LOCKED = { id: 'pg', orgId: 'org', partnerId: 'partner-1', isPartnerHome: false, publishedAt: new Date('2026-10-01T00:00:00Z'), publicationRevision: 7 };
+
+  function txWithdraw(locked: unknown[], sets: Record<string, unknown>[], returning: unknown[] = [{ ...LOCKED, publishedAt: null, publicationRevision: 8 }]) {
+    dbm.transaction.mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      select: () => chain(locked),
+      update: () => ({ set: (v: Record<string, unknown>) => { sets.push(v); return chain(returning); } }),
+    }));
+  }
+
+  it('clears published_at and bumps the revision without touching updated_by_user_id', async () => {
+    const sets: Record<string, unknown>[] = [];
+    txWithdraw([LOCKED], sets);
+    const out = await withdrawTrustPageFromPortal('pg');
+    expect(out).toMatchObject({ changed: true, partnerId: 'partner-1', row: { publishedAt: null, publicationRevision: 8 } });
+    expect(sets).toHaveLength(1);
+    expect(Object.keys(sets[0]!).sort()).toEqual(['publicationRevision', 'publishedAt', 'updatedAt']);
+    expect(sets[0]!.publishedAt).toBeNull();
+    expect(sets[0]!.publicationRevision).toBeInstanceOf(SQL);
+  });
+
+  it('an already unpublished page is a no-op that returns the LOCKED row (current revision)', async () => {
+    const sets: Record<string, unknown>[] = [];
+    txWithdraw([{ ...LOCKED, publishedAt: null, publicationRevision: 9 }], sets);
+    const out = await withdrawTrustPageFromPortal('pg');
+    expect(out).toMatchObject({ changed: false, row: { publicationRevision: 9 } });
+    expect(sets).toHaveLength(0);
+  });
+
+  it('a page that became the partner home under the lock is refused (403) and nothing is written', async () => {
+    const sets: Record<string, unknown>[] = [];
+    txWithdraw([{ ...LOCKED, isPartnerHome: true }], sets);
+    await expect(withdrawTrustPageFromPortal('pg')).rejects.toMatchObject({ status: 403, code: 'PORTAL_TRUST_EDITOR_REQUIRED' });
+    expect(sets).toHaveLength(0);
+  });
+
+  it('a page that vanished under the lock is a 404', async () => {
+    txWithdraw([], []);
+    await expect(withdrawTrustPageFromPortal('pg')).rejects.toMatchObject({ status: 404 });
   });
 });

@@ -60,10 +60,16 @@ export function TrustPageEditor({ initialPage, orgName }: { initialPage: PortalT
     setMessage(null);
     try {
       const res = await trustEditorApi.save({ expectedRevision: loaded.publicationRevision, ...changes });
-      if (res.statusCode === 409) {
+      if (res.statusCode === 409 && res.code === 'REVISION_MISMATCH') {
         // Someone (usually the provider) saved or published since this page loaded: show their version.
         const fresh = await trustEditorApi.get();
-        if (fresh.data?.data.page) adopt(fresh.data.data.page);
+        const freshPage = fresh.data?.data.page;
+        if (!freshPage) {
+          // Keep the customer's edits; without the newer revision a retry would only 409 again.
+          setMessage({ tone: 'destructive', text: 'Your provider changed this page, and we could not load their version. Reload this page, then make your change again.', testId: 'trust-editor-error' });
+          return;
+        }
+        adopt(freshPage);
         setMessage({ tone: 'warning', text: 'Your provider changed this page; review and save again.', testId: 'trust-editor-conflict' });
         return;
       }
@@ -97,7 +103,10 @@ export function TrustPageEditor({ initialPage, orgName }: { initialPage: PortalT
     }
   };
 
-  const nameMatches = confirmName.trim() === orgName.trim() && orgName.trim() !== '';
+  // The org name is the confirmation phrase; if the profile could not supply one, a fixed word stands in so
+  // withdrawal is never impossible.
+  const confirmPhrase = orgName.trim() || 'UNPUBLISH';
+  const nameMatches = confirmName.trim() === confirmPhrase;
   const unpublish = async () => {
     if (busy || !nameMatches) return;
     setBusy(true);
@@ -108,7 +117,9 @@ export function TrustPageEditor({ initialPage, orgName }: { initialPage: PortalT
         adopt(page);
         setConfirmOpen(false);
         setConfirmName('');
-        setMessage({ tone: 'success', text: 'Withdrawn. Your trust page is not published any more; your provider can publish it again.', testId: 'trust-editor-withdrawn' });
+        setMessage(res.data?.data.changed === false
+          ? { tone: 'neutral', text: 'This page was already not public, so there was nothing to withdraw.', testId: 'trust-editor-already-withdrawn' }
+          : { tone: 'success', text: 'Withdrawn. Your trust page is not published any more; your provider can publish it again.', testId: 'trust-editor-withdrawn' });
         return;
       }
       setMessage({ tone: 'destructive', text: res.error ?? 'We could not withdraw the page. Try again in a moment.', testId: 'trust-editor-error' });
@@ -242,7 +253,7 @@ export function TrustPageEditor({ initialPage, orgName }: { initialPage: PortalT
           ) : (
             <div className="space-y-3">
               <label htmlFor="trust-editor-unpublish-name" className="block text-sm font-medium text-foreground">
-                Type {orgName} to confirm
+                Type {confirmPhrase} to confirm
               </label>
               <input
                 id="trust-editor-unpublish-name"

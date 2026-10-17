@@ -17,7 +17,7 @@ import { getTestDb } from './setup';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { trustPages } from '../../db/schema';
 import { ensureTrustPage, publishTrustPage } from '../../services/trustPage/publication';
-import { applyTrustPageDraftPatch } from '../../services/trustPage/draftPatch';
+import { applyTrustPageDraftPatch, withdrawTrustPageFromPortal } from '../../services/trustPage/draftPatch';
 import { decidePortalTrustPageEditor } from '../../services/portal/trustPageEditor';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -59,7 +59,7 @@ async function seed(): Promise<Seeded> {
 }
 
 /** A portal login linked to a contact; optionally the org's flag and an admin role (scope chosen by the caller). */
-async function seedPortalUser(orgId: string, opts: { flag?: boolean; role?: 'org' | 'site' | null; status?: string } = {}) {
+async function seedPortalUser(orgId: string, opts: { flag?: boolean; role?: 'org' | 'site' | 'group' | 'billing' | null; status?: string } = {}) {
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const [contact] = (await admin().execute(sql`
     INSERT INTO contacts (org_id, name, email) VALUES (${orgId}, 'Customer Admin', ${`admin-${suffix}@example.com`}) RETURNING id
@@ -76,6 +76,14 @@ async function seedPortalUser(orgId: string, opts: { flag?: boolean; role?: 'org
   }
   if (opts.role === 'org') {
     await admin().execute(sql`INSERT INTO contact_roles (contact_id, org_id, role) VALUES (${contact!.id}, ${orgId}, 'admin')`);
+  } else if (opts.role === 'billing') {
+    // An ORG-scoped responsibility that is not admin.
+    await admin().execute(sql`INSERT INTO contact_roles (contact_id, org_id, role) VALUES (${contact!.id}, ${orgId}, 'billing')`);
+  } else if (opts.role === 'group') {
+    const [group] = (await admin().execute(sql`
+      INSERT INTO device_groups (org_id, name) VALUES (${orgId}, ${`Group ${suffix}`}) RETURNING id
+    `)) as unknown as Array<{ id: string }>;
+    await admin().execute(sql`INSERT INTO contact_roles (contact_id, org_id, role, device_group_id) VALUES (${contact!.id}, ${orgId}, 'admin', ${group!.id})`);
   } else if (opts.role === 'site') {
     const [site] = (await admin().execute(sql`
       INSERT INTO sites (org_id, name) VALUES (${orgId}, ${`Site ${suffix}`}) RETURNING id
@@ -152,6 +160,14 @@ describe('portal trust-page editing (Trust Center W3d)', () => {
     expect(await asPortal(s.orgA.id, () => decidePortalTrustPageEditor({ id: siteAdmin.id, orgId: s.orgA.id })))
       .toEqual({ allowed: false, code: 'PORTAL_TRUST_EDITOR_REQUIRED' });
 
+    const billing = await seedPortalUser(s.orgA.id, { role: 'billing' });
+    expect(await asPortal(s.orgA.id, () => decidePortalTrustPageEditor({ id: billing.id, orgId: s.orgA.id })))
+      .toEqual({ allowed: false, code: 'PORTAL_TRUST_EDITOR_REQUIRED' });
+
+    const groupAdmin = await seedPortalUser(s.orgA.id, { role: 'group' });
+    expect(await asPortal(s.orgA.id, () => decidePortalTrustPageEditor({ id: groupAdmin.id, orgId: s.orgA.id })))
+      .toEqual({ allowed: false, code: 'PORTAL_TRUST_EDITOR_REQUIRED' });
+
     const disabled = await seedPortalUser(s.orgA.id, { role: 'org', status: 'disabled' });
     expect(await asPortal(s.orgA.id, () => decidePortalTrustPageEditor({ id: disabled.id, orgId: s.orgA.id })))
       .toEqual({ allowed: false, code: 'PORTAL_TRUST_EDITOR_REQUIRED' });
@@ -161,8 +177,39 @@ describe('portal trust-page editing (Trust Center W3d)', () => {
     expect(await asPortal(s.orgB.id, () => decidePortalTrustPageEditor({ id: bAdmin.id, orgId: s.orgB.id })))
       .toEqual({ allowed: false, code: 'PORTAL_TRUST_EDITING_DISABLED' });
 
+    // The MSP turns the flag off: the same org admin is refused on the next check.
+    await seedPortalUser(s.orgA.id, { flag: false });
+    expect(await asPortal(s.orgA.id, () => decidePortalTrustPageEditor({ id: editor.id, orgId: s.orgA.id })))
+      .toEqual({ allowed: false, code: 'PORTAL_TRUST_EDITING_DISABLED' });
+
     // Org A's editor asking under org B's context sees nothing of org A.
     expect(await asPortal(s.orgB.id, () => decidePortalTrustPageEditor({ id: editor.id, orgId: s.orgA.id })))
       .toMatchObject({ allowed: false });
+  });
+
+  it('portal unpublish clears published_at and bumps the revision; a publish with the old revision 409s', async () => {
+    await sys(() => ensureTrustPage(s.orgA.id, s.userId));
+    const first = await publishA(s, 0);
+    expect(first.page.publicationRevision).toBe(1);
+
+    const out = await asPortal(s.orgA.id, () => withdrawTrustPageFromPortal(first.page.id));
+    expect(out.changed).toBe(true);
+    expect(out.row.publishedAt).toBeNull();
+    expect(out.row.publicationRevision).toBe(2);
+    expect(out.row.updatedByUserId).toBe(s.userId);
+
+    const [after] = await sys(() => db.select().from(trustPages).where(eq(trustPages.id, first.page.id)));
+    expect(after!.publishedAt).toBeNull();
+    await expect(publishA(s, 1)).rejects.toMatchObject({ status: 409, code: 'REVISION_MISMATCH' });
+
+    // A second withdrawal is a no-op returning the current revision.
+    const again = await asPortal(s.orgA.id, () => withdrawTrustPageFromPortal(first.page.id));
+    expect(again).toMatchObject({ changed: false, row: { publicationRevision: 2 } });
+
+    // Org B cannot withdraw org A's page.
+    const republished = await publishA(s, 2);
+    await expect(asPortal(s.orgB.id, () => withdrawTrustPageFromPortal(republished.page.id))).rejects.toMatchObject({ status: 404 });
+    const [still] = await sys(() => db.select().from(trustPages).where(eq(trustPages.id, first.page.id)));
+    expect(still!.publishedAt).not.toBeNull();
   });
 });

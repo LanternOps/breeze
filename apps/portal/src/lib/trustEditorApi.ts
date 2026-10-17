@@ -36,7 +36,8 @@ export const trustEditorApi = {
   save: (patch: PortalTrustDraftPatch) => apiPut<PageEnvelope>(ENDPOINT, patch),
   previewToken: () =>
     apiPost<{ data: { token: string; expiresInSeconds: number; previewPath: string } }>(`${ENDPOINT}/preview-token`, {}),
-  unpublish: () => apiPost<PageEnvelope>(`${ENDPOINT}/unpublish`, { confirm: true }),
+  /** `changed: false` = the page was not published (e.g. the provider already unpublished it). */
+  unpublish: () => apiPost<{ data: { changed: boolean; page: PortalTrustPageDraft } }>(`${ENDPOINT}/unpublish`, { confirm: true }),
 };
 
 const blankToNull = (v: string | null): string | null => {

@@ -63,3 +63,26 @@ export async function applyTrustPageDraftPatch(
     return row;
   });
 }
+
+/**
+ * Customer withdrawal of consent from the portal: unpublish. Same effect as the staff
+ * unpublish (W1 unpublishTrustPage), done here because that helper stamps updated_by_user_id
+ * with a users.id and a portal user is not one (follow-up: let it take a portal actor).
+ * Locks the row, refuses the partner home, clears published_at and bumps the revision so an
+ * MSP publish holding the older revision 409s. An already-unpublished page is a no-op that
+ * returns the locked (current) row. The caller refreshes the serving set after COMMIT.
+ */
+export async function withdrawTrustPageFromPortal(pageId: string): Promise<{ changed: boolean; row: TrustPageRow; partnerId: string }> {
+  return db.transaction(async (tx) => {
+    const [locked] = await tx.select().from(trustPages).where(eq(trustPages.id, pageId)).for('update');
+    if (!locked) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
+    if (locked.isPartnerHome) throw new TrustPageError('Only your provider can edit this page.', 403, 'PORTAL_TRUST_EDITOR_REQUIRED');
+    if (!locked.publishedAt) return { changed: false, row: locked, partnerId: locked.partnerId };
+    const [row] = await tx.update(trustPages)
+      .set({ publishedAt: null, publicationRevision: sql`${trustPages.publicationRevision} + 1`, updatedAt: new Date() })
+      .where(eq(trustPages.id, pageId))
+      .returning();
+    if (!row) throw new TrustPageError('Not found', 404, 'NOT_FOUND');
+    return { changed: true, row, partnerId: row.partnerId };
+  });
+}
