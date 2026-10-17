@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractApiError, isApiFailure } from './apiError';
+import { humanizeFieldPath, extractApiError, isApiFailure } from './apiError';
 
 describe('extractApiError', () => {
   const FALLBACK = 'Operation failed';
@@ -79,8 +79,9 @@ describe('extractApiError', () => {
         fieldErrors: { 'contacts.0.email': ['Invalid email'] },
       },
     };
+    // #8369: the dotted JSON path is rendered as a readable field label.
     expect(extractApiError(body, FALLBACK)).toBe(
-      'Unrecognized key: "maxUses"; contacts.0.email: Invalid email'
+      'Unrecognized key: "maxUses"; Email: Invalid email'
     );
   });
 
@@ -142,7 +143,7 @@ describe('extractApiError — zod flatten() details shapes', () => {
       },
     };
     expect(extractApiError(body, 'fb')).toBe(
-      'Invalid patch settings: apps: Duplicate application rule (source + packageId must be unique)'
+      'Invalid patch settings: Apps: Duplicate application rule (source + packageId must be unique)'
     );
   });
 
@@ -159,7 +160,7 @@ describe('extractApiError — zod flatten() details shapes', () => {
       },
     };
     expect(extractApiError(body, 'fb')).toBe(
-      'top-level problem; apps: bad rule; autoApproveSeverities: pick one; invalid value'
+      'top-level problem; Apps: bad rule; Auto approve severities: pick one; invalid value'
     );
   });
 
@@ -309,5 +310,114 @@ describe('extractApiError — new shapes', () => {
         'FALLBACK'
       )
     ).toBe('name is required: Webhook URL must use HTTPS');
+  });
+});
+
+// #8369: a field-level 400 used to reach the user as
+// "settings.contact.email: Invalid email address" — the dotted JSON path is
+// developer text. These pin the readable rendering.
+describe('humanizeFieldPath (#8369)', () => {
+  it.each([
+    ['settings.contact.email', 'Email'],
+    ['settings.security.minLength', 'Min length'],
+    ['settings.aiBudgets.monthlyBudgetCents', 'Monthly budget'],
+    ['settings.aiBudgets.dailyBudgetCents', 'Daily budget'],
+    ['settings.notifications.slackWebhookUrl', 'Slack webhook URL'],
+    ['loginBranding.logoUrl', 'Logo URL'],
+    ['contacts.0.email', 'Email'],
+    ['settings.notifications.webhooks.2', 'Webhooks'],
+    ['name', 'Name'],
+    ['rpo_minutes', 'RPO minutes'],
+    ['ipAllowlist', 'IP allowlist'],
+    ['smtpHost', 'SMTP host'],
+    ['siteId', 'Site ID'],
+    ['cents', 'Cents'],
+  ])('%s -> %s', (path, label) => {
+    expect(humanizeFieldPath(path)).toBe(label);
+  });
+
+  it('returns a purely numeric path unchanged rather than an empty label', () => {
+    expect(humanizeFieldPath('0')).toBe('0');
+  });
+});
+
+describe('extractApiError — zValidator field errors render with readable labels (#8369)', () => {
+  const FALLBACK = 'fallback';
+  // Mirrors apps/api/src/lib/validation.ts formatZodError: the `error` string
+  // is the raw-path join of the same flatten payload sent in `details`.
+  function wrapperBody(formErrors: string[], fieldErrors: Record<string, string[]>) {
+    const parts = [
+      ...formErrors,
+      ...Object.entries(fieldErrors).map(([f, m]) => `${f}: ${m.join('; ')}`),
+    ];
+    return { error: parts.join('; '), details: { formErrors, fieldErrors } };
+  }
+
+  it('partner settings contact email', () => {
+    const body = wrapperBody([], { 'settings.contact.email': ['Invalid email address'] });
+    expect(extractApiError(body, FALLBACK)).toBe('Email: Invalid email address');
+  });
+
+  it('partner settings AI budget names the dollar field, not the cents key', () => {
+    const body = wrapperBody([], {
+      'settings.aiBudgets.monthlyBudgetCents': ['Too small: expected number to be >=0'],
+    });
+    const msg = extractApiError(body, FALLBACK);
+    expect(msg).toBe('Monthly budget: Too small: expected number to be >=0');
+    expect(msg).not.toContain('Cents');
+    expect(msg).not.toContain('settings.');
+  });
+
+  it('does not repeat a label the message already starts with', () => {
+    const body = wrapperBody([], {
+      'settings.notifications.slackWebhookUrl': [
+        'Slack webhook URL must be a full http:// or https:// URL',
+      ],
+    });
+    expect(extractApiError(body, FALLBACK)).toBe(
+      'Slack webhook URL must be a full http:// or https:// URL'
+    );
+  });
+
+  it('renders several fields and form errors in order', () => {
+    const body = wrapperBody(['Unrecognized key: "x"'], {
+      'settings.contact.email': ['Invalid email address'],
+      'settings.security.minLength': ['Too small: expected number to be >=6'],
+    });
+    expect(extractApiError(body, FALLBACK)).toBe(
+      'Unrecognized key: "x"; Email: Invalid email address; Min length: Too small: expected number to be >=6'
+    );
+  });
+
+  it('contract: the exact multi-field body formatZodError emits renders once, labelled', () => {
+    // Verbatim output pinned in apps/api/src/lib/validation.test.ts
+    // ('joins nested paths with dots and groups repeated fields'). If the API
+    // join changes, that test breaks; keep this literal in step with it.
+    const body = {
+      error: 'Unrecognized key: "extra"; contacts.0.email: Invalid email; Too short',
+      details: {
+        formErrors: ['Unrecognized key: "extra"'],
+        fieldErrors: { 'contacts.0.email': ['Invalid email', 'Too short'] },
+      },
+    };
+    expect(extractApiError(body, FALLBACK)).toBe('Unrecognized key: "extra"; Email: Invalid email; Too short');
+  });
+
+  it('keeps the label when the message only starts with a longer word', () => {
+    const body = wrapperBody([], { name: ['Names must be unique'] });
+    expect(extractApiError(body, FALLBACK)).toBe('Name: Names must be unique');
+  });
+
+  it('does not render "Email: Email" when the message is just the label', () => {
+    const body = wrapperBody([], { 'contact.email': ['Email'] });
+    expect(extractApiError(body, FALLBACK)).toBe('Email');
+  });
+
+  it('humanizes a flatten details payload that rides with a different error headline', () => {
+    const body = {
+      error: 'Invalid feature link',
+      details: { formErrors: [], fieldErrors: { 'inlineSettings.scheduleTime': ['Invalid format'] } },
+    };
+    expect(extractApiError(body, FALLBACK)).toBe('Invalid feature link: Schedule time: Invalid format');
   });
 });

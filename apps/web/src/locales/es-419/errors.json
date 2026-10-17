@@ -1,7 +1,7 @@
 {
   "NOT_FOUND": "Not found",
   "ACCESS_DENIED": "Access denied",
-  "VALIDATION_FAILED": "Check the highlighted fields",
+  "VALIDATION_FAILED": "Corrige los valores no válidos e inténtalo de nuevo",
   "RATE_LIMITED": "Too many requests — try again shortly",
   "CONFLICT": "There's a conflict with the current state",
   "LIMIT_REACHED": "You've reached the limit for this action",
