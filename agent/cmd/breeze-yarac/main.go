@@ -48,7 +48,7 @@ func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
+		_, _ = fmt.Fprint(stderr, usage)
 		return exitUsage
 	}
 	switch args[0] {
@@ -61,10 +61,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "version":
 		return writeJSON(stdout, stderr, map[string]any{"engine": yarac.EngineVersion(), "policy": yarac.PolicyVersion, "format": yarascan.BundleFormatVersion})
 	case "-h", "--help", "help":
-		fmt.Fprint(stdout, usage)
+		_, _ = fmt.Fprint(stdout, usage)
 		return exitOK
 	default:
-		fmt.Fprintf(stderr, "unknown subcommand %q\n%s", args[0], usage)
+		_, _ = fmt.Fprintf(stderr, "unknown subcommand %q\n%s", args[0], usage)
 		return exitUsage
 	}
 }
@@ -79,7 +79,7 @@ func writeJSON(stdout, stderr io.Writer, v any) int {
 	enc := json.NewEncoder(stdout)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(v); err != nil {
-		fmt.Fprintf(stderr, "write output: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "write output: %v\n", err)
 		return exitUsage
 	}
 	return exitOK
@@ -100,7 +100,7 @@ func readBounded(r io.Reader) ([]byte, error) {
 
 func cmdValidate(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) != 0 {
-		fmt.Fprintf(stderr, "validate takes no arguments; the bundle is read from stdin\n%s", usage)
+		_, _ = fmt.Fprintf(stderr, "validate takes no arguments; the bundle is read from stdin\n%s", usage)
 		return exitUsage
 	}
 	body, err := readBounded(stdin)
@@ -109,7 +109,7 @@ func cmdValidate(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitRules
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "read stdin: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "read stdin: %v\n", err)
 		return exitUsage
 	}
 	// No sha256 pin: the caller is the server that just built these bytes.
@@ -174,11 +174,11 @@ func compileBundles(bundles []*yarascan.Bundle, stdout, stderr io.Writer) (*yara
 		return nil, exitRules
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "compile: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "compile: %v\n", err)
 		return nil, exitUsage
 	}
 	if rules == nil {
-		fmt.Fprintln(stderr, "compile: no rules")
+		_, _ = fmt.Fprintln(stderr, "compile: no rules")
 		return nil, exitUsage
 	}
 	entry := &yarascan.CacheEntry{Rules: rules, Index: map[string]yarascan.RuleMeta{}, AutoQuarantine: map[string]bool{}}
@@ -199,12 +199,12 @@ func cmdCompile(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if *out == "" || fs.NArg() == 0 {
-		fmt.Fprintf(stderr, "compile needs --out and at least one bundle\n%s", usage)
+		_, _ = fmt.Fprintf(stderr, "compile needs --out and at least one bundle\n%s", usage)
 		return exitUsage
 	}
 	bundles, err := loadBundles(fs.Args())
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
 	entry, code := compileBundles(bundles, stdout, stderr)
@@ -213,7 +213,7 @@ func cmdCompile(args []string, stdout, stderr io.Writer) int {
 	}
 	f, err := os.OpenFile(*out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
 	n, werr := entry.Rules.WriteTo(f)
@@ -221,7 +221,7 @@ func cmdCompile(args []string, stdout, stderr io.Writer) int {
 		werr = cerr
 	}
 	if werr != nil {
-		fmt.Fprintln(stderr, werr)
+		_, _ = fmt.Fprintln(stderr, werr)
 		return exitUsage
 	}
 	return writeJSON(stdout, stderr, map[string]any{"ok": true, "rules": entry.Rules.Count(), "bytes": n})
@@ -267,16 +267,16 @@ func cmdScan(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if len(bundlePaths) == 0 || fs.NArg() == 0 {
-		fmt.Fprintf(stderr, "scan needs at least one --bundle and one path\n%s", usage)
+		_, _ = fmt.Fprintf(stderr, "scan needs at least one --bundle and one path\n%s", usage)
 		return exitUsage
 	}
 	if *workers < 0 || *maxFileMb < 0 {
-		fmt.Fprintln(stderr, "--workers and --max-file-mb must be >= 0")
+		_, _ = fmt.Fprintln(stderr, "--workers and --max-file-mb must be >= 0")
 		return exitUsage
 	}
 	bundles, err := loadBundles(bundlePaths)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
 

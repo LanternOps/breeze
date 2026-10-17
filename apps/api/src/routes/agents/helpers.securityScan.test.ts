@@ -218,3 +218,87 @@ describe('quarantine/remove/restore command results (#6685)', () => {
     expect(updateSetMock).not.toHaveBeenCalled();
   });
 });
+
+// #6263 W02 — Breeze's own scanner owns its threats (DECISION W02-d).
+describe('security_scan attribution and YARA detail (#6265)', () => {
+  function threatInsertFrom() {
+    return insertValuesMock.mock.calls
+      .map((call) => call[0])
+      .find((vals) => Array.isArray(vals) && vals.some((v: any) => v?.threatName));
+  }
+
+  it('attributes every security_scan threat to provider breeze even when the device AV is windows_defender', async () => {
+    selectQueue.push([{ orgId: ORG_ID }], [{ id: SCAN_ID }]);
+
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      durationMs: 1000,
+      stdout: JSON.stringify({
+        scanRecordId: SCAN_ID,
+        scanType: 'quick',
+        provider: 'windows_defender',
+        status: { provider: 'windows_defender', realTimeProtection: true },
+        threatsFound: 1,
+        threats: [{ name: 'Legacy-Sig', type: 'malware', severity: 'high', path: 'C:\\a.exe' }],
+      }),
+    }));
+
+    expect(threatInsertFrom()).toEqual([expect.objectContaining({ provider: 'breeze' })]);
+  });
+
+  it('keeps YARA rule detail in details', async () => {
+    selectQueue.push([{ orgId: ORG_ID }], [{ id: SCAN_ID }]);
+
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      durationMs: 1000,
+      stdout: JSON.stringify({
+        scanRecordId: SCAN_ID,
+        scanType: 'quick',
+        engine: 'yara',
+        threatsFound: 1,
+        threats: [{
+          name: 'fixture_marker', type: 'pup', severity: 'high', path: '/tmp/x',
+          ruleName: 'fixture_marker', ruleSetId: 's1', ruleId: 'r1', tags: ['fixture'],
+          matchedStrings: [{ id: '$a', offset: 7, data: 'breeze_yara_fixture_marker_7f3a' }],
+          sha256: 'ab'.repeat(32),
+          quarantinedTo: '', quarantineFailed: false,
+        }],
+      }),
+    }));
+
+    expect(threatInsertFrom()[0].details).toMatchObject({
+      ruleName: 'fixture_marker', ruleSetId: 's1', ruleId: 'r1', tags: ['fixture'],
+      sha256: 'ab'.repeat(32),
+      matchedStrings: [{ id: '$a', offset: 7 }],
+      quarantineFailed: false,
+    });
+  });
+
+  it('does not fail the ingest when ruleSetErrors are present with zero threats, and warns', async () => {
+    selectQueue.push([{ orgId: ORG_ID }], [{ id: SCAN_ID }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      durationMs: 1000,
+      stdout: JSON.stringify({
+        scanRecordId: SCAN_ID,
+        scanType: 'quick',
+        engine: 'legacy',
+        threatsFound: 0,
+        threats: [],
+        ruleSetErrors: [{ id: 's1', version: 3, code: 'compile', detail: 'x' }],
+      }),
+    }));
+
+    expect(updateSetMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    expect(threatInsertFrom()).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('ruleSetErrors'),
+      expect.objectContaining({
+        deviceId: DEVICE_ID,
+        scanRecordId: SCAN_ID,
+        ruleSetErrors: [{ id: 's1', version: 3, code: 'compile', detail: 'x' }],
+      }),
+    );
+    warn.mockRestore();
+  });
+});

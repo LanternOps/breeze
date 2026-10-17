@@ -95,7 +95,7 @@ func TestCompileWritesLoadableRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	rules, err := yx.ReadFrom(f)
 	if err != nil || rules.Count() != 1 {
 		t.Fatalf("compiled output not loadable: %v", err)

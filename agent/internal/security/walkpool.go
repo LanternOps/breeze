@@ -163,7 +163,7 @@ func walkAndMatch(ctx context.Context, paths []string, options threatScanOptions
 				if err != nil {
 					// W01 (fatal mode) skips permission-denied files silently;
 					// the non-fatal mode counts every unreadable file.
-					if !(cfg.FileErrorsFatal && os.IsPermission(err)) {
+					if !cfg.FileErrorsFatal || !os.IsPermission(err) {
 						ec.file(job.path, err)
 					}
 					continue

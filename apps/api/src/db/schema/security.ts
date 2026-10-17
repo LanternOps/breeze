@@ -32,7 +32,10 @@ export const securityProviderEnum = pgEnum('security_provider', [
   'other',
   // Failed collection / not collected (#8538) — distinct from 'other', which
   // is a real attribution for an unmapped product.
-  'unknown'
+  'unknown',
+  // Breeze's own IOC scanner (#6263 W02) — attribution for security_scan
+  // threats, never an AV product reported via status ingest.
+  'breeze'
 ]);
 
 export const threatSeverityEnum = pgEnum('threat_severity', [

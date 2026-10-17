@@ -728,8 +728,20 @@ export async function handleSecurityCommandResult(
       });
     }
 
+    // #6263 W02: a rule set that failed to compile/load on the agent is not a
+    // failed scan — surface it for operators and keep ingesting what was found.
+    if (Array.isArray(resultJson?.ruleSetErrors) && resultJson.ruleSetErrors.length > 0) {
+      console.warn('[agents/helpers] security_scan reported ruleSetErrors', {
+        deviceId: command.deviceId,
+        scanRecordId,
+        ruleSetErrors: resultJson.ruleSetErrors.slice(0, 20),
+      });
+    }
+
     if (resultData.status === 'completed' && threatsValue.length > 0) {
-      const provider = normalizeProvider(parsedStatus?.provider);
+      // DECISION W02-d: every security_scan threat (YARA and legacy-signature
+      // hits alike) is Breeze's own detection, not the device's AV product.
+      const provider = 'breeze' as const;
       const inserts: Array<typeof securityThreats.$inferInsert> = [];
 
       for (const threat of threatsValue) {
