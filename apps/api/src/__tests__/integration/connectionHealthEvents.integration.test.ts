@@ -198,7 +198,7 @@ describe('connection health events', () => {
 
 describe('event outbox migration baseline (2026-12-30-120000)', () => {
   const migrationSql = readFileSync(
-    new URL('../../../migrations/2026-12-30-120000-connection-health-event-outbox.sql', import.meta.url),
+    new URL('../../../migrations/2026-12-30-130000-connection-health-event-outbox.sql', import.meta.url),
     'utf8',
   );
   const replay = () => getTestDb().transaction(async (tx) => {
