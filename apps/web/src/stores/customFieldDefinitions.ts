@@ -42,6 +42,10 @@ interface CustomFieldDefinitionsState {
   fetchCustomFieldDefinitions: () => Promise<void>;
 }
 
+// Bumped whenever the header org/partner scope changes so a response that was
+// in flight for the previous scope is discarded instead of repopulating the cache (#8946).
+let scopeGeneration = 0;
+
 export const useCustomFieldDefinitionsStore = create<CustomFieldDefinitionsState>()((set, get) => ({
   definitions: [],
   status: 'idle',
@@ -49,19 +53,48 @@ export const useCustomFieldDefinitionsStore = create<CustomFieldDefinitionsState
     // Idempotent — every consuming surface calls this on mount; only the
     // first caller should hit the network.
     if (get().status === 'loading' || get().status === 'loaded') return;
+    const generation = scopeGeneration;
     set({ status: 'loading' });
     try {
       const res = await fetchWithAuth('/custom-fields');
+      if (generation !== scopeGeneration) return;
       if (!res.ok) {
         console.error(`Failed to fetch custom field definitions (HTTP ${res.status})`);
         set({ status: 'error' });
         return;
       }
       const body = await res.json();
+      if (generation !== scopeGeneration) return;
       set({ definitions: asDefinitionList(body), status: 'loaded' });
     } catch (err) {
+      if (generation !== scopeGeneration) return;
       console.error('Failed to load custom field definitions:', err);
       set({ status: 'error' });
     }
   },
 }));
+
+// GET /custom-fields is scoped by the header org/partner, so the cache is only
+// valid for the scope it was fetched under. On any scope change, drop it and, if
+// it had been in use, refetch for the new scope (#8946). orgStore is imported
+// lazily (as aiStore does) so this store does not pull orgStore and its auth
+// provider registration into every test/module that only needs definitions.
+void import('./orgStore')
+  .then(({ useOrgStore }) => {
+    useOrgStore.subscribe((state, prev) => {
+      if (
+        state.currentOrgId === prev.currentOrgId &&
+        state.currentPartnerId === prev.currentPartnerId &&
+        state.allOrgs === prev.allOrgs
+      ) {
+        return;
+      }
+      scopeGeneration += 1;
+      const wasInUse = useCustomFieldDefinitionsStore.getState().status !== 'idle';
+      useCustomFieldDefinitionsStore.setState({ definitions: [], status: 'idle' });
+      if (wasInUse) void useCustomFieldDefinitionsStore.getState().fetchCustomFieldDefinitions();
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to subscribe custom field definitions to org scope changes:', err);
+  });
