@@ -629,7 +629,7 @@ const REAUTH_ID_TOKEN_CLOCK_TOLERANCE_SECONDS = 300;
 
 /** Values of IdTokenVerificationError.failureKind allowed onto the audit row. */
 const ID_TOKEN_FAILURE_KINDS: ReadonlySet<string> = new Set<IdTokenVerifyFailureKind>([
-  'config', 'jwks', 'signature', 'claims', 'nonce',
+  'config', 'jwks', 'signature', 'timing', 'claims', 'nonce',
 ]);
 
 type LinkRejectReason =

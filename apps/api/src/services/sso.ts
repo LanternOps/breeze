@@ -429,12 +429,16 @@ export interface VerifyIdTokenOptions {
 /**
  * Coarse, non-PII class of an id_token verification failure. The SSO callback
  * records it on the audit row so an operator can tell an IdP clock quirk
- * (`claims`) from a misconfigured provider (`config`), an unreachable or
- * keyless JWKS (`jwks`), a bad signature or malformed token (`signature`), and
- * a nonce mismatch on a validly-signed token (`nonce`), which is a
- * replay/injection signal.
+ * (`timing`: exp/nbf/iat on a validly-signed token) from a validly-signed
+ * token whose other claims are wrong (`claims`: aud/iss/typ/missing claim —
+ * e.g. a token minted for another tenant or app), a misconfigured provider
+ * (`config`), an unreachable or keyless JWKS (`jwks`), a bad signature or
+ * malformed token (`signature`), and a nonce mismatch on a validly-signed
+ * token (`nonce`). `claims` and `nonce` are replay/injection signals.
  */
-export type IdTokenVerifyFailureKind = 'config' | 'jwks' | 'signature' | 'claims' | 'nonce';
+export type IdTokenVerifyFailureKind = 'config' | 'jwks' | 'signature' | 'timing' | 'claims' | 'nonce';
+
+const TIMING_CLAIMS: ReadonlySet<string> = new Set(['exp', 'nbf', 'iat']);
 
 /** Error thrown by verifyIdTokenSignature. Carries no token data and no `cause`. */
 export class IdTokenVerificationError extends Error {
@@ -447,8 +451,12 @@ export class IdTokenVerificationError extends Error {
 }
 
 function classifyJoseFailure(err: unknown): IdTokenVerifyFailureKind {
-  if (err instanceof joseErrors.JWTExpired || err instanceof joseErrors.JWTClaimValidationFailed) {
-    return 'claims';
+  // jose validates claims only after the signature passes, so both kinds below
+  // mean a validly-signed token. JWTExpired and JWTClaimValidationFailed are
+  // sibling classes (both extend JOSEError), so each is matched explicitly.
+  if (err instanceof joseErrors.JWTExpired) return 'timing';
+  if (err instanceof joseErrors.JWTClaimValidationFailed) {
+    return TIMING_CLAIMS.has(err.claim) ? 'timing' : 'claims';
   }
   if (
     err instanceof joseErrors.JWKSNoMatchingKey
@@ -493,7 +501,7 @@ function logIdTokenVerifyFailure(
   mode: string,
   clockToleranceSeconds: number | undefined,
 ): void {
-  const claimFailure = failureKind === 'claims'
+  const claimFailure = failureKind === 'timing' || failureKind === 'claims'
     ? (err as InstanceType<typeof joseErrors.JWTClaimValidationFailed>)
     : undefined;
   console.warn('[sso] id_token verification failed', {

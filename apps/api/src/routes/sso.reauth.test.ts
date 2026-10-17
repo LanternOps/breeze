@@ -943,6 +943,8 @@ describe('GET /sso/callback — reauth mode (#4018)', () => {
   it.each([
     ['nonce', 'nonce'],
     ['claims', 'claims'],
+    ['timing', 'timing'],
+    ['evil', 'unknown'],
     [undefined, 'unknown'],
   ] as const)('records failureKind=%s on the audit row (as %s)', async (thrownKind, auditedKind) => {
     vi.spyOn(console, 'error').mockImplementation(() => {});

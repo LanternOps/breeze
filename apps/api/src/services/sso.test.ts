@@ -882,7 +882,7 @@ describe('verifyIdTokenSignature clock tolerance + diagnostics (#8862)', () => {
   // nonce mismatch on a validly-signed token is a replay/injection signal and
   // must not look like Entra's clock quirk.
   it.each([
-    ['claims', async () => sign(entraReauthClaims(400)), NONCE],
+    ['timing', async () => sign(entraReauthClaims(400)), NONCE],
     ['nonce', async () => sign(entraReauthClaims(200)), 'some-other-nonce'],
   ] as const)('tags a %s failure with failureKind', async (kind, makeToken, nonce) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -891,6 +891,27 @@ describe('verifyIdTokenSignature clock tolerance + diagnostics (#8862)', () => {
       .catch((e: unknown) => e as Error & { failureKind?: string });
     expect(err).toBeInstanceOf(Error);
     expect(err!.failureKind).toBe(kind);
+  });
+
+  // Review round 2: a validly-signed token for another tenant or app (wrong
+  // aud/iss) must not be audited like Entra's expiry quirk.
+  it.each([
+    ['aud', { aud: 'some-other-client' }],
+    ['iss', { iss: 'https://login.example/other-tenant/v2.0' }],
+  ] as const)('tags a wrong-%s token with failureKind=claims, not timing', async (_claim, override) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { SignJWT } = await vi.importActual<typeof import('jose')>('jose');
+    const now = nowSec();
+    const token = await new SignJWT({ nonce: NONCE, iat: now, exp: now + 3600 })
+      .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuer('iss' in override ? override.iss : config.issuer)
+      .setAudience('aud' in override ? override.aud : config.clientId)
+      .setSubject('external-sub-8862')
+      .sign(privateKey);
+    const err = await verifyIdTokenSignature(token, config, NONCE, { clockToleranceSeconds: 300, mode: 'reauth' })
+      .catch((e: unknown) => e as Error & { failureKind?: string });
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.failureKind).toBe('claims');
   });
 
   it('tags a bad signature with failureKind=signature', async () => {
