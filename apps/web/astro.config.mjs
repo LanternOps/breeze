@@ -13,7 +13,7 @@ import path from 'node:path';
 // resolution under Vite/rolldown. Resolve the package root via the bare
 // `"monaco-editor"` specifier (allowed by `exports["."]`) and alias the old
 // CSS specifier to its on-disk path directly, bypassing the exports map.
-// See src/components/scripts/ScriptForm.tsx for why this file is imported
+// See src/lib/monacoLoader.ts for why this file is imported
 // at build time (hashed <link> in <head> instead of a runtime-injected
 // <style>, for CSP reasons) and scripts/copy-monaco-assets.ts, which copies
 // the same `min/vs` directory into `public/monaco/vs` for the AMD loader.
