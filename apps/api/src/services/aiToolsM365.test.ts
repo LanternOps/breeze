@@ -697,6 +697,20 @@ describe('M1 control-plane identity write handlers', () => {
     expect(forAuth).not.toHaveBeenCalled();
   });
 
+  // Tenant-wide identity writes: the same org-wide governance ceiling as the
+  // Delegant pair — a device-bound run or a site-restricted caller (even with
+  // an EMPTY allow-list, which still means restricted) never reaches the service.
+  it.each(cases)('$tool: denies a device-bound run and a site-restricted caller before the service', async ({ handler, input }) => {
+    for (const restricted of [
+      { ...writeAuth, scope: 'organization', allowedDeviceIds: ['dev-1'] },
+      { ...writeAuth, scope: 'organization', allowedSiteIds: [] },
+    ]) {
+      const out = text(await handler(input, restricted as AuthContext, 'sess-1'));
+      expect(out).toContain('Site-restricted');
+    }
+    expect(forAuth).not.toHaveBeenCalled();
+  });
+
   it('m365_create_user returns a SecretToolResult: password only in secrets, never in llmText', async () => {
     const PW = 'Zq9!hunter2xx';
     forAuth.mockResolvedValue({

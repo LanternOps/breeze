@@ -20,7 +20,7 @@
  *     system context;
  *   - converts `observedAt` from the ISO string to a Date.
  */
-import { m365WriteActionSchema } from '@breeze/shared/m365';
+import { m365WriteActionSchema, type M365MutatingAction } from '@breeze/shared/m365';
 import { runOutsideDbContext, withDbAccessContext } from '../../../db';
 import { probeM365Effect } from '../../m365ControlPlane/effectProbes';
 import { buildWriteAction, M365_HEADLESS_ACTIONS } from '../../m365ToolsHeadless';
@@ -36,10 +36,10 @@ function adapt(toolName: string, actionId: (typeof M365_HEADLESS_ACTIONS)[keyof 
         detail: `${toolName}: the approved arguments do not form a valid ${actionId} action, so the effect cannot be observed`,
       };
     }
-    const action = parsed.data;
+    const action = parsed.data as M365MutatingAction;
     const observed = await runOutsideDbContext(() => withDbAccessContext(
       { scope: 'organization', orgId: ctx.orgId, accessibleOrgIds: [ctx.orgId], label: 'aiOperator.effectProbe.m365' },
-      () => probeM365Effect(actionId, action, { orgId: ctx.orgId, effectRequestedAt: ctx.effectRequestedAt }),
+      () => probeM365Effect(actionId, action, { orgId: ctx.orgId, effectRequestedAt: ctx.effectRequestedAt, phase: ctx.phase }),
     ));
     return { state: observed.state, observedAt: new Date(observed.observedAt), detail: observed.detail };
   };

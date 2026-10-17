@@ -166,8 +166,13 @@ async function groupIsDirectlyEditable(groupId: string, ctx: GraphWriteActionCon
  * it into $filter is safe. $filter on members needs advanced-query
  * (ConsistencyLevel: eventual + $count) — see
  * https://learn.microsoft.com/en-us/graph/aad-advanced-queries
- * Any doubt (absent, malformed, read failure) reads as "not a member".
+ * Any doubt (absent, malformed, a failed read) reads as "not a member", so the
+ * caller fails closed — except a cause the operator can act on (throttling, a
+ * missing permission, a bad app token), which propagates with its own code,
+ * and a non-Graph error, which is a bug and is never swallowed.
  */
+const DISAMBIGUATION_CAUSES_KEPT = new Set(['graph_throttled', 'graph_permission_missing', 'application_token_invalid']);
+
 async function isDirectMember(groupId: string, userId: string, ctx: GraphWriteActionContext): Promise<boolean> {
   try {
     const { items } = await ctx.graphClient.readCollection({
@@ -179,7 +184,8 @@ async function isDirectMember(groupId: string, userId: string, ctx: GraphWriteAc
       maxPages: 1,
     });
     return items.some((item) => item.id === userId);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof GraphClientError) || DISAMBIGUATION_CAUSES_KEPT.has(error.code)) throw error;
     return false;
   }
 }
@@ -454,7 +460,10 @@ async function existingUserOutcome(upn: string, ctx: GraphWriteActionContext): P
       select: ['id'],
     });
     return typeof existing.id === 'string' && existing.id ? 'user_already_exists' : 'graph_error';
-  } catch {
+  } catch (error) {
+    // The create itself was rejected; a failed follow-up read cannot change
+    // that answer. A non-Graph error is a bug and is never swallowed.
+    if (!(error instanceof GraphClientError)) throw error;
     return 'graph_error';
   }
 }

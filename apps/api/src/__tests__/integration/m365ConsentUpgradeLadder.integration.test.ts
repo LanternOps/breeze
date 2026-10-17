@@ -405,3 +405,36 @@ describe('M365 write ladder across the actions v3 bump (real DB)', () => {
     expect(executorStub.executeWriteAction).not.toHaveBeenCalled();
   });
 });
+
+describe('partner re-consent list across partners (real RLS)', () => {
+  async function staleList(token: string) {
+    const app = new Hono();
+    app.route('/api/v1/m365/customer-graph-actions', m365CustomerGraphActionsRoutes);
+    const res = await app.request('/api/v1/m365/customer-graph-actions/connections/stale-manifest', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return { status: res.status, body: await res.json() as { connections?: Array<{ id: string; orgId: string }> } };
+  }
+
+  runDb('each partner sees only its own organizations’ stale connections; an organization token is refused', async () => {
+    const partnerA = await setupTestEnvironment({ scope: 'partner' });
+    const partnerB = await setupTestEnvironment({ scope: 'partner' });
+    const connA = await seedActiveRow(partnerA, randomUUID(), PRE_M1, PRE_M1_GRANTS, new Date());
+    const connB = await seedActiveRow(partnerB, randomUUID(), PRE_M1, PRE_M1_GRANTS, new Date());
+
+    const seenByA = await staleList(partnerA.token);
+    expect(seenByA.status).toBe(200);
+    const idsA = (seenByA.body.connections ?? []).map((c) => c.id);
+    expect(idsA).toContain(connA);
+    expect(idsA).not.toContain(connB);
+
+    const seenByB = await staleList(partnerB.token);
+    expect(seenByB.status).toBe(200);
+    const idsB = (seenByB.body.connections ?? []).map((c) => c.id);
+    expect(idsB).toContain(connB);
+    expect(idsB).not.toContain(connA);
+
+    const orgEnv = await setupTestEnvironment({ scope: 'organization' });
+    expect((await staleList(orgEnv.token)).status).toBe(403);
+  });
+});

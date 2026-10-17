@@ -26,7 +26,7 @@
  */
 import type {
   M365InteractiveReadAction,
-  M365WriteAction,
+  M365MutatingAction,
   M365WriteActionId,
 } from '@breeze/shared/m365';
 import { executeM365ReadActionByOrg, type M365ReadActionServiceResult } from './readActionService';
@@ -45,12 +45,18 @@ export interface M365EffectProbeContext {
   orgId: string;
   /** When the write was (or is about to be) requested. */
   effectRequestedAt: Date;
+  /**
+   * `pre` decides whether to skip the write, so a pre-write `satisfied` must
+   * rest on evidence that cannot also mean "wrong target" or "stale index";
+   * `post` verifies. Required: a caller cannot forget which question it asks.
+   */
+  phase: 'pre' | 'post';
   actorId?: string;
 }
 
 const MAX_DETAIL_CHARS = 500;
 
-type ProbeFn = (args: M365WriteAction, ctx: M365EffectProbeContext, now: () => Date) => Promise<M365EffectProbeResult>;
+type ProbeFn = (args: M365MutatingAction, ctx: M365EffectProbeContext, now: () => Date) => Promise<M365EffectProbeResult>;
 
 function result(state: M365EffectProbeState, detail: string, now: () => Date): M365EffectProbeResult {
   return { state, observedAt: now().toISOString(), detail: detail.slice(0, MAX_DETAIL_CHARS) };
@@ -183,12 +189,19 @@ async function observeMembership(
 // Graph's membership index behind $filter is eventually consistent (seconds).
 const EVENTUAL = 'observed through an eventually consistent membership index';
 
+// Before the write, a lagging index could report the desired state the
+// tenant does not hold, and a pre-write `satisfied` would skip the write.
+// Both membership writes are idempotent (DELETE 404 / POST 400 are no-ops),
+// so the pre-write answer is `unknown` and the write itself decides.
+const PRE_WRITE_MEMBERSHIP = 'membership is not judged before the write: the index is eventually consistent and the write is idempotent';
+
 const probeGroupRemove: ProbeFn = async (args, ctx, now) => {
   if (args.type !== 'm365.group.membership.remove') throw new Error('unreachable');
   const seen = await observeMembership(ctx, args.groupId, args.userIdentifier);
   if ('unknown' in seen) return result('unknown', seen.unknown, now);
-  return seen.member
-    ? result('unsatisfied', `the user is still a direct member of the group (${EVENTUAL})`, now)
+  if (seen.member) return result('unsatisfied', `the user is still a direct member of the group (${EVENTUAL})`, now);
+  return ctx.phase === 'pre'
+    ? result('unknown', PRE_WRITE_MEMBERSHIP, now)
     : result('satisfied', `the user is not a direct member of the group (${EVENTUAL})`, now);
 };
 
@@ -196,9 +209,10 @@ const probeGroupAdd: ProbeFn = async (args, ctx, now) => {
   if (args.type !== 'm365.group.membership.add') throw new Error('unreachable');
   const seen = await observeMembership(ctx, args.groupId, args.userIdentifier);
   if ('unknown' in seen) return result('unknown', seen.unknown, now);
-  return seen.member
-    ? result('satisfied', `the user is a direct member of the group (${EVENTUAL})`, now)
-    : result('unsatisfied', `the user is not yet a direct member of the group (${EVENTUAL})`, now);
+  if (!seen.member) return result('unsatisfied', `the user is not yet a direct member of the group (${EVENTUAL})`, now);
+  return ctx.phase === 'pre'
+    ? result('unknown', PRE_WRITE_MEMBERSHIP, now)
+    : result('satisfied', `the user is a direct member of the group (${EVENTUAL})`, now);
 };
 
 const RETIRED_STATES = new Set(['retirePending', 'retireIssued']);
@@ -208,10 +222,13 @@ const probeIntuneRetire: ProbeFn = async (args, ctx, now) => {
   if (args.type !== 'm365.intune.device.retire') throw new Error('unreachable');
   const outcome = await read(ctx, { type: 'm365.intune.device.get', deviceId: args.managedDeviceId });
   if (!outcome.ok) {
-    // Retire unenrols the device and Intune deletes the managedDevice record.
-    return outcome.code === 'graph_not_found'
-      ? result('satisfied', 'the managed device record no longer exists (retired and unenrolled)', now)
-      : result('unknown', cannotObserve('The managed device', outcome), now);
+    if (outcome.code !== 'graph_not_found') return result('unknown', cannotObserve('The managed device', outcome), now);
+    // After the retire, a missing record is the evidence: Intune deletes the
+    // managedDevice once the device unenrols. Before it, a wrong or foreign
+    // id 404s the same way, so it proves nothing and must not skip the write.
+    return ctx.phase === 'pre'
+      ? result('unknown', 'the managed device was not found before the retire; the retire itself will report a wrong id', now)
+      : result('satisfied', 'the managed device record no longer exists (retired and unenrolled)', now);
   }
   if (outcome.kind !== 'resource') return result('unknown', 'The device read returned an unexpected shape', now);
   const state = outcome.resource.managementState;
@@ -254,7 +271,31 @@ const probeAutoReply: ProbeFn = async (args, ctx, now) => {
   if (args.externalAudience !== undefined && state.externalAudience !== args.externalAudience) {
     return result('unsatisfied', `external audience is ${state.externalAudience}, not ${args.externalAudience}`, now);
   }
-  return result('satisfied', `automatic replies are ${state.status}`, now);
+  for (const [field, wanted, seen] of [
+    ['scheduledStartDateTime', args.scheduledStartDateTime, state.scheduledStartDateTime],
+    ['scheduledEndDateTime', args.scheduledEndDateTime, state.scheduledEndDateTime],
+  ] as const) {
+    if (wanted !== undefined && (seen === null || Date.parse(seen) !== Date.parse(wanted))) {
+      return result('unsatisfied', `${field} is ${seen ?? 'unset'}, not ${wanted}`, now);
+    }
+  }
+  if ((args.internalReplyMessage !== undefined && !state.hasInternalReplyMessage)
+    || (args.externalReplyMessage !== undefined && !state.hasExternalReplyMessage)) {
+    return result('unsatisfied', 'a requested reply message is not set', now);
+  }
+  // Message bodies are never read back (they may quote customer mail), so a
+  // requested body cannot be confirmed. Before the write that is not enough to
+  // skip it (rewriting the same reply is harmless); after it, the write's own
+  // success plus the matching state is the evidence, and the detail says so.
+  const bodyRequested = args.internalReplyMessage !== undefined || args.externalReplyMessage !== undefined;
+  if (bodyRequested && ctx.phase === 'pre') {
+    return result('unknown', 'automatic replies match, but a requested message body cannot be read back before the write', now);
+  }
+  return result(
+    'satisfied',
+    `automatic replies are ${state.status}${bodyRequested ? '; message presence matches (message bodies are not compared)' : ''}`,
+    now,
+  );
 };
 
 /** Total over the write ids: tsc fails the moment the catalog grows without a probe. */
@@ -273,7 +314,7 @@ const PROBES: Record<M365WriteActionId, ProbeFn> = {
 
 export async function probeM365Effect(
   actionId: M365WriteActionId,
-  args: M365WriteAction,
+  args: M365MutatingAction,
   ctx: M365EffectProbeContext,
   now: () => Date = () => new Date(),
 ): Promise<M365EffectProbeResult> {

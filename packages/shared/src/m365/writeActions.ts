@@ -136,7 +136,25 @@ export const m365WriteActionSchema = z.discriminatedUnion('type', [
   }
 });
 
+/** Every arm the executor accepts: the mutating writes AND the read-only probe arm. */
 export type M365WriteAction = z.infer<typeof m365WriteActionSchema>;
+/** Only the mutating arms — what a tool, an intent or a recipe effect may carry. */
+export type M365MutatingAction = Extract<M365WriteAction, { type: M365WriteActionId }>;
+/** Only the read-only probe arms — reachable from the effect probes alone. */
+export type M365ProbeAction = Extract<M365WriteAction, { type: M365ProbeActionId }>;
+
+export function isM365ProbeActionId(id: string): id is M365ProbeActionId {
+  return (M365_PROBE_ACTION_IDS as readonly string[]).includes(id);
+}
+
+// Compile-time tie between the id lists and the schema arms: adding an id
+// without an arm (or an arm without an id) fails tsc here, not at runtime.
+type ArmIdsMatch = [
+  Exclude<M365WriteAction['type'], M365ExecutorActionId>,
+  Exclude<M365ExecutorActionId, M365WriteAction['type']>,
+] extends [never, never] ? true : false;
+const ARM_IDS_MATCH: ArmIdsMatch = true;
+void ARM_IDS_MATCH;
 
 export const writeActionRequestSchema = z.object({
   correlationId: guidSchema,

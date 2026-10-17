@@ -21,7 +21,7 @@ export class M365ConnectionUnavailableError extends Error {
 }
 
 /** Tool name → typed write-action id. This map is the headless allowlist. */
-export const M365_HEADLESS_ACTIONS: Record<string, M365WriteActionId> = {
+const HEADLESS_ACTION_MAP = {
   m365_disable_user: 'm365.user.disable',
   m365_reset_password: 'm365.user.reset_password',
   m365_revoke_sessions: 'm365.user.revoke_sessions',
@@ -32,7 +32,15 @@ export const M365_HEADLESS_ACTIONS: Record<string, M365WriteActionId> = {
   m365_retire_intune_device: 'm365.intune.device.retire',
   m365_create_user: 'm365.user.create',
   m365_set_auto_reply: 'm365.user.mailbox.auto_reply',
-};
+} as const satisfies Record<string, M365WriteActionId>;
+
+// Compile-time totality: every write action id has a headless tool (the
+// `satisfies` above already admits write ids only, so no probe id can appear).
+type UncoveredWriteIds = Exclude<M365WriteActionId, (typeof HEADLESS_ACTION_MAP)[keyof typeof HEADLESS_ACTION_MAP]>;
+const EVERY_WRITE_ID_HAS_A_TOOL: [UncoveredWriteIds] extends [never] ? true : false = true;
+void EVERY_WRITE_ID_HAS_A_TOOL;
+
+export const M365_HEADLESS_ACTIONS: Readonly<Record<string, M365WriteActionId>> = HEADLESS_ACTION_MAP;
 // Invariant: keys(M365_HEADLESS_ACTIONS) === tier-3 m365ToolTiers set.
 // Enforced by the parity unit test in m365ToolsHeadless.test.ts.
 
@@ -124,7 +132,9 @@ export async function executeM365ToolHeadless(
   }
   const input = (args ?? {}) as Record<string, unknown>;
   const parsed = m365WriteActionSchema.safeParse(buildWriteAction(actionId, input));
-  if (!parsed.success) {
+  // The type equality is the runtime proof that only the tool's own mutating
+  // arm can pass (buildWriteAction stamps it; a probe arm never can).
+  if (!parsed.success || parsed.data.type !== actionId) {
     // Bad captured arguments — a terminal tool error, not a connection issue.
     return JSON.stringify({ error: 'Invalid M365 action arguments for headless execution.' });
   }

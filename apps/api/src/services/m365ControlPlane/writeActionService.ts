@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   getM365PermissionProfile,
+  isM365ProbeActionId,
+  type M365MutatingAction,
   type M365WriteAction,
   type WriteActionResult,
   type WriteActionFailureCode,
@@ -11,6 +13,7 @@ import { m365Connections, type M365ConnectionRow, type M365ConnectionStatus } fr
 import { dbAccessContextFromAuth, type AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, type RequestLike } from '../auditEvents';
 import { resolveWritableToolOrgId } from '../aiToolWriteOrg';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { missingRolesForAction } from './grantReadiness';
 import {
   createGraphActionsExecutorClient,
@@ -258,16 +261,20 @@ export async function executeM365WriteActionByOrg(
  */
 export async function executeM365WriteActionForAuth(
   auth: AuthContext,
-  action: M365WriteAction,
+  action: M365MutatingAction,
   inputOrgId?: string,
   auditRequest?: RequestLike,
 ): Promise<M365WriteActionServiceResult> {
-  if (auth.allowedSiteIds) {
-    return {
-      ok: false,
-      code: 'site_scope_denied',
-      message: 'Microsoft 365 actions are not available to site-restricted sessions.',
-    };
+  // These are tenant-wide identity writes: the org-wide governance ceiling
+  // applies — a site-restricted caller (even with an empty allow-list) and a
+  // device-bound AI run are both refused, exactly as the Delegant pair is.
+  if (!canMutateOrgWideGovernance(auth)) {
+    return { ok: false, code: 'site_scope_denied', message: SITE_CEILING_WRITE_DENIED_MESSAGE };
+  }
+  // Belt over the type: the read-only probe arms are reachable from the
+  // effect probes only (executeM365WriteActionByOrg), never from chat.
+  if (isM365ProbeActionId(action.type)) {
+    return { ok: false, code: 'invalid_action', message: FAILURE_MESSAGES.invalid_action };
   }
   const resolved = resolveWritableToolOrgId(auth, inputOrgId);
   if (!resolved.orgId) {

@@ -286,6 +286,16 @@ describe('group membership arms', () => {
     expect(await run(add, f)).toEqual({ success: false, errorCode: 'graph_error' });
   });
 
+  it('add keeps a retryable cause when the disambiguation read is throttled (not a flat graph_error)', async () => {
+    const f = fake({ reads: { [GROUP_READ]: okGroup }, post: () => rejected(), collections: { [MEMBERS]: new GraphClientError('graph_throttled', 9) } });
+    expect(await run(add, f)).toEqual({ success: false, errorCode: 'graph_throttled', retryAfterSeconds: 9 });
+  });
+
+  it('add never swallows a programming error in the disambiguation read', async () => {
+    const f = fake({ reads: { [GROUP_READ]: okGroup }, post: () => rejected(), collections: { [MEMBERS]: new TypeError('boom') } });
+    await expect(run(add, f)).rejects.toThrow('boom');
+  });
+
   it('add maps non-rejected POST failures normally and does not disambiguate', async () => {
     const f = fake({ reads: { [GROUP_READ]: okGroup }, post: () => new GraphClientError('graph_throttled', 12) });
     expect(await run(add, f)).toEqual({ success: false, errorCode: 'graph_throttled', retryAfterSeconds: 12 });
@@ -366,6 +376,12 @@ describe('m365.user.create', () => {
   ])('on provider_rejected where the follow-up read is %s => graph_error', async (_n, read) => {
     const f = fake({ post: () => rejected(), reads: { [UPN_READ]: read } });
     expect(await run(create, f)).toEqual({ success: false, errorCode: 'graph_error' });
+    expect(f.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('never swallows a programming error in the follow-up read', async () => {
+    const f = fake({ post: () => rejected(), reads: { [UPN_READ]: new TypeError('boom') } });
+    await expect(run(create, f)).rejects.toThrow('boom');
     expect(f.post).toHaveBeenCalledTimes(1);
   });
 

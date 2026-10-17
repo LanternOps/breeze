@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { M365WriteAction, M365WriteActionId } from '@breeze/shared/m365';
+import type { M365MutatingAction, M365WriteActionId } from '@breeze/shared/m365';
 
 const { readByOrg, writeByOrg } = vi.hoisted(() => ({
   readByOrg: vi.fn(),
@@ -24,7 +24,8 @@ const PLAN = '00000000-0000-4000-8000-000000000001';
 const DEVICE = '66666666-6666-4666-8666-666666666666';
 const REQUESTED_AT = new Date('2026-10-16T12:00:05.400Z');
 const NOW = new Date('2026-10-16T12:00:09.000Z');
-const ctx = { orgId: ORG, effectRequestedAt: REQUESTED_AT, actorId: 'actor-1' };
+const ctx = { orgId: ORG, effectRequestedAt: REQUESTED_AT, actorId: 'actor-1', phase: 'post' as const };
+const preCtx = { ...ctx, phase: 'pre' as const };
 const clock = () => NOW;
 
 const userResource = (fields: Record<string, unknown>) =>
@@ -32,7 +33,7 @@ const userResource = (fields: Record<string, unknown>) =>
 const notFound = { ok: false, code: 'graph_not_found', message: 'nf' };
 const collection = (items: Record<string, unknown>[]) => ({ ok: true, kind: 'collection', items, truncated: false });
 
-const ACTIONS: Record<M365WriteActionId, M365WriteAction> = {
+const ACTIONS: Record<M365WriteActionId, M365MutatingAction> = {
   'm365.user.disable': { type: 'm365.user.disable', userIdentifier: 'a@b.com', reason: 'x' },
   'm365.user.reset_password': { type: 'm365.user.reset_password', userIdentifier: 'a@b.com', reason: 'x' },
   'm365.user.revoke_sessions': { type: 'm365.user.revoke_sessions', userIdentifier: 'a@b.com', reason: 'x' },
@@ -109,7 +110,7 @@ const CASES: Record<Exclude<M365WriteActionId, 'm365.user.reset_password'>, Prob
   },
 };
 
-async function probe(id: M365WriteActionId, action: M365WriteAction = ACTIONS[id]): Promise<M365EffectProbeResult> {
+async function probe(id: M365WriteActionId, action: M365MutatingAction = ACTIONS[id]): Promise<M365EffectProbeResult> {
   return probeM365Effect(id, action, ctx, clock);
 }
 
@@ -166,7 +167,7 @@ describe('probeM365Effect — honest criteria', () => {
 
   it('license.assign: a SKU present with different disabled plans than requested is unsatisfied', async () => {
     readByOrg.mockResolvedValueOnce(userResource({ assignedLicenses: [{ skuId: SKU_A, disabledPlans: [] }] }));
-    const action: M365WriteAction = { ...ACTIONS['m365.user.license.assign'], skuIds: [SKU_A], disabledPlanIds: [PLAN] } as M365WriteAction;
+    const action: M365MutatingAction = { ...ACTIONS['m365.user.license.assign'], skuIds: [SKU_A], disabledPlanIds: [PLAN] } as M365MutatingAction;
     expect((await probe('m365.user.license.assign', action)).state).toBe('unsatisfied');
   });
 
@@ -227,6 +228,67 @@ describe('probeM365Effect — a probe that cannot observe never claims success',
   }
 });
 
+describe('probeM365Effect — a PRE-write probe never skips a write on weak evidence', () => {
+  // A pre-phase `satisfied` makes the operator record a no-op and skip the
+  // write, so it must rest on evidence that the effect really happened.
+  it('intune retire: a missing device record before the write is unknown (a wrong id also 404s)', async () => {
+    readByOrg.mockResolvedValueOnce(notFound);
+    expect((await probeM365Effect('m365.intune.device.retire', ACTIONS['m365.intune.device.retire'], preCtx, clock)).state)
+      .toBe('unknown');
+  });
+
+  it('group membership: the eventually consistent index never satisfies a pre-write probe', async () => {
+    CASES['m365.group.membership.remove'].satisfied();
+    expect((await probeM365Effect('m365.group.membership.remove', ACTIONS['m365.group.membership.remove'], preCtx, clock)).state)
+      .toBe('unknown');
+    CASES['m365.group.membership.add'].satisfied();
+    expect((await probeM365Effect('m365.group.membership.add', ACTIONS['m365.group.membership.add'], preCtx, clock)).state)
+      .toBe('unknown');
+  });
+
+  it('group membership: a post-write observation still verifies', async () => {
+    CASES['m365.group.membership.remove'].satisfied();
+    expect((await probe('m365.group.membership.remove')).state).toBe('satisfied');
+  });
+});
+
+describe('probeM365Effect — auto-reply compares everything it can observe', () => {
+  const scheduled = {
+    type: 'm365.user.mailbox.auto_reply', userIdentifier: 'a@b.com', status: 'scheduled',
+    scheduledStartDateTime: '2026-10-20T00:00:00Z', scheduledEndDateTime: '2026-10-27T00:00:00Z', reason: 'x',
+  } as M365MutatingAction;
+  const stateFor = (fields: Record<string, unknown>) => autoReplyState({
+    status: 'scheduled', scheduledStartDateTime: '2026-10-20T00:00:00.000Z', scheduledEndDateTime: '2026-10-27T00:00:00.000Z',
+    hasInternalReplyMessage: false, hasExternalReplyMessage: false, ...fields,
+  });
+
+  it('a different schedule window is unsatisfied', async () => {
+    writeByOrg.mockResolvedValueOnce(stateFor({ scheduledStartDateTime: '2026-09-01T00:00:00.000Z' }));
+    expect((await probe('m365.user.mailbox.auto_reply', scheduled)).state).toBe('unsatisfied');
+  });
+
+  it('the same schedule window is satisfied', async () => {
+    writeByOrg.mockResolvedValueOnce(stateFor({}));
+    expect((await probe('m365.user.mailbox.auto_reply', scheduled)).state).toBe('satisfied');
+  });
+
+  it('a requested message that is absent is unsatisfied', async () => {
+    writeByOrg.mockResolvedValueOnce(stateFor({ hasInternalReplyMessage: false }));
+    const withMessage = { ...scheduled, internalReplyMessage: 'Away' } as M365MutatingAction;
+    expect((await probe('m365.user.mailbox.auto_reply', withMessage)).state).toBe('unsatisfied');
+  });
+
+  it('a requested message body cannot be read back: unknown before the write, satisfied (with a caveat) after', async () => {
+    const withMessage = { ...scheduled, internalReplyMessage: 'Away' } as M365MutatingAction;
+    writeByOrg.mockResolvedValueOnce(stateFor({ hasInternalReplyMessage: true }));
+    expect((await probeM365Effect('m365.user.mailbox.auto_reply', withMessage, preCtx, clock)).state).toBe('unknown');
+    writeByOrg.mockResolvedValueOnce(stateFor({ hasInternalReplyMessage: true }));
+    const post = await probe('m365.user.mailbox.auto_reply', withMessage);
+    expect(post.state).toBe('satisfied');
+    expect(post.detail).toContain('not compared');
+  });
+});
+
 describe('probeM365Effect — contract', () => {
   it('throws when the action id does not match the arguments', async () => {
     await expect(probeM365Effect('m365.user.disable', ACTIONS['m365.user.create'], ctx, clock)).rejects.toThrow(/does not match/);
@@ -240,7 +302,7 @@ describe('probeM365Effect — contract', () => {
   it('bounds detail to 500 characters', async () => {
     readByOrg.mockResolvedValueOnce(notFound);
     const longUpn = `${'a'.repeat(300)}@${'b'.repeat(15)}.com`;
-    const action = { ...ACTIONS['m365.user.create'], userPrincipalName: longUpn } as M365WriteAction;
+    const action = { ...ACTIONS['m365.user.create'], userPrincipalName: longUpn } as M365MutatingAction;
     expect((await probe('m365.user.create', action)).detail.length).toBeLessThanOrEqual(500);
   });
 

@@ -77,7 +77,7 @@ describe('M365 effect probe adapter', () => {
     expect(probeM365Effect).toHaveBeenCalledWith(
       'm365.group.membership.remove',
       { type: 'm365.group.membership.remove', groupId: GROUP, userIdentifier: 'dana@customer.example', reason: 'offboarding' },
-      { orgId: ORG, effectRequestedAt: ctx.effectRequestedAt },
+      { orgId: ORG, effectRequestedAt: ctx.effectRequestedAt, phase: 'post' },
     );
   });
 

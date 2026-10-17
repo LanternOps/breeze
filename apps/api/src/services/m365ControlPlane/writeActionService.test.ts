@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { M365WriteAction } from '@breeze/shared/m365';
+import type { M365MutatingAction, M365WriteAction } from '@breeze/shared/m365';
 
 /**
  * writeActionService is the security-critical write-side authz ladder:
@@ -203,6 +203,27 @@ describe('executeM365WriteActionForAuth', () => {
     expect(r).toMatchObject({ ok: false, code: 'site_scope_denied' });
     expect(connRows).not.toHaveBeenCalled();
     expect(executeWriteAction).not.toHaveBeenCalled();
+  });
+
+  it('refuses a device-bound run and an empty site allow-list (org-wide governance ceiling)', async () => {
+    for (const restricted of [
+      { ...auth, allowedDeviceIds: ['d1'] },
+      { ...auth, allowedSiteIds: [] },
+    ]) {
+      const r = await executeM365WriteActionForAuth(restricted as unknown as AuthContext, action);
+      expect(r).toMatchObject({ ok: false, code: 'site_scope_denied' });
+    }
+    expect(connRows).not.toHaveBeenCalled();
+    expect(executeWriteAction).not.toHaveBeenCalled();
+  });
+
+  it('refuses the read-only probe arm: the chat path takes mutating actions only', async () => {
+    const r = await executeM365WriteActionForAuth(
+      auth,
+      { type: 'm365.user.mailbox.auto_reply.state', userIdentifier: 'a@b.com' } as unknown as M365MutatingAction,
+    );
+    expect(r).toMatchObject({ ok: false, code: 'invalid_action' });
+    expect(connRows).not.toHaveBeenCalled();
   });
 
   it('refuses when no org can be resolved', async () => {

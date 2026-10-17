@@ -35,7 +35,7 @@ import {
   DELEGANT_BASE_URL, DELEGANT_SERVICE_TOKEN, DELEGANT_PRINCIPAL_SIGNING_KEY, DELEGANT_PRINCIPAL_KID,
 } from '../config/env';
 import {
-  m365ReadActionSchema, m365WriteActionSchema, type M365ReadAction, type M365WriteAction, type M365WriteActionId,
+  m365ReadActionSchema, m365WriteActionSchema, type M365ReadAction, type M365MutatingAction, type M365WriteActionId,
 } from '@breeze/shared/m365';
 import { executeM365WriteActionForAuth } from './m365ControlPlane/writeActionService';
 import { buildWriteAction } from './m365ToolsHeadless';
@@ -364,14 +364,19 @@ async function runWrite(
   input: Record<string, unknown>,
   actionId: M365WriteActionId,
 ): Promise<WriteRun> {
+  // Same org-wide governance ceiling as the Delegant pair above.
+  const ceiling = siteCeilingDenied(auth);
+  if (ceiling) return { ok: false, error: ceiling };
   if (!requireString(input, 'reason')) {
     return { ok: false, error: errorString('missing_reason', 'A reason is required for this action.') };
   }
   const parsed = m365WriteActionSchema.safeParse(buildWriteAction(actionId, input));
-  if (!parsed.success) {
+  // buildWriteAction stamps `type: actionId`; the equality check is the
+  // runtime proof that only the requested mutating arm can pass.
+  if (!parsed.success || parsed.data.type !== actionId) {
     return { ok: false, error: errorString('invalid_arguments', 'Invalid parameters for this Microsoft 365 action.') };
   }
-  const action: M365WriteAction = parsed.data;
+  const action = parsed.data as M365MutatingAction;
   const outcome = await executeM365WriteActionForAuth(auth, action, inputOrgId(input));
   return outcome.ok
     ? { ok: true, result: outcome.result as Record<string, unknown> }
