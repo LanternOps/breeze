@@ -56,7 +56,7 @@ function fakeDeps(over: Partial<ChatDeps> = {}) {
       return { command: { id: randomUUID() } as never, delivery: 'delivered' };
     },
     chatSettings: async () => ({ enabled: true, allowUserReply: true }),
-    branding: async () => ({ partnerId: 'p', branding: { companyName: 'Acme IT', displayName: 'Acme IT' } }),
+    branding: async () => ({ partnerId: 'p', branding: { companyName: 'Acme IT', displayName: 'Acme IT', accent: null } }),
     openLimit: async () => ({ allowed: true, retryAfterSeconds: 0 }),
     messageLimit: async () => ({ allowed: true, retryAfterSeconds: 0 }),
     ...over,
