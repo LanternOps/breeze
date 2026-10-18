@@ -467,6 +467,7 @@ func TestStop_DuringDial_ExitsPromptly(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(srv.URL, noopHandler)
+	t.Cleanup(c.Stop) // also covers the failure path so the loop never outlives the test
 	done := make(chan struct{})
 	go func() {
 		c.Start()
