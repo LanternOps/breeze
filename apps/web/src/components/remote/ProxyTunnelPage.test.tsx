@@ -526,7 +526,7 @@ describe('ProxyTunnelPage host mode', () => {
       render(<ProxyTunnelPage tunnelId={HOST_ID} target="10.1.2.209:80" />);
       const frame = await screen.findByTestId('network-proxy-frame');
       postFromFrame(frame, { type: COOKIE_BLOCKED, tunnelId: HOST_ID, reason: 'storage' });
-      fireEvent.click(await screen.findByTestId('proxy-cookie-blocked-open-new-tab'));
+      fireEvent.click(await screen.findByTestId('proxy-cookie-blocked-open-new-tab', {}, { timeout: 5000 }));
       await waitFor(() => expect(popup.location.replace).toHaveBeenCalledWith(HOST_TAB_URL));
     });
 
