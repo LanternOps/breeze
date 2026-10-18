@@ -4422,7 +4422,8 @@
     "reEnterYourNewPassword": "Digite novamente sua nova senha",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Alterando a senha..."
+    "changingPassword": "Alterando a senha...",
+    "noPasswordNotice": "Esta conta entra pelo provedor de identidade da sua organização e não tem senha, então não há nada para alterar aqui. Se a sua organização não exige login único, use \"Esqueci a senha\" na página de login para definir uma."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Logon único conectado.",

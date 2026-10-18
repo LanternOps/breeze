@@ -4422,7 +4422,8 @@
     "reEnterYourNewPassword": "Vuelva a ingresar su nueva contraseña",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Cambiando contraseña..."
+    "changingPassword": "Cambiando contraseña...",
+    "noPasswordNotice": "Esta cuenta inicia sesión mediante el proveedor de identidad de su organización y no tiene contraseña, por lo que no hay nada que cambiar aquí. Si su organización no exige inicio de sesión único, use «Olvidé mi contraseña» en la página de inicio de sesión para establecer una."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Inicio de sesión único conectado.",
