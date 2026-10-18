@@ -423,12 +423,17 @@
     "empty": {
       "noPolicies": "No hay políticas configuradas",
       "allCompliant": "¡Todos los dispositivos son compatibles!",
+      "notEvaluated": "Aún no se ha evaluado ningún dispositivo.",
+      "noViolationsPending_one": "No se encontraron violaciones; {{count}} dispositivo aún está pendiente de evaluación.",
+      "noViolationsPending_other": "No se encontraron violaciones; {{count}} dispositivos aún están pendientes de evaluación.",
       "noMatchingDevices": "No se encontraron dispositivos coincidentes."
     },
     "policyComplianceRatio": "Compatible con {{compliant}} / {{total}}",
     "searchDevices": "Buscar dispositivos...",
-    "violationCount": "violación {{count}}",
-    "moreViolations": "+{{count}} más violaciones",
+    "violationCount_one": "{{count}} violación",
+    "violationCount_other": "{{count}} violaciones",
+    "moreViolations_one": "+{{count}} violación más",
+    "moreViolations_other": "+{{count}} violaciones más",
     "lastChecked": "Última comprobación: {{date}}",
     "pagination": {
       "showing": "Mostrando {{start}} a {{end}} de {{total}}",

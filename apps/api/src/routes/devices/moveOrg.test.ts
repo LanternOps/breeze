@@ -13,7 +13,9 @@ const {
   captureExceptionMock,
   schedulePeripheralPolicyDeviceMock,
   propagateCancelledMock,
+  invalidateDevicePolicyCachesMock,
 } = vi.hoisted(() => ({
+  invalidateDevicePolicyCachesMock: vi.fn(async () => undefined),
   guardMock: vi.fn(),
   pamGuardMock: vi.fn(),
   captureExceptionMock: vi.fn(),
@@ -30,7 +32,12 @@ vi.mock('../../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
 }));
 
+vi.mock('../../services/devicePolicyCache', () => ({
+  invalidateDevicePolicyCaches: invalidateDevicePolicyCachesMock,
+}));
+
 vi.mock('../../db', () => ({
+  runAfterDbContextCommit: vi.fn((_label: string, fn: () => unknown) => { void fn(); }),
   runOutsideDbContext: vi.fn((fn: any) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -615,6 +622,8 @@ describe('POST /devices/:id/move-org', () => {
         DEVICE_ID,
         'device_org_changed',
       );
+      // #8257: the device's cached heartbeat policy config is dropped post-commit.
+      expect(invalidateDevicePolicyCachesMock).toHaveBeenCalledWith(DEVICE_ID);
 
       // devices.set() must include both orgId and siteId flips, and MUST
       // unlink the device from any multi-boot group (#2138) — the composite
@@ -1772,6 +1781,7 @@ describe('POST /devices/:id/move-org', () => {
       expect(captureExceptionMock).toHaveBeenCalledWith(unrelated, expect.anything());
       expect(disconnectAgent).not.toHaveBeenCalled();
       expect(schedulePeripheralPolicyDeviceMock).not.toHaveBeenCalled();
+      expect(invalidateDevicePolicyCachesMock).not.toHaveBeenCalled();
     });
   });
 

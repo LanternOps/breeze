@@ -22,7 +22,7 @@ import { sanitizeIntro } from '../services/trustPage/payloadBuilder';
 import { createTrustPreviewToken, TRUST_PREVIEW_TTL_SECONDS } from '../services/trustPage/previewToken';
 import {
   DEFAULT_TRUST_EVALUATION_POLICY, TRUST_CONTROL_CATALOG, TRUST_INTRO_STORED_MAX_CHARS, TRUST_SLUG_RE, evaluateTrustControls,
-  trustPageDocumentsUpdateSchema, trustPagePartnerHomeSchema, trustPagePublishSchema, trustPageUpdateSchema,
+  trustEmbedOriginsUpdateSchema, trustPageDocumentsUpdateSchema, trustPagePartnerHomeSchema, trustPagePublishSchema, trustPageUpdateSchema,
 } from '@breeze/shared';
 
 export const trustPageRoutes = new Hono();
@@ -48,9 +48,12 @@ function handleError(c: Context, err: unknown): Response {
 }
 function publicPaths(ctx: OrgCtx, isPartnerHome: boolean) {
   const base = `/portal/trust/${ctx.partnerSlug}`;
+  const embedBase = `/portal/trust/embed/${ctx.partnerSlug}`;
   return {
     publicPath: isPartnerHome ? base : `${base}/${ctx.orgSlug}`,
     badgePath: `/api/v1/trust/public/${ctx.partnerSlug}/${ctx.orgSlug}/badge.svg`,
+    // W03a: the framable card (portal /trust/embed/*); framing is limited to the page's live allowlist.
+    embedPath: isPartnerHome ? embedBase : `${embedBase}/${ctx.orgSlug}`,
   };
 }
 function slugReport(ctx: OrgCtx) {
@@ -170,6 +173,29 @@ trustPageRoutes.put('/:orgId/trust-page/documents', scopes, orgWrite, zValidator
     const visibilityChanged = documents.filter((d) => { const b = beforeRows.find((r) => r.documentId === d.documentId); return b && b.visibility !== d.visibility; }).map((d) => d.documentId);
     await audit(c, orgId, 'trust_page.documents.update', page.id, { added: ids.filter((i) => !prev.has(i)), removed: [...prev].filter((i) => !after.has(i)), visibilityChanged, confirmed: documents.length, gated: documents.filter((d) => d.visibility === 'gated').length, publicationRevision });
     return c.json({ data: { documents, publicationRevision } });
+  } catch (err) { return handleError(c, err); }
+});
+
+// W03a: the iframe embed allowlist. A LIVE access-control setting (W3 plan Open Decision 4): read per request by
+// the card, never frozen into published_config, so it does not touch publication_revision. MFA-gated because it
+// changes what third-party sites may do with a public surface without a republish.
+trustPageRoutes.put('/:orgId/trust-page/embed', scopes, orgWrite, requireMfa(), zValidator('param', orgParam), zValidator('json', trustEmbedOriginsUpdateSchema), async (c) => {
+  const { orgId } = c.req.valid('param');
+  const ctx = await resolveAccessibleOrg(c, orgId);
+  if (!ctx) return notFound(c);
+  const auth = c.get('auth') as AuthContext;
+  const { origins } = c.req.valid('json');
+  try {
+    const page = await ensureTrustPage(orgId, auth.user.id);
+    const before = page.embedAllowedOrigins ?? [];
+    const [row] = await db.update(trustPages).set({ embedAllowedOrigins: origins, updatedAt: new Date(), updatedByUserId: auth.user.id })
+      .where(eq(trustPages.id, page.id)).returning({ embedAllowedOrigins: trustPages.embedAllowedOrigins });
+    if (!row) return notFound(c);
+    const prev = new Set(before); const next = new Set(row.embedAllowedOrigins);
+    await audit(c, orgId, 'trust_page.embed.update', page.id, {
+      added: row.embedAllowedOrigins.filter((o) => !prev.has(o)), removed: before.filter((o) => !next.has(o)), count: row.embedAllowedOrigins.length,
+    });
+    return c.json({ data: { embedAllowedOrigins: row.embedAllowedOrigins } });
   } catch (err) { return handleError(c, err); }
 });
 

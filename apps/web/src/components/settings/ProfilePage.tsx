@@ -1522,12 +1522,22 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
       </form>
 
       {/* Change Password */}
-      <ChangePasswordForm
-        onSubmit={handlePasswordChange}
-        errorMessage={passwordError}
-        successMessage={passwordSuccess}
-        loading={isChangingPassword}
-      />
+      {isPasswordless ? (
+        <section
+          data-testid="change-password-unavailable"
+          className="space-y-1 rounded-lg border bg-card p-6 shadow-xs"
+        >
+          <h2 className="text-lg font-semibold">{t('changePasswordForm.changePassword')}</h2>
+          <p className="text-sm text-muted-foreground">{t('changePasswordForm.noPasswordNotice')}</p>
+        </section>
+      ) : (
+        <ChangePasswordForm
+          onSubmit={handlePasswordChange}
+          errorMessage={passwordError}
+          successMessage={passwordSuccess}
+          loading={isChangingPassword}
+        />
+      )}
 
       {/* MFA Settings */}
       <MFASettings

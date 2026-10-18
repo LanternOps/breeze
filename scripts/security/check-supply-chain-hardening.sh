@@ -601,8 +601,8 @@ require_grep '(directory: |^ +- )"/apps/web"$' .github/dependabot.yml \
   "Dependabot must cover Web Dockerfiles before digest pinning can be maintained"
 require_grep '(directory: |^ +- )"/docker"$' .github/dependabot.yml \
   "Dependabot must cover release/security Dockerfiles before digest pinning can be maintained"
-require_grep 'language: \[javascript-typescript, go\]' .github/workflows/codeql.yml \
-  "CodeQL must analyze both TypeScript and Go"
+require_grep 'language: \[javascript-typescript, go, actions\]' .github/workflows/codeql.yml \
+  "CodeQL must analyze TypeScript, Go and the Actions workflows"
 
 require_grep "severity: 'HIGH,CRITICAL'" .github/workflows/security.yml \
   "Trivy must fail on HIGH and CRITICAL vulnerabilities"

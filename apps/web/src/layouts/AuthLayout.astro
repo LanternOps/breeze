@@ -2,6 +2,7 @@
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
 import { tServer } from '../lib/i18n/server';
+import { currentSecurityContacts, getAuthFooterLinks } from '../lib/securityContact';
 
 interface Props {
   title?: string;
@@ -12,6 +13,8 @@ const { title, titleKey } = Astro.props;
 const pageTitle = titleKey ? tServer(Astro.locals.locale, titleKey) : title;
 const metaDescription = tServer(Astro.locals.locale, 'layout.metaDescription');
 const tagline = tServer(Astro.locals.locale, 'authLayout.tagline');
+// Operator abuse/security links (#8872): server-side env, empty unless configured.
+const footerLinks = getAuthFooterLinks(currentSecurityContacts(), Astro.url.host);
 ---
 
 <!DOCTYPE html>
@@ -46,6 +49,16 @@ const tagline = tServer(Astro.locals.locale, 'authLayout.tagline');
         </div>
 
         <slot />
+
+        {footerLinks.length > 0 && (
+          <footer class="flex justify-center gap-4 text-xs text-muted-foreground">
+            {footerLinks.map((link) => (
+              <a href={link.href} class="underline-offset-4 hover:text-foreground hover:underline">
+                {tServer(Astro.locals.locale, /* i18n-dynamic */ link.key)}
+              </a>
+            ))}
+          </footer>
+        )}
       </div>
     </div>
   </body>

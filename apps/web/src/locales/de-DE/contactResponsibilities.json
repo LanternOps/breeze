@@ -18,5 +18,7 @@
     "organization": "Gesamte Organisation",
     "site": "Dieser Standort",
     "device_group": "Gerätegruppe"
-  }
+  },
+  "emptyCompact": "Keine verantwortlichen Kontakte",
+  "assign": "Zuweisen"
 }

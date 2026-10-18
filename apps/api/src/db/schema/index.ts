@@ -214,6 +214,7 @@ export * from './backupRestoreAuthorizations';
 export * from './devicePoolAssignmentEvents';
 export * from './aiModelRegistry';
 export * from './aiModelRegistryCutover';
+export * from './aiModelRegistryLegacyArchive';
 export * from './aiInvocations';
 export * from './aiUsageCharges';
 export * from './autopay';

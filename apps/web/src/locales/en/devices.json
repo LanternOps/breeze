@@ -10,7 +10,7 @@
     "site": "Site",
     "policy": "Policy",
     "states": {
-      "not_reported": "No time data yet — this needs an agent update that includes time sync",
+      "not_reported": "No time data yet — agent update required for time sync",
       "unsupported_os": "Not supported on this OS yet"
     },
     "health": {
@@ -384,6 +384,7 @@
     "hide": "hide"
   },
   "deviceActions": {
+    "moreActions": "More actions",
     "unavailable": {
       "offline": "Device is offline",
       "maintenance": "Device is in maintenance mode",
@@ -473,7 +474,7 @@
     },
     "runScript": "Run Script",
     "remoteTools": "Remote Tools",
-    "reRunAgentInventoryCollectorsSo": "Re-run agent inventory collectors so the UI sees fresh hardware/software/network data without waiting for the next heartbeat cycle",
+    "reRunAgentInventoryCollectorsSo": "Collect fresh inventory now",
     "refresh": "Refresh",
     "reboot": "Reboot",
     "wake": "Wake",
@@ -864,7 +865,10 @@
     "loadingDevice": "Loading device...",
     "backToDevices": "Back to devices",
     "goBack": "Go back",
-    "devices": "Devices"
+    "devices": "Devices",
+    "devicesCrumbOtherOrg": "Opens {{deviceOrg}}'s Devices tab; your working org stays {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Opens {{deviceOrg}}'s Devices tab; your working organization does not change",
+    "switchOrgFailed": "Couldn't switch organization. Try again."
   },
   "deviceDetails": {
     "overview": "Overview",
@@ -898,7 +902,7 @@
     "scriptExecutionHistory": "Script execution history",
     "management": "Management",
     "agentSettingsAndDeviceManagement": "Agent settings and device management",
-    "config": "Config",
+    "config": "Configuration",
     "resolvedConfigurationFromAllAssignedPolicies": "Resolved configuration from all assigned policies",
     "security": "Security",
     "playbooks": "Playbooks",
@@ -913,7 +917,7 @@
     "changeHistoryTitle": "Tracked configuration and inventory changes for this device",
     "diskCleanup": "Disk Cleanup",
     "diskUsageAnalysisAndCleanup": "Disk usage analysis and cleanup",
-    "bootPerf": "Boot Perf",
+    "bootPerf": "Boot performance",
     "systemRestore": "System Restore",
     "startupTimeAndBootProcessAnalysis": "Startup time and boot process analysis",
     "backup": "Backup",
@@ -950,7 +954,13 @@
       "extensions": "Extensions"
     },
     "workloads": "Workloads",
-    "workloadsTitle": "Containers and virtual machines on this host"
+    "workloadsTitle": "Containers and virtual machines on this host",
+    "offlineLastSeen": "Offline · last seen {{ago}}",
+    "locatedIn": "in <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Viewing a {{org}} device",
+      "switch": "Switch to {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Failed to isolate device",
@@ -1509,7 +1519,8 @@
     "tags": "Tags",
     "customFields": "Custom Fields",
     "text2": "*",
-    "edit": "Edit"
+    "edit": "Edit",
+    "roleNotAssessed": "Role not assessed yet"
   },
   "deviceIpHistoryTab": {
     "true": "true",
@@ -1591,6 +1602,7 @@
       "os": "OS",
       "role": "Role",
       "status": "Status",
+      "attention": "Attention",
       "cpu": "CPU %",
       "ram": "RAM %",
       "lastSeen": "Last Seen",
@@ -1766,6 +1778,26 @@
       "equalTooltip": "Matches the effective version {{version}}",
       "aheadTooltip": "Ahead of pin {{version}}",
       "behindTooltip": "Behind pin {{version}}"
+    },
+    "attention": {
+      "alerts": {
+        "critical_one": "{{count}} critical",
+        "critical_other": "{{count}} critical",
+        "high_one": "{{count}} high",
+        "high_other": "{{count}} high",
+        "medium_one": "{{count}} medium",
+        "medium_other": "{{count}} medium",
+        "low_one": "{{count}} low",
+        "low_other": "{{count}} low",
+        "info_one": "{{count}} info",
+        "info_other": "{{count}} info"
+      },
+      "tickets_one": "{{count}} open ticket",
+      "tickets_other": "{{count}} open tickets",
+      "alertsTitle": "Open alerts: {{breakdown}}",
+      "none": "Nothing open",
+      "unavailable": "Alert and ticket counts unavailable",
+      "loading": "Loading alert and ticket counts"
     }
   },
   "deviceLogsTab": {
@@ -2019,16 +2051,18 @@
     },
     "loading": "Loading performance graphs...",
     "metrics": {
-      "cpu": "Cpu",
+      "cpu": "CPU",
       "disk": "Disk",
       "download": "Download",
-      "ram": "Ram",
+      "ram": "RAM",
       "readThroughput": "Read Throughput",
       "upload": "Upload",
       "writeThroughput": "Write Throughput"
     },
     "networkBandwidth": "Network Bandwidth",
-    "title": "Performance Graphs"
+    "title": "Performance Graphs",
+    "noSamples": "No samples in the last {{range}}",
+    "offlineSince": "Device offline · last seen {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2105,7 +2139,7 @@
     "details": "details",
     "disabled": "Reliability scoring is disabled for this organization.",
     "distinctEvents": "Distinct events from the {{window}}.",
-    "empty": "No reliability snapshot available yet.",
+    "empty": "No reliability data yet",
     "errors": {
       "loadDetail": "Failed to load reliability detail",
       "loadScore": "Failed to load reliability score",
@@ -2451,7 +2485,7 @@
     "loadFailed": "Couldn't load warranty.",
     "lookupUnavailable": "Warranty lookup not available for this manufacturer",
     "manufacturer": "Manufacturer",
-    "noInformation": "No warranty information",
+    "noInformation": "No warranty on file",
     "renews": "Renews",
     "serialNumber": "Serial Number",
     "source": "Source: {{source}}",
@@ -2477,7 +2511,8 @@
       "refreshing": "Refreshing warranty…",
       "stillInProgress": "Warranty refresh is still in progress; the card will update when it completes.",
       "updated": "Warranty information updated."
-    }
+    },
+    "lookUp": "Look up"
   },
   "devicesPage": {
     "accessDenied": "You don't have permission to view devices.",
@@ -2612,6 +2647,21 @@
       "installAgent": "Install agent…",
       "addNetworkAsset": "Add network asset…",
       "addManualAsset": "Add asset manually…"
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} will be sent to {{count}} device(s) {{scope}}.",
+      "messageSplit": "{{action}} will be sent to {{count}} device(s) {{scope}}: {{online}} online now · {{queued}} queued for next check-in.",
+      "scopeMulti": "across {{count}} organizations ({{orgs}})",
+      "scopeSingle": "in {{org}}",
+      "title": "{{action}} {{count}} device(s)?",
+      "verbs": {
+        "lock": "Lock",
+        "maintenanceOff": "End maintenance",
+        "reboot": "Reboot",
+        "reboot_safe_mode": "Reboot into safe mode",
+        "shutdown": "Shut down",
+        "wake": "Wake"
+      }
     }
   },
   "filterAddDropdown": {
@@ -4420,5 +4470,17 @@
     "updatesPaused": "Live updates paused — retrying",
     "closeNotAnnounced": "The chat is closed here. The user's chat window may stay open until their device reconnects or they reply.",
     "unavailable": "This chat is no longer available"
+  },
+  "deviceOverviewState": {
+    "label": "Device state",
+    "lastCheckIn": "Last check-in {{ago}}",
+    "openAlerts_one": "{{count}} open alert",
+    "openAlerts_other": "{{count}} open alerts",
+    "openTickets_one": "{{count}} open ticket",
+    "openTickets_other": "{{count}} open tickets",
+    "noOpenAlerts": "No open alerts",
+    "untitledAlert": "Alert reported",
+    "alertsUnavailable": "Couldn't load open alerts",
+    "viewAlerts": "View alerts"
   }
 }

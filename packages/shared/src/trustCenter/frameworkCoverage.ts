@@ -49,6 +49,11 @@ export function summarizeFrameworkCoverage(payload: TrustPagePublicPayload, fram
 
   for (const c of payload.controls) {
     add(c.frameworkRefs, { id: c.id, source: 'telemetry', status: c.status, counts: c.status !== 'not_assessed' });
+    // W3e: a safeguard evidenced by hardening checks counts like a referenced one, once per ref (the Sets dedupe
+    // a ref that a control also references). Present only while the CIS view is on, and always cis_v8.
+    for (const sg of c.safeguards ?? []) {
+      add([{ framework: sg.framework, ref: sg.ref }], { id: c.id, source: 'telemetry', status: sg.status, counts: sg.status !== 'not_assessed' });
+    }
   }
   for (const d of payload.declaredControls) {
     add(d.frameworkRefs, { id: d.id, source: 'declared', status: d.status, counts: d.status === 'current' });

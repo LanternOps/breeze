@@ -93,11 +93,13 @@ describe('createAnthropicKeyConnection', () => {
     expect(out).toEqual({ connectionId: 'c-new', last4: '1234', configVersion: 1 });
   });
 
-  it('refuses a second Anthropic connection under the lock (R1 cap)', async () => {
+  it('connects a second Anthropic connection without moving platform references (W08b: compat_uq dropped)', async () => {
     remap.lockAnthropicConnectionIds.mockResolvedValue(['c1']);
-    await expect(createAnthropicKeyConnection({ partnerId: 'p1', apiKey: 'sk-ant-1234', userId: 'u1' }))
-      .rejects.toMatchObject({ status: 409 });
-    expect(remap.connectAnthropicConnection).not.toHaveBeenCalled();
+    const out = await createAnthropicKeyConnection({ partnerId: 'p1', apiKey: 'sk-ant-1234', userId: 'u1' });
+    expect(remap.connectAnthropicConnection).toHaveBeenCalledWith('p1', expect.objectContaining({
+      kind: 'anthropic_byok', movePlatformReferences: false,
+    }));
+    expect(out).toEqual({ connectionId: 'c-new', last4: '1234', configVersion: 1 });
   });
 
   it('maps a partner without registry rows to the recoverable 503', async () => {

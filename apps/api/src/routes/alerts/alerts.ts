@@ -25,16 +25,18 @@ import {
   ALERT_CAS_LOST_MESSAGE,
   ALERT_DISMISS_CAS_LOST_MESSAGE,
   ALERT_SUPPRESS_CAS_LOST_MESSAGE,
+  ALERT_UNSUPPRESS_CAS_LOST_MESSAGE,
   buildAcknowledgeAlertCas,
   buildDismissAlertCas,
   buildResolveAlertCas,
   buildSuppressAlertCas,
+  buildUnsuppressAlertCas,
 } from '../../services/alertService';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { publishEvent } from '../../services/eventBus';
 import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
-import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
+import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, unsuppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
 import { fillStoredAlertCopy } from './alertCopy';
 import { withAlertActorNames } from './actorNames';
@@ -1207,6 +1209,65 @@ alertsRoutes.post(
         nextStatus: updated.status,
         suppressedUntil: suppressedUntil ? suppressedUntil.toISOString() : null,
       },
+    });
+
+    return c.json(updated);
+  }
+);
+
+// POST /alerts/:id/unsuppress - Lift a mute (server half of the Mute toast "Undo", #8966)
+//
+// Restores the caller-supplied pre-mute status, falling back to 'acknowledged' when
+// acknowledgedAt is set, else 'active'. Compare-and-swap on
+// status = 'suppressed' so a stale undo can never reopen a resolved/dismissed alert.
+alertsRoutes.post(
+  '/:id/unsuppress',
+  requireScope('organization', 'partner', 'system'),
+  requireAlertWrite,
+  zValidator('param', alertIdParamSchema),
+  zValidator('json', unsuppressAlertSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: alertId } = c.req.valid('param');
+    const { restoreStatus: requestedStatus } = c.req.valid('json');
+
+    const alert = await getAlertWithOrgCheck(alertId, auth);
+    if (!alert) {
+      return c.json({ error: 'Alert not found' }, 404);
+    }
+    if (alert.status !== 'suppressed') {
+      return c.json({ error: ALERT_UNSUPPRESS_CAS_LOST_MESSAGE }, 409);
+    }
+
+    // The caller knows the pre-mute status; acknowledgedAt alone is only a fallback
+    // (the expiry reaper returns muted alerts to 'active' without clearing it).
+    const restoredStatus = requestedStatus ?? (alert.acknowledgedAt ? 'acknowledged' : 'active');
+    const [updated] = await db
+      .update(alerts)
+      .set({ status: restoredStatus, suppressedUntil: null })
+      .where(buildUnsuppressAlertCas(alertId))
+      .returning();
+    if (!updated) {
+      return c.json({ error: ALERT_UNSUPPRESS_CAS_LOST_MESSAGE }, 409);
+    }
+
+    await emitAlertStateFeedback({
+      orgId: alert.orgId,
+      alertId: updated.id,
+      eventType: 'alert.reopened',
+      outcome: 'reopened',
+      actorUserId: auth.user.id,
+      occurredAt: new Date(),
+      metadata: { source: 'alerts.route', restoredStatus },
+    });
+
+    writeRouteAudit(c, {
+      orgId: alert.orgId,
+      action: 'alert.unsuppress',
+      resourceType: 'alert',
+      resourceId: updated.id,
+      resourceName: updated.title,
+      details: { previousStatus: alert.status, nextStatus: updated.status },
     });
 
     return c.json(updated);

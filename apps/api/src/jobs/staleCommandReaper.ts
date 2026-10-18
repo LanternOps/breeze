@@ -32,6 +32,7 @@ import {
 import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
 import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain';
 import { captureException } from '../services/sentry';
+import { releaseFilesystemScanGenerationForCommand } from '../services/filesystemScanGenerationRelease';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
 import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
@@ -320,6 +321,23 @@ export async function propagateTimedOutDeviceCommand(params: {
         `[StaleCommandReaper] Timed-out ${params.commandType} command ${commandId} names no valid backup job id; ` +
         'its job is left to the backup reaper',
       );
+    }
+  }
+
+  // #9105 — a filesystem_analysis command the reaper times out never reaches
+  // handleFilesystemAnalysisCommandResult, so release the volume's scan
+  // generation here (conditionally on this command still owning it) or older
+  // good results keep being dropped as superseded. Contained like the blocks
+  // above: a failure must not skip the DR reconcile.
+  if (params.commandType === 'filesystem_analysis' && params.deviceId) {
+    try {
+      await releaseFilesystemScanGenerationForCommand(
+        { id: commandId, deviceId: params.deviceId, payload },
+        params.kind ?? 'timeout',
+      );
+    } catch (err) {
+      console.error(`[StaleCommandReaper] Failed to release filesystem scan generation for timed-out command ${commandId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
 

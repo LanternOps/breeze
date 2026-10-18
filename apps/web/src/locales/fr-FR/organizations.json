@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Appareils",
-        "devicesSub": "{{online}} sur {{total}} en ligne",
         "alerts": "Alertes ouvertes",
-        "alertsSub": "{{critical}} critiques · {{high}} élevées",
         "tickets": "Tickets ouverts",
-        "ticketsSub": "{{count}} en attente du client",
         "contracts": "Contrats actifs",
         "contractsSub": "Prochain renouvellement {{date}}",
         "contractsNoRenewal": "Aucun renouvellement à venir",
-        "invoices": "Impayé",
         "invoicesSub": "Prochaine échéance {{date}}",
         "invoicesOverdue_one": "{{count}} en retard",
         "invoicesOverdue_other": "{{count}} en retard",
@@ -94,7 +90,23 @@
       },
       "lastActivity": "Dernière activité {{date}}",
       "noSummary": "Les totaux récapitulatifs ne sont pas disponibles pour le moment.",
-      "archivedNotice": "Les données de synthèse ne sont pas affichées pour les organisations archivées."
+      "archivedNotice": "Les données de synthèse ne sont pas affichées pour les organisations archivées.",
+      "fleet": {
+        "title": "État du parc",
+        "total": "Au total",
+        "allOnline": "Tous en ligne",
+        "noDevices": "Aucun appareil",
+        "critical": "Critiques",
+        "high": "Élevées",
+        "otherAlerts": "Autres",
+        "noAlerts": "Aucune alerte ouverte",
+        "awaitingCustomer": "En attente du client",
+        "noTickets": "Aucun ticket ouvert"
+      },
+      "account": {
+        "title": "Compte",
+        "invoices": "Factures impayées"
+      }
     },
     "archived": {
       "banner": "Cette organisation est archivée et en lecture seule. Restaurez-la pour apporter des modifications.",
@@ -531,6 +543,29 @@
         "copy": "Copier l'extrait",
         "copied": "Extrait copié",
         "copyFailed": "Impossible de copier l'extrait."
+      },
+      "embed": {
+        "title": "Intégrer sur votre site web",
+        "description": "Affichez une carte compacte et à jour de la posture de sécurité sur votre propre site, dans une iframe. Seuls les sites listés ici peuvent l’afficher ; la page de confiance complète ne peut jamais être intégrée.",
+        "liveNote": "Les modifications s’appliquent au prochain chargement de la carte intégrée ; aucune republication n’est nécessaire.",
+        "unpublishedNote": "La carte intégrée s’affiche une fois la page publiée.",
+        "originLabel": "Adresse du site (https uniquement, sans chemin)",
+        "add": "Ajouter un site",
+        "remove": "Retirer",
+        "save": "Enregistrer les sites",
+        "saved": "Sites d’intégration enregistrés",
+        "saveFailed": "Impossible d’enregistrer les sites d’intégration.",
+        "invalidOrigin": "Saisissez une adresse https exacte, sans chemin, joker ni adresse IP, par exemple https://www.example.com",
+        "duplicateOrigin": "Ce site figure déjà dans la liste.",
+        "maxReached": "Vous pouvez autoriser au plus {{max}} sites.",
+        "preview": "Sera enregistré sous la forme",
+        "snippetLabel": "HTML d’intégration",
+        "frameTitle": "Carte de posture de sécurité",
+        "copy": "Copier l’extrait",
+        "copied": "Extrait copié",
+        "copyFailed": "Impossible de copier l’extrait.",
+        "emptyNote": "Ajoutez au moins un site pour activer l’intégration.",
+        "mfaRequired": "La modification des sites d’intégration exige l’authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
       }
     },
     "documents": {

@@ -40,7 +40,7 @@ function publishedW1Page(): TrustPageRow {
     // W1 rows keep their explicit values; the W2 draft columns differ to prove the refresh ignores them.
     searchIndexable: false, showPercentages: true, showDeviceCount: true, showManagedBy: true,
     securityContactEmail: null, websiteUrl: null, introHtml: '<p>Draft edit</p>', hiddenControlIds: [],
-    frameworkView: ['essential_eight'], showHistory: true, ndaText: 'Draft NDA', accessRequestCreatesTicket: false,
+    frameworkView: ['essential_eight'], showHistory: true, ndaText: 'Draft NDA', accessRequestCreatesTicket: false, embedAllowedOrigins: [],
     publicationAuthorizedBy: 'Jane Doe, COO', publicationAuthorizedAt: now, publicationAuthorizedByUserId: null,
     lastEvaluatedAt: now, publishedConfig: W1_FIXTURE_CONFIG as never, createdByUserId: null, updatedByUserId: null, createdAt: now, updatedAt: now,
   };

@@ -89,13 +89,13 @@ func TestRecoveryVerifiedAcceptsAuthRejectedMarker(t *testing.T) {
 	health := watchdog.NewHealthChecker(nil, nil, 3*time.Minute)
 	deadline := time.Now().Add(-10 * time.Second)
 
-	ok, viaAuth := recoveryVerified(&state.AgentState{AuthRejectedAt: time.Now()}, health, deadline)
-	if !ok || !viaAuth {
-		t.Fatalf("recoveryVerified = (%v, %v), want (true, true)", ok, viaAuth)
+	ok, via := recoveryVerified(&state.AgentState{AuthRejectedAt: time.Now()}, health, deadline)
+	if !ok || via != verifiedViaAuthRejected {
+		t.Fatalf("recoveryVerified = (%v, %q), want (true, %q)", ok, via, verifiedViaAuthRejected)
 	}
-	ok, viaAuth = recoveryVerified(&state.AgentState{LastHeartbeat: time.Now()}, health, deadline)
-	if !ok || viaAuth {
-		t.Fatalf("heartbeat path: recoveryVerified = (%v, %v), want (true, false)", ok, viaAuth)
+	ok, via = recoveryVerified(&state.AgentState{LastHeartbeat: time.Now()}, health, deadline)
+	if !ok || via != verifiedViaHeartbeat {
+		t.Fatalf("heartbeat path: recoveryVerified = (%v, %q), want (true, %q)", ok, via, verifiedViaHeartbeat)
 	}
 	// Evidence older than the deadline belongs to the previous process.
 	ok, _ = recoveryVerified(&state.AgentState{AuthRejectedAt: deadline.Add(-time.Second), LastHeartbeat: deadline.Add(-time.Second)}, health, deadline)

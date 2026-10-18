@@ -171,6 +171,28 @@ describe('McpClient', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('(f) keeps surfacing auth-builder failures as McpClientError after the shared-builder refactor (W2)', async () => {
+    const mismatch = new McpClient({
+      endpointUrl: BASE_URL,
+      credentialOrigin: 'https://attacker.example.com',
+      auth: { authKind: 'bearer', token: 'tok123' },
+      fetchImpl: vi.fn(),
+    });
+    const mismatchErr = await mismatch.listTools().catch((e) => e);
+    expect(mismatchErr).toBeInstanceOf(McpClientError);
+    expect(mismatchErr.code).toBe('origin_mismatch');
+
+    const tokenFails = new McpClient({
+      endpointUrl: BASE_URL,
+      credentialOrigin: ORIGIN,
+      auth: { authKind: 'oauth2_client_credentials', tokenUrl: 'https://id.example.com/token', clientId: 'w2-refactor', clientSecret: 's' },
+      fetchImpl: vi.fn().mockResolvedValue(new Response('denied', { status: 401 })),
+    });
+    const tokenErr = await tokenFails.listTools().catch((e) => e);
+    expect(tokenErr).toBeInstanceOf(McpClientError);
+    expect(tokenErr.code).toBe('auth');
+  });
+
   it('(f) does not require origin agreement when auth is none', async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse({ jsonrpc: '2.0', id: 1, result: { tools: [] } }));
     const client = new McpClient({

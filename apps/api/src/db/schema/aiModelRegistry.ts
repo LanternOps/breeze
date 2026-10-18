@@ -59,9 +59,6 @@ export const partnerAiConnections = pgTable('partner_ai_connections', {
 }, (t) => [
   unique('partner_ai_connections_id_partner_uq').on(t.id, t.partnerId),
   index('partner_ai_connections_partner_idx').on(t.partnerId),
-  // Disconnected rows are kept as provenance (#7700 finding 1) and do not count.
-  uniqueIndex('partner_ai_connections_compat_uq').on(t.partnerId)
-    .where(sql`${t.kind} IN (${sql.raw(ANTHROPIC_API_CHECK_LITERALS)}) AND ${t.status} <> 'disconnected'`),
   check('partner_ai_connections_kind_chk', sql`${t.kind} IN (${sql.raw(KIND_CHECK_LITERALS)})`),
   check('partner_ai_connections_status_chk', sql`${t.status} IN ('active', 'error', 'disconnected')`),
   check('partner_ai_connections_shape_chk', sql`(${t.kind} = 'catalog') = (${t.catalogEntryId} IS NOT NULL) AND (${t.kind} = 'openai_compatible') = (${t.baseUrl} IS NOT NULL) AND (${t.kind} NOT IN (${sql.raw(ANTHROPIC_API_CHECK_LITERALS)}) OR ${t.status} = 'disconnected' OR ${t.apiKeyEncrypted} IS NOT NULL)`),

@@ -278,12 +278,21 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if consentGated {
 		consent = h.runConsentGate(sessionID, prompt, targetSession)
 		if !consent.proceed {
+			// A newer start admitted while this prompt was up owns the
+			// session now. Report this start as superseded, not denied: a
+			// consent_denied marker would finalize the session the newer
+			// start is about to serve, and the target and leases are its.
+			if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok && reason == desktopFenceReasonSuperseded {
+				log.Warn("dropping the consent verdict of a start superseded while its prompt was up",
+					"sessionId", sessionID, "commandId", cmd.ID, "reason", consent.reason, "outcome", consent.outcome)
+				return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
+			}
 			log.Info("remote session denied by consent gate",
 				"sessionId", sessionID, "reason", consent.reason, "outcome", consent.outcome)
 			// The session never started — no disconnect event will ever arrive
-			// to release this via handleConsentSessionEnd, so clear it here.
-			h.releaseDesktopLeases(sessionID)
-			h.takeDesktopTarget(sessionID)
+			// to release this via handleConsentSessionEnd, so clear it here
+			// (unless a newer start for the session now owns it).
+			h.releaseFailedDesktopStart(sessionID, fenceInput)
 			if consent.detail == consentDetailSessionEnded {
 				// A stop withdrew the prompt: report it as the stop it was.
 				return tools.NewErrorResult(desktopStartTombstonedError(), time.Since(start).Milliseconds())
@@ -304,13 +313,18 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
-	// Name the viewer for the Quick Support indicator only now that this
-	// start has passed the consent gate and is still the session's current
-	// start, as the WebSocket path does: a denied or superseded start never
-	// renames the indicator of a viewing already on screen.
-	if ok, _ := h.desktopStartFence.stillCurrent(sessionID, fenceInput); ok {
-		h.noteSupportViewer(prompt)
+	// Consent, helper leases and the resync all take time. A stop or a newer
+	// start that landed meanwhile wins: refuse here, before capture is
+	// created, as the WebSocket fallback path does (#8955). Only then name the
+	// viewer for the Quick Support indicator, so a denied or superseded start
+	// never renames the indicator of a viewing already on screen.
+	if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok {
+		log.Warn("refusing start_desktop: the session moved on while the start was in flight",
+			"sessionId", sessionID, "commandId", cmd.ID, "reason", string(reason))
+		h.releaseFailedDesktopStart(sessionID, fenceInput)
+		return tools.NewErrorResult(streamStartOvertakenError(reason), time.Since(start).Milliseconds())
 	}
+	h.noteSupportViewer(prompt)
 
 	// Route through IPC helper when running headless (no display access).
 	// ScreenCaptureKit requires a GUI session (Aqua) — root daemons on macOS
@@ -346,8 +360,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 			// will come to release the target or the leases. Clear both now.
 			// startDesktopOnDemand already did this for the on-demand path;
 			// both are idempotent, and this covers every other failure exit.
-			h.releaseDesktopLeases(sessionID)
-			h.takeDesktopTarget(sessionID)
+			h.releaseFailedDesktopStart(sessionID, fenceInput)
 		}
 		result.DurationMs = time.Since(start).Milliseconds()
 		return result
@@ -361,8 +374,7 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if err != nil {
 		// Direct start failed — same reasoning as the helper-start-failed case
 		// above: nothing will disconnect to release the target.
-		h.releaseDesktopLeases(sessionID)
-		h.takeDesktopTarget(sessionID)
+		h.releaseFailedDesktopStart(sessionID, fenceInput)
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
 	// Same post-start tombstone re-check as the helper path above.
@@ -406,6 +418,11 @@ func (h *Heartbeat) admitDesktopStartAtFence(sessionID string, cmd Command, star
 		return fenceInput, &r
 	}
 	fenceInput.CommandID = cmd.ID
+	// Announce this start before deciding it, so a concurrent older start for
+	// the same session that is still deciding (parked on its resync) loses to
+	// it rather than racing it to capture (#8955).
+	release := h.desktopStartFence.beginAdmission(sessionID, fenceInput)
+	defer release()
 	decision := h.desktopStartFence.admitStart(sessionID, fenceInput)
 	if decision.NeedsSync {
 		// The fence has no in-process record of this session — fresh install,
@@ -438,6 +455,26 @@ func (h *Heartbeat) admitDesktopStartAtFence(sessionID string, cmd Command, star
 		return fenceInput, &r
 	}
 	return fenceInput, nil
+}
+
+// releaseFailedDesktopStart releases the per-session target and helper leases
+// a start_desktop took, after that start failed or was refused before it
+// produced a live session.
+//
+// Both are keyed by the desktop session id alone, which a newer start for the
+// same session shares. When this start has been superseded, that newer start
+// has already been admitted and owns them — releasing here would pull the
+// lease out from under it and leave it streaming unleased (#8955). It then
+// releases them itself on its own failure path, or keeps them for its live
+// session. A terminal session has no newer owner, so it releases as before.
+func (h *Heartbeat) releaseFailedDesktopStart(sessionID string, fenceInput desktopStartFenceInput) {
+	if ok, reason := h.desktopStartFence.stillCurrent(sessionID, fenceInput); !ok && reason == desktopFenceReasonSuperseded {
+		log.Info("leaving the desktop target and leases to the newer start for this session",
+			"sessionId", sessionID, "generation", fenceInput.Generation)
+		return
+	}
+	h.releaseDesktopLeases(sessionID)
+	h.takeDesktopTarget(sessionID)
 }
 
 // directStartResult builds the direct-mode start result. In consent mode it

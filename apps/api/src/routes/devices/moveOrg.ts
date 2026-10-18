@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, eq, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runAfterDbContextCommit } from '../../db';
 import { sites, organizations } from '../../db/schema';
 import {
   authMiddleware,
@@ -37,6 +37,7 @@ import {
   PamDeviceMoveBlockedError,
 } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
+import { invalidateDevicePolicyCaches } from '../../services/devicePolicyCache';
 import { checkPoolMembershipTransition } from '../../services/unassignedPool/orgType';
 import { TicketServiceError } from '../../services/ticketService';
 import { scheduleTicketLinkRemovalNotes } from '../../services/ticketLinkMoveNotes';
@@ -340,6 +341,12 @@ moveOrgRoutes.post(
     // tickets. Registered here, once the move is final, and run only after
     // the request transaction commits (never inside the move: see moveTicketOrg).
     scheduleTicketLinkRemovalNotes(moved!.removedTicketLinks);
+
+    // #8257: drop the device's cached heartbeat policy config once the move
+    // has committed. The entries are org-bound, so this is belt and braces —
+    // an entry a racing beat writes for the source org is never served to the
+    // target org either.
+    runAfterDbContextCommit('devices.moveOrg.policyCacheInvalidate', () => invalidateDevicePolicyCaches(deviceId));
 
     await expireDiagnosticApprovalsForMovedDevice(deviceId).catch((error) => {
       console.error(`[devices.moveOrg] failed to expire diagnostic access approvals for ${deviceId}:`, error);

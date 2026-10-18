@@ -22,6 +22,7 @@ import {
   getPolicyWithOrgCheck,
   automationPolicyOwnershipCondition,
   getPolicyComplianceMap,
+  getDistinctDeviceCompliance,
   complianceSiteCondition,
   buildComplianceSummary,
   extractViolationsFromComplianceDetails,
@@ -332,17 +333,6 @@ complianceRoutes.get(
     // Merge all policies for summary
     const allPolicies = [...policies, ...configPolicyEntries];
 
-    const overall = allPolicies.reduce(
-      (acc, policy) => {
-        acc.total += policy.compliance.total;
-        acc.compliant += policy.compliance.compliant;
-        acc.nonCompliant += policy.compliance.nonCompliant;
-        acc.unknown += policy.compliance.unknown;
-        return acc;
-      },
-      { total: 0, compliant: 0, nonCompliant: 0, unknown: 0 }
-    );
-
     // --- Non-compliant devices: legacy ---
     const policyIdSet = new Set(policyIds);
     let nonCompliantDevices: Array<{
@@ -489,6 +479,15 @@ complianceRoutes.get(
         byEnforcement[key] += 1;
       }
     }
+
+    // Device-level overview: every device counted once at its worst status
+    // across all policies (#8967). Per-policy `compliance` entries above stay
+    // per-policy observations.
+    const overall = await getDistinctDeviceCompliance(
+      policyIds,
+      configFeatureLinkIds,
+      perms?.allowedSiteIds
+    );
 
     const complianceOverview = {
       compliant: overall.compliant,

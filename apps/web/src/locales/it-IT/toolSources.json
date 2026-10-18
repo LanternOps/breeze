@@ -1,9 +1,9 @@
 {
   "title": "Fonti degli strumenti",
-  "subtitle": "Connetti un server MCP in modo che i suoi strumenti diventino disponibili nella chat IA, con livelli di rischio e approvazioni per ogni strumento.",
+  "subtitle": "Connetti un server MCP o un’API OpenAPI (REST) in modo che i suoi strumenti diventino disponibili nella chat IA, con livelli di rischio e approvazioni per ogni strumento.",
   "empty": {
     "title": "Nessuna fonte di strumenti",
-    "body": "Aggiungi un server MCP per dare all’assistente accesso in lettura e scrittura ai sistemi che il tuo team utilizza già."
+    "body": "Aggiungi un server MCP o un’API OpenAPI per dare all’assistente accesso in lettura e scrittura ai sistemi che il tuo team utilizza già."
   },
   "list": {
     "add": "Aggiungi fonte",
@@ -24,9 +24,14 @@
     "slugHelp": "Viene anteposto a ogni strumento di questa fonte, ad esempio hudu__get_asset. Solo lettere minuscole e cifre.",
     "kind": "Tipo",
     "kindMcp": "Server MCP",
-    "kindOpenapiSoon": "OpenAPI (disponibile in una versione futura)",
+    "kindOpenapi": "OpenAPI (API REST)",
     "endpoint": "URL dell’endpoint",
+    "endpointMcp": "URL del server MCP",
+    "endpointOpenapi": "URL di base dell’API",
     "endpointHelp": "Usa HTTPS, oppure HTTP se le connessioni in uscita verso reti private sono abilitate su un server autogestito. Le credenziali vengono inviate solo a questa origine.",
+    "endpointHelpOpenapi": "Ogni operazione viene chiamata su questo URL e le credenziali vengono inviate solo alla sua origine. Gli URL dei server indicati nel documento vengono ignorati.",
+    "specUrl": "URL del documento OpenAPI",
+    "specUrlHelp": "Dove Breeze legge la descrizione dell’API. La credenziale viene inviata con questa richiesta solo se il documento è servito dalla stessa origine dell’URL di base dell’API.",
     "authKind": "Autenticazione",
     "rateLimit": "Chiamate al minuto",
     "scope": "Disponibilità",
@@ -62,9 +67,25 @@
     "deleteTitle": "Eliminare questa fonte di strumenti?",
     "deleteConfirm": "I suoi strumenti rilevati smettono immediatamente di essere offerti alla chat IA e la credenziale memorizzata viene distrutta. Questa azione non può essere annullata.",
     "endpoint": "Punto di connessione",
+    "specUrl": "Documento OpenAPI",
     "lastDiscovered": "Ultimo rilevamento",
     "discovering": "Rilevamento strumenti in corso…",
     "loadFailed": "Impossibile caricare questa fonte di strumenti.",
+    "skippedHeading": "Operazioni saltate",
+    "skippedBody": "Queste operazioni non sono state trasformate in strumenti. Breeze salta ciò che non può chiamare in sicurezza invece di tirare a indovinare.",
+    "skippedShowing": "Visualizzati {{shown}} di {{total}}",
+    "summaryAt": "Dall’esecuzione di rilevamento del {{at}}.",
+    "serverOriginWarning": "Il documento elenca URL di server su altre origini. Sono stati ignorati: le operazioni vengono inviate solo all’URL di base dell’API.",
+    "skipReasons": {
+      "unsupported_method": "Metodo HTTP non supportato (OPTIONS/TRACE)",
+      "unsupported_path": "Il percorso non può essere chiamato in sicurezza",
+      "unsupported_param_style": "Stile o posizione del parametro non supportati (cookie, deepObject, …)",
+      "unsupported_request_body": "Il corpo della richiesta non è JSON",
+      "unsupported_security_location": "Richiede una credenziale nella query string, in un cookie, OpenID Connect o TLS reciproco",
+      "schema_too_large": "Lo schema di input generato supera i 64 KB",
+      "too_many_parameters": "Più di 100 parametri",
+      "name_not_addressable": "Il nome non rientra nel limite di 64 caratteri per i nomi degli strumenti"
+    },
     "status": {
       "active": "Attiva",
       "error": "Errore",
@@ -75,6 +96,8 @@
     "heading": "Strumenti rilevati",
     "empty": "Nessuno strumento rilevato finora. Esegui un rilevamento per recuperare l’elenco degli strumenti di questo server.",
     "name": "Strumento",
+    "method": "Metodo",
+    "path": "Percorso",
     "description": "Descrizione",
     "proposedTier": "Proposto",
     "tier": "Livello di rischio",

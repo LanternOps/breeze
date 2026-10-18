@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useId } from 'react';
 import { Monitor, MonitorOff, ExternalLink, Download, X, Globe } from 'lucide-react';
 import * as Sentry from '@sentry/astro';
 import type { DesktopAccessState, RemoteAccessPolicy } from '@breeze/shared';
@@ -116,6 +116,9 @@ function desktopAccessUnavailableReason(
 
 export default function ConnectDesktopButton({ deviceId, className = '', compact = false, iconOnly = false, disabled = false, disabledTitle, isHeadless = false, desktopAccess = null, remoteAccessPolicy = null, helperLifecycleMode = null }: Props) {
   const { t } = useTranslation('remote');
+  // #9026: the full-size button stays focusable while unavailable
+  // (aria-disabled) and points at this visually-hidden reason.
+  const reasonId = useId();
   const [status, setStatus] = useState<'idle' | 'creating' | 'launching' | 'fallback' | 'denied' | 'ending' | 'revoked' | 'loginWindow' | 'unavailable' | 'startFailed'>('idle');
   // #7335: the agent's (server-redacted) reason for a failed start_desktop.
   const [startFailedReason, setStartFailedReason] = useState<string | null>(null);
@@ -559,12 +562,13 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
   // Entry point for a connect click. RDS hosts open the session picker first;
   // everything else connects immediately (unchanged behavior).
   const handleClick = useCallback(() => {
+    if (disabled) return;
     if (helperLifecycleMode === 'on-demand') {
       setPickerOpen(true);
       return;
     }
     void startConnect();
-  }, [helperLifecycleMode, startConnect]);
+  }, [disabled, helperLifecycleMode, startConnect]);
 
   const handleDismiss = useCallback(() => {
     setVncFallback(null);
@@ -1046,13 +1050,15 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       <div className={`relative ${className}`}>
         <button
           type="button"
-          disabled
+          aria-disabled="true"
           title={unavailableTitle}
-          className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium text-muted-foreground cursor-not-allowed opacity-50"
+          aria-describedby={unavailableTitle ? reasonId : undefined}
+          className="flex h-9 items-center gap-2 rounded-md border bg-background px-4 text-sm font-medium text-muted-foreground cursor-not-allowed"
         >
-          <MonitorOff className="h-4 w-4" />
+          <MonitorOff className="h-4 w-4" aria-hidden="true" />
           {t('connectDesktopButton.desktopUnavailable')}
         </button>
+        {unavailableTitle && <span id={reasonId} className="sr-only">{unavailableTitle}</span>}
       </div>
     );
   }
@@ -1101,16 +1107,21 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       <div className="relative">
         <button
           type="button"
+          role="menuitem"
+          tabIndex={-1}
           onClick={handleClick}
-          disabled={disabled || status === 'creating' || status === 'launching'}
+          aria-disabled={disabled || status === 'creating' || status === 'launching' ? true : undefined}
           title={error || (disabled ? disabledTitle : undefined)}
-          className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
+          className={`flex w-full items-center gap-2 px-4 py-2 text-left text-sm hover:bg-muted aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${error ? 'text-red-500' : ''}`}
         >
           <Monitor className="h-4 w-4" />
           {error ? t('connectDesktopButton.errors.connectionFailed') :
            status === 'creating' ? t('connectDesktopButton.connecting') :
            status === 'launching' ? t('connectDesktopButton.launching') :
            t('connectDesktopButton.connectDesktop')}
+          {status === 'idle' && !error && (
+            <span className="sr-only"> {t('connectDesktopButton.opensNewWindow')}</span>
+          )}
         </button>
         {fallbackContent}
         {deniedContent}
@@ -1128,17 +1139,29 @@ export default function ConnectDesktopButton({ deviceId, className = '', compact
       <button
         type="button"
         onClick={handleClick}
-        disabled={disabled || status === 'creating' || status === 'launching'}
+        // #9026: `disabled` (offline etc.) keeps the button in the Tab order so
+        // its reason is reachable; handleClick already ignores the click. Only
+        // the in-flight states use the native attribute.
+        disabled={status === 'creating' || status === 'launching'}
+        aria-disabled={disabled || undefined}
         title={error || (disabled ? disabledTitle : undefined)}
-        className={`flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${error ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900' : 'bg-background hover:bg-muted'}`}
+        aria-describedby={disabled && disabledTitle ? reasonId : undefined}
+        className={`flex h-9 items-center gap-2 rounded-md border px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:text-muted-foreground ${error ? 'border-red-300 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-950 dark:text-red-400 dark:hover:bg-red-900' : 'bg-background hover:bg-muted aria-disabled:hover:bg-background'}`}
       >
         <Monitor className="h-4 w-4" />
         {error ? t('connectDesktopButton.errors.connectionFailed') :
          status === 'creating' ? t('connectDesktopButton.creatingSession') :
          status === 'launching' ? t('connectDesktopButton.launchingViewer') :
          t('connectDesktopButton.connectDesktop')}
-        {status === 'idle' && !error && <ExternalLink className="w-3.5 h-3.5 opacity-60" />}
+        {/* #9030: the icon is decorative, so the label itself says where it goes. */}
+        {status === 'idle' && !error && (
+          <>
+            <span className="sr-only"> {t('connectDesktopButton.opensNewWindow')}</span>
+            <ExternalLink className="w-3.5 h-3.5 opacity-60" aria-hidden="true" />
+          </>
+        )}
       </button>
+      {disabled && disabledTitle && <span id={reasonId} className="sr-only">{disabledTitle}</span>}
 
       {fallbackContent}
       {deniedContent}

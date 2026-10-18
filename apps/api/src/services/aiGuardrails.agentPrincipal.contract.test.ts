@@ -288,6 +288,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_configuration_policies',
   'list_contracts',
   'list_deliverable_templates',
+  'list_device_restore_point_attempts', // #8584: Tier 1 device-scoped ledger read, same as get_device_time_status
   'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',

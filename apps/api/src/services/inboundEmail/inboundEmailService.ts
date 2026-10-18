@@ -34,7 +34,7 @@ import {
 function isPolledProvider(p: string): p is PolledMailboxProvider {
   return (POLLED_MAILBOX_PROVIDERS as readonly string[]).includes(p);
 }
-import { TICKET_TOKEN_RE, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
+import { stripTicketTokens, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
 
@@ -52,7 +52,6 @@ const SYSTEM_ACTOR: TicketActor = {
 };
 
 // Per-partner ticket display number, e.g. T-2026-0001.
-const TOKEN_RE = TICKET_TOKEN_RE;
 
 async function logInbound(
   n: NormalizedInboundEmail,
@@ -851,7 +850,7 @@ async function createFromEmail(
   const ticket = await createTicket(
     {
       orgId,
-      subject: n.subject.replace(TOKEN_RE, '').trim() || '(no subject)',
+      subject: stripTicketTokens(n.subject) || '(no subject)',
       description,
       source: 'email',
       submitterEmail: n.from,

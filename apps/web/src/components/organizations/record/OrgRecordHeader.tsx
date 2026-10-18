@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Building2, ChevronDown, Mail, MapPin, Phone, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { usePermissions } from '@/lib/permissions';
@@ -53,6 +53,12 @@ export default function OrgRecordHeader({
   const canSendMessage = ENABLE_ENDPOINT_MESSAGING && can('endpoint_messages', 'send'); // #8968: hidden until the build enables messaging
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const closeMenu = useCallback((returnFocus: boolean) => {
+    setMenuOpen(false);
+    if (returnFocus) triggerRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -62,6 +68,40 @@ export default function OrgRecordHeader({
     document.addEventListener('mousedown', onDocumentClick);
     return () => document.removeEventListener('mousedown', onDocumentClick);
   }, [menuOpen]);
+
+  const menuItems = () =>
+    Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+
+  // Same APG menu pattern as OverflowTabs' More menu: opening moves focus to
+  // the first item, arrows wrap, Home/End jump, Escape closes and hands focus
+  // back to the trigger (#9021).
+  useEffect(() => {
+    if (menuOpen) menuItems()[0]?.focus();
+  }, [menuOpen]);
+
+  const handleMenuKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    const items = menuItems();
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number;
+    switch (event.key) {
+      case 'ArrowDown': next = (current + 1) % items.length; break;
+      case 'ArrowUp': next = (current - 1 + items.length) % items.length; break;
+      case 'Home': next = 0; break;
+      case 'End': next = items.length - 1; break;
+      case 'Escape':
+        event.preventDefault();
+        closeMenu(true);
+        return;
+      case 'Tab':
+        closeMenu(false);
+        return;
+      default:
+        return;
+    }
+    event.preventDefault();
+    items[next]?.focus();
+  };
 
   // statusColors/statusLabelKeys are keyed by the store's Organization union.
   // A status the client does not know about still has to render something, so
@@ -205,11 +245,16 @@ export default function OrgRecordHeader({
             <div className="relative" ref={menuRef}>
               <button
                 type="button"
+                ref={triggerRef}
                 data-testid="org-record-more"
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
                 aria-label={t('orgRecord.actions.more')}
                 onClick={() => setMenuOpen((open) => !open)}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown' && !menuOpen) { e.preventDefault(); setMenuOpen(true); }
+                  if (e.key === 'Escape' && menuOpen) { e.preventDefault(); closeMenu(true); }
+                }}
                 className="inline-flex items-center gap-1 rounded-md border px-2 py-1.5 text-sm font-medium hover:bg-accent"
               >
                 <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
@@ -217,6 +262,8 @@ export default function OrgRecordHeader({
               {menuOpen && (
                 <div
                   role="menu"
+                  aria-label={t('orgRecord.actions.more')}
+                  onKeyDown={handleMenuKeyDown}
                   className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-md border bg-popover py-1 shadow-md"
                 >
                   {onArchive && (
@@ -225,7 +272,7 @@ export default function OrgRecordHeader({
                       role="menuitem"
                       data-testid="org-record-archive"
                       onClick={() => {
-                        setMenuOpen(false);
+                        closeMenu(true);
                         onArchive();
                       }}
                       className="block w-full px-3 py-1.5 text-left text-sm hover:bg-accent"
@@ -239,7 +286,7 @@ export default function OrgRecordHeader({
                       role="menuitem"
                       data-testid="org-record-merge"
                       onClick={() => {
-                        setMenuOpen(false);
+                        closeMenu(true);
                         onMerge();
                       }}
                       className="block w-full px-3 py-1.5 text-left text-sm hover:bg-accent"

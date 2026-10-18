@@ -366,7 +366,6 @@
       "supportedGeos": "Desteklenen: {{geos}}",
       "refreshQueued": "Model yenileme sıraya alındı",
       "refreshFailed": "Model yenileme sıraya alınamadı.",
-      "alreadyConnected": "Zaten bağlı",
       "addKind": {
         "anthropic_byok": "Anthropic API anahtarı",
         "openai_compatible": "OpenAI uyumlu uç nokta"
@@ -4422,7 +4421,8 @@
     "reEnterYourNewPassword": "Yeni şifrenizi tekrar girin",
     "confirmPassword": "onaylaŞifre",
     "newPassword2": "yeniŞifre",
-    "changingPassword": "Şifre değiştiriliyor..."
+    "changingPassword": "Şifre değiştiriliyor...",
+    "noPasswordNotice": "Bu hesap kuruluşunuzun kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur, bu nedenle burada değiştirilecek bir şey yoktur. Kuruluşunuz çoklu oturum açmayı zorunlu kılmıyorsa, oturum açma sayfasındaki Parolamı unuttum seçeneğiyle bir parola belirleyebilirsiniz."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Tek oturum açma bağlandı.",

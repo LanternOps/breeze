@@ -281,7 +281,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -459,7 +460,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -657,7 +659,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -871,7 +874,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
@@ -1035,7 +1039,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -1177,7 +1182,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder
