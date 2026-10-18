@@ -452,8 +452,10 @@ describe('featureLinks routes', () => {
     });
   });
 
-  // #8188: policy-level approval keys are retired. A stale tab still sends them;
-  // the write succeeds and the service strips them (normalizePatchInlineSettings).
+  // #8188: policy-level approval keys are retired. A stale tab still sends them
+  // and the route must accept the write (no refusal code any more). The service
+  // is mocked here, so stripping itself is proven in configurationPolicy.test.ts
+  // ("patch feature link writes strip retired approval keys").
   describe('patch writes carrying retired approval keys (#8188)', () => {
     const RING_ID = '44444444-4444-4444-8444-444444444444';
     const STALE_INLINE = {

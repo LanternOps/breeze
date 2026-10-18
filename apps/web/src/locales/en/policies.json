@@ -887,10 +887,7 @@
         "noRingManualApprovalHint": "No ring linked — patches install only after manual approval.",
         "unavailableRingOption": "Unavailable ring",
         "ringInvalidTitle": "The linked Update Ring is no longer available.",
-        "ringInvalidBody": "Patches for this policy are held until you choose a ring and save.",
-        "ringInvalidLegacyRules": "This policy still carries application rules from before they moved to rings ({{rules}}). The ring you choose must already have exactly these rules — add them to it first.",
-        "approvalRulesMovedToRing": "Auto-approval and application rules are now set on the Update Ring. Edit them on the linked ring. If this page was open before the update, reload it and save again.",
-        "ringLacksPolicyAppRules": "The Update Ring you chose does not have this policy's application rules. Add exactly these rules to that ring first, or choose a ring that already has them."
+        "ringInvalidBody": "Patches for this policy are held until you choose a ring and save."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link Peripheral Policy",

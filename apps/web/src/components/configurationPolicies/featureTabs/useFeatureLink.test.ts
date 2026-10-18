@@ -45,28 +45,6 @@ describe('feature Save action feedback', () => {
       message: expect.not.stringContaining('MONITOR_NOT_ATTACHABLE'),
     }));
   });
-  it('maps APPROVAL_RULES_MOVED_TO_RING to copy that points at the Update Ring (#8187)', async () => {
-    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
-      error: 'Approval and application rules are configured on the Update Ring linked to this policy.',
-      code: 'APPROVAL_RULES_MOVED_TO_RING',
-    }), { status: 400 }));
-    const { result } = renderHook(() => useFeatureLink(POLICY));
-    await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
-    expect(result.current.error).toMatch(/Update Ring/);
-    expect(result.current.error).toMatch(/reload/i);
-  });
-  it('maps RING_LACKS_POLICY_APP_RULES to repair copy, not the reload-and-save-again copy (#8678)', async () => {
-    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
-      error: 'This policy still carries application rules that no Update Ring enforces.',
-      code: 'RING_LACKS_POLICY_APP_RULES',
-    }), { status: 400 }));
-    const { result } = renderHook(() => useFeatureLink(POLICY));
-    await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
-    // The localized repair copy, not the API's English message passed through.
-    expect(result.current.error).toMatch(/Update Ring you chose/);
-    expect(result.current.error).not.toMatch(/reload/i);
-    expect(result.current.error).not.toContain('RING_LACKS_POLICY_APP_RULES');
-  });
   it('redirects on 401 without an extra toast', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response('{}', { status: 401 }));
     const { result } = renderHook(() => useFeatureLink(POLICY));

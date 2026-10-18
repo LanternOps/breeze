@@ -46,7 +46,8 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { canonicalAppRuleKey, policyAppRuleSchema } from '@breeze/shared/validators';
+import { z } from 'zod';
+import { canonicalAppRuleKey } from '@breeze/shared/validators';
 import {
   configPolicyFeatureLinks,
   configurationPolicies,
@@ -59,6 +60,8 @@ import { createAccessToken } from '../../services/jwt';
 import { configPolicyRoutes } from '../../routes/configurationPolicies';
 import { createOrganization, createPartner, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
+import { withSystemDbAccessContext } from '../../db';
+import { loadPolicyLocalPatchConfig } from '../../services/configPolicyPatching';
 
 const MIGRATION_FILE = join(
   __dirname,
@@ -159,6 +162,24 @@ async function applyMigration(): Promise<{ metrics: Map<string, number>; notices
 type Rule = Record<string, unknown>;
 
 /**
+ * `policyAppRuleSchema` as it stood when this migration shipped, copied so a
+ * later ring-side change to the live schema cannot redden a comparison
+ * against SQL that can no longer change.
+ */
+const W02_APP_RULE_SCHEMA = z.object({
+  source: z.enum(['third_party', 'custom']),
+  packageId: z.string().min(1).max(256),
+  displayName: z.string().max(255).optional(),
+  action: z.enum(['block', 'pin']),
+  pinnedVersion: z.string().min(1).max(64).optional(),
+}).refine((r) => r.action !== 'pin' || !!r.pinnedVersion);
+
+/** W02-era canonical key: third_party/custom share a bucket, id lowercased. */
+function w02AppRuleKey(source: string, packageId: string): string {
+  return `${source === 'custom' ? 'third_party' : source}|${packageId.toLowerCase()}`;
+}
+
+/**
  * The runtime's per-entry `apps` salvage as it shipped with this migration
  * (configPolicyPatching.normalizeStoredInlineSettingsWithSalvage, retired by
  * #8188): first valid entry per canonical key wins, invalid entries are
@@ -173,9 +194,9 @@ function w02RuntimeSalvagedApps(inline: unknown): Rule[] {
   const seen = new Set<string>();
   const out: Rule[] = [];
   for (const entry of raw) {
-    const parsed = policyAppRuleSchema.safeParse(entry);
+    const parsed = W02_APP_RULE_SCHEMA.safeParse(entry);
     if (!parsed.success) continue;
-    const key = canonicalAppRuleKey(parsed.data.source, parsed.data.packageId);
+    const key = w02AppRuleKey(parsed.data.source, parsed.data.packageId);
     if (seen.has(key) || out.length >= 200) continue;
     seen.add(key);
     out.push(parsed.data);
@@ -695,6 +716,11 @@ describe('backfill -> feature-link PATCH seam (#8678, #8188)', () => {
     expect(row.schedule_time).toBe('03:30'); // the PATCH really landed
     expect(row.has_apps).toBe(false); // the retired key is stripped on write...
     expect(await linkTarget(linkId)).toBe(ringId); // ...and the link keeps its ring,
-    expect(canonical((await ringsOf(P)).find((r) => r.id === ringId)!.appRules)).toEqual([firefoxBlock]); // which keeps the rules
+    // ...so the policy's EFFECTIVE rules, read through the runtime loader,
+    // still carry the backfilled block.
+    const local = await withSystemDbAccessContext(() => loadPolicyLocalPatchConfig(pol));
+    expect(local!.ring.valid).toBe(true);
+    expect(local!.ring.ringId).toBe(ringId);
+    expect(canonical(local!.ring.appRules)).toEqual([firefoxBlock]);
   });
 });

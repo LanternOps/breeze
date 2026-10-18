@@ -6,7 +6,6 @@ import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
 import { fetchWithAuth } from "../../../stores/auth";
-import type { RingAppRule } from "../../patches/RingAppRulesSection";
 import { extractApiError } from "@/lib/apiError";
 import { Dialog } from "../../shared/Dialog";
 import UpdateRingForm, {
@@ -87,19 +86,6 @@ function settingsFromInline(
     Object.entries(inline ?? {}).filter(([key]) => !RING_OWNED_APPROVAL_KEYS.has(key)),
   ) as Partial<PatchDeploymentSettings>;
   return { ...kept, sources: normalizeSources(kept.sources) };
-}
-/**
- * The legacy app rules a link still stores, for the repair prompt. Always
- * empty once the #8188 migration has stripped `apps`.
- */
-function legacyAppRules(inline: Record<string, unknown> | null | undefined): RingAppRule[] {
-  const apps = inline?.apps;
-  return Array.isArray(apps)
-    ? apps.filter(
-        (rule): rule is RingAppRule =>
-          !!rule && typeof rule === "object" && typeof (rule as RingAppRule).packageId === "string",
-      )
-    : [];
 }
 /** Blank input means "use the built-in text", stored as null. */
 function promptTextOrNull(value: string): string | null {
@@ -439,7 +425,6 @@ export default function PatchTab({
   // so the link can be repaired.
   const ringInvalid =
     ringsLoaded && !ringsLoading && selectedRingId !== "" && !selectedRing;
-  const ringLegacyRules = legacyAppRules(effectiveLink?.inlineSettings);
   const meta = FEATURE_META.patch;
   const openCreateRing = () => {
     setRingEditorError(undefined);
@@ -613,18 +598,6 @@ export default function PatchTab({
                 "policies:configurationPolicies.featureTabs.patchTab.ringInvalidBody",
               )}
             </p>
-            {ringLegacyRules.length > 0 && (
-              <p className="mt-1 text-muted-foreground">
-                {i18n.t(
-                  "policies:configurationPolicies.featureTabs.patchTab.ringInvalidLegacyRules",
-                  {
-                    rules: ringLegacyRules
-                      .map((rule) => rule.displayName ?? rule.packageId)
-                      .join(", "),
-                  },
-                )}
-              </p>
-            )}
           </div>
         ) : (
           <p

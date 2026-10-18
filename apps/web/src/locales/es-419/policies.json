@@ -887,10 +887,7 @@
         "noRingManualApprovalHint": "Ningún anillo vinculado: los parches se instalan solo después de la aprobación manual.",
         "unavailableRingOption": "Anillo no disponible",
         "ringInvalidTitle": "El anillo de actualización vinculado ya no está disponible.",
-        "ringInvalidBody": "Los parches de esta directiva quedan retenidos hasta que elija un anillo y guarde.",
-        "ringInvalidLegacyRules": "Esta directiva aún tiene reglas de aplicación de antes de que pasaran a los anillos ({{rules}}). El anillo que elija ya debe tener exactamente estas reglas: agréguelas primero a él.",
-        "approvalRulesMovedToRing": "La aprobación automática y las reglas de aplicación ahora se configuran en el anillo de actualización. Edítelas en el anillo vinculado. Si esta página estaba abierta antes de la actualización, recárguela y vuelva a guardar.",
-        "ringLacksPolicyAppRules": "El anillo de actualización que eligió no tiene las reglas de aplicación de esta directiva. Agregue primero exactamente estas reglas a ese anillo o elija un anillo que ya las tenga."
+        "ringInvalidBody": "Los parches de esta directiva quedan retenidos hasta que elija un anillo y guarde."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Política de enlace periférico",

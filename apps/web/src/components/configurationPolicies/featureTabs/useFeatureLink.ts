@@ -49,18 +49,6 @@ export function useFeatureLink(policyId: string) {
             if (code === 'MONITOR_NOT_ATTACHABLE') {
               return i18n.t('policies:configurationPolicies.featureTabs.monitorsTab.notAttachable');
             }
-            // #8187: a patch link write that edits ring-owned approval rules
-            // (most often a Patch tab loaded before the release).
-            if (code === 'APPROVAL_RULES_MOVED_TO_RING') {
-              return i18n.t('policies:configurationPolicies.featureTabs.patchTab.approvalRulesMovedToRing');
-            }
-            // #8678: repointing a link off a ring reference that does not
-            // resolve (missing, deleted, not a ring) onto one that lacks the
-            // link's legacy app rules — the Patch tab's repair flow. Reloading
-            // would not help; the chosen ring needs the rules.
-            if (code === 'RING_LACKS_POLICY_APP_RULES') {
-              return i18n.t('policies:configurationPolicies.featureTabs.patchTab.ringLacksPolicyAppRules');
-            }
             return undefined;
           },
           successMessage: i18n.t('common:states.saved'),

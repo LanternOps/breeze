@@ -38,8 +38,12 @@
 -- patchInlineSettingsSchema no longer defines them. Links whose stored `apps`
 -- were left behind by the W02 backfill (an invalid ring reference: missing,
 -- not a ring, another partner's ring, or a disabled ring) already deny every
--- candidate at read time (ring_reference_invalid); their count is reported
--- before the strip so an operator can recreate the rules on a ring.
+-- candidate at read time (ring_reference_invalid). No ring enforces their
+-- rules, so before the strip each such link is reported in one
+-- `drop_policy_patch_auto_approve unenforced_app_rules` WARNING carrying the
+-- link id, policy id, ring reference and the stored `apps` JSON (bounded to
+-- 4000 characters) — the record an operator needs to recreate the rules on a
+-- ring when repairing the link. A total count follows.
 --
 -- Idempotent: CREATE OR REPLACE, DROP COLUMN IF EXISTS, and the strip only
 -- matches rows that still carry a key, so a re-run reports 0.
@@ -194,33 +198,47 @@ ALTER TABLE config_policy_patch_settings
   DROP COLUMN IF EXISTS auto_approve,
   DROP COLUMN IF EXISTS auto_approve_severities;
 
+-- @data-section-start: dropPolicyPatchAutoApproveMigration.integration.test.ts
+-- replays everything below as a NOSUPERUSER NOBYPASSRLS role (the DDL above
+-- needs the owner).
 SELECT set_config('breeze.scope', 'system', true);
 
 DO $$
 DECLARE
   n bigint;
+  r record;
   lock_orgs uuid[];
   lock_partners uuid[];
 BEGIN
   PERFORM set_config('breeze.scope', 'system', true);
 
-  -- Informational: legacy app rules that no valid ring enforces are discarded
-  -- with the key. These links already fail closed (ring_reference_invalid).
-  SELECT count(*) INTO n
-  FROM config_policy_feature_links l
-  JOIN configuration_policies cp ON cp.id = l.config_policy_id
-  LEFT JOIN organizations o ON o.id = cp.org_id
-  WHERE l.feature_type = 'patch'
-    AND jsonb_typeof(l.inline_settings) = 'object'
-    AND jsonb_typeof(l.inline_settings->'apps') = 'array'
-    AND jsonb_array_length(l.inline_settings->'apps') > 0
-    AND NOT EXISTS (
-      SELECT 1 FROM patch_policies p
-      WHERE p.id = l.feature_policy_id
-        AND p.kind = 'ring'
-        AND p.enabled IS TRUE
-        AND p.partner_id = COALESCE(cp.partner_id, o.partner_id)
-    );
+  -- Forensic record: legacy app rules that no valid ring enforces are
+  -- discarded with the key. These links already fail closed
+  -- (ring_reference_invalid); one WARNING per link keeps what was there.
+  n := 0;
+  FOR r IN
+    SELECT l.id AS link_id, l.config_policy_id, l.feature_policy_id,
+           left((l.inline_settings->'apps')::text, 4000) AS apps
+    FROM config_policy_feature_links l
+    JOIN configuration_policies cp ON cp.id = l.config_policy_id
+    LEFT JOIN organizations o ON o.id = cp.org_id
+    WHERE l.feature_type = 'patch'
+      AND jsonb_typeof(l.inline_settings) = 'object'
+      AND jsonb_typeof(l.inline_settings->'apps') = 'array'
+      AND jsonb_array_length(l.inline_settings->'apps') > 0
+      AND NOT EXISTS (
+        SELECT 1 FROM patch_policies p
+        WHERE p.id = l.feature_policy_id
+          AND p.kind = 'ring'
+          AND p.enabled IS TRUE
+          AND p.partner_id = COALESCE(cp.partner_id, o.partner_id)
+      )
+    ORDER BY l.id
+  LOOP
+    n := n + 1;
+    RAISE WARNING 'drop_policy_patch_auto_approve unenforced_app_rules link=% policy=% ring_ref=% apps=%',
+      r.link_id, r.config_policy_id, COALESCE(r.feature_policy_id::text, 'none'), r.apps;
+  END LOOP;
   RAISE WARNING 'drop_policy_patch_auto_approve links_with_unenforced_app_rules=%', n;
 
   -- Configuration-family partner-export pre-locks (#5912): partners

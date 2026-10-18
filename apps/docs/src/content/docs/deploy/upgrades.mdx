@@ -270,6 +270,17 @@ ROLLBACK;
 
 `never_migrated` counts values whose partner had no registry configuration when the archive ran (only possible on an install that skipped v0.121.0); re-enter those choices under AI Providers & Models.
 
+### Next release — policy-level patch auto-approve retired
+
+`2026-12-31-160000-drop-policy-patch-auto-approve.sql` finishes moving patch approval onto Update Rings (v0.123.0 moved the rules; this release removes the policy-level copies). Nothing in Breeze has read them for approval since 2026-08.
+
+- **Columns dropped:** `config_policy_patch_settings.auto_approve` and `auto_approve_severities`. A report or BI query that selects them fails after this upgrade; read the Update Ring's auto-approve settings instead.
+- **Inline keys stripped:** `apps`, `autoApprove`, `autoApproveSeverities` and `autoApproveDeferralDays` are removed from every patch feature link's stored settings, and a write that still sends them is accepted with the fields ignored. The 400 `APPROVAL_RULES_MOVED_TO_RING` / `RING_LACKS_POLICY_APP_RULES` refusals are gone.
+- **Partner API export:** patch feature settings no longer include those four keys (they are absent, not empty), so every exported patch policy's revision changes once. Read per-app rules from the Update Ring (`appRules`).
+- **Check the start log.** The migration logs `drop_policy_patch_auto_approve inline_links_stripped=<n>`. A link whose stored `apps` no valid ring enforces (its ring is missing, disabled or another partner's — these already deny every patch with `ring_reference_invalid`) is logged as `drop_policy_patch_auto_approve unenforced_app_rules link=… policy=… ring_ref=… apps=…`, followed by a `links_with_unenforced_app_rules=<n>` total. Recreate those rules on the ring you link when repairing the policy; the migration does not keep them anywhere else.
+- **Rolling deploys.** An API instance still running the previous release reads the dropped columns and fails patch-settings reads and writes until it is replaced. Replace every API instance in the same deploy.
+- **Rolling back** needs a database restore: the previous release reads the dropped columns.
+
 ### v0.123.0 — agent ECH, ticket types, customer work approval, Update Ring app rules
 
 <Aside type="caution" title="The Update Ring backfill can add rings, and can stop the upgrade">

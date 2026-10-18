@@ -220,8 +220,6 @@ describe('PatchTab', () => {
     );
     const prompt = await screen.findByTestId('patch-ring-invalid');
     expect(prompt).toHaveTextContent('The linked Update Ring is no longer available');
-    // The legacy rules the replacement ring has to carry are named.
-    expect(prompt).toHaveTextContent('Firefox');
 
     fireEvent.change(screen.getByTestId('approval-ring-select'), { target: { value: 'ring-1' } });
     expect(screen.queryByTestId('patch-ring-invalid')).toBeNull();

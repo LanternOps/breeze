@@ -10,9 +10,10 @@
  *     soft-deleted through the REAL route, so the DELETE -> resolver seam is
  *     covered, with a pre-delete 'valid_ring' control).
  *  2. validateFeaturePolicyExists('patch', ...) refuses a disabled ring.
- *  3. Repair seam: a link with legacy inline `apps` rules on a disabled ring
- *     can only be repointed onto a ring that enforces exactly those rules
- *     (RING_LACKS_POLICY_APP_RULES otherwise).
+ *  3. Repair seam: a link on a disabled ring is repaired by repointing it at
+ *     an enabled ring. Since #8188 a link carries no legacy inline `apps`
+ *     (the W04 migration strips them and the schema drops them on write), so
+ *     the repair is a plain ring change with no app-rule precondition.
  *
  * Fixtures are seeded through the superuser getTestDb(); setup.ts truncates
  * between tests, so every case seeds its own.
@@ -138,20 +139,27 @@ describe('soft-deleted update ring resolution (#8678)', () => {
     expect(refused.error).toMatch(/deleted or disabled/);
   });
 
-  runDb('repointing a legacy-rules link off a disabled ring requires a ring enforcing exactly those rules', async () => {
+  runDb('repointing a link off a disabled ring onto an enabled ring repairs it (#8188)', async () => {
     const { partnerId, configPolicyId } = await seed();
     const disabledId = await seedRing(partnerId, 'Disabled ring', [], false);
-    const emptyRing = await seedRing(partnerId, 'Enabled, no rules', []);
-    const matchingRing = await seedRing(partnerId, 'Enabled, same rules', [firefoxBlock]);
-    const linkId = await seedLink(configPolicyId, disabledId, { sources: ['os', 'third_party'], apps: [firefoxBlock] });
+    const ruleRing = await seedRing(partnerId, 'Enabled, with rules', [firefoxBlock]);
+    // A stale client may still send the retired `apps` key; it is stripped.
+    const linkId = await seedLink(configPolicyId, disabledId, { sources: ['os', 'third_party'] });
 
-    await expect(
-      withSystemDbAccessContext(() => updateFeatureLink(linkId, { featurePolicyId: emptyRing }, configPolicyId)),
-    ).rejects.toMatchObject({ code: 'RING_LACKS_POLICY_APP_RULES' });
-    expect(await linkTarget(linkId)).toBe(disabledId);
+    await withSystemDbAccessContext(() => updateFeatureLink(
+      linkId,
+      { featurePolicyId: ruleRing, inlineSettings: { sources: ['os', 'third_party'], apps: [firefoxBlock] } },
+      configPolicyId,
+    ));
+    expect(await linkTarget(linkId)).toBe(ruleRing);
 
-    // Control: a ring that enforces the legacy rules is an accepted repair.
-    await withSystemDbAccessContext(() => updateFeatureLink(linkId, { featurePolicyId: matchingRing }, configPolicyId));
-    expect(await linkTarget(linkId)).toBe(matchingRing);
+    const local = await withSystemDbAccessContext(() => loadPolicyLocalPatchConfig(configPolicyId));
+    expect(local!.ring.valid).toBe(true);
+    expect(local!.ring.appRules).toEqual([firefoxBlock]);
+    const [link] = await getTestDb()
+      .select({ inline: configPolicyFeatureLinks.inlineSettings })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.id, linkId));
+    expect(link!.inline).not.toHaveProperty('apps');
   });
 });
