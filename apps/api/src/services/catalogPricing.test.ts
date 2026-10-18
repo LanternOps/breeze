@@ -289,6 +289,34 @@ describe('computeBundleEconomicsFrom', () => {
     expect(r.marginPct).toBe(60);
   });
 
+  it('lists a NULL cost alongside a missing price and alongside a foreign-currency cost (#9223)', () => {
+    const missingPrice = computeBundleEconomicsFrom({
+      currencyCode: 'USD',
+      headlinePrice: '100.00',
+      components: [
+        { componentItemId: componentA, quantity: '1', costBasis: '20.00', costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: false },
+        { componentItemId: componentB, quantity: '1', costBasis: null, costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true }
+      ]
+    });
+    expect(missingPrice).toMatchObject({
+      priceBookComplete: false, marginAvailable: false, missingPriceComponentIds: [componentA], missingCostComponentIds: [componentB],
+      totalCost: null, margin: null, marginPct: null
+    });
+
+    // Only the NULL-cost component is "missing cost"; a CAD cost is known, just unusable in USD.
+    const foreign = computeBundleEconomicsFrom({
+      currencyCode: 'USD',
+      headlinePrice: '100.00',
+      components: [
+        { componentItemId: componentA, quantity: '1', costBasis: '20.00', costCurrency: 'CAD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true },
+        { componentItemId: componentB, quantity: '1', costBasis: null, costCurrency: 'USD', revenueAllocation: null, allocationCurrency: null, hasPriceInCurrency: true }
+      ]
+    });
+    expect(foreign).toMatchObject({
+      priceBookComplete: true, marginAvailable: false, missingCostComponentIds: [componentB], totalCost: null, margin: null, marginPct: null
+    });
+  });
+
   it('marks price-book pricing incomplete when the bundle lacks a headline price', () => {
     const r = computeBundleEconomicsFrom({
       currencyCode: 'USD',

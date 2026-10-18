@@ -510,10 +510,11 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
                                       // A component (or the bundle) has no price in this
                                       // currency — totals are withheld, never partially summed.
                                       <span>{t('catalogItemsTab.incompletePriceBook')} ({exp.economics.currencyCode})</span>
-                                    ) : exp.economics.missingCostComponentIds.length > 0 ? (
+                                    ) : (exp.economics.missingCostComponentIds?.length ?? 0) > 0 ? (
                                       // A component has no cost: the margin is UNKNOWN,
-                                      // never computed as if that cost were 0 (#9223).
-                                      <span>{t('catalogItemsTab.marginUnknownMissingCost', { count: exp.economics.missingCostComponentIds.length })}</span>
+                                      // never computed as if that cost were 0 (#9223). `?.`
+                                      // tolerates a pre-#9223 API during a deploy skew.
+                                      <span>{t('catalogItemsTab.marginUnknownMissingCost', { count: exp.economics.missingCostComponentIds?.length ?? 0 })}</span>
                                     ) : !exp.economics.marginAvailable ? (
                                       <span>{t('catalogItemsTab.marginUnavailable')} ({exp.economics.currencyCode})</span>
                                     ) : (
