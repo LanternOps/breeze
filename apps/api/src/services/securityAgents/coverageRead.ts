@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, isNotNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   devices,
-  securityAgentDeviceStatus,
+  securityAgentDeviceStatus as t,
   SECURITY_AGENT_COVERAGE_STATES,
   type SecurityAgentCoverageState,
   type SecurityAgentStatusVendor,
@@ -51,7 +51,6 @@ export interface CoverageSummaryDto {
   counts: Record<SecurityAgentCoverageState, number>;
 }
 
-const t = securityAgentDeviceStatus;
 
 function baseConditions(scope: EdrReadScope, q: CoverageQuery): SQL[] {
   const conditions: SQL[] = [];

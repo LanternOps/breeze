@@ -1,6 +1,6 @@
 import { and, eq, isNotNull, notInArray, or, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { securityAgentDeviceStatus } from '../../db/schema';
+import { securityAgentDeviceStatus as t } from '../../db/schema';
 import type { ReadinessReason } from './installerReadiness';
 import type { VendorKey } from './securityAgentVendors';
 
@@ -46,7 +46,6 @@ export interface RecordManagedApplicabilityParams {
 
 const UPSERT_CHUNK = 1000;
 
-const t = securityAgentDeviceStatus;
 
 export async function recordManagedPolicyApplicability(
   params: RecordManagedApplicabilityParams,

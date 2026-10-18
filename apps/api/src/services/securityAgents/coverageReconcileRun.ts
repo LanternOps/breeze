@@ -3,7 +3,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   devices,
   organizations,
-  securityAgentDeviceStatus,
+  securityAgentDeviceStatus as t,
   softwareCatalog,
   softwareComplianceStatus,
   softwarePolicies,
@@ -72,7 +72,6 @@ const defaultDeps: ReconcileDeps = { alerts: defaultCoverageAlertDeps, sourceFor
 /** Alerts raised per org per run; the rest keep their prior state and follow on later runs. */
 export const COVERAGE_ALERTS_PER_ORG_RUN = 50;
 
-const t = securityAgentDeviceStatus;
 
 const system = <T>(fn: () => Promise<T>, label: string): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn, label));
