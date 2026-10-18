@@ -208,6 +208,11 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // `derived` and the engine must never write them itself.
   'partner_export_device_material_state.breeze_partner_export_guard_direct_write': 'silent org_id revert at depth 0',
   'partner_export_site_material_state.breeze_partner_export_guard_direct_write': 'silent org_id revert at depth 0',
+  // #6263 W03a (2026-12-30-230000): copies org_id/partner_id/is_builtin from
+  // the parent yara_rule_sets row on every INSERT/UPDATE, so a direct repoint
+  // is silently reverted to the parent's org. The table is `derived`: the
+  // parent's AFTER UPDATE propagate trigger moves the children.
+  'yara_rules.yara_rules_inherit_owner_trg': 'silent org_id revert to the parent set\'s owner; derived table, moved by yara_rule_sets_propagate_owner',
   // PAM actuations: hardened to RAISE 42501 iff org_id changed (Track E
   // §Hardening, apps/api/migrations/2026-09-25-pam-actuation-org-immutable.sql).
   // Generation-decrease and cleanup-tombstone checks are unrelated to org_id

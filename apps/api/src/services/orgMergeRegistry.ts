@@ -503,6 +503,12 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // 42501 mid-merge, after the loser org was already fenced.
   agent_health_observations: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK; UPDATE is revoked from breeze_app (append-only evidence)' },
   software_inventory_observations: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK; UPDATE is revoked from breeze_app (append-only evidence)' },
+  // #6263 W03a (DECISION W03-c). A rule's org_id/partner_id are a trigger-kept
+  // copy of its parent set's: yara_rules_inherit_owner overwrites them on every
+  // write, and yara_rule_sets_propagate_owner rewrites them when the parent's
+  // owner changes. A direct repoint would be silently reverted to the parent's
+  // org, so the merge never writes this table — the yara_rule_sets repoint moves it.
+  yara_rules: { kind: 'derived', note: 'owner columns copied from yara_rule_sets by trigger; the parent repoint propagates (yara_rule_sets_propagate_owner)' },
 
   // No org_id column — tenancy via parent rows, which we re-point:
   ...buildFollowsParentEntries(),
@@ -1293,6 +1299,10 @@ const REPOINT_TABLES: readonly string[] = [
   "users",
   "vault_snapshot_inventory",
   "webhooks",
+  // #6263 W03a. Plain org XOR partner rule set; its AFTER UPDATE trigger
+  // yara_rule_sets_propagate_owner rewrites the child yara_rules owner columns
+  // (yara_rules is `derived` in SPECIAL). Built-in rows (org_id NULL) never match.
+  "yara_rule_sets",
 ];
 
 export function getOrgMergePolicies(): ReadonlyMap<string, OrgMergePolicy> {

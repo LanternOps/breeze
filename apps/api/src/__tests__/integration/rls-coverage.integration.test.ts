@@ -709,6 +709,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // security_policies_one_owner_chk enforces exactly one axis. Functional
   // cross-partner forge proof: securityPoliciesPartnerRls.integration.test.ts.
   'security_policies',
+  // yara_rule_sets / yara_rules (#6263 W03a, 2026-12-30-230000-yara-rule-sets):
+  // org-scoped OR partner-wide YARA rule sets plus ONE read-only built-in pack.
+  // CHECK <table>_one_owner_chk is XOR with a built-in carve-out —
+  // `(is_builtin AND org_id IS NULL AND partner_id IS NULL) OR (NOT is_builtin
+  // AND XOR)` — so a tenant cannot mint a globally readable "built-in".
+  // yara_rules copies its owner from the parent by trigger. Functional forge,
+  // XOR, built-in and agent-path proof:
+  // yaraRuleSetsPartnerRls.integration.test.ts.
+  'yara_rule_sets',
+  'yara_rules',
   // alert_rules (#2128, epic #2135): org-scoped OR partner-wide standalone
   // alert rule (fired alerts always carry the DEVICE's org — alerts stays
   // org-only). Converted in 2026-07-01-alert-rules-partner-ownership. CHECK
@@ -945,6 +955,12 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'software_catalog',
   'software_policies',
   'security_policies',
+  // yara_rule_sets / yara_rules (#6263 W03a): org XOR partner, plus the
+  // built-in carve-out (both owners NULL only when is_builtin). Both
+  // partner-wide SELECT branches ship in the creating migration
+  // (2026-12-30-230000), alongside a SELECT-only built-in branch.
+  'yara_rule_sets',
+  'yara_rules',
   'alert_rules',
   'alert_templates',
   'automation_policies',

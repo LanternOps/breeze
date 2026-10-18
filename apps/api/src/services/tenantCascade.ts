@@ -1099,6 +1099,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'users',
   'vault_snapshot_inventory',
   'webhooks',
+  // #6263 W03a. yara_rules.rule_set_id -> yara_rule_sets ON DELETE CASCADE,
+  // so deleting the parent first is FK-safe; built-in rows (org_id NULL) are
+  // never matched by an org erasure.
+  'yara_rule_sets',
+  'yara_rules',
   // organizations is id-keyed (no org_id column). Cleared last.
   'organizations',
 ]);
