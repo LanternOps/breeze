@@ -146,7 +146,8 @@ describe('workerRegistry: losslessness', () => {
     const loaded = await entry!.load();
     expect(typeof loaded.init).toBe('function');
     expect(typeof loaded.shutdown).toBe('function');
-  });
+    // #9198: first dynamic import of the job's module graph is slow on a loaded runner.
+  }, 60_000);
 
   it('registers the m365 sync worker as a socket-owner-placement entry', () => {
     // NOTE (deviation from plan text): the plan's Step 1 pins 'global', but

@@ -1,7 +1,7 @@
 // #7105 item 4 — when Redis is down at boot, index.ts skips every BullMQ
 // worker. Entries flagged `runsWithoutRedis` still get started through their
 // `startWithoutRedis` fallback, and their shutdown is still registered.
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   WORKER_REGISTRY,
   _buildShutdownTasksForTest,
@@ -75,10 +75,20 @@ describe('startRedisIndependentWorkers (#7105)', () => {
     expect(onResult).toHaveBeenCalledWith('reaper', false, boom);
   });
 
-  it('flags the stale command reaper, and it exports the fallback', async () => {
+  describe('staleCommandReaper registration', () => {
     const entry = WORKER_REGISTRY.find((e) => e.name === 'staleCommandReaper');
-    expect(entry?.runsWithoutRedis).toBe(true);
-    const mod = await entry!.load();
-    expect(typeof mod.startWithoutRedis).toBe('function');
+    let mod: Awaited<ReturnType<NonNullable<typeof entry>['load']>>;
+
+    // #9198: the first load() cold-imports the reaper's whole service graph,
+    // which can exceed the 5 s per-test budget on a loaded CI runner. Pay for
+    // it here, under its own budget, so the test times only the assertions.
+    beforeAll(async () => {
+      mod = await entry!.load();
+    }, 60_000);
+
+    it('flags the stale command reaper, and it exports the fallback', () => {
+      expect(entry?.runsWithoutRedis).toBe(true);
+      expect(typeof mod.startWithoutRedis).toBe('function');
+    });
   });
 });
