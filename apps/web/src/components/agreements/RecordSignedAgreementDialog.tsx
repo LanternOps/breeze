@@ -76,6 +76,9 @@ export default function RecordSignedAgreementDialog({
 }: Props) {
   const { t } = useTranslation('billing');
   const [orgs, setOrgs] = useState<Organization[]>([]);
+  const [orgsFailed, setOrgsFailed] = useState(false);
+  const [contractFailed, setContractFailed] = useState(false);
+  const [contractsFailed, setContractsFailed] = useState(false);
   const [pickedOrgId, setPickedOrgId] = useState('');
   // Contract-only embed: the org comes from the contract itself.
   const [contractOrgId, setContractOrgId] = useState('');
@@ -106,6 +109,7 @@ export default function RecordSignedAgreementDialog({
     setPickedOrgId(''); setContractOrgId(''); setTemplateId(''); setContractId(lockedContractId ?? '');
     setMethod('verbal'); setMethodTouched(false); setReference(''); setSignerName(''); setSignerEmail('');
     setSignedDate(localToday()); setFile(null); setFileError(null); setValues({}); setUnresolved([]);
+    setLockedContractName(''); setOrgsFailed(false); setContractFailed(false); setContractsFailed(false);
     setSubmitting(false);
   }, [open, lockedContractId]);
 
@@ -115,7 +119,12 @@ export default function RecordSignedAgreementDialog({
     void (async () => {
       try {
         setOrgs(await fetchAllOrganizationsFrom<Organization>('/orgs/organizations'));
-      } catch { /* picker stays empty; a locked org just loses its display name */ }
+        setOrgsFailed(false);
+      } catch (err) {
+        if ((err as { status?: number }).status === 401) return UNAUTHORIZED();
+        // A locked org only loses its display name; the picker needs the list.
+        setOrgsFailed(true);
+      }
     })();
   }, [open]);
 
@@ -145,11 +154,18 @@ export default function RecordSignedAgreementDialog({
     void (async () => {
       try {
         const res = await getContract(lockedContractId);
+        if (res.status === 401) return UNAUTHORIZED();
         const body = (await res.json().catch(() => null)) as { data?: ContractDetail } | null;
-        if (cancelled || !res.ok || !body?.data) return;
+        if (cancelled) return;
+        // The org comes only from this lookup, so a failure must be visible —
+        // otherwise the form just sits there with submit disabled.
+        if (!res.ok || !body?.data) { setContractFailed(true); return; }
+        setContractFailed(false);
         setContractOrgId(body.data.contract.orgId);
         setLockedContractName(body.data.contract.name);
-      } catch { /* submit stays disabled until the org is known */ }
+      } catch {
+        if (!cancelled) setContractFailed(true);
+      }
     })();
     return () => { cancelled = true; };
   }, [open, lockedContractId, lockedOrgId]);
@@ -161,10 +177,15 @@ export default function RecordSignedAgreementDialog({
     void (async () => {
       try {
         const res = await listContracts({ orgId });
+        if (res.status === 401) return UNAUTHORIZED();
         const body = (await res.json().catch(() => null)) as { data?: ContractSummary[] } | null;
-        if (!cancelled) setContracts(res.ok ? body?.data ?? [] : []);
+        if (cancelled) return;
+        // A failed load must not read as "this org has no contracts". Not
+        // blocking: an unlinked signed agreement can be linked later.
+        setContractsFailed(!res.ok || !body);
+        setContracts(res.ok ? body?.data ?? [] : []);
       } catch {
-        if (!cancelled) setContracts([]);
+        if (!cancelled) { setContracts([]); setContractsFailed(true); }
       }
     })();
     return () => { cancelled = true; };
@@ -220,8 +241,9 @@ export default function RecordSignedAgreementDialog({
       return;
     }
     setFile(picked); setFileError(null);
-    // A signed copy is almost always a signed document; do not override a choice the tech made.
-    if (picked && !methodTouched) setMethod('signed_document');
+    // A signed copy is almost always a signed document; do not override a
+    // choice the tech made — and undo our own guess when the file goes away.
+    if (!methodTouched) setMethod(picked ? 'signed_document' : 'verbal');
   }, [methodTouched, t]);
 
   const submit = useCallback(async () => {
@@ -287,7 +309,7 @@ export default function RecordSignedAgreementDialog({
             <span className="mb-1 block text-sm font-medium text-foreground">{t('agreements.recordSigned.organization')}</span>
             <select
               value={orgId}
-              onChange={(e) => { setPickedOrgId(e.target.value); setTemplateId(''); setContractId(''); }}
+              onChange={(e) => { setPickedOrgId(e.target.value); setTemplateId(''); setContractId(''); setUnresolved([]); }}
               disabled={submitting || orgLocked}
               data-testid="agreements-record-org"
               className={inputCls}
@@ -296,13 +318,24 @@ export default function RecordSignedAgreementDialog({
               {orgId && !orgs.some((o) => o.id === orgId) && <option value={orgId}>{orgName}</option>}
               {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
             </select>
+            {orgsFailed && !orgLocked && (
+              <span className="mt-1 block text-xs text-destructive" data-testid="agreements-record-orgs-error">
+                {t('agreements.recordSigned.orgsError')}
+              </span>
+            )}
+            {contractFailed && (
+              <span className="mt-1 block text-xs text-destructive" data-testid="agreements-record-contract-error">
+                {t('agreements.recordSigned.contractError')}
+              </span>
+            )}
           </label>
 
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-foreground">{t('agreements.recordSigned.template')}</span>
             <select
               value={templateId}
-              onChange={(e) => setTemplateId(e.target.value)}
+              // Names a 422 reported belong to the previous template.
+              onChange={(e) => { setTemplateId(e.target.value); setUnresolved([]); }}
               disabled={submitting || !orgId}
               data-testid="agreements-record-template"
               className={inputCls}
@@ -332,6 +365,11 @@ export default function RecordSignedAgreementDialog({
               {lockedContractId && <option value={lockedContractId}>{lockedContractName || lockedContractId}</option>}
               {contracts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
+            {contractsFailed && (
+              <span className="mt-1 block text-xs text-destructive" data-testid="agreements-record-contracts-error">
+                {t('agreements.recordSigned.contractsError')}
+              </span>
+            )}
           </label>
 
           <label className="block">

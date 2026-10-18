@@ -17,7 +17,7 @@ vi.mock('../../lib/api/contractTemplates', async (importOriginal) => {
   return { ...orig, ...templatesApi };
 });
 
-const contractsApi = vi.hoisted(() => ({ listContracts: vi.fn() }));
+const contractsApi = vi.hoisted(() => ({ listContracts: vi.fn(), getContract: vi.fn() }));
 vi.mock('../../lib/api/contracts', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../lib/api/contracts')>();
   return { ...orig, ...contractsApi };
@@ -95,6 +95,35 @@ describe('RecordSignedAgreementDialog', () => {
     expect(method.value).toBe('signed_document');
   });
 
+  it('reverts the auto-picked method when the file is removed', async () => {
+    renderDialog();
+    const method = (await screen.findByTestId('agreements-record-method')) as HTMLSelectElement;
+    const input = screen.getByTestId('agreements-record-file');
+    fireEvent.change(input, { target: { files: [new File(['%PDF'], 'msa.pdf', { type: 'application/pdf' })] } });
+    expect(method.value).toBe('signed_document');
+    fireEvent.change(input, { target: { files: [] } });
+    expect(method.value).toBe('verbal');
+  });
+
+  it('says so when the org\'s contracts fail to load (instead of an empty "no contracts" list)', async () => {
+    contractsApi.listContracts.mockResolvedValue(resp({ error: 'boom' }, 500));
+    renderDialog();
+    expect(await screen.findByTestId('agreements-record-contracts-error')).toBeInTheDocument();
+  });
+
+  it('says so when organizations fail to load', async () => {
+    fetchWithAuth.mockResolvedValue(resp({ error: 'boom' }, 500));
+    renderDialog({ lockedOrgId: undefined });
+    expect(await screen.findByTestId('agreements-record-orgs-error')).toBeInTheDocument();
+  });
+
+  it('contract-only embed: a failed contract lookup is shown, not a silently disabled form', async () => {
+    contractsApi.getContract.mockResolvedValue(resp({ error: 'boom' }, 500));
+    renderDialog({ lockedOrgId: undefined, lockedContractId: 'c-1' });
+    expect(await screen.findByTestId('agreements-record-contract-error')).toBeInTheDocument();
+    expect(screen.getByTestId('agreements-record-submit')).toBeDisabled();
+  });
+
   it('does not override a method the user already chose', async () => {
     renderDialog();
     const method = (await screen.findByTestId('agreements-record-method')) as HTMLSelectElement;
@@ -156,5 +185,23 @@ describe('RecordSignedAgreementDialog', () => {
     expect(onRecorded).not.toHaveBeenCalled();
     // Required and empty -> cannot resubmit until the value is provided.
     expect(screen.getByTestId('agreements-record-submit')).toBeDisabled();
+  });
+
+  it('drops fields a 422 named for a previous template when the template changes', async () => {
+    templatesApi.listContractTemplates.mockResolvedValue(resp({ data: [
+      TEMPLATE,
+      { ...TEMPLATE, id: 't-2', name: 'NDA', latestVersion: { ...TEMPLATE.latestVersion, id: 'v-2', templateId: 't-2' } },
+    ] }));
+    requestsApi.recordSignedAgreement.mockResolvedValue(
+      resp({ error: 'Agreement variables unresolved: custom.po', code: 'AGREEMENT_VARIABLES_UNRESOLVED' }, 422),
+    );
+    renderDialog();
+    await pickTemplate();
+    fill();
+    fireEvent.click(screen.getByTestId('agreements-record-submit'));
+    await screen.findByTestId('agreements-record-var-custom.po');
+    fireEvent.change(screen.getByTestId('agreements-record-template'), { target: { value: 't-2' } });
+    expect(screen.queryByTestId('agreements-record-var-custom.po')).toBeNull();
+    expect(screen.getByTestId('agreements-record-submit')).toBeEnabled();
   });
 });

@@ -48,12 +48,10 @@ function handleDocumentError(c: { json: (b: unknown, s: number) => Response }, e
   throw err;
 }
 
-/** Strips the binary pdfData column before a full document row goes over
- *  JSON — same reasoning as templates.ts's serializeVersion. Only the PATCH
- *  (link) response returns a full row; GET / already selects a JSON-safe
- *  projection and GET /:id/pdf streams the bytes directly. */
 /** File extension for a signed agreement's STORED MIME (spec §3.4): an
- *  externally signed scan is a PNG/JPEG, not a PDF, and must download as one. */
+ *  externally signed scan is a PNG/JPEG, not a PDF, and must download as one.
+ *  freezeSignedAgreement only ever stores these three, so the `.pdf` fallback
+ *  is for legacy rows (all PDFs); Content-Type always carries the real MIME. */
 const SIGNED_AGREEMENT_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/png': 'png',
@@ -64,6 +62,10 @@ function signedAgreementFilename(id: string, mime: string): string {
   return `signed-agreement-${id}.${SIGNED_AGREEMENT_EXT[mime] ?? 'pdf'}`;
 }
 
+/** Strips the binary pdfData column before a full document row goes over
+ *  JSON — same reasoning as templates.ts's serializeVersion. Only the PATCH
+ *  (link) response returns a full row; GET / already selects a JSON-safe
+ *  projection and GET /:id/pdf streams the bytes directly. */
 function serializeDocument(doc: { pdfData: Buffer; [k: string]: unknown }) {
   const { pdfData: _pdfData, ...rest } = doc;
   return rest;

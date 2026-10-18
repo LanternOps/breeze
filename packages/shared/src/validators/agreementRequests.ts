@@ -12,8 +12,21 @@ import { QUOTE_ACCEPT_ON_BEHALF_METHODS } from './quotes';
  *  the schema only coerces. */
 export const AGREEMENT_SIGNED_AT_SKEW_MS = 5 * 60 * 1000;
 
-// validators/quotes.ts keeps its isoDate private; redeclared here.
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD');
+// validators/quotes.ts keeps its isoDate private; redeclared here — and
+// stricter: the shape alone lets `2026-02-30` through to the Postgres `date`
+// column, which rejects it as a 500 instead of a 400.
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'expected YYYY-MM-DD')
+  .refine((s) => {
+    const d = new Date(`${s}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+  }, 'not a real calendar date');
+
+/** Earliest signing date accepted. `z.coerce.date()` turns stray input such as
+ *  "1" into a real but absurd instant; a signed agreement predating 1900 is
+ *  input garbage, not history. */
+const SIGNED_AT_MIN = new Date('1900-01-01T00:00:00Z');
 
 /** Body for POST /contracts/agreement-requests/record-signed (multipart; feed
  *  the form through recordSignedAgreementFromForm first). */
@@ -26,7 +39,7 @@ export const recordSignedAgreementSchema = z.object({
   signerName: z.string().trim().min(1).max(255),
   signerEmail: z.string().trim().email().max(255).optional().nullable(),
   /** The real signing date — may be in the past; not later than now + skew. */
-  signedAt: z.coerce.date(),
+  signedAt: z.coerce.date().min(SIGNED_AT_MIN, 'signedAt is before 1900'),
   effectiveDate: isoDate.optional().nullable(),
   method: z.enum(QUOTE_ACCEPT_ON_BEHALF_METHODS),
   reference: z.string().trim().min(1).max(500),

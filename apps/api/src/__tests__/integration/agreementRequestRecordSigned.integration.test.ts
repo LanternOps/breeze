@@ -90,10 +90,20 @@ async function seed() {
 type Seed = Awaited<ReturnType<typeof seed>>;
 
 /** The route's composition: caller-context template read, system-scoped record. */
-async function record(s: Seed, over: Partial<RecordSignedAgreementParams['input']> & { versionId?: string } = {}, file: Buffer | null = null) {
+async function record(
+  s: Seed,
+  over: Partial<RecordSignedAgreementParams['input']> & { versionId?: string } = {},
+  file: Buffer | null = null,
+  /** 'system' skips the caller-context read so a test can reach the
+   *  service's in-transaction template guard with a version the caller
+   *  could not have loaded. */
+  loadAs: 'caller' | 'system' = 'caller',
+) {
   const versionId = over.versionId ?? s.authored.versionId;
-  const renderData = await withDbAccessContext(orgCtx(s.org.id, s.partner.id), () =>
-    loadTemplateVersionRenderData(versionId, { includeFileData: file === null }));
+  const load = () => loadTemplateVersionRenderData(versionId, { includeFileData: file === null });
+  const renderData = loadAs === 'caller'
+    ? await withDbAccessContext(orgCtx(s.org.id, s.partner.id), load)
+    : await sys(load);
   const { versionId: _v, ...inputOver } = over;
   return runOutsideDbContext(() => withSystemDbAccessContext(() => recordSignedAgreement({
     input: {
@@ -233,6 +243,35 @@ describe('recordSignedAgreement — real DB', () => {
     const err = await record(s, { variableValues: {} }).catch((e) => e);
     expect(err).toMatchObject({ status: 422, code: 'AGREEMENT_VARIABLES_UNRESOLVED' });
     expect(err.message).toBe('Agreement variables unresolved: custom.po');
+    expect(await countRows(s.org.id)).toEqual({ requests: 0, documents: 0 });
+  });
+
+  runDb('another org\'s template: invisible to the caller (404), and refused by the in-tx guard even if loaded (422 TEMPLATE_NOT_VISIBLE), no rows', async () => {
+    const s = await seed();
+    const foreign = await sys(async () => rows(await db.execute(sql`
+      WITH t AS (
+        INSERT INTO contract_templates (org_id, name) VALUES (${s.otherOrg.id}::uuid, 'Other org MSA') RETURNING id
+      )
+      INSERT INTO contract_template_versions
+        (template_id, org_id, version_number, status, source_type, body_html, sha256, declared_variables, published_at)
+      SELECT t.id, ${s.otherOrg.id}::uuid, 1, 'published', 'authored', '<p>x</p>', ${'f'.repeat(64)}, '[]'::jsonb, now()
+        FROM t
+      RETURNING id`))[0]!.id as string);
+
+    // The route's path: the caller's own context cannot see it.
+    await expect(record(s, { versionId: foreign, variableValues: {} }))
+      .rejects.toMatchObject({ status: 404, code: 'VERSION_NOT_FOUND' });
+    // Defence in depth: render data obtained some other way still hits the
+    // explicit orgId comparison inside the system transaction.
+    await expect(record(s, { versionId: foreign, variableValues: {} }, null, 'system'))
+      .rejects.toMatchObject({ status: 422, code: 'TEMPLATE_NOT_VISIBLE' });
+    expect(await countRows(s.org.id)).toEqual({ requests: 0, documents: 0 });
+  });
+
+  runDb('an archived template → 422 TEMPLATE_ARCHIVED, no rows', async () => {
+    const s = await seed();
+    await sys(() => db.execute(sql`UPDATE contract_templates SET status = 'archived' WHERE id = ${s.authored.templateId}::uuid`));
+    await expect(record(s)).rejects.toMatchObject({ status: 422, code: 'TEMPLATE_ARCHIVED' });
     expect(await countRows(s.org.id)).toEqual({ requests: 0, documents: 0 });
   });
 

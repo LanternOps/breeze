@@ -17,6 +17,8 @@ const h = vi.hoisted(() => ({
   writeRouteAudit: vi.fn(),
   // Which context each step ran in — pushed by the wrappers and the steps.
   trace: [] as string[],
+  // Which scope / permission guards actually ran for the request.
+  guards: [] as string[],
   inAuth: false,
   inSystem: false,
 }));
@@ -33,8 +35,8 @@ vi.mock('../../middleware/auth', () => ({
     });
     await next();
   },
-  requireScope: () => async (_c: any, next: any) => next(),
-  requirePermission: () => async (_c: any, next: any) => next(),
+  requireScope: (...scopes: string[]) => async (_c: any, next: any) => { h.guards.push(`scope:${scopes.join(',')}`); return next(); },
+  requirePermission: (resource: string, action: string) => async (_c: any, next: any) => { h.guards.push(`perm:${resource}:${action}`); return next(); },
   withAuthDbAccessContext: h.withAuthDbAccessContext,
 }));
 
@@ -130,6 +132,7 @@ const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2
 beforeEach(() => {
   vi.clearAllMocks();
   h.trace.length = 0;
+  h.guards.length = 0;
   h.inAuth = false;
   h.inSystem = false;
   h.withAuthDbAccessContext.mockImplementation(async (_auth: unknown, fn: () => Promise<unknown>) => {
@@ -151,6 +154,12 @@ beforeEach(() => {
 });
 
 describe('POST /contracts/agreement-requests/record-signed', () => {
+  it('is guarded by partner/organization/system scopes and agreements:write (W2 moves it to agreements:send)', async () => {
+    const res = await contractRoutes.request(URL, multipart(fields()));
+    expect(res.status).toBe(201);
+    expect(h.guards).toEqual(['scope:partner,organization,system', 'perm:agreements:write']);
+  });
+
   it('JSON body instead of multipart → 400 INVALID_MULTIPART, service not called', async () => {
     const res = await contractRoutes.request(URL, {
       method: 'POST',

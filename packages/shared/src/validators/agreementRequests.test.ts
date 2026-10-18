@@ -58,6 +58,18 @@ describe('recordSignedAgreementSchema', () => {
     expect(recordSignedAgreementSchema.safeParse({ ...full, effectiveDate: '10/01/2026' }).success).toBe(false);
   });
 
+  it('rejects an impossible calendar effectiveDate (would otherwise 500 at the date column)', () => {
+    expect(recordSignedAgreementSchema.safeParse({ ...full, effectiveDate: '2026-02-30' }).success).toBe(false);
+    expect(recordSignedAgreementSchema.safeParse({ ...full, effectiveDate: '2026-13-01' }).success).toBe(false);
+    expect(recordSignedAgreementSchema.safeParse({ ...full, effectiveDate: '2024-02-29' }).success).toBe(true);
+  });
+
+  it('rejects a signedAt before 1900 (garbage like "1" coerces to year 2001/0001)', () => {
+    expect(recordSignedAgreementSchema.safeParse({ ...full, signedAt: '0099-06-01T00:00:00Z' }).success).toBe(false);
+    expect(recordSignedAgreementSchema.safeParse({ ...full, signedAt: '1899-12-31T23:59:59Z' }).success).toBe(false);
+    expect(recordSignedAgreementSchema.safeParse({ ...full, signedAt: '1900-01-01T00:00:00Z' }).success).toBe(true);
+  });
+
   it('defaults variableValues to {} and allows the optional fields to be absent', () => {
     const parsed = recordSignedAgreementSchema.parse({
       orgId: ORG, templateVersionId: VERSION, signerName: 'J', signedAt: full.signedAt,

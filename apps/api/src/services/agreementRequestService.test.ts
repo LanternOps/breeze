@@ -138,6 +138,25 @@ describe('recordSignedAgreement — refusals write nothing', () => {
     await expect(recordSignedAgreement(p)).resolves.toMatchObject({ signedAgreementId: 'sa-1' });
   });
 
+  it('skew boundary: exactly now + 5 min is accepted, + 5 min + 1 ms is refused', async () => {
+    queueHappy();
+    await expect(recordSignedAgreement(params({}, { signedAt: new Date(NOW.getTime() + 5 * 60 * 1000) })))
+      .resolves.toMatchObject({ signedAgreementId: 'sa-1' });
+    queued.length = 0;
+    inserted.length = 0;
+    vi.mocked(db.insert).mockClear();
+    await expect(recordSignedAgreement(params({}, { signedAt: new Date(NOW.getTime() + 5 * 60 * 1000 + 1) })))
+      .rejects.toMatchObject({ status: 400, code: 'SIGNED_AT_IN_FUTURE' });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('a future signedAt is refused before ANY read (no org/contract lookups)', async () => {
+    vi.mocked(db.select).mockClear();
+    await expect(recordSignedAgreement(params({}, { signedAt: new Date(NOW.getTime() + 60 * 60 * 1000) })))
+      .rejects.toMatchObject({ code: 'SIGNED_AT_IN_FUTURE' });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   it('blank signer name → 400 INVALID_SIGNER_NAME', async () => {
     queueHappy();
     await expect(recordSignedAgreement(params({}, { signerName: '   ' }))).rejects.toMatchObject({ status: 400, code: 'INVALID_SIGNER_NAME' });
@@ -235,6 +254,27 @@ describe('recordSignedAgreement — refusals write nothing', () => {
     queueHappy();
     await expect(recordSignedAgreement(params({ file: { buffer: Buffer.from('MZ\x90\x00 not a scan'), filename: 'x.exe' } })))
       .rejects.toMatchObject({ status: 415, code: 'UNSUPPORTED_FILE_TYPE' });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('the type comes from the magic bytes, never the filename: scan.png holding MZ bytes → 415', async () => {
+    queueHappy();
+    await expect(recordSignedAgreement(params({ file: { buffer: Buffer.from('MZ\x90\x00 not a scan'), filename: 'scan.png' } })))
+      .rejects.toMatchObject({ status: 415, code: 'UNSUPPORTED_FILE_TYPE' });
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('size boundary: exactly 10 MiB is accepted, 10 MiB + 1 byte → 413', async () => {
+    const atLimit = Buffer.concat([PNG, Buffer.alloc(10 * 1024 * 1024 - PNG.length)]);
+    expect(atLimit.length).toBe(10 * 1024 * 1024);
+    queueHappy();
+    await expect(recordSignedAgreement(params({ file: { buffer: atLimit, filename: 'x.png' } })))
+      .resolves.toMatchObject({ signedAgreementId: 'sa-1' });
+    queued.length = 0;
+    vi.mocked(db.insert).mockClear();
+    queueHappy();
+    await expect(recordSignedAgreement(params({ file: { buffer: Buffer.concat([atLimit, Buffer.alloc(1)]), filename: 'x.png' } })))
+      .rejects.toMatchObject({ status: 413, code: 'FILE_TOO_LARGE' });
     expect(db.insert).not.toHaveBeenCalled();
   });
 
@@ -354,6 +394,12 @@ describe('recordSignedAgreement — happy paths', () => {
     });
     expect(freezeArg.evidence.contentSha256).toBe(expected);
     expect(res.contentSha256).toBe(expected);
+  });
+
+  it('PNG bytes named scan.pdf are stored as image/png (the stored MIME the download name follows)', async () => {
+    queueHappy();
+    await recordSignedAgreement(params({ file: { buffer: PNG, filename: 'scan.pdf' } }, { variableValues: {} }));
+    expect(freezeMock.mock.calls[0]![0].externalBytes.mime).toBe('image/png');
   });
 
   it('a partner document language becomes the render locale', async () => {
