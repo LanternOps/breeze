@@ -1,4 +1,5 @@
 import '@/lib/i18n';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -43,6 +44,18 @@ type SettingsSectionNavProps = {
  */
 export default function SettingsSectionNav({ groups, activeKey, onNavigate, selectId, testIdPrefix }: SettingsSectionNavProps) {
   const { t } = useTranslation('settings');
+  const railRef = useRef<HTMLElement>(null);
+
+  // Keep the active item visible in the (scrollable) rail when the tab changes
+  // by hash, keyboard or deep link. `nearest` moves nothing when it is already
+  // in view, so the form beside the rail does not jump.
+  useEffect(() => {
+    const active = railRef.current?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (active && typeof active.scrollIntoView === 'function') {
+      active.scrollIntoView({ block: 'nearest' });
+    }
+  }, [activeKey]);
+
   return (
     <div>
       <div className="lg:hidden">
@@ -67,7 +80,14 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
         </select>
       </div>
 
-      <nav aria-label={t('settingsSectionNav.settingsSections')} className="hidden lg:block lg:sticky lg:top-6 space-y-4">
+      <nav
+        ref={railRef}
+        aria-label={t('settingsSectionNav.settingsSections')}
+        // Bounded to the visible scrollport: 100vh minus the app header (h-16,
+        // 4rem), the sticky offset (top-6) and <main>'s bottom padding (md:p-6),
+        // so a long rail scrolls itself instead of running off-screen.
+        className="hidden lg:block lg:sticky lg:top-6 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto space-y-4"
+      >
         {groups.map(group => (
           <div key={group.label}>
             <p className="px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

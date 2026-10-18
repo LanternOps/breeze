@@ -72,7 +72,7 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
-import { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
+import MfaPolicyOffBanner, { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPolicyOffBanner';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -648,6 +648,10 @@ export default function PartnerSettingsPage() {
           </button>
         )}
       </header>
+
+      {/* The layout's copy stands down on this route (placement="layout"), so
+          exactly one banner shows, aligned to this container. */}
+      <MfaPolicyOffBanner placement="page" />
 
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-destructive">

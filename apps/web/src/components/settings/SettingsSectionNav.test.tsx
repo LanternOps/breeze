@@ -41,4 +41,28 @@ describe('SettingsSectionNav (#9168)', () => {
     expect(inactive).toHaveClass('border-l-2', 'border-transparent');
     expect(inactive).not.toHaveClass('border-primary');
   });
+
+  it('bounds the sticky rail to the visible scrollport and lets it scroll (#9171)', () => {
+    renderNav();
+    const rail = screen.getByRole('navigation');
+    // 100vh - app header (4rem) - sticky offset top-6 (1.5rem) - main bottom padding (1.5rem).
+    expect(rail).toHaveClass('lg:sticky', 'lg:max-h-[calc(100vh-7rem)]', 'lg:overflow-y-auto');
+  });
+
+  it('scrolls the active rail item into view, nearest only, when the active tab changes (#9171)', () => {
+    const scrollIntoView = vi.fn();
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    try {
+      const { rerender } = renderNav('company');
+      scrollIntoView.mockClear();
+      rerender(
+        <SettingsSectionNav groups={groups} activeKey="security" onNavigate={vi.fn()} selectId="nav-select" testIdPrefix="nav" />,
+      );
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+      expect(scrollIntoView.mock.instances[0]).toBe(screen.getByTestId('nav-tab-security'));
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  });
 });
