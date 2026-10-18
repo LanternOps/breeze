@@ -146,7 +146,7 @@ The executor's content validation applies unchanged. Captured output has every `
 
 *Timeout budget*
 - Download 15 + installer 30 + two scripts 2×10 + settle 1 = 66 min, which exceeds `SOFTWARE_INSTALL_SERVER_TIMEOUT_MS` = 55 min (`packages/shared/src/constants/softwareInstallTimeouts.ts`).
-- Raise it to **75 min** and add `SOFTWARE_INSTALL_SCRIPT_TIMEOUT_MS = 10 min`. Both are pinned by the Go timeouts test.
+- Raise it to **75 min** and add `SOFTWARE_INSTALL_SCRIPT_TIMEOUT_MS = 10 min`. The Go timeouts test (`software_install_timeouts_test.go`) pins the download, installer and new script constants. The 75 min server value is pinned by a TS test in PR A.
 
 **D4 — `service_running`: one clause, two evaluators.**
 
@@ -214,7 +214,11 @@ The executor's content validation applies unchanged. Captured output has every `
 | `nextdns_windows` | `file_exists C:\Program Files\nextdns\nextdns.exe`, `service_running nextdns` | `presence.windowsService = 'nextdns'` |
 
 *W5 obligations recorded here (not built here)*
-- Assert with `serviceRunningNamesFor(key)`.
+- Assert with `serviceRunningNamesFor(key)`. Resolve catalog rows with the read-only `catalogIdForBuiltinKey(partnerId, key)` (D1), never `ensurePinnedBuiltinPackage`.
+- Amend the security-agents plan text when W5 starts:
+  - Task 1.3's `presence` type `macProcess` becomes `macLaunchdLabel`.
+  - Task 5.1's "macOS depends on #6958's args" becomes "macOS depends on #6958's pre-install script and lab gate L2".
+  - Task 5.2 reads "one catalog row per (vendor, OS) via `builtinPackageKeysForVendor`".
 - Generate one rule per (vendor, platform) catalog key (`services/securityAgents/managedPolicyGenerator.ts:78` takes one catalog id per vendor today).
 - Extend `services/securityAgents/managedRuleApplicability.ts:110` filtering (today `missing` only) to `not_running` and `service_unverified` for off-platform or not-ready rules.
 - Replace `detectionRuleName` globs (`'Control D*'` never matches inventory; presence comes from the bridge).
@@ -273,11 +277,11 @@ Merge order: **A → (B ∥ C) → E → D**. Each PR targets `main` after its p
 
 | PR | Branch | Owns (exclusively) | If the next PR never ships |
 |---|---|---|---|
-| **A** shared | `feat/6958-a-shared-install-spec` | `packages/shared/src/validators/softwareDetection.ts`(+test), `packages/shared/src/utils/softwareFileType.ts`(+test), `packages/shared/src/validators/softwareVersionInstallSpec.ts`(new,+test), `packages/shared/src/validators/index.ts`, `packages/shared/src/constants/softwareInstallTimeouts.ts` | Inert types; `zip` writes fail validation until C wires them |
+| **A** shared | `feat/6958-a-shared-install-spec` | `packages/shared/src/validators/softwareDetection.ts`(+test), `packages/shared/src/validators/softwareVersionInstallSpec.ts`(new,+test), `packages/shared/src/validators/index.ts`, `packages/shared/src/constants/softwareInstallTimeouts.ts`(+ a TS test pinning the 75 min server value) | Inert. The clause and validator exist, but no route calls the validator yet. `zip` is **not** a file type yet: C adds it together with its validation and gate. Old agents report `service_running` as unsupported, and C strips it |
 | **B** agent | `feat/6958-b-agent-install-scripts` | `agent/internal/remote/tools/{software_install.go,software_detection.go,software_detection_service_{windows,darwin,linux,other}.go,software_install_archive.go,software_install_scripts.go}`, `software_install_timeouts_test.go`, `testdata/builtin_scripts/*`, `agent/internal/heartbeat/handlers_software_install.go`, `agent/internal/monitoring/{service_darwin.go,service_linux.go}`, `agent/internal/svcquery/svcquery_darwin.go`, their tests | API never sends the new keys (gates stay above every real agent) |
-| **C** API dispatch + data model | `feat/6958-c-api-install-scripts` | migration `234000`, `apps/api/src/db/schema/software.ts`, `services/tenantExportPolicyRegistry.ts`, `services/softwareDeployment.ts`, `services/installerVariables.ts`, `services/softwareInstallAgentSupport.ts`(new), `services/installScriptPayload.ts`(new), `services/commandDelivery.ts`, `services/commandAudit.ts`, `services/softwareDependencyIdentity.ts`, `routes/software.ts`, `routes/softwareUploads.ts`, `routes/softwareInstallMethods.ts`, their tests | Scripts dispatchable for user-authored versions; no built-ins |
-| **E** compliance bridge | `feat/6958-e-service-running-bridge` | migration `234100`, `apps/api/src/db/schema/softwarePolicies.ts`, `services/softwarePolicyServiceRules.ts`(new,+test), `services/softwarePolicyService.ts`, `jobs/softwareComplianceWorker.ts`(+test), `routes/agents/helpers.ts`, `routes/agents/helpers.softwareServiceWatches.test.ts`(new), `__tests__/integration/rls-coverage.integration.test.ts`, `__tests__/integration/softwareComplianceStatusRls.integration.test.ts`(new) | `service_running` violations for any catalog version that carries the clause; no DNS built-ins yet |
-| **D** built-ins + web | `feat/6958-d-builtin-dns-catalog` | `apps/api/src/services/builtinDeploymentPackages.ts`(+test), `__tests__/integration/{builtinDeploymentPackages,builtinCatalogRls}.integration.test.ts`, `routes/softwareBuiltinPackages.ts`(new,+test), `apps/api/src/index.ts`, `services/mcpCoverage.ts`, `__tests__/partner-wide-write-coverage.test.ts`, `apps/web/src/components/software/{BuiltinPackagesPanel.tsx(new),SoftwareCatalog.tsx,DetectionRulesEditor.tsx,SoftwareVersionManager.tsx}`, 8 locale files | n/a |
+| **C** API dispatch + data model | `feat/6958-c-api-install-scripts` | migration `234000`, `apps/api/src/db/schema/software.ts`, `services/tenantExportPolicyRegistry.ts`, `services/softwareDeployment.ts`, `services/installerVariables.ts`, `services/softwareInstallAgentSupport.ts`(new), `services/installScriptPayload.ts`(new), `services/commandDelivery.ts`, `services/commandAudit.ts`, `services/softwareDependencyIdentity.ts`, `routes/software.ts`, `routes/softwareUploads.ts`, `routes/softwareInstallMethods.ts`, `services/softwareVersionShared.ts`(+test), `packages/shared/src/utils/softwareFileType.ts`(+test), their tests | Scripts dispatchable for user-authored versions; no built-ins |
+| **E** compliance bridge | `feat/6958-e-service-running-bridge` | migration `234100`, `apps/api/src/db/schema/softwarePolicies.ts`, `services/softwarePolicyServiceRules.ts`(new,+test), `services/softwarePolicyService.ts`, `jobs/softwareComplianceWorker.ts`(+test), `routes/agents/helpers.ts`, `routes/agents/helpers.softwareServiceWatches.test.ts`(new), `__tests__/integration/rls-coverage.integration.test.ts`, `__tests__/integration/softwareComplianceStatusRls.integration.test.ts`(new), `__tests__/integration/softwareServiceWatchDelivery.integration.test.ts`(new) | `service_running` violations for any catalog version that carries the clause; no DNS built-ins yet |
+| **D** built-ins + web | `feat/6958-d-builtin-dns-catalog` | `apps/api/src/services/builtinDeploymentPackages.ts`(+test), `__tests__/integration/{builtinDeploymentPackages,builtinCatalogRls}.integration.test.ts`, `routes/softwareBuiltinPackages.ts`(new,+test), `apps/api/src/index.ts`, `services/mcpCoverage.ts`, `__tests__/partner-wide-write-coverage.test.ts`, `apps/web/src/components/software/{BuiltinPackagesPanel.tsx(new),SoftwareCatalog.tsx,DetectionRulesEditor.tsx,SoftwareVersionManager.tsx,AddPackageModal.tsx}`, `apps/web/src/lib/installerArgsPrefill.ts`(+test), 8 locale files | n/a |
 
 ---
 
@@ -310,9 +314,9 @@ it('accepts a display-name style serviceName with spaces', () => {
 - [ ] **Step 3:** add a `.strict()` object to the union. `serviceName` is `z.string().min(1).max(256).regex(/^[^\x00-\x1f\x7f-][^\x00-\x1f\x7f]*$/)`. Update the header comment (lines 16–21): the clause is portable (SCM / launchd / systemd).
 - [ ] **Step 4:** PASS. Commit `feat(shared): service_running detection clause (#6958)`.
 
-### Task A2: `zip`, install-spec rules, timeout budget
+### Task A2: Install-spec rules, timeout budget
 
-**Files:** Modify `packages/shared/src/utils/softwareFileType.ts`, `packages/shared/src/constants/softwareInstallTimeouts.ts`; Create `packages/shared/src/validators/softwareVersionInstallSpec.ts` (export from `validators/index.ts`); Tests alongside.
+**Files:** Modify `packages/shared/src/constants/softwareInstallTimeouts.ts` (+ a TS test pinning both values); Create `packages/shared/src/validators/softwareVersionInstallSpec.ts` (export from `validators/index.ts`); Tests alongside.
 
 **Interfaces:**
 - Produces:
@@ -334,7 +338,6 @@ export const SOFTWARE_INSTALL_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
 // SOFTWARE_INSTALL_SERVER_TIMEOUT_MS: 55 → 75 min (comment: download 15 + installer 30 + 2 scripts 20 + settle 1 = 66, plus margin)
 ```
 - [ ] **Step 1 (red):**
-  - `SOFTWARE_FILE_TYPES` includes `'zip'` and a `.zip` filename infers `'zip'`.
   - A zip with no post-install script → `['zip_requires_post_install_script']`.
   - Scripts with `supportedOs` set to `[]`, `null` or `['windows','macos']` → `['scripts_require_single_os']`.
   - A 65,537-**byte** script → `['script_too_large']`.
@@ -362,6 +365,11 @@ export const SOFTWARE_INSTALL_SCRIPT_TIMEOUT_MS = 10 * 60 * 1000;
 - Modify `agent/internal/monitoring/service_darwin.go`: map errors through `serviceErrorStatus`.
 - Modify `agent/internal/monitoring/service_linux.go`: a failure to exec `systemctl` returns `StatusError`, not `not_found`.
 - Tests: `software_detection_test.go`, `monitoring/service_status_test.go`, `svcquery/svcquery_test.go`.
+- **CI reachability.** The OS-specific logic must be testable on Linux CI. Put the pure mappings in tag-free files:
+  - `agent/internal/svcquery/launchctl_parse.go`: `parseLaunchctlList(output string, name string) (ServiceInfo, error)`, which returns `ErrServiceNotFound` when the label is absent.
+  - `agent/internal/monitoring/service_status.go` (exists, :13): `serviceErrorStatus`.
+  - `agent/internal/remote/tools/software_detection_service.go`: `classifySystemctl(exitErr error, execErr error) (running bool, supported bool)`.
+- The `_darwin.go`, `_windows.go` and `_linux.go` files stay thin wrappers around `exec`. The darwin and windows wrappers run only in the owner lab (L1–L3); say so in the PR body.
 
 **Interfaces:**
 - Produces: the package-level test seam `var serviceStatusFn func(name string) (running bool, supported bool)`.
@@ -397,6 +405,9 @@ Test: `software_install_archive_test.go`.
     - A nested entry `dist/x/ctrld.exe` lands under `destDir`.
     - `../evil`, `/abs`, `C:\x` and symlink entries → error.
     - 1001 entries → error.
+    - `..\evil`, an alternate-data-stream name (`a:b`) and reserved device names (`CON`, `NUL.txt`) → error.
+    - A duplicate entry path → error, with no overwrite.
+    - File modes are masked to 0755 (exec bit set) or 0644. setuid, setgid and sticky bits are dropped.
     - A zip bomb past the byte cap → error.
   - `TestInstallSoftwareZipRequiresPostInstallScript`: the error is returned before the `downloadFileFn` stub is ever called.
 - [ ] **Step 2:** `go test -race ./internal/remote/tools/ -run 'ExtractArchive|Zip'` → FAIL.
@@ -434,6 +445,7 @@ func InstallSoftwareWithOptions(payload map[string]any, progress ProgressReporte
 - [ ] **Step 2:** `go test -race ./internal/remote/tools/ ./internal/heartbeat/ -run 'InstallScript|BuiltinScripts|SoftwareInstall|Timeouts'` → FAIL.
 - [ ] **Step 3:** implement.
   - No `RunAs` (the agent service principal), `ScriptType = language`, `Timeout` clamped to 1..1800.
+  - `ScriptExecution.ID` is `<commandId>-pre` / `<commandId>-post`, unique per run, because the executor refuses duplicate IDs (`executor.go:429`).
   - `handlers_software_install.go` passes `tools.InstallOptions{RunScript: h.executor.Execute}`.
   - Move the restore checkpoint before the pre-install script.
 - [ ] **Step 4:** PASS; `cd agent && go test -race ./...` green; the repo's Go lint target green. Commit. Open PR B (`Refs #6958`). The body says: **agent release required; lab gates L1–L5 owed before any DNS key is offered.**
@@ -527,7 +539,7 @@ export function buildInstallScriptPayload(content: string, osType: string, ctx: 
   - (a) `buildInstallScriptPayload('x {{var.code}} y {{install.dir}}','windows',{vars:{code:'ab12cd'}})` → content `'x {{var_code}} y {{install_dir}}'`, parameters `{var_code:'ab12cd'}`.
   - (b) A value `'a; Remove-Item C:\\'` appears only in `parameters`.
   - (c) A missing var → `unresolved:['var.code']`.
-  - (d) Two tokens mapping to one key → unresolved (collision guard).
+  - (d) Two tokens mapping to one key, **or** to one `BREEZE_PARAM_` env name after uppercasing and `-`→`_` folding (`paramrefs.go` `parameterEnvName`) → unresolved (collision guard).
   - (e) Dispatch with an enabled post-script and an **old** agent: that device's `deployment_results` is `failed` with `errorMessage` starting `agent_update_required`. No `device_commands` row is created for it; a new-agent device in the same deployment is dispatched.
   - (f) A new agent gets the payload `postInstallScript === buildInstallScriptPayload(...).payload`.
   - (g) A script with `installScriptsEnabled:false`: the payload has no script keys and no gate is applied (today's behavior).
@@ -551,7 +563,7 @@ export function buildInstallScriptPayload(content: string, osType: string, ctx: 
 - catalog PATCH :1016 and DELETE :1055 guards
 - `GET /catalog` select :829, which returns `builtinPackageKey` and `installScriptsEnabled` per latest version
 
-Also modify `routes/softwareUploads.ts` (:154-163, completion :744) and `routes/softwareInstallMethods.ts:113`. Tests: the matching route test files (`git ls-files apps/api/src/routes | grep -iE '^apps/api/src/routes/software(Uploads|InstallMethods)?\.test'`).
+Also modify `routes/softwareUploads.ts` (:154-163, completion :744), `routes/softwareInstallMethods.ts:113`, `packages/shared/src/utils/softwareFileType.ts` (add `'zip'` to `SOFTWARE_FILE_TYPES` and infer `.zip` → `'zip'`), and `services/softwareVersionShared.ts:16` (`ALLOWED_EXTENSIONS` derives `.zip`). `zip` becomes accepted in the same PR as its validation and agent gate, so it is never accepted unvalidated. Tests: the matching route test files (`git ls-files apps/api/src/routes | grep -iE '^apps/api/src/routes/software(Uploads|InstallMethods)?\.test'`).
 
 - [ ] **Step 1 (red):**
   - (a) On every create path (JSON, multipart, chunked completion), each `InstallSpecIssue` → 400 `{ error, issues }`.
@@ -563,6 +575,7 @@ Also modify `routes/softwareUploads.ts` (:154-163, completion :744) and `routes/
     - install-method create → 400
   - (e) An S1 row (NULL key) can still take a partner-uploaded version.
   - (f) `POST /catalog` with a `builtinPackageKey` in the body does not set it.
+  - (g) `SOFTWARE_FILE_TYPES` includes `'zip'` and `.zip` infers `'zip'` (`softwareFileType.test.ts`). `softwareVersionShared.test.ts` accepts a `.zip` upload name. A zip upload with no post script → 400 `zip_requires_post_install_script`.
 - [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS. API typecheck (12 GB, exit code). Integration: `builtinCatalogVersionsRoute.integration.test.ts` on the wt-stack. Commit. Open PR C (`Refs #6958`).
 
 ---
@@ -587,12 +600,37 @@ SELECT set_config('breeze.scope', 'system', true);
 ALTER TABLE software_compliance_status ADD COLUMN IF NOT EXISTS service_watches jsonb;
 ALTER TABLE software_compliance_status ENABLE ROW LEVEL SECURITY;
 ALTER TABLE software_compliance_status FORCE ROW LEVEL SECURITY;
--- Four policies (select/insert/update/delete), each DROP POLICY IF EXISTS then
--- CREATE, predicate copied verbatim from an existing DEVICE_ID_JOIN_POLICY_TABLES
--- member's migration (find with: git grep -n "DEVICE_ID_JOIN" -- apps/api/src/__tests__):
---   EXISTS (SELECT 1 FROM devices d WHERE d.id = software_compliance_status.device_id
---           AND public.breeze_has_org_access(d.org_id))
+-- Shape copied from 2026-04-11-bucket-c-phase-5-admin-cold-rls.sql:45-75
+-- (automation_policy_compliance, a DEVICE_ID_JOIN_POLICY_TABLES member).
+DROP POLICY IF EXISTS breeze_org_isolation_select ON software_compliance_status;
+DROP POLICY IF EXISTS breeze_org_isolation_insert ON software_compliance_status;
+DROP POLICY IF EXISTS breeze_org_isolation_update ON software_compliance_status;
+DROP POLICY IF EXISTS breeze_org_isolation_delete ON software_compliance_status;
+CREATE POLICY breeze_org_isolation_select ON software_compliance_status
+  FOR SELECT USING (
+    EXISTS (SELECT 1 FROM devices d WHERE d.id = software_compliance_status.device_id
+            AND public.breeze_has_org_access(d.org_id)));
+CREATE POLICY breeze_org_isolation_insert ON software_compliance_status
+  FOR INSERT WITH CHECK (
+    EXISTS (SELECT 1 FROM devices d WHERE d.id = software_compliance_status.device_id
+            AND public.breeze_has_org_access(d.org_id)));
+CREATE POLICY breeze_org_isolation_update ON software_compliance_status
+  FOR UPDATE USING (
+    EXISTS (SELECT 1 FROM devices d WHERE d.id = software_compliance_status.device_id
+            AND public.breeze_has_org_access(d.org_id)))
+  WITH CHECK (
+    EXISTS (SELECT 1 FROM devices d WHERE d.id = software_compliance_status.device_id
+            AND public.breeze_has_org_access(d.org_id)));
+CREATE POLICY breeze_org_isolation_delete ON software_compliance_status
+  FOR DELETE USING (
+    EXISTS (SELECT 1 FROM devices d WHERE d.id = software_compliance_status.device_id
+            AND public.breeze_has_org_access(d.org_id)));
 ```
+In `rls-coverage.integration.test.ts`:
+- Delete the `software_compliance_status` line from `UNREVIEWED_RLS_CLASSIFICATION_DEBT` (:1303).
+- Add the table to `DEVICE_ID_JOIN_POLICY_TABLES` (:1030, alphabetical).
+- Lower `UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING` from 11 to 10 (:1324).
+- Leave `UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES` (:1325) as a shrink-only superset. Confirm against the "only shrinks" test whether the name must also leave it, and remove it if so.
 - [ ] **Step 1 (red):** `softwareComplianceStatusRls.integration.test.ts`, with two partners, two orgs and devices in each.
   - An org-A session sees only org-A devices' rows and cannot INSERT/UPDATE a row for an org-B device.
   - A partner-scope session sees all its orgs.
@@ -622,7 +660,7 @@ export function applyServiceRules(input: {
   rules: Array<{ name: string; catalogId?: string; vendor?: string; minVersion?: string; maxVersion?: string }>;
   inventoryMatchedRuleNames: Set<string>;
   serviceNamesByCatalogId: Map<string, string[]>;        // OS-filtered
-  observations: Map<string, ServiceObservation>;         // key: watchKey('service', name)
+  observations: Map<string, ServiceObservation>;         // ONE device's observations, key watchKey('service', name); E3 calls this once per device
   now: Date;
 }): SoftwarePolicyViolation[];
 ```
@@ -676,6 +714,11 @@ export function applyServiceRules(input: {
   - (h) 60 derived names → 50 delivered.
   - (i) No `withSystemDbAccessContext` on this path.
   - (j) `resolveMonitoringConfigForDisplay` includes derived watches (intended: the device monitoring tab shows the client's service).
+  - (k) **Integration** (`__tests__/integration/softwareServiceWatchDelivery.integration.test.ts`, wt-stack, real RLS):
+    - An agent-shaped context (`scope:'organization'`, `accessibleOrgIds:[orgA]`, `accessiblePartnerIds:[]`, `currentPartnerId:P`; `middleware/agentAuth.ts:1156,1176`) resolves the watch for a status row whose policy is **partner-wide** (`org_id NULL`, `partner_id P`). It reads through `software_policies_partner_wide_select` (`migrations/2026-10-11-000200-…:76`).
+    - The same case for an org-owned policy.
+    - Another partner's policy yields nothing.
+    - A mocked statement counter cannot catch a join that RLS silently empties, which is why these cases need a real database.
 - [ ] **Step 2:** `npx vitest run src/routes/agents/helpers.softwareServiceWatches.test.ts src/routes/agents/helpers.monitorWatchDelivery.test.ts` → FAIL.
 - [ ] **Step 3:** implement. The existing 120 s monitoring cache covers the result. A cached entry may carry `auto_restart:true` up to 120 s after a disarm, and that bound is accepted and documented in a code comment.
 - [ ] **Step 4:** PASS; rerun `helpers.partnerWidePolicies.test.ts`. Typecheck. Commit. Open PR E (`Refs #6958`, `Refs #6960`).
@@ -705,6 +748,8 @@ export function builtinPackageKeysForVendor(vendor: TenantVarVendorKey): Partial
 export function serviceRunningNamesFor(key: BuiltinPackageKey): string[];
 export async function ensurePinnedBuiltinPackage(p: { key: BuiltinPackageKey; partnerId: string }): Promise<{ catalogId: string; versionId: string }>;
 export async function refreshPinnedBuiltinPackages(): Promise<{ refreshed: number }>;
+/** Read-only lookup for #6960 W5 (managedPolicyGenerator): never creates rows. Runs in the caller's context. */
+export async function catalogIdForBuiltinKey(partnerId: string, key: BuiltinPackageKey): Promise<string | null>;
 ```
 
 **Values**
@@ -790,10 +835,10 @@ exit $LASTEXITCODE
 **Interfaces:**
 - `GET /software/builtin-packages` (partner/system scope, `devices.read`) → `{ data: Array<{ key, name, vendor, os, version, requiredVars, uninstallCommand, catalogId: string | null, archived: boolean }> }`; `hidden` defs are omitted.
 - `POST /software/builtin-packages/:key` (partner/system scope; `devices.write` + `devices.execute` + MFA + `canManagePartnerWidePolicies`) → `201 { catalogId, versionId }`.
-  - Unknown or hidden key → 404.
+  - Unknown key → 404. A hidden key → 404 for partner scope. **System scope may provision a hidden key** (lab gate L2) and must pass `?partnerId=`.
   - Org scope → 403.
   - Missing `devices.execute` → 403.
-  - The partner is always `auth.partnerId`; a body cannot choose it.
+  - For partner scope the partner is always `auth.partnerId`, and a body or query cannot choose it.
 - [ ] **Step 1 (red):** the status codes above; `mcp-coverage.test.ts` and `partner-wide-write-coverage.test.ts` pass with the new entries.
 - [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS. Commit.
 
@@ -803,6 +848,10 @@ exit $LASTEXITCODE
 - `SoftwareCatalog.tsx`: the panel for partner scope, plus a "Built-in" badge when `builtinPackageKey` is set.
 - `DetectionRulesEditor.tsx`: a `service_running` option with a `serviceName` input.
 - `SoftwareVersionManager.tsx`: an "inactive stored script" notice when a script exists and `installScriptsEnabled` is false.
+- `AddPackageModal.tsx`:
+  - Add `.zip` to the file `accept` list (:990).
+  - With `zip` selected, the post-install script field is required and the silent-args field is hidden.
+- `apps/web/src/lib/installerArgsPrefill.ts`: no args prefill for `zip`/`pkg`/`dmg`/`deb`.
 - 8 locale files.
 
 - [ ] **Step 1 (red):**
@@ -811,6 +860,8 @@ exit $LASTEXITCODE
   - `requiredVars` and `uninstallCommand` render.
   - `DetectionRulesEditor` round-trips `{type:'service_running', serviceName:'ctrld'}`.
   - The inactive-script notice renders.
+  - `AddPackageModal` accepts a `.zip` file and blocks submit without a post-install script.
+  - `installerArgsPrefill` returns `''` for `zip`.
   - `localeParity.test.ts` and `no-silent-mutations.test.ts` pass.
 - [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS; web typecheck exit 0. Commit. Open PR D (`Refs #6958`, `Refs #6960`, `Refs #8734`).
 
@@ -818,7 +869,7 @@ exit $LASTEXITCODE
 
 ## Lab gates (owner-run; they block offering the DNS keys to MSPs, not merging)
 
-**Setup:** clean VMs; an agent at or above `MIN_AGENT_VERSION_INSTALL_SCRIPTS` (released or `make dev-push`); a scratch Control D sub-org provisioning code (limit 1, short expiry); a scratch NextDNS profile. Record results in PR D.
+**Setup:** clean VMs; an agent at or above `MIN_AGENT_VERSION_INSTALL_SCRIPTS`. Use a release, or a lab build with `cd agent && make build VERSION=<MIN>` (ldflags `-X main.version`, `agent/Makefile:3,8`). Not `make dev-push`: it stamps `dev-<epoch>`, which the gate correctly treats as unsupported. a scratch Control D sub-org provisioning code (limit 1, short expiry); a scratch NextDNS profile. Record results in PR D.
 
 | Gate | Steps | Pass |
 |---|---|---|
@@ -851,6 +902,7 @@ exit $LASTEXITCODE
 - Backfill `builtin_package_key` for Huntress/S1, so "built-in" has a single discriminator.
 - Software-compliance alerting on `not_running`: #6960 W3, per spec §2.6.
 - Secret tenant variables for install scripts via the executor `SecretEnv` (#3409 PR4b precedent).
+- Linux DNS clients: ctrld and NextDNS ship Linux builds; NextDNS has a `.deb`; ctrld has tarballs only. Also the issue's open question of whether software-policy auto-reinstall reaches Linux devices. Both are unverified and out of v1; the Linux `systemctl` evaluator ships anyway.
 
 ## Decisions for Todd (defaults chosen; the plan proceeds on the default)
 
@@ -902,3 +954,19 @@ exit $LASTEXITCODE
   - `is_latest` limits automatic selection only, not manual deploys.
   - An earlier false clause short-circuits before an unknown clause is evaluated.
 - **Unresolved disagreements:** none. Four product defaults are listed under Decisions for Todd.
+
+## Plan review
+
+One independent Sonnet review round returned **approve-with-changes**, with 12 findings. All are folded in:
+- `zip` is accepted in the same PR as its validation and gate (moved from A to C). The `AddPackageModal` and `installerArgsPrefill` web files are now owned by D.
+- The lab agent is built with `make build VERSION=<MIN>`, not `dev-push`.
+- System scope can provision a hidden key for L2.
+- A real-RLS integration test covers the partner-wide watch delivery.
+- E1's four-policy SQL is written inline.
+- Pure OS mappings are tag-free so Linux CI runs them.
+- W5 gets `catalogIdForBuiltinKey` plus the list of plan-text amendments.
+- Zip edge cases and mode masking are covered, and executor IDs are unique.
+- The parameter env-name collision guard is added.
+- `applyServiceRules` runs per device.
+- The timeout-pin wording is corrected.
+- Linux is added to Deferred.
