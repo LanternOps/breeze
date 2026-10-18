@@ -5292,6 +5292,11 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	if err != nil {
 		log.Error("failed to send heartbeat", "server", baseURL, "error", err.Error())
 		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
+		// #8934: the server answered, it is just overloaded — the loop is
+		// alive, and the watchdog must not restart it for that.
+		if status, ok := serverOverloadAnswer(err); ok {
+			h.noteServerUnavailableLiveness(status)
+		}
 		return nil, false
 	}
 	defer resp.Body.Close()
@@ -5315,6 +5320,11 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("heartbeat returned non-OK status", "server", baseURL, "status", resp.StatusCode)
+		// Do absorbs overload statuses into its error today; this keeps the
+		// marker if that ever changes (#8934).
+		if isServerOverloadStatus(resp.StatusCode) {
+			h.noteServerUnavailableLiveness(resp.StatusCode)
+		}
 		h.healthMon.Update("heartbeat", health.Degraded, fmt.Sprintf("status %d", resp.StatusCode))
 		return nil, false
 	}
