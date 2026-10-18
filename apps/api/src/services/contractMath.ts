@@ -75,6 +75,60 @@ export function duePeriodStartFor(billingTiming: BillingTiming, nextBillingAt: s
   return billingTiming === 'advance' ? nextBillingAt : addMonthsClamped(nextBillingAt, -intervalMonths);
 }
 
+/**
+ * The billing sites' expiry test, evaluated against the period the sweep is
+ * NEXT going to bill (`duePeriodStartFor`, exactly as generateDueInvoice does).
+ * A contract with no pointer can never produce another invoice, so it is judged
+ * against today instead. Open-ended (endDate null) is never past its end.
+ */
+export function isPastEndForReporting(
+  c: { endDate: string | null; nextBillingAt: string | null; billingTiming: BillingTiming; intervalMonths: number },
+  asOfISO: string,
+): boolean {
+  if (c.endDate === null || c.endDate === undefined) return false;
+  const periodStart = c.nextBillingAt
+    ? duePeriodStartFor(c.billingTiming, c.nextBillingAt, c.intervalMonths > 0 ? c.intervalMonths : 1)
+    : asOfISO;
+  return isExpired({ endDate: c.endDate, periodStart });
+}
+
+/** Why a contract counts as in term: still billing, or its final period is billed and still being served. */
+export type ContractInTermBasis = 'active' | 'billed_final_term';
+
+/**
+ * #9220 (business-reports phase 2 spec, trap T8): is this contract in term on
+ * `asOfISO`, for reporting (MRR)? `status` alone cannot answer it.
+ * generateDueInvoice flips a contract to `expired` as soon as it bills a period
+ * whose SUCCESSOR starts on/after end_date, so an advance-billed contract is
+ * `expired` for the whole of its final, paid, still-served period — a one-year
+ * contract billed annually in advance is `expired` right after its only invoice.
+ *
+ * In term when all hold:
+ *  - start_date <= asOf (a future-start contract is not yet earning);
+ *  - end_date is NULL or asOf < end_date (end_date is exclusive, like isExpired);
+ *  - status is `active` and not isPastEndForReporting → 'active', or
+ *    status is `expired` and a billed contract_billing_periods row covers asOf
+ *    (`billedPeriodCoversAsOf`, looked up by the caller) → 'billed_final_term'.
+ * `paused`, `cancelled` and `draft` are never in term.
+ *
+ * Billing behaviour is deliberately untouched: this only stops reporting from
+ * reading the early `expired` stamp as "ended".
+ */
+export function contractInTermForReporting(
+  c: {
+    status: string; startDate: string; endDate: string | null;
+    nextBillingAt: string | null; billingTiming: BillingTiming; intervalMonths: number;
+  },
+  asOfISO: string,
+  billedPeriodCoversAsOf: boolean,
+): ContractInTermBasis | null {
+  if (c.startDate > asOfISO) return null;
+  if (c.endDate !== null && c.endDate !== undefined && asOfISO >= c.endDate) return null;
+  if (c.status === 'active') return isPastEndForReporting(c, asOfISO) ? null : 'active';
+  if (c.status === 'expired') return billedPeriodCoversAsOf ? 'billed_final_term' : null;
+  return null;
+}
+
 /** UTC calendar date of `asOf`. Contracts carry no timezone, so every "today" in
  *  the billing code is UTC (the claim query and the hour-block boundaries use the
  *  same convention). */
