@@ -307,6 +307,25 @@ describe('groups routes', () => {
         expect(body.details[0]).toContain('reference itself');
       });
 
+      it('rejects flipping a static group with a stored self-referencing filter to dynamic', async () => {
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([makeGroup({
+                type: 'static',
+                filterConditions: { operator: 'AND', conditions: [{ field: 'groupId', operator: 'notEquals', value: GROUP_ID }] }
+              })])
+            })
+          })
+        } as any);
+        const res = await app.request(`/groups/${GROUP_ID}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({ type: 'dynamic' })
+        });
+        expect(res.status).toBe(400);
+      });
+
       it('rejects a two-group cycle', async () => {
         mockGroupLookup();
         vi.mocked(db.select).mockReturnValueOnce({

@@ -781,22 +781,28 @@ groupRoutes.patch(
         return c.json({ error: 'Invalid filter conditions', details: validation.errors }, 400);
       }
       filterFieldsUsed = extractFieldsFromFilter(payload.filterConditions);
-      if (effectiveType === 'dynamic') {
-        // #9179: a dynamic group may not reference itself or form a membership
-        // cycle with other dynamic groups (group exclusion would oscillate).
-        const cycle = await findCycleForSave(group.orgId, id, payload.filterConditions);
-        if (cycle) {
-          return c.json({
-            error: 'Invalid filter conditions',
-            details: [cycle.length === 2
-              ? 'A dynamic group cannot reference itself in its own filter'
-              : 'Filter creates a membership cycle between dynamic groups'],
-          }, 400);
-        }
-      }
     } else if (filterChanged && payload.filterConditions === null) {
       // Clearing filter conditions
       filterFieldsUsed = [];
+    }
+
+    // #9179: a dynamic group may not reference itself or form a membership
+    // cycle with other dynamic groups (group exclusion would oscillate). Also
+    // runs when only the type flips to dynamic, since a static group can hold a
+    // stored filter that then goes live. Check-then-write is not atomic: two
+    // concurrent edits can still close a cycle between them (accepted; narrow).
+    const typeBecameDynamic = effectiveType === 'dynamic' && group.type !== 'dynamic';
+    const filterToCheck = filterChanged ? payload.filterConditions : (typeBecameDynamic ? group.filterConditions : null);
+    if (effectiveType === 'dynamic' && filterToCheck) {
+      const cycle = await findCycleForSave(group.orgId, id, filterToCheck);
+      if (cycle) {
+        return c.json({
+          error: 'Invalid filter conditions',
+          details: [cycle.length === 2
+            ? 'A dynamic group cannot reference itself in its own filter'
+            : 'Filter creates a membership cycle between dynamic groups'],
+        }, 400);
+      }
     }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
