@@ -213,7 +213,7 @@ func TestICETrickle_RealPeerConnectionTricklesLateCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer offerer.Close()
+	defer func() { _ = offerer.Close() }()
 	if _, err := offerer.CreateDataChannel("probe", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestICETrickle_RealPeerConnectionTricklesLateCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer answerer.Close()
+	defer func() { _ = answerer.Close() }()
 
 	tr := newICETrickle()
 	answerer.OnICECandidate(tr.observe)
@@ -285,7 +285,7 @@ func TestSessionManager_AddRemoteICECandidateAfterAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer offerer.Close()
+	defer func() { _ = offerer.Close() }()
 	if _, err := offerer.CreateDataChannel("probe", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestSessionManager_AddRemoteICECandidateAfterAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer answerer.Close()
+	defer func() { _ = answerer.Close() }()
 	if err := answerer.SetRemoteDescription(offer); err != nil {
 		t.Fatal(err)
 	}
