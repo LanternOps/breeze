@@ -106,9 +106,12 @@ type Snapshot struct {
 
 // ChangeTrackerCollector tracks changes in system configuration.
 type ChangeTrackerCollector struct {
-	snapshotPath     string
-	lastSnapshot     *Snapshot
-	gatherSnapshot   func() (*Snapshot, error)
+	snapshotPath   string
+	lastSnapshot   *Snapshot
+	gatherSnapshot func() (*Snapshot, error)
+	// serviceCollect overrides the service collector in the real gather path
+	// (tests only). Nil means NewServiceCollector().Collect.
+	serviceCollect   func() ([]ServiceInfo, error)
 	now              func() time.Time
 	collectorTimeout time.Duration
 	ignoreRules      []changeIgnoreRule
@@ -401,7 +404,10 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	)
 
 	softwareCollector := NewSoftwareCollector()
-	serviceCollector := NewServiceCollector()
+	collectServiceInfo := NewServiceCollector().Collect
+	if c.serviceCollect != nil {
+		collectServiceInfo = c.serviceCollect
+	}
 	invCollector := NewInventoryCollector()
 	hwCollector := NewHardwareCollector()
 
@@ -418,7 +424,7 @@ func (c *ChangeTrackerCollector) gatherCurrentSnapshot() (*Snapshot, error) {
 	go func() {
 		defer wg.Done()
 		services, servicesErr = collectWithTimeout(ctx, c.collectorTimeout, func(_ context.Context) ([]ServiceInfo, error) {
-			return serviceCollector.Collect()
+			return collectServiceInfo()
 		})
 	}()
 	go func() {
@@ -1317,16 +1323,27 @@ func mergeServiceReads(prev map[string]ServiceInfo, services []ServiceInfo) map[
 		key := serviceKey(svc)
 		if svc.accountUnreliable || svc.startupTypeUnreliable {
 			if old, ok := prev[key]; ok {
+				slog.Warn("service read contained control characters, keeping previous value",
+					"service", svc.Name,
+					"accountUnreliable", svc.accountUnreliable,
+					"startupTypeUnreliable", svc.startupTypeUnreliable,
+					"readAccount", svc.Account,
+					"keptAccount", old.Account,
+					"readStartupType", svc.StartupType,
+					"keptStartupType", old.StartupType)
 				if svc.accountUnreliable {
 					svc.Account = old.Account
 				}
 				if svc.startupTypeUnreliable {
 					svc.StartupType = old.StartupType
 				}
-				slog.Warn("service read contained control characters, keeping previous value",
+			} else {
+				slog.Warn("service read contained control characters and has no previous value, using sanitised read",
 					"service", svc.Name,
-					"account", svc.accountUnreliable,
-					"startupType", svc.startupTypeUnreliable)
+					"accountUnreliable", svc.accountUnreliable,
+					"startupTypeUnreliable", svc.startupTypeUnreliable,
+					"readAccount", svc.Account,
+					"readStartupType", svc.StartupType)
 			}
 			svc.accountUnreliable = false
 			svc.startupTypeUnreliable = false

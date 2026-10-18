@@ -519,3 +519,49 @@ func TestMergeServiceReads_UnreliableWithoutPreviousKeepsSanitizedValue(t *testi
 		}
 	}
 }
+
+// TestGatherCurrentSnapshot_ServicesKeepPreviousOnUnreliableRead runs the real
+// gather path with a stubbed service collector, so it fails if the services
+// branch stops routing reads through mergeServiceReads (#8904).
+func TestGatherCurrentSnapshot_ServicesKeepPreviousOnUnreliableRead(t *testing.T) {
+	collector := NewChangeTrackerCollector(filepath.Join(t.TempDir(), "snapshot.json"))
+	collector.collectorTimeout = 2 * time.Second
+	collector.serviceCollect = func() ([]ServiceInfo, error) {
+		return []ServiceInfo{{
+			Name:                  "GoogleUpdaterInternalService156.0.8067.0",
+			State:                 "running",
+			StartupType:           "uto",
+			Account:               "lSystem",
+			accountUnreliable:     true,
+			startupTypeUnreliable: true,
+		}}, nil
+	}
+
+	// A non-nil previous snapshot also keeps slow host collectors on their
+	// "warn + reuse previous" timeout branch instead of failing the gather.
+	seed := &Snapshot{}
+	collector.ensureSnapshotMaps(seed)
+	key := normalizeString("GoogleUpdaterInternalService156.0.8067.0")
+	seed.Services[key] = ServiceInfo{
+		Name:        "GoogleUpdaterInternalService156.0.8067.0",
+		State:       "running",
+		StartupType: "automatic",
+		Account:     "LocalSystem",
+	}
+	collector.lastSnapshot = seed
+
+	snapshot, err := collector.gatherCurrentSnapshot()
+	if err != nil {
+		t.Fatalf("gatherCurrentSnapshot returned error: %v", err)
+	}
+	got, ok := snapshot.Services[key]
+	if !ok {
+		t.Fatalf("snapshot missing service %q: %#v", key, snapshot.Services)
+	}
+	if got.Account != "LocalSystem" || got.StartupType != "automatic" {
+		t.Fatalf("unreliable read was not carried forward: %#v", got)
+	}
+	if changes := collector.diffServices(snapshot); len(changes) != 0 {
+		t.Fatalf("expected no service changes, got %#v", changes)
+	}
+}
