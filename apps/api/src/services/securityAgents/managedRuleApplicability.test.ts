@@ -116,6 +116,33 @@ describe('loadManagedRuleApplicability', () => {
     expect(a.filterViolations('d1', [unauthorized]).violations).toEqual([unauthorized]);
   });
 
+  // #6960 W03: coverage persists per-(device, vendor) applicability whether or
+  // not the device currently has a `missing` violation (an installed agent in
+  // an unmapped org is still not_applicable, not "covered by accident").
+  it('evaluateDevice reports every known-vendor rule, ready or not, with or without a violation', async () => {
+    prime();
+    orgReadiness.mockResolvedValueOnce(new Map([['org-1', { ok: false, reason: 'org_not_mapped' }], ['org-2', { ok: true }]]));
+    const a = await loadManagedRuleApplicability(POLICY, [
+      { deviceId: 'd1', orgId: 'org-1', osType: 'windows' },
+      { deviceId: 'd2', orgId: 'org-2', osType: 'windows' },
+    ]);
+    expect(a.evaluateDevice('d1')).toEqual([
+      { catalogId: HUNTRESS_CATALOG, vendor: 'huntress', result: { ok: false, reason: 'org_not_mapped' } },
+    ]);
+    expect(a.evaluateDevice('d2')).toEqual([{ catalogId: HUNTRESS_CATALOG, vendor: 'huntress', result: { ok: true } }]);
+    expect(a.vendors()).toEqual(['huntress']);
+  });
+
+  it('evaluateDevice omits rules whose catalog row is not a known vendor (no vendor to key a status row on)', async () => {
+    prime({ catalog: [{ id: UNKNOWN_CATALOG, integrationProvider: null }] });
+    const a = await loadManagedRuleApplicability(
+      { ...POLICY, rules: { software: [{ name: 'X', catalogId: UNKNOWN_CATALOG }], allowUnknown: true } },
+      [{ deviceId: 'd1', orgId: 'org-1', osType: 'windows' }],
+    );
+    expect(a.evaluateDevice('d1')).toEqual([]);
+    expect(a.vendors()).toEqual([]);
+  });
+
   it('an unknown device is treated as not applicable rather than assumed ready', async () => {
     prime();
     orgReadiness.mockResolvedValueOnce(new Map());

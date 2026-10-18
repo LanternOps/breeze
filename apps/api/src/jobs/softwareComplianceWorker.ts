@@ -30,6 +30,11 @@ import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigReso
 import { readLatestPolicyOwnedInstallByDevice } from '../services/softwarePolicyInstallRemediation';
 import { repairManagedSoftwarePolicies } from '../services/securityAgents/managedPolicyGenerator';
 import {
+  pruneAllForPolicy,
+  recordManagedPolicyApplicability,
+  type ManagedApplicabilityEntry,
+} from '../services/securityAgents/coverageStatusStore';
+import {
   loadManagedRuleApplicability,
   type ManagedRuleApplicability,
 } from '../services/securityAgents/managedRuleApplicability';
@@ -564,8 +569,9 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   /**
    * #6960, generated (security agents) policies only: devices with at least one
    * rule that is not applicable to them (org not mapped, platform unsupported,
-   * …), and the (device, rule) pairs per reason. Nothing durable stores these
-   * yet; this return value and the pass log are where they are visible.
+   * …), and the (device, rule) pairs per reason. W03 persists the per-(device,
+   * vendor) reasons in `security_agent_device_status`; these counts remain for
+   * the pass log.
    */
   notApplicable?: number;
   notApplicableByReason?: Record<string, number>;
@@ -641,8 +647,14 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     }
   }
   deviceIds = deviceIds.filter((id) => orgByDevice.has(id));
+  const isFullPass = !(Array.isArray(data.deviceIds) && data.deviceIds.length > 0);
 
   if (deviceIds.length === 0) {
+    // #6960 W03: a generated policy that reaches nobody any more owns no
+    // coverage rows either.
+    if (policy.managedByLinkId && isFullPass) {
+      await reportCoverageFailure(policy.id, () => pruneAllForPolicy(policy.id));
+    }
     return {
       policyId: policy.id,
       devicesEvaluated: 0,
@@ -1030,6 +1042,27 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     recordSoftwareRemediationDecision('install_scheduled', installRemediationQueued);
   }
 
+  if (managedApplicability) {
+    // #6960 W03: durable per-(device, vendor) applicability, keyed on the
+    // DEVICE's org (orgByDevice), never the policy owner's.
+    const entries: ManagedApplicabilityEntry[] = [];
+    for (const deviceId of deviceIds) {
+      for (const readiness of managedApplicability.evaluateDevice(deviceId)) {
+        entries.push({
+          deviceId,
+          orgId: orgByDevice.get(deviceId)!,
+          vendor: readiness.vendor,
+          notApplicableReason: readiness.result.ok ? null : readiness.result.reason,
+        });
+      }
+    }
+    await reportCoverageFailure(policy.id, () => recordManagedPolicyApplicability({
+      policyId: policy.id,
+      entries,
+      prune: isFullPass ? { deviceIds, vendors: managedApplicability.vendors() } : null,
+    }));
+  }
+
   if (managedApplicability && notApplicableDevices > 0) {
     console.info('[SoftwareComplianceWorker] Managed security-agent rules not applicable to some devices', {
       policyId: policy.id,
@@ -1048,6 +1081,21 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     installRemediationQueued,
     ...(managedApplicability ? { notApplicable: notApplicableDevices, notApplicableByReason } : {}),
   };
+}
+
+/**
+ * Coverage state is observability for the security-agents feature, not part of
+ * compliance enforcement: a failed write is reported (and retried by the next
+ * pass) but never fails the compliance pass that already queued installs.
+ * The store runs in its own transaction, so it cannot poison this one.
+ */
+async function reportCoverageFailure(policyId: string, write: () => Promise<unknown>): Promise<void> {
+  try {
+    await write();
+  } catch (error) {
+    console.error('[SoftwareComplianceWorker] Failed to persist security-agent coverage applicability', { policyId, error });
+    captureException(error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 export function createSoftwareComplianceWorker(): Worker<SoftwareComplianceJobData> {
