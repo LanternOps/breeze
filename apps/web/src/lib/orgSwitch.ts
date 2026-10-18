@@ -82,7 +82,9 @@ export function getOrgSwitchRedirect(pathname: string): string | null {
  * `destination` overrides both: for a switch that is itself a navigation (e.g.
  * the org record's "Open in Devices"), the caller knows where the user is
  * going and the redirect table has nothing to add. A destination equal to the
- * current URL means "switch and stay": no navigation happens at all.
+ * current URL *including a hash* means "switch and stay": no navigation
+ * happens at all (a hashless same-path destination still soft-navigates so
+ * the page re-renders under the new org).
  */
 export async function applyOrgSwitch(
   orgId: string | null,
@@ -105,7 +107,7 @@ export async function applyOrgSwitch(
   // swaps, so navigating would report 'hard' and strand the toast. The caller
   // owns re-rendering here — its view must already be independent of the
   // ambient org, as the org record's (every read pinned to the URL's org) is.
-  if (destination !== undefined && destination === here) {
+  if (destination !== undefined && destination === here && here.includes('#')) {
     const message = consumeSwitchToast();
     if (message) showToast({ type: 'success', message });
     return;
