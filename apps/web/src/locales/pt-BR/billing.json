@@ -670,7 +670,8 @@
       "viewContract": "Ver contrato",
       "notLinked": "Sem vínculo",
       "rowSubtitle": "Aceito com o orçamento {{quoteNumber}} por {{signer}} em {{date}}",
-      "rowSubtitleNoQuote": "Assinado por {{signer}} em {{date}}"
+      "rowSubtitleNoQuote": "Assinado por {{signer}} em {{date}}",
+      "evidenceUnavailable": "Aceito por orçamento — evidência de aceite indisponível"
     },
     "templateEditor": {
       "usage": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados",

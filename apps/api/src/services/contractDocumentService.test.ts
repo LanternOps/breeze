@@ -572,6 +572,34 @@ describe('contractDocumentService.listContractDocuments predicates', () => {
     expect(sqlText).not.toContain('is not null');
   });
 
+  it('projects signer fields from the contract_documents evidence snapshot, not quote_acceptances (#8865 W1b)', async () => {
+    const { contractDocuments } = await import('../db/schema/contractDocuments');
+    const { quoteAcceptances, quotes } = await import('../db/schema/quotes');
+    const auth = { orgCondition: (col: AnyPgColumn) => inArray(col, ['org-1']) } as unknown as AuthContext;
+    queueResult([]);
+    await listContractDocuments(auth, { linked: 'all' });
+    const chain = db as unknown as Record<string, { mock: { calls: unknown[][] } }>;
+    const projection = chain.select!.mock.calls.at(-1)![0] as Record<string, unknown>;
+
+    expect(projection.signerName).toBe(contractDocuments.signerName);
+    expect(projection.signedAt).toBe(contractDocuments.signedAt);
+    expect(projection.signerEmail).toBe(contractDocuments.signerEmail);
+    expect(projection.sourceKind).toBe(contractDocuments.sourceKind);
+    expect(projection.agreementRequestId).toBe(contractDocuments.agreementRequestId);
+    expect(projection.mime).toBe(contractDocuments.mime);
+    expect(projection.acceptanceOrigin).toBe(contractDocuments.acceptanceOrigin);
+    expect(projection.acceptanceMethod).toBe(contractDocuments.acceptanceMethod);
+    expect(projection.acceptanceReference).toBe(contractDocuments.acceptanceReference);
+    expect(new PgDialect().sqlToQuery(projection.evidenceAvailable as SQL).sql.toLowerCase())
+      .toBe('"contract_documents"."signed_at" is not null');
+
+    // The quote_acceptances join is gone (deleting a quote no longer blanks the
+    // signer); the quotes join stays for quoteNumber.
+    const joined = chain.leftJoin!.mock.calls.map((c) => c[0]); // mocks cleared in beforeEach
+    expect(joined).not.toContain(quoteAcceptances);
+    expect(joined).toContain(quotes);
+  });
+
   it('ANDs orgId with the caller org condition rather than substituting for it', async () => {
     const sqlText = await whereSqlFor({ orgId: 'org-2', linked: 'all' });
     // both the access condition (in (...)) and the narrowing equality survive

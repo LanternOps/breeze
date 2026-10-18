@@ -23,8 +23,19 @@ export interface ContractDocument {
   templateVersionId: string;
   templateName: string;
   templateVersionNumber: number;
+  /** Evidence snapshot on the signed agreement itself (#8865 W1b). NULL on a
+   *  legacy quote-sourced row whose acceptance was deleted before the back-fill
+   *  — then `evidenceAvailable` is false. */
   signerName: string | null;
   signedAt: string | null;
+  signerEmail: string | null;
+  acceptanceOrigin: 'customer' | 'on_behalf' | null;
+  acceptanceMethod: string | null;
+  acceptanceReference: string | null;
+  evidenceAvailable: boolean;
+  sourceKind: 'quote' | 'request';
+  agreementRequestId: string | null;
+  mime: string;
   quoteNumber: string | null;
   byteSize: number;
   sha256: string;

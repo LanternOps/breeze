@@ -670,7 +670,8 @@
       "viewContract": "Vedi contratto",
       "notLinked": "Non collegato",
       "rowSubtitle": "Accettato con il preventivo {{quoteNumber}} da {{signer}} il {{date}}",
-      "rowSubtitleNoQuote": "Firmato da {{signer}} il {{date}}"
+      "rowSubtitleNoQuote": "Firmato da {{signer}} il {{date}}",
+      "evidenceUnavailable": "Accettato tramite preventivo — prova di accettazione non disponibile"
     },
     "templateEditor": {
       "usage": "Usato su {{quotes}} preventivi · {{signed}} accordi firmati",

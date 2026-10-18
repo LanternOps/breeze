@@ -40,6 +40,14 @@ const UNATTACHED_DOC = {
   templateVersionNumber: 2,
   signerName: 'Jane Doe',
   signedAt: '2026-06-15T00:00:00Z',
+  signerEmail: null,
+  acceptanceOrigin: 'customer',
+  acceptanceMethod: 'typed-signature',
+  acceptanceReference: null,
+  evidenceAvailable: true,
+  sourceKind: 'quote',
+  agreementRequestId: null,
+  mime: 'application/pdf',
   quoteNumber: 'Q-2026-0001',
   byteSize: 2048,
   sha256: 'a'.repeat(64),
@@ -149,6 +157,19 @@ describe('SignedAgreementsPage', () => {
     const rows = await screen.findAllByTestId('contract-document-row');
     expect(within(rows[0]).getByTestId('signed-agreement-subtitle'))
       .toHaveTextContent(/Q-2026-0001.*Jane Doe/);
+  });
+
+  it('says acceptance evidence is unavailable instead of a blank signer on a legacy row (#8865 W1b)', async () => {
+    docsApi.listContractDocuments.mockResolvedValue(resp({
+      data: [{
+        ...UNATTACHED_DOC, quoteId: null, quoteNumber: null, signerName: null, signedAt: null,
+        acceptanceOrigin: null, acceptanceMethod: null, evidenceAvailable: false,
+      }],
+    }));
+    render(<SignedAgreementsPage />);
+    const rows = await screen.findAllByTestId('contract-document-row');
+    expect(within(rows[0]).getByTestId('signed-agreement-signer'))
+      .toHaveTextContent('Accepted via quote — acceptance evidence unavailable');
   });
 
   it('links a linked row to its contract', async () => {

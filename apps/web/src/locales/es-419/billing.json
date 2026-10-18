@@ -670,7 +670,8 @@
       "viewContract": "Ver contrato",
       "notLinked": "Sin vincular",
       "rowSubtitle": "Aceptado con la cotización {{quoteNumber}} por {{signer}} el {{date}}",
-      "rowSubtitleNoQuote": "Firmado por {{signer}} el {{date}}"
+      "rowSubtitleNoQuote": "Firmado por {{signer}} el {{date}}",
+      "evidenceUnavailable": "Aceptado mediante cotización — evidencia de aceptación no disponible"
     },
     "templateEditor": {
       "usage": "Usada en {{quotes}} cotizaciones · {{signed}} acuerdos firmados",

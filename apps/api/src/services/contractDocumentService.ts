@@ -24,11 +24,11 @@
 
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
-import { and, desc, eq, isNotNull, isNull, type SQL } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { contractDocuments, contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
 import { contracts } from '../db/schema/contracts';
-import { quotes, quoteAcceptances } from '../db/schema/quotes';
+import { quotes } from '../db/schema/quotes';
 import { QuoteServiceError } from './quoteTypes';
 import type { HashableContractPart } from './quoteContentHash';
 import {
@@ -419,8 +419,20 @@ export interface ContractDocumentListRow {
   templateVersionId: string;
   templateName: string;
   templateVersionNumber: number;
+  /** Evidence snapshot (#8865 W1b) — read from contract_documents itself, so it
+   *  survives deletion of the quote / request. NULL on a legacy quote-sourced
+   *  row whose acceptance was deleted before the back-fill. */
   signerName: string | null;
   signedAt: Date | null;
+  signerEmail: string | null;
+  acceptanceOrigin: 'customer' | 'on_behalf' | null;
+  acceptanceMethod: string | null;
+  acceptanceReference: string | null;
+  /** `signedAt !== null` — false means "accepted via quote, evidence unavailable". */
+  evidenceAvailable: boolean;
+  sourceKind: 'quote' | 'request';
+  agreementRequestId: string | null;
+  mime: string;
   quoteNumber: string | null;
   byteSize: number;
   sha256: string;
@@ -463,8 +475,16 @@ export async function listContractDocuments(
       templateVersionId: contractDocuments.templateVersionId,
       templateName: contractTemplates.name,
       templateVersionNumber: contractTemplateVersions.versionNumber,
-      signerName: quoteAcceptances.signerName,
-      signedAt: quoteAcceptances.signedAt,
+      signerName: contractDocuments.signerName,
+      signedAt: contractDocuments.signedAt,
+      signerEmail: contractDocuments.signerEmail,
+      acceptanceOrigin: contractDocuments.acceptanceOrigin,
+      acceptanceMethod: contractDocuments.acceptanceMethod,
+      acceptanceReference: contractDocuments.acceptanceReference,
+      evidenceAvailable: sql<boolean>`${contractDocuments.signedAt} IS NOT NULL`,
+      sourceKind: contractDocuments.sourceKind,
+      agreementRequestId: contractDocuments.agreementRequestId,
+      mime: contractDocuments.mime,
       quoteNumber: quotes.quoteNumber,
       byteSize: contractDocuments.byteSize,
       sha256: contractDocuments.sha256,
@@ -473,7 +493,6 @@ export async function listContractDocuments(
     .from(contractDocuments)
     .innerJoin(contractTemplates, eq(contractDocuments.templateId, contractTemplates.id))
     .innerJoin(contractTemplateVersions, eq(contractDocuments.templateVersionId, contractTemplateVersions.id))
-    .leftJoin(quoteAcceptances, eq(contractDocuments.quoteAcceptanceId, quoteAcceptances.id))
     .leftJoin(quotes, eq(contractDocuments.quoteId, quotes.id))
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(contractDocuments.createdAt));

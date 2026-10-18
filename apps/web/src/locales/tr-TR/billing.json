@@ -670,7 +670,8 @@
       "viewContract": "Sözleşmeyi görüntüle",
       "notLinked": "Bağlanmamış",
       "rowSubtitle": "{{date}} tarihinde {{signer}} tarafından {{quoteNumber}} numaralı fiyat teklifiyle kabul edildi",
-      "rowSubtitleNoQuote": "{{date}} tarihinde {{signer}} tarafından imzalandı"
+      "rowSubtitleNoQuote": "{{date}} tarihinde {{signer}} tarafından imzalandı",
+      "evidenceUnavailable": "Fiyat teklifiyle kabul edildi — kabul kanıtı mevcut değil"
     },
     "templateEditor": {
       "usage": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor",

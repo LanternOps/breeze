@@ -670,7 +670,8 @@
       "viewContract": "View contract",
       "notLinked": "Not linked",
       "rowSubtitle": "Accepted with quote {{quoteNumber}} by {{signer}} on {{date}}",
-      "rowSubtitleNoQuote": "Signed by {{signer}} on {{date}}"
+      "rowSubtitleNoQuote": "Signed by {{signer}} on {{date}}",
+      "evidenceUnavailable": "Accepted via quote — acceptance evidence unavailable"
     },
     "templateEditor": {
       "usage": "Used on {{quotes}} quotes · {{signed}} signed agreements",

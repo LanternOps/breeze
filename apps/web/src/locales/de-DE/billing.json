@@ -670,7 +670,8 @@
       "viewContract": "Vertrag ansehen",
       "notLinked": "Nicht zugeordnet",
       "rowSubtitle": "Mit Angebot {{quoteNumber}} angenommen von {{signer}} am {{date}}",
-      "rowSubtitleNoQuote": "Unterzeichnet von {{signer}} am {{date}}"
+      "rowSubtitleNoQuote": "Unterzeichnet von {{signer}} am {{date}}",
+      "evidenceUnavailable": "Über Angebot angenommen — Annahmenachweis nicht verfügbar"
     },
     "templateEditor": {
       "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",

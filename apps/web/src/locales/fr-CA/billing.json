@@ -670,7 +670,8 @@
       "viewContract": "Voir le contrat",
       "notLinked": "Non liée",
       "rowSubtitle": "Acceptée avec le devis {{quoteNumber}} par {{signer}} le {{date}}",
-      "rowSubtitleNoQuote": "Signée par {{signer}} le {{date}}"
+      "rowSubtitleNoQuote": "Signée par {{signer}} le {{date}}",
+      "evidenceUnavailable": "Acceptée par devis — preuve d’acceptation non disponible"
     },
     "templateEditor": {
       "usage": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées",
