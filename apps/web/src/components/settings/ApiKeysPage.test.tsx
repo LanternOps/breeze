@@ -163,4 +163,24 @@ describe('ApiKeysPage destructive confirmations (#3531)', () => {
     expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ name: 'New key', orgId: 'org-1' });
     expect(listFetches()).toBe(2);
   });
+
+  it('create POST body carries mcpDomains', async () => {
+    routeFetch({ status: 201, payload: { key: 'brz_created_secret' } });
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Key' }));
+    const form = (await screen.findByPlaceholderText('My API Key')).closest('form')!;
+    fireEvent.change(within(form).getByPlaceholderText('My API Key'), { target: { value: 'Narrow key' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Select all' }));
+    fireEvent.click(within(form).getByTestId('mcp-domains-selected'));
+    fireEvent.click(within(form).getByTestId('mcp-domain-tickets'));
+    fireEvent.click(within(form).getByRole('button', { name: 'Create Key' }));
+
+    await screen.findByDisplayValue('brz_created_secret');
+    const createCall = fetchMock.mock.calls.find(([url, init]) => url === '/api-keys' && init?.method === 'POST');
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
+      name: 'Narrow key',
+      mcpDomains: ['tickets'],
+    });
+  });
 });
