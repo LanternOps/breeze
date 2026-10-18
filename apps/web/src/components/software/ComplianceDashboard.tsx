@@ -17,6 +17,7 @@ import PolicyForm, {
   type CatalogOption,
   type PolicyFormValues,
 } from "./PolicyForm";
+import { useHashState } from "@/lib/useHashState";
 import { asList } from "@/lib/asList";
 import { runAction, ActionError } from "@/lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -153,11 +154,8 @@ function parsePolicyMode(
 const COVERAGE_HASH_KEY = "coverage";
 
 /** The selected coverage state from `#coverage=<state>`, composing with any other hash pairs. */
-function readCoverageHash(): CoverageState | null {
-  if (typeof window === "undefined") return null;
-  const value = new URLSearchParams(window.location.hash.replace(/^#/, "")).get(
-    COVERAGE_HASH_KEY,
-  );
+function parseCoverageHash(hash: string): CoverageState | null {
+  const value = new URLSearchParams(hash).get(COVERAGE_HASH_KEY);
   return isCoverageState(value) ? value : null;
 }
 
@@ -242,14 +240,10 @@ export default function ComplianceDashboard({
   >([]);
   const [coverageRows, setCoverageRows] = useState<CoverageRow[]>([]);
   const [coverageTotal, setCoverageTotal] = useState(0);
-  const [coverageFilter, setCoverageFilter] = useState<CoverageState | null>(
-    readCoverageHash,
+  const [coverageFilter, setCoverageFilter] = useHashState<CoverageState | null>(
+    null,
+    parseCoverageHash,
   );
-  useEffect(() => {
-    const onHashChange = () => setCoverageFilter(readCoverageHash());
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
   useEffect(() => {
     let cancelled = false;
     (async () => {
