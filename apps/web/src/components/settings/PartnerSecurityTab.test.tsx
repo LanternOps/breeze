@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/react';
-import PartnerSecurityTab, { parseAllowlistInput, currentIpCovered } from './PartnerSecurityTab';
+import PartnerSecurityTab, { parseAllowlistInput, currentIpCovered, displayIp } from './PartnerSecurityTab';
 
 describe('parseAllowlistInput', () => {
   it('splits lines, trims, and drops blanks', () => {
@@ -74,5 +74,18 @@ describe('PartnerSecurityTab add-current-IP button', () => {
     expect(button.textContent).not.toContain('::ffff:');
     fireEvent.click(button);
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ ipAllowlist: ['::ffff:203.0.113.7'] }));
+  });
+});
+
+describe('displayIp', () => {
+  it('strips only the dotted IPv4-mapped prefix, case-insensitively', () => {
+    expect(displayIp('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(displayIp('::FFFF:203.0.113.7')).toBe('203.0.113.7');
+  });
+
+  it('leaves plain IPv4, plain IPv6 and the hex-form mapped address untouched', () => {
+    expect(displayIp('203.0.113.7')).toBe('203.0.113.7');
+    expect(displayIp('2001:db8::1')).toBe('2001:db8::1');
+    expect(displayIp('::ffff:cb00:7107')).toBe('::ffff:cb00:7107');
   });
 });
