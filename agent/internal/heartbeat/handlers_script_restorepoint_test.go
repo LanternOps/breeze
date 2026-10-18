@@ -76,7 +76,7 @@ func newFakeRunAsUserHelper(t *testing.T, log *eventLog) *sessionbroker.Session 
 	session := sessionbroker.NewSession(serverIPC, 1000, "1000", "testuser", "quartz", "rp-helper", []string{"run_as_user"})
 	session.WinSessionID = "7"
 	go func() {
-		clientIPC.SetReadDeadline(time.Now().Add(10 * time.Second))
+		_ = clientIPC.SetReadDeadline(time.Now().Add(10 * time.Second))
 		env, err := clientIPC.Recv()
 		if err != nil {
 			return
@@ -87,7 +87,7 @@ func newFakeRunAsUserHelper(t *testing.T, log *eventLog) *sessionbroker.Session 
 		_ = clientIPC.Send(&ipc.Envelope{ID: env.ID, Type: ipc.TypeCommandResult, Payload: payload})
 	}()
 	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
-	t.Cleanup(func() { session.Close(); clientIPC.Close() })
+	t.Cleanup(func() { _ = session.Close(); _ = clientIPC.Close() })
 	return session
 }
 
@@ -238,9 +238,9 @@ func TestScriptSessionTargetedWaitFailureReportsNoMutation(t *testing.T) {
 func TestScriptHelperWithoutRunAsUserScopeTakesNoCheckpoint(t *testing.T) {
 	rec := installCheckpointRecorder(t)
 	serverConn, clientConn := createTestSocketPair(t)
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	session := sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "1000", "u", "quartz", "noscope", []string{"notify"})
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	cp := newCommandCheckpoint(withScriptBlock(nil), false, "x")
 	res := newTestHeartbeat(nil).executeViaUserHelper(session, Command{ID: "c", Type: tools.CmdScript, Payload: scriptPayload(nil)}, 10, cp)
 	if res.Status != "failed" || rec.count() != 0 {
@@ -255,8 +255,8 @@ func TestScriptHelperSendFailureAfterTheCheckpointStillReportsIt(t *testing.T) {
 	rec := installCheckpointRecorder(t)
 	serverConn, clientConn := createTestSocketPair(t)
 	session := sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "1000", "u", "quartz", "send-fail", []string{"run_as_user"})
-	clientConn.Close()
-	session.Close() // the send fails: the helper is gone
+	_ = clientConn.Close()
+	_ = session.Close() // the send fails: the helper is gone
 	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
 
 	res := runScript(h, withScriptBlock(map[string]any{"runAs": "user"}))

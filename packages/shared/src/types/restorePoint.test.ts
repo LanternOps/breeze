@@ -34,6 +34,19 @@ describe('restore-point wire contract (#4609)', () => {
   it('pins triggers and statuses', () => {
     expect([...RESTORE_POINT_TRIGGERS]).toEqual(['patch', 'script', 'software_install']);
     expect(RESTORE_POINT_STATUSES[0]).toBe('requested');
-    expect(RESTORE_POINT_STATUSES).toHaveLength(10);
+    expect(RESTORE_POINT_STATUSES).toHaveLength(11);
+    expect([...RESTORE_POINT_STATUSES]).toEqual([
+      'requested',
+      'created',
+      'existing_accepted',
+      'skipped_disabled',
+      'skipped_definition_only',
+      'skipped_no_mutation',
+      'unsupported',
+      'busy',
+      'insufficient_privileges',
+      'verification_failed',
+      'failed',
+    ]);
   });
 });
