@@ -33,4 +33,9 @@ export const apiKeys = pgTable('api_keys', {
   creatorAuthEpoch: integer('creator_auth_epoch'),
   creatorMfaEpoch: integer('creator_mfa_epoch'),
   creatorCredentialEpoch: integer('creator_credential_epoch'),
+  // B-W02 (#6156): MCP tool domains this key may use over /api/v1/mcp. NULL =
+  // unrestricted (today's behaviour, incl. domains added later). A non-empty
+  // set of grantable domains restricts it; 'core' is implicit, never stored.
+  // Shape CHECK lives in the migration. REST is unaffected.
+  mcpDomains: text('mcp_domains').array().$type<string[] | null>(),
 });

@@ -96,7 +96,6 @@ vi.mock('../../services/aiModels/connectionProbe', () => {
   return { ConnectionCheckError };
 });
 vi.mock('../../services/aiModels/anthropicConnectionWrites', () => ({
-  hasAnthropicConnection: vi.fn(),
   createAnthropicKeyConnection: vi.fn(),
   rotateAnthropicKey: vi.fn(),
   changeAnthropicEndpoint: vi.fn(),
@@ -122,7 +121,6 @@ import {
   changeAnthropicEndpoint,
   createAnthropicKeyConnection,
   deleteAnthropicConnection,
-  hasAnthropicConnection,
   rotateAnthropicKey,
 } from '../../services/aiModels/anthropicConnectionWrites';
 import { ConnectionCheckError } from '../../services/aiModels/connectionProbe';
@@ -192,8 +190,7 @@ beforeEach(() => {
   vi.mocked(rateLimiter).mockResolvedValue({ allowed: true, remaining: 10, resetAt: new Date(Date.now() + 60_000) });
   vi.mocked(buildPartnerModelsSnapshot).mockResolvedValue({ connections: [] } as any);
   // The partner already has its Anthropic connection C (getConnection below
-  // resolves it, live): creating another is the R1-cap 409.
-  vi.mocked(hasAnthropicConnection).mockResolvedValue(true);
+  // resolves it, live); W08b (#7606) lets it create another.
   vi.mocked(createAnthropicKeyConnection).mockResolvedValue({ connectionId: C, last4: 'xxxx', configVersion: 1 });
   vi.mocked(rotateAnthropicKey).mockResolvedValue({ last4: 'xxxx', configVersion: 2 });
   vi.mocked(changeAnthropicEndpoint).mockResolvedValue({ connectionId: C, catalogEntryId: null, configVersion: 3, slug: null, revision: null });
@@ -223,8 +220,6 @@ beforeEach(() => {
 
 describe('/ai/models partner routes — authz matrix', () => {
   it.each(WRITE_ROUTES)('%s %s succeeds for a full partner admin with MFA (control)', async (method, path, body) => {
-    // POST /connections is a 409 when an Anthropic connection already exists.
-    if (path === '/connections' && (body as { kind?: string }).kind === 'anthropic_byok') vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     const res = await call(method, path, body);
     expect(res.status).toBeLessThan(300);
   });
@@ -344,23 +339,20 @@ describe('/ai/models partner routes — behaviour', () => {
     expect((await call('PATCH', `/connections/${C}`, { name: 'x' })).status).toBe(404);
     expect(updateConnectionSettings).not.toHaveBeenCalled();
   });
-  it('409s creating a second Anthropic connection', async () => {
+  it('201s creating a second Anthropic connection while one exists (W08b: compat_uq dropped, #7606)', async () => {
     const res = await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY });
-    expect([res.status, (await res.json()).code]).toEqual([409, 'conflict']);
-    expect(createAnthropicKeyConnection).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(createAnthropicKeyConnection).toHaveBeenCalledWith({ partnerId: P, apiKey: KEY, userId: baseAuth().user.id });
   });
   it('creates the first connection with the partner id from auth, then applies name/geo', async () => {
-    vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     const res = await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY, name: 'Ours', inferenceGeo: 'us' });
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ id: C });
-    expect(hasAnthropicConnection).toHaveBeenCalledWith(P);
     expect(createAnthropicKeyConnection).toHaveBeenCalledWith({ partnerId: P, apiKey: KEY, userId: baseAuth().user.id });
     expect(updateConnectionSettings).toHaveBeenCalledWith({ partnerId: P, connectionId: C, patch: { name: 'Ours', inferenceGeo: 'us' } });
     expect(JSON.stringify(vi.mocked(writeRouteAudit).mock.calls)).not.toContain(KEY);
   });
   it('does not call updateConnectionSettings when create carries no name/geo', async () => {
-    vi.mocked(hasAnthropicConnection).mockResolvedValueOnce(false);
     expect((await call('POST', '/connections', { kind: 'anthropic_byok', apiKey: KEY })).status).toBe(201);
     expect(updateConnectionSettings).not.toHaveBeenCalled();
   });
@@ -721,8 +713,7 @@ describe('/ai/models partner routes — openai_compatible connections (W06 #7604
       expect(createGatewayConnection).toHaveBeenCalledWith(expect.objectContaining({ apiKey: undefined }));
       expect(audits()[0]!.details).toMatchObject({ hasKey: false });
     });
-    it('is allowed while an Anthropic connection exists (the R1-cap 409 belongs to the anthropic_byok arm only)', async () => {
-      vi.mocked(hasAnthropicConnection).mockResolvedValue(true);
+    it('is allowed while an Anthropic connection exists', async () => {
       expect((await call('POST', '/connections', BYO_BODY)).status).toBe(201);
       expect(createGatewayConnection).toHaveBeenCalled();
     });

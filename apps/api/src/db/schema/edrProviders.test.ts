@@ -63,6 +63,18 @@ describe('edr provider schema', () => {
     expect(getTableColumns(edrTenants).unsupportedActionsAt.notNull).toBe(false);
   });
 
+  it('W03 PR-B: push-hint columns — push defaults off, registration and hint marker nullable', () => {
+    const cols = getTableColumns(edrConnections);
+    expect(cols.pushEnabled, 'edr_connections.push_enabled missing').toBeDefined();
+    expect(cols.pushEnabled.name).toBe('push_enabled');
+    expect(cols.pushEnabled.notNull).toBe(true);
+    expect(cols.pushEnabled.default).toBe(false);
+    expect(cols.pushRegisteredAt.name).toBe('push_registered_at');
+    expect(cols.pushRegisteredAt.notNull).toBe(false);
+    expect(cols.pendingHintAt.name).toBe('pending_hint_at');
+    expect(cols.pendingHintAt.notNull).toBe(false);
+  });
+
   it('W03: in-flight action identity is unique per target + action (partial)', () => {
     const inflight = getTableConfig(edrActions).indexes.filter((i) => i.config.name?.startsWith('edr_actions_inflight_'));
     expect(inflight.map((i) => i.config.name).sort()).toEqual([

@@ -10,7 +10,6 @@ import RoleManager, {
   RoleUsersModal
 } from './RoleManager';
 import { fetchWithAuth } from '../../stores/auth';
-import { getOrgScope } from '@/hooks/useOrgScope';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '../../lib/runAction';
 import { showToast } from '../shared/Toast';
@@ -191,19 +190,14 @@ export default function RolesPage() {
   const handleCreateSubmit = async (data: RoleFormData) => {
     setSubmitting(true);
     try {
-      // When focused on a specific org (partner admin drilled into one org, or
-      // an org-scope user), create the role scoped to that org so it shows up in
-      // that org's SSO default-role picker (#3524). In fleet view (scope 'all')
-      // send nothing — the API defaults a partner caller to a partner-scoped
-      // role, preserving the prior behavior.
-      const scope = getOrgScope();
-      const body = scope.scope === 'org'
-        ? { ...data, orgId: scope.orgId }
-        : data;
+      // The owner axis comes from the dialog's explicit scope choice (#8370):
+      // `data` carries ownerScope (+ orgId for an org role) for a partner-scope
+      // creator, and neither for an org-scope creator, whose token org owns it.
+      // It is no longer read from the header org.
       await runAction({
         request: () => fetchWithAuth('/roles', {
           method: 'POST',
-          body: JSON.stringify(body)
+          body: JSON.stringify(data)
         }),
         errorFallback: t('rolesPage.failedToCreateRole'),
         successMessage: t('rolesPage.roleCreated', { name: data.name }),

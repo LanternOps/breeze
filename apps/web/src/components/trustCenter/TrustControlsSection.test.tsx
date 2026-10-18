@@ -11,10 +11,23 @@ const page = (over: Record<string, unknown> = {}) => ({
   showPercentages: false, showDeviceCount: false, showManagedBy: true, securityContactEmail: null, websiteUrl: null,
   introHtml: null, hiddenControlIds: [], publicationAuthorizedBy: null, publicationAuthorizedAt: null, lastEvaluatedAt: null, ...over,
 });
-const state = (over: Record<string, unknown> = {}) => ({
-  page: page(over), publicPath: '/p', badgePath: '/b',
-  slugs: { partnerSlug: 'a', orgSlug: 'b', valid: true, problems: [] }, canPublish: { allowed: true, reason: null },
-});
+/** Mirror of the API's GET effective block: page value when set, else the built-in default. */
+const effectiveOf = (pg: Record<string, unknown>) => {
+  const d: Record<string, unknown> = { introHtml: null, searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true, showHistory: false, hiddenControlIds: [], frameworkView: ['nist_csf_2'] };
+  const values: Record<string, unknown> = {}; const sources: Record<string, string> = {};
+  for (const k of Object.keys(d)) { const v = pg[k]; values[k] = v ?? d[k]; sources[k] = v == null ? 'default' : 'page'; }
+  if (values.introHtml === '') values.introHtml = null;
+  return { values, sources };
+};
+const state = (over: Record<string, unknown> = {}, effectiveOver: Record<string, unknown> = {}) => {
+  const pg = page(over);
+  const effective = effectiveOf(pg);
+  return {
+    page: pg, publicPath: '/p', badgePath: '/b',
+    slugs: { partnerSlug: 'a', orgSlug: 'b', valid: true, problems: [] }, canPublish: { allowed: true, reason: null },
+    effective: { ...effective, values: { ...effective.values, ...effectiveOver } },
+  };
+};
 const def = (id: string, category: string, rank: number, title: string) => ({ id, category, title, description: `${title} d`, source: 'telemetry', metric: 'coverage_pct', unit: 'devices', insurerRank: rank, frameworkRefs: [{ framework: 'cis_v8', ref: '10.1' }] });
 const asm = (id: string, category: string, status: string, percent: number | null) => ({ id, category, source: 'telemetry', unit: 'devices', status, reason: null, percent, assessed: 9, eligible: 10, evidenceAsOf: null, frameworkRefs: [] });
 const controls = {
@@ -24,9 +37,9 @@ const controls = {
 };
 const ok = () => new Response(JSON.stringify({ data: {} }), { status: 200 });
 const orgFetch = vi.fn() as never;
-const mount = (over: { canWrite?: boolean; pageOver?: Record<string, unknown> } = {}) => {
+const mount = (over: { canWrite?: boolean; pageOver?: Record<string, unknown>; effectiveOver?: Record<string, unknown> } = {}) => {
   const onReload = vi.fn(async () => {});
-  render(<TrustControlsSection orgId="o1" orgFetch={orgFetch} state={state(over.pageOver) as never} controls={controls as never} canWrite={over.canWrite ?? true} onReload={onReload} />);
+  render(<TrustControlsSection orgId="o1" orgFetch={orgFetch} state={state(over.pageOver, over.effectiveOver) as never} controls={controls as never} canWrite={over.canWrite ?? true} onReload={onReload} />);
   return onReload;
 };
 
@@ -51,6 +64,16 @@ describe('TrustControlsSection', () => {
     fireEvent.click(screen.getByTestId('trust-control-switch-edr_coverage'));
     await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { hiddenControlIds: ['disk_encryption'] }));
   });
+  it('W2: an inherited (null) page value displays the EFFECTIVE value', () => {
+    mount({ pageOver: { showPercentages: null, hiddenControlIds: null }, effectiveOver: { showPercentages: true, hiddenControlIds: ['disk_encryption'] } });
+    expect(screen.getByTestId('trust-toggle-showPercentages')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('trust-control-switch-disk_encryption')).toHaveAttribute('aria-checked', 'false');
+  });
+  it('W2: toggling an inherited value writes an explicit page value', async () => {
+    mount({ pageOver: { showPercentages: null }, effectiveOver: { showPercentages: true } });
+    fireEvent.click(screen.getByTestId('trust-toggle-showPercentages'));
+    await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { showPercentages: false }));
+  });
   it('toggling percentages sends showPercentages: true', async () => {
     mount();
     fireEvent.click(screen.getByTestId('trust-toggle-showPercentages'));
@@ -74,5 +97,52 @@ describe('TrustControlsSection', () => {
     expect(screen.queryByTestId('trust-controls-published-banner')).toBeNull();
     expect(screen.getByTestId('trust-control-switch-edr_coverage')).toBeDisabled();
     expect(screen.getByTestId('trust-toggle-searchIndexable')).toBeDisabled();
+  });
+
+  describe('W02g inheritance', () => {
+    const mountWithSources = (sources: Record<string, string>, pageOver: Record<string, unknown> = {}, canWrite = true) => {
+      const onReload = vi.fn(async () => {});
+      const s = state(pageOver);
+      s.effective = { ...s.effective, sources: { ...s.effective.sources, ...sources } };
+      render(<TrustControlsSection orgId="o1" orgFetch={orgFetch} state={s as never} controls={controls as never} canWrite={canWrite} onReload={onReload} />);
+      return onReload;
+    };
+
+    it('each toggle and the hidden-controls list badge where its value comes from (effective.sources)', () => {
+      mountWithSources({ showManagedBy: 'template', showPercentages: 'default', showDeviceCount: 'page', hiddenControlIds: 'template' }, { showManagedBy: null, showPercentages: null });
+      expect(screen.getByTestId('trust-inheritance-showManagedBy')).toHaveAttribute('data-source', 'template');
+      expect(screen.getByTestId('trust-inheritance-showManagedBy')).toHaveTextContent('Partner template');
+      expect(screen.getByTestId('trust-inheritance-showPercentages')).toHaveTextContent('Breeze default');
+      expect(screen.getByTestId('trust-inheritance-showDeviceCount')).toHaveTextContent('Set for this organization');
+      expect(screen.getByTestId('trust-inheritance-hiddenControlIds')).toHaveAttribute('data-source', 'template');
+    });
+
+    it('Reset to inherited is offered only for the page’s own values and sends null', async () => {
+      const onReload = mountWithSources({ showDeviceCount: 'page', showManagedBy: 'template' });
+      expect(screen.queryByTestId('trust-reset-showManagedBy')).toBeNull();
+      fireEvent.click(screen.getByTestId('trust-reset-showDeviceCount'));
+      await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { showDeviceCount: null }));
+      await waitFor(() => expect(onReload).toHaveBeenCalled());
+    });
+
+    it('resetting the hidden-controls list sends hiddenControlIds: null', async () => {
+      mountWithSources({ hiddenControlIds: 'page' }, { hiddenControlIds: ['edr_coverage'] });
+      fireEvent.click(screen.getByTestId('trust-reset-hiddenControlIds'));
+      await waitFor(() => expect(api.updateTrustPage).toHaveBeenCalledWith(orgFetch, 'o1', { hiddenControlIds: null }));
+    });
+
+    it('a toggle flipped locally reads as set for this organization while the save is in flight', async () => {
+      let release: (r: Response) => void = () => {};
+      api.updateTrustPage.mockReturnValueOnce(new Promise<Response>((r) => { release = r; }));
+      mountWithSources({ showManagedBy: 'template' }, { showManagedBy: null });
+      fireEvent.click(screen.getByTestId('trust-toggle-showManagedBy'));
+      await waitFor(() => expect(screen.getByTestId('trust-inheritance-showManagedBy')).toHaveAttribute('data-source', 'page'));
+      release(ok());
+    });
+
+    it('no reset without write access', () => {
+      mountWithSources({ showDeviceCount: 'page' }, {}, false);
+      expect(screen.getByTestId('trust-reset-showDeviceCount')).toBeDisabled();
+    });
   });
 });

@@ -5,6 +5,18 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # Not a required check (`CI Success` is), so a docs-only PR can skip it
+    # without starving the merge queue. See ci.yml for why CI itself cannot.
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.mdx'
+      - docs/**
+      - apps/docs/**
+      - internal/**
+  schedule:
+    # Weekly re-scan of main picks up new queries shipped in the CodeQL
+    # bundle even when nothing landed that day.
+    - cron: '17 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,7 +34,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [javascript-typescript, go]
+        # `actions` scans the workflow files themselves for script injection
+        # (untrusted `${{ github.event.* }}` in `run:`) and unpinned/excessive
+        # permissions. It is cheap and this repo has a dozen inline scripts.
+        language: [javascript-typescript, go, actions]
 
     steps:
       - name: Checkout
@@ -41,10 +56,7 @@ jobs:
         uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           languages: ${{ matrix.language }}
-
-      - name: Autobuild JavaScript/TypeScript
-        if: matrix.language == 'javascript-typescript'
-        uses: github/codeql-action/autobuild@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Build Go agent for CodeQL
         if: matrix.language == 'go'

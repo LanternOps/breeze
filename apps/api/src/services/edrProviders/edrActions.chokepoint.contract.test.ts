@@ -79,6 +79,18 @@ describe('EDR action chokepoints', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('W03 PR-B: the push path (webhook, hint store, verifier) can only schedule a read sync', () => {
+    const pushFiles = [
+      'apps/api/src/routes/webhooks/edr.ts',
+      'apps/api/src/services/edrProviders/hints.ts',
+      'apps/api/src/services/edrProviders/bitdefender/push.ts',
+    ];
+    for (const f of pushFiles) expect(API_FILES).toContain(f);
+    // No action door, no adapter write, no detection persistence, no vendor client.
+    const forbidden = /edrProviders\/(?:actions|actionStatus|persist)\b|dispatchEdrAction|\bperformAction\b|\bpersistDetections\b|bitdefender\/client\b|\.insert\s*\(|INSERT\s+INTO|\bedr_detections\b|\bedr_actions\b/;
+    expect(pushFiles.filter((f) => forbidden.test(read(f)))).toEqual([]);
+  });
+
   it('the portal never reaches EDR actions', () => {
     const re = /edrProviders\/actions\b|\/edr\/actions\b|dispatchEdrAction|edrActionRoutes/;
     const portalSide = [

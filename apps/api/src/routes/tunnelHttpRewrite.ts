@@ -174,8 +174,17 @@ if(typeof Element!=='undefined'){
  * legacy device markup. Tokens consume quoted '>' characters and raw-text bodies.
  * WebSocket upgrades and Location setters are not supported by this HTTP bridge.
  */
-export function rewriteTunnelHtml(html: string, options: TunnelRewriteOptions): string {
-  const injection = `<base href="${options.basePath}">` + browserShim(options);
+export function rewriteTunnelHtml(
+  html: string,
+  options: TunnelRewriteOptions,
+  behavior: { injectBase?: boolean } = {},
+): string {
+  // Host mode (spec §5): the device owns the origin, so relative URLs already
+  // resolve correctly and an injected <base> would only add risk. Path mode
+  // keeps it. A device's own <base> is still stripped below in both modes
+  // (host-mode handling of device <base> is a W04 lab decision).
+  const injectBase = behavior.injectBase ?? true;
+  const injection = (injectBase ? `<base href="${options.basePath}">` : '') + browserShim(options);
   let injected = false;
   let sawScript = false;
   const rewritten = html.replace(

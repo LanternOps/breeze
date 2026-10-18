@@ -1,0 +1,74 @@
+[
+  {
+    "Id": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+    "Names": [
+      "/alpine"
+    ],
+    "Image": "alpine:latest",
+    "ImageID": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "Created": 1760670000,
+    "Labels": {},
+    "State": "running",
+    "Status": "Up 1 hour"
+  },
+  {
+    "Id": "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2",
+    "Names": [
+      "/lab-local"
+    ],
+    "Image": "lab-local:dev",
+    "ImageID": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "Created": 1760670001,
+    "Labels": {},
+    "State": "running",
+    "Status": "Up 1 hour"
+  },
+  {
+    "Id": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "Names": [
+      "/app"
+    ],
+    "Image": "ghcr.io/acme/app:1",
+    "ImageID": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "Created": 1760670002,
+    "Labels": {},
+    "State": "running",
+    "Status": "Up 1 hour"
+  },
+  {
+    "Id": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+    "Names": [
+      "/nginx-hub"
+    ],
+    "Image": "nginx:1.27",
+    "ImageID": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "Created": 1760670003,
+    "Labels": {},
+    "State": "running",
+    "Status": "Up 1 hour"
+  },
+  {
+    "Id": "c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5",
+    "Names": [
+      "/nginx-team"
+    ],
+    "Image": "registry.example.com/team/nginx:1",
+    "ImageID": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "Created": 1760670004,
+    "Labels": {},
+    "State": "running",
+    "Status": "Up 1 hour"
+  },
+  {
+    "Id": "c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6",
+    "Names": [
+      "/loaded"
+    ],
+    "Image": "loaded:1",
+    "ImageID": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "Created": 1760670005,
+    "Labels": {},
+    "State": "running",
+    "Status": "Up 1 hour"
+  }
+]

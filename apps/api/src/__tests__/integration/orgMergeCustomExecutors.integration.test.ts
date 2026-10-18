@@ -508,6 +508,23 @@ describe('org merge engine SQL against real Postgres', () => {
           await db.execute(sql`
             INSERT INTO trust_page_documents (trust_page_id, document_id, org_id, visibility, disclosure_confirmed_at)
             VALUES (${pageId}::uuid, ${doc[0]!.id}::uuid, ${org}::uuid, 'public', now())`);
+          // Trust Center W2 children (#8770 W02a): one row in each; they cascade with the loser's page.
+          await db.execute(sql`
+            INSERT INTO trust_page_declarations (trust_page_id, org_id, control_id, statement, evidence_document_id, declared_by_partner_name, declared_at, expires_at)
+            VALUES (${pageId}::uuid, ${org}::uuid, 'incident_response_plan', 'We keep an IR plan.', ${doc[0]!.id}::uuid, 'Partner', now(), now() + interval '8760 hours')`);
+          const request = (await db.execute(sql`
+            INSERT INTO trust_page_access_requests (trust_page_id, org_id, requester_email, requester_name, requester_company, purpose)
+            VALUES (${pageId}::uuid, ${org}::uuid, 'buyer@example.com', 'Buyer', 'Buyer Co', 'Due diligence')
+            RETURNING id`)) as unknown as Array<{ id: string }>;
+          await db.execute(sql`
+            INSERT INTO trust_page_access_tokens (request_id, org_id, purpose, token_hash, expires_at)
+            VALUES (${request[0]!.id}::uuid, ${org}::uuid, 'verify_email', ${(org === L ? 'c' : 'd').repeat(64)}, now() + interval '1 day')`);
+          await db.execute(sql`
+            INSERT INTO trust_page_faq_items (trust_page_id, org_id, question, answer_html, sort_order)
+            VALUES (${pageId}::uuid, ${org}::uuid, 'Q?', '<p>A</p>', 0)`);
+          await db.execute(sql`
+            INSERT INTO trust_page_subprocessors (trust_page_id, org_id, name, purpose, sort_order)
+            VALUES (${pageId}::uuid, ${org}::uuid, 'Vendor', 'Hosting', 0)`);
         }
         const trust = await CUSTOM_EXECUTORS.trust_pages!(L, S);
         expect(trust.dropped).toBe(1);
@@ -517,11 +534,17 @@ describe('org merge engine SQL against real Postgres', () => {
           SELECT
             (SELECT count(*)::int FROM trust_pages WHERE org_id = ${org}::uuid) AS pages,
             (SELECT count(*)::int FROM trust_page_snapshots WHERE org_id = ${org}::uuid) AS snapshots,
-            (SELECT count(*)::int FROM trust_page_documents WHERE org_id = ${org}::uuid) AS links`)) as unknown as Array<{
+            (SELECT count(*)::int FROM trust_page_documents WHERE org_id = ${org}::uuid) AS links,
+            (SELECT count(*)::int FROM trust_page_declarations WHERE org_id = ${org}::uuid) AS declarations,
+            (SELECT count(*)::int FROM trust_page_access_requests WHERE org_id = ${org}::uuid) AS requests,
+            (SELECT count(*)::int FROM trust_page_access_tokens WHERE org_id = ${org}::uuid) AS tokens,
+            (SELECT count(*)::int FROM trust_page_faq_items WHERE org_id = ${org}::uuid) AS faq,
+            (SELECT count(*)::int FROM trust_page_subprocessors WHERE org_id = ${org}::uuid) AS subprocessors`)) as unknown as Array<{
           pages: number; snapshots: number; links: number;
+          declarations: number; requests: number; tokens: number; faq: number; subprocessors: number;
         }>;
-        expect((await trustCounts(L))[0]).toEqual({ pages: 0, snapshots: 0, links: 0 });
-        expect((await trustCounts(S))[0]).toEqual({ pages: 1, snapshots: 1, links: 1 });
+        expect((await trustCounts(L))[0]).toEqual({ pages: 0, snapshots: 0, links: 0, declarations: 0, requests: 0, tokens: 0, faq: 0, subprocessors: 0 });
+        expect((await trustCounts(S))[0]).toEqual({ pages: 1, snapshots: 1, links: 1, declarations: 1, requests: 1, tokens: 1, faq: 1, subprocessors: 1 });
         const survivorPage = (await db.execute(sql`
           SELECT id, last_evaluated_at FROM trust_pages WHERE org_id = ${S}::uuid`)) as unknown as Array<{
           id: string; last_evaluated_at: Date | null;
@@ -700,7 +723,7 @@ describe('org merge engine SQL against real Postgres', () => {
         asserted++;
 
         // No loser rows left anywhere the custom executors touched.
-        for (const table of ['contacts', 'backup_configs', 'audit_baselines', 'fleet_findings', 'ai_agents', 'organization_users', 'pax8_orders', 'api_keys', 'enrollment_keys', 'trust_pages', 'trust_page_snapshots', 'trust_page_documents']) {
+        for (const table of ['contacts', 'backup_configs', 'audit_baselines', 'fleet_findings', 'ai_agents', 'organization_users', 'pax8_orders', 'api_keys', 'enrollment_keys', 'trust_pages', 'trust_page_snapshots', 'trust_page_documents', 'trust_page_declarations', 'trust_page_access_requests', 'trust_page_access_tokens', 'trust_page_faq_items', 'trust_page_subprocessors']) {
           const left = (await db.execute(
             sql`SELECT count(*)::int AS n FROM ${sql.identifier(table)} WHERE org_id = ${L}::uuid`,
           )) as unknown as Array<{ n: number }>;

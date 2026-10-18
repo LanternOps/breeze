@@ -266,6 +266,35 @@ describe('securityMiddleware', () => {
       expect(res.status).toBe(400);
       expect(res.headers.get('Location')).toBeNull();
     });
+
+    // Network Proxy host mode (plan amendment 2026-10-12b item 6): a tunnel
+    // host is never canonical to PUBLIC_API_URL. Behind a trusted proxy that
+    // forwards `X-Forwarded-Proto: https` it must pass; resolved as http it is
+    // refused 400 (fail-closed, documented in the Caddyfile and .env.example).
+    describe('tunnel host under FORCE_HTTPS', () => {
+      const TUNNEL_HOST = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.us.breezetunnel.test';
+      const tunnelApp = () => {
+        const app = createApp({ forceHttps: 'true', publicApiUrl: PUBLIC_API_URL, skipHeadersWhen: () => true });
+        app.get('/device/page', (c) => c.text('device'));
+        return app;
+      };
+
+      it('does not 400 a tunnel Host from a trusted proxy that forwarded https', async () => {
+        const res = await tunnelApp().request(new Request(`http://${TUNNEL_HOST}/device/page`, {
+          headers: { 'x-forwarded-proto': 'https', host: TUNNEL_HOST },
+        }));
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe('device');
+      });
+
+      it('400s (never redirects) a tunnel Host whose scheme resolves to http', async () => {
+        const res = await tunnelApp().request(new Request(`http://${TUNNEL_HOST}/device/page`, {
+          headers: { 'x-forwarded-proto': 'http', host: TUNNEL_HOST },
+        }));
+        expect(res.status).toBe(400);
+        expect(res.headers.get('Location')).toBeNull();
+      });
+    });
   });
 
   describe('next() is called', () => {

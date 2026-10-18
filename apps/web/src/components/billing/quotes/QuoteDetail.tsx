@@ -35,6 +35,7 @@ import {
 } from './quoteTypes';
 import { StatusPill } from '../shared/StatusPill';
 import { LineItemsTable, type LineItemColumn } from '../shared/LineItemsTable';
+import { EntityLink } from '@/components/shared/EntityLink';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -273,7 +274,7 @@ export default function QuoteDetail({ detail, onChanged, actionsInHeader }: Prop
               )}
             </div>
             <dl className="space-y-1 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.customer')}</dt><dd className="text-right" data-testid="quote-detail-customer"><a href={`/organizations/${encodeURIComponent(quote.orgId)}`} data-testid="org-record-link" className="hover:underline">{orgName}</a></dd></div>
+              <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.customer')}</dt><dd className="text-right" data-testid="quote-detail-customer"><EntityLink kind="org" id={quote.orgId} name={orgName} /></dd></div>
               <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.issued')}</dt><dd>{formatDate(quote.issueDate)}</dd></div>
               {(!quote.issueDate || formatDate(quote.issueDate) !== formatDate(quote.createdAt)) && (
                 <div className="flex justify-between"><dt className="text-muted-foreground">{t('quotes.detail.created')}</dt><dd>{formatDate(quote.createdAt)}</dd></div>

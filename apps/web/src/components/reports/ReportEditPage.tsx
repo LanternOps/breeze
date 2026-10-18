@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, Loader2 } from 'lucide-react';
+import BackupStatusPreviewPanel from './BackupStatusPreviewPanel';
 import ReportBuilder, { type ReportBuilderFormValues } from './ReportBuilder';
 import type { Report, ReportType } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
@@ -360,6 +361,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
           <BackupStatusOptionsFields value={backupStatusOptions} onChange={setBackupStatusOptions} />
         </div>
       )}
+
+      {isBackupStatus && <BackupStatusPreviewPanel orgId={report.orgId ?? null} config={baseConfig} />}
 
       {isThreatDetection && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">

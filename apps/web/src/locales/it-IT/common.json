@@ -114,7 +114,8 @@
     "ticketsIncidents": "Incidenti",
     "ticketsServiceRequests": "Richieste di servizio",
     "ticketsProblems": "Problemi",
-    "ticketsChanges": "Modifiche"
+    "ticketsChanges": "Modifiche",
+    "endpointMessages": "Messaggi"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -315,6 +316,17 @@
       "target": "Destinazione",
       "time": "Ora"
     },
+    "recentlyViewed": {
+      "title": "Riprendi da dove avevi lasciato",
+      "kind": {
+        "device": "Dispositivo",
+        "org": "Organizzazione",
+        "ticket": "Ticket",
+        "alert": "Avviso",
+        "site": "Sede",
+        "page": "Pagina"
+      }
+    },
     "alerts": {
       "title": "Avvisi recenti",
       "viewAll": "Visualizza tutto",
@@ -482,7 +494,10 @@
       "createFirst": "Crea il tuo primo filtro",
       "created": "Creato {{date}}",
       "deleteConfirm": "Eliminare questo filtro?",
-      "duplicate": "Duplicato"
+      "duplicate": "Duplicato",
+      "saveFailed": "Impossibile salvare il filtro",
+      "deleteFailed": "Impossibile eliminare il filtro",
+      "ownerOrgHint": "I filtri salvati appartengono a un'organizzazione. Scegli a quale appartiene questo filtro."
     },
     "targets": {
       "modes": {
@@ -688,7 +703,23 @@
       "noSelection": "Seleziona organizzazione",
       "searchOrganizations": "Cerca organizzazioni…",
       "noMatches": "Nessuna organizzazione corrisponde",
-      "legacyFilterNotice": "Il filtro dell'organizzazione ora segue il selettore dell'intestazione."
+      "legacyFilterNotice": "Il filtro dell'organizzazione ora segue il selettore dell'intestazione.",
+      "recent": "Recenti",
+      "pane": {
+        "destinations": {
+          "overview": "Panoramica",
+          "devices": "Dispositivi",
+          "tickets": "Ticket",
+          "alerts": "Avvisi",
+          "sites": "Sedi",
+          "billing": "Fatturazione"
+        },
+        "offlineCount": "{{count}} offline",
+        "openCount": "{{count}} aperti",
+        "criticalCount": "{{count}} critici",
+        "noCritical": "nessuno",
+        "hint": "Clicca un nome per cambiare · clicca una pagina per cambiare e aprirla"
+      }
     },
     "header": {
       "menu": "Menù",
@@ -805,9 +836,9 @@
       "expand": "Espandi la barra laterale",
       "collapseSections": "Comprimi tutte le sezioni",
       "closeMenu": "Chiudi menu",
-      "recentDevices": "Dispositivi recenti",
-      "hideRecentDevices": "Nascondi dispositivi recenti",
-      "showRecentDevices": "Mostra dispositivi recenti"
+      "recent": "Recenti",
+      "hideRecent": "Nascondi recenti",
+      "showRecent": "Mostra recenti"
     },
     "orgRequired": {
       "title": "Seleziona un'organizzazione",
@@ -1335,6 +1366,14 @@
           "migrationWindowClosed": {
             "description": "Attivato una volta per organizzazione quando una finestra di migrazione dei ticket si chiude, con i conteggi importati.",
             "label": "Finestra di migrazione chiusa"
+          },
+          "integrationHealthOpened": {
+            "description": "Si attiva quando viene aperto un incidente di stato sulla connessione di un'organizzazione.",
+            "label": "Incidente di stato della connessione aperto"
+          },
+          "integrationHealthResolved": {
+            "description": "Si attiva quando un incidente di stato di una connessione viene risolto.",
+            "label": "Incidente di stato della connessione risolto"
           }
         },
         "fields": {
@@ -2605,6 +2644,34 @@
         "sending": "Invio…",
         "send": "Invia"
       }
+    },
+    "mcpDomains": {
+      "legend": "Accesso agli strumenti",
+      "allLabel": "Tutti gli strumenti (incluse le aree aggiunte in seguito)",
+      "selectedLabel": "Solo queste aree",
+      "coreLabel": "Core (sempre incluso)",
+      "error": "Seleziona almeno un’area oppure scegli Tutti gli strumenti.",
+      "allEquivalentNote": "Tutte le aree sono selezionate, quindi equivale a Tutti gli strumenti, comprese le aree aggiunte in seguito.",
+      "reconnectNote": "Si applica a questa connessione. Per restringere una connessione esistente, revocala in App connesse e poi riconnettiti.",
+      "apiKeyHint": "Scegli quali aree di strumenti questa chiave può usare tramite l’interfaccia IA/MCP.",
+      "allTools": "Tutti gli strumenti",
+      "areaCount_one": "{{count}} area",
+      "areaCount_other": "{{count}} aree",
+      "labels": {
+        "devices": "Dispositivi",
+        "scripts": "Script e automazione",
+        "patching": "Patch e software",
+        "monitoring": "Monitoraggio e avvisi",
+        "network": "Rete",
+        "security": "Sicurezza e conformità",
+        "backup": "Backup e ripristino",
+        "tickets": "Ticket e tempo",
+        "billing": "Fatturazione",
+        "accounts": "Account",
+        "integrations": "Integrazioni",
+        "admin": "Amministrazione",
+        "ai": "Agenti IA"
+      }
     }
   },
   "whatsNew": {
@@ -2628,7 +2695,8 @@
     "dismiss": "Ignora il promemoria per l'autenticazione a due fattori"
   },
   "mfaPolicyOffBanner": {
-    "message": "L'autenticazione a più fattori non è obbligatoria per il tuo team. Le sessioni con sola password possono eseguire script, spostare dispositivi e modificare i criteri.",
+    "label": "Promemoria MFA",
+    "message": "La MFA non è obbligatoria per il tuo team: con la sola password si eseguono script.",
     "cta": "Richiedi MFA",
     "dismiss": "Ignora per oggi il promemoria sui criteri MFA"
   },

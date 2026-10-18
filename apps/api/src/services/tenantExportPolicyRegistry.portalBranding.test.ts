@@ -66,3 +66,14 @@ describe('portal_branding.enable_hour_block export policy (block hours W04)', ()
     ).toBe('enable_hour_block');
   });
 });
+
+describe('portal_branding.enable_trust_page_editing export policy (Trust Center W3d)', () => {
+  it('is mapped and included (plain boolean, not jsonb/bytea)', () => {
+    expect(
+      getTenantExportPolicyRegistry()['portal_branding']?.columns['enable_trust_page_editing']?.decision,
+    ).toBe('include');
+    expect(
+      (getTableColumns(portalBranding) as Record<string, { name: string }>)['enableTrustPageEditing']?.name,
+    ).toBe('enable_trust_page_editing');
+  });
+});

@@ -701,7 +701,11 @@
         "showOpenPortal": "showOpenPortal",
         "showDeviceInfo": "showDeviceInfo",
         "showRequestSupport": "showRequestSupport",
-        "portalUrl": "portalUrl"
+        "portalUrl": "portalUrl",
+        "endpointMessaging": "Endpoint messaging",
+        "endpointMessagingHelp": "Lets technicians send messages to the person at the device.",
+        "allowUserReply": "Allow replies from the user",
+        "allowUserReplyHelp": "Lets the person at the device reply in a chat a technician starts. When off, chats are one-way."
       },
       "inlineEntityPicker": {
         "search": "Search...",
@@ -885,7 +889,8 @@
         "ringInvalidTitle": "The linked Update Ring is no longer available.",
         "ringInvalidBody": "Patches for this policy are held until you choose a ring and save.",
         "ringInvalidLegacyRules": "This policy still carries application rules from before they moved to rings ({{rules}}). The ring you choose must already have exactly these rules — add them to it first.",
-        "approvalRulesMovedToRing": "Auto-approval and application rules are now set on the Update Ring. Edit them on the linked ring. If this page was open before the update, reload it and save again."
+        "approvalRulesMovedToRing": "Auto-approval and application rules are now set on the Update Ring. Edit them on the linked ring. If this page was open before the update, reload it and save again.",
+        "ringLacksPolicyAppRules": "The Update Ring you chose does not have this policy's application rules. Add exactly these rules to that ring first, or choose a ring that already has them."
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link Peripheral Policy",
@@ -1121,6 +1126,22 @@
         "aboutTitle": "About System Restore",
         "aboutBody": "Applies to Windows devices only. System Restore covers system files, the registry, installed programs and settings. It is not a backup and does not cover personal files. Windows limits restore-point creation to once every 24 hours by default, and a created point can later be removed by Windows or become unusable."
       },
+      "securityAgentsTab": {
+        "title": "Security Agents",
+        "description": "Deploy and keep managed security agents installed on devices",
+        "deployVendor": "Deploy {{vendor}}",
+        "comingSoon": "Coming soon",
+        "platformWindows": "Windows: installed automatically.",
+        "platformMacos": "macOS: requires MDM approval, so Breeze does not install it automatically. These devices show as not applicable.",
+        "platformLinux": "Linux: not supported.",
+        "keysNotice": "Installs use the per-customer keys from the Huntress integration. Organizations that are not mapped in that integration are skipped and shown as not applicable, with no failed deployments. Turning a vendor off stops enforcement but never uninstalls the agent.",
+        "closerWarning": "A configuration policy assigned closer to a device (site, group or device, or an inheriting child policy) that has its own Security Agents settings replaces these settings entirely for those devices. A vendor left out there is not enforced.",
+        "partnerWideBadge": "Applies to all organizations",
+        "noneEnabledNote": "No vendor is enabled: devices reached by this policy are opted out of every security agent.",
+        "catalogMissing": "Huntress is not set up for this partner yet. Connect the Huntress integration first, then save again.",
+        "catalogMissingLink": "Connect Huntress",
+        "executeRequired": "Turning on installs requires permission to run commands on devices, with MFA. Ask an administrator who has that permission to save this setting."
+      },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Warranty alerting is opt-in: devices with no warranty policy assigned never alert. Thresholds below apply to fixed-term coverage only — active AppleCare subscriptions renew rather than expire, so their expiry alerts are always suppressed.",
         "enableWarrantyExpiryAlerts": "Enable warranty expiry alerts",
@@ -1339,7 +1360,9 @@
       "installSkippedNoCatalog": "A required rule has no linked catalog item, so there's nothing to install. Add a catalog link in the policy editor to fix this.",
       "installSkippedCapOrPlatform": "Not a failure — either the per-pass install cap was reached or this device's platform has no install method for the software. May be attempted again next pass.",
       "installAttempts": "{{count}} attempt(s)",
-      "installLastAttempt": "Last install attempt: "
+      "installLastAttempt": "Last install attempt: ",
+      "managedByConfigPolicy": "Managed by configuration policy",
+      "managedByConfigPolicyHint": "This policy is generated from a configuration policy and is read-only here. Change it in Configuration Policies."
     },
     "deploymentList": {
       "running": "Running",

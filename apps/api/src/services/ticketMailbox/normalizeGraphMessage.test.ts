@@ -145,6 +145,152 @@ describe('normalizeGraphMessage', () => {
     expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'fail', verified: false });
   });
 
+  // #8299 item 1: mail a user sends from inside the connected tenant to its own
+  // support mailbox carries no DMARC pass the mailbox can trust (EOP stamps
+  // `mx.microsoft.com`, DKIM/DMARC are `none`). Exchange's own organization
+  // headers are the intra-tenant signal. Header shape is from the reporter's
+  // Graph read of five real intra-tenant messages (issue comment, 2026-10-09).
+  describe('Exchange intra-tenant sender auth (#8299)', () => {
+    const INTERNAL_HEADERS: GraphMessage['internetMessageHeaders'] = [
+      { name: 'Authentication-Results', value: 'mx.microsoft.com 1; dkim=none (message not signed) header.d=none;dmarc=none action=none header.from=a.com;' },
+      { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Internal' },
+      { name: 'X-MS-Exchange-Organization-AuthMechanism', value: '04' },
+      { name: 'X-MS-Exchange-Organization-AuthSource', value: 'SJ0P221MB0722.NAMP221.PROD.OUTLOOK.COM' },
+      { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
+      { name: 'X-MS-Exchange-Organization-SCL', value: '1' },
+      { name: 'X-MS-Exchange-CrossTenant-AuthAs', value: 'Internal' },
+      { name: 'X-MS-Exchange-CrossTenant-FromEntityHeader', value: 'Hosted' },
+      { name: 'X-Forefront-Antispam-Report', value: 'CIP:255.255.255.255;CTRY:;LANG:en;SCL:1;SRV:;IPV:NLI;SFV:NSPM;H:x;PTR:;CAT:NONE;SFS:;DIR:INT;' },
+    ];
+    const internal = (headers: GraphMessage['internetMessageHeaders']): GraphMessage => ({
+      ...msg,
+      from: { emailAddress: { address: 'staff@a.com', name: 'Staff' } },
+      internetMessageHeaders: headers,
+    });
+    const without = (name: string) => INTERNAL_HEADERS!.filter((h) => h.name !== name);
+
+    it('verifies intra-tenant mail when AuthAs=Internal and MessageDirectionality=Originating', () => {
+      const n = normalizeGraphMessage(internal(INTERNAL_HEADERS), 'partner-9', 'support@a.com');
+      expect(n.senderAuth).toEqual({
+        spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', verified: true, source: 'exchange-internal',
+      });
+      // Recorded on the inbound audit row so this path is distinguishable from DMARC.
+      expect(n.raw.senderAuthSource).toBe('exchange-internal');
+    });
+
+    it('does not mark DMARC-verified or unverified mail with an audit source', () => {
+      expect(normalizeGraphMessage(msg, 'partner-9', 'support@a.com').raw).not.toHaveProperty('senderAuthSource');
+      expect(normalizeGraphMessage(internal([]), 'partner-9', 'support@a.com').raw).not.toHaveProperty('senderAuthSource');
+    });
+
+    it('tolerates surrounding whitespace on the header values', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: ' Internal ' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating\t' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(true);
+    });
+
+    it('verifies over a trusted dmarc=none verdict, keeping the real verdicts', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'Authentication-Results', value: 'a.com; spf=none; dkim=none; dmarc=none' },
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Internal' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth).toEqual({
+        spf: 'none', dkim: 'none', dmarc: 'none', verified: true, source: 'exchange-internal',
+      });
+    });
+
+    it('stays unverified when Graph returns no headers at all', () => {
+      const n = normalizeGraphMessage({ ...msg, internetMessageHeaders: undefined }, 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(false);
+    });
+
+    it('matches the header names case-insensitively, as Graph may return any casing', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'x-ms-exchange-organization-authas', value: 'Internal' },
+        { name: 'X-MS-EXCHANGE-ORGANIZATION-MESSAGEDIRECTIONALITY', value: 'Originating' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(true);
+      expect(n.senderAuth?.source).toBe('exchange-internal');
+    });
+
+    it('stays unverified when AuthAs is missing', () => {
+      const n = normalizeGraphMessage(internal(without('X-MS-Exchange-Organization-AuthAs')), 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(false);
+      expect(n.senderAuth?.source).toBeUndefined();
+    });
+
+    it('stays unverified when MessageDirectionality is missing', () => {
+      const n = normalizeGraphMessage(internal(without('X-MS-Exchange-Organization-MessageDirectionality')), 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(false);
+      expect(n.senderAuth?.source).toBeUndefined();
+    });
+
+    it('stays unverified for external mail (AuthAs=Anonymous, MessageDirectionality=Incoming)', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Anonymous' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Incoming' },
+        // The SENDER's tenant stamps CrossTenant-AuthAs from its own point of view,
+        // so another Microsoft 365 tenant's mail can say Internal here. Not trusted.
+        { name: 'X-MS-Exchange-CrossTenant-AuthAs', value: 'Internal' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(false);
+    });
+
+    it('does not trust the CrossTenant-AuthAs header alone', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'X-MS-Exchange-CrossTenant-AuthAs', value: 'Internal' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(false);
+    });
+
+    it('requires the exact values (no prefix, substring, or case variants)', () => {
+      for (const [authAs, dir] of [
+        ['internal', 'Originating'],
+        ['Internal', 'originating'],
+        ['InternalX', 'Originating'],
+        ['Internal', 'Originating, Incoming'],
+        ['', 'Originating'],
+      ]) {
+        const n = normalizeGraphMessage(internal([
+          { name: 'X-MS-Exchange-Organization-AuthAs', value: authAs! },
+          { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: dir! },
+        ]), 'partner-9', 'support@a.com');
+        expect(n.senderAuth?.verified, `${authAs} / ${dir}`).toBe(false);
+      }
+    });
+
+    it('stays unverified when a header appears twice with conflicting values', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Anonymous' },
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Internal' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth?.verified).toBe(false);
+    });
+
+    it('does not override a trusted DMARC fail', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'Authentication-Results', value: 'a.com; spf=fail; dkim=fail; dmarc=fail' },
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Internal' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth).toEqual({ spf: 'fail', dkim: 'fail', dmarc: 'fail', verified: false });
+    });
+
+    it('keeps a trusted DMARC pass as the source of truth (no exchange-internal source)', () => {
+      const n = normalizeGraphMessage(internal([
+        { name: 'Authentication-Results', value: 'a.com; spf=pass; dkim=pass; dmarc=pass' },
+        { name: 'X-MS-Exchange-Organization-AuthAs', value: 'Internal' },
+        { name: 'X-MS-Exchange-Organization-MessageDirectionality', value: 'Originating' },
+      ]), 'partner-9', 'support@a.com');
+      expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true });
+    });
+  });
+
   describe('body text (#6687)', () => {
     const longPara = 'The printer on the second floor has been jamming since Monday morning. '.repeat(6).trim();
 

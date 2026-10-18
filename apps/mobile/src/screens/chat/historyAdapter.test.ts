@@ -175,3 +175,132 @@ describe('historyToMessages', () => {
     }
   });
 });
+
+describe('historyToMessages action plans', () => {
+  const input = {
+    title: 'Fix printing',
+    steps: [
+      { toolName: 'manage_services', input: { name: 'Spooler' }, reasoning: 'Restart' },
+      { toolName: 'run_script', input: {}, reasoning: 'Clear' },
+    ],
+  };
+
+  it('a later turn\'s tool results never tick an earlier approved plan (#8885 review)', () => {
+    const msgs = historyToMessages([
+      row({ id: 'a1', role: 'assistant', content: 'Plan.' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolInput: input }),
+      row({ id: 'r1', role: 'tool_result', toolUseId: 'tu-plan', toolOutput: { result: 'approved' } }),
+      row({ id: 't2', role: 'tool_use', toolName: 'manage_services', toolUseId: 'tu-s1' }),
+      row({ id: 'r2', role: 'tool_result', toolUseId: 'tu-s1', toolName: 'manage_services', toolOutput: {} }),
+      row({ id: 'u2', role: 'user', content: 'Actually, run a different script.' }),
+      row({ id: 'a2', role: 'assistant', content: 'Sure.' }),
+      row({ id: 't3', role: 'tool_use', toolName: 'run_script', toolUseId: 'tu-s2' }),
+      row({ id: 'r3', role: 'tool_result', toolUseId: 'tu-s2', toolName: 'run_script', toolOutput: {} }),
+    ]);
+    const a1 = msgs.find((m) => m.id === 'a1');
+    expect(a1?.role === 'assistant' && a1.plan?.status).not.toBe('completed');
+    expect(a1?.role === 'assistant' && a1.plan?.steps.map((st) => st.status)).toEqual(['completed', 'pending']);
+  });
+
+  it('rebuilds the plan from the propose_action_plan tool_use input', () => {
+    const out = historyToMessages([
+      row({ id: 'u1', role: 'user', content: 'fix printing' }),
+      row({ id: 'a1', role: 'assistant', content: 'Here is the plan.' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolInput: input }),
+    ]);
+    const a = out[1];
+    expect(a.role).toBe('assistant');
+    if (a.role !== 'assistant') return;
+    expect(a.plan).toMatchObject({ toolUseId: 'tu-plan', title: 'Fix printing', status: 'awaiting' });
+    expect(a.plan?.steps.map((st) => st.toolName)).toEqual(['manage_services', 'run_script']);
+    // The tool row itself stays, so turn-completeness still sees it as running.
+    expect(a.toolEvents[0]).toMatchObject({ toolUseId: 'tu-plan', state: 'started' });
+  });
+
+  it('settles the plan from its tool_result (approved, rejected, dropped-call wrapper)', () => {
+    const decided = (output: unknown) => {
+      const out = historyToMessages([
+        row({ id: 'a1', role: 'assistant', content: '' }),
+        row({ id: 't1', role: 'tool_use', toolName: 'mcp__breeze__propose_action_plan', toolUseId: 'tu-plan', toolInput: input }),
+        row({ id: 't2', role: 'tool_result', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolOutput: output }),
+      ]);
+      const a = out[0];
+      return a.role === 'assistant' ? a.plan?.status : undefined;
+    };
+    expect(decided({ result: 'approved' })).toBe('approved');
+    expect(decided({ result: 'rejected' })).toBe('rejected');
+    expect(decided({ error: '{"result":"approved"}', droppedBeforeExecution: true })).toBe('approved');
+    expect(decided({ error: 'Failed to create action plan' })).toBe('expired');
+  });
+
+  it('derives completed status and step ticks from the step tool results after approval', () => {
+    const rows = (withSecond: boolean) => [
+      row({ id: 'a1', role: 'assistant', content: '' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolInput: input }),
+      row({ id: 't2', role: 'tool_result', toolName: 'propose_action_plan', toolUseId: 'tu-plan', toolOutput: { result: 'approved' } }),
+      row({ id: 't3', role: 'tool_use', toolName: 'manage_services', toolUseId: 'tu-1', toolInput: {} }),
+      row({ id: 't4', role: 'tool_result', toolName: 'manage_services', toolUseId: 'tu-1', toolOutput: { ok: true } }),
+      ...(withSecond ? [
+        row({ id: 't5', role: 'tool_use', toolName: 'run_script', toolUseId: 'tu-2', toolInput: {} }),
+        row({ id: 't6', role: 'tool_result', toolName: 'run_script', toolUseId: 'tu-2', toolOutput: { ok: true } }),
+      ] : []),
+    ];
+    const done = historyToMessages(rows(true))[0];
+    expect(done.role === 'assistant' ? done.plan?.status : null).toBe('completed');
+    expect(done.role === 'assistant' ? done.plan?.steps.map((s) => s.status) : null).toEqual(['completed', 'completed']);
+    const partial = historyToMessages(rows(false))[0];
+    expect(partial.role === 'assistant' ? partial.plan?.status : null).toBe('approved');
+    expect(partial.role === 'assistant' ? partial.plan?.steps.map((s) => s.status) : null).toEqual(['completed', 'pending']);
+  });
+
+  it('leaves non-plan tool rows without a plan', () => {
+    const out = historyToMessages([
+      row({ id: 'a1', role: 'assistant', content: '' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'run_script', toolUseId: 'tu-1', toolInput: {} }),
+    ]);
+    const a = out[0];
+    expect(a.role === 'assistant' ? a.plan : 'x').toBeUndefined();
+  });
+});
+
+describe('historyToMessages model provenance (W05)', () => {
+  const turnModel = {
+    requestedModel: 'm', requestedDisplayName: 'Opus', servedModel: 'm', servedDisplayName: 'Opus',
+    fallbackUsed: false, appliedOptions: {}, fastDowngraded: false,
+  };
+
+  it('stamps the session lastTurnModel on the last assistant turn only', () => {
+    const out = historyToMessages([
+      row({ id: 'u1', role: 'user', content: 'hi' }),
+      row({ id: 'a1', role: 'assistant', content: 'one' }),
+      row({ id: 'u2', role: 'user', content: 'again' }),
+      row({ id: 'a2', role: 'assistant', content: 'two' }),
+    ], turnModel);
+    expect(out[1].role === 'assistant' && out[1].turnModel).toBeFalsy();
+    expect(out[3].role === 'assistant' && out[3].turnModel).toEqual(turnModel);
+  });
+
+  it('does not stamp a turn that has not been answered yet', () => {
+    const out = historyToMessages([
+      row({ id: 'a1', role: 'assistant', content: 'one' }),
+      row({ id: 'u2', role: 'user', content: 'pending' }),
+    ], turnModel);
+    expect(out[0].role === 'assistant' && out[0].turnModel).toBeFalsy();
+  });
+
+  it('does not stamp a trailing assistant row that is still in progress', () => {
+    // A catch-up fetch mid-turn: the previous turn's provenance must not
+    // render "Answered by" under a reply that has not finished.
+    const out = historyToMessages([
+      row({ id: 'u1', role: 'user', content: 'restart it' }),
+      row({ id: 'a1', role: 'assistant', content: '' }),
+      row({ id: 't1', role: 'tool_use', toolName: 'restart_device', toolUseId: 'tu1', toolInput: {} }),
+    ], turnModel);
+    expect(out[1].role === 'assistant' && out[1].turnModel).toBeFalsy();
+  });
+
+  it('ignores a malformed lastTurnModel', () => {
+    const out = historyToMessages([row({ id: 'a1', role: 'assistant', content: 'one' })], { servedDisplayName: 7 });
+    expect(out[0].role === 'assistant' && out[0].turnModel).toBeFalsy();
+  });
+});

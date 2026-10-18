@@ -1,0 +1,17 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Remote ref", "version": "1.0.0" },
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": { "application/json": { "schema": { "$ref": "https://evil.example/schemas/Pet.json" } } }
+          }
+        }
+      }
+    }
+  }
+}

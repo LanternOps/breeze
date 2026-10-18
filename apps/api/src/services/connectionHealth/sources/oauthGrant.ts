@@ -2,6 +2,11 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../../../db';
 import { PERMISSIONS } from '../../permissions';
 import type { HealthObservation, HealthSource } from '../types';
+import { readRefreshRetryCounts, retryingDetail } from '../oauthRetryCounter';
+import { cleanDisplayName, sanitizeHealthDetail } from '../sanitize';
+
+// Re-exported: W1 callers and tests import it from here.
+export { cleanDisplayName };
 
 const LOOKBACK_DAYS = 30;
 // The only automatic revocation W1 reports. `provider-revoke-grant` is also
@@ -12,20 +17,6 @@ const LOOKBACK_DAYS = 30;
 // partial index predicate.
 const AUTO_REASON = sql.raw(`'refresh-token-reuse'`);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DISPLAY_NAME_MAX = 80;
-
-// DCR client_name is attacker-controlled. C0/C1 controls and line separators
-// become spaces; bidi controls, zero-width characters and the BOM are removed,
-// so a name cannot reorder or hide text in a notice. Then whitespace collapses
-// and the result is capped in code points, never splitting a surrogate pair.
-const TO_SPACE_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
-const INVISIBLE_RE = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
-export function cleanDisplayName(raw: unknown, fallback: string): string {
-  const s = typeof raw === 'string'
-    ? raw.replace(TO_SPACE_RE, ' ').replace(INVISIBLE_RE, '').replace(/\s+/g, ' ').trim()
-    : '';
-  return Array.from(s || fallback).slice(0, DISPLAY_NAME_MAX).join('');
-}
 
 type PairRow = {
   account_id: string; client_id: string; partner_id: string; org_id: string | null;
@@ -130,6 +121,9 @@ function pairQuery(pairsSql: SQL, now: Date): SQL {
 export const oauthGrantSource: HealthSource = {
   kind: 'oauth_grant',
   intervalMinutes: 15,
+  tables: ['oauth_grants'],
+  fixHrefs: ['/settings/connected-apps', '/account/connected-apps'],
+  brokenQuery: brokenCandidatesQuery,
   async observe(now, trackedSourceIds) {
     // Tracked pairs, validated before any cast; malformed ids are skipped
     // (absent => the reconciler retires them).
@@ -153,6 +147,26 @@ export const oauthGrantSource: HealthSource = {
       // Untracked pairs only matter when broken (spec §1.3: never report the healthy set).
       if (o.state === 'broken' || trackedSet.has(o.sourceId)) out.push(o);
     }
-    return out;
+    return decorateStillRetrying(out, now);
   },
 };
+
+/**
+ * W4: a broken grant whose app keeps presenting its revoked refresh token says
+ * so, from the grant.error counter (oauthRetryCounter.ts). Per client: the
+ * token endpoint cannot tell which account a dead token belonged to. One
+ * bounded Redis read inside the kind's transaction; a Redis failure leaves the
+ * detail null and never fails the kind.
+ */
+export async function decorateStillRetrying(observations: HealthObservation[], now: Date): Promise<HealthObservation[]> {
+  // sourceId is `<account uuid>:<client id>`; a client id may itself contain ':'.
+  const clientOf = (o: HealthObservation) => o.sourceId.slice(o.sourceId.indexOf(':') + 1);
+  const broken = observations.filter((o) => o.state === 'broken');
+  if (broken.length === 0) return observations;
+  const counts = await readRefreshRetryCounts([...new Set(broken.map(clientOf))], now);
+  return observations.map((o) => {
+    if (o.state !== 'broken') return o;
+    const detail = retryingDetail(counts.get(clientOf(o)) ?? 0);
+    return detail ? { ...o, detail: sanitizeHealthDetail(detail) } : o;
+  });
+}

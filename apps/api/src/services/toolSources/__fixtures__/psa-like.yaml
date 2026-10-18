@@ -1,0 +1,115 @@
+# A 3.1 YAML document shaped like a typical PSA vendor API: operations with
+# no operationId, and exactly one instance of every D7/D9 skip reason.
+openapi: 3.1.0
+info:
+  title: PSA-like
+  version: '2.0'
+servers:
+  - url: https://api.example.com/api
+  - url: https://eu.vendor-cdn.example/api
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+    queryKey:
+      type: apiKey
+      in: query
+      name: api_key
+  schemas:
+    Ticket:
+      type: object
+      properties:
+        id: { type: integer }
+        summary: { type: string }
+        status: { type: string, enum: [open, closed] }
+security:
+  - bearer: []
+paths:
+  /tickets:
+    get:
+      summary: List tickets
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: tags
+          in: query
+          schema:
+            type: array
+            items: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Ticket' }
+    post:
+      operationId: createTicket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Ticket' }
+      responses:
+        '201': { description: Created }
+  /tickets/{ticketId}:
+    get:
+      summary: Get one ticket
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+  /tickets/search:
+    get:
+      operationId: searchTickets
+      parameters:
+        - name: filter
+          in: query
+          style: deepObject
+          explode: true
+          schema: { type: object }
+      responses:
+        '200': { description: OK }
+  /tickets/{ticketId}/attachments:
+    post:
+      operationId: uploadAttachment
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201': { description: Created }
+  /session:
+    get:
+      operationId: getSession
+      parameters:
+        - name: sid
+          in: cookie
+          schema: { type: string }
+      responses:
+        '200': { description: OK }
+  /legacy/report:
+    get:
+      operationId: legacyReport
+      security:
+        - queryKey: []
+      responses:
+        '200': { description: OK }

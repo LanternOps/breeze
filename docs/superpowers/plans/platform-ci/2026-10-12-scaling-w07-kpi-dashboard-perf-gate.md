@@ -850,6 +850,7 @@ Rollback: revert PR A (or PR B for the baseline alone); remove the rule group an
 1. A production-image, split-role perf profile (`stack.profile: compose-prod`, `role: api`), once there is a way to run `docker-compose.yml` from a locally built image ref and a worker container in the lab. This removes the `role: all` overstatement.
 2. Multi-org fleet shape in the simulator (several enrollment keys/orgs), which W0a left as a W0c option. It edits `agent/tools/agentsim/**`, so it waits for W06 to land.
 3. Once W3a adds `BREEZE_INSTANCE_SLOT`, label the two new series by `slot` and switch the dashboard's per-instance variable to it.
+3a. **Resolved (#8642):** the nightly workflow also runs `storm.sh storm-suite` (a `storm` job) with the heartbeat-p95, pool-min-ratio and pool-recovery gates, warn-only until `PERF_GATES_ENFORCE=true` (from 2026-10-31). See `load-tests/perf/README.md`.
 4. With the nightly history from this gate, decide whether to add a second profile at 2,000 agents (the W02 scale run) on a weekly schedule.
 5. W05 follow-up 2 (cache TTLs) can now read hit rates next to agent cost on the same dashboard; add W05's cache panels to `breeze-agent-capacity.json` when W05 lands.
 

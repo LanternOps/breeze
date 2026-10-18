@@ -24,7 +24,7 @@ describe('M365 tool registration gating', () => {
     expect(m365ToolDefinitions(getAuth, getSession, undefined, undefined)).toEqual([]);
   });
 
-  it('registers all 5 M365 tools (correct names) when DELEGANT_BASE_URL is set', () => {
+  it('registers all 13 M365 tools (correct names) when DELEGANT_BASE_URL is set', () => {
     process.env.DELEGANT_BASE_URL = 'https://delegant.example';
     const names = m365ToolDefinitions(getAuth, getSession, undefined, undefined).map((t) => t.name);
     expect(names).toEqual([
@@ -33,6 +33,14 @@ describe('M365 tool registration gating', () => {
       'm365_list_group_memberships',
       'm365_disable_user',
       'm365_reset_password',
+      'm365_revoke_sessions',
+      'm365_remove_license',
+      'm365_assign_license',
+      'm365_remove_from_group',
+      'm365_add_to_group',
+      'm365_retire_intune_device',
+      'm365_create_user',
+      'm365_set_auto_reply',
     ]);
   });
 });

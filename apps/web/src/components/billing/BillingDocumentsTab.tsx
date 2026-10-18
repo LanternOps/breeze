@@ -209,8 +209,14 @@ export default function BillingDocumentsTab({
             id="pb-footer" rows={3} value={footer}
             onChange={(e) => setFooter(e.target.value)} placeholder={t('partnerBillingSettings.defaults.invoiceFooterPlaceholder')}
             data-testid="partner-billing-footer"
+            aria-describedby="pb-footer-help"
             className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
           />
+          {/* #7510: the PARTNER level of the one document-footer chain
+              (resolveDocumentFooter): document line → org footer → this. */}
+          <p id="pb-footer-help" data-testid="partner-billing-footer-help" className="mt-1 text-xs text-muted-foreground">
+            {t('partnerBillingSettings.defaults.invoiceFooterHelp')}
+          </p>
         </div>
       </section>
 

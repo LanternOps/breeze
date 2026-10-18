@@ -22,7 +22,7 @@ import { and, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
 import Ajv, { type ValidateFunction } from 'ajv';
 import addFormats from 'ajv-formats';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { organizations, toolSources, toolSourceTools, type ToolSourceRow } from '../../db/schema';
+import { organizations, toolSources, toolSourceTools, type ToolSourceRow, type ToolSourceToolRow } from '../../db/schema';
 import { toolSourcesEnabled } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -30,7 +30,8 @@ export interface TenantToolDescriptor {
   id: string;
   sourceId: string;
   sourceName: string;
-  sourceKind: 'mcp';
+  /** Which transport dispatches this tool (W2): read from the joined source row. */
+  sourceKind: 'mcp' | 'openapi';
   ownerRef: { orgId: string | null; partnerId: string | null };
   qualifiedName: string;
   name: string;
@@ -58,6 +59,7 @@ export interface ResolvedToolRow {
   orgId: string | null;
   partnerId: string | null;
   sourceName: string;
+  sourceKind: 'mcp' | 'openapi';
   rateLimitPerMinute: number;
 }
 
@@ -73,6 +75,7 @@ const RESOLVE_TOOL_ROW_SELECTION = {
   orgId: toolSourceTools.orgId,
   partnerId: toolSourceTools.partnerId,
   sourceName: toolSources.name,
+  sourceKind: toolSources.kind,
   rateLimitPerMinute: toolSources.rateLimitPerMinute,
 };
 
@@ -200,7 +203,7 @@ export function compileToolDescriptor(row: ResolvedToolRow, ajv: Ajv): TenantToo
     id: row.id,
     sourceId: row.sourceId,
     sourceName: row.sourceName,
-    sourceKind: 'mcp',
+    sourceKind: row.sourceKind,
     ownerRef: { orgId: row.orgId, partnerId: row.partnerId },
     qualifiedName: row.qualifiedName,
     name: row.name,
@@ -472,7 +475,7 @@ export async function loadTenantToolForExecution(
   toolId: string,
   auth?: AuthContext,
   targetOrgId?: string | null,
-): Promise<{ descriptor: TenantToolDescriptor; source: ToolSourceRow } | null> {
+): Promise<{ descriptor: TenantToolDescriptor; source: ToolSourceRow; tool: ToolSourceToolRow } | null> {
   // The kill switch is re-checked HERE, not only at session-start resolution
   // (`resolveTenantTools`, routes, and the discovery worker): a chat
   // session's SDK tool descriptors / `extraTools` map are built once when the
@@ -508,11 +511,15 @@ export async function loadTenantToolForExecution(
       orgId: row.tool.orgId,
       partnerId: row.tool.partnerId,
       sourceName: row.source.name,
+      sourceKind: row.source.kind,
       rateLimitPerMinute: row.source.rateLimitPerMinute,
     },
     ajv,
   );
   if (!descriptor) return null;
 
-  return { descriptor, source: row.source };
+  // `tool` is the fresh row: the OpenAPI executor reads its routing binding
+  // (`annotations.operation`) from here, never from a descriptor captured at
+  // session start.
+  return { descriptor, source: row.source, tool: row.tool };
 }

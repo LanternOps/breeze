@@ -1,25 +1,36 @@
 import { createHash } from 'node:crypto';
 import {
-  FRAMEWORK_META, TRUST_CONTROL_CATALOG, TRUST_CONTROL_CATALOG_VERSION, TRUST_FRAMEWORKS,
-  TRUST_INTRO_STORED_MAX_CHARS, trustPagePublicPayloadSchema, type TrustControlAssessment, type TrustFramework, type TrustPagePublicPayload,
+  FRAMEWORK_META, TRUST_CONTROL_CATALOG_VERSION, TRUST_CONTROL_SAFEGUARDS_MAX, TRUST_DOCUMENTS_MAX, TRUST_FRAMEWORKS, TRUST_INTRO_STORED_MAX_CHARS,
+  trustPagePublicPayloadSchema, type TrustControlAssessment, type TrustDocumentVisibility, type TrustFramework,
+  type TrustPagePublicPayload, type TrustPublishedConfigResolved,
 } from '@breeze/shared';
-import type { TrustPageRow } from '../../db/schema/trustPages';
+import { trustCisFrameworkViewEnabled } from '../../config/env';
 import { resolveDocumentBrand } from '../partnerDocumentBrand';
 import { sanitizeFlowRichTextHtml } from '../richTextSanitize';
 import type { OrgDocumentView } from '../orgDocumentService';
+import type { SectionBlocks } from './sections/types';
 
 export const TRUST_ELIGIBILITY_NOTE =
   'Eligible devices are Breeze-managed, non-ephemeral, non-decommissioned devices in this organization. A device counts as assessed only when Breeze holds evidence for the control inside the evidence window.';
 
+export interface LiveTrustDocument extends OrgDocumentView {
+  /** The LIVE link's visibility (trust_page_documents.visibility). */
+  visibility: TrustDocumentVisibility;
+}
+
 export interface BuildPayloadInput {
   snapshotId: string; generatedAt: Date; publishedAt: Date;
-  page: TrustPageRow;
+  /** Draft (publish/preview) or frozen (refresh) publication config, every W2 field resolved. */
+  config: TrustPublishedConfigResolved;
+  /** The W2 blocks from the section modules (sections/index.ts buildSections). */
+  sections: SectionBlocks;
   org: { name: string };
   partner: { name: string; settings: unknown; billingWebsite: string | null; trustPageUnbranded: boolean };
   orgBrand: { logoUrl: string | null; primaryColor: string | null } | null;
   assessments: TrustControlAssessment[];
   deviceCount: number;
-  documents: OrgDocumentView[];
+  /** Every live (confirmed, not deleted, not superseded) linked document, both visibilities. */
+  documents: LiveTrustDocument[];
   policy: { evidenceMaxAgeDays: number; definitionsMaxAgeDays: number; coverageFloorPct: number; thresholds: { met: number; attention: number } };
 }
 
@@ -42,17 +53,50 @@ export function sanitizeIntro(html: string | null | undefined): string | null {
   return out;
 }
 
+/**
+ * The payload's document list: the frozen entries, in frozen order, that still have a live link. Visibility is
+ * the more restrictive of the frozen and the live value (Review Focus 2): a draft gated→public edit stays gated
+ * until a republish; a public→gated edit gates at once.
+ */
+export function projectPayloadDocuments(
+  frozen: TrustPublishedConfigResolved['documents'],
+  live: readonly LiveTrustDocument[],
+): TrustPagePublicPayload['documents'] {
+  const byId = new Map(live.map((d) => [d.id, d]));
+  const out: TrustPagePublicPayload['documents'] = [];
+  for (const entry of frozen) {
+    const d = byId.get(entry.id);
+    if (!d) continue;
+    out.push({
+      id: d.id, title: d.title, category: d.category, contentType: d.contentType, byteSize: d.byteSize, updatedAt: d.createdAt,
+      visibility: entry.visibility === 'gated' || d.visibility === 'gated' ? 'gated' : 'public',
+    });
+  }
+  return out.slice(0, TRUST_DOCUMENTS_MAX);
+}
+
 export function buildTrustPagePayload(input: BuildPayloadInput): TrustPagePublicPayload {
-  const { page } = input;
-  const hidden = new Set(page.hiddenControlIds);
-  const shown = input.assessments.filter((a) => !hidden.has(a.id));
+  const { config, sections } = input;
+  const catalog = new Set<string>(config.catalogControlIds);
+  const hidden = new Set<string>(config.hiddenControlIds);
+  const shown = input.assessments.filter((a) => catalog.has(a.id) && !hidden.has(a.id));
   const brand = resolveDocumentBrand(input.orgBrand ?? undefined, input.partner.settings);
   const partnerBrand = resolveDocumentBrand(undefined, input.partner.settings);
-  const attributions = TRUST_FRAMEWORKS.filter((fw: TrustFramework) => shown.some((a) => a.frameworkRefs.some((r) => r.framework === fw)));
-  const deviceCount = page.showDeviceCount && input.deviceCount > 0 ? input.deviceCount : null;
+  // W3e: hardening safeguards are CIS v8 content, so they render only while the CIS framework view is on —
+  // read at build time, so flipping the switch off removes them from the next refresh of an existing page.
+  const cisGate = trustCisFrameworkViewEnabled();
+  const safeguardsOf = (a: TrustControlAssessment) =>
+    cisGate && a.id === 'hardening_baseline' ? (a.safeguards ?? []).slice(0, TRUST_CONTROL_SAFEGUARDS_MAX) : [];
+  const referenced = (fw: TrustFramework) =>
+    shown.some((a) => a.frameworkRefs.some((r) => r.framework === fw) || (fw === 'cis_v8' && safeguardsOf(a).length > 0))
+    || sections.declaredControls.some((d) => d.frameworkRefs.some((r) => r.framework === fw))
+    || sections.frameworks.includes(fw);
+  const attributions = TRUST_FRAMEWORKS.filter(referenced);
+  const deviceCount = config.showDeviceCount && input.deviceCount > 0 ? input.deviceCount : null;
 
   const payload: TrustPagePublicPayload = {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    locale: config.locale,
     snapshotId: input.snapshotId,
     generatedAt: input.generatedAt.toISOString(),
     publishedAt: input.publishedAt.toISOString(),
@@ -61,16 +105,18 @@ export function buildTrustPagePayload(input: BuildPayloadInput): TrustPagePublic
       // Org row wins field by field; an unusable org value (http:, non-hex) falls back to the partner's.
       logoUrl: logo(brand.logoUrl) ?? logo(partnerBrand.logoUrl),
       primaryColor: hex(brand.primaryColor) ?? hex(partnerBrand.primaryColor),
-      websiteUrl: https(page.websiteUrl),
-      securityContactEmail: page.securityContactEmail?.trim() || null,
+      websiteUrl: https(config.websiteUrl),
+      securityContactEmail: config.securityContactEmail?.trim() || null,
     },
-    managedBy: page.showManagedBy
+    managedBy: config.showManagedBy
       ? { name: input.partner.name, logoUrl: logo(partnerBrand.logoUrl), websiteUrl: https(input.partner.billingWebsite) }
       : null,
-    introHtml: sanitizeIntro(page.introHtml),
+    introHtml: sanitizeIntro(config.introHtml),
     summary: {
-      catalogTotal: TRUST_CONTROL_CATALOG.length,
+      // The catalog this page was published against (a W1 page keeps its 15), never the live catalog size.
+      catalogTotal: config.catalogControlIds.length,
       controlsShown: shown.length,
+      // Telemetry only: declared controls never share a count with telemetry controls (amendment 27).
       controlsMet: shown.filter((a) => a.status === 'met').length,
       deviceCount,
     },
@@ -83,18 +129,29 @@ export function buildTrustPagePayload(input: BuildPayloadInput): TrustPagePublic
       eligibilityNote: TRUST_ELIGIBILITY_NOTE,
     },
     controls: shown.map((a) => ({
+      ...(safeguardsOf(a).length > 0 ? {
+        safeguards: safeguardsOf(a).map((sg) => ({
+          framework: sg.framework, ref: sg.ref, status: sg.status, reason: sg.reason,
+          percent: config.showPercentages && sg.status !== 'not_assessed' ? sg.percent : null,
+          assessed: config.showPercentages && sg.status !== 'not_assessed' ? sg.assessed : null,
+          eligible: config.showPercentages && sg.status !== 'not_assessed' ? sg.eligible : null,
+        })),
+      } : {}),
       id: a.id, category: a.category, source: 'telemetry', unit: a.unit,
       status: a.status, reason: a.reason,
-      percent: page.showPercentages && a.status !== 'not_assessed' ? a.percent : null,
-      assessed: page.showPercentages && a.status !== 'not_assessed' ? a.assessed : null,
-      eligible: page.showPercentages && a.status !== 'not_assessed' ? a.eligible : null,
+      percent: config.showPercentages && a.status !== 'not_assessed' ? a.percent : null,
+      assessed: config.showPercentages && a.status !== 'not_assessed' ? a.assessed : null,
+      eligible: config.showPercentages && a.status !== 'not_assessed' ? a.eligible : null,
       evidenceAsOf: a.evidenceAsOf,
       frameworkRefs: a.frameworkRefs.map((r) => ({ framework: r.framework, ref: r.ref })),
     })),
-    documents: input.documents.slice(0, 20).map((d) => ({
-      id: d.id, title: d.title, category: d.category, contentType: d.contentType, byteSize: d.byteSize,
-      updatedAt: d.createdAt, visibility: 'public' as const,
-    })),
+    documents: projectPayloadDocuments(config.documents, input.documents),
+    declaredControls: sections.declaredControls,
+    frameworks: sections.frameworks,
+    subprocessors: sections.subprocessors,
+    faq: sections.faq,
+    history: sections.history,
+    access: sections.access,
     footer: { poweredByBreeze: !input.partner.trustPageUnbranded, frameworkAttributions: attributions },
   };
   // The schema is the exposure boundary: anything the projection above missed fails here, loudly.
@@ -111,7 +168,8 @@ export function payloadSha256(payload: TrustPagePublicPayload): string {
   // Control evidenceAsOf is excluded too: device evidence timestamps move with every check-in, so hashing them
   // would make the hourly refresh insert a snapshot per page per hour. The page-level lastEvaluatedAt (served
   // outside the payload) carries freshness; a status, count or percent change still changes the hash.
-  const { snapshotId: _s, generatedAt: _g, controls, ...rest } = payload;
+  // `history` is excluded (amendment 29): it grows on its own, and the renderer appends the current point.
+  const { snapshotId: _s, generatedAt: _g, history: _h, controls, ...rest } = payload;
   const substance = { ...rest, controls: controls.map(({ evidenceAsOf: _e, ...c }) => c) };
   return createHash('sha256').update(JSON.stringify(stable(substance))).digest('hex');
 }

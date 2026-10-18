@@ -134,6 +134,23 @@ describe('TicketWorkbench — organization record link', () => {
     expect(link).toHaveAttribute('href', '/organizations/org-9');
     expect(link).toHaveTextContent('Globex Inc');
   });
+
+  it('links the header device hostname to /devices/:id (ui-flow W03)', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    expect(screen.getByTestId('device-record-link')).toHaveAttribute('href', '/devices/dev-1');
+  });
+
+  it('prints the header hostname as text when the ticket has no deviceId', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ deviceId: null, deviceHostname: 'DESKTOP-123' }) });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
+    expect(screen.getAllByText('DESKTOP-123').length).toBeGreaterThan(0);
+  });
 });
 
 describe('TicketWorkbench — page item name', () => {

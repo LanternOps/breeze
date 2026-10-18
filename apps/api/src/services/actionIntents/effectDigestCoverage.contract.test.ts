@@ -95,8 +95,12 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
   computer_control:
     'EXTERNAL: synchronous input injection against the live device via the Go agent. Nothing in our DB is the write target and there is no persisted state to hash.',
   ...sharedReason(
-    ['m365_disable_user', 'm365_reset_password'],
-    'EXTERNAL: the target is a Microsoft Graph user object. Pinning it would require a Graph round trip at intent creation, putting a third-party outage on the creation path.',
+    [
+      'm365_disable_user', 'm365_reset_password', 'm365_revoke_sessions', 'm365_remove_license',
+      'm365_assign_license', 'm365_remove_from_group', 'm365_add_to_group',
+      'm365_retire_intune_device', 'm365_create_user', 'm365_set_auto_reply',
+    ],
+    'EXTERNAL: the target is a Microsoft Graph user, group or Intune device object. Pinning it would require a Graph round trip at intent creation, putting a third-party outage on the creation path.',
   ),
   ...sharedReason(
     [

@@ -33,6 +33,9 @@ import {
 } from "../../services/deviceActions";
 import { useAiStore } from "@/stores/aiStore";
 import { navigateTo } from "@/lib/navigation";
+import { useOrgStore } from "@/stores/orgStore";
+import { deviceListCrumbHref } from "./deviceListCrumbHref";
+import { applyOrgSwitch } from "@/lib/orgSwitch";
 import { deviceScriptsHash } from "@/lib/deviceScriptsLink";
 import { runAction, ActionError } from "@/lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -61,6 +64,9 @@ export default function DeviceDetailPage(props: DeviceDetailPageProps) {
 function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   const { t } = useTranslation("devices");
   const [device, setDevice] = useState<Device | null>(null);
+  // When the newest CPU/RAM sample was taken (null = none in the last 24h), so
+  // the header shows "—" instead of a stale or defaulted 0.0% (#9026).
+  const [metricsSampledAt, setMetricsSampledAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [actionInProgress, setActionInProgress] = useState(false);
@@ -150,6 +156,8 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
         hostname: data.hostname ?? data.displayName ?? "Unknown",
         os: (data.osType ?? data.os ?? "windows") as OSType,
         osVersion: data.osVersion ?? "",
+        // #9026: the header's "Windows 11 Pro (build 22631)" label.
+        osBuild: typeof data.osBuild === "string" ? data.osBuild : undefined,
         status: (data.status ?? "offline") as DeviceStatus,
         cpuPercent: latestMetrics?.cpuPercent ?? 0,
         ramPercent: latestMetrics?.ramPercent ?? 0,
@@ -229,6 +237,9 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
             : null,
       };
 
+      setMetricsSampledAt(
+        typeof latestMetrics?.timestamp === "string" ? latestMetrics.timestamp : null,
+      );
       setDevice(transformedDevice);
     } catch (err) {
       setError(
@@ -338,14 +349,55 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
   // the signed-in user (recordDevice no-ops until then), so re-run once it has.
   const recordRecentDevice = useRecentsStore((s) => s.recordDevice);
   const recentsUserId = useRecentsStore((s) => s.userId);
+  // Working org decides where the "Devices" crumb and Back land (A4).
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const recentName = device ? device.displayName || device.hostname : null;
   useEffect(() => {
     if (!device || !recentName || !recentsUserId) return;
     recordRecentDevice({ id: device.id, name: recentName, orgId: device.orgId });
   }, [device?.id, device?.orgId, recentName, recentsUserId, recordRecentDevice]);
 
+  const devicesHref = device ? deviceListCrumbHref(currentOrgId, device.orgId) : "/devices";
+  // #9027: when the crumb leaves the working org (it opens the device org's
+  // Devices tab), say so — the working org itself does not change.
+  const workingOrgName = useOrgStore(
+    (s) => s.organizations.find((o) => o.id === s.currentOrgId)?.name ?? null,
+  );
+  const crossOrgCrumb = devicesHref !== "/devices" && device != null;
+  const devicesCrumbHint = crossOrgCrumb
+    ? workingOrgName
+      ? t("deviceDetailPage.devicesCrumbOtherOrg", { deviceOrg: device.orgName, workingOrg: workingOrgName })
+      : t("deviceDetailPage.devicesCrumbOtherOrgUnnamed", { deviceOrg: device.orgName })
+    : undefined;
+  // Switch the working org to the device's org and stay on this record. No
+  // hash: a same-path navigation carrying one is a scroll-to-anchor for the
+  // router, so the switch (and its toast) would never settle.
+  const switchingOrgRef = useRef(false);
+  const handleSwitchToDeviceOrg = () => {
+    if (!device?.orgId || switchingOrgRef.current) return;
+    switchingOrgRef.current = true;
+    applyOrgSwitch(
+      device.orgId,
+      t("common:layout.org.toast.switched", { name: device.orgName }),
+      `/devices/${device.id}`,
+    )
+      .catch((err) => {
+        console.error("[DeviceDetailPage] switching to the device org failed", err);
+        showToast({ type: "error", message: t("deviceDetailPage.switchOrgFailed") });
+      })
+      .finally(() => {
+        switchingOrgRef.current = false;
+      });
+  };
+  // Back returns to wherever the tech came from (list filters, scroll, org);
+  // a fresh tab / deep link has no history to pop, so fall to the org-aware
+  // Devices crumb instead.
   const handleBack = () => {
-    void navigateTo("/devices");
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    void navigateTo(devicesHref);
   };
 
   const handleAction = async (
@@ -762,13 +814,25 @@ function DeviceDetailPageInner({ deviceId }: DeviceDetailPageProps) {
           ...(device.orgId
             ? [{ label: device.orgName, href: `/organizations/${device.orgId}` }]
             : []),
-          { label: t("deviceDetailPage.devices"), href: "/devices" },
-          { label: device.hostname || "Device" },
+          {
+            label: t("deviceDetailPage.devices"),
+            href: devicesHref,
+            title: devicesCrumbHint,
+            description: devicesCrumbHint,
+          },
+          // #9026: one name — the leaf matches the h1; hostname on hover.
+          {
+            label: device.displayName || device.hostname || "Device",
+            title: device.hostname || undefined,
+          },
         ]}
       />
       <ActiveSessionsBanner key={device.id} deviceId={device.id} deviceStatus={device.status} />
       <DeviceDetails
         device={device}
+        metricsSampledAt={metricsSampledAt}
+        workingOrgId={currentOrgId}
+        onSwitchToDeviceOrg={handleSwitchToDeviceOrg}
         onBack={handleBack}
         onAction={handleAction}
       />

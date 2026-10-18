@@ -572,7 +572,14 @@ describe('DeviceList — sortable columns (every column sorts on header click)',
     // click-actually-reorders behavior is covered by the row-order tests.)
     const dataHeaders = headers.slice(1, -1);
     expect(dataHeaders.length).toBe(COLUMN_IDS.length);
-    for (const th of dataHeaders) {
+    // #9038: Attention is deliberately unsortable until the counts are part of
+    // the list query (a client sort would only reorder one page). Pin that it
+    // is the ONLY exception and is still a proper column header.
+    const unsortable = dataHeaders.filter((th) => th.getAttribute('data-testid') === 'device-list-header-attention');
+    expect(unsortable).toHaveLength(1);
+    expect(unsortable[0]!.querySelector('button')).toBeNull();
+    expect(unsortable[0]!.getAttribute('scope')).toBe('col');
+    for (const th of dataHeaders.filter((h) => !unsortable.includes(h))) {
       // The hint lives on a real <button> inside the cell so sorting is
       // reachable by keyboard; the cell itself carries scope + aria-sort.
       const button = th.querySelector('button');
@@ -1947,6 +1954,47 @@ describe('DeviceList filter action scope (RMM-QA-153)', () => {
     }
   });
 });
+
+describe('DeviceList — entity links (ui-flow W03)', () => {
+  it('links the organization and site cells to their records', () => {
+    render(<DeviceList devices={[baseDevice]} />);
+    expect(screen.getByTestId('org-record-link')).toHaveAttribute('href', '/organizations/org-1');
+    expect(screen.getByTestId('site-record-link')).toHaveAttribute('href', '/settings/sites/site-1');
+  });
+
+  it('links the hostname to the device and keeps row click working', () => {
+    const onSelect = vi.fn();
+    render(<DeviceList devices={[baseDevice]} onSelect={onSelect} />);
+    const link = screen.getByTestId('device-record-link');
+    expect(link).toHaveAttribute('href', `/devices/${baseDevice.id}`);
+    fireEvent.click(link);
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.click(link.closest('tr')!);
+    expect(onSelect).toHaveBeenCalledWith(baseDevice);
+  });
+
+  it('prints a manual asset hostname as text (no detail page)', () => {
+    const manual: Device = {
+      ...baseDevice,
+      id: 'c3333333-3333-3333-3333-333333333333',
+      hostname: 'spare-laptop',
+      deviceClass: 'manual',
+      assetType: 'workstation',
+      status: 'unknown',
+    };
+    render(<DeviceList devices={[manual]} />);
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
+    expect(screen.getAllByText('spare-laptop').length).toBeGreaterThan(0);
+  });
+
+  it('prints the site name as text when the device has no site', () => {
+    render(<DeviceList devices={[{ ...baseDevice, siteId: '', siteName: 'Unknown Site' }]} />);
+    expect(screen.queryByTestId('site-record-link')).toBeNull();
+    expect(screen.getByText('Unknown Site')).toBeInTheDocument();
+  });
+});
+
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 // #7215: Wake is gated on devices:execute; grant everything here (role-aware
 // behaviour is covered in DeviceList.permissions.test.tsx).

@@ -103,6 +103,8 @@ export function DeviceCard({ device }: Props) {
     haptic.tap();
     navigation.navigate('SystemsTab', {
       screen: 'SystemsDeviceDetail',
+      // Same as AlertCard: keep the Systems root beneath the detail.
+      initial: false,
       params: { device: toDevice(device) },
     } as never);
   };

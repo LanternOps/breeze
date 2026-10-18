@@ -11,6 +11,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
+import InheritedField from '../shared/InheritedField';
 
 type PortalSettings = {
   enableTickets: boolean;
@@ -36,14 +37,18 @@ type PortalSettings = {
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
   enableVulnerabilityDetail: boolean;
+  enableTrustPageEditing: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
   footerText: string | null;
   chromeAccent: PortalChromeAccent;
+  /** Read-only (#7510): the partner's document footer, which quotes and
+   *  invoices print when `footerText` is blank. Never sent back on save. */
+  partnerInvoiceFooter?: string | null;
 };
 
-type ToggleKey = 'enableTickets' | 'enableAssetCheckout' | 'enableSelfService' | 'enablePasswordReset';
+type ToggleKey = 'enableTickets' | 'enableAssetCheckout' | 'enableSelfService' | 'enablePasswordReset' | 'enableTrustPageEditing';
 
 const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string }> = [
   {
@@ -65,6 +70,13 @@ const TOGGLES: Array<{ key: ToggleKey; labelKey: string; descriptionKey: string 
     key: 'enablePasswordReset',
     labelKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.label',
     descriptionKey: 'orgPortalSettingsEditor.features.toggles.enablePasswordReset.description',
+  },
+  // Trust Center W3d: a permission flag (PORTAL_PERMISSION_FLAG_KEYS), not a
+  // visibility tier, so it lives with the features and "Enable all" never sets it.
+  {
+    key: 'enableTrustPageEditing',
+    labelKey: 'orgPortalSettingsEditor.features.toggles.enableTrustPageEditing.label',
+    descriptionKey: 'orgPortalSettingsEditor.features.toggles.enableTrustPageEditing.description',
   },
 ];
 
@@ -305,6 +317,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
             enablePatchDetail: draft.enablePatchDetail,
             enableVulnerabilityDetail: draft.enableVulnerabilityDetail,
+            enableTrustPageEditing: draft.enableTrustPageEditing,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
             welcomeMessage: draft.welcomeMessage?.trim() || null,
@@ -502,15 +515,24 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
               data-testid="org-portal-welcome"
             />
           </div>
+          {/* #7510 (settings rules 3 + 4): this is the ORG level of the one
+              document-footer chain (resolveDocumentFooter) — it overrides the
+              partner document footer on this org's quotes and invoices, and
+              while blank shows the inherited partner value and its source. */}
           <div className="sm:col-span-2">
-            <label className="text-sm font-medium" htmlFor="portal-footer">{t('orgPortalSettingsEditor.support.footerText')}</label>
-            <input
+            <InheritedField
               id="portal-footer"
+              label={t('orgPortalSettingsEditor.support.footerText')}
               value={draft.footerText ?? ''}
-              onChange={(e) => update({ footerText: e.target.value })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm"
+              onChange={(value) => update({ footerText: value })}
+              inheritedValue={draft.partnerInvoiceFooter ?? null}
+              inheritedSource={t('orgPortalSettingsEditor.support.footerTextInheritedSource')}
+              ariaDescribedBy="portal-footer-help"
               data-testid="org-portal-footer"
             />
+            <p id="portal-footer-help" data-testid="org-portal-footer-help" className="mt-1 text-xs text-muted-foreground">
+              {t('orgPortalSettingsEditor.support.footerTextHelp')}
+            </p>
           </div>
         </div>
       </section>

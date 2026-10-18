@@ -423,12 +423,17 @@
     "empty": {
       "noPolicies": "Hiçbir politika yapılandırılmadı",
       "allCompliant": "Tüm cihazlar uyumludur!",
+      "notEvaluated": "Henüz hiçbir cihaz değerlendirilmedi.",
+      "noViolationsPending_one": "İhlal bulunamadı; {{count}} cihazın değerlendirmesi hâlâ bekliyor.",
+      "noViolationsPending_other": "İhlal bulunamadı; {{count}} cihazın değerlendirmesi hâlâ bekliyor.",
       "noMatchingDevices": "Eşleşen cihaz bulunamadı."
     },
     "policyComplianceRatio": "{{compliant}} / {{total}} uyumlu",
     "searchDevices": "Cihazları arayın...",
-    "violationCount": "{{count}} ihlali",
-    "moreViolations": "+{{count}} daha fazla ihlal",
+    "violationCount_one": "{{count}} ihlal",
+    "violationCount_other": "{{count}} ihlal",
+    "moreViolations_one": "+{{count}} ihlal daha",
+    "moreViolations_other": "+{{count}} ihlal daha",
     "lastChecked": "Son kontrol: {{date}}",
     "pagination": {
       "showing": "{{start}} ila {{end}} / {{total}} gösteriliyor",

@@ -99,7 +99,6 @@ vi.mock('../../services/aiModels/connectionProbe', () => {
   return { ConnectionCheckError };
 });
 vi.mock('../../services/aiModels/anthropicConnectionWrites', () => ({
-  hasAnthropicConnection: vi.fn(),
   createAnthropicKeyConnection: vi.fn(),
   rotateAnthropicKey: vi.fn(),
   changeAnthropicEndpoint: vi.fn(),

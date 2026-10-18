@@ -3,7 +3,6 @@
 package userhelper
 
 import (
-	"encoding/xml"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,26 +40,37 @@ func registerToastAUMID() {
 	}
 }
 
-// showNotificationOS uses PowerShell toast notifications on Windows.
-// A production implementation would use WinRT Toast API directly.
+// toastWinRTFn and toastPowerShellFn are the two toast backends behind
+// showNotificationOS. WinRT is primary: it raises the toast in-process, so no
+// child gets a console and nothing flashes on the user's desktop. PowerShell is
+// the fallback for hosts where WinRT activation fails; it is spawned hidden.
+// Tests swap both.
+var (
+	toastWinRTFn      = showToastWinRT
+	toastPowerShellFn = showToastPowerShell
+)
+
+// showNotificationOS raises a Windows toast for a plain notice.
 func showNotificationOS(req ipc.NotifyRequest) bool {
 	notifyAumidOnce.Do(registerToastAUMID)
 	req = sanitizeNotifyRequest(req)
-	// XML-escape title and body to prevent injection
-	title := xmlEscape(req.Title)
-	body := xmlEscape(req.Body)
+	toastXML := buildToastXML(req.Title, req.Body)
 
-	toastXML := `<toast><visual><binding template="ToastText02">` +
-		`<text id="1">` + title + `</text>` +
-		`<text id="2">` + body + `</text>` +
-		`</binding></visual></toast>`
+	if err := toastWinRTFn(notifyAUMID, toastXML); err != nil {
+		log.Warn("WinRT toast failed; falling back to PowerShell", "error", err.Error())
+		return toastPowerShellFn(toastXML)
+	}
+	return true
+}
 
-	// The XML travels via an environment variable: `-Command <script> <args>`
-	// does NOT bind script params — PowerShell appends the extra argv tokens to
-	// the command TEXT, which made the previous `param($xml) ... -xml <toast>`
-	// shape a parse error on every call (the toast never showed once). The env
-	// var also avoids all quoting/interpolation, so the escaped XML can't
-	// inject into the script.
+// newToastPowerShellCmd builds the hidden powershell.exe invocation that raises
+// toastXML through the WinRT projection. The XML travels via an environment
+// variable: `-Command <script> <args>` does NOT bind script params — PowerShell
+// appends the extra argv tokens to the command TEXT, which made the previous
+// `param($xml) ... -xml <toast>` shape a parse error on every call (the toast
+// never showed once). The env var also avoids all quoting/interpolation, so the
+// escaped XML can't inject into the script.
+func newToastPowerShellCmd(toastXML string) *exec.Cmd {
 	script := `try {
   [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
   [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
@@ -72,21 +82,19 @@ func showNotificationOS(req ipc.NotifyRequest) bool {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1
 }`
-
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	cmd.Env = append(os.Environ(), "BREEZE_TOAST_XML="+toastXML)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	// The user-helper is a GUI-subsystem binary; without this the kernel gives
+	// powershell.exe a fresh console that flashes on the interactive desktop.
+	hideWindow(cmd)
+	return cmd
+}
+
+// showToastPowerShell is the fallback toast backend.
+func showToastPowerShell(toastXML string) bool {
+	if out, err := newToastPowerShellCmd(toastXML).CombinedOutput(); err != nil {
 		log.Warn("notification failed", "error", err, "output", strings.TrimSpace(string(out)))
 		return false
 	}
 	return true
-}
-
-// xmlEscape encodes a string so it is safe for embedding in XML text content.
-func xmlEscape(s string) string {
-	var b strings.Builder
-	if err := xml.EscapeText(&b, []byte(s)); err != nil {
-		return ""
-	}
-	return b.String()
 }

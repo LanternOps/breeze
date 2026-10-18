@@ -398,6 +398,10 @@ Custom fields default to `string` type operators. The actual field type is resol
 | `after` | date, datetime | date string | Date is after value |
 | `between` | number, date, datetime | `{ from, to }` | Value is between `from` and `to` (inclusive) |
 | `withinLast` | date, datetime | `{ amount, unit }` | Date is within the last N units. Units: `minutes`, `hours`, `days`, `weeks`, `months` |
+
+<Aside type="caution" title="Enum values must match exactly">
+From v0.123.0, a value outside an enum field's allowed set (for example `osType notEquals "Windows"` instead of `"windows"`) is rejected with `400`, and the error names the allowed values. Earlier releases dropped such a value, which could widen a target to every device. A stored deployment target or dynamic group rule with a bad value now fails visibly instead of matching more devices than intended.
+</Aside>
 | `notWithinLast` | date, datetime | `{ amount, unit }` | Date is **not** within the last N units |
 
 ### Value Types

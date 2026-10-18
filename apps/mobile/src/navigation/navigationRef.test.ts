@@ -25,6 +25,7 @@ describe('navigateToTicket (#4336)', () => {
 
     expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
       screen: 'TicketDetail',
+      initial: false,
       params: { ticketId: 't-1' },
     });
   });
@@ -45,6 +46,7 @@ describe('navigateToTicket (#4336)', () => {
     expect(ref.navigate).toHaveBeenCalledTimes(1);
     expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
       screen: 'TicketDetail',
+      initial: false,
       params: { ticketId: 't-2' },
     });
   });
@@ -71,6 +73,7 @@ describe('navigateToTicket (#4336)', () => {
     expect(ref.navigate).toHaveBeenCalledTimes(1);
     expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
       screen: 'TicketDetail',
+      initial: false,
       params: { ticketId: 't-4' },
     });
   });
@@ -98,6 +101,7 @@ describe('navigateToTicket (#4336)', () => {
     expect(ref.navigate).toHaveBeenCalledTimes(1);
     expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
       screen: 'TicketDetail',
+      initial: false,
       params: { ticketId: 't-3' },
     });
   });
@@ -117,6 +121,7 @@ describe('navigateToTicket composer params (#5366)', () => {
 
     expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
       screen: 'TicketDetail',
+      initial: false,
       params: { ticketId: 't-1', composeMode: 'internal', focusComposer: true },
     });
   });
@@ -137,6 +142,7 @@ describe('navigateToTicket composer params (#5366)', () => {
     expect(ref.navigate).toHaveBeenCalledTimes(1);
     expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
       screen: 'TicketDetail',
+      initial: false,
       params: { ticketId: 't-2', composeMode: 'internal', focusComposer: true },
     });
   });
@@ -153,6 +159,7 @@ describe('navigateToTicket composer params (#5366)', () => {
     expect(ref.navigate).toHaveBeenCalledTimes(1);
     expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
       screen: 'TicketDetail',
+      initial: false,
       params: { ticketId: 't-4' },
     });
   });

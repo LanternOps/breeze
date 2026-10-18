@@ -618,7 +618,8 @@ describe('frozen "no footer" invoice render (#7216)', () => {
   const LATER = 'Footer added after issue';
   function renderInputs(terms: string | null) {
     const invoice = makeInvoice({ terms });
-    const footerText = resolveDocumentFooter({ documentTerms: invoice.terms, partnerFooter: LATER, brandingFooter: 'Portal footer added later' });
+    // LATER is the org footer — the level that wins over the partner default (#7510).
+    const footerText = resolveDocumentFooter({ documentTerms: invoice.terms, partnerFooter: 'Partner footer added later', brandingFooter: LATER });
     return { invoice, branding: { ...branding, footerText } };
   }
   const pdfText = (pdf: Buffer) => extractPositionedPdfText(pdf).map((f) => f.text).join(' ');

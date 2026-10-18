@@ -31,6 +31,8 @@ export const LIFECYCLE_COMMAND_TYPES = [
   'backup_list',
   'backup_stop',
   'cancel_reboot',
+  // Endpoint live chat W03 (#8743): carries only a conversation id and a reason.
+  'chat_close',
   'collect_software',
   'desktop_stream_stop',
   'get_reboot_status',
@@ -39,6 +41,8 @@ export const LIFECYCLE_COMMAND_TYPES = [
   'patch_scan',
   'refresh_inventory',
   'restart_agent',
+  // Endpoint messaging W02 (#8742): carries only a message id, no content.
+  'retract_message',
   'script_cancel',
   'script_list_running',
   'security_collect_status',
@@ -56,6 +60,9 @@ export const LIFECYCLE_COMMAND_TYPES = [
  * documented and checked by the allowlist test; runtime fails closed. */
 export const GATED_COMMAND_TYPES = [
   'actuate_elevation',
+  // Endpoint live chat W03 (#8743): operator-authored chat text.
+  'chat_message',
+  'chat_open',
   'apply_browser_policy',
   'apply_audit_policy_baseline',
   'apply_cis_remediation',

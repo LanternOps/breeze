@@ -25,7 +25,7 @@ const setApiKeyContext = (c: any) => {
   c.set('apiKey', {
     id: 'key-1', orgId: 'org-1', name: 'test', keyPrefix: 'brz_test',
     partnerId: 'partner-1',
-    scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1',
+    scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1', mcpDomains: null,
   });
   c.set('apiKeyOrgId', 'org-1');
 };
@@ -266,6 +266,7 @@ describe('mcpServer bearer auth routing', () => {
         partnerId: 'partner-1',
         name: 'OAuth bearer',
         keyPrefix: 'oauth',
+        mcpDomains: null,
         scopes: ['ai:read'],
         rateLimit: 1000,
         createdBy: 'user-1',
@@ -324,7 +325,7 @@ describe('mcpServer bearer auth routing', () => {
       c.set('apiKey', {
         id: 'oauth:jti-1', orgId: null, partnerId: 'partner-1',
         name: 'OAuth bearer', keyPrefix: 'oauth',
-        scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1',
+        scopes: ['ai:read'], rateLimit: 1000, createdBy: 'user-1', mcpDomains: null,
       });
       return next();
     });

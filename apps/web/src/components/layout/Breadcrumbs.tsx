@@ -8,6 +8,10 @@ import '../../lib/i18n';
 interface BreadcrumbItem {
   label: string;
   href?: string;
+  /** Hover text, e.g. the hostname behind a device's display name. */
+  title?: string;
+  /** Extra context for assistive tech (rendered as `aria-description`). */
+  description?: string;
 }
 
 interface BreadcrumbsProps {
@@ -34,12 +38,17 @@ export default function Breadcrumbs({ items }: BreadcrumbsProps) {
             {item.href && index < items.length - 1 ? (
               <a
                 href={item.href}
-                className="truncate hover:text-foreground transition-colors"
+                title={item.title}
+                aria-description={item.description}
+                className="truncate transition-colors hover:text-foreground max-md:min-h-[32px] max-md:leading-8"
               >
                 {item.label}
               </a>
             ) : (
-              <span className={index === items.length - 1 ? 'truncate text-foreground font-medium max-w-[200px]' : 'truncate'}>
+              <span
+                title={item.title}
+                className={index === items.length - 1 ? 'truncate text-foreground font-medium max-w-[200px]' : 'truncate'}
+              >
                 {item.label}
               </span>
             )}

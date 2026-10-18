@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { McpGrantableDomain } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+import McpDomainPicker, { isMcpDomainSelectionValid } from '../shared/McpDomainPicker';
 // Initializes the shared i18next singleton. This page's layout has no Sidebar
 // (which is what pulls i18n in elsewhere), so without this every t() call here
 // renders its raw key.
@@ -101,6 +103,8 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
   const { t } = useTranslation('common');
   const [state, setState] = useState<ViewState>({ kind: 'loading' });
   const [partnerId, setPartnerId] = useState<string>('');
+  // null = every tool; a restricted list is posted as `mcp_domains` (#6156).
+  const [mcpDomains, setMcpDomains] = useState<McpGrantableDomain[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -156,7 +160,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
     try {
       const res = await fetchWithAuth(`/oauth/interaction/${encodeURIComponent(uid)}/consent`, {
         method: 'POST',
-        body: JSON.stringify({ partner_id: partnerId, approve }),
+        body: JSON.stringify({ partner_id: partnerId, approve, mcp_domains: approve ? mcpDomains : null }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -279,6 +283,14 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
 
       <ScopeList scopes={selectedPartnerScopes} />
 
+      <McpDomainPicker
+        idPrefix="consent"
+        variant="consent"
+        value={mcpDomains}
+        onChange={setMcpDomains}
+        disabled={submitting}
+      />
+
       {details.partners.length > 1 && (
         <TenantPicker
           partners={details.partners}
@@ -292,7 +304,7 @@ export default function ConsentForm({ uid }: ConsentFormProps) {
         <button
           type="button"
           onClick={() => submit(true)}
-          disabled={submitting || !partnerId}
+          disabled={submitting || !partnerId || !isMcpDomainSelectionValid(mcpDomains)}
           className="inline-flex h-10 flex-1 items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {submitting ? t('longTail.oauth.ConsentForm.approving') : t('longTail.oauth.ConsentForm.approve')}

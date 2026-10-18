@@ -39,6 +39,7 @@ export type InitiatedCustomerGraphActionsConsent = InitiatedConsent<'customer-gr
 export const initiateCustomerGraphActionsConsent = actionsConnectionService.initiateConsent;
 export const initiateCustomerGraphActionsUpgradeConsent = actionsConnectionService.initiateUpgradeConsent;
 export const listCustomerGraphActionsConnections = actionsConnectionService.listConnections;
+export const listStaleManifestCustomerGraphActionsConnections = actionsConnectionService.listStaleManifestConnections;
 export const transitionIdentityToConsent = actionsConnectionService.transitionIdentityToConsent;
 export const readPendingCustomerGraphActionsTenantConfirmation = actionsConnectionService.readPendingTenantConfirmation;
 export const continueCustomerGraphActionsConsent = actionsConnectionService.continueToConsent;

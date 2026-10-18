@@ -434,6 +434,11 @@ type Heartbeat struct {
 	endpointMessages     *messageStore
 	endpointMessagesOnce sync.Once
 	messageEventSink     func(messageEvent)
+	// Endpoint live chat (#8743): in-memory conversation store and the
+	// injectable reply-post seam (nil = post to the API; tests override it).
+	endpointChat     *chatStore
+	endpointChatOnce sync.Once
+	chatReplySink    func(chatReplyEvent) (int, error)
 	// unifiCollectorWake is signalled when configUpdate says this device has
 	// UniFi collectors (#7970); see unifi_collector_hint.go.
 	unifiCollectorWake        atomic.Pointer[func()]
@@ -1738,6 +1743,12 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		log.Debug("notify result from user helper", "uid", session.UID)
 	case ipc.TypeMessagePresented, ipc.TypeMessageAck, ipc.TypeMessageDismissed:
 		h.handleMessageEventFromHelper(session, env)
+	case ipc.TypeChatReply:
+		h.handleChatReplyFromHelper(session, env)
+	case ipc.TypeChatPresented:
+		// A chat_presented answering a live chat_open/chat_message is consumed
+		// by its waiter; one arriving here follows a replay and is ignored.
+		log.Debug("unsolicited chat_presented ignored", "sessionId", session.SessionID)
 	case ipc.TypeSASRequest:
 		go func() {
 			defer func() {
@@ -5281,6 +5292,11 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	if err != nil {
 		log.Error("failed to send heartbeat", "server", baseURL, "error", err.Error())
 		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
+		// #8934: the server answered, it is just overloaded — the loop is
+		// alive, and the watchdog must not restart it for that.
+		if status, ok := serverOverloadAnswer(err); ok {
+			h.noteServerUnavailableLiveness(status)
+		}
 		return nil, false
 	}
 	defer resp.Body.Close()
@@ -6960,6 +6976,7 @@ func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Sess
 	// Endpoint messaging (#8293): resend still-open cards to a (re)started
 	// Assist helper. Independent of the token push below.
 	h.replayEndpointMessages(session)
+	h.replayChat(session)
 	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
 		return
 	}

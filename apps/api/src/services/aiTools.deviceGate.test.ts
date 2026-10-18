@@ -70,7 +70,7 @@ beforeEach(() => vi.clearAllMocks());
 describe('enforceDeviceArgs — declarative device gate', () => {
   it('allows (ok) when the tool declares no deviceArgs', async () => {
     const r = await enforceDeviceArgs({ deviceArgs: undefined }, { deviceId: FOREIGN_DEVICE }, makeAuth());
-    expect(r).toEqual({ ok: true });
+    expect(r).toEqual({ ok: true, devices: [] });
     expect(db.select).not.toHaveBeenCalled();
   });
 
@@ -83,7 +83,7 @@ describe('enforceDeviceArgs — declarative device gate', () => {
 
   it('allows when a declared single-id arg names an accessible device', async () => {
     mockLookupSequence([IN_SITE]);
-    expect(await enforceDeviceArgs({ deviceArgs: ['deviceId'] }, { deviceId: OWN_DEVICE }, makeAuth())).toEqual({ ok: true });
+    expect(await enforceDeviceArgs({ deviceArgs: ['deviceId'] }, { deviceId: OWN_DEVICE }, makeAuth())).toEqual({ ok: true, devices: IN_SITE });
   });
 
   it('SITE AXIS: denies a same-org device in a site the caller cannot access', async () => {
@@ -95,7 +95,14 @@ describe('enforceDeviceArgs — declarative device gate', () => {
 
   it('SITE AXIS: allows a same-org device within the caller site allowlist', async () => {
     mockLookupSequence([IN_SITE]);
-    expect(await enforceDeviceArgs({ deviceArgs: ['deviceId'] }, { deviceId: OWN_DEVICE }, makeSiteRestrictedAuth())).toEqual({ ok: true });
+    expect(await enforceDeviceArgs({ deviceArgs: ['deviceId'] }, { deviceId: OWN_DEVICE }, makeSiteRestrictedAuth())).toEqual({ ok: true, devices: IN_SITE });
+  });
+
+  it('returns every verified row of an array arg, in input order (the AI data policy gate resolves from them)', async () => {
+    const second = [{ id: FOREIGN_DEVICE, orgId: 'org-123', hostname: 'h2', siteId: 'site-1', status: 'online' }];
+    mockLookupSequence([IN_SITE, second]);
+    const r = await enforceDeviceArgs({ deviceArgs: ['deviceIds'] }, { deviceIds: [OWN_DEVICE, FOREIGN_DEVICE] }, makeAuth());
+    expect(r).toEqual({ ok: true, devices: [...IN_SITE, ...second] });
   });
 
   it('denies an array arg if ANY element is inaccessible (not just the first)', async () => {
@@ -111,7 +118,7 @@ describe('enforceDeviceArgs — declarative device gate', () => {
   });
 
   it('allows when a declared optional arg is absent (nothing to gate)', async () => {
-    expect(await enforceDeviceArgs({ deviceArgs: ['deviceId'] }, {}, makeAuth())).toEqual({ ok: true });
+    expect(await enforceDeviceArgs({ deviceArgs: ['deviceId'] }, {}, makeAuth())).toEqual({ ok: true, devices: [] });
     expect(db.select).not.toHaveBeenCalled();
   });
 

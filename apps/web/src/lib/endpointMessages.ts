@@ -108,3 +108,132 @@ export function sendEndpointMessage(
       }),
   });
 }
+
+export type EndpointMessageDeliveryStatus =
+  | 'queued'
+  | 'delivered'
+  | 'displayed'
+  | 'acknowledged'
+  | 'dismissed'
+  | 'expired'
+  | 'retracted'
+  | 'failed'
+  | 'superseded';
+
+export interface EndpointMessageListItem {
+  id: string;
+  orgId: string;
+  batchId: string;
+  /** Null once the 90-day body purge has run. */
+  title: string | null;
+  severity: EndpointMessageSeverity;
+  requiresAck: boolean;
+  createdBy: string | null;
+  createdAt: string;
+  expiresAt: string;
+  retractedAt: string | null;
+  bodyPurged: boolean;
+  aiInitiated: boolean;
+  resendOfId: string | null;
+  deviceCount: number;
+  statusCounts: Partial<Record<EndpointMessageDeliveryStatus, number>>;
+}
+
+export interface EndpointMessageReceipt {
+  sessionUsername: string | null;
+  eventType: 'displayed' | 'acknowledged' | 'dismissed' | 'expired';
+  occurredAt: string;
+}
+
+export interface EndpointMessageDelivery {
+  id: string;
+  deviceId: string;
+  hostname: string | null;
+  siteId: string | null;
+  status: EndpointMessageDeliveryStatus;
+  surface: 'assist' | 'native' | null;
+  errorCode: string | null;
+  deliveredAt: string | null;
+  displayedAt: string | null;
+  acknowledgedAt: string | null;
+  dismissedAt: string | null;
+  retractedAt: string | null;
+  receipts: EndpointMessageReceipt[];
+}
+
+export interface EndpointMessageDetail extends EndpointMessageListItem {
+  body: string | null;
+  deliveries: EndpointMessageDelivery[];
+}
+
+export interface EndpointMessageListPage {
+  items: EndpointMessageListItem[];
+  nextCursor: string | null;
+}
+
+export interface EndpointMessageRetractResponse {
+  id: string;
+  retractedAt: string;
+  alreadyRetracted: boolean;
+  results: Array<
+    | { deviceId: string; status: 'retracted'; via: 'cancelled' | 'command' | 'expired' }
+    | { deviceId: string; status: 'failed'; errorCode: string }
+  >;
+}
+
+type MutationOptions<T> = Pick<
+  RunActionOptions<T>,
+  'errorFallback' | 'friendly' | 'suppressErrorToast' | 'onUnauthorized' | 'successMessage'
+>;
+
+/** GET /endpoint-messages: one page of batches, newest first. */
+export async function listEndpointMessages(
+  params: { limit?: number; cursor?: string | null } = {},
+): Promise<EndpointMessageListPage> {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set('limit', String(params.limit));
+  if (params.cursor) qs.set('cursor', params.cursor);
+  const query = qs.toString();
+  const response = await fetchWithAuth(`/endpoint-messages${query ? `?${query}` : ''}`);
+  if (!response.ok) throw new Error(`list_failed_${response.status}`);
+  return (await response.json()) as EndpointMessageListPage;
+}
+
+/** GET /endpoint-messages/:id. Null when the message does not exist (404). */
+export async function getEndpointMessage(id: string): Promise<EndpointMessageDetail | null> {
+  const response = await fetchWithAuth(`/endpoint-messages/${encodeURIComponent(id)}`);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`detail_failed_${response.status}`);
+  return (await response.json()) as EndpointMessageDetail;
+}
+
+/** POST /endpoint-messages/:id/retract (no body). */
+export function retractEndpointMessage(
+  id: string,
+  opts: MutationOptions<EndpointMessageRetractResponse>,
+): Promise<EndpointMessageRetractResponse> {
+  return runAction<EndpointMessageRetractResponse>({
+    ...opts,
+    request: () => fetchWithAuth(`/endpoint-messages/${encodeURIComponent(id)}/retract`, { method: 'POST' }),
+  });
+}
+
+/**
+ * POST /endpoint-messages/:id/resend. `messageId` is a fresh client uuid: the
+ * API replays the first response on a repeat of the same one.
+ */
+export function resendEndpointMessage(
+  id: string,
+  messageId: string,
+  opts: MutationOptions<EndpointMessageSendResponse>,
+): Promise<EndpointMessageSendResponse> {
+  return runAction<EndpointMessageSendResponse>({
+    ...opts,
+    request: () =>
+      fetchWithAuth(`/endpoint-messages/${encodeURIComponent(id)}/resend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId }),
+      }),
+  });
+}

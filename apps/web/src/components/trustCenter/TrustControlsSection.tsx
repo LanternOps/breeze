@@ -4,23 +4,18 @@ import {
   FRAMEWORK_META,
   TRUST_CONTROL_CATEGORY_ORDER,
   type TelemetryControlId,
-  type TrustControlCategory,
   type TrustPageUpdateInput,
+  type TrustSettingValues,
 } from '@breeze/shared';
 import StatusPill from '@/components/billing/shared/StatusPill';
 import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
-import { updateTrustPage, type TrustControlsState, type TrustPageDraft, type TrustPageState } from '@/lib/api/trustPage';
+import { updateTrustPage, type TrustControlsState, type TrustPageState } from '@/lib/api/trustPage';
 import { handleActionError, runAction } from '@/lib/runAction';
 import { controlStatusPill } from './trustCenterPill';
+import { useTrustControlCopy } from './trustControlCopy';
+import { InheritanceBadge, ResetToInheritedButton, resetToInherited, sourceAfterLocalEdit } from './trustInheritance';
 
-// Catalog copy is English-only in W1 (plan 19.4), so category labels are too.
-const CATEGORY_LABEL: Record<TrustControlCategory, string> = {
-  endpoint_protection: 'Endpoint protection',
-  patching_hardening: 'Patching and hardening',
-  identity_access: 'Identity and access',
-  data_protection: 'Data protection',
-  monitoring: 'Monitoring',
-};
+type ControlValues = Pick<TrustSettingValues, 'showPercentages' | 'showDeviceCount' | 'showManagedBy' | 'searchIndexable' | 'hiddenControlIds'>;
 
 type ToggleKey = 'showPercentages' | 'showDeviceCount' | 'showManagedBy' | 'searchIndexable';
 const TOGGLES: ToggleKey[] = ['showPercentages', 'showDeviceCount', 'showManagedBy', 'searchIndexable'];
@@ -62,14 +57,17 @@ export default function TrustControlsSection({ orgId, orgFetch, state, controls,
     (key: string, vars?: Record<string, unknown>) => t(/* i18n-dynamic */ `orgRecord.trust.${key}`, vars ?? {}),
     [t],
   );
-  // Optimistic overlay on top of the server page; cleared per key once the save
-  // settles (success: after the reload lands; failure: immediately = revert).
-  const [local, setLocal] = useState<Partial<TrustPageDraft>>({});
+  const copy = useTrustControlCopy();
+  // Optimistic overlay on top of the EFFECTIVE values (page → template → default: what publish would
+  // freeze); cleared per key once the save settles (success: after the reload lands; failure: revert).
+  // Saves write explicit page values; "Reset to inherited" sends null so the value inherits again (W02g).
+  const [local, setLocal] = useState<Partial<ControlValues>>({});
   const [busy, setBusy] = useState(false);
-  const page: TrustPageDraft = { ...state.page, ...local };
+  const values: ControlValues = { ...state.effective.values, ...local };
   const published = state.page.publishedAt !== null;
+  const sourceOf = (key: keyof ControlValues) => sourceAfterLocalEdit(state.effective.sources[key], key in local);
 
-  const save = async (patch: TrustPageUpdateInput, optimistic: Partial<TrustPageDraft>) => {
+  const save = async (patch: TrustPageUpdateInput, optimistic: Partial<ControlValues>) => {
     if (!canWrite) return;
     setLocal((prev) => ({ ...prev, ...optimistic }));
     setBusy(true);
@@ -95,11 +93,13 @@ export default function TrustControlsSection({ orgId, orgFetch, state, controls,
   };
 
   const toggleControl = (id: TelemetryControlId) => {
-    const hidden = page.hiddenControlIds;
+    const hidden = values.hiddenControlIds;
     const next = hidden.includes(id) ? hidden.filter((h) => h !== id) : [...hidden, id];
     void save({ hiddenControlIds: next }, { hiddenControlIds: next });
   };
-  const toggleFlag = (key: ToggleKey) => void save({ [key]: !page[key] }, { [key]: !page[key] });
+  const toggleFlag = (key: ToggleKey) => void save({ [key]: !values[key] }, { [key]: !values[key] });
+  // No optimistic value: the inherited one is only known once the reload resolves it.
+  const reset = (key: keyof ControlValues) => void save(resetToInherited(key), {});
 
   const grouped = useMemo(() => {
     if (!controls) return [];
@@ -125,12 +125,18 @@ export default function TrustControlsSection({ orgId, orgFetch, state, controls,
       <div className="grid gap-2 sm:grid-cols-2">
         {TOGGLES.map((key) => (
           <div key={key} className="flex items-start justify-between gap-3 rounded-md border p-3">
-            <div id={`trust-toggle-${key}-label`} className="text-sm">
-              <div className="font-medium">{tr(`controls.toggles.${key}.label`)}</div>
-              <div className="text-xs text-muted-foreground">{tr(`controls.toggles.${key}.description`)}</div>
+            <div className="min-w-0 space-y-1">
+              <div id={`trust-toggle-${key}-label`} className="text-sm">
+                <div className="font-medium">{tr(`controls.toggles.${key}.label`)}</div>
+                <div className="text-xs text-muted-foreground">{tr(`controls.toggles.${key}.description`)}</div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <InheritanceBadge source={sourceOf(key)} testId={`trust-inheritance-${key}`} />
+                <ResetToInheritedButton source={sourceOf(key)} disabled={!canWrite || busy} onReset={() => reset(key)} testId={`trust-reset-${key}`} />
+              </div>
             </div>
             <Switch
-              checked={page[key]}
+              checked={values[key]}
               disabled={!canWrite || busy}
               labelledBy={`trust-toggle-${key}-label`}
               testId={`trust-toggle-${key}`}
@@ -140,21 +146,26 @@ export default function TrustControlsSection({ orgId, orgFetch, state, controls,
         ))}
       </div>
 
+      <div className="flex flex-wrap items-center gap-2" data-testid="trust-controls-hidden-source">
+        <InheritanceBadge source={sourceOf('hiddenControlIds')} testId="trust-inheritance-hiddenControlIds" />
+        <ResetToInheritedButton source={sourceOf('hiddenControlIds')} disabled={!canWrite || busy} onReset={() => reset('hiddenControlIds')} testId="trust-reset-hiddenControlIds" />
+      </div>
+
       {controls === null ? (
         <p className="text-sm text-muted-foreground" data-testid="trust-controls-unavailable">{tr('controls.unavailable')}</p>
       ) : (
         grouped.map(({ category, rows }) => (
           <div key={category} data-testid={`trust-controls-group-${category}`}>
-            <h4 className="mb-2 text-sm font-semibold">{CATEGORY_LABEL[category]}</h4>
+            <h4 className="mb-2 text-sm font-semibold">{copy.categoryLabel(category)}</h4>
             <ul className="divide-y rounded-md border">
               {rows.map(({ def, assessment }) => {
-                const shown = !page.hiddenControlIds.includes(def.id);
+                const shown = !values.hiddenControlIds.includes(def.id);
                 const pill = assessment ? controlStatusPill(assessment.status) : null;
                 return (
                   <li key={def.id} className="flex items-start justify-between gap-3 p-3" data-testid={`trust-control-row-${def.id}`}>
                     <div className="min-w-0 space-y-1">
-                      <div id={`trust-control-${def.id}-label`} className="text-sm font-medium">{def.title}</div>
-                      <div className="text-xs text-muted-foreground">{def.description}</div>
+                      <div id={`trust-control-${def.id}-label`} className="text-sm font-medium">{copy.controlTitle(def.id)}</div>
+                      <div className="text-xs text-muted-foreground">{copy.controlDescription(def.id)}</div>
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         {pill && <StatusPill role={pill.role} label={pill.label} testId={`trust-control-pill-${def.id}`} />}
                         {assessment && (

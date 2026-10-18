@@ -140,6 +140,8 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/audit-baselines(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/logs(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/tickets(\/.*)?$/, kind: 'org-or-all' },
+  // Endpoint message send history (#8742): fleet state, narrowed by the selected org.
+  { pattern: /^\/endpoint-messages(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/billing(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/contracts(\/.*)?$/, kind: 'org-or-all' },
   // W03 IA split: the agreements area is the same fleet-state surface the

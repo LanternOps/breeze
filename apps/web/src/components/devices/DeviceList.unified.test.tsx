@@ -16,6 +16,7 @@ vi.mock('@/stores/orgStore', () => ({
     selector({ currentOrgId: null, allOrgs: true }),
 }));
 vi.mock('../remote/ConnectDesktopButton', () => ({ default: () => null }));
+vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('@/lib/formatTime', () => ({ formatLastSeen: () => 'just now' }));
 
 const agent: Device = {
@@ -76,6 +77,11 @@ describe('DeviceList — unified agent + network (#1322)', () => {
     expect(screen.queryByTestId(`device-${agent.id}-class-badge`)).toBeNull();
     // The agent row still renders — it's just the agent-only view.
     expect(screen.getByText('agent-box')).toBeTruthy();
+  });
+
+  it('prints a network row hostname as text (its page is /devices/network/:id)', () => {
+    render(<DeviceList devices={[networkPrinter]} pageSize={50} networkDevicesEnabled />);
+    expect(screen.queryByTestId('device-record-link')).toBeNull();
   });
 
   it('routes a network row to onSelect (Discovery placeholder) via the View button', () => {

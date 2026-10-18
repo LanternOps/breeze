@@ -52,6 +52,14 @@ export const SENTRY_EVENT_CODES = [
    * silent, indefinite gap in offline detection for that one device (#5867).
    */
   'offline_detector_invalid_device_row',
+  /**
+   * The maintenance-reboot sweep decided a device should reboot inside its
+   * maintenance window and the dispatch was refused. Not a throw: the sweep
+   * logs it and moves on, and the device is re-evaluated on a later sweep. The
+   * refusal class (`CommandDispatchRefusal`, services/commandQueue.ts) rides
+   * as the `command_dispatch_refusal` tag (#8022).
+   */
+  'maintenance_reboot_dispatch_refused',
 
   // --- database / pool --------------------------------------------------
   /** Pool-health watchdog published a non-healthy verdict. */
@@ -297,6 +305,22 @@ export const SENTRY_EVENT_CODES = [
   /** Snapshots are unattributable because two orgs share a destination. */
   'backup_snapshot_ambiguous_destination',
 
+  // --- filesystem analysis results (#8024) ------------------------------
+  /** A `filesystem_analysis` result reported `completed` but its stdout was
+   *  empty or not a JSON object, so no snapshot was written and the Disk
+   *  Cleanup tab shows nothing. The agent always marshals an object on success,
+   *  so a run of these is a producer or transport defect. */
+  'filesystem_analysis_result_unparseable',
+  /** A `filesystem_analysis` result arrived for a device id with no `devices`
+   *  row (deleted mid-scan, or invisible under RLS); the result was dropped. */
+  'filesystem_analysis_result_unknown_device',
+  /** A `filesystem_analysis` result whose command id is already the volume's
+   *  applied receipt reached the snapshot write again. The terminal
+   *  compare-and-set runs first in the same transaction and should stop a
+   *  replay, so an occurrence is unexpected: a bypassed guard or a stale
+   *  receipt. */
+  'filesystem_analysis_result_duplicate',
+
   // --- tenant erasure -----------------------------------------------------
   /**
    * An org-erasure attempt was refused because a backup snapshot for that org
@@ -356,6 +380,18 @@ export const SENTRY_EVENT_CODES = [
    * job can prune it — raise the job's batch-size / max-batches knobs.
    */
   'retention_backlog_remaining',
+  /**
+   * #8855: a nightly AI tool output retention run finished with orgs that
+   * failed or were skipped, or transcript deletes that failed, so expired tool
+   * outputs (or SDK transcripts) remain. Per-org errors are in the worker log
+   * (`[AiToolOutputRetention]`).
+   */
+  'ai_tool_output_retention_incomplete',
+  /**
+   * #9050: the nightly SDK transcript sweep found orphaned transcripts it could
+   * not delete on this container's disk (`[AiTranscriptSweeper]` log has ids).
+   */
+  'ai_transcript_sweep_incomplete',
 
   // --- server-side i18n (#3860) -----------------------------------------
   /** `tApi` was asked for a key no bundle defines — the raw key string is

@@ -37,6 +37,7 @@ const setApiKeyContext = (c: any, scopes: string[] = ['ai:read']) => {
     orgId: 'org-1',
     name: 'test',
     keyPrefix: 'brz_test',
+    mcpDomains: null,
     partnerId: 'partner-1',
     scopes,
     rateLimit: 1000,
@@ -243,15 +244,41 @@ describe.each([...SUPPORTED_MCP_PROTOCOL_VERSIONS])('MCP conformance for protoco
     const { rpc } = await session();
     const { body } = await rpc('tools/list');
     const names = body.result.tools.map((t: { name: string }) => t.name);
-    expect(names).toEqual(['manage_services', 'query_devices']);
+    expect(names).toEqual(['manage_services', 'query_devices', 'whoami']);
     expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, 'en')));
     for (const t of body.result.tools) {
       expect(Object.keys(t).sort()).toEqual(['_meta', 'annotations', 'description', 'inputSchema', 'name', 'title']);
       expect(Object.keys(t.annotations).sort()).toEqual(['destructiveHint', 'idempotentHint', 'openWorldHint', 'readOnlyHint']);
-      const readOnly = t.name === 'query_devices';
+      const readOnly = t.name !== 'manage_services';
       expect(t.annotations).toEqual({ readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: !readOnly });
-      expect(t._meta).toEqual({ 'app.breeze/domain': 'devices' });
+      // B-W02: whoami is server-intrinsic and always `core`.
+      expect(t._meta).toEqual({ 'app.breeze/domain': t.name === 'whoami' ? 'core' : 'devices' });
     }
+  });
+
+  it('B-W02: a domain-restricted key keeps the same shapes; a domain outside the grant is -32003 with a structured reason', async () => {
+    mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+      setApiKeyContext(c, ['ai:read', 'ai:write']);
+      c.set('apiKey', { ...c.get('apiKey'), mcpDomains: ['devices'] });
+      return next();
+    });
+    const restricted = await session();
+    const listed = (await restricted.rpc('tools/list')).body.result.tools;
+    expect(listed.map((t: { name: string }) => t.name)).toEqual(['manage_services', 'query_devices', 'whoami']);
+    for (const t of listed) expect(Object.keys(t).sort()).toEqual(['_meta', 'annotations', 'description', 'inputSchema', 'name', 'title']);
+
+    mocks.apiKeyAuthMiddleware.mockImplementation(async (c: any, next: any) => {
+      setApiKeyContext(c, ['ai:read', 'ai:write']);
+      c.set('apiKey', { ...c.get('apiKey'), mcpDomains: ['tickets'] });
+      return next();
+    });
+    const other = await session();
+    expect((await other.rpc('tools/list')).body.result.tools.map((t: { name: string }) => t.name)).toEqual(['whoami']);
+    const who = await other.rpc('tools/call', { name: 'whoami', arguments: {} });
+    expect(who.body.result.structuredContent.domains).toMatchObject({ restricted: true, granted: ['core', 'tickets'] });
+    const { body } = await other.rpc('tools/call', { name: 'query_devices', arguments: {} });
+    expect(body.error).toMatchObject({ code: -32003, data: { reason: 'domain_not_granted', domain: 'devices', hint: expect.any(String) } });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
   });
 
   it('tools/call returns a text block and matching structuredContent', async () => {

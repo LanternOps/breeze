@@ -69,6 +69,7 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
   'abuse_sweep_state',
   'abuse_endpoint_fingerprints',
   'ai_kill_state',
+  'trust_signing_keys',
 ]);
 
 // System-scoped tables: forced RLS with either no permissive policies at all,
@@ -92,6 +93,7 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'intent_outbox', // Generalized transactional outbox: system-scoped workers-only queue. Its XOR parent FK cascades from either action_intents or pam_actuations (both direct-org, forced RLS). Mirrors device_commands.
   'manifest_signing_keys', // System-scoped: per-deployment agent-update signing key. Forced RLS, no policies → only system context.
   'manifest_signing_key_delegations', // System-scoped: signed authorisation to add ONE unseen agent-update signing key (Wave 6 Task 7). No tenant column — per-deployment agent-update infrastructure. Forced RLS, single system-only policy (USING + WITH CHECK) → only system context. No org_id/device_id, so no cascade-list registration applies.
+  'trust_signing_keys', // Per-deployment trust-attestation signing keys (Trust Center W3b, #8771). No tenant column. Forced RLS, single system-only policy. No org_id, so no cascade/merge/export registration.
   'm365_consent_sessions', // OAuth consent state: forced RLS, system-only policies; tenant scopes must never read verifier/nonce material.
   'm365_user_consent_sessions', // Delegated (user-axis) OAuth consent state. System-only for the same reason as its org-axis sibling: the rows hold a live PKCE code_verifier and nonce. Deliberately NOT user-axis readable — the owning user's own session is still not something their session token should select.
   'vulnerability_sources', // Global vulnerability-source sync metadata. Forced RLS, no tenant policies → only system context.
@@ -104,7 +106,6 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'llm_provider_catalog', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'llm_provider_catalog_revisions', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'llm_provider_verifications', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
-  'ai_model_registry_state', // W03 cutover coordinator: one row, no tenant column (#7601). Forced RLS, single system-only policy — its only reader/writer, the system-context cutover sweep, was removed in W08 (#7606); the table is dropped in W08b. No org_id / device_id / partner_id, so no cascade, merge or export registration applies.
   'ai_platform_models', // AI model registry W01 (#7599): system-wide platform model catalog (Anthropic model ids, capabilities, operator prices, option support). No tenant column and NO RLS — same posture as llm_provider_catalog; every request context reads it for pricing and capabilities. Writes are gated to the ai-model-discovery worker and the platform-admin + MFA /admin/ai-models routes. No org_id / device_id, so no cascade, merge or export registration applies. Plan: docs/superpowers/plans/ai-mcp/2026-09-30-ai-model-registry-w01-platform-catalog.md.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'supported_currencies', // Global ISO-4217 allowlist (multi-currency spec §4). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read it), system-only writes. Mirrors winget_package_index.
@@ -153,6 +154,9 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // prices, partner-axis like its sibling above; org_id is set only on the
   // org_ticket_settings rows and is metadata for cascade/merge/export.
   'legacy_labour_pricing_archive',
+  // AI model registry W08b (#7606): snapshot of the dropped legacy AI model
+  // config; partner-axis like legacy_labour_pricing_archive, org_id is metadata.
+  'ai_model_registry_legacy_archive',
   // Huntress credentials and discovered-org mappings are partner-scoped.
   // org_id is retained only as legacy/mapping metadata and may be NULL for
   // quarantined Huntress orgs.
@@ -257,6 +261,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['billing_profile_ai_rates', 'partner_id'],
   ['org_billing_profile_assignments', 'partner_id'],
   ['legacy_labour_pricing_archive', 'partner_id'],
+  ['ai_model_registry_legacy_archive', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
   ['ticket_mailbox_connections', 'partner_id'],
   ['ticket_mailbox_tenant_ownerships', 'partner_id'],
@@ -350,9 +355,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // partner. Functional cross-partner forge proof:
   // stripeConnectCredentialsRls.integration.test.ts.
   ['stripe_connect_credentials', 'partner_id'],
-  ['partner_llm_configs', 'partner_id'],
-  // AI model registry W02 (#7600): partner_ai_connections — partner axis like
-  // partner_llm_configs (rows copied with the same id); no org_id, so no
+  // AI model registry W02 (#7600): partner_ai_connections — partner axis (rows
+  // copied with the same id from the legacy table W08b dropped); no org_id, so no
   // org-cascade / export-policy entry. No org-token read branch by design.
   ['partner_ai_connections', 'partner_id'],
   // partner_ai_models (#7600 W02): partner axis + a SEPARATE FOR SELECT
@@ -478,6 +482,16 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // includes DELETE for that sweep.
   // Functional cross-partner forge proof: partnerSendingDailyStats.integration.test.ts.
   ['partner_sending_daily_stats', 'partner_id'],
+  // trust_page_templates (Trust Center W2 W02g, #8770, spec §19 item 33): the
+  // partner's own default for its customers' trust pages. Shape 3, flat
+  // breeze_has_partner_access(partner_id), partner_id NOT NULL UNIQUE — a
+  // product-owner decision (spec §18.8), not an org-owned policy, so
+  // Partner-Wide First's org-XOR-partner shape does not apply and it is
+  // deliberately NOT in DUAL_AXIS_TENANT_TABLES or
+  // PARTNER_WIDE_SELECT_BRANCH_EXEMPT. No org_id, so no org cascade / export /
+  // merge registration; cascadeDeletePartner's partner_id sweep erases it.
+  // Functional forge proof: trustPageTemplatesPartnerRls.integration.test.ts.
+  ['trust_page_templates', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -540,6 +554,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // day one in 2026-11-14-100200 with its partner-wide SELECT branch in the
   // same file. Functional forge proof: aiModelAssignmentsPartnerRls.integration.test.ts.
   'ai_model_assignments',
+  // ai_data_policies (AI device file read policy, spec 2026-10-15): partner
+  // default (org_id NULL) or org override. Dual-axis from day one in
+  // 2026-12-29-230000-ai-data-policies, SELECT branch in the same file.
+  // Functional forge proof: aiDataPoliciesPartnerRls.integration.test.ts.
+  'ai_data_policies',
   // deliverable_template_sets / deliverable_template_items (spec #5573 §4.6,
   // D9): a template set is org-scoped (org_id set) OR partner-wide (partner_id
   // set, org_id NULL — one service tier applied across every org the MSP
@@ -896,6 +915,8 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'ai_script_policies',
   // ai_model_assignments_one_owner_chk, 2026-11-14-100200 (#7600 W02).
   'ai_model_assignments',
+  // ai_data_policies_one_owner_chk, 2026-12-29-160000.
+  'ai_data_policies',
   // deliverable_template_sets_one_owner_chk / deliverable_template_items_one_owner_chk
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.
   'deliverable_template_sets',
@@ -1199,6 +1220,14 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // Request paths are limited to the exact user owner; the explicit system
   // branch lets the bounded retry worker drain work for every user.
   'oauth_revocation_retries',
+  // Connection health W3 (#8847, spec §2.2/§2.3): pure Shape 6, user_id only, no
+  // org/partner axis. user_email_optouts is the user's own email opt-out (written
+  // by the user in My Account, or by the system-scope one-click unsubscribe);
+  // connection_health_digest_deliveries is the user's own digest delivery ledger,
+  // written only by the system-scope digest job. Behavioural proof:
+  // connectionHealthDigest.integration.test.ts.
+  'user_email_optouts',
+  'connection_health_digest_deliveries',
 ]);
 
 // Tables WITHOUT their own org_id whose permissive policies may admit rows by
@@ -1217,6 +1246,7 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
 const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
   'approval_requests', // step-up approval the requesting user creates and answers; their own decision record.
   'authenticator_devices', // the user's own approver device keys.
+  'connection_health_digest_deliveries', // the user's own digest delivery receipts: date, status and bare incident ids (no FK, no org content).
   'email_verification_tokens', // verification token for the user's own address; also carries its own partner_id.
   'mobile_devices', // the user's own registered phone/tablet.
   'oauth_interactions', // the user's own in-flight OAuth login interaction.
@@ -1225,6 +1255,7 @@ const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
   'refresh_token_families', // the user's own refresh-token chain.
   'sessions', // the user's own login session.
   'ticket_push_preferences', // the user's own push preference row (user_id PK, no ticket reference).
+  'user_email_optouts', // the user's own email opt-out choice (topic + source).
   'user_passkeys', // the user's own WebAuthn credentials.
   'user_sso_identities', // the user's own link to an external identity.
 ]);

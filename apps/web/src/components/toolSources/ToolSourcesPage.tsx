@@ -90,7 +90,7 @@ export default function ToolSourcesPage() {
                         <ScopeBadge orgId={source.orgId} partnerId={source.partnerId} isSystem={false} />
                       </div>
                     </td>
-                    <td className="p-2 uppercase">{source.kind}</td>
+                    <td className="p-2">{source.kind === 'openapi' ? t('form.kindOpenapi') : t('form.kindMcp')}</td>
                     <td className="p-2"><StatusChip status={source.status} lastError={source.lastError} /></td>
                     <td className="p-2">
                       {t('list.toolCount', { enabled: source.enabledToolCount, total: source.toolCount })}

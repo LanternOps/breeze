@@ -112,6 +112,16 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
 
   usePageItemName(source?.name);
 
+  // Untrusted text from a vendor-controlled document: rendered only as React
+  // text nodes. Tolerate an absent/short summary (older rows, older API).
+  const summary = source?.lastDiscoverySummary ?? null;
+  const skipped = summary?.skipped ?? [];
+  const skippedTotal = summary?.skippedTotal ?? skipped.length;
+  const warnings = summary?.warnings ?? [];
+  // A failed run leaves the previous summary in place, so always say which run it describes.
+  const summaryAtText = summary?.at ? formatDiscoveredAt(summary.at) : null;
+  const summaryAt = summaryAtText ? t('detail.summaryAt', { at: summaryAtText }) : null;
+
   if (loadError) {
     return <p data-testid="tool-source-detail-error" className="p-4 text-sm text-destructive">{loadError}</p>;
   }
@@ -136,6 +146,11 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
           <p className="text-sm text-muted-foreground">
             {t('detail.endpoint')}: <span className="font-mono">{source.endpointUrl}</span>
           </p>
+          {source.kind === 'openapi' && source.specUrl && (
+            <p className="text-sm text-muted-foreground" data-testid="tool-source-spec-url">
+              {t('detail.specUrl')}: <span className="break-all font-mono">{source.specUrl}</span>
+            </p>
+          )}
           <p className="text-sm text-muted-foreground">
             {t('detail.lastDiscovered')}: {formatDiscoveredAt(source.lastDiscoveredAt) ?? t('list.never')}
           </p>
@@ -168,15 +183,64 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
         </div>
       </header>
 
+      {warnings.length > 0 && (
+        <section
+          data-testid="tool-source-warnings"
+          className="space-y-2 rounded-md bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+        >
+          {warnings.map((warning) => (
+            <div key={warning.code}>
+              <p>{warning.code === 'server_origin_mismatch' ? t('detail.serverOriginWarning') : warning.code}</p>
+              <ul className="mt-1 list-disc pl-5 font-mono text-xs">
+                {warning.origins.map((origin) => (
+                  <li key={origin} className="break-all">{origin}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          {summaryAt && <p data-testid="tool-source-warnings-at" className="text-xs">{summaryAt}</p>}
+        </section>
+      )}
+
       <section className="space-y-2">
         <h2 className="text-sm font-medium">{t('tools.heading')}</h2>
         <DiscoveredToolsTable
           sourceId={sourceId}
+          kind={source.kind}
           tools={tools}
           onChanged={() => void load()}
           onTest={(tool) => setTesting(tool)}
         />
       </section>
+
+      {skipped.length > 0 && (
+        <section data-testid="tool-source-skipped" className="space-y-2">
+          <h2 className="text-sm font-medium">{t('detail.skippedHeading')}</h2>
+          <p className="text-xs text-muted-foreground">{t('detail.skippedBody')}</p>
+          {summaryAt && <p data-testid="tool-source-skipped-at" className="text-xs text-muted-foreground">{summaryAt}</p>}
+          <ul className="divide-y rounded-md border text-sm">
+            {skipped.map((skip, index) => (
+              <li key={`${skip.name}-${index}`} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 p-2">
+                <span className="break-all font-mono text-xs">{skip.name}</span>
+                {(skip.method || skip.path) && (
+                  <span className="break-all font-mono text-xs text-muted-foreground">
+                    {[skip.method, skip.path].filter(Boolean).join(' ')}
+                  </span>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  {/* i18n-dynamic: one detail.skipReasons.* key per ToolSourceSkipReason. */}
+                  {t(/* i18n-dynamic */ `detail.skipReasons.${skip.reason}`, { defaultValue: skip.reason })}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {skippedTotal > skipped.length && (
+            <p className="text-xs text-muted-foreground">
+              {t('detail.skippedShowing', { shown: skipped.length, total: skippedTotal })}
+            </p>
+          )}
+        </section>
+      )}
 
       {editing && (
         <Dialog open onClose={() => setEditing(false)} title={t('form.edit')}>

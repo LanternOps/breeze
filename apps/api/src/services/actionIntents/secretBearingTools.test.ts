@@ -18,6 +18,12 @@ describe('isSecretBearingTool', () => {
     expect(isSecretBearingTool('mcp__breeze__google_reset_password')).toBe(true);
   });
 
+  it('matches m365_create_user (POST /users carries a temporary password)', () => {
+    expect(isSecretBearingTool('m365_create_user')).toBe(true);
+    expect(isSecretBearingTool('mcp__breeze__m365_create_user')).toBe(true);
+    expect(isSecretBearingTool('m365_revoke_sessions')).toBe(false);
+  });
+
   it('does not match non-secret tools', () => {
     expect(isSecretBearingTool('m365_disable_user')).toBe(false);
     expect(isSecretBearingTool('google_suspend_user')).toBe(false);

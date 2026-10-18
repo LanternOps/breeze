@@ -169,6 +169,10 @@ vi.mock('../../jobs/edrProviderSync', () => ({
   enqueueEdrSync: (id: string, stream: string) => enqueueMock(id, stream),
 }));
 
+const lastHint = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => new Map<string, string>()));
+vi.mock('../../services/edrProviders/hints', () => ({ readLastEdrHintAt: lastHint }));
+vi.mock('../../services/redis', () => ({ getRedis: () => ({ fake: 'redis' }) }));
+
 import { writeRouteAudit } from '../../services/auditEvents';
 import { runOutsideDbContext } from '../../db';
 import { edrConnectionRoutes } from './connections';
@@ -242,6 +246,34 @@ describe('EDR connection routes', () => {
     it('a selected-org partner user can read', async () => {
       authState.partnerOrgAccess = 'selected';
       expect((await app.request('/edr/connections')).status).toBe(200);
+    });
+
+    it('W03 PR-B: rows carry push state, pushSupported from the adapter, and lastHintAt (Redis, else the pending marker)', async () => {
+      const pending = new Date('2026-10-16T09:00:00.000Z');
+      dbState.connections = [
+        connectionRow({ pushEnabled: true, pushRegisteredAt: pending, pendingHintAt: null }),
+        connectionRow({ id: 'other', provider: 'bitdefender', pushEnabled: true, pendingHintAt: pending }),
+        connectionRow({ id: 'gone', provider: 'retired', pushEnabled: false, pendingHintAt: null }),
+      ];
+      lastHint.mockResolvedValue(new Map([[CONNECTION_ID, '2026-10-16T10:00:00.000Z']]));
+      Object.assign(adapter, { registerPush: vi.fn(), verifyWebhook: vi.fn() });
+      try {
+        const body = await (await app.request('/edr/connections')).json();
+        expect(body.data[0]).toMatchObject({ pushSupported: true, pushEnabled: true, lastHintAt: '2026-10-16T10:00:00.000Z' });
+        expect(body.data[1]).toMatchObject({ pushSupported: true, lastHintAt: pending.toISOString() });
+        expect(body.data[2]).toMatchObject({ pushSupported: false, lastHintAt: null });
+        expect(lastHint).toHaveBeenCalledWith([CONNECTION_ID, 'other', 'gone'], { fake: 'redis' });
+        expect(JSON.stringify(body)).not.toMatch(/webhookSecretEncrypted/);
+      } finally {
+        delete (adapter as Record<string, unknown>).registerPush;
+        delete (adapter as Record<string, unknown>).verifyWebhook;
+      }
+    });
+
+    it('W03 PR-B: an adapter without push -> pushSupported false', async () => {
+      dbState.connections = [connectionRow()];
+      const body = await (await app.request('/edr/connections')).json();
+      expect(body.data[0]).toMatchObject({ pushSupported: false });
     });
   });
 
@@ -440,6 +472,18 @@ describe('EDR connection routes', () => {
       expect(testConnection).not.toHaveBeenCalled();
       expect(dbState.updated[0]).toMatchObject({ name: 'Renamed' });
     });
+
+    it.each(['detectionIntervalMinutes', 'inventoryIntervalMinutes'])(
+      '%s: 3 and 4 are 400 (DB CHECK minimum is 5), 5 is 200 (#8666)',
+      async (field) => {
+        dbState.connections = [connectionRow()];
+        for (const bad of [1, 3, 4]) {
+          const res = await patch({ [field]: bad });
+          expect(res.status).toBe(400);
+        }
+        expect((await patch({ [field]: 5 })).status).toBe(200);
+      },
+    );
 
     it('404 for an unknown connection', async () => {
       expect((await patch({ name: 'x' })).status).toBe(404);

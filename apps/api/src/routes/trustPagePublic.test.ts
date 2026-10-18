@@ -64,6 +64,44 @@ describe('card', () => {
     expect(data).toMatchObject({ orgName: 'Acme', managedByName: 'NW', stale: false, summaryLine: expect.stringMatching(/9 met/) });
     expect(res.headers.get('X-Robots-Tag')).toBe('noindex');
   });
+  it('card carries the locale and the summary numbers; a v1 snapshot is English', async () => {
+    const res = await app.request('/trust/card/nw/acme');
+    const { data } = await res.json();
+    expect(data).toMatchObject({ locale: 'en', controlsShown: 15, catalogTotal: 15, controlsMet: 9 });
+  });
+  it('card of a de-DE snapshot reports de-DE and keeps the English title/summaryLine for compatibility', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, payload: { ...PAYLOAD, schemaVersion: 2, locale: 'de-DE', declaredControls: [], frameworks: [], subprocessors: [], faq: [], history: [], access: null } });
+    const res = await app.request('/trust/card/nw/acme');
+    const { data } = await res.json();
+    expect(data).toMatchObject({ locale: 'de-DE', title: 'Acme · Security posture', summaryLine: expect.stringMatching(/^Showing 15 of 15/), controlsMet: 9 });
+  });
+  it('W03a: card includes frameAncestors from the resolved page', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: ['https://example.com'] });
+    const { data } = await (await app.request('/trust/card/nw/acme')).json();
+    expect(data.frameAncestors).toEqual(['https://example.com']);
+  });
+  it('W03a: card reflects an allowlist edit on the next request (live, not from the payload)', async () => {
+    resolve.resolvePublishedTrustPage
+      .mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: ['https://a.example.com', 'https://b.example.com'] })
+      .mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: ['https://b.example.com'] });
+    expect((await (await app.request('/trust/card/nw/acme')).json()).data.frameAncestors).toEqual(['https://a.example.com', 'https://b.example.com']);
+    expect((await (await app.request('/trust/card/nw/acme')).json()).data.frameAncestors).toEqual(['https://b.example.com']);
+  });
+  it('W03a: card frameAncestors is [] when the column is empty', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: [] });
+    expect((await (await app.request('/trust/card/nw/acme')).json()).data.frameAncestors).toEqual([]);
+  });
+  it('W03a: card is no-store (a cached copy of a live framing policy is wrong)', async () => {
+    resolve.resolvePublishedTrustPage.mockResolvedValueOnce({ ...RESOLVED, embedAllowedOrigins: ['https://example.com'] });
+    const res = await app.request('/trust/card/nw/acme');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+  it("W03a: reserved partner slug 'embed' → generic 404 with zero Redis and zero SQL", async () => {
+    for (const path of ['/trust/card/embed', '/trust/card/embed/acme', '/trust/public/embed/acme']) await expectGeneric404(await app.request(path));
+    expect(serving.isServing).not.toHaveBeenCalled();
+    expect(resolve.resolvePublishedTrustPage).not.toHaveBeenCalled();
+  });
   it('partner-home card resolves without an org slug', async () => {
     const res = await app.request('/trust/card/nw');
     expect(res.status).toBe(200);
@@ -150,6 +188,27 @@ describe('badge, documents, preview', () => {
     expect(hit.headers.get('Content-Disposition')).toMatch(/^attachment/);
     expect(hit.headers.get('Cache-Control')).toBe('no-store');
     expect(await hit.text()).toBe('pdf');
+  });
+  it('W2 (Review Focus 2): a document whose snapshot entry is gated → generic 404 even when its live link is public, with zero SQL', async () => {
+    const gated = { ...PAYLOAD, schemaVersion: 2, locale: 'en', declaredControls: [], frameworks: [], subprocessors: [], faq: [], history: [], access: { ndaText: null }, documents: [{ id: DOC_ID, title: 'Doc', visibility: 'gated' }] };
+    resolve.resolvePublishedTrustPage.mockResolvedValue({ ...RESOLVED, payload: gated });
+    dbSelect.mockReturnValue(docRow()); // the live link IS public — the frozen entry alone must refuse
+    await expectGeneric404(await app.request(`/trust/public/nw/acme/documents/${DOC_ID}`));
+    expect(dbSelect).not.toHaveBeenCalled();
+  });
+  it('W2: a v1 cached payload is served normalized to schemaVersion 2 (English, no W2 block, public documents)', async () => {
+    serving.readCachedSnapshotPayload.mockResolvedValueOnce(PAYLOAD as never);
+    const res = await app.request('/trust/public/nw/acme');
+    const { payload } = (await res.json()).data;
+    expect(payload).toMatchObject({ schemaVersion: 2, locale: 'en', declaredControls: [], faq: [], access: null });
+    expect(payload.documents[0].visibility).toBe('public');
+  });
+  it('W2 (amendment 36): reserved partner slug "access" → generic 404 with zero Redis and zero SQL', async () => {
+    await expectGeneric404(await app.request('/trust/public/access/acme'));
+    await expectGeneric404(await app.request('/trust/public/access'));
+    await expectGeneric404(await app.request('/trust/card/access/acme'));
+    await expectGeneric404(await app.request(`/trust/public/access/documents/${DOC_ID}`));
+    expect(serving.isServing).not.toHaveBeenCalled(); expect(resolve.resolvePublishedTrustPage).not.toHaveBeenCalled(); expect(dbSelect).not.toHaveBeenCalled();
   });
   it('document unlinked from the snapshot never queries SQL', async () => {
     await expectGeneric404(await app.request('/trust/public/nw/acme/documents/00000000-0000-4000-8000-000000000000'));

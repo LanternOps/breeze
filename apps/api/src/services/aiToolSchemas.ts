@@ -27,12 +27,17 @@ import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
 import { topologyToolSchemas } from './aiToolSchemasTopology';
 import { m365ToolSchemas } from './aiToolSchemasM365';
+import { messagingToolSchemas } from './aiToolSchemasMessaging';
 import {
   peripheralDeviceClassEnum,
   peripheralPolicyActionEnum,
   peripheralPolicyTargetTypeEnum,
   peripheralEventTypeEnum
 } from '../db/schema/peripheralControl';
+import {
+  RESTORE_POINT_ATTEMPT_STATUSES,
+  RESTORE_POINT_ATTEMPT_TRIGGERS,
+} from '../db/schema/deviceRestorePointAttempts';
 import { CONFIG_FEATURE_TYPES } from './configFeatureTypes';
 import { aiPathRefusal } from './aiPathRestriction';
 import { CONTACT_ROLES } from './contacts/types';
@@ -215,6 +220,13 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
 
   get_device_time_status: z.object({ deviceId: uuid }),
+  // #8584 — System Restore ledger read (aiToolsRestorePoints.ts).
+  list_device_restore_point_attempts: z.object({
+    deviceId: uuid,
+    trigger: z.enum(RESTORE_POINT_ATTEMPT_TRIGGERS).optional(),
+    status: z.enum(RESTORE_POINT_ATTEMPT_STATUSES).optional(),
+    ...pageZodShape(20, 50),
+  }),
   query_device_workloads: z.object({
     deviceId: uuid,
     runtime: z.enum(WORKLOAD_RUNTIMES).optional(),
@@ -298,6 +310,7 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   }),
   // Topology AI tools (M3-D12 + M4 #6000) — strict, extracted to aiToolSchemasTopology.ts
   ...topologyToolSchemas,
+  ...messagingToolSchemas,
 
   get_ip_history: z.object({
     device_id: uuid.optional(),
@@ -902,6 +915,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     action: z.enum(['isolate', 'unisolate', 'scan']),
     connectionId: uuid.optional(),
     reason: z.string().max(500).optional(),
+  }),
+
+  // #8167 W03 PR-B. Tier-2 "sync now".
+  sync_edr_data: z.object({
+    connectionId: uuid.optional(),
+    orgId: uuid.optional(),
   }),
 
   s1_isolate_device: z.object({
@@ -1631,6 +1650,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     handle: uuid,
     offset: z.number().int().min(0).optional(),
     maxChars: z.number().int().min(1).max(6000).optional(),
+  }),
+
+  // Trust Center W2 (Ruling 15): read-only page status.
+  get_trust_page_status: z.object({
+    orgId: uuid,
   }),
 
   export_dataset: z.object({

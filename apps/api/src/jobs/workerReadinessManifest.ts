@@ -59,6 +59,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('fleetFindingsWorker'),
   consumers('fleetRemediationDispatchWorker'),
   consumers('mlOutputRetention'),
+  consumers('aiToolOutputRetention'),
+  consumers('aiTranscriptSweeper'),
   consumers('offlineDetector'),
   consumers('notificationDispatcher'),
   // #5306 — daily MFA enrolment grace notices. Plain Redis-required consumer:
@@ -91,6 +93,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // One Worker, no flag gate; attaches under 'helperScreenshotRetention',
   // which differs from its registry key.
   consumers('helperScreenshotRetentionWorker', ['helperScreenshotRetention']),
+  consumers('endpointMessageRetention'),
   consumers('ipHistoryRetention'),
   consumers('reliabilityRetention'),
   consumers('processSampleRetention'),
@@ -101,6 +104,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Disk Cleanup v2 W03. Plain Redis-required consumer: it constructs and
   // attaches unconditionally wherever it is placed, with no feature flag.
   consumers('filesystemCleanupRunRetention'),
+  // #8581. Plain Redis-required consumer, no feature flag.
+  consumers('restorePointAttemptRetention'),
   consumers('oauthCleanup'),
   consumers('stripeAccountCacheRefresh'),
   consumers('exchangeRateSync'),
@@ -276,6 +281,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // attached unconditionally under CONNECTION_HEALTH_QUEUE, which differs from
   // the registry key.
   consumers('connectionHealthReconcileWorker', ['connection-health-reconcile']),
+  consumers('connectionHealthDigestWorker', ['connection-health-digest']),
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),

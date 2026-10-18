@@ -6,6 +6,7 @@ import { readAutopay, mutateAutopay, methodLabel, skippedAutopayReason, type Aut
 import { autopayButton } from './autopayUi';
 import { PageHeader } from '../shared/PageHeader';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
+import { EntityLink } from '@/components/shared/EntityLink';
 type Variant = 'row' | 'card';
 export default function AutopayListPage() {
   const { t } = useTranslation('billing');
@@ -33,8 +34,8 @@ export default function AutopayListPage() {
     data-testid={id(variant, `autopay-select-${row.orgId}`)} className="h-4 w-4"
     checked={selected.includes(row.orgId)} disabled={busy || row.enrollment?.status === 'active'}
     onChange={e => setSelected(current => e.target.checked ? [...current, row.orgId] : current.filter(orgId => orgId !== row.orgId))} />;
-  const renderClient = (row: AutopayRow, variant: Variant) => <a data-testid={id(variant, `autopay-client-${row.orgId}`)}
-    href={`/organizations/${row.orgId}#billing`} className="font-medium text-primary hover:underline">{row.orgName}</a>;
+  const renderClient = (row: AutopayRow, variant: Variant) => <span data-testid={id(variant, `autopay-client-${row.orgId}`)}>
+    <EntityLink kind="org" id={row.orgId} name={row.orgName} hash="billing" className="font-medium text-primary" /></span>;
   const renderStatus = (row: AutopayRow, variant: Variant) => <>
     <span>{t(/* i18n-dynamic */ `autopay.status.${row.status}`)}</span>
     {deliveryFailed(row) && <p role="alert" data-testid={id(variant, `autopay-delivery-${row.orgId}`)} className="mt-1 text-amber-800 dark:text-amber-200">{t('autopay.requestDeliveryFailed')}</p>}

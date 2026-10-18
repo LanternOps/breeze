@@ -246,7 +246,23 @@ function ensureSpace(doc: jsPDF, chrome: PdfChrome, y: number, needed: number): 
 
 export type BackupStatusPdfOpts = {
   generatedAt: string;
+  /** IANA zone for the snapshot timestamp in the footer note. Defaults to UTC. */
+  timezone?: string;
 };
+
+/** Format an ISO timestamp like the other reports' `generatedAt` (medium date, short time). */
+function formatSnapshotTime(iso: string, timezone: string | undefined): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone || 'UTC', dateStyle: 'medium', timeStyle: 'short',
+    }).format(d);
+  } catch {
+    // Unknown zone string: fall back to UTC rather than failing the render.
+    return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short' }).format(d);
+  }
+}
 
 export function renderBackupStatusReport(
   doc: jsPDF,
@@ -331,7 +347,7 @@ export function renderBackupStatusReport(
   const truncatedNote = data.truncated
     ? ' Row limit reached: the device list is cut short and does not cover every device.'
     : '';
-  const note = `Figures as of ${data.asOf}. "28 days" reads oldest (left) to most recent (right); grey is a day with no observation.${truncatedNote}`;
+  const note = `Figures as of ${formatSnapshotTime(data.asOf, opts.timezone)}. "28 days" reads oldest (left) to most recent (right); grey is a day with no observation.${truncatedNote}`;
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   ink(doc, C.faint);
