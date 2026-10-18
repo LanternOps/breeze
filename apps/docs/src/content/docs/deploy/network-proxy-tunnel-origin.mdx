@@ -55,7 +55,7 @@ TUNNEL_HOST_SUFFIX=us.tunnel.example.net
 |---|---|---|
 | `TUNNEL_ORIGIN_TEMPLATE` | API | `https://{id}.<suffix>`, with `{id}` as the whole leftmost label. Unset means path mode. |
 | `TUNNEL_FRAME_ANCESTOR` | API | The exact `https://` origin allowed to frame tunnel content. Defaults to the origin of `PUBLIC_APP_URL`, else `DASHBOARD_URL`. Set it explicitly if neither is set. |
-| `TUNNEL_SITE_ADDRESS` | Caddy | Site address for the tunnel domain. List both wildcards: `*.<suffix>` matches the tunnel host, and `*.*.<suffix>` sends deeper names to the tunnel block (which refuses them) instead of the app. Unset, it matches nothing. |
+| `TUNNEL_SITE_ADDRESS` | Caddy | Site address for the tunnel domain. List both wildcards: `*.<suffix>` matches the tunnel host, and `*.*.<suffix>` sends two-label names to the tunnel block (where the API refuses them) instead of the app. Unset, it matches nothing. |
 | `TUNNEL_HOST_SUFFIX` | Caddy | The bare suffix (`<region>.tunnel.example.net`). Hosts at or under it that miss the wildcards get `421` from the app block instead of being served as the app. |
 | `TUNNEL_TLS_DIRECTIVE` | Caddy | Empty by default. A full `tls <cert> <key>` line when Caddy terminates TLS for the tunnel domain with your own certificate. |
 
