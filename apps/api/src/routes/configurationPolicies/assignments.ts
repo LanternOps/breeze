@@ -1,3 +1,4 @@
+import { assignmentWriteAllowed, hasHelperBranding } from '../../services/helperBranding';
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import type { AuthContext } from '../../middleware/auth';
@@ -125,6 +126,15 @@ assignmentRoutes.post(
     const siteAuth = await authorizeAssignmentTarget(auth, data.level, targetId);
     if (!siteAuth.valid) {
       return c.json({ error: siteAuth.error }, 403);
+    }
+
+    // Helper branding is partner/organization-only: a site, device-group or device
+    // assignment cannot be added to a policy that already carries branding.
+    const policyHasBranding = !!policy.featureLinks?.some(
+      (l: { featureType: string; inlineSettings?: unknown }) => l.featureType === 'helper' && hasHelperBranding(l.inlineSettings),
+    );
+    if (!assignmentWriteAllowed(data.level, policyHasBranding)) {
+      return c.json({ error: 'Helper branding is partner- and organization-scoped; this policy cannot take a site, device group or device assignment' }, 409);
     }
 
     // #5511 W02 (contract D4): an assignment is how a policy that already

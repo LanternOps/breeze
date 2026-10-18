@@ -1,3 +1,5 @@
+import { brandingWriteError } from '../../services/helperBranding';
+import { listAssignments } from '../../services/configurationPolicy';
 import { Hono, type Context, type Next } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { zodValidationErrorBody } from '../../lib/zodIssues';
@@ -210,6 +212,11 @@ featureLinkRoutes.post(
         { error: `The "${data.featureType}" feature is not supported on partner-wide policies; it must be configured on an organization-scoped policy.` },
         400
       );
+    }
+
+    if (data.featureType === 'helper' && data.inlineSettings && 'branding' in data.inlineSettings) {
+      const brandingErr = brandingWriteError(data.inlineSettings, (await listAssignments(id)).map((a) => a.level));
+      if (brandingErr) return c.json({ error: brandingErr.error, details: brandingErr.details }, brandingErr.status);
     }
 
     // #5511 W02 (contract D4): enabling device-side HP warranty collection
@@ -572,6 +579,12 @@ featureLinkRoutes.patch(
 
     if (isRetiredConfigFeatureType(existingLink.featureType)) {
       return c.json(RETIRED_FEATURE_TYPE_GONE(existingLink.featureType), 410);
+    }
+
+    // Helper branding (Phase 2): replacement blob, validated and partner/org-only.
+    if (existingLink.featureType === 'helper' && data.inlineSettings !== undefined) {
+      const brandingErr = brandingWriteError(data.inlineSettings, (await listAssignments(id)).map((a) => a.level));
+      if (brandingErr) return c.json({ error: brandingErr.error, details: brandingErr.details }, brandingErr.status);
     }
 
     // Same gate as the POST route (#5511 W02, D4). `data.inlineSettings` is the

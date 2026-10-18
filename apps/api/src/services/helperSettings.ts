@@ -21,6 +21,13 @@ import {
 } from '../db/schema';
 import { devicePolicyCacheOrg, readDevicePolicyCache, writeDevicePolicyCache } from './devicePolicyCache';
 import { policyOwnershipCondition } from './configPolicyOwnership';
+import {
+  brandingScopeId,
+  buildBrandingDecision,
+  resolvePartnerOrgBranding,
+  type BrandingCandidate,
+  type BrandingDecision,
+} from './helperBranding';
 
 const LEVEL_PRIORITY: Record<string, number> = {
   device: 5,
@@ -70,6 +77,8 @@ export interface HelperSettings {
    * Snapshotted on each conversation at open.
    */
   endpointMessaging?: { enabled: boolean; allowUserReply: boolean };
+  /** Partner/organization runtime branding decision (Phase 2). Absent = no decision; the Agent keeps its last-known snapshot. */
+  branding?: BrandingDecision;
 }
 
 const HELPER_DEFAULTS: HelperSettings = {
@@ -124,6 +133,23 @@ export function helperSettingsFromRows(rows: readonly HelperRankRow[]): HelperSe
   };
 }
 
+/**
+ * Attaches the partner/organization branding decision. Without an org id there
+ * is no scope, so no decision is attached and the key stays absent.
+ */
+function attachHelperBranding(
+  settings: HelperSettings | null,
+  candidates: BrandingCandidate[],
+  partnerId: string | null,
+  orgId: string | null,
+): HelperSettings | null {
+  if (!settings || !orgId) return settings;
+  return {
+    ...settings,
+    branding: buildBrandingDecision(resolvePartnerOrgBranding(candidates), brandingScopeId(partnerId ?? '', orgId)),
+  };
+}
+
 // Resolves the helper feature settings for a device from configuration
 // policies. Returns null when NO helper feature link matched — callers
 // distinguish "no policy" (legacy org fallback applies) from an explicit
@@ -136,11 +162,17 @@ export async function resolveDeviceHelperSettings(deviceId: string, opts?: Devic
   // #8142: the heartbeat passes the beat's one-statement policy set.
   const set = policySetFor(deviceId, opts);
   if (set) {
-    return helperSettingsFromRows(candidatesWithLink(set, 'helper', HELPER_APPLICABILITY).map(({ candidate, link }) => ({
-      level: candidate.level,
-      assignmentPriority: candidate.priority,
-      inlineSettings: link.inlineSettings,
-    })));
+    const linked = candidatesWithLink(set, 'helper', HELPER_APPLICABILITY);
+    return attachHelperBranding(
+      helperSettingsFromRows(linked.map(({ candidate, link }) => ({
+        level: candidate.level,
+        assignmentPriority: candidate.priority,
+        inlineSettings: link.inlineSettings,
+      }))),
+      linked.map(({ candidate, link }) => ({ level: candidate.level, priority: candidate.priority, inlineSettings: link.inlineSettings })),
+      passed?.org?.partnerId ?? null,
+      passed?.orgId ?? null,
+    );
   }
 
   // 1. Load device
@@ -208,7 +240,12 @@ export async function resolveDeviceHelperSettings(deviceId: string, opts?: Devic
     ))
     .orderBy(asc(configPolicyAssignments.createdAt), asc(configPolicyAssignments.id));
 
-  return helperSettingsFromRows(rows);
+  return attachHelperBranding(
+    helperSettingsFromRows(rows),
+    rows.map((r) => ({ level: r.level, priority: r.assignmentPriority, inlineSettings: r.inlineSettings })),
+    org?.partnerId ?? null,
+    device.orgId,
+  );
 }
 
 const HELPER_CACHE_TTL_SECONDS = 120;
