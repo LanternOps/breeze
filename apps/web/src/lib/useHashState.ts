@@ -45,7 +45,17 @@ const hashAppliers = new Set<() => void>();
 let hashListenerAttached = false;
 
 function onHashChange(): void {
-  for (const apply of Array.from(hashAppliers)) apply();
+  for (const apply of Array.from(hashAppliers)) {
+    // One hook's throwing parser must not starve the rest (they used to have
+    // independent listeners); surface the error without aborting the loop.
+    try {
+      apply();
+    } catch (err) {
+      queueMicrotask(() => {
+        throw err;
+      });
+    }
+  }
 }
 
 function subscribeHashChange(apply: () => void): () => void {

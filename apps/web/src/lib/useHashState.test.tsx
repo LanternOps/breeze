@@ -1,6 +1,6 @@
-import { act, render } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import { flushSync } from 'react-dom';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useHashState } from './useHashState';
 
@@ -40,7 +40,10 @@ describe('useHashState with several hooks on one page (#8978)', () => {
     window.location.hash = '';
     restore = emulateBrowserPerListenerCommit();
   });
-  afterEach(() => restore());
+  afterEach(() => {
+    cleanup();
+    restore();
+  });
 
   it('applies an external hash change to every hook in one commit', () => {
     const renders: string[] = [];
@@ -65,16 +68,46 @@ describe('useHashState with several hooks on one page (#8978)', () => {
     expect(renders[renders.length - 1]).toBe('a1|b1|c1');
   });
 
-  it('stops listening after unmount', () => {
+  it('detaches the shared listener after the last unmount and reattaches on remount', () => {
+    const adds = vi.spyOn(window, 'addEventListener');
+    const removes = vi.spyOn(window, 'removeEventListener');
+    const count = (spy: typeof adds) => spy.mock.calls.filter((c) => c[0] === 'hashchange').length;
     function Page() {
       useHashState<string>('a0', parseA);
+      useHashState<string>('b0', parseB);
       return null;
     }
-    const { unmount } = render(<Page />);
-    unmount();
-    expect(() => {
-      window.location.hash = '#a=a1';
+    const first = render(<Page />);
+    expect(count(adds)).toBe(1); // two hooks, one listener
+    first.unmount();
+    expect(count(removes)).toBe(1);
+    const second = render(<Page />);
+    expect(count(adds)).toBe(2);
+    second.unmount();
+    expect(count(removes)).toBe(2);
+  });
+
+  it('a throwing parser does not starve other hooks', () => {
+    let boom = false;
+    const seen: string[] = [];
+    function Page() {
+      const [a] = useHashState<string>('a0', (h) => {
+        if (boom) throw new Error('bad parse');
+        return parseA(h);
+      });
+      const [b] = useHashState<string>('b0', parseB);
+      seen.push(`${a}|${b}`);
+      return null;
+    }
+    render(<Page />);
+    boom = true;
+    const deferred = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation(() => {});
+    act(() => {
+      window.location.hash = '#a=a1&b=b1';
       window.dispatchEvent(new HashChangeEvent('hashchange'));
-    }).not.toThrow();
+    });
+    expect(deferred).toHaveBeenCalledTimes(1); // error surfaced, not swallowed
+    deferred.mockRestore();
+    expect(seen[seen.length - 1]).toBe('a0|b1');
   });
 });
