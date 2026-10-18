@@ -138,7 +138,10 @@ One quorum finding concerns pre-existing code outside this wave's scope. It is r
     - A `sector_identifier_uri` or `jwks_uri` fetch that `addClient` would trigger before `allowClient` therefore fails closed.
   - **Cache.** The library's in-process LRU applies, bounded `{ min: 300, max: 86400 }` seconds.
     - `Cache-Control: no-store` / `no-cache` are **not** honoured below 300 s. This is deliberate: it bounds fetch amplification.
-  - **Cleanup and tombstones.** `cleanupStaleOauthClients` excludes rows with `disabled_at` set and rows that have `oauth_client_blocks`, for every client kind. A stable CIMD URL therefore cannot erase its own disable or org blocks by ageing out and re-materialising.
+  - **Cleanup and tombstones.** `cleanupStaleOauthClients` excludes three kinds of row, for every client kind:
+    - rows with `disabled_at` set;
+    - rows that have `oauth_client_blocks`;
+    - rows referenced by `approval_requests.requesting_client_id`. That FK has no `ON DELETE` (`db/schema/approvals.ts:35`), so a single such row would fail the whole delete. A stable CIMD URL therefore cannot erase its own disable or org blocks by ageing out and re-materialising.
   - **Disable.** Disabling goes through the existing family revocation: `revokeClientFamilies(id, { kind: 'global' })` sets `disabled_at` last, after grants and tokens die. An operator UI for it is deferred.
   - **Consent.**
     - The payload gains `registration: 'metadata_document' | 'dynamic'`, `client_id_host`, `redirect_host` and `localhost_redirect`.
@@ -147,7 +150,7 @@ One quorum finding concerns pre-existing code outside this wave's scope. It is r
     - A warning appears when a CIMD client redirects to loopback. This addresses the spec's localhost impersonation risk.
   - **AS metadata.**
     - It gains `client_id_metadata_document_supported: true`, only when the flag is on.
-    - It gains `authorization_response_iss_parameter_supported: true`, always. oidc-provider already sets `iss` on code-flow success and error redirects (`respond.js:38`, `authorization_error_handler.js:25`).
+    - It gains `authorization_response_iss_parameter_supported: true`, always. oidc-provider already sets `iss` on code-flow success and error redirects (`respond.js:40`, `authorization_error_handler.js:25`).
     - DCR (`registration_endpoint`) stays. The spec deprecates it, with earliest removal ≥ 2027-07-28.
 - **D-B21 — RFC 9207 needs no client-side change.**
   - Breeze's outbound MCP client (`services/toolSources/authHeaders.ts:55-140`) uses only `client_credentials`. It never redeems an authorization code, so it has no `iss` to validate.
@@ -202,10 +205,12 @@ One quorum finding concerns pre-existing code outside this wave's scope. It is r
 - **Never weaker than today.**
   - Every legacy request behaves byte-identically to `main`. This is pinned by the per-version conformance suite, which runs over `LEGACY_MCP_PROTOCOL_VERSIONS`.
   - The documented exceptions are:
-    - The envelope-validation fix (JSON `null` body or non-string method → 400 `-32600` instead of a thrown 500).
-    - `resources/templates/list` (additive).
-    - The deprecation headers on HTTP+SSE.
-    - The audit `resourceId` now carrying the request UUID. The session id stays in `details.sessionId`.
+    1. **Envelope validation.** Any body failing `validateJsonRpcEnvelope` gets 400 `-32600` instead of today's thrown 500 or lax acceptance. That covers JSON `null`, arrays, a non-string or empty `method`, an object or `null` `id`, and non-object `params`.
+    2. **New rejections.** An `initialize` carrying modern `_meta` is rejected (row 1). Modern `_meta`, or a modern header, on `/message` is rejected (row 3). With the flag on, a modern header without `_meta` gets `-32020` (row 4).
+    3. **`resources/templates/list`**, which is additive.
+    4. **HTTP+SSE deprecation.** `Deprecation` and `Sunset` headers are added, and a `mcp.transport.http_sse.open` audit row is written per stream.
+    5. **Audit `resourceId`.** It now carries the request UUID. The session id stays in `details.sessionId`, and `details.correlation` is added.
+    6. **CORS.** The new allow and expose headers are added, and a log-only Origin counter runs on legacy requests.
 - **Modern ≡ legacy for authorization.** Every gate (scope tier, approval, MFA, production allowlist, RBAC, domain, rate limit, creator authority, partner IP allowlist) runs on both eras through the same functions. The parity contract (Task 5) enforces this.
 - **No client-supplied value is ever written as an identifier** to `audit_logs`, the tool audit or the ledger. `clientInfo` is stored only under `correlation.clientInfo`, bounded, with `clientInfoTrust: 'self_reported'`.
 - **No outbound fetch inside a held DB context.** CIMD fetches happen in the oidc-provider Koa layer. The adapter's `asSystem` is a held transaction, so `adapter.find` must never fetch. `materializeCimdClient` runs its Redis budget check before `asSystem`.
@@ -291,7 +296,10 @@ Run `rls-coverage`, `tenant-export-policy` and `tenantCascade` once on the wave 
   });
   ```
 - [ ] **Step 2:** Run `cd apps/api && npx vitest run src/services/mcpProtocol.test.ts`. Expected: FAIL (missing exports).
-- [ ] **Step 3: Implement.** In the conformance contract, iterate `LEGACY_MCP_PROTOCOL_VERSIONS` for the session suite, and replace `LATEST_*` with `LATEST_LEGACY_*`.
+- [ ] **Step 3: Implement.**
+  - `isSupportedMcpProtocolVersion` becomes an alias of `isLegacyMcpProtocolVersion`. Today it derives from `SUPPORTED_*` (`mcpProtocol.ts:9-11`), so without the alias the header parser and `negotiateMcpProtocolVersion` would start accepting `2026-07-28`.
+  - Narrow `ASSUMED_MCP_PROTOCOL_VERSION`, the `version` returned by `parseMcpProtocolVersionHeader`, and the return type of `negotiateMcpProtocolVersion` to `LegacyMcpProtocolVersion`.
+  - In the conformance contract, iterate `LEGACY_MCP_PROTOCOL_VERSIONS` for the session suite, and replace `LATEST_*` with `LATEST_LEGACY_*`.
 - [ ] **Step 4:** Run both files and expect PASS. The conformance file count must still be 4 versions × its cases.
 - [ ] **Step 5:** Commit `feat(mcp): split modern and legacy protocol versions (B-W03 #6157)`.
 
@@ -322,10 +330,10 @@ Run `rls-coverage`, `tenant-export-policy` and `tenantCascade` once on the wave 
 
 | # | Condition | Result |
 |---|---|---|
-| 1 | `method === 'initialize'` and `metaV !== undefined` | reject 400 `-32600` `contradictory_initialize`, `data: { supported }` |
+| 1 | `method === 'initialize'` and `metaV !== undefined` | reject 400 `-32600` `contradictory_initialize`, `data: { supported: supportedMcpProtocolVersions(statelessEnabled) }` |
 | 2 | `method === 'initialize'` | legacy |
 | 3 | `endpoint === 'legacy_message'` and (`metaV !== undefined` or `isModern(hdrV)`) | reject 400 `-32600` `modern_on_legacy_endpoint` |
-| 4 | `metaV === undefined` and `isModern(hdrV)` | reject 400 `-32020` `header_modern_without_meta` |
+| 4 | `metaV === undefined`, `isModern(hdrV)` and `statelessEnabled` | reject 400 `-32020` `header_modern_without_meta`. When the flag is off this row does not fire: row 5 routes the request to legacy, which keeps today's `-32600 "Unsupported MCP-Protocol-Version"` (`mcpServer.ts:911-918`). |
 | 5 | `metaV === undefined` | legacy |
 | 6 | `!statelessEnabled` | reject 400 `-32600` `modern_disabled`. This must not be a recognised modern error, so that the client falls back. |
 | 7 | `metaV` is not a string, or `hdrV !== metaV` | reject 400 `-32020` `header_mismatch` |
@@ -351,8 +359,23 @@ Run `rls-coverage`, `tenant-export-policy` and `tenantCascade` once on the wave 
     expect(classify({ method: 'tools/call', name }, { name: hdr }).era).toBe('modern');
     expect(classify({ method: 'tools/call', name }, { name: '=?base64?!!!?=' })).toMatchObject({ era: 'reject', rejection: { error: { code: -32020 } } });
   });
-  it('compares header values case-sensitively and header names are case-insensitive at the route', () => { /* Mcp-Method: Tools/List → -32020 */ });
+  it('compares header values case-sensitively', () => {
+    expect(classify({ method: 'tools/list' }, { method: 'Tools/List' })).toMatchObject({ era: 'reject', rejection: { error: { code: -32020 } } });
+  });
+  it.each([
+    ['Mcp-Method absent', { method: undefined }],
+    ['Mcp-Name absent on tools/call', { name: undefined }],
+    ['Mcp-Name with a control character', { name: 'get_weather\u0001' }],
+    ['MCP-Protocol-Version differs from _meta', { protocolVersion: '2025-11-25' }],
+  ])('row 11/7: %s → 400 -32020', (_label, headerPatch) => {
+    expect(classify({ method: 'tools/call', name: 'get_weather' }, headerPatch)).toMatchObject({ era: 'reject', rejection: { status: 400, error: { code: -32020 } } });
+  });
+  it('row 4 is inert when the flag is off (legacy keeps its own -32600)', () => {
+    expect(classifyMcpRequest({ body: { jsonrpc: '2.0', id: 1, method: 'tools/list' }, headers: { protocolVersion: '2026-07-28' }, statelessEnabled: false, endpoint: 'streamable' }))
+      .toEqual({ era: 'legacy' });
+  });
   ```
+  The `classify(bodyPatch, headerPatch)` test helper builds a valid modern `tools/call` envelope with matching headers, applies both patches, and calls `classifyMcpRequest` with `statelessEnabled: true` and `endpoint: 'streamable'`.
 - [ ] **Step 2:** Run `npx vitest run src/services/mcpModernEnvelope.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.** The module has no imports beyond `mcpProtocol.ts` and `node:buffer`.
 - [ ] **Step 4:** Expect PASS.
@@ -446,7 +469,10 @@ export function recordMcpHeaderMismatch(): void;   // once-per-60s Sentry 'mcp_h
   - `Mcp-Name mismatch → 400 -32020 and recordMcpHeaderMismatch called`
   - `unsupported _meta version → 400 -32022 with data.supported and data.requested`
   - `legacy version inside a modern envelope → 400 -32600 (client falls back to initialize)`
-  - `modern ping and notifications/initialized → 404 -32601, audited`
+  - `modern ping, notifications/initialized, logging/setLevel, resources/subscribe and subscriptions/listen → 404 -32601, audited` (`it.each`)
+  - `legacy server/discover → 200 -32601` (discover is modern-only)
+  - `POST /message audit row carries correlation.transport === 'http_sse' and the verified sessionId`
+  - `recordMcpHeaderMismatch raises one Sentry event at the threshold within 60 s and none below it`
   - `modern notification (no id) → 202, handleJsonRpc not called`
   - `JSON null body → 400 -32600 on both endpoints` (legacy fix)
   - `buildCheckedAuthFromApiKey denial (creator has no access) is identical in both eras` (403 body)
@@ -503,6 +529,7 @@ export function recordMcpHeaderMismatch(): void;   // once-per-60s Sentry 'mcp_h
   expect(modern.headers.get('www-authenticate')).toBe(legacy.headers.get('www-authenticate'));
   expect(omitCorrelation(modernAudit.details)).toEqual(omitCorrelation(legacyAudit.details));
   ```
+  Modern audit rows write `hasSession: false` and no `sessionId`. `omitCorrelation` strips `correlation`, `clientInfoTrust`, `sessionId`, `hasSession` and `rawResourceId`. Compare the row's `resourceId` separately, as a UUID in both eras.
   `stripModernDecoration` removes `resultType`, `ttlMs`, `cacheScope` and `_meta['io.modelcontextprotocol/serverInfo']`, and only those keys. The documented exception row is unknown method → modern 404 vs legacy 200.
 - [ ] **Step 2:** Add `cacheable results are per-principal and private`. In modern, two principals call `tools/list` back to back; their lists differ by the domain grant, and both are `private`.
 - [ ] **Step 3:** In the conformance contract, add a `describe('2026-07-28 (stateless)')` covering `server/discover` → `tools/list` → `tools/call`. It asserts the `resultType`, `supportedVersions` containing every `SUPPORTED_MCP_PROTOCOL_VERSIONS` entry, and the absence of `Mcp-Session-Id`.
@@ -520,7 +547,7 @@ export function recordMcpHeaderMismatch(): void;   // once-per-60s Sentry 'mcp_h
 **Interfaces — Produces:**
 - `MCP_HTTP_SSE_DEPRECATION = '@1742947200'`
 - `MCP_HTTP_SSE_SUNSET = 'Sun, 31 Jan 2027 23:59:59 GMT'`. This value is provisional; see Open Decision 2.
-- `resolveCorsOrigin(origin?: string): string | null`, moved verbatim from `index.ts:467`.
+- `resolveCorsOrigin: (origin?: string) => string | null`. This moves the `createCorsOriginResolver({...})` factory call verbatim from `index.ts:467` into `corsPolicy.ts`; `index.ts` then imports the instance.
 - `CORS_ALLOW_HEADERS: readonly string[]` and `CORS_EXPOSE_HEADERS: readonly string[]`.
 - `checkMcpOrigin(c: Context, era: 'legacy' | 'modern'): Response | null`.
 
@@ -557,7 +584,8 @@ export function recordMcpHeaderMismatch(): void;   // once-per-60s Sentry 'mcp_h
 
 **Files:**
 - Create `apps/api/src/oauth/cimdPolicy.ts` and `cimdPolicy.test.ts`.
-- Modify `config/env.ts`, `config/validate.ts` and `.env.example`, at `:1693-1705` next to `OAUTH_DCR_*`.
+- Modify `config/env.ts` (next to `OAUTH_DCR_*` at `:683`), `config/validate.ts` (schema next to `:841`; the boot check for the CSV goes in the superRefine, next to the DCR posture check at `:1782`) and the root `.env.example` (next to `OAUTH_DCR_*` at `:1693-1705`).
+- `checkSsrfSafe` is imported from `services/ssrfGuard.ts` (`:91`), and `safeFetch` from `services/urlSafety.ts` (`:536`).
 
 **Interfaces — Produces:**
 ```ts
@@ -581,7 +609,16 @@ The env flags are `OAUTH_CIMD_ENABLED = envFlag('OAUTH_CIMD_ENABLED', false)` an
       'https://client.example.com/%2e%2e/x', 'https://127.0.0.1/x', 'https://[::1]/x', 'Ab3dDcrStyleId'])
       expect(isCimdClientId(bad)).toBe(false);
   });
-  it('allowFetch: flag off → false; allowlist miss → false; budgets exhausted → false; prod without redis → false', ...);
+  it.each([
+    ['flag off', { enabled: false }],
+    ['host not in OAUTH_CIMD_ALLOWED_HOSTS', { allowlist: ['.trusted.example.org'] }],
+    ['per-host budget spent', { hostBudgetLeft: 0 }],
+    ['global budget spent', { globalBudgetLeft: 0 }],
+    ['production without redis', { nodeEnv: 'production', redis: null }],
+  ])('allowFetch refuses: %s', async (_l, env) => {
+    expect(await withCimdEnv(env, () => cimdAllowFetch({}, 'https://client.example.com/oauth/metadata.json'))).toBe(false);
+  });
+  it('allowFetch admits a suffix match and registers a single approval', ...); // allowlist ['.example.com'] → true; the approval map has exactly that URL
   it('validateCimdMetadata requires client_name, public auth, policy-valid redirect_uris, no DCR-rejected fields', () => {
     const ok = { client_id: ID, client_name: 'Example', redirect_uris: ['http://127.0.0.1:3000/cb'], token_endpoint_auth_method: 'none' };
     expect(validateCimdMetadata(ID, ok).ok).toBe(true);
@@ -594,9 +631,15 @@ The env flags are `OAUTH_CIMD_ENABLED = envFlag('OAUTH_CIMD_ENABLED', false)` an
     await expect(f('https://evil.example.net/sector')).rejects.toThrow();
     expect(spy).not.toHaveBeenCalled();
   });
-  it('an approval is single-use and expires after 30 s', ...);
-  it('passes a hard deadline signal and maxBytes 5120 to safeFetch', ...);
+  it('an approval is single-use and expires after 30 s', async () => {
+    // approve URL at t=0; the first fetch calls spy once; a second fetch of the same URL rejects;
+    // re-approve, advance now() by 30_001 → the fetch rejects and the spy is not called again
+  });
+  it('passes a hard deadline signal and maxBytes 5120 to safeFetch', async () => {
+    // spy receives init.maxBytes === 5120 and an init.signal that aborts within 5000 ms even when the library passed none
+  });
   ```
+  `withCimdEnv` is a test helper. It sets the env flags and the allowlist, stubs `rateLimiter` with the given budgets, stubs `getRedis`, and restores everything afterwards. Also add `validate.ts` tests: `boot rejects a malformed OAUTH_CIMD_ALLOWED_HOSTS entry (scheme, path, wildcard, empty item)` and `accepts example.com,.example.org`.
 - [ ] **Steps 2–5:** Run red, implement, run green, commit. `allowFetch` registers the approval in a bounded `Map` (≤ 1 000 entries, oldest evicted).
 
 ### Task 9: Provider configuration, adapter, materialisation and cleanup
@@ -620,7 +663,7 @@ The env flags are `OAUTH_CIMD_ENABLED = envFlag('OAUTH_CIMD_ENABLED', false)` an
   - `adapter.upsert(Client) refuses a CIMD id`
   - `materializeCimdClient creates once, is unchanged on the same metadata, updates on a metadata hash change after 60 s, returns disabled for a disabled row, and returns budget_exceeded without writing when the create budget is spent`
   - `allowClient re-evaluates disable and host policy on cache hits`. Resolve once, then disable the row or narrow the allowlist; the second resolution with no fetch → false.
-  - `cleanup never deletes a disabled client or one with org blocks` (`provider.cleanup.test.ts`)
+  - `cleanup never deletes a disabled client, one with org blocks, or one referenced by an approval request` (`provider.cleanup.test.ts`)
   - `a CIMD client honours an org block`. This test goes in `middleware/bearerTokenAuth.test.ts`: a bearer whose `client_id` claim is the URL loses an org that blocked that URL. `filterBlockedOAuthClientOrgIds` (`bearerTokenAuth.ts:370`) is module-private, so drive it through the middleware.
 - [ ] **Step 2:** Run each file red.
 - [ ] **Step 3: Implement.** `cimdAllowClient` calls `materializeCimdClient` last, and only after every check passes. Any result other than `created`, `updated` or `unchanged` → `false`. Every refusal logs through `logOauthWarn` with a new `ERROR_IDS.OAUTH_CIMD_REFUSED` and a bounded `reason`.
@@ -692,7 +735,7 @@ The new locale keys are `metadataHostedAt` ("App details published by {{host}}")
 ## Exit checklist
 
 - [ ] There is no migration, and the reserved slot `2026-12-31-130000` is unused. `rls-coverage`, `tenant-export-policy` and `tenantCascade` are green and unchanged.
-- [ ] Legacy behaviour is byte-identical except for the four documented changes. The per-version conformance suite is green for all 4 legacy versions.
+- [ ] Legacy behaviour is byte-identical except for the six documented exceptions (Global Constraints). The per-version conformance suite is green for all 4 legacy versions.
 - [ ] The modern era passes the parity contract: same errors, same status (bar `-32601` → 404), same `WWW-Authenticate`, and same audit details minus correlation.
 - [ ] No `Mcp-Session-Id` is read, minted or echoed on a modern request, and the session store is untouched.
 - [ ] A single `requestId` is present in the request audit, the tool audit, and both ledger representations.
