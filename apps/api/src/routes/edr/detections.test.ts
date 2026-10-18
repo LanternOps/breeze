@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
-const { gates, permsState, readMocks } = vi.hoisted(() => ({
+const { gates, permsState, readMocks, coverageMock } = vi.hoisted(() => ({
+  coverageMock: vi.fn(),
   gates: { permission: false },
   permsState: { value: undefined as undefined | Record<string, unknown> },
   readMocks: {
@@ -31,6 +32,11 @@ vi.mock('../../services/edrProviders/read', async () => {
   return { ...readMocks, EdrReadError, EDR_DETECTIONS_MAX_LIMIT: 200 };
 });
 
+vi.mock('../../services/securityAgents/coverageRead', () => ({
+  readSecurityAgentCoverage: coverageMock,
+  COVERAGE_MAX_LIMIT: 200,
+}));
+
 import { edrDetectionRoutes } from './detections';
 import { EdrReadError } from '../../services/edrProviders/read';
 
@@ -49,6 +55,7 @@ describe('EDR detection read routes', () => {
     readMocks.resolveEdrReadScope.mockImplementation(async (a: unknown) => ({ auth: a, allowedDeviceIds: null, allowedSiteIds: null }));
     readMocks.listEdrDetections.mockResolvedValue({ rows: [], total: 0, coverage: COVERAGE });
     readMocks.getEdrStatus.mockResolvedValue({ providers: [], coverage: COVERAGE });
+    coverageMock.mockResolvedValue({ summary: [], rows: [], total: 0 });
     app = new Hono();
     app.use('*', async (c, next) => {
       c.set('auth' as never, auth as never);
@@ -125,6 +132,57 @@ describe('EDR detection read routes', () => {
     it('is gated on devices:read', async () => {
       gates.permission = true;
       expect((await app.request('/edr/status')).status).toBe(403);
+    });
+  });
+
+  // #6960 W03 — security agent coverage (read-only).
+  describe('GET /edr/security-agents/coverage', () => {
+    const DEVICE_ID = '33333333-3333-4333-8333-333333333333';
+
+    it('returns summary, rows and pagination', async () => {
+      coverageMock.mockResolvedValueOnce({
+        summary: [{ vendor: 'huntress', total: 1, counts: { gap: 1 } }],
+        rows: [{ id: 'r1', state: 'gap' }],
+        total: 1,
+      });
+      const res = await app.request('/edr/security-agents/coverage');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        summary: [{ vendor: 'huntress', total: 1, counts: { gap: 1 } }],
+        data: [{ id: 'r1', state: 'gap' }],
+        pagination: { limit: 50, offset: 0, total: 1 },
+      });
+    });
+
+    it('passes filters through (state list, vendor, device, org) and clamps limit', async () => {
+      await app.request(`/edr/security-agents/coverage?orgId=${ORG_ID}&deviceId=${DEVICE_ID}&vendor=huntress&state=gap,mismatched_org&limit=5000&offset=10`);
+      expect(coverageMock).toHaveBeenCalledWith(
+        expect.objectContaining({ auth }),
+        { orgId: ORG_ID, deviceId: DEVICE_ID, vendor: 'huntress', states: ['gap', 'mismatched_org'], limit: 200, offset: 10 },
+      );
+    });
+
+    it('rejects malformed filters with 400', async () => {
+      for (const q of ['state=nope', 'vendor=acme', 'deviceId=x', 'orgId=x', 'limit=0']) {
+        expect((await app.request(`/edr/security-agents/coverage?${q}`)).status, q).toBe(400);
+      }
+    });
+
+    it('maps a scope refusal (foreign orgId) to 403', async () => {
+      coverageMock.mockRejectedValueOnce(new EdrReadError(403, 'Access to this organization denied'));
+      expect((await app.request(`/edr/security-agents/coverage?orgId=${OTHER_ORG}`)).status).toBe(403);
+    });
+
+    it('requires devices.read', async () => {
+      gates.permission = true;
+      expect((await app.request('/edr/security-agents/coverage')).status).toBe(403);
+      expect(coverageMock).not.toHaveBeenCalled();
+    });
+
+    it('is read-only: no write verb is routed', async () => {
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+        expect((await app.request('/edr/security-agents/coverage', { method })).status, method).toBe(404);
+      }
     });
   });
 });

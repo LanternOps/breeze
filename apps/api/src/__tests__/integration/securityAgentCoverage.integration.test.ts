@@ -50,6 +50,8 @@ import {
   reconcileOrgCoverage,
 } from '../../services/securityAgents/coverageReconcileRun';
 import { SECURITY_AGENT_COVERAGE_ALERT_SOURCE } from '../../services/securityAgents/coverageAlerts';
+import { readSecurityAgentCoverage } from '../../services/securityAgents/coverageRead';
+import type { EdrReadScope } from '../../services/edrProviders/read';
 import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
 
 const ACCT_KEY = 'ACCTKEY-TEST-0001';
@@ -239,6 +241,36 @@ describe('security agent coverage — live Postgres (#6960 W03)', () => {
       db.select({ id: securityAgentDeviceStatus.id }).from(securityAgentDeviceStatus),
     );
     expect(otherPartner).toEqual([]);
+  });
+
+  it('read model: an org session gets its own org summary and rows (problems first), nothing of other orgs', async () => {
+    const f = await seed();
+    await compliancePass(f);
+    await setCompliance(f, f.dev.a, { missing: true, installRemediationStatus: 'gave_up' });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    await addAgent(f, { orgId: f.orgs.a.id, deviceId: null, hostname: 'ghost-host-read-model' });
+    await reconcileOrgCoverage(f.orgs.a.id);
+
+    const scope = { auth: { scope: 'organization', orgId: f.orgs.a.id }, allowedDeviceIds: null, allowedSiteIds: null } as unknown as EdrReadScope;
+    const result = await withDbAccessContext(orgContext(f.orgs.a.id, f.p.id), () =>
+      readSecurityAgentCoverage(scope, { limit: 50, offset: 0 }),
+    );
+    expect(result.summary).toEqual([
+      expect.objectContaining({ vendor: 'huntress', total: 2, counts: expect.objectContaining({ gap: 1, vendor_only: 1 }) }),
+    ]);
+    expect(result.rows.map((r) => r.state)).toEqual(['gap', 'vendor_only']);
+    expect(result.rows[0]).toMatchObject({ deviceId: f.dev.a, deviceName: f.host.a, orgId: f.orgs.a.id });
+    expect(result.rows.every((r) => r.orgId === f.orgs.a.id)).toBe(true);
+
+    const filtered = await withDbAccessContext(orgContext(f.orgs.a.id, f.p.id), () =>
+      readSecurityAgentCoverage(scope, { states: ['vendor_only'], limit: 50, offset: 0 }),
+    );
+    expect(filtered.total).toBe(1);
+    // A site-restricted user never sees device-less vendor_only rows.
+    const siteScoped = await withDbAccessContext(orgContext(f.orgs.a.id, f.p.id), () =>
+      readSecurityAgentCoverage({ ...scope, allowedDeviceIds: [f.dev.a] } as EdrReadScope, { limit: 50, offset: 0 }),
+    );
+    expect(siteScoped.rows.map((r) => r.state)).toEqual(['gap']);
   });
 
   it('fan-out source: the partner and its orgs with rows are listed, the other partner is not', async () => {
