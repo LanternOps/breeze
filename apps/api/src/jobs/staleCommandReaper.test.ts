@@ -1651,21 +1651,26 @@ describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
     vi.resetAllMocks();
   });
 
-  function arrangeExec(opts: { timeoutSeconds: number; ageMs: number }) {
+  function arrangeExec(opts: {
+    timeoutSeconds: number;
+    ageMs: number;
+    cmdRow?: Record<string, unknown>;
+    running?: boolean;
+  }) {
     const createdAt = new Date(Date.now() - opts.ageMs);
     selectMock
       .mockReturnValueOnce(selectChain([
         {
           id: 'exec-1',
-          status: 'pending',
+          status: opts.running ? 'running' : 'pending',
           scriptId: 'script-1',
           createdAt,
-          startedAt: null,
+          startedAt: opts.running ? createdAt : null,
           timeoutSeconds: opts.timeoutSeconds,
         },
       ]))
       // the #3097 device-command lookup — no terminal row, so the guard is inert
-      .mockReturnValueOnce(selectChain([]));
+      .mockReturnValueOnce(selectChain(opts.cmdRow ? [opts.cmdRow] : []));
 
     const execSet = vi.fn((_values: Record<string, unknown>) => ({
       where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ id: 'exec-1' }]) })),
@@ -1728,6 +1733,56 @@ describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
 
     expect(reaped).toBe(0);
     expect(execSet).not.toHaveBeenCalled();
+  });
+
+  // #9162: the agent takes the restore-point checkpoint on its own 5-minute
+  // budget before the script runs, and the stamp lives on the related
+  // device_commands payload, not the execution row. This reaper must see it,
+  // or it would fail an execution the device-command reaper still considers
+  // in flight. 60 s script => 60 s + 5 min grace + 5 min budget = 11 min.
+  // Executions are `running` (started on the device): a not-yet-running one
+  // with a `sent` command is skipped by the #5128 delivery-clock guard.
+  describe('restore-point checkpoint budget (#9162)', () => {
+    const sentCmd = (enabled: boolean) => ({
+      payload: { executionId: 'exec-1', timeoutSeconds: 60, restorePoint: { v: 1, enabled } },
+      status: 'sent',
+      result: null,
+    });
+
+    it('does not reap inside timeout + grace + budget when the command carries an enabled block', async () => {
+      const { execSet } = arrangeExec({ timeoutSeconds: 60, ageMs: 8 * 60 * 1000, cmdRow: sentCmd(true), running: true });
+
+      expect(await reapStaleScriptExecutions()).toBe(0);
+      expect(execSet).not.toHaveBeenCalled();
+    });
+
+    it('reaps once timeout + grace + budget has passed', async () => {
+      const { execSet } = arrangeExec({ timeoutSeconds: 60, ageMs: 12 * 60 * 1000, cmdRow: sentCmd(true), running: true });
+
+      expect(await reapStaleScriptExecutions()).toBe(1);
+      expect(execSet).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the plain deadline when the block is disabled', async () => {
+      const { execSet } = arrangeExec({ timeoutSeconds: 60, ageMs: 8 * 60 * 1000, cmdRow: sentCmd(false), running: true });
+
+      expect(await reapStaleScriptExecutions()).toBe(1);
+      expect(execSet).toHaveBeenCalledTimes(1);
+    });
+
+    it('takes the timeout from the execution row, not the command payload', async () => {
+      // A stale payload timeoutSeconds must not override the execution's own
+      // snapshot: only the restorePoint stamp is read from the command.
+      const { execSet } = arrangeExec({
+        timeoutSeconds: 60,
+        ageMs: 12 * 60 * 1000,
+        running: true,
+        cmdRow: { ...sentCmd(true), payload: { executionId: 'exec-1', timeoutSeconds: 3600, restorePoint: { v: 1, enabled: true } } },
+      });
+
+      expect(await reapStaleScriptExecutions()).toBe(1);
+      expect(execSet).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('leaves a long-timeout script alone while it is still within its deadline', async () => {
