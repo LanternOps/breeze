@@ -129,6 +129,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_UPGRADE_PREFLIGHT_STRICT: 'upgrade CLI flag',
   // CALLER_*
   CALLER_VERIFICATION_ENABLED: 'feature flag',
+  CALLER_VERIFICATION_WORKSTATION_ENABLED: 'feature flag (workstation tier, dark by default)',
   // CANCEL_*
   CANCEL_GRACE_MS: 'timing knob',
   // CHANGE_*

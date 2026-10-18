@@ -45,13 +45,13 @@ import type { SecretToolResult } from './actionIntents/secretBearingTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { actionIntents, type ActionIntent } from '../db/schema/actionIntents';
+import type { ActionIntent } from '../db/schema/actionIntents';
 import { m365Connections } from '../db/schema/m365';
 import { delegantM365Connections } from '../db/schema/delegant';
 import { executeM365WriteActionByOrg } from './m365ControlPlane/writeActionService';
 import { executeM365UserLookupForCallerTarget } from './m365ControlPlane/readActionService';
 import {
-  callerAction, loadPinnedCallerBackend, normalizeTenantId, requireResolvedOid, type CallerBackend,
+  callerAction, loadCallerIntent, loadPinnedCallerBackend, normalizeTenantId, requireResolvedOid, type CallerBackend,
 } from './actionIntents/callerTarget';
 import { prepareCallerDispatch } from './callerVerification/dispatch';
 import { requireCallerVerification } from './callerVerification/gate';
@@ -262,9 +262,7 @@ export async function loadM365MutationContext(
     throw new CallerVerificationRequiredError({ orgId, contactId: null, action, requiredTier: 2, reason, latest: null });
   };
   if (!intentId) return refuse('no_fresh_verification');
-  const [intent] = await db.select().from(actionIntents).where(and(
-    eq(actionIntents.id, intentId), eq(actionIntents.orgId, orgId),
-  )).limit(1);
+  const intent = await loadCallerIntent(orgId, intentId);
   if (!intent) return refuse('no_fresh_verification');
   if (callerAction(intent.actionName) !== action) return refuse('target_rebound');
   if (!intent.targetConnectionRef || !intent.targetEntraOid || !intent.targetEntraTenantId) return refuse('subject_unmatched');

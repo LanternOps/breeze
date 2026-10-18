@@ -24,6 +24,13 @@
  *  - M365 inline: only `invokeDelegantTool` (the Delegant broker HTTP call)
  *    is mocked. Everything else — session/connection loads, `sealToolSecrets`
  *    via the real session-aware handler wrapper, the CAS completion — real.
+ *  - M365 caller verification (#6354 W05): `m365_reset_password` is a
+ *    protected identity action, so both M365 paths need a pinned Entra target
+ *    and a fresh verification. Only `resolveM365CallerTarget` — the
+ *    creation-time Microsoft Graph user lookup — is mocked (as in
+ *    callerVerificationEnforcement.integration.test.ts). The subject binding,
+ *    the verified self-service grant and the partner policy are real rows,
+ *    consumed by the real gate and dispatch guard.
  *
  * If you find yourself wanting to mock secretCrypto, sealToolSecrets,
  * resultSecrets, or the db layer to make this file pass, stop — that defeats
@@ -42,6 +49,7 @@ import {
   aiSessions,
   aiToolExecutions,
   auditLogs,
+  contacts,
   delegantM365Connections,
   googleWorkspaceConnections,
   m365Connections,
@@ -51,6 +59,11 @@ import {
   roles,
   users,
 } from '../../db/schema';
+import {
+  callerVerificationPolicies,
+  callerVerificationSubjectBindings,
+  callerVerifications,
+} from '../../db/schema/callerVerification';
 import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { createActionIntent } from '../../services/actionIntents/intentService';
@@ -92,6 +105,16 @@ const m365ExecutorMocks = vi.hoisted(() => ({ executeWriteAction: vi.fn() }));
 vi.mock('../../services/m365ControlPlane/graphActionsExecutorClient', () => ({
   createGraphActionsExecutorClient: vi.fn(() => ({ executeWriteAction: m365ExecutorMocks.executeWriteAction })),
   GraphActionsExecutorClientError: class GraphActionsExecutorClientError extends Error {},
+}));
+
+// Caller verification (#6354 W05): creation-time target resolution reaches
+// Microsoft Graph through the read executor / Delegant; only that network
+// lookup is replaced. The gate, the creation transaction, the pin columns and
+// the dispatch guard are real.
+const callerTargetMocks = vi.hoisted(() => ({ resolveM365CallerTarget: vi.fn() }));
+vi.mock('../../services/aiToolsM365', async (original) => ({
+  ...await original<typeof import('../../services/aiToolsM365')>(),
+  resolveM365CallerTarget: callerTargetMocks.resolveM365CallerTarget,
 }));
 
 // Pure config plumbing (env-var parsing), not business logic — mocked so the
@@ -168,6 +191,12 @@ async function seedScenario(): Promise<Scenario> {
 async function cleanupScenario(s: Scenario) {
   await withSystemDbAccessContext(async () => {
     await db.delete(actionIntents).where(eq(actionIntents.orgId, s.orgId));
+    // caller_verifications.initiated_by_user_id is ON DELETE RESTRICT — clear
+    // the M365 caller-verification fixture before the users delete below.
+    await db.delete(callerVerifications).where(eq(callerVerifications.orgId, s.orgId));
+    await db.delete(callerVerificationSubjectBindings).where(eq(callerVerificationSubjectBindings.orgId, s.orgId));
+    await db.delete(callerVerificationPolicies).where(eq(callerVerificationPolicies.partnerId, s.partnerId));
+    await db.delete(contacts).where(eq(contacts.orgId, s.orgId));
     // ai_messages / ai_tool_executions FK-reference ai_sessions.id — must be
     // cleared first (or the ai_sessions delete below 23503s).
     const sessionRows = await db
@@ -327,13 +356,13 @@ async function seedGoogleConnection(orgId: string): Promise<void> {
   );
 }
 
-async function seedM365ActionsConnection(orgId: string): Promise<string> {
+async function seedM365ActionsConnection(orgId: string, tenantId: string): Promise<string> {
   const [row] = await withSystemDbAccessContext(() =>
     db
       .insert(m365Connections)
       .values({
         orgId,
-        tenantId: randomUUID(),
+        tenantId,
         clientId: 'test-client-id',
         profile: 'customer-graph-actions',
         authMode: 'application-certificate',
@@ -363,7 +392,7 @@ async function seedAiSessionForInline(orgId: string, userId: string, delegantCon
   return row!.id;
 }
 
-async function seedDelegantM365Connection(orgId: string): Promise<string> {
+async function seedDelegantM365Connection(orgId: string, tenantId: string): Promise<string> {
   const [row] = await withSystemDbAccessContext(() =>
     db
       .insert(delegantM365Connections)
@@ -373,12 +402,40 @@ async function seedDelegantM365Connection(orgId: string): Promise<string> {
         customerDisplayName: 'Test Customer',
         delegantOrgId: 'delegant-org-1',
         delegantConnectionId: 'delegant-conn-1',
-        m365TenantId: randomUUID(),
+        m365TenantId: tenantId,
         status: 'active',
       })
       .returning({ id: delegantM365Connections.id }),
   );
   return row!.id;
+}
+
+/**
+ * Caller verification fixture for a self-service password reset (#6354 W05):
+ * the target account's own contact is bound to the Entra object id and holds a
+ * fresh, verified callback-attestation grant initiated by the requesting
+ * technician. An explicit partner policy makes tier 1 sufficient. These are
+ * real rows; the real gate consumes the grant at release and the real dispatch
+ * guard checks it again before the outbound call.
+ */
+async function seedSelfServiceResetVerification(s: Scenario, tenantId: string, oid: string): Promise<void> {
+  await withSystemDbAccessContext(async () => {
+    const [person] = await db.insert(contacts).values({ orgId: s.orgId, name: 'Target person' }).returning();
+    const [binding] = await db.insert(callerVerificationSubjectBindings).values({
+      orgId: s.orgId, contactId: person!.id, entraTenantId: tenantId, entraOid: oid,
+      source: 'technician_attested', upnSnapshot: 'target@example.test',
+    }).returning();
+    await db.insert(callerVerifications).values({
+      orgId: s.orgId, contactId: person!.id, requesterBindingId: binding!.id, targetBindingId: binding!.id,
+      targetEntraTenantId: tenantId, targetEntraOid: oid, initiatedByUserId: s.requester.id, technicianLabel: 'Requester',
+      actionScope: 'reset_password', method: 'callback_attestation', status: 'verified', tier: 1, tierReason: 'attestation',
+      matchValue: '42', decoyValues: ['17', '63'], reverseCode: '7319', attemptNo: 1,
+      decidedAt: new Date(), expiresAt: new Date(Date.now() + 1800_000),
+    });
+    await db.insert(callerVerificationPolicies).values({
+      partnerId: s.partnerId, requiredTierDisableUser: 1, requiredTierResetPassword: 1,
+    });
+  });
 }
 
 function makeActiveSession(s: Scenario, breezeSessionId: string): ActiveSession {
@@ -474,10 +531,15 @@ async function executeApprovedReset(
 
   // m365_reset_password
   const plaintext = `M365Temp!${randomUUID().slice(0, 8)}`;
-  const targetUserId = randomUUID(); // bare object id (no '@') — skips the get_user resolution hop
+  const targetUserId = randomUUID(); // the pinned Entra object id
+  const tenantId = randomUUID();
+  await seedSelfServiceResetVerification(s, tenantId, targetUserId);
 
   if (path === 'durable') {
-    await seedM365ActionsConnection(s.orgId);
+    const connectionId = await seedM365ActionsConnection(s.orgId, tenantId);
+    callerTargetMocks.resolveM365CallerTarget.mockResolvedValue({
+      backend: 'controlPlane', connectionId, tenantId, orgId: s.orgId, entraOid: targetUserId,
+    });
     m365ExecutorMocks.executeWriteAction.mockImplementation(async () => ({
       success: true,
       action: 'm365.user.reset_password',
@@ -498,7 +560,10 @@ async function executeApprovedReset(
   // inline — Delegant backend (no 'legacy-direct' m365Connections row seeded
   // for this org, so resolveContext falls through to the session's Delegant
   // connection).
-  const delegantConnId = await seedDelegantM365Connection(s.orgId);
+  const delegantConnId = await seedDelegantM365Connection(s.orgId, tenantId);
+  callerTargetMocks.resolveM365CallerTarget.mockResolvedValue({
+    backend: 'delegant', connectionId: delegantConnId, tenantId, orgId: s.orgId, entraOid: targetUserId,
+  });
   const sessionId = await seedAiSessionForInline(s.orgId, s.requester.id, delegantConnId);
   delegantMocks.invokeDelegantTool.mockImplementation(async (args: { toolName: string }) => {
     if (args.toolName === 'reset_user_password') {
@@ -551,6 +616,7 @@ beforeEach(async () => {
   googleMocks.usersUpdate.mockReset();
   delegantMocks.invokeDelegantTool.mockReset();
   m365ExecutorMocks.executeWriteAction.mockReset();
+  callerTargetMocks.resolveM365CallerTarget.mockReset();
 });
 
 afterEach(async () => {
@@ -588,6 +654,20 @@ describe('secret-bearing tool seal parity (real PG)', () => {
     // The tool's own recorded arguments (the INPUT, not the result) must
     // never carry the credential either — cheap, free assertion.
     expect(JSON.stringify(row!.arguments)).not.toContain(plaintext);
+
+    if (toolName === 'm365_reset_password') {
+      // The protected dispatch really went through caller verification: the
+      // seeded grant was consumed by exactly this intent, and the intent was
+      // pinned to the Entra target and dispatched once.
+      const grants = await withSystemDbAccessContext(() =>
+        db.select().from(callerVerifications).where(eq(callerVerifications.orgId, s.orgId)),
+      );
+      expect(grants).toHaveLength(1);
+      expect(grants[0]!.consumedIntentRef).toBe(intentId);
+      expect(grants[0]!.consumedAt).not.toBeNull();
+      expect(row!.targetEntraOid).toBe(grants[0]!.targetEntraOid);
+      expect(row!.dispatchStartedAt).not.toBeNull();
+    }
 
     // Scoped by org (never by a fabricated id): for the inline path `sessionId`
     // is the real seeded ai_sessions.id, so this returns genuine rows. For the

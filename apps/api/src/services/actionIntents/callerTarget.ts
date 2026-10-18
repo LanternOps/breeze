@@ -21,6 +21,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { m365Connections } from '../../db/schema/m365';
 import { delegantM365Connections } from '../../db/schema/delegant';
+import { actionIntents, type ActionIntent } from '../../db/schema/actionIntents';
 import { CallerVerificationValidationError } from '../callerVerification/errors';
 import type { CallerVerificationAction } from '../callerVerification/types';
 
@@ -95,4 +96,21 @@ export async function loadPinnedCallerBackend(orgId: string, connectionId: strin
     return { backend: 'delegant', connectionId: broker.id, tenantId: brokerTenant, orgId };
   }
   throw new CallerVerificationValidationError('connection_not_ready', 'The pinned Microsoft connection is unavailable');
+}
+
+/**
+ * Load the action intent a released protected M365 mutation dispatches for,
+ * by id and org, under the AMBIENT db context (the session handler / release
+ * worker opens the requester's org scope). `intentId` is the pipeline-supplied
+ * `ToolExecutionContext.actionIntentId`, never model input. Returns null when
+ * there is no such intent in `orgId`; the caller refuses.
+ *
+ * Lives here, not in the AI tool file: the intent row is the caller-target
+ * pin, not device data — an M365 identity action has no device axis.
+ */
+export async function loadCallerIntent(orgId: string, intentId: string): Promise<ActionIntent | null> {
+  const [intent] = await db.select().from(actionIntents).where(and(
+    eq(actionIntents.id, intentId), eq(actionIntents.orgId, orgId),
+  )).limit(1);
+  return intent ?? null;
 }

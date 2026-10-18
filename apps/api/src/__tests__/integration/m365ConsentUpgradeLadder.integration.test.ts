@@ -12,7 +12,16 @@
  * → CAS), because that is the state an operator's Retest actually produces
  * after the bump (#8745). The upgrade then runs through the real actions
  * upgrade-consent route and consent callback. Only the executor client, the
- * feature flag and the Redis budget are stubbed.
+ * feature flag, the Redis budget and the caller-verification dispatch guard
+ * are stubbed.
+ *
+ * Caller verification (#6354 W05): disable / reset_password only dispatch as
+ * the release of a durable intent, by pinned object id, behind
+ * `prepareCallerDispatch`. That guard is orthogonal to the consent ladder (it
+ * runs after readiness, immediately before the executor) and is proven live in
+ * callerVerificationEnforcement.integration.test.ts, so it is stubbed here and
+ * the protected actions are driven in their released shape. The refusal of an
+ * identifier-only / intent-less call is pinned below.
  *
  * Run:
  *   cd apps/api && npx vitest run --config vitest.integration.config.ts m365ConsentUpgradeLadder
@@ -42,6 +51,7 @@ import {
   initiateCustomerGraphActionsConsent,
 } from '../../services/m365ControlPlane/writeActionConnectionService';
 import { executeM365WriteActionByOrg } from '../../services/m365ControlPlane/writeActionService';
+import { CallerVerificationRequiredError } from '../../services/callerVerification/errors';
 import { m365CustomerGraphActionsRoutes } from '../../routes/m365CustomerGraphActions';
 import { createM365ConsentCallbackRoutes } from '../../routes/m365ConsentCallback';
 import { setupTestEnvironment } from './db-utils';
@@ -67,6 +77,13 @@ vi.mock('../../services/m365ControlPlane/writeActionRuntimeConfig', async (impor
 // budget is unit-tested on its own (writeActionBudget.test.ts).
 vi.mock('../../services/m365ControlPlane/writeActionBudget', () => ({
   consumeM365WriteActionBudget: async () => ({ allowed: true }),
+}));
+
+// See the header: the dispatch guard is covered by its own live suite.
+const callerDispatch = vi.hoisted(() => ({ prepareCallerDispatch: vi.fn(async () => undefined) }));
+vi.mock('../../services/callerVerification/dispatch', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../services/callerVerification/dispatch')>(),
+  prepareCallerDispatch: callerDispatch.prepareCallerDispatch,
 }));
 
 vi.mock('../../services/m365ControlPlane/graphActionsExecutorClient', async (importOriginal) => {
@@ -113,10 +130,12 @@ const PRE_M1_GRANTS = REQUIRED.filter((grant) => PRE_M1_ROLES.has(grant.value ??
 const GROUP = '55555555-5555-4555-8555-555555555555';
 const DEVICE = '44444444-4444-4444-8444-444444444444';
 const SKU = '33333333-3333-4333-8333-333333333333';
+/** The pinned Entra object id a released disable / reset intent dispatches to. */
+const TARGET_OID = '22222222-2222-4222-8222-222222222222';
 
 const ALL_ACTIONS: M365WriteAction[] = [
-  { type: 'm365.user.disable', userIdentifier: 'a@contoso.test', reason: 'offboard' },
-  { type: 'm365.user.reset_password', userIdentifier: 'a@contoso.test', reason: 'offboard' },
+  { type: 'm365.user.disable', oid: TARGET_OID, reason: 'offboard' },
+  { type: 'm365.user.reset_password', oid: TARGET_OID, reason: 'offboard' },
   { type: 'm365.user.revoke_sessions', userIdentifier: 'a@contoso.test', reason: 'offboard' },
   { type: 'm365.user.license.remove', userIdentifier: 'a@contoso.test', skuIds: [SKU], reason: 'offboard' },
   { type: 'm365.user.license.assign', userIdentifier: 'a@contoso.test', skuIds: [SKU], reason: 'onboard' },
@@ -142,6 +161,7 @@ const RUNS_ON_PRE_M1 = ALL_ACTIONS.filter(coveredByPreM1);
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 
 beforeEach(() => {
+  callerDispatch.prepareCallerDispatch.mockClear();
   executorStub.retest = null;
   executorStub.executeWriteAction.mockReset();
   // Executor reached: answer a deterministic failure the ladder passes
@@ -269,8 +289,18 @@ function cookiePair(setCookieHeader: string | null): string {
   return setCookieHeader.split(';')[0]!;
 }
 
+const isProtected = (action: M365WriteAction) =>
+  action.type === 'm365.user.disable' || action.type === 'm365.user.reset_password';
+
+/**
+ * Protected actions run as the release of an intent (intent id doubling as the
+ * executor idempotency key, as the release worker sends them); everything else
+ * runs as before.
+ */
 async function runAs(env: Env, action: M365WriteAction) {
-  return withDbAccessContext(orgContext(env), () => executeM365WriteActionByOrg(env.organization.id, action));
+  const intentId = randomUUID();
+  const opts = isProtected(action) ? { actionIntentId: intentId, idempotencyKey: intentId } : undefined;
+  return withDbAccessContext(orgContext(env), () => executeM365WriteActionByOrg(env.organization.id, action, opts));
 }
 
 // --- tests ------------------------------------------------------------
@@ -298,7 +328,9 @@ describe('M365 write ladder across the actions v3 bump (real DB)', () => {
     // Pre-M1 actions keep working — the executor is reached.
     for (const type of ['m365.user.disable', 'm365.user.reset_password'] as const) {
       executorStub.executeWriteAction.mockClear();
-      const result = await runAs(env, { type, userIdentifier: 'a@contoso.test', reason: 'offboard' });
+      callerDispatch.prepareCallerDispatch.mockClear();
+      const result = await runAs(env, { type, oid: TARGET_OID, reason: 'offboard' });
+      expect(callerDispatch.prepareCallerDispatch).toHaveBeenCalledTimes(1);
       expect(executorStub.executeWriteAction).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({ ok: false, code: 'graph_throttled' }); // the stub's verbatim answer
     }
@@ -384,6 +416,28 @@ describe('M365 write ladder across the actions v3 bump (real DB)', () => {
       await runAs(env, action);
       expect(executorStub.executeWriteAction).toHaveBeenCalledTimes(1);
     }
+  });
+
+  runDb('disable / reset outside a released intent refuse with caller verification before the ladder or the executor', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    await seedActiveRow(env, randomUUID(), CURRENT, REQUIRED, new Date());
+    const intentId = randomUUID();
+    const attempts: Array<[M365WriteAction, Parameters<typeof executeM365WriteActionByOrg>[2]]> = [
+      // No intent at all.
+      [{ type: 'm365.user.disable', oid: TARGET_OID, reason: 'offboard' }, undefined],
+      // An identifier (UPN) instead of the pinned object id.
+      [{ type: 'm365.user.reset_password', userIdentifier: 'a@contoso.test', reason: 'offboard' },
+        { actionIntentId: intentId, idempotencyKey: intentId }],
+      // An idempotency key that is not the intent id.
+      [{ type: 'm365.user.disable', oid: TARGET_OID, reason: 'offboard' },
+        { actionIntentId: intentId, idempotencyKey: randomUUID() }],
+    ];
+    for (const [action, opts] of attempts) {
+      await expect(withDbAccessContext(orgContext(env), () => executeM365WriteActionByOrg(env.organization.id, action, opts)))
+        .rejects.toBeInstanceOf(CallerVerificationRequiredError);
+    }
+    expect(callerDispatch.prepareCallerDispatch).not.toHaveBeenCalled();
+    expect(executorStub.executeWriteAction).not.toHaveBeenCalled();
   });
 
   runDb('RLS still holds through the new path: another org cannot see or act on the connection', async () => {
