@@ -81,8 +81,22 @@ apps/mobile
 apps/docs
 apps/agent
 
-# Go agent (not needed in Docker)
+# Go agent (not needed in Docker) — EXCEPT the sources of `breeze-yarac`, the
+# agent's YARA compiler, which the API image builds as its rule pre-check
+# (#6263 W03a, apps/api/Dockerfile `yarac` stage). Only the module files, the
+# command, and the internal packages it imports enter the context; test files
+# and fixtures stay out.
 agent
+!agent/go.mod
+!agent/go.sum
+!agent/cmd/breeze-yarac
+!agent/internal
+agent/**/testdata
+agent/**/*_test.go
+# Later rules win: re-assert the env-file exclusions over the negations above.
+agent/**/.env*
+agent/**/*.env
+agent/**/*.env.*
 
 # Testing & tooling
 e2e-tests

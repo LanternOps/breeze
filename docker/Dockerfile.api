@@ -31,6 +31,19 @@ RUN pnpm --filter @breeze/ext-workspace build:web
 # apps/api/package.json and drop --legacy. See pnpm v10 release notes.
 RUN pnpm --filter @breeze/api deploy --legacy --prod /deployed
 
+# YARA rule pre-check binary (#6263 W03a) — same stage as apps/api/Dockerfile;
+# see the comment there. Tag must equal agent/go.mod's `go` directive.
+FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS yarac
+ARG TARGETOS
+ARG TARGETARCH
+ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
+WORKDIR /src/agent
+COPY agent/go.mod agent/go.sum ./
+RUN go mod download
+COPY agent/cmd/breeze-yarac ./cmd/breeze-yarac
+COPY agent/internal ./internal
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags "-s -w" -o /out/breeze-yarac ./cmd/breeze-yarac
+
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
@@ -76,6 +89,9 @@ COPY --from=builder --chown=hono:nodejs /app/apps/api/assets ./assets
 COPY --from=builder --chown=hono:nodejs /app/ee/workspace/migrations ./ee/workspace/migrations
 COPY --from=builder --chown=hono:nodejs /app/ee/workspace/manifest.json ./ee/workspace/manifest.json
 COPY --from=builder --chown=hono:nodejs /app/ee/workspace/dist ./ee/workspace/dist
+
+# YARA pre-check binary (services/yaraPrecheck.ts default path), root-owned.
+COPY --from=yarac /out/breeze-yarac /usr/local/bin/breeze-yarac
 
 # The stock image contains AGPL core + built-in ee/ code (compiled into
 # dist/index.cjs plus the runtime assets copied above). There is no
