@@ -179,6 +179,29 @@ func TestICETrickle_GatheringCompletingBetweenSnapshotAndBeginIsSignalled(t *tes
 	}
 }
 
+// An older service never sends begin, so the queue can fill; the completion
+// marker must still fit, or a viewer that later gets the queue waits out its
+// whole window.
+func TestICETrickle_CompletionMarkerSurvivesAFullQueue(t *testing.T) {
+	tr := newICETrickle()
+	tr.snapshot(sdpDesc("v=0\r\n"))
+	for i := 0; i < maxQueuedTrickleEntries+5; i++ {
+		tr.observe(testHostCandidate(uint16(2000 + i)))
+	}
+	tr.observe(nil)
+	rec := &trickleRecorder{}
+	tr.begin(rec.emit)
+	got := rec.snapshot()
+	if len(got) == 0 || !got[len(got)-1].Complete {
+		t.Fatalf("completion marker dropped by a full queue; got %d entries", len(got))
+	}
+	for i, c := range got {
+		if c.Seq != i {
+			t.Fatalf("entry %d has seq %d; a dropped candidate must not leave a seq gap", i, c.Seq)
+		}
+	}
+}
+
 func TestICETrickle_QueueIsBounded(t *testing.T) {
 	tr := newICETrickle()
 	tr.snapshot(sdpDesc("v=0\r\n"))
@@ -302,6 +325,8 @@ func TestSessionManager_AddRemoteICECandidateAfterAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = answerer.Close() }()
+	s := &Session{id: "sess-9182", peerConn: answerer, done: make(chan struct{}), trickle: newICETrickle()}
+	answerer.OnICECandidate(s.trickle.observe)
 	if err := answerer.SetRemoteDescription(offer); err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +339,6 @@ func TestSessionManager_AddRemoteICECandidateAfterAnswer(t *testing.T) {
 	}
 
 	m := NewSessionManager()
-	s := &Session{id: "sess-9182", peerConn: answerer, done: make(chan struct{}), trickle: newICETrickle()}
 	s.trickle.snapshot(answerer.LocalDescription)
 	m.mu.Lock()
 	m.sessions[s.id] = s
@@ -323,6 +347,8 @@ func TestSessionManager_AddRemoteICECandidateAfterAnswer(t *testing.T) {
 	var emitted []LocalICECandidate
 	var gens []string
 	m.OnLocalICECandidate = func(sessionID, generation string, c LocalICECandidate) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 		gens = append(gens, generation)
 		emitted = append(emitted, c)
 	}
@@ -339,6 +365,24 @@ func TestSessionManager_AddRemoteICECandidateAfterAnswer(t *testing.T) {
 	}
 	if err := m.AddRemoteICECandidate("nope", "7", late); !errors.Is(err, ErrNoICESession) {
 		t.Fatalf("a candidate for an unknown session must be refused, got %v", err)
+	}
+	// The answerer's host candidates were gathered after the snapshot above,
+	// so they (and the completion marker) trickle under the bound generation.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		n := len(emitted)
+		done := n > 0 && emitted[n-1].Complete
+		m.mu.RUnlock()
+		if done {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(gens) == 0 {
+		t.Fatal("nothing trickled after BeginICETrickle; the generation check below would be vacuous")
 	}
 	for _, g := range gens {
 		if g != "7" {

@@ -137,6 +137,10 @@ func (t *iceTrickle) begin(emit func(LocalICECandidate)) bool {
 	t.emit = emit
 	queued := t.queue
 	t.queue = nil
+	if t.dropped > 0 {
+		slog.Warn("ICE trickle began after dropping late candidates",
+			"dropped", t.dropped, "sending", len(queued))
+	}
 	// Emitting under the lock keeps the flush ahead of any live entry. Both
 	// emitters (a non-blocking WebSocket send, an IPC write) are short, and
 	// the only other contender is pion's serial candidate callback.
@@ -164,6 +168,11 @@ func (t *iceTrickle) boundGeneration() string {
 func (t *iceTrickle) stop() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.state == trickleQueued && len(t.queue) > 0 {
+		// Never begun: these candidates were gathered and never sent.
+		slog.Info("desktop session ended before its late ICE candidates were sent",
+			"unsent", len(t.queue), "dropped", t.dropped)
+	}
 	t.state = trickleStopped
 	t.queue = nil
 	t.emit = nil
@@ -176,7 +185,10 @@ func (t *iceTrickle) enqueueLocked(entry LocalICECandidate) {
 		t.emit(entry)
 		return
 	}
-	if len(t.queue) >= maxQueuedTrickleEntries {
+	// The completion marker always fits: without it a receiver that gets
+	// this queue waits out its whole window. Dropped candidates take no seq,
+	// so the sequence stays contiguous.
+	if !entry.Complete && len(t.queue) >= maxQueuedTrickleEntries {
 		t.dropped++
 		if t.dropped == 1 {
 			slog.Warn("ICE trickle queue full before the answer was delivered; dropping late candidates",

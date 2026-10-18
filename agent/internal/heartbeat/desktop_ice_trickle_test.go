@@ -172,3 +172,25 @@ func TestBeginHelperICETrickleTellsTheOwningHelper(t *testing.T) {
 		t.Fatalf("unexpected begin: %#v", got)
 	}
 }
+
+func TestFormatFenceGeneration(t *testing.T) {
+	if got := formatFenceGeneration(desktopStartFenceInput{Generation: 9007199254740993, HasGeneration: true}); got != "9007199254740993" {
+		t.Fatalf("got %q", got)
+	}
+	if got := formatFenceGeneration(desktopStartFenceInput{}); got != "" {
+		t.Fatalf("a start without a generation must format as empty, got %q", got)
+	}
+}
+
+// The API binds every stored entry to a generation and rejects frames
+// without one, so a generationless start (old server) must not send any.
+func TestTrickleWithoutAGenerationIsNotSent(t *testing.T) {
+	sent := make(chan sentICE, 1)
+	h := &Heartbeat{desktopICESender: recordingICESender(sent)}
+	h.forwardLocalICECandidate("desk-1", "", desktop.LocalICECandidate{Seq: 0, Complete: true})
+	select {
+	case got := <-sent:
+		t.Fatalf("a generationless entry was sent: %#v", got)
+	default:
+	}
+}

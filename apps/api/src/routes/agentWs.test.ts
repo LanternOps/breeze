@@ -7662,6 +7662,24 @@ describe('desktop_ice_candidate frames (#9182)', () => {
     });
   });
 
+  it('treats a frame that matched no live session as a quiet no-op', async () => {
+    vi.mocked(appendAgentIceCandidate).mockResolvedValue(false);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const handlers = createAgentWsHandlers('agent-9182-nomatch', preValidatedAgent);
+    const ws = wsMock();
+    await connectAgentSocket(handlers, ws);
+    vi.mocked(ws.send).mockClear();
+
+    await expect(handlers.onMessage({
+      data: JSON.stringify({ type: 'desktop_ice_candidate', sessionId: SESSION_ID, startGeneration: '4', seq: 0, candidate: { candidate: RELAY } }),
+    } as any, ws as any)).resolves.toBeUndefined();
+
+    expect(vi.mocked(appendAgentIceCandidate)).toHaveBeenCalledTimes(1);
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('desktop_ice_candidate'))).toBe(false);
+    warnSpy.mockRestore();
+  });
+
   it('drops a malformed frame without writing or answering', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const handlers = createAgentWsHandlers('agent-9182-bad', preValidatedAgent);

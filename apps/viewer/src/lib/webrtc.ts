@@ -358,7 +358,7 @@ export async function createWebRTCSession(
       throw new Error('Failed to generate local SDP');
     }
     // Everything gathered so far is in this SDP; anything later trickles.
-    trickle.markOfferSent();
+    trickle.markOfferSent(localDesc.sdp);
 
     // POST offer to API — this triggers the agent to create a pion session
     const offerResp = await apiFetch(

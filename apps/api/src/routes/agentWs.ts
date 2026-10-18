@@ -3484,7 +3484,7 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
           }
           const ice = parsedIce.data;
           try {
-            await runWithAgentDbAccess('agentWs.desktop.iceCandidate', () =>
+            const recorded = await runWithAgentDbAccess('agentWs.desktop.iceCandidate', () =>
               appendAgentIceCandidate({
                 // Bound to the device this socket authenticated as — never an
                 // agent-supplied id.
@@ -3495,6 +3495,12 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
                 ...(ice.complete ? { complete: true as const } : { candidate: ice.candidate }),
               })
             );
+            if (!recorded) {
+              console.debug(
+                `[AgentWs] desktop ICE entry matched no live session (superseded start, ended, or over cap): ` +
+                `session=${ice.sessionId} generation=${ice.startGeneration} seq=${ice.seq} complete=${ice.complete === true}`
+              );
+            }
           } catch (error) {
             console.warn(
               `[AgentWs] Failed to record desktop_ice_candidate for session ${ice.sessionId} from agent ${agentId}:`,

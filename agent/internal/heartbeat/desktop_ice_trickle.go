@@ -46,6 +46,13 @@ func (h *Heartbeat) sendDesktopICE(sessionID, startGeneration string, seq int, c
 	if send == nil {
 		return
 	}
+	if startGeneration == "" {
+		// The API binds every entry to a start generation and refuses frames
+		// without one; only a server too old to send generations (and so too
+		// old to advertise trickle) produces this.
+		log.Debug("not trickling a desktop ICE candidate for a start without a generation", "sessionId", sessionID)
+		return
+	}
 	if err := send(sessionID, startGeneration, seq, cand); err != nil {
 		if errors.Is(err, websocket.ErrServerLacksCapability) {
 			// An older API: the session keeps the candidates in its answer,
@@ -165,7 +172,12 @@ func (h *Heartbeat) beginDirectICETrickle(sessionID string, fence desktopStartFe
 	if h.desktopMgr == nil {
 		return
 	}
-	h.desktopMgr.BeginICETrickle(sessionID, formatFenceGeneration(fence))
+	if !h.desktopMgr.BeginICETrickle(sessionID, formatFenceGeneration(fence)) {
+		// The session was torn down between its answer and here, or the
+		// emitter is not wired. Either way its late candidates stay local.
+		log.Warn("ICE trickle not started for a direct desktop session; late candidates will not reach the viewer",
+			"sessionId", sessionID)
+	}
 }
 
 // beginHelperICETrickle tells the helper hosting sessionID to start sending

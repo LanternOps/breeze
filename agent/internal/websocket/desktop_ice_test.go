@@ -5,6 +5,9 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
+
+	gorillaws "github.com/gorilla/websocket"
 )
 
 // #9182: trickle ICE between the agent and the viewer rides the agent socket.
@@ -133,5 +136,54 @@ func TestHandleDesktopICECandidateMessage_DropsMalformed(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("malformed frames must be dropped, hook called %d times", calls)
+	}
+}
+
+// The read pump must route the id-less relay frame to the hook BEFORE its
+// id-less skip; the handler tests above would stay green if it did not.
+func TestReadPumpRoutesRelayedDesktopICECandidate(t *testing.T) {
+	srv := newTestServer(t, func(conn *gorillaws.Conn) {
+		_ = conn.WriteJSON(map[string]any{"type": "ack", "commandId": "x"})
+		_ = conn.WriteJSON(map[string]any{
+			"type":            "desktop_ice_candidate",
+			"sessionId":       "sess-pump",
+			"startGeneration": "3",
+			"candidate":       map[string]any{"candidate": "candidate:1 1 udp 1 203.0.113.9 9 typ relay"},
+		})
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer srv.Close()
+
+	got := make(chan DesktopICECandidateMessage, 2)
+	c := newTestClient(srv.URL, noopHandler)
+	c.OnDesktopICECandidate = func(m DesktopICECandidateMessage) { got <- m }
+	defer c.Stop()
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect error: %v", err)
+	}
+	pumpDone := make(chan struct{})
+	writerDone := make(chan struct{})
+	go c.writePump(pumpDone, writerDone)
+	go func() {
+		_ = c.readPump()
+		close(pumpDone)
+	}()
+
+	select {
+	case m := <-got:
+		if m.SessionID != "sess-pump" || m.StartGeneration != "3" {
+			t.Fatalf("unexpected relayed candidate: %#v", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read pump never delivered the relayed ICE candidate")
+	}
+	select {
+	case m := <-got:
+		t.Fatalf("hook fired twice (an ack must not reach it): %#v", m)
+	case <-time.After(100 * time.Millisecond):
 	}
 }

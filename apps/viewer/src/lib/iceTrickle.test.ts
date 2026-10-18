@@ -3,6 +3,8 @@ import {
   createIceTrickle,
   TRICKLE_POLL_INTERVAL_MS,
   TRICKLE_MAX_DURATION_MS,
+  TRICKLE_CONNECTED_GRACE_MS,
+  TRICKLE_POLLS_AFTER_COMPLETE,
 } from './iceTrickle';
 
 // #9182: the viewer capped its own gathering at 3 s and never sent another
@@ -205,7 +207,80 @@ describe('inbound: the agent\'s late candidates', () => {
   });
 });
 
+describe('inbound: bounded polling (#9182 review)', () => {
+  it('stops shortly after the connection is up', async () => {
+    const pc = new FakePC();
+    const net = stubFetch([{ body: { agentIceCandidates: [] } }]);
+    const trickle = createIceTrickle(pc as unknown as RTCPeerConnection, params);
+    trickle.markOfferSent();
+    trickle.start(ANSWER_PARTIAL);
+    pc.connectionState = 'connected';
+
+    await vi.advanceTimersByTimeAsync(TRICKLE_CONNECTED_GRACE_MS + TRICKLE_POLL_INTERVAL_MS * 2);
+    const settled = net.polls();
+    await vi.advanceTimersByTimeAsync(TRICKLE_POLL_INTERVAL_MS * 10);
+
+    expect(net.polls()).toBe(settled);
+    expect(settled).toBeLessThanOrEqual(Math.ceil(TRICKLE_CONNECTED_GRACE_MS / TRICKLE_POLL_INTERVAL_MS) + 2);
+    trickle.stop();
+  });
+
+  it('stops a few polls after the completion marker even if an entry never arrives', async () => {
+    const pc = new FakePC();
+    const net = stubFetch([{ body: { agentIceCandidates: [{ seq: 1, complete: true }] } }]);
+    const trickle = createIceTrickle(pc as unknown as RTCPeerConnection, params);
+    trickle.markOfferSent();
+    trickle.start(ANSWER_PARTIAL);
+
+    await vi.advanceTimersByTimeAsync(TRICKLE_POLL_INTERVAL_MS * 12);
+
+    expect(net.polls()).toBe(1 + TRICKLE_POLLS_AFTER_COMPLETE);
+    trickle.stop();
+  });
+
+  it('counts an entry it cannot use toward completion', async () => {
+    const pc = new FakePC();
+    const net = stubFetch([{ body: { agentIceCandidates: [{ seq: 0, candidate: { candidate: '' } }, { seq: 1, complete: true }] } }]);
+    const trickle = createIceTrickle(pc as unknown as RTCPeerConnection, params);
+    trickle.markOfferSent();
+    trickle.start(ANSWER_PARTIAL);
+
+    await vi.advanceTimersByTimeAsync(TRICKLE_POLL_INTERVAL_MS * 5);
+
+    expect(net.polls()).toBe(1);
+    expect(pc.added).toHaveLength(0);
+  });
+});
+
 describe('outbound: the viewer\'s late candidates', () => {
+  it('does not resend a candidate already in the offer SDP', async () => {
+    const pc = new FakePC();
+    const net = stubFetch([{ body: { agentIceCandidates: [] } }]);
+    const trickle = createIceTrickle(pc as unknown as RTCPeerConnection, params);
+    trickle.markOfferSent('v=0\r\na=candidate:host-in-offer\r\n');
+    pc.emitLocal('candidate:host-in-offer');
+    pc.emitLocal(RELAY);
+    trickle.start(ANSWER_COMPLETE);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(net.posts().map((p) => JSON.parse(String(p.init?.body)).candidate.candidate)).toEqual([RELAY]);
+    trickle.stop();
+  });
+
+  it('warns when the API could not relay a candidate to the agent', async () => {
+    const pc = new FakePC();
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ accepted: true, forwarded: false })));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const trickle = createIceTrickle(pc as unknown as RTCPeerConnection, params);
+    trickle.markOfferSent();
+    trickle.start(ANSWER_COMPLETE);
+    pc.emitLocal(RELAY);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('did not reach the agent'))).toBe(true);
+    trickle.stop();
+  });
+
   it('sends only candidates gathered after the offer, and only once the answer is applied', async () => {
     const pc = new FakePC();
     const net = stubFetch([{ body: { agentIceCandidates: [] } }]);

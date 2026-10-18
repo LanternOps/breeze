@@ -76,10 +76,19 @@ func (c *Client) handleDesktopICECandidateMessage(raw []byte) {
 		StartGeneration string               `json:"startGeneration"`
 		Candidate       *DesktopICECandidate `json:"candidate"`
 	}
-	if err := json.Unmarshal(raw, &frame); err != nil || frame.SessionID == "" ||
-		frame.Candidate == nil || frame.Candidate.Candidate == "" ||
-		len(frame.Candidate.Candidate) > maxDesktopICECandidateBytes {
-		log.Warn("dropping malformed desktop_ice_candidate frame")
+	reason := ""
+	switch err := json.Unmarshal(raw, &frame); {
+	case err != nil:
+		reason = "undecodable: " + err.Error()
+	case frame.SessionID == "":
+		reason = "no sessionId"
+	case frame.Candidate == nil || frame.Candidate.Candidate == "":
+		reason = "no candidate"
+	case len(frame.Candidate.Candidate) > maxDesktopICECandidateBytes:
+		reason = "candidate too large"
+	}
+	if reason != "" {
+		log.Warn("dropping malformed desktop_ice_candidate frame", "sessionId", frame.SessionID, "reason", reason)
 		return
 	}
 	if c.OnDesktopICECandidate == nil {

@@ -41,6 +41,7 @@ export const MAX_ICE_ENTRIES_PER_SOURCE = 32;
 
 const MAX_CANDIDATE_BYTES = 1024;
 const GENERATION_PATTERN = /^\d{1,19}$/;
+const MAX_BIGINT = 9223372036854775807n;
 const LIVE_ICE_STATUSES = ['connecting', 'active'] as const;
 
 export const iceCandidateInitSchema = z.object({
@@ -60,7 +61,7 @@ export const agentIceCandidateMessageSchema = z.object({
   sessionId: z.string().uuid(),
   // Canonical decimal string: generations are bigint and must never pass
   // through a JavaScript Number.
-  startGeneration: z.string().regex(GENERATION_PATTERN),
+  startGeneration: z.string().regex(GENERATION_PATTERN).refine((g) => GENERATION_PATTERN.test(g) && BigInt(g) <= MAX_BIGINT, 'generation out of range'),
   seq: z.number().int().min(0).max(1000),
   candidate: iceCandidateInitSchema.optional(),
   complete: z.literal(true).optional(),

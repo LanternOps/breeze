@@ -59,6 +59,7 @@ describe('agent desktop_ice_candidate frame schema', () => {
     ['an empty candidate line', { seq: 0, candidate: { candidate: '' } }],
     ['an oversized candidate line', { seq: 0, candidate: { candidate: 'a'.repeat(1025) } }],
     ['a non-decimal generation', { seq: 0, startGeneration: '7e3', candidate: { candidate: RELAY } }],
+    ['a generation beyond bigint range', { seq: 0, startGeneration: '9999999999999999999', candidate: { candidate: RELAY } }],
     ['a negative seq', { seq: -1, candidate: { candidate: RELAY } }],
   ])('rejects %s', (_label, overrides) => {
     expect(agentIceCandidateMessageSchema.safeParse({

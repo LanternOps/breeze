@@ -1,8 +1,10 @@
 package userhelper
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -53,5 +55,32 @@ func TestHelperBeginICETrickleValidates(t *testing.T) {
 	}
 	if err := h.beginICETrickle(ipc.DesktopICETrickleBegin{SessionID: "desk-1"}); err == nil {
 		t.Fatal("beginning a session this helper does not host must report it")
+	}
+}
+
+func TestWireDesktopICETrickleSendsLocalCandidatesToTheService(t *testing.T) {
+	client, peer, cleanup := createClientPipe(t)
+	defer cleanup()
+	client.wireDesktopICETrickle()
+	if client.desktopMgr.mgr.OnLocalICECandidate == nil {
+		t.Fatal("the helper must register an emitter for late local candidates")
+	}
+
+	go client.desktopMgr.mgr.OnLocalICECandidate("desk-wire", "6", desktop.LocalICECandidate{Seq: 1, Complete: true})
+
+	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	env, err := peer.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if env.Type != ipc.TypeDesktopLocalICECandidate {
+		t.Fatalf("type = %q, want %q", env.Type, ipc.TypeDesktopLocalICECandidate)
+	}
+	var got ipc.DesktopLocalICECandidate
+	if err := json.Unmarshal(env.Payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != "desk-wire" || got.StartGeneration != "6" || got.Seq != 1 || !got.Complete {
+		t.Fatalf("notice = %#v", got)
 	}
 }
