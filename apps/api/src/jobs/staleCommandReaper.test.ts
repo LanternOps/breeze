@@ -1763,6 +1763,24 @@ describe('reapStaleScriptExecutions per-script timeout (#3190)', () => {
       expect(execSet).toHaveBeenCalledTimes(1);
     });
 
+    it('skips the command lookup for a row not due even before the budget', async () => {
+      // The budget only lengthens the deadline, so the cheap execution-row
+      // check must still short-circuit: 60 s script, 2 min old, never due.
+      // Without it every in-flight execution costs a lookup per tick.
+      const { execSet } = arrangeExec({ timeoutSeconds: 60, ageMs: 2 * 60 * 1000, cmdRow: sentCmd(true), running: true });
+
+      expect(await reapStaleScriptExecutions()).toBe(0);
+      expect(selectMock).toHaveBeenCalledTimes(1);
+      expect(execSet).not.toHaveBeenCalled();
+    });
+
+    it('does the command lookup once the plain deadline has passed', async () => {
+      arrangeExec({ timeoutSeconds: 60, ageMs: 8 * 60 * 1000, cmdRow: sentCmd(true), running: true });
+
+      await reapStaleScriptExecutions();
+      expect(selectMock).toHaveBeenCalledTimes(2);
+    });
+
     it('keeps the plain deadline when the block is disabled', async () => {
       const { execSet } = arrangeExec({ timeoutSeconds: 60, ageMs: 8 * 60 * 1000, cmdRow: sentCmd(false), running: true });
 
