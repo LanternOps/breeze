@@ -90,12 +90,18 @@ export async function fetchSecurityAgentCoverage(
   );
   throwIfNotOk(res);
   const body = (await res.json()) as Partial<CoverageResponse>;
-  // Tolerate a partial body: coverage is supplementary and must never throw
-  // the host panel into an error state.
+  if (!Array.isArray(body.summary) || !Array.isArray(body.data)) {
+    throw new Error("malformed coverage response");
+  }
+  const rows = body.data;
   return {
-    summary: Array.isArray(body.summary) ? body.summary : [],
-    data: Array.isArray(body.data) ? body.data : [],
-    pagination: body.pagination ?? { limit: 0, offset: 0, total: 0 },
+    summary: body.summary,
+    data: rows,
+    pagination: body.pagination ?? {
+      limit: rows.length,
+      offset: 0,
+      total: rows.length,
+    },
   };
 }
 

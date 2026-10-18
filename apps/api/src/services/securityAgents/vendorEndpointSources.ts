@@ -24,24 +24,35 @@ function isOffline(status: string | null): boolean | null {
   return (HUNTRESS_OFFLINE_STATUSES as readonly string[]).some((s) => lowered.includes(s));
 }
 
+/**
+ * A Huntress view older than this is not trusted: the rows may describe agents
+ * that have since moved or gone. Sync runs far more often than this.
+ */
+export const HUNTRESS_VIEW_STALE_MS = 24 * 60 * 60 * 1000;
+
 export const huntressEndpointSource: VendorEndpointSource = {
   vendor: 'huntress',
   // huntress_agents.org_id is the Breeze org its Huntress organization is
   // mapped to (huntress_org_mappings), so another org there is a real mismatch.
   reportsVendorOrg: true,
-  async listForOrg(orgId: string): Promise<VendorEndpointView[]> {
+  async listForOrg(orgId: string): Promise<VendorEndpointView[] | null> {
     const [org] = await db
       .select({ partnerId: organizations.partnerId })
       .from(organizations)
       .where(eq(organizations.id, orgId))
       .limit(1);
-    if (!org?.partnerId) return [];
+    if (!org?.partnerId) return null;
 
     const integrations = await db
-      .select({ id: huntressIntegrations.id })
+      .select({ id: huntressIntegrations.id, lastSyncAt: huntressIntegrations.lastSyncAt })
       .from(huntressIntegrations)
       .where(and(eq(huntressIntegrations.partnerId, org.partnerId), eq(huntressIntegrations.isActive, true)));
-    if (integrations.length === 0) return [];
+    // No active integration, or one whose data has never been / is no longer
+    // fresh: the view is unavailable, not empty.
+    const cutoff = Date.now() - HUNTRESS_VIEW_STALE_MS;
+    if (integrations.length === 0 || integrations.some((i) => !i.lastSyncAt || i.lastSyncAt.getTime() < cutoff)) {
+      return null;
+    }
 
     const orgDeviceIds = sql`(SELECT d.id FROM devices d WHERE d.org_id = ${orgId}::uuid)`;
     const orgDeviceNames = sql`(

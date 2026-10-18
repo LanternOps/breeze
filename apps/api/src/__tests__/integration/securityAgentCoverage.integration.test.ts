@@ -24,7 +24,7 @@
  *     src/__tests__/integration/securityAgentCoverage.integration.test.ts
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
@@ -48,8 +48,13 @@ import {
   listCoverageOrgsForPartner,
   listCoveragePartners,
   reconcileOrgCoverage,
+  type ReconcileDeps,
 } from '../../services/securityAgents/coverageReconcileRun';
-import { SECURITY_AGENT_COVERAGE_ALERT_SOURCE } from '../../services/securityAgents/coverageAlerts';
+import {
+  defaultCoverageAlertDeps,
+  SECURITY_AGENT_COVERAGE_ALERT_SOURCE,
+} from '../../services/securityAgents/coverageAlerts';
+import { getVendorEndpointSource } from '../../services/securityAgents/vendorEndpointSources';
 import { readSecurityAgentCoverage } from '../../services/securityAgents/coverageRead';
 import type { EdrReadScope } from '../../services/edrProviders/read';
 import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
@@ -93,6 +98,8 @@ async function seed() {
       apiKeyEncrypted: encryptSecret('dummy-api-key', { aad: 'huntress_integrations.api_key_encrypted' })!,
       accountKeyEncrypted: encryptSecret(ACCT_KEY, { aad: 'huntress_integrations.account_key_encrypted' })!,
       isActive: true,
+      // A synced integration: the reconciler trusts only a fresh vendor view.
+      lastSyncAt: new Date(),
     }).returning({ id: huntressIntegrations.id });
     await db.insert(huntressOrgMappings).values([
       { integrationId: integration!.id, partnerId: p.id, huntressOrgId: 'h-a', huntressOrgKey: ORG_KEY_A, orgId: orgs.a.id },
@@ -388,5 +395,142 @@ describe('security agent coverage — live Postgres (#6960 W03)', () => {
       db.update(devices).set({ orgId: target.id, siteId: site.id }).where(eq(devices.id, f.dev.c)),
     );
     expect(await rowFor(f.dev.c)).toMatchObject({ orgId: target.id, state: 'not_applicable' });
+  });
+
+  // ---- review-round cases ------------------------------------------------
+
+  async function secondDeviceInA(f: Fixture): Promise<string> {
+    const site = await createSite({ orgId: f.orgs.a.id });
+    return (await createDevice({ orgId: f.orgs.a.id, siteId: site.id, hostname: `cov-a2-${f.orgs.a.id.slice(0, 8)}` })).id;
+  }
+
+  it('alert cap: deferred transitions keep their prior state and are raised on the next run', async () => {
+    const f = await seed();
+    const dA2 = await secondDeviceInA(f);
+    await compliancePass(f);
+    await setCompliance(f, f.dev.a, { missing: true, installRemediationStatus: 'gave_up' });
+    await setCompliance(f, dA2, { missing: true, installRemediationStatus: 'gave_up' });
+
+    const first = await reconcileOrgCoverage(f.orgs.a.id, undefined, { maxAlertsPerRun: 1 });
+    expect(first).toMatchObject({ alertsRaised: 1, alertsDeferred: 1 });
+    const states = [(await rowFor(f.dev.a))?.state, (await rowFor(dA2))?.state].sort();
+    expect(states).toEqual(['gap', 'pending']);
+
+    const second = await reconcileOrgCoverage(f.orgs.a.id, undefined, { maxAlertsPerRun: 1 });
+    expect(second).toMatchObject({ alertsRaised: 1, alertsDeferred: 0 });
+    expect((await rowFor(f.dev.a))?.state).toBe('gap');
+    expect((await rowFor(dA2))?.state).toBe('gap');
+    expect(await coverageAlerts(f.dev.a)).toHaveLength(1);
+    expect(await coverageAlerts(dA2)).toHaveLength(1);
+  });
+
+  it.each([
+    ['returns false', async () => false],
+    ['throws', async () => { throw new Error('alert pipeline down'); }],
+  ])('a raise that %s keeps the prior state (retried next run), never a silent gap', async (_name, raise) => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const f = await seed();
+    await compliancePass(f);
+    await setCompliance(f, f.dev.a, { missing: true, installRemediationStatus: 'gave_up' });
+    const failing: ReconcileDeps = { alerts: { ...defaultCoverageAlertDeps, raise }, sourceFor: getVendorEndpointSource };
+
+    const result = await reconcileOrgCoverage(f.orgs.a.id, failing);
+    expect(result).toMatchObject({ alertsRaised: 0, alertsDeferred: 1, changed: 0 });
+    expect((await rowFor(f.dev.a))?.state).toBe('pending');
+
+    const retried = await reconcileOrgCoverage(f.orgs.a.id);
+    expect(retried.alertsRaised).toBe(1);
+    expect((await rowFor(f.dev.a))?.state).toBe('gap');
+    err.mockRestore();
+  });
+
+  it('a later compliance pass leaves a reconciled gap alone (same state_changed_at); unmapping the org moves it to not_applicable and resolves the alert', async () => {
+    const f = await seed();
+    await compliancePass(f);
+    await setCompliance(f, f.dev.a, { missing: true, installRemediationStatus: 'gave_up' });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    const gap = await rowFor(f.dev.a);
+    expect(gap?.state).toBe('gap');
+
+    await compliancePass(f);
+    const after = await rowFor(f.dev.a);
+    expect(after).toMatchObject({ state: 'gap', reasonCode: 'install_failed' });
+    expect(after?.stateChangedAt.getTime()).toBe(gap?.stateChangedAt.getTime());
+
+    await withSystemDbAccessContext(() => db.delete(huntressOrgMappings).where(eq(huntressOrgMappings.orgId, f.orgs.a.id)));
+    await compliancePass(f);
+    expect(await rowFor(f.dev.a)).toMatchObject({ state: 'not_applicable', reasonCode: 'org_not_mapped' });
+    const resolved = await reconcileOrgCoverage(f.orgs.a.id);
+    expect(resolved.alertsResolved).toBe(1);
+    expect(await coverageAlerts(f.dev.a, 'active')).toEqual([]);
+  });
+
+  it('deactivating the generated policy prunes its rows on the next reconcile', async () => {
+    const f = await seed();
+    await compliancePass(f);
+    await withSystemDbAccessContext(() =>
+      db.update(softwarePolicies).set({ isActive: false }).where(eq(softwarePolicies.id, f.policyId)),
+    );
+    const result = await reconcileOrgCoverage(f.orgs.a.id);
+    expect(result.pruned).toBe(1);
+    expect(await rowFor(f.dev.a)).toBeUndefined();
+  });
+
+  it("an org whose last rows the compliance worker pruned stays in the fan-out until its open alerts are resolved", async () => {
+    const f = await seed();
+    await compliancePass(f);
+    await setCompliance(f, f.dev.a, { missing: true, installRemediationStatus: 'gave_up' });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect(await coverageAlerts(f.dev.a, 'active')).toHaveLength(1);
+
+    // The policy stops reaching org A: the compliance worker deletes its rows directly.
+    await withSystemDbAccessContext(() =>
+      db.delete(securityAgentDeviceStatus).where(eq(securityAgentDeviceStatus.orgId, f.orgs.a.id)),
+    );
+    const orgs = await withSystemDbAccessContext(() => listCoverageOrgsForPartner(f.p.id));
+    expect(orgs).toContain(f.orgs.a.id);
+
+    const result = await reconcileOrgCoverage(f.orgs.a.id);
+    expect(result.alertsResolved).toBe(1);
+    expect(await coverageAlerts(f.dev.a, 'active')).toEqual([]);
+    expect(await withSystemDbAccessContext(() => listCoverageOrgsForPartner(f.p.id))).not.toContain(f.orgs.a.id);
+  });
+
+  it('vendor_only rows are dropped once the org has no in-scope device rows for that vendor', async () => {
+    const f = await seed();
+    await compliancePass(f);
+    await addAgent(f, { orgId: f.orgs.a.id, deviceId: null, hostname: 'ghost-host-scope-exit' });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect((await statusRows()).filter((r) => r.orgId === f.orgs.a.id && r.state === 'vendor_only')).toHaveLength(1);
+
+    await withSystemDbAccessContext(() =>
+      db.delete(securityAgentDeviceStatus).where(and(
+        eq(securityAgentDeviceStatus.orgId, f.orgs.a.id),
+        eq(securityAgentDeviceStatus.deviceId, f.dev.a),
+      )),
+    );
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect((await statusRows()).filter((r) => r.orgId === f.orgs.a.id)).toEqual([]);
+  });
+
+  it('an unavailable vendor view (stale sync) changes nothing: covered stays covered and open alerts stay open', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = await seed();
+    await compliancePass(f);
+    await setCompliance(f, f.dev.a, { missing: false, installRemediationStatus: 'none' });
+    await addAgent(f, { orgId: f.orgs.b.id, deviceId: f.dev.a, hostname: f.host.a });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect((await rowFor(f.dev.a))?.state).toBe('mismatched_org');
+
+    await withSystemDbAccessContext(() =>
+      db.update(huntressIntegrations)
+        .set({ lastSyncAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) })
+        .where(eq(huntressIntegrations.id, f.integrationId)),
+    );
+    const result = await reconcileOrgCoverage(f.orgs.a.id);
+    expect(result).toMatchObject({ evaluated: 0, changed: 0, alertsResolved: 0 });
+    expect((await rowFor(f.dev.a))?.state).toBe('mismatched_org');
+    expect(await coverageAlerts(f.dev.a, 'active')).toHaveLength(1);
+    warn.mockRestore();
   });
 });

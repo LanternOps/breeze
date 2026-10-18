@@ -135,8 +135,12 @@ export async function initializeSecurityAgentCoverageWorker(): Promise<void> {
     captureException(error);
   });
   coverageWorker.on('failed', (job, error) => {
-    console.error('[SecurityAgentCoverage] Job failed', { jobId: job?.id, jobType: job?.data?.type, error });
-    captureException(error);
+    const data = job?.data;
+    console.error('[SecurityAgentCoverage] Job failed', { jobId: job?.id, jobType: data?.type, error });
+    const tags: Record<string, string> = { service: 'securityAgentCoverage', jobType: data?.type ?? 'unknown' };
+    if (data && 'partnerId' in data) tags.partnerId = data.partnerId;
+    if (data && 'orgId' in data) tags.orgId = data.orgId;
+    captureException(error, undefined, tags);
   });
 
   try {

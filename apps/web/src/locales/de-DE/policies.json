@@ -1367,7 +1367,8 @@
       "coverageDevice": "Gerät",
       "coverageVendor": "Hersteller",
       "coverageReason": "Grund",
-      "vendorOnlyAgent": "Nur beim Hersteller bekannter Agent"
+      "vendorOnlyAgent": "Nur beim Hersteller bekannter Agent",
+      "coverageRowsNote": "{{shown}} von {{total}} angezeigt"
     },
     "deploymentList": {
       "running": "Wird ausgeführt",

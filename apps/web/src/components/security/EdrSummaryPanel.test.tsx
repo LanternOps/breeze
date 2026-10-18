@@ -254,4 +254,30 @@ describe('EdrSummaryPanel security agent coverage', () => {
     expect(errSpy.mock.calls.some((c) => String(c[0]).includes('security-agents/coverage'))).toBe(true);
     errSpy.mockRestore();
   });
+
+  it.each([[500, /edr status couldn't be loaded/i, 'edr-summary-unavailable'], [403, null, 'edr-summary-denied']])(
+    'shows the failure notice and the coverage section when both status fetches return %s',
+    async (status, text, testId) => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      fetchWithAuth.mockImplementation((url: string) => {
+        if (url.startsWith('/edr/security-agents/coverage')) return Promise.resolve(ok(coveragePayload));
+        return Promise.resolve({ ok: false, status, statusText: 'err', json: async () => ({}) } as Response);
+      });
+      render(<EdrSummaryPanel />);
+      expect(await screen.findByTestId('edr-security-agent-coverage')).toBeInTheDocument();
+      if (text) expect(screen.getByText(text)).toBeInTheDocument();
+      else expect(screen.getByTestId(testId)).toBeInTheDocument();
+      errSpy.mockRestore();
+    }
+  );
+
+  it('treats a malformed coverage body as a failure: logs and omits the section', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    routeStatus(s1Unconfigured, huntressConfigured, { nope: true });
+    render(<EdrSummaryPanel />);
+    expect(await screen.findByTestId('edr-card-huntress-coverage')).toBeInTheDocument();
+    expect(screen.queryByTestId('edr-security-agent-coverage')).toBeNull();
+    expect(errSpy.mock.calls.some((c) => String(c[1]).includes('malformed coverage response'))).toBe(true);
+    errSpy.mockRestore();
+  });
 });

@@ -241,6 +241,7 @@ export default function ComplianceDashboard({
     CoverageVendorSummary[]
   >([]);
   const [coverageRows, setCoverageRows] = useState<CoverageRow[]>([]);
+  const [coverageTotal, setCoverageTotal] = useState(0);
   const [coverageFilter, setCoverageFilter] = useState<CoverageState | null>(
     readCoverageHash,
   );
@@ -255,11 +256,16 @@ export default function ComplianceDashboard({
       try {
         const res = await fetchSecurityAgentCoverage({
           orgId: currentOrgId,
+          // Server-side filter: a client-side filter over one page would show a
+          // near-empty table for a state whose rows fall past the page limit.
+          states: coverageFilter ? [coverageFilter] : undefined,
           limit: 200,
         });
         if (cancelled) return;
+        // The API computes the summary over all states regardless of the filter.
         setCoverageSummary(res.summary);
         setCoverageRows(res.data);
+        setCoverageTotal(res.pagination.total);
       } catch (err) {
         if (cancelled) return;
         console.error(
@@ -268,19 +274,18 @@ export default function ComplianceDashboard({
         );
         setCoverageSummary([]);
         setCoverageRows([]);
+        setCoverageTotal(0);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [currentOrgId]);
+  }, [currentOrgId, coverageFilter]);
   const coverageCounts = totalCounts(coverageSummary);
   const hasCoverage =
     coverageRows.length > 0 ||
     COVERAGE_STATES.some((st) => coverageCounts[st] > 0);
-  const visibleCoverageRows = coverageFilter
-    ? coverageRows.filter((r) => r.state === coverageFilter)
-    : coverageRows;
+  const visibleCoverageRows = coverageRows;
   const toggleCoverageFilter = (state: CoverageState) => {
     const next = coverageFilter === state ? null : state;
     setCoverageFilter(next);
@@ -693,6 +698,17 @@ export default function ComplianceDashboard({
               </button>
             ))}
           </div>
+          {coverageTotal > visibleCoverageRows.length && (
+            <p
+              className="border-t px-4 py-2 text-xs text-muted-foreground"
+              data-testid="coverage-rows-note"
+            >
+              {i18n.t("policies:software.complianceDashboard.coverageRowsNote", {
+                shown: visibleCoverageRows.length,
+                total: coverageTotal,
+              })}
+            </p>
+          )}
           {visibleCoverageRows.length > 0 && (
             <div className="overflow-x-auto border-t">
               <table className="min-w-full text-sm">

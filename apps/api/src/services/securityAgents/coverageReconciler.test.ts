@@ -71,9 +71,32 @@ describe('classifyOrgCoverage — per-device state machine', () => {
     expect(decisions.get('d1')).toMatchObject({ state: 'mismatched_org', reasonCode: 'vendor_org_mismatch', vendorEndpointId: 'e1' });
   });
 
-  it("mismatched_org: an unlinked agent in another org's vendor account carries this device's hostname", () => {
-    const { decisions } = classify({ endpoints: [endpoint({ orgId: OTHER_ORG, hostname: 'pc-1' })] });
+  it("mismatched_org: an unlinked agent in another org's vendor account carries this device's hostname (agent installed per inventory)", () => {
+    const { decisions } = classify({
+      devices: [device({ install: 'installed' })],
+      endpoints: [endpoint({ orgId: OTHER_ORG, hostname: 'pc-1' })],
+    });
     expect(decisions.get('d1')?.state).toBe('mismatched_org');
+  });
+
+  // Review fix: a generic hostname (FRONTDESK, RECEPTION) recurs across an
+  // MSP's client orgs. A name-only match against another org's agent says
+  // nothing when this device's inventory shows the agent MISSING: the agent
+  // is on some other machine, and this device is a gap, not a mismatch.
+  it('a hostname-only foreign match never masks a missing agent: the device stays on the install path (gap)', () => {
+    const { decisions } = classify({
+      devices: [device({ install: 'missing', installRemediationStatus: 'gave_up' })],
+      endpoints: [endpoint({ orgId: OTHER_ORG, hostname: 'pc-1' })],
+    });
+    expect(decisions.get('d1')).toMatchObject({ state: 'gap', reasonCode: 'install_failed' });
+  });
+
+  it('a hostname-only foreign match is ignored while the device is unevaluated too (pending)', () => {
+    const { decisions } = classify({
+      devices: [device({ install: 'unknown' })],
+      endpoints: [endpoint({ orgId: OTHER_ORG, hostname: 'pc-1' })],
+    });
+    expect(decisions.get('d1')?.state).toBe('pending');
   });
 
   it("mismatch detail never names the other organization (it is visible to this org's users)", () => {

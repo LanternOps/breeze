@@ -86,19 +86,24 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   }, [orgId, deviceId]);
 
   // Read-only coverage: its own fetch so a failure never touches `error`.
-  const loadCoverage = useCallback(async () => {
-    try {
-      const res = await fetchSecurityAgentCoverage({
-        orgId,
-        deviceId,
-        limit: 50,
-      });
-      setCoverageRows(res.data);
-    } catch (err) {
-      console.error("[DeviceEdrPanel] security agent coverage failed:", err);
-      setCoverageRows([]);
-    }
-  }, [orgId, deviceId]);
+  const loadCoverage = useCallback(
+    async (isStale: () => boolean) => {
+      try {
+        const res = await fetchSecurityAgentCoverage({
+          orgId,
+          deviceId,
+          limit: 50,
+        });
+        if (isStale()) return;
+        setCoverageRows(res.data);
+      } catch (err) {
+        if (isStale()) return;
+        console.error("[DeviceEdrPanel] security agent coverage failed:", err);
+        setCoverageRows([]);
+      }
+    },
+    [orgId, deviceId],
+  );
 
   const doIsolate = async (isolate: boolean) => {
     setIsolating(true);
@@ -153,7 +158,12 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   }, [load]);
 
   useEffect(() => {
-    void loadCoverage();
+    let cancelled = false;
+    setCoverageRows([]);
+    void loadCoverage(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
   }, [loadCoverage]);
 
   return (

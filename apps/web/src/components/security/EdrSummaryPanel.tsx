@@ -133,29 +133,27 @@ export default function EdrSummaryPanel() {
       </div>
     );
   }
-  if (!showS1 && !showHuntress && !showCoverage) {
-    if (failureKind === "none") return null;
-    // A 403 is terminal for this user — a retry hits the same permission gate, and
-    // "EDR status unavailable" would misreport a permission denial as an outage.
-    if (failureKind === "denied") {
-      return (
-        <div
-          className="rounded-lg border bg-card p-6 shadow-xs"
-          data-testid="edr-summary-panel"
-        >
-          <AccessDenied testId="edr-summary-denied" />
+  // With no provider card to show, a failed status fetch must still surface
+  // (a 403 is terminal for this user, so it is "denied", not "unavailable").
+  const failureNotice =
+    !showS1 && !showHuntress && failureKind !== "none" ? (
+      failureKind === "denied" ? (
+        <AccessDenied testId="edr-summary-denied" />
+      ) : (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <ShieldAlert className="h-4 w-4" />
+          {t("securityEdrSummaryPanel.edrStatusUnavailable")}
         </div>
-      );
-    }
+      )
+    ) : null;
+  if (!showS1 && !showHuntress && !showCoverage) {
+    if (failureNotice === null) return null;
     return (
       <div
         className="rounded-lg border bg-card p-6 shadow-xs"
         data-testid="edr-summary-panel"
       >
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <ShieldAlert className="h-4 w-4" />
-          {t("securityEdrSummaryPanel.edrStatusUnavailable")}
-        </div>
+        {failureNotice}
       </div>
     );
   }
@@ -170,6 +168,7 @@ export default function EdrSummaryPanel() {
           {t("securityEdrSummaryPanel.endpointDetectionAndAmpResponse")}
         </h3>
       </div>
+      {failureNotice}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {showS1 && s1 && (
           <>

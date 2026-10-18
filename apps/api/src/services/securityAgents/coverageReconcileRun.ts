@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
+  alerts,
   devices,
   organizations,
   securityAgentDeviceStatus as t,
@@ -22,7 +23,12 @@ import {
   type VendorEndpointSource,
   type VendorEndpointView,
 } from './coverageReconciler';
-import { defaultCoverageAlertDeps, logCoverageAlertFailure, type CoverageAlertDeps } from './coverageAlerts';
+import {
+  defaultCoverageAlertDeps,
+  logCoverageAlertFailure,
+  SECURITY_AGENT_COVERAGE_ALERT_SOURCE,
+  type CoverageAlertDeps,
+} from './coverageAlerts';
 import { vendorForIntegrationProvider, type VendorKey } from './securityAgentVendors';
 import { getVendorEndpointSource, loadPartnerDeviceHostnames } from './vendorEndpointSources';
 import { notInHoldingOrgCondition } from '../unassignedPool/selectorPredicate';
@@ -82,6 +88,8 @@ interface VendorPlan {
   decisions: Map<string, CoverageDecision>;
   vendorOnly: Array<{ endpointId: string; detail: string }>;
   hasSource: boolean;
+  /** The source exists but its view is unavailable this run: rows, vendor_only rows and alerts are left as they are. */
+  unavailable: boolean;
   deviceNames: Map<string, string | null>;
 }
 
@@ -153,7 +161,7 @@ export async function reconcileOrgCoverage(
       const source = deps.sourceFor(vendor);
       const vendorRows = kept.filter((row) => row.vendor === vendor);
       const plan: VendorPlan = {
-        vendor, rows: vendorRows, decisions: new Map(), vendorOnly: [], hasSource: !!source, deviceNames: new Map(),
+        vendor, rows: vendorRows, decisions: new Map(), vendorOnly: [], hasSource: !!source, unavailable: false, deviceNames: new Map(),
       };
       plans.push(plan);
       if (!source) continue;
@@ -176,7 +184,13 @@ export async function reconcileOrgCoverage(
         };
       });
       // vendor_only is only meaningful where the feature reaches devices.
-      const endpoints: VendorEndpointView[] = vendorRows.length > 0 ? await source.listForOrg(orgId) : [];
+      const listed: VendorEndpointView[] | null = vendorRows.length > 0 ? await source.listForOrg(orgId) : [];
+      if (listed === null) {
+        plan.unavailable = true;
+        console.warn(`[SecurityAgentCoverage] org ${orgId}: ${vendor} vendor view unavailable (no active integration or stale sync); its coverage is left unchanged this run`);
+        continue;
+      }
+      const endpoints = listed;
       const unlinkedHostnames = endpoints
         .filter((e) => e.orgId === orgId && !e.deviceId)
         .map((e) => normalizeHostname(e.hostname))
@@ -250,6 +264,7 @@ export async function reconcileOrgCoverage(
     }
 
     for (const plan of loaded.plans) {
+      if (plan.unavailable) continue;
       const keep = plan.vendorOnly.map((v) => v.endpointId);
       // Stale vendor_only rows: agents now matched, gone, or the org no longer in scope.
       await db.delete(t).where(and(
@@ -282,7 +297,10 @@ export async function reconcileOrgCoverage(
   } catch (error) {
     logCoverageAlertFailure('loadOpenAlerts', error, { orgId });
   }
+  const unavailableVendors = new Set(loaded.plans.filter((p) => p.unavailable).map((p) => p.vendor as string));
   for (const alert of open) {
+    // An unavailable vendor view proves nothing either way: keep its alerts.
+    if (alert.vendor && unavailableVendors.has(alert.vendor)) continue;
     const current = alert.deviceId && alert.vendor ? finalState.get(`${alert.deviceId}|${alert.vendor}`) : undefined;
     if (current !== undefined && current === alert.kind) continue;
     // An indefinitely-suppressed alert keeps its mute (EDR / backup precedent).
@@ -320,25 +338,44 @@ async function raiseSafely(
 }
 
 /**
- * Partners with any coverage row (the worker's fan-out source). Holding
- * (unassigned-pool) orgs are left out: no coverage is reconciled or alerted
- * for parked devices.
+ * Orgs the coverage fan-out visits: every org with a coverage row, PLUS every
+ * org with an open coverage alert. The compliance worker can delete an org's
+ * last rows (policy no longer reaches it, vendor removed); its alerts must
+ * still be resolved, which only the reconciler does. Holding (unassigned-pool)
+ * orgs are left out: no coverage is reconciled or alerted for parked devices.
  */
-export async function listCoveragePartners(): Promise<string[]> {
-  const rows = await db
-    .selectDistinct({ partnerId: organizations.partnerId })
+async function listCoverageOrgs(partnerId: string | null): Promise<Array<{ orgId: string; partnerId: string }>> {
+  const fromRows = await db
+    .selectDistinct({ orgId: t.orgId, partnerId: organizations.partnerId })
     .from(t)
     .innerJoin(organizations, eq(organizations.id, t.orgId))
-    .where(notInHoldingOrgCondition(t.orgId));
-  return rows.map((r) => r.partnerId).filter((id): id is string => !!id);
+    .where(and(
+      notInHoldingOrgCondition(t.orgId),
+      ...(partnerId ? [eq(organizations.partnerId, partnerId)] : []),
+    ));
+  const fromAlerts = await db
+    .selectDistinct({ orgId: alerts.orgId, partnerId: organizations.partnerId })
+    .from(alerts)
+    .innerJoin(organizations, eq(organizations.id, alerts.orgId))
+    .where(and(
+      inArray(alerts.status, ['active', 'acknowledged', 'suppressed']),
+      sql`${alerts.context}->>'source' = ${SECURITY_AGENT_COVERAGE_ALERT_SOURCE}`,
+      notInHoldingOrgCondition(alerts.orgId),
+      ...(partnerId ? [eq(organizations.partnerId, partnerId)] : []),
+    ));
+  const byOrg = new Map<string, string>();
+  for (const row of [...fromRows, ...fromAlerts]) {
+    if (row.orgId && row.partnerId) byOrg.set(row.orgId, row.partnerId);
+  }
+  return Array.from(byOrg, ([orgId, p]) => ({ orgId, partnerId: p }));
 }
 
-/** Orgs of one partner with any coverage row, holding orgs left out. */
+/** Partners the coverage fan-out visits (see {@link listCoverageOrgs}). */
+export async function listCoveragePartners(): Promise<string[]> {
+  return Array.from(new Set((await listCoverageOrgs(null)).map((o) => o.partnerId)));
+}
+
+/** Orgs of one partner the coverage fan-out visits (see {@link listCoverageOrgs}). */
 export async function listCoverageOrgsForPartner(partnerId: string): Promise<string[]> {
-  const rows = await db
-    .selectDistinct({ orgId: t.orgId })
-    .from(t)
-    .innerJoin(organizations, eq(organizations.id, t.orgId))
-    .where(and(eq(organizations.partnerId, partnerId), notInHoldingOrgCondition(t.orgId)));
-  return rows.map((r) => r.orgId);
+  return (await listCoverageOrgs(partnerId)).map((o) => o.orgId);
 }

@@ -15,9 +15,12 @@ import type { VendorKey } from './securityAgentVendors';
  *  1. The vendor reports it under the device's own org → `covered`, or
  *     `vendor_offline` when every matching agent is offline.
  *  2. Else the vendor reports it under ANOTHER org (only for vendors that have
- *     a vendor-side org) → `mismatched_org`. This wins over the install view on
- *     purpose: detection already treats the agent as installed, so nothing is
- *     redeployed, and a technician decides (spec 2.9; no reassign action).
+ *     a vendor-side org) → `mismatched_org`: a foreign agent LINKED to this
+ *     device, or an unlinked foreign agent with its hostname while inventory
+ *     shows the agent installed (a name match alone is not evidence when the
+ *     agent is missing here). Detection already treats the agent as installed,
+ *     so nothing is redeployed, and a technician decides (spec 2.9; no
+ *     reassign action).
  *  3. Else the device view: missing with the install loop exhausted (or not
  *     armed) → `gap`; missing with an install still possible → `pending`;
  *     installed but not reported, or never evaluated → `pending`.
@@ -63,8 +66,13 @@ export interface VendorEndpointSource {
    * org, plus rows of the same partner's integration that are linked to the
    * org's devices or carry one of their hostnames while unlinked (the
    * cross-org mismatch candidates).
+   *
+   * `null` means the vendor view is UNAVAILABLE (no active integration, never
+   * synced, sync stale): an empty list would read as "the vendor reports
+   * nothing" and wrongly downgrade covered devices and resolve live alerts, so
+   * the reconciler leaves that vendor's rows and alerts untouched instead.
    */
-  listForOrg(orgId: string): Promise<VendorEndpointView[]>;
+  listForOrg(orgId: string): Promise<VendorEndpointView[] | null>;
 }
 
 export type DeviceInstallView = 'installed' | 'missing' | 'unknown';
@@ -142,15 +150,23 @@ export function classifyOrgCoverage(input: OrgCoverageInput): OrgCoverageResult 
   const claimed = new Set<string>();
   const decisions = new Map<string, CoverageDecision>();
   for (const device of input.devices) {
-    const matches = [...(linkedByDevice.get(device.deviceId) ?? [])];
+    const linked = linkedByDevice.get(device.deviceId) ?? [];
+    const byName: VendorEndpointView[] = [];
     for (const hostname of new Set(device.hostnames)) {
       if (devicesByHostname.get(hostname) !== 1) continue;
-      matches.push(...(unlinkedByHostname.get(hostname) ?? []));
+      byName.push(...(unlinkedByHostname.get(hostname) ?? []));
     }
-    for (const match of matches) claimed.add(match.endpointId);
-
-    const own = input.reportsVendorOrg ? matches.filter((m) => m.orgId === device.orgId) : matches;
-    const foreign = input.reportsVendorOrg ? matches.filter((m) => m.orgId !== device.orgId) : [];
+    const isOwn = (m: VendorEndpointView) => !input.reportsVendorOrg || m.orgId === device.orgId;
+    const own = [...linked, ...byName].filter(isOwn);
+    // A NAME-only match against another org's agent is evidence of a mismatch
+    // only when this device's inventory shows the agent installed. Generic
+    // hostnames recur across an MSP's client orgs; when the agent is missing
+    // here it is on some other machine and this device is on the install path.
+    const foreign = [
+      ...linked.filter((m) => !isOwn(m)),
+      ...(device.install === 'installed' ? byName.filter((m) => !isOwn(m)) : []),
+    ];
+    for (const match of [...own, ...foreign]) claimed.add(match.endpointId);
 
     if (own.length > 0) {
       const live = own.find((m) => m.online !== false);

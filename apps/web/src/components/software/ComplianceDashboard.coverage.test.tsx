@@ -48,12 +48,21 @@ const coverage = {
   pagination: { limit: 200, offset: 0, total: 3 },
 };
 
-function route(cov: () => Promise<Response>) {
+// Mirrors the API: rows honor the state filter, summary always covers all states.
+function serverCoverage(total?: number) {
+  return (url: string) => {
+    const st = new URL(url, 'http://x').searchParams.get('state');
+    const data = st ? coverage.data.filter((r) => r.state === st) : coverage.data;
+    return Promise.resolve(json({ ...coverage, data, pagination: { limit: 200, offset: 0, total: total ?? data.length } }));
+  };
+}
+
+function route(cov: (url: string) => Promise<Response>) {
   fetchMock.mockImplementation((url: string) => {
     if (url.startsWith('/software-policies/compliance/overview')) return Promise.resolve(json({ total: 0, compliant: 0, violations: 0, unknown: 0 }));
     if (url.startsWith('/software-policies/violations')) return Promise.resolve(json({ data: [] }));
     if (url.startsWith('/software-policies?')) return Promise.resolve(json({ data: [] }));
-    if (url.startsWith('/edr/security-agents/coverage')) return cov();
+    if (url.startsWith('/edr/security-agents/coverage')) return cov(url);
     return Promise.resolve(json({ data: [] }));
   });
 }
@@ -68,7 +77,7 @@ describe('ComplianceDashboard — security agent coverage strip', () => {
   });
 
   it('renders one chip per state with counts and fetches for the current org', async () => {
-    route(() => Promise.resolve(json(coverage)));
+    route(serverCoverage());
     render(<ComplianceDashboard />);
     const strip = await screen.findByTestId('compliance-security-agent-coverage');
     expect(within(strip).getByTestId('coverage-chip-gap')).toHaveTextContent('1');
@@ -80,19 +89,52 @@ describe('ComplianceDashboard — security agent coverage strip', () => {
   });
 
   it('clicking a chip writes #coverage=<state> and filters the table', async () => {
-    route(() => Promise.resolve(json(coverage)));
+    route(serverCoverage());
     render(<ComplianceDashboard />);
     fireEvent.click(await screen.findByTestId('coverage-chip-vendor_only'));
     expect(window.location.hash).toBe('#coverage=vendor_only');
-    const rows = await screen.findAllByTestId('coverage-row');
-    expect(rows).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByTestId('coverage-row')).toHaveLength(1));
+    const rows = screen.getAllByTestId('coverage-row');
     expect(rows[0]).toHaveTextContent('Vendor-only agent');
     expect(screen.queryByText('Device-01')).toBeNull();
+    const urls = fetchMock.mock.calls.map((c) => String(c[0])).filter((u) => u.startsWith('/edr/security-agents/coverage'));
+    expect(urls.some((u) => new URL(u, 'http://x').searchParams.get('state') === 'vendor_only')).toBe(true);
+  });
+
+  it('refetches server-side so a filtered state is not limited to the unfiltered page', async () => {
+    // Unfiltered page holds only gap rows; the covered row only exists server-side.
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/software-policies/compliance/overview')) return Promise.resolve(json({ total: 0, compliant: 0, violations: 0, unknown: 0 }));
+      if (url.startsWith('/edr/security-agents/coverage')) {
+        const st = new URL(url, 'http://x').searchParams.get('state');
+        const data = st === 'covered' ? [row({ id: 'k1', deviceName: 'Device-09', state: 'covered', reasonCode: null })] : [coverage.data[0]];
+        return Promise.resolve(json({ ...coverage, data, pagination: { limit: 200, offset: 0, total: data.length } }));
+      }
+      return Promise.resolve(json({ data: [] }));
+    });
+    render(<ComplianceDashboard />);
+    fireEvent.click(await screen.findByTestId('coverage-chip-covered'));
+    expect(await screen.findByText('Device-09')).toBeInTheDocument();
+  });
+
+  it('shows a "showing N of M" note when the server has more rows than shown', async () => {
+    route(serverCoverage(600));
+    render(<ComplianceDashboard />);
+    fireEvent.click(await screen.findByTestId('coverage-chip-gap'));
+    const note = await screen.findByTestId('coverage-rows-note');
+    expect(note).toHaveTextContent('Showing 1 of 600');
+  });
+
+  it('shows no note when every row is displayed', async () => {
+    route(serverCoverage());
+    render(<ComplianceDashboard />);
+    await screen.findAllByTestId('coverage-row');
+    expect(screen.queryByTestId('coverage-rows-note')).toBeNull();
   });
 
   it('pre-selects the state from the initial hash', async () => {
     window.location.hash = '#coverage=gap';
-    route(() => Promise.resolve(json(coverage)));
+    route(serverCoverage());
     render(<ComplianceDashboard />);
     const rows = await screen.findAllByTestId('coverage-row');
     expect(rows).toHaveLength(1);
@@ -103,7 +145,7 @@ describe('ComplianceDashboard — security agent coverage strip', () => {
 
   it('preserves unrelated hash pairs when writing the coverage filter', async () => {
     window.location.hash = '#tab=x';
-    route(() => Promise.resolve(json(coverage)));
+    route(serverCoverage());
     render(<ComplianceDashboard />);
     fireEvent.click(await screen.findByTestId('coverage-chip-gap'));
     expect(window.location.hash).toContain('tab=x');

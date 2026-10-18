@@ -1045,22 +1045,25 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   if (managedApplicability) {
     // #6960 W03: durable per-(device, vendor) applicability, keyed on the
     // DEVICE's org (orgByDevice), never the policy owner's.
-    const entries: ManagedApplicabilityEntry[] = [];
-    for (const deviceId of deviceIds) {
-      for (const readiness of managedApplicability.evaluateDevice(deviceId)) {
-        entries.push({
-          deviceId,
-          orgId: orgByDevice.get(deviceId)!,
-          vendor: readiness.vendor,
-          notApplicableReason: readiness.result.ok ? null : readiness.result.reason,
-        });
+    const applicability = managedApplicability;
+    await reportCoverageFailure(policy.id, () => {
+      const entries: ManagedApplicabilityEntry[] = [];
+      for (const deviceId of deviceIds) {
+        for (const readiness of applicability.evaluateDevice(deviceId)) {
+          entries.push({
+            deviceId,
+            orgId: orgByDevice.get(deviceId)!,
+            vendor: readiness.vendor,
+            notApplicableReason: readiness.result.ok ? null : readiness.result.reason,
+          });
+        }
       }
-    }
-    await reportCoverageFailure(policy.id, () => recordManagedPolicyApplicability({
-      policyId: policy.id,
-      entries,
-      prune: isFullPass ? { deviceIds, vendors: managedApplicability.vendors() } : null,
-    }));
+      return recordManagedPolicyApplicability({
+        policyId: policy.id,
+        entries,
+        prune: isFullPass ? { deviceIds, vendors: applicability.vendors() } : null,
+      });
+    });
   }
 
   if (managedApplicability && notApplicableDevices > 0) {
@@ -1094,7 +1097,11 @@ async function reportCoverageFailure(policyId: string, write: () => Promise<unkn
     await write();
   } catch (error) {
     console.error('[SoftwareComplianceWorker] Failed to persist security-agent coverage applicability', { policyId, error });
-    captureException(error instanceof Error ? error : new Error(String(error)));
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      service: 'securityAgentCoverage',
+      operation: 'recordManagedPolicyApplicability',
+      policyId,
+    });
   }
 }
 

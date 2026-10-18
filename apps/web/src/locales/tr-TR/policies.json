@@ -1367,7 +1367,8 @@
       "coverageDevice": "Cihaz",
       "coverageVendor": "Sağlayıcı",
       "coverageReason": "Neden",
-      "vendorOnlyAgent": "Yalnızca sağlayıcıda bilinen aracı"
+      "vendorOnlyAgent": "Yalnızca sağlayıcıda bilinen aracı",
+      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor"
     },
     "deploymentList": {
       "running": "Koşuyor",

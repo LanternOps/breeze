@@ -1367,7 +1367,8 @@
       "coverageDevice": "Dispositivo",
       "coverageVendor": "Proveedor",
       "coverageReason": "Motivo",
-      "vendorOnlyAgent": "Agente solo del proveedor"
+      "vendorOnlyAgent": "Agente solo del proveedor",
+      "coverageRowsNote": "Mostrando {{shown}} de {{total}}"
     },
     "deploymentList": {
       "running": "En ejecución",
