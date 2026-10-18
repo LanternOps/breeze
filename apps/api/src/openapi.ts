@@ -2628,7 +2628,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           '400': { description: 'Invalid input (e.g. target site not in target org, target org equals source)' },
           '403': { description: 'Access denied: target org or cross-partner move without system scope; `Interactive user session required` for machine principals; `MFA_REQUIRED` for a non-assured session; `STEP_UP_REQUIRED` when the step-up grant is missing, stale, mismatched or already consumed' },
           '404': { description: 'Device or target organization not found' },
-          '409': { description: 'Move blocked: `TICKET_MOVE_CURRENCY_BLOCKED` (unbilled ticket money in another currency; resend with acceptCurrencyMismatch), `DELIVERABLE_TICKET_PINNED`, `HOUR_BLOCK_DRAWN_TIME` (a ticket carries time drawn from a block of prepaid hours), `APPROVAL_REQUEST_PENDING` (a ticket has a pending customer approval request), or `PAM_DEVICE_MOVE_BLOCKED`' },
+          '409': { description: 'Move blocked: `TICKET_MOVE_CURRENCY_BLOCKED` (unbilled ticket money in another currency; resend with acceptCurrencyMismatch), `DELIVERABLE_TICKET_PINNED`, `HOUR_BLOCK_DRAWN_TIME` (a ticket carries time drawn from a block of prepaid hours), `APPROVAL_REQUEST_PENDING` (a ticket has a pending customer approval request), `PAM_DEVICE_MOVE_ACTIVE` (PAM ownership transfer is enabled and an elevation session on the device has not finished cleanup; retry once it closes), or `PAM_DEVICE_MOVE_BLOCKED` (the device has PAM history and transfer is not enabled)' },
           '503': { description: 'Step-up binding could not be established (auth state or session id unavailable); retry' },
         },
       },
@@ -3719,6 +3719,25 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         responses: {
           '200': {
             description: 'Alert suppressed',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/Alert' }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/alerts/{id}/unsuppress': {
+      post: {
+        operationId: 'unsuppressAlert',
+        tags: ['Alerts'],
+        summary: 'Lift an alert mute',
+        description: 'Restores a suppressed alert to acknowledged (if it was acknowledged before the mute) or active, and clears the mute deadline. Returns 409 if the alert is not suppressed.',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        responses: {
+          '200': {
+            description: 'Alert restored',
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/Alert' }

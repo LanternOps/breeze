@@ -4,6 +4,7 @@ import type { Alert } from '../../services/api';
 import {
   canRebootFromAlert,
   needsAlertLookup,
+  resolveCreatedAt,
   rebootConfirmMessage,
   rebootPlan,
   REBOOT_PENDING_SOURCE,
@@ -71,6 +72,39 @@ describe('needsAlertLookup', () => {
   it('skips the lookup for other alerts or when there is no alert id', () => {
     expect(needsAlertLookup(alert({ source: 'patch-job-finalizer' }))).toBe(false);
     expect(needsAlertLookup(alert({ id: '' }))).toBe(false);
+  });
+
+  it('looks up any alert missing createdAt, whatever its source (#8891)', () => {
+    expect(needsAlertLookup(alert({ source: 'patch-job-finalizer', createdAt: '' }))).toBe(true);
+  });
+});
+
+describe('resolveCreatedAt', () => {
+  const real = '2026-10-16T11:00:00.000Z';
+
+  it('prefers the fetched record for the same alert', () => {
+    expect(resolveCreatedAt(alert({ createdAt: '' }), alert({ createdAt: real }))).toBe(real);
+    expect(
+      resolveCreatedAt(alert({ createdAt: '2026-01-01T00:00:00.000Z' }), alert({ createdAt: real })),
+    ).toBe(real);
+  });
+
+  it('falls back to the param value until the fetch lands', () => {
+    expect(resolveCreatedAt(alert({ createdAt: real }), null)).toBe(real);
+  });
+
+  it('ignores a fetched record for a different alert', () => {
+    expect(
+      resolveCreatedAt(
+        alert({ createdAt: real }),
+        alert({ id: 'other', createdAt: '2020-01-01T00:00:00.000Z' }),
+      ),
+    ).toBe(real);
+  });
+
+  it('is null, never now, when neither side has a timestamp', () => {
+    expect(resolveCreatedAt(alert({ createdAt: '' }), null)).toBeNull();
+    expect(resolveCreatedAt(alert({ createdAt: '' }), alert({ createdAt: '' }))).toBeNull();
   });
 });
 

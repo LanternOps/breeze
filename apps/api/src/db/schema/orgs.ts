@@ -167,6 +167,10 @@ export const partners = pgTable('partners', {
   // surface gate on this; it is NOT in settings JSONB because that is
   // partner-writable and the partner must not be able to self-enable.
   aiForOfficeEnabled: boolean('ai_for_office_enabled').notNull().default(false),
+  // Trust Center footer removal — operator-granted (spec trust-center §9, §18.3).
+  // Dedicated column for the same reason as aiForOfficeEnabled: settings JSONB is
+  // partner-writable and the partner must not self-enable.
+  trustPageUnbranded: boolean('trust_page_unbranded').notNull().default(false),
   // #5075 W04 — which service-desk/billing module this partner runs.
   // 'native' = Breeze's own service desk & billing (default, and what every
   // partner ran before this column existed); 'external' = the partner's PSA is
@@ -228,7 +232,9 @@ export const organizations = pgTable('organizations', {
   // Multi-currency (spec §5): the org's billing currency, inherited from the
   // partner at creation. Deliberately NO .default() — every creation path must
   // stamp it explicitly, so a missed path is a loud insert failure, never a
-  // silent USD document. Editing is NOT exposed until wave 6.
+  // silent USD document. Not inherited afterwards: a later partner currency
+  // change never moves it (#7510); it is edited per org from the org Billing tab
+  // (wave 6, with a currency-change impact preview).
   currencyCode: char('currency_code', { length: 3 }).notNull(),
   // Settings consolidation W06 (#6229): org override of the partner's invoice
   // payment terms. NULL = inherit `partners.invoice_terms_days`; deliberately

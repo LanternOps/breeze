@@ -18,31 +18,60 @@ export const toolSourceAuthConfigSchema = z.discriminatedUnion('authKind', [
   }) }),
 ]);
 
+export const TOOL_SOURCE_KINDS = ['mcp', 'openapi'] as const;
+
 const sourceCore = z.object({
   name: z.string().min(1).max(120),
   slug: z.string().regex(TOOL_SOURCE_SLUG_RE).refine((s) => !RESERVED_TOOL_SOURCE_SLUGS.has(s), 'reserved slug'),
-  kind: z.literal('mcp'), // W2 widens to z.enum(['mcp', 'openapi'])
+  kind: z.enum(TOOL_SOURCE_KINDS),
+  // For an `openapi` source this is the API BASE url — the origin the
+  // credential is pinned to (`credentialOriginFor(endpointUrl)`), and the only
+  // host operations are ever sent to (the document's `servers[]` never routes).
   endpointUrl: httpsUrl,
+  // W2: the OpenAPI document URL. Only read; the credential travels with it
+  // only when it shares `endpointUrl`'s origin.
+  specUrl: httpsUrl.optional(),
   rateLimitPerMinute: z.number().int().min(1).max(6000).default(120),
   ownerScope: z.enum(['organization', 'partner']).optional(),
   orgId: z.string().uuid().optional(),
 });
-export const createToolSourceSchema = z.intersection(sourceCore, toolSourceAuthConfigSchema);
-// slug/kind/ownerScope are create-only; auth may be replaced wholesale.
+
+/** `openapi` needs a document; `mcp` must not carry one (mirrors `tool_sources_spec_url_kind_chk`). */
+function kindSpecUrlRule(v: { kind?: string; specUrl?: string }, ctx: z.RefinementCtx): void {
+  if (v.kind === 'openapi' && !v.specUrl) {
+    ctx.addIssue({ code: 'custom', path: ['specUrl'], message: 'an openapi source requires a spec URL' });
+  }
+  if (v.kind === 'mcp' && v.specUrl !== undefined) {
+    ctx.addIssue({ code: 'custom', path: ['specUrl'], message: 'an mcp source must not have a spec URL' });
+  }
+}
+
+// slug/kind/ownerScope/orgId are create-only; auth may be replaced wholesale.
+// `kind` is refused outright on update rather than silently stripped, so a
+// client that believes it can flip a source's transport gets a 400, not a
+// 200 that changed nothing. (`.strict()` cannot be used here: the auth union
+// on the other side of the intersection owns `authKind`/`authConfig`.)
+const updateOnly = { kind: z.never({ message: 'kind cannot be changed after creation' }).optional() };
+
+export const createToolSourceSchema = z.intersection(sourceCore, toolSourceAuthConfigSchema).superRefine(kindSpecUrlRule);
 export const updateToolSourceSchema = z.intersection(
-  sourceCore.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial(),
+  sourceCore.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial().extend(updateOnly),
   z.union([toolSourceAuthConfigSchema, z.object({})]),
 );
 // Explicit opt-in for self-hosted APIs; the default schemas remain HTTPS-only.
+const httpOrHttpsUrl = z.string().url().refine(
+  (url) => url.startsWith('https://') || url.startsWith('http://'),
+  'must be an http or https URL',
+);
 const sourceCoreWithHttp = sourceCore.extend({
-  endpointUrl: z.string().url().refine(
-    (url) => url.startsWith('https://') || url.startsWith('http://'),
-    'must be an http or https URL',
-  ),
+  endpointUrl: httpOrHttpsUrl,
+  specUrl: httpOrHttpsUrl.optional(),
 });
-export const createToolSourceSchemaWithHttp = z.intersection(sourceCoreWithHttp, toolSourceAuthConfigSchema);
+export const createToolSourceSchemaWithHttp = z
+  .intersection(sourceCoreWithHttp, toolSourceAuthConfigSchema)
+  .superRefine(kindSpecUrlRule);
 export const updateToolSourceSchemaWithHttp = z.intersection(
-  sourceCoreWithHttp.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial(),
+  sourceCoreWithHttp.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial().extend(updateOnly),
   z.union([toolSourceAuthConfigSchema, z.object({})]),
 );
 export const patchToolSourceToolSchema = z.object({

@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Données et confidentialité de l'IA",
+    "orgDescription": "Ce que Breeze AI peut lire sur les appareils de cette organisation et la durée de conservation des sorties des outils d'IA. Vide hérite de la valeur par défaut du partenaire; une organisation peut seulement la resserrer.",
+    "partnerDescription": "Valeurs par défaut pour chaque organisation. Une organisation peut les resserrer dans son propre onglet IA, mais jamais les assouplir.",
+    "levelLabel": "Lecture de fichiers d'appareils par l'IA",
+    "levels": {
+      "off": {
+        "label": "Désactivé",
+        "help": "L'IA ne peut ni lire le contenu des fichiers ni parcourir les dossiers des appareils, et les demandes d'accès de diagnostic sont refusées. Les sommaires d'utilisation du disque et vos propres scripts de bibliothèque restent disponibles."
+      },
+      "no_user_profiles": {
+        "label": "Exclut les dossiers de profils utilisateur",
+        "help": "Chemins système et d'applications avec approbation; Documents, Bureau et dossiers personnels sont refusés à moins qu'un administrateur approuve un accès de diagnostic limité dans le temps."
+      },
+      "any_with_approval": {
+        "label": "N'importe quel chemin, avec approbation",
+        "help": "Chaque lecture exige toujours l'approbation d'un technicien et est auditée; les magasins d'identifiants restent bloqués."
+      }
+    },
+    "inherit": "Hériter : {{value}} ({{source}})",
+    "retentionLabel": "Conserver les sorties des outils d'IA pendant (jours)",
+    "retentionInherit": "Hériter : {{value}} ({{source}})",
+    "retentionHelp": "Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit. Vide hérite; un partenaire peut choisir de les conserver indéfiniment.",
+    "keepForever": "indéfiniment",
+    "sourceOrg": "cette organisation",
+    "sourcePartner": "valeur par défaut du partenaire",
+    "sourceDefault": "valeur par défaut de Breeze",
+    "abovePartnerCeiling": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "aboveCeilingLevel": "Non disponible : la valeur par défaut du partenaire est plus stricte.",
+    "retentionAboveCeiling": "Votre partenaire conserve les sorties au plus {{days}} jours.",
+    "saved": "Politique de données d'IA enregistrée",
+    "failedToSave": "Échec de l'enregistrement de la politique de données d'IA",
+    "partnerInheritDefault": "Valeur par défaut de Breeze : {{value}}",
+    "readOnly": "Vous n'avez pas la permission de modifier ces valeurs par défaut.",
+    "retentionKeepDays": "Conserver pendant (jours)",
+    "retentionKeepForever": "Conserver indéfiniment",
+    "retentionBreezeDefault": "Valeur par défaut de Breeze : {{days}} jours",
+    "partnerRetentionHelp": "Choisissez la durée de conservation des sorties des outils d'IA, ou conservez-les indéfiniment. Les sorties plus anciennes sont remplacées par un marqueur lors de l'exécution de nuit."
+  },
   "partnerServicePrincipals": {
     "title": "Principaux de service",
     "description": "Gérez les identités machines au niveau du partenaire et leurs clés d'accès.",
@@ -327,7 +366,6 @@
       "supportedGeos": "Prend en charge : {{geos}}",
       "refreshQueued": "Actualisation des modèles mise en file d'attente",
       "refreshFailed": "Impossible de mettre l'actualisation des modèles en file d'attente.",
-      "alreadyConnected": "Déjà connectée",
       "addKind": {
         "anthropic_byok": "Clé API Anthropic",
         "openai_compatible": "Point de terminaison compatible OpenAI"
@@ -982,6 +1020,11 @@
       "schemeRequired": "Le modèle URL doit commencer par un schéma suivi de deux-points (par exemple rustdesk:, https:)",
       "schemeBlocked": "Ce schéma d’URL n’est pas autorisé — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: et filesystem: sont bloqués.",
       "idRequired": "Le modèle URL doit inclure le marqueur {id} pour la valeur par appareil."
+    },
+    "networkProxy": {
+      "title": "Proxy réseau",
+      "label": "Servir le proxy réseau depuis une origine dédiée",
+      "help": "S'applique à toutes les organisations; les organisations ne peuvent pas le remplacer. Ne prend effet que là où votre région offre une origine dédiée, et améliore la compatibilité avec les interfaces Web des appareils."
     }
   },
   "partnerSettingsPage": {
@@ -1011,6 +1054,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Centre de confiance",
+        "description": "Valeurs par défaut des pages de confiance de vos clients"
+      },
       "company": {
         "label": "Entreprise",
         "description": "Nom, adresse, contacts"
@@ -1915,6 +1962,10 @@
       "title": "Fonctionnalités du portail",
       "description": "Contrôlez ce que ce client peut faire sur son portail. Chaque organisation est indépendante.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Modification de la page de confiance par le client",
+          "description": "Les contacts administrateurs du client ayant un accès au portail peuvent modifier le brouillon de la page de confiance : contact de sécurité, site Web, contrôles masqués et ce que la page affiche. Vous publiez toujours leurs modifications. Ils peuvent aussi retirer la page publiée."
+        },
         "enableTickets": {
           "label": "Soumission de billets",
           "description": "Les clients peuvent ouvrir et suivre les billets de support depuis le portail."
@@ -2036,7 +2087,9 @@
       "email": "Courriel de soutien",
       "phone": "Téléphone d’assistance",
       "welcomeMessage": "Message de bienvenue",
-      "footerText": "Texte du bas de page"
+      "footerText": "Texte du bas de page",
+      "footerTextHelp": "Affiché au bas du portail client et imprimé sur les devis et factures de cette organisation, à la place du pied de page des documents du partenaire. Laissez vide pour imprimer le pied de page du partenaire.",
+      "footerTextInheritedSource": "Pied de page des documents du partenaire"
     }
   },
   "orgPortalUsersEditor": {
@@ -3429,6 +3482,7 @@
         "delete_tenant": "Supprimer une organisation",
         "detect_log_correlations": "Détecter des corrélations de journaux",
         "disk_cleanup": "Nettoyage de disque",
+        "edr_endpoint_action": "EDR : isoler, libérer ou analyser un appareil",
         "execute_command": "Exécuter une commande système",
         "execute_playbook": "Exécuter un playbook",
         "file_operations": "Opérations sur les fichiers",
@@ -3516,6 +3570,7 @@
         "security_scan": "Analyse de sécurité",
         "set_agent_log_level": "Définir le niveau de journalisation de l'agent",
         "set_device_context": "Définir le contexte de l'appareil",
+        "sync_edr_data": "Synchroniser les données EDR",
         "sync_huntress_data": "Synchroniser les données Huntress",
         "system_cleanup": "Nettoyage du système",
         "take_screenshot": "Prendre une capture d'écran"
@@ -4366,7 +4421,8 @@
     "reEnterYourNewPassword": "Saisissez à nouveau votre nouveau mot de passe",
     "confirmPassword": "confirmerMot de passe",
     "newPassword2": "newPassword",
-    "changingPassword": "Changement de mot de passe..."
+    "changingPassword": "Changement de mot de passe...",
+    "noPasswordNotice": "Ce compte se connecte via le fournisseur d'identité de votre organisation et n'a pas de mot de passe; il n'y a donc rien à modifier ici. Si votre organisation n'impose pas l'authentification unique, utilisez « Mot de passe oublié » sur la page de connexion pour en définir un."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Connexion simple connectée.",
@@ -4384,7 +4440,8 @@
     "sessionInvalid": "Votre session a changé avant que la liaison puisse aboutir. Veuillez vous reconnecter et réessayer.",
     "providerInactive": "Ce fournisseur de connexion unique n’est plus actif. Contactez votre administrateur.",
     "configChanged": "La configuration de la connexion unique a été modifiée pendant l’opération. Veuillez réessayer.",
-    "emailUnverified": "Votre fournisseur d’identité n’a pas confirmé que votre adresse courriel est vérifiée. Contactez votre administrateur."
+    "emailUnverified": "Votre fournisseur d’identité n’a pas confirmé que votre adresse courriel est vérifiée. Contactez votre administrateur.",
+    "idpVerifyFailed": "Breeze n’a pas pu vérifier la connexion renvoyée par votre fournisseur d’identité. Veuillez réessayer."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Chargement des applications connectées...",
@@ -4585,6 +4642,7 @@
     "ssoReauthProviderInactive": "L'authentification unique n'est plus offerte pour ce compte. Communiquez avec votre administrateur, puis réessayez.",
     "ssoReauthConfigChanged": "Vos paramètres d'authentification unique ont changé pendant la vérification. Recommencez la vérification.",
     "ssoReauthEmailUnverified": "Votre fournisseur d'identité indique que votre adresse courriel n'est pas vérifiée. Vérifiez-la auprès de lui, puis réessayez.",
+    "ssoReauthIdpVerifyFailed": "Breeze n'a pas pu vérifier la connexion renvoyée par votre fournisseur d'identité. Réessayez. Si le problème persiste, demandez à votre administrateur de consulter les journaux du serveur.",
     "ssoReauthProofExpired": "Votre vérification auprès du fournisseur d'identité est expirée. Vérifiez de nouveau pour terminer la configuration de l'authentification multifacteur.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Ce compte ouvre une session par un fournisseur d'identité et n'a pas de mot de passe. Vérifiez de nouveau auprès de votre fournisseur avant d'ajouter une clé d'accès.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Votre identité est vérifiée. Nommez cette clé d’accès et continuez.",
@@ -4617,6 +4675,11 @@
     "systemRoles": "Rôles du système",
     "customRoles": "Rôles personnalisés",
     "createRole": "Créer un rôle",
+    "ownerScope": "Portée",
+    "ownerScopePartner": "Partenaire",
+    "ownerScopePartnerHelp": "Pour votre propre personnel. Attribuez-le dans la page Utilisateurs.",
+    "ownerScopeOrganization": "Organisation",
+    "ownerScopeOrganizationHelp": "Pour les utilisateurs d’une organisation et son rôle SSO par défaut.",
     "name": "Nom",
     "type": "Type",
     "inheritsFrom": "hérite de",
@@ -5674,6 +5737,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Cette organisation possède une page publique du Centre de confiance. Changer l’identifiant d’URL modifie son adresse publique, et l’ancien lien cessera de fonctionner.",
     "actions": {
       "save": "Enregistrer l’organisation"
     },
@@ -5846,6 +5910,12 @@
         "merge": "Échec du démarrage de la fusion",
         "missingResult": "La fusion s'est terminée mais n'a renvoyé aucune donnée de résultat. Réessayez.",
         "mfaRequired": "La fusion d'organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
+      },
+      "blockers": {
+        "pam_open_actuation": "L'organisation absorbée par la fusion a des sessions d'accès privilégié (PAM) dont le nettoyage n'est pas terminé. Attendez leur fermeture, puis relancez la fusion.",
+        "pam_evidence": "L'organisation absorbée par la fusion a un historique d'accès privilégié (PAM), et le déplacement de l'historique PAM entre organisations n'est pas activé sur ce déploiement. Fusionnez dans l'autre sens, ou ne fusionnez pas ces organisations.",
+        "payment_in_flight": "Un paiement de l'organisation absorbée par la fusion est encore en cours. Attendez qu'il soit réglé, puis relancez la fusion.",
+        "lineage_depth": "Ces organisations ont déjà été fusionnées trop de fois; cette fusion dépasserait la profondeur maximale de l'historique de fusions."
       }
     },
     "archive": {
@@ -5989,6 +6059,8 @@
     },
     "columns": {
       "timezone": "Fuse horaire",
+      "address": "Adresse",
+      "contact": "Personne-ressource",
       "devices": "Appareils"
     },
     "empty": "Aucun site trouvé. Ajoutez un site pour commencer."
@@ -6773,5 +6845,16 @@
     "invalidKey": "Une clé d’utilisateur Pushover compte 30 lettres ou chiffres.",
     "loadFailed": "Impossible de charger votre réglage Pushover.",
     "saveFailed": "Impossible d’enregistrer votre réglage Pushover."
+  },
+  "emailNotificationSettings": {
+    "title": "Notifications par courriel",
+    "description": "Choisissez les courriels que Breeze vous envoie. Les avis dans l'application restent toujours activés.",
+    "digestLabel": "Résumé quotidien de l'état des connexions",
+    "digestHelp": "Un résumé matinal des intégrations et des connexions que vous pouvez réparer, ainsi que de celles qui ont été rétablies. Envoyé au plus une fois par jour.",
+    "enabledToast": "Résumé de l'état des connexions activé",
+    "disabledToast": "Résumé de l'état des connexions désactivé",
+    "loadFailed": "Impossible de charger les préférences de courriel.",
+    "saveFailed": "Impossible d'enregistrer les préférences de courriel.",
+    "retry": "Réessayer"
   }
 }

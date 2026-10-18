@@ -1599,10 +1599,12 @@ describe('blocks-merge: durable PAM evidence refuses the merge', () => {
     expect(preview.verdict).toBe('blocked');
     expect(preview.tables).toEqual(
       expect.arrayContaining([
-        { table: 'pam_actuations', policy: 'blocks-merge', loserRows: 1, wouldDrop: 0 },
-        { table: 'pam_actuation_results', policy: 'blocks-merge', loserRows: 1, wouldDrop: 0 },
+        { table: 'pam_actuations', policy: 'epoch-frozen', loserRows: 1, wouldDrop: 0 },
+        { table: 'pam_actuation_results', policy: 'epoch-frozen', loserRows: 1, wouldDrop: 0 },
       ]),
     );
+    // Transfer off (default): any PAM history refuses, exactly the former blocks-merge.
+    expect(preview.blockerCodes).toEqual(['pam_evidence']);
     expect(preview.blockers).toHaveLength(1);
     expect(preview.blockers[0]).toContain('durable PAM lifecycle evidence');
     expect(preview.blockers[0]).toContain('Audit-admin retention is not a merge mechanism');
@@ -1735,6 +1737,25 @@ describe('blocks-merge: durable PAM evidence refuses the merge', () => {
       name: 'OrgMergeBlockedError',
       code: 'ORG_MERGE_BLOCKED',
       blockers: [{ table: 'pam_actuations', loserRows: 1 }],
+    });
+  });
+
+  it('runPolicy epoch-frozen (transfer off) refuses any loser PAM row, typed (W6 #8208)', async () => {
+    await seedPamEvidence(f.loser, f.siteL, f.deviceL);
+    await expect(
+      withSystemDbAccessContext(() =>
+        orgMergeModule.runPolicy(
+          'pam_actuations',
+          { kind: 'epoch-frozen', note: 'test: epoch-frozen evidence' },
+          f.loser,
+          f.survivor,
+          'move',
+        ),
+      ),
+    ).rejects.toMatchObject({
+      name: 'OrgMergeBlockedError',
+      code: 'ORG_MERGE_BLOCKED',
+      blockerCodes: ['pam_evidence'],
     });
   });
 

@@ -289,7 +289,7 @@ async function composeLaidOutRequesterMail(
     id,
     custom: asPartnerEmailCustom(partner.emailTemplates?.[id]),
     vars: {
-      ticket_number: ticket.internalNumber ?? '',
+      ticket_number: ticket.ticketNumber ?? '',
       ticket_subject: ticket.subject ?? '',
       requester_name: ticket.submitterName ?? '',
       requester_email: ticket.submitterEmail ?? '',
@@ -301,7 +301,7 @@ async function composeLaidOutRequesterMail(
     },
     ctaUrl: href || undefined,
     brandName: partner.name,
-    internalNumber: ticket.internalNumber,
+    ticketNumber: ticket.ticketNumber,
     ticketSubject: ticket.subject,
   });
   return {
@@ -679,7 +679,7 @@ async function collectAutoresponse(
       body: partner.inbound?.autoresponseBody ?? null,
     },
     vars: {
-      ticket_number: ticket.internalNumber ?? '',
+      ticket_number: ticket.ticketNumber ?? '',
       ticket_subject: ticket.subject ?? event.payload.subject,
       requester_name: ticket.submitterName ?? '',
       requester_email: event.payload.to,
@@ -687,7 +687,7 @@ async function collectAutoresponse(
       partner_name: partner.name,
     },
     brandName: partner.name,
-    internalNumber: event.payload.internalNumber,
+    ticketNumber: ticket.ticketNumber,
     ticketSubject: event.payload.subject,
   });
 

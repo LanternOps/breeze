@@ -46,6 +46,7 @@ export function buildPortalNavItems(
     | 'enableService'
     | 'enableDocuments'
     | 'enableNetworkVisibility'
+    | 'canEditTrustPage'
   >,
   paymentMethodsAvailable = false,
   approvalsPendingCount = 0
@@ -72,6 +73,12 @@ export function buildPortalNavItems(
       : null,
     branding.enableSecurity === true
       ? { href: '/security', label: 'Security' }
+      : null,
+    // Trust Center W3d: a per-user permission (org flag + org-scoped admin
+    // contact), not a visibility flag, so it does not follow enableSecurity.
+    // Fail closed: only an explicit true earns the slot.
+    branding.canEditTrustPage === true
+      ? { href: '/security/trust-page', label: 'Trust page' }
       : null,
     branding.enableBackups === true
       ? { href: '/backups', label: 'Backups' }

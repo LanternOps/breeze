@@ -1,4 +1,5 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // #7900 W3: Service Desk nav entries per ticket type. The typed entries share
@@ -28,6 +29,12 @@ vi.mock('./BrandHeader', () => ({ default: () => null }));
 
 import Sidebar, { navSections } from './Sidebar';
 import { replaceUrl } from '../../lib/replaceUrl';
+import { useHashState } from '../../lib/useHashState';
+import { ticketTypeFromHash } from '../tickets/ticketType';
+import {
+  installAstroClientRouterStandIn,
+  type ClientRouterStandIn,
+} from '../../__tests__/astroClientRouterStandIn';
 
 const ENTRIES = [
   { id: 'nav-tickets-all', href: '/tickets' },
@@ -162,6 +169,85 @@ describe('Service Desk nav active state', () => {
     window.history.replaceState({ index: 0, scrollX: 0, scrollY: 0 }, '', '/timesheet#type=problem');
     render(<Sidebar currentPath="/timesheet" />);
     expect(activeIds()).toEqual([]);
+  });
+});
+
+// #8682 sweep: on /tickets the typed entries differ from the current URL only by
+// fragment, so Astro's ClientRouter claims the click and moves the URL with a
+// bare `history.pushState` — no hashchange, no popstate. TicketsPage reads its
+// type filter through `useHashState` (hashchange-driven), so the probe below
+// stands in for it. The stand-in reproduces the router; a synthetic hashchange
+// here would pass while production stays broken.
+function TypeFilterProbe() {
+  const [type] = useHashState<string>('', (h) => ticketTypeFromHash(h) ?? '');
+  return <output data-testid="type-filter-probe">{type || 'all'}</output>;
+}
+
+describe('Service Desk typed entries under the Astro ClientRouter (#8682 sweep)', () => {
+  let router: ClientRouterStandIn;
+
+  beforeEach(() => {
+    window.history.replaceState({ index: 0, scrollX: 0, scrollY: 0 }, '', '/tickets#type=problem');
+    router = installAstroClientRouterStandIn();
+  });
+
+  afterEach(() => {
+    router.uninstall();
+  });
+
+  it('clicking a typed entry while on /tickets re-filters in place, and back/forward re-sync', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <Sidebar currentPath="/tickets" />
+        <TypeFilterProbe />
+      </>,
+    );
+    expect(screen.getByTestId('type-filter-probe')).toHaveTextContent('problem');
+    expect(activeIds()).toEqual(['nav-tickets-problem']);
+
+    await user.click(screen.getByTestId('nav-tickets-change'));
+
+    await waitFor(() => expect(screen.getByTestId('type-filter-probe')).toHaveTextContent('change'));
+    expect(window.location.pathname).toBe('/tickets');
+    expect(window.location.hash).toBe('#type=change');
+    expect(activeIds()).toEqual(['nav-tickets-change']);
+    // The click must not be left to the router's silent pushState.
+    expect(router.intercepted).toHaveLength(0);
+    // The new entry carries the router's state shape (#8331), so Back onto it
+    // after a later page swap is not ignored by the router.
+    expect(window.history.state).toEqual(expect.objectContaining({ index: expect.any(Number) }));
+
+    act(() => window.history.back());
+    await waitFor(() => expect(screen.getByTestId('type-filter-probe')).toHaveTextContent('problem'));
+    expect(activeIds()).toEqual(['nav-tickets-problem']);
+
+    act(() => window.history.forward());
+    await waitFor(() => expect(screen.getByTestId('type-filter-probe')).toHaveTextContent('change'));
+    expect(activeIds()).toEqual(['nav-tickets-change']);
+  });
+
+  it('leaves cross-page typed clicks to the router (it navigates; the page mounts with the hash)', async () => {
+    window.history.replaceState({ index: 0, scrollX: 0, scrollY: 0 }, '', '/timesheet');
+    const user = userEvent.setup();
+    render(<Sidebar currentPath="/timesheet" />);
+
+    await user.click(screen.getByTestId('nav-tickets-change'));
+
+    expect(router.intercepted).toHaveLength(1);
+    expect(window.location.pathname).toBe('/tickets');
+  });
+
+  it('leaves modified clicks (open in new tab) to the browser', async () => {
+    const user = userEvent.setup();
+    render(<Sidebar currentPath="/tickets" />);
+
+    await user.keyboard('{Meta>}');
+    await user.click(screen.getByTestId('nav-tickets-change'));
+    await user.keyboard('{/Meta}');
+
+    expect(router.observed.at(-1)?.modified).toBe(true);
+    expect(router.observed.at(-1)?.defaultPrevented).toBe(false);
   });
 });
 

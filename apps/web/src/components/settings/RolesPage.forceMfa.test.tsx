@@ -9,6 +9,8 @@ import { fetchWithAuth } from '../../stores/auth';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  // orgStore (via RoleFormModal's owner-scope hooks, #8370) registers an orgId provider at module load.
+  registerOrgIdProvider: vi.fn(),
   useAuthStore: Object.assign(
     (selector: (s: { user: { permissions: { resource: string; action: string }[] } }) => unknown) =>
       selector({ user: { permissions: [{ resource: '*', action: '*' }] } }),

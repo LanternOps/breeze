@@ -1,4 +1,4 @@
-import type { M365WriteActionId, WriteActionFailureCode } from '@breeze/shared/m365';
+import type { M365ExecutorActionId, WriteActionFailureCode } from '@breeze/shared/m365';
 import { Counter, type Registry } from 'prom-client';
 import { writeAuditEvent, type RequestLike } from '../auditEvents';
 
@@ -9,10 +9,18 @@ import { writeAuditEvent, type RequestLike } from '../auditEvents';
  * Graph calls), not the read-side connection lifecycle events.
  */
 
-export type M365WriteActionOutcome = 'ok' | WriteActionFailureCode | 'executor_unavailable';
+// consent_upgrade_required / connection_not_ready here are the app-role ladder's
+// refusals (an authoritative grant observation lacks a role the action needs);
+// the plain readiness refusal before it is still not audited.
+export type M365WriteActionOutcome =
+  | 'ok'
+  | WriteActionFailureCode
+  | 'executor_unavailable'
+  | 'consent_upgrade_required'
+  | 'connection_not_ready';
 
 interface M365WriteActionMetricsRecorder {
-  onEvent: (action: M365WriteActionId, outcome: M365WriteActionOutcome) => void;
+  onEvent: (action: M365ExecutorActionId, outcome: M365WriteActionOutcome) => void;
 }
 
 const noop = () => {};
@@ -25,7 +33,7 @@ export function setM365WriteActionMetricsRecorder(
 }
 
 export function recordM365WriteActionMetric(
-  action: M365WriteActionId,
+  action: M365ExecutorActionId,
   outcome: M365WriteActionOutcome,
 ): void {
   recorder.onEvent(action, outcome);
@@ -52,7 +60,7 @@ export function registerM365GraphActionsPrometheusCounter(
 export interface M365WriteActionAuditInput {
   orgId: string;
   connectionId: string;
-  actionType: M365WriteActionId;
+  actionType: M365ExecutorActionId;
   outcome: M365WriteActionOutcome;
   actorId?: string;
 }

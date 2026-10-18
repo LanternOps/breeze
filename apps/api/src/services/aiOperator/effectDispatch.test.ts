@@ -48,6 +48,8 @@ vi.mock('../../db', () => ({
 }));
 
 import { classifyEffectIdempotency, dispatchPlannedEffect, verifyDispatchedEffect } from './effectDispatch';
+import { M365_WRITE_ACTION_IDEMPOTENCY } from '@breeze/shared/m365';
+import { M365_HEADLESS_ACTIONS } from '../m365ToolsHeadless';
 import { planEffectOperationKey } from './planApproval';
 import type { PlannedEffect } from './recipes/types';
 
@@ -175,8 +177,22 @@ describe('verifyDispatchedEffect — the POST probe', () => {
 
 describe('classifyEffectIdempotency', () => {
   it('defaults an unclassified tool to non_idempotent (never auto-retried)', () => {
-    expect(classifyEffectIdempotency('m365_create_user')).toBe('non_idempotent');
+    expect(classifyEffectIdempotency('some_future_tool')).toBe('non_idempotent');
     expect(classifyEffectIdempotency('google_remove_from_group')).toBe('idempotent');
     expect(classifyEffectIdempotency('google_set_forwarding')).toBe('idempotent_by_probe');
+  });
+
+  it('classifies every headless M365 tool by its action’s spec §6.6 class (M1 #6170)', () => {
+    expect(classifyEffectIdempotency('m365_disable_user')).toBe('idempotent');
+    expect(classifyEffectIdempotency('m365_reset_password')).toBe('non_idempotent');
+    expect(classifyEffectIdempotency('m365_revoke_sessions')).toBe('idempotent_by_probe');
+    expect(classifyEffectIdempotency('m365_remove_from_group')).toBe('idempotent');
+    expect(classifyEffectIdempotency('m365_assign_license')).toBe('idempotent_by_probe');
+    expect(classifyEffectIdempotency('m365_retire_intune_device')).toBe('idempotent');
+    expect(classifyEffectIdempotency('m365_create_user')).toBe('non_idempotent');
+    expect(classifyEffectIdempotency('m365_set_auto_reply')).toBe('idempotent_by_probe');
+    for (const [tool, actionId] of Object.entries(M365_HEADLESS_ACTIONS)) {
+      expect(classifyEffectIdempotency(tool)).toBe(M365_WRITE_ACTION_IDEMPOTENCY[actionId]);
+    }
   });
 });

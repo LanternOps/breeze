@@ -38,7 +38,7 @@ describe('email template defaults', () => {
 
   it('interpolates the shared subject template', () => {
     expect(defaultSubject('ticket_comment_notification', {
-      internalNumber: 'T-1',
+      ticketNumber: 'T-1',
       ticketSubject: 'Printer',
     })).toBe('[T-1] New reply: Printer');
     expect(defaultSubject('quote_send', {
@@ -53,7 +53,7 @@ describe('email template defaults', () => {
     expect(defaultSubject('ticket_autoresponse', { ticketSubject: 'Printer' }))
       .toBe('We received your request: Printer');
     expect(defaultSubject('ticket_autoresponse', {
-      internalNumber: null,
+      ticketNumber: null,
       ticketSubject: 'Printer',
       vars: { ticket_number: 'your request' },
     })).toBe('We received your request: Printer');

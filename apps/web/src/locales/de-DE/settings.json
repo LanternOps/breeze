@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "KI-Daten & Datenschutz",
+    "orgDescription": "Was Breeze AI auf den Geräten dieser Organisation lesen darf und wie lange KI-Tool-Ausgaben aufbewahrt werden. Leer übernimmt den Partner-Standard; eine Organisation kann ihn nur verschärfen.",
+    "partnerDescription": "Standardwerte für jede Organisation. Eine Organisation kann diese im eigenen KI-Tab verschärfen, aber nie lockern.",
+    "levelLabel": "KI-Lesezugriff auf Gerätedateien",
+    "levels": {
+      "off": {
+        "label": "Aus",
+        "help": "Die KI kann keine Dateiinhalte lesen und keine Ordner auf Geräten durchsuchen; Anfragen für Diagnosezugriff werden abgelehnt. Übersichten zur Speichernutzung und Ihre eigenen Bibliotheksskripte bleiben verfügbar."
+      },
+      "no_user_profiles": {
+        "label": "Ohne Benutzerprofilordner",
+        "help": "System- und Anwendungspfade mit Genehmigung; Dokumente, Desktop und Home-Ordner werden abgelehnt, sofern ein Administrator keine zeitlich begrenzte Diagnosefreigabe erteilt."
+      },
+      "any_with_approval": {
+        "label": "Beliebiger Pfad, mit Genehmigung",
+        "help": "Jeder Lesezugriff erfordert weiterhin die Genehmigung eines Technikers und wird protokolliert; Anmeldedaten-Speicher bleiben gesperrt."
+      }
+    },
+    "inherit": "Übernehmen: {{value}} ({{source}})",
+    "retentionLabel": "KI-Tool-Ausgaben aufbewahren für (Tage)",
+    "retentionInherit": "Übernehmen: {{value}} ({{source}})",
+    "retentionHelp": "Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt. Leer übernimmt; ein Partner kann Ausgaben unbegrenzt aufbewahren.",
+    "keepForever": "unbegrenzt",
+    "sourceOrg": "diese Organisation",
+    "sourcePartner": "Partner-Standard",
+    "sourceDefault": "Breeze-Standard",
+    "abovePartnerCeiling": "Nicht verfügbar: Der Partner-Standard ist strenger.",
+    "aboveCeilingLevel": "Nicht verfügbar: Der Partner-Standard ist strenger.",
+    "retentionAboveCeiling": "Ihr Partner bewahrt Ausgaben höchstens {{days}} Tage auf.",
+    "saved": "KI-Datenrichtlinie gespeichert",
+    "failedToSave": "KI-Datenrichtlinie konnte nicht gespeichert werden",
+    "partnerInheritDefault": "Breeze-Standard: {{value}}",
+    "readOnly": "Sie haben keine Berechtigung, diese Standardwerte zu ändern.",
+    "retentionKeepDays": "Aufbewahren für (Tage)",
+    "retentionKeepForever": "Unbegrenzt aufbewahren",
+    "retentionBreezeDefault": "Breeze-Standard: {{days}} Tage",
+    "partnerRetentionHelp": "Legen Sie fest, wie lange KI-Tool-Ausgaben aufbewahrt werden, oder bewahren Sie sie unbegrenzt auf. Ältere Ausgaben werden im nächtlichen Lauf durch einen Platzhalter ersetzt."
+  },
   "partnerServicePrincipals": {
     "title": "Dienstprinzipale",
     "description": "Partnerweite Maschinenidentitäten und ihre Zugriffsschlüssel verwalten.",
@@ -327,7 +366,6 @@
       "supportedGeos": "Unterstützt: {{geos}}",
       "refreshQueued": "Modellaktualisierung eingeplant",
       "refreshFailed": "Die Modellaktualisierung konnte nicht eingeplant werden.",
-      "alreadyConnected": "Bereits verbunden",
       "addKind": {
         "anthropic_byok": "Anthropic-API-Schlüssel",
         "openai_compatible": "OpenAI-kompatibler Endpunkt"
@@ -982,6 +1020,11 @@
       "schemeRequired": "URL Vorlage muss mit einem Schema gefolgt von einem Doppelpunkt beginnen (z. B. rustdesk:, https:)",
       "schemeBlocked": "Dieses URL-Schema ist nicht zulässig – javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: und filesystem: sind blockiert.",
       "idRequired": "Die Vorlage URL muss den Platzhalter {id} für den Wert pro Gerät enthalten."
+    },
+    "networkProxy": {
+      "title": "Netzwerk-Proxy",
+      "label": "Netzwerk-Proxy über einen eigenen Ursprung bereitstellen",
+      "help": "Gilt für alle Organisationen; Organisationen können dies nicht überschreiben. Wirkt nur, wo Ihre Region einen eigenen Ursprung anbietet, und verbessert die Kompatibilität mit Weboberflächen von Geräten."
     }
   },
   "partnerSettingsPage": {
@@ -1011,6 +1054,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Vertrauenszentrum",
+        "description": "Standardwerte für die Vertrauensseiten Ihrer Kunden"
+      },
       "company": {
         "label": "Unternehmen",
         "description": "Name, Adresse, Kontakte"
@@ -1915,6 +1962,10 @@
       "title": "Portalfunktionen",
       "description": "Steuern Sie, was dieser Kunde in seinem Portal tun kann. Jede Organisation ist unabhängig.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Bearbeitung der Trust-Seite durch den Kunden",
+          "description": "Admin-Kontakte des Kunden mit Portalzugang können den Entwurf der Trust-Seite bearbeiten: Sicherheitskontakt, Website, ausgeblendete Kontrollen und was die Seite anzeigt. Die Veröffentlichung bleibt bei Ihnen. Sie können die veröffentlichte Seite auch zurückziehen."
+        },
         "enableTickets": {
           "label": "Ticketeinreichung",
           "description": "Kunden können Support-Tickets über das Portal öffnen und verfolgen."
@@ -2036,7 +2087,9 @@
       "email": "Support-E-Mail",
       "phone": "Support-Telefon",
       "welcomeMessage": "Willkommensnachricht",
-      "footerText": "Fußzeilentext"
+      "footerText": "Fußzeilentext",
+      "footerTextHelp": "Wird unten im Kundenportal angezeigt und auf die Angebote und Rechnungen dieser Organisation gedruckt – anstelle der Partner-Dokumentfußzeile. Leer lassen, um die Partner-Fußzeile zu drucken.",
+      "footerTextInheritedSource": "Partner-Dokumentfußzeile"
     }
   },
   "orgPortalUsersEditor": {
@@ -3429,6 +3482,7 @@
         "delete_tenant": "Organisation löschen",
         "detect_log_correlations": "Protokollkorrelationen erkennen",
         "disk_cleanup": "Datenträgerbereinigung",
+        "edr_endpoint_action": "EDR: Gerät isolieren, freigeben oder scannen",
         "execute_command": "Systembefehl ausführen",
         "execute_playbook": "Playbook ausführen",
         "file_operations": "Dateivorgänge",
@@ -3516,6 +3570,7 @@
         "security_scan": "Sicherheitsscan",
         "set_agent_log_level": "Agent-Protokollstufe festlegen",
         "set_device_context": "Gerätekontext festlegen",
+        "sync_edr_data": "EDR-Daten synchronisieren",
         "sync_huntress_data": "Huntress-Daten synchronisieren",
         "system_cleanup": "Systembereinigung",
         "take_screenshot": "Screenshot aufnehmen"
@@ -4371,7 +4426,8 @@
     "reEnterYourNewPassword": "Geben Sie Ihr neues Passwort erneut ein",
     "confirmPassword": "bestätigenPasswort",
     "newPassword2": "neuesPasswort",
-    "changingPassword": "Passwort ändern..."
+    "changingPassword": "Passwort ändern...",
+    "noPasswordNotice": "Dieses Konto meldet sich über den Identitätsanbieter Ihrer Organisation an und hat kein Passwort, daher gibt es hier nichts zu ändern. Wenn Ihre Organisation kein Single Sign-On vorschreibt, können Sie auf der Anmeldeseite über „Passwort vergessen“ eines festlegen."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single Sign-On verbunden.",
@@ -4389,7 +4445,8 @@
     "sessionInvalid": "Ihre Sitzung hat sich geändert, bevor die Verknüpfung abgeschlossen werden konnte. Bitte melden Sie sich erneut an und versuchen Sie es noch einmal.",
     "providerInactive": "Dieser Single-Sign-On-Anbieter ist nicht mehr aktiv. Wenden Sie sich an Ihren Administrator.",
     "configChanged": "Die Single-Sign-On-Konfiguration wurde geändert, während Sie sich verbunden haben. Bitte versuchen Sie es erneut.",
-    "emailUnverified": "Ihr Identitätsanbieter hat nicht bestätigt, dass Ihre E-Mail-Adresse verifiziert ist. Wenden Sie sich an Ihren Administrator."
+    "emailUnverified": "Ihr Identitätsanbieter hat nicht bestätigt, dass Ihre E-Mail-Adresse verifiziert ist. Wenden Sie sich an Ihren Administrator.",
+    "idpVerifyFailed": "Breeze konnte die von Ihrem Identitätsanbieter zurückgegebene Anmeldung nicht verifizieren. Bitte versuchen Sie es erneut."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Verbundene Apps werden geladen…",
@@ -4590,6 +4647,7 @@
     "ssoReauthProviderInactive": "Single Sign-on ist für dieses Konto nicht mehr verfügbar. Wenden Sie sich an Ihren Administrator und versuchen Sie es erneut.",
     "ssoReauthConfigChanged": "Ihre Single-Sign-on-Einstellungen haben sich während der Überprüfung geändert. Starten Sie die Überprüfung erneut.",
     "ssoReauthEmailUnverified": "Ihr Identitätsanbieter meldet, dass Ihre E-Mail-Adresse nicht bestätigt ist. Bestätigen Sie sie dort und versuchen Sie es erneut.",
+    "ssoReauthIdpVerifyFailed": "Breeze konnte die von Ihrem Identitätsanbieter zurückgegebene Anmeldung nicht verifizieren. Versuchen Sie es erneut. Wenn es weiterhin fehlschlägt, bitten Sie Ihren Administrator, die Serverprotokolle zu prüfen.",
     "ssoReauthProofExpired": "Ihre Überprüfung durch den Identitätsanbieter ist abgelaufen. Führen Sie sie erneut durch, um die Einrichtung der Multi-Faktor-Authentifizierung abzuschließen.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Dieses Konto meldet sich über einen Identitätsanbieter an und hat kein Passwort. Bestätigen Sie sich erneut bei Ihrem Anbieter, bevor Sie einen Passkey hinzufügen.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Ihre Identität wurde bestätigt. Benennen Sie diesen Passkey und fahren Sie fort.",
@@ -4622,6 +4680,11 @@
     "systemRoles": "Systemrollen",
     "customRoles": "Benutzerdefinierte Rollen",
     "createRole": "Rolle erstellen",
+    "ownerScope": "Geltungsbereich",
+    "ownerScopePartner": "Partnerebene",
+    "ownerScopePartnerHelp": "Für Ihre eigenen Mitarbeitenden. Zuweisung auf der Seite „Benutzer“.",
+    "ownerScopeOrganization": "Organisation",
+    "ownerScopeOrganizationHelp": "Für die Benutzer einer Organisation und deren SSO-Standardrolle.",
     "name": "Name",
     "type": "Typ",
     "inheritsFrom": "Erbt von",
@@ -5626,6 +5689,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Diese Organisation hat eine veröffentlichte Seite im Vertrauenszentrum. Wenn Sie das URL-Kürzel ändern, ändert sich die öffentliche URL, und der alte Link funktioniert nicht mehr.",
     "actions": {
       "save": "Organisation retten"
     },
@@ -5798,6 +5862,12 @@
         "merge": "Zusammenführung konnte nicht gestartet werden",
         "missingResult": "Die Zusammenführung wurde abgeschlossen, lieferte aber keine Ergebnisdaten. Versuchen Sie es erneut.",
         "mfaRequired": "Das Zusammenführen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
+      },
+      "blockers": {
+        "pam_open_actuation": "Die aufzulösende Organisation hat PAM-Sitzungen (privilegierter Zugriff), deren Bereinigung noch nicht abgeschlossen ist. Warten Sie, bis sie beendet sind, und versuchen Sie die Zusammenführung dann erneut.",
+        "pam_evidence": "Die aufzulösende Organisation hat einen PAM-Verlauf (privilegierter Zugriff), und das Verschieben von PAM-Verlauf zwischen Organisationen ist in dieser Bereitstellung nicht aktiviert. Führen Sie die Organisationen in umgekehrter Richtung zusammen oder gar nicht.",
+        "payment_in_flight": "Eine Zahlung der aufzulösenden Organisation ist noch in Bearbeitung. Warten Sie, bis sie abgeschlossen ist, und versuchen Sie die Zusammenführung dann erneut.",
+        "lineage_depth": "Diese Organisationen wurden bereits zu oft zusammengeführt; diese Zusammenführung würde die maximale Tiefe des Zusammenführungsverlaufs überschreiten."
       }
     },
     "archive": {
@@ -5941,6 +6011,8 @@
     },
     "columns": {
       "timezone": "Zeitzone",
+      "address": "Adresse",
+      "contact": "Kontakt",
       "devices": "Geräte"
     },
     "empty": "Keine Standorte gefunden. Fügen Sie eine Standort hinzu, um loszulegen."
@@ -6773,5 +6845,16 @@
     "invalidKey": "Ein Pushover-Benutzerschlüssel besteht aus 30 Buchstaben oder Ziffern.",
     "loadFailed": "Ihre Pushover-Einstellung konnte nicht geladen werden.",
     "saveFailed": "Ihre Pushover-Einstellung konnte nicht gespeichert werden."
+  },
+  "emailNotificationSettings": {
+    "title": "E-Mail-Benachrichtigungen",
+    "description": "Legen Sie fest, welche E-Mails Breeze Ihnen sendet. Hinweise in der App bleiben immer aktiv.",
+    "digestLabel": "Tägliche Zusammenfassung zum Verbindungsstatus",
+    "digestHelp": "Eine morgendliche Übersicht über defekte Integrationen und Anmeldungen, die Sie beheben können, sowie über bereits wiederhergestellte. Höchstens einmal täglich.",
+    "enabledToast": "Zusammenfassung zum Verbindungsstatus aktiviert",
+    "disabledToast": "Zusammenfassung zum Verbindungsstatus deaktiviert",
+    "loadFailed": "E-Mail-Einstellungen konnten nicht geladen werden.",
+    "saveFailed": "E-Mail-Einstellungen konnten nicht gespeichert werden.",
+    "retry": "Erneut versuchen"
   }
 }

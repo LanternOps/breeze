@@ -37,7 +37,12 @@ import {
 } from '../ticketMoveCurrencyGuard';
 import { assertNoHourBlockDrawnTime } from '../ticketMoveHourBlockGuard';
 import { assertNoPendingApprovalRequest } from '../ticketMoveApprovalGuard';
-import { assertPamDeviceOrgMoveAllowed } from '../pamDeviceMoveGuard';
+import {
+  armOwnershipChange,
+  assertPamDeviceOrgMoveAllowed,
+  expireUnactuatedElevationRequests,
+  resolvePamEpochTransfer,
+} from '../pamDeviceMoveGuard';
 import { revokeWorkstationGrantsForMove } from '../callerVerification/deviceMove';
 import { revokeDiagnosticGrantsForMove } from '../diagnosticAccess/deviceMove';
 import {
@@ -148,6 +153,12 @@ export interface MoveDeviceOrgResult {
    * commits its outer transaction would otherwise note a move that rolled back).
    */
   removedTicketLinks: RemovedTicketLink[];
+  /**
+   * PAM ownership epochs W6 (#8208, OD4): live elevation requests that never
+   * reached actuation, expired with reason `ownership_changed`. They stay in
+   * the source org as its history.
+   */
+  expiredElevationRequests: number;
 }
 
 export async function moveDeviceOrgInTransaction(
@@ -239,7 +250,21 @@ export async function moveDeviceOrgInTransaction(
   const lockedTarget = lockedOrgs.get(targetOrgId);
   if (!lockedTarget) throw new OrgVanishedDuringMoveError('target');
   if (!lockedSource) throw new OrgVanishedDuringMoveError('source');
-  await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId });
+  // PAM ownership epochs W6 (#8208). Transfer mode is env flag AND the
+  // database switch, read in-transaction; the GUCs armed here are what the
+  // devices triggers read at the org flip below (epoch cause, and the closed-
+  // actuation predicate of devices_pam_history_move_guard). The typed check
+  // runs first so a refusal is a 409, not the trigger's 23514.
+  const pamEpochTransfer = await resolvePamEpochTransfer(tx);
+  await armOwnershipChange(tx, 'device_move', pamEpochTransfer);
+  await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId, transferEnabled: pamEpochTransfer });
+  // OD4: expire this device's live un-actuated elevation requests in the
+  // source org before anything else moves. Deliberately BEFORE the device
+  // FOR UPDATE below: an actuator holds its request row while it waits for the
+  // device FOR SHARE (breeze_pam_chain_epoch_guard), so taking the request
+  // rows after the device lock would invert that order and deadlock. A request
+  // that gains an actuation after this point is refused by the trigger.
+  const expiredElevationRequests = await expireUnactuatedElevationRequests(tx, { orgId: sourceOrgId, deviceId });
   // #5573 W02 — a ticket on this device that is a service deliverable's
   // work item pins it to the deliverable's org. `tickets` is in
   // getDeviceOrgDenormalizedTables(), so the loop below would re-stamp
@@ -465,6 +490,31 @@ export async function moveDeviceOrgInTransaction(
   if (poolRefusal) throw new DevicePoolMembershipRefusedError(poolRefusal);
   await revokeWorkstationGrantsForMove(tx, sourceOrgId, deviceId);
   await revokeDiagnosticGrantsForMove(tx, sourceOrgId, deviceId, input.actor.userId);
+
+  // Endpoint messaging (#8742 W02): delivery and receipt history follows the
+  // device, but the message (and its body) stays with the source org. The
+  // (endpoint_message_id, org_id) -> endpoint_messages(id, org_id) FK is
+  // DEFERRABLE INITIALLY IMMEDIATE, and breeze_cascade_device_org_id()
+  // restamps the delivery's org_id inside the devices UPDATE below, so the
+  // pointer must be severed BEFORE the flip or that UPDATE 23503s.
+  // LOAD-BEARING, like the invoice_line_devices detach.
+  await tx.execute(
+    sql`UPDATE endpoint_message_deliveries SET endpoint_message_id = NULL, updated_at = now()
+        WHERE device_id = ${deviceId}::uuid AND endpoint_message_id IS NOT NULL`,
+  );
+
+  // Endpoint live chat (#8743 W03): chat history follows the device (both
+  // tables are restamped by breeze_cascade_device_org_id()), but a LIVE chat
+  // must not: a destination-org technician would otherwise inherit, and could
+  // post into, a conversation the source org opened. End it here, in the
+  // source org, before the flip. The agent is not told (post-commit side
+  // effects are the caller's); its next reply gets 409 conversation_closed
+  // and the helper closes the window's input.
+  await tx.execute(
+    sql`UPDATE endpoint_conversations
+           SET status = 'closed', close_reason = 'device_moved', closed_at = now(), updated_at = now()
+         WHERE device_id = ${deviceId}::uuid AND status IN ('opening', 'open')`,
+  );
 
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
@@ -883,18 +933,14 @@ export async function moveDeviceOrgInTransaction(
     // the trusted org-only restamp inside this transaction.
     if (DEVICE_ORG_FK_CASCADE_TABLES.includes(table)) continue;
     if (table === 'elevation_requests') {
-      // PAM ownership epochs W6-pre (#8746): an ACTUATED request of ANY epoch
-      // is PAM-chain evidence frozen at its (org_id, device_epoch);
-      // breeze_pam_chain_epoch_guard() refuses (42501) a restamp of it. Only
-      // un-actuated requests follow the device (the guard re-anchors them into
-      // the new epoch). Same statement as the
-      // devices_restamp_unactuated_elevation_requests trigger, which has
-      // normally already run, so this copy matches nothing.
-      await tx.execute(
-        sql`UPDATE ${sql.identifier(table)} r SET org_id = ${targetOrgId}::uuid
-            WHERE r.device_id = ${deviceId}::uuid AND r.org_id IS DISTINCT FROM ${targetOrgId}::uuid
-              AND NOT EXISTS (SELECT 1 FROM pam_actuations a WHERE a.elevation_request_id = r.id)`,
-      );
+      // PAM ownership epochs W6 (#8208, spec §7.3/§8, OD4): on a device move
+      // EVERY elevation request stays at its (org_id, device_epoch) as source-
+      // org history — actuated ones are frozen evidence (the epoch guard
+      // refuses their restamp, 42501), and un-actuated ones were expired
+      // above and cannot follow anyway: each carries elevation_audit rows
+      // whose (elevation_request_id, org_id) FK is IMMEDIATE here, so a
+      // restamp raised 23503. The devices restamp trigger moves un-actuated
+      // requests only on an org merge (cause org_merge). Nothing to write.
       continue;
     }
     if (table === 'tickets') {
@@ -1380,5 +1426,13 @@ export async function moveDeviceOrgInTransaction(
   // earlier epochs keep their event-time site (W2, #8204).
   await rewriteDeviceSiteDenormalizedTables(tx, deviceId, targetSiteId);
 
-  return { updated, linkGroupDissolved, currencyGuard, alertChildRewrite, customFieldRehome, removedTicketLinks };
+  return {
+    updated,
+    linkGroupDissolved,
+    currencyGuard,
+    alertChildRewrite,
+    customFieldRehome,
+    removedTicketLinks,
+    expiredElevationRequests,
+  };
 }

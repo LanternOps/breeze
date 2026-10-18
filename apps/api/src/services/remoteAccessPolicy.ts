@@ -13,7 +13,7 @@ import { resolveEffectiveConfig } from './configurationPolicy';
 import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { getRemoteAccessBaseline } from './policyBaselineDefaults';
-import { db, runAfterDbContextExit } from '../db';
+import { db, runAfterDbContextExit, withDbTransaction } from '../db';
 import { isParkedDevice, PARKED_DEVICE_COMMAND_REFUSAL_CODE } from './unassignedPool/deliveryEligibility';
 
 // ---------------------------------------------------------------------------
@@ -248,7 +248,7 @@ interface ResolvedRemoteAccess {
 
 export async function resolveRemoteAccessForDevice(
   deviceId: string,
-  options: { bypassCache?: boolean; maxAgeMs?: number } = {},
+  options: { bypassCache?: boolean; maxAgeMs?: number; savepoint?: boolean } = {},
 ): Promise<ResolvedRemoteAccess> {
   // Check cache
   const now = Date.now();
@@ -261,7 +261,12 @@ export async function resolveRemoteAccessForDevice(
 
   // Resolve via the generic config policy engine
   const generationAtStart = cacheGeneration;
-  const effective = await resolveEffectiveConfig(deviceId, systemAuth);
+  // #8997: `savepoint` (caller must be inside a DB context) confines a failed
+  // read to a savepoint so a caller that catches the error does not leave the
+  // surrounding transaction aborted. Only the cache-miss path pays for it.
+  const effective = options.savepoint
+    ? await withDbTransaction(() => resolveEffectiveConfig(deviceId, systemAuth))
+    : await resolveEffectiveConfig(deviceId, systemAuth);
 
   let settings = { ...DEFAULTS };
   let policyName: string | null = null;

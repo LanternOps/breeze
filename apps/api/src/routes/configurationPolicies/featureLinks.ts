@@ -500,7 +500,8 @@ featureLinkRoutes.post(
       if (error instanceof BackupDestinationNotInOrgError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
-      // #8186: approval / app rules are edited on the Update Ring now.
+      // #8186 / #8678: approval / app rules live on the Update Ring; `code`
+      // says whether this was a stale edit or a repair onto a ring lacking them.
       if (error instanceof PolicyApprovalFieldMovedError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
@@ -809,7 +810,8 @@ featureLinkRoutes.patch(
       if (error instanceof BackupDestinationNotInOrgError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }
-      // #8186: approval / app rules are edited on the Update Ring now.
+      // #8186 / #8678: approval / app rules live on the Update Ring; `code`
+      // says whether this was a stale edit or a repair onto a ring lacking them.
       if (error instanceof PolicyApprovalFieldMovedError) {
         return c.json({ error: error.message, code: error.code }, 400);
       }

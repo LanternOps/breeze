@@ -367,6 +367,90 @@ describe('updateToolSourceRow', () => {
   });
 });
 
+describe('openapi kind (W2) — service', () => {
+  function existing(overrides: Partial<ToolSourceRow> = {}): ToolSourceRow {
+    return {
+      id: 'src-1', orgId: 'org-A', partnerId: null, slug: 'vendor', name: 'Vendor', kind: 'openapi',
+      endpointUrl: 'https://api.vendor.example/v1', specUrl: 'https://docs.vendor.example/openapi.json',
+      credentialOrigin: 'https://api.vendor.example', authKind: 'bearer', authConfigEncrypted: 'ct', authFingerprint: 'fp',
+      status: 'active', lastDiscoveredAt: null, lastError: null, lastDiscoverySummary: null, rateLimitPerMinute: 60,
+      createdByUserId: 'user-1', createdAt: new Date('2026-01-01T00:00:00Z'), updatedAt: new Date('2026-01-01T00:00:00Z'),
+      ...overrides,
+    } as ToolSourceRow;
+  }
+  function mockUpdateChain(returnedRow: ToolSourceRow) {
+    const returning = vi.fn().mockResolvedValue([returnedRow]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+    return set;
+  }
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('pins the credential origin to the API base URL, never the spec host, and stores spec_url', async () => {
+    vi.mocked(encryptToolSourceAuth).mockReturnValue({ encrypted: 'ct', fingerprint: 'fp' });
+    const returning = vi.fn().mockResolvedValue([{ id: 'src-new' }]);
+    const values = vi.fn().mockReturnValue({ returning });
+    insertMock.mockReturnValue({ values });
+
+    await createToolSourceRow({ orgId: 'org-A', partnerId: null }, {
+      slug: 'vendor', name: 'Vendor', kind: 'openapi',
+      endpointUrl: 'https://api.vendor.example/v1', specUrl: 'https://docs.vendor.example/openapi.json',
+      authKind: 'bearer', authConfig: { token: 't' }, rateLimitPerMinute: 60,
+    } as unknown as Parameters<typeof createToolSourceRow>[1], 'user-1');
+
+    const row = values.mock.calls[0]![0] as Record<string, unknown>;
+    expect(row.kind).toBe('openapi');
+    expect(row.credentialOrigin).toBe('https://api.vendor.example');
+    expect(row.specUrl).toBe('https://docs.vendor.example/openapi.json');
+  });
+
+  it('never stores a spec_url on an mcp source even if one slips through', async () => {
+    vi.mocked(encryptToolSourceAuth).mockReturnValue({ encrypted: null, fingerprint: null } as any);
+    const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'x' }]) });
+    insertMock.mockReturnValue({ values });
+
+    await createToolSourceRow({ orgId: 'org-A', partnerId: null }, {
+      slug: 'hudu', name: 'Hudu', kind: 'mcp', endpointUrl: 'https://hudu.example.com/mcp',
+      specUrl: 'https://hudu.example.com/openapi.json', authKind: 'none', rateLimitPerMinute: 60,
+    } as unknown as Parameters<typeof createToolSourceRow>[1], 'user-1');
+
+    expect((values.mock.calls[0]![0] as Record<string, unknown>).specUrl).toBeNull();
+  });
+
+  it('writes a changed spec URL and re-triggers discovery', async () => {
+    const set = mockUpdateChain(existing({ specUrl: 'https://docs.vendor.example/v2.json' }));
+    const outcome = await updateToolSourceRow(existing(), { specUrl: 'https://docs.vendor.example/v2.json' } as any);
+    if ('error' in outcome) throw new Error(outcome.error);
+    expect((set.mock.calls[0]![0] as Record<string, unknown>).specUrl).toBe('https://docs.vendor.example/v2.json');
+    expect(outcome.discoveryTriggered).toBe(true);
+  });
+
+  it('does not re-trigger discovery for an unchanged spec URL', async () => {
+    const set = mockUpdateChain(existing());
+    const outcome = await updateToolSourceRow(existing(), { specUrl: 'https://docs.vendor.example/openapi.json', name: 'x' } as any);
+    if ('error' in outcome) throw new Error(outcome.error);
+    expect(set.mock.calls[0]![0]).not.toHaveProperty('specUrl');
+    expect(outcome.discoveryTriggered).toBe(false);
+  });
+
+  it('refuses a spec URL on an mcp row with spec_url_not_applicable', async () => {
+    const outcome = await updateToolSourceRow(existing({ kind: 'mcp', specUrl: null }), { specUrl: 'https://x.example/o.json' } as any);
+    expect(outcome).toMatchObject({ status: 400, code: 'spec_url_not_applicable' });
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('exposes specUrl and lastDiscoverySummary on the DTO', () => {
+    const summary = { version: 1, at: '2026-10-17T00:00:00.000Z', operationCount: 3, skipped: [], skippedTotal: 0, warnings: [] };
+    const dto = toToolSourceDto(existing({ lastDiscoverySummary: summary as any }));
+    expect(dto.specUrl).toBe('https://docs.vendor.example/openapi.json');
+    expect(dto.lastDiscoverySummary).toEqual(summary);
+    expect(toToolSourceDto(existing({ kind: 'mcp', specUrl: null })).specUrl).toBeNull();
+  });
+});
+
 describe('patchSourceTool', () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -1,0 +1,28 @@
+{
+  "Platform": {
+    "Name": "Docker Engine - Community"
+  },
+  "Components": [
+    {
+      "Name": "Engine",
+      "Version": "29.4.0",
+      "Details": {
+        "ApiVersion": "1.54",
+        "Os": "linux"
+      }
+    },
+    {
+      "Name": "containerd",
+      "Version": "1.7.19"
+    },
+    {
+      "Name": "runc",
+      "Version": "1.7.19"
+    }
+  ],
+  "Version": "29.4.0",
+  "ApiVersion": "1.54",
+  "Os": "linux",
+  "Arch": "amd64",
+  "KernelVersion": "6.8.0-40-generic"
+}

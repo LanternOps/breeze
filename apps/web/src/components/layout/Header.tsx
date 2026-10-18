@@ -391,8 +391,8 @@ export default function Header() {
           <Menu className="h-5 w-5 text-muted-foreground" />
         </button>
 
-        {/* Organization Switcher */}
-        <div data-tour="org-switcher">
+        {/* Organization Switcher — min-w-0 lets the org name truncate, not drop, on a phone (#9028) */}
+        <div data-tour="org-switcher" className="min-w-0">
           <OrgSwitcher />
         </div>
 

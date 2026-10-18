@@ -14,6 +14,7 @@ import {
   migrateHumanKeyToServicePrincipal,
   ServicePrincipalNotFoundError,
   ApiKeyNotFoundError,
+  ServicePrincipalMcpDomainsConflictError,
 } from '../services/servicePrincipals';
 
 // SR2-15: service-principal management. Mounted behind `authMiddleware` ONLY
@@ -48,7 +49,10 @@ function getPagination(query: { page?: string; limit?: string }) {
   return { page, limit, offset: (page - 1) * limit };
 }
 
-function mapServicePrincipalError(err: unknown): { status: 404 | 400; error: string } | null {
+function mapServicePrincipalError(err: unknown): { status: 404 | 400 | 409; error: string } | null {
+  if (err instanceof ServicePrincipalMcpDomainsConflictError) {
+    return { status: 409, error: err.message };
+  }
   if (err instanceof ServicePrincipalNotFoundError) {
     return { status: 404, error: 'Service principal not found' };
   }

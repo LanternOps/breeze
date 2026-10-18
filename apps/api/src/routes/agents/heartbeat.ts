@@ -71,6 +71,7 @@ import { DeferredCacheFills } from '../../services/hotPathCache';
 import {
   buildSettingsDecisionFields,
   retainStateKillSwitchEnabled,
+  agentEchEnabled,
   type RemoteManagementDecision,
 } from './heartbeatSettingsDecision';
 import { agentCollectorAbsenceCache, agentCollectorAbsenceKey, deviceHasAgentCollectors } from '../../services/unifi/unifiCollectorService';
@@ -96,7 +97,12 @@ import {
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { normalizeReportedScriptSecretEnvVersion } from '../../services/scriptSecretDelivery';
 import { redactSecretsDeep } from '../../services/secretRedaction';
-import { recordAgentHeartbeat, resolveResponseStatus } from '../metrics';
+import {
+  recordAgentHeartbeat,
+  recordAgentHeartbeatEch,
+  recordAgentFilterSignatureReport,
+  resolveResponseStatus,
+} from '../metrics';
 import { ingestRollbackObservation } from '../../services/agentRollbackResult';
 import {
   editionWithheldDetail,
@@ -1191,6 +1197,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.updateAttemptCount = null;
   }
 
+  // #8869 — ECH telemetry: counters only (no persistence). Absent = not counted.
+  if (data.echActive !== undefined) recordAgentHeartbeatEch(data.echActive);
+  if (data.filterSignatureSeenAt !== undefined) recordAgentFilterSignatureReport();
+
   // #6925 — persist the agent's Breeze Assist install problem ("enabled but
   // not installed, no server offer", or an abandoned install) so it shows on
   // the device page and device list instead of one agent-side log line.
@@ -2162,6 +2172,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     backup_server_url: (process.env.AGENT_BACKUP_SERVER_URL ?? '').trim(),
   };
 
+  // #8869 — ECH kill switch, ALWAYS sent as true/false (an absent key means
+  // "no change" on the agent, so the explicit value is the only lever).
+  // Takes effect on the agent's next connection; never tears down live
+  // connections.
+  mergedConfigUpdate.ech_enabled = agentEchEnabled();
+
   // Security remediation Wave 6, Task 9 — ALWAYS sent, as true or false.
   //
   // An earlier revision omitted the key when unset/false, mirroring
@@ -2219,8 +2235,13 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // #8053: the heartbeat's own (longer) max age — the default 30 s is
     // shorter than the 60 s beat, so it never hit and every beat re-ran the
     // full effective-config resolution inside this org transaction.
+    // #8997: `savepoint` confines a failed policy read (e.g. a permission
+    // error) to a savepoint taken only on a cache miss. Otherwise the failure
+    // aborts the org transaction: this catch "recovers" but the commit
+    // re-throws and the whole heartbeat 500s. Cache hits add no statement.
     const remoteAccess = await resolveRemoteAccessForDevice(device.id, {
       maxAgeMs: HEARTBEAT_REMOTE_ACCESS_MAX_AGE_MS,
+      savepoint: true,
     });
     remoteManagement = { resolved: remoteAccess.resolved, value: remoteAccess.settings.vncRelay === true };
   } catch (err) {
@@ -2618,6 +2639,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         ? { orgId: beatHierarchy.orgId, partnerId: beatHierarchy.org.partnerId }
         : undefined;
       const probePartnerOpts = beatHierarchy?.org ? { partnerId: beatHierarchy.org.partnerId } : undefined;
+      // #8257: the device-keyed Redis policy caches are bound to the device's
+      // org. With a hierarchy it supplies the org (already checked equal to
+      // scoped.deviceOrgId above); without one this names it. No statement.
+      const cachedPolicyOpts = { ...policyOpts, orgId: scoped.deviceOrgId };
 
       // Helper. Redis first (no statement on a hit). With the set the helper
       // resolves in memory and only the legacy org flag can read (its own
@@ -2626,7 +2651,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // helperEnabled:false to a legacy beat (a retain-state beat retains it),
       // so its SQL error must not abort the context.
       try {
-        const cachedHelper = await readCachedHelperSettings(scoped.deviceId);
+        const cachedHelper = await readCachedHelperSettings(scoped.deviceId, scoped.deviceOrgId);
         if (cachedHelper) {
           helperSettings = cachedHelper;
         } else {
@@ -2666,14 +2691,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
       // Sentry on every feature: losing a policy silently is exactly #2930.
       try {
-        policyConfigs.eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, policyOpts);
+        policyConfigs.eventLogSettings = await buildEventLogConfigUpdate(scoped.deviceId, cachedPolicyOpts);
       } catch (err) {
         console.error(`[agents] failed to build event log config update for ${agentId}:`, err);
         captureException(err);
       }
 
       try {
-        policyConfigs.hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, policyOpts);
+        policyConfigs.hardwareMonitoringSettings = await buildHardwareMonitoringConfigUpdate(scoped.deviceId, cachedPolicyOpts);
       } catch (err) {
         console.error(`[agents] failed to build hardware monitoring config update for ${agentId}:`, err);
         captureException(err);
@@ -2681,7 +2706,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
       try {
         policyConfigs.pamSettings = await buildPamConfigUpdate(scoped.deviceId, {
-          ...policyOpts,
+          ...cachedPolicyOpts,
           // #8616: see the helper read above.
           skipCacheWrite: hierarchyOutcome !== 'loaded',
           loadOrgPamFallback: (orgId) =>
@@ -2743,7 +2768,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // "no policy applies" arrives as { watches: [] } and must be sent (#2949).
       // With the set, a device with no monitors link costs no statement.
       try {
-        policyConfigs.monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, policyOpts) as Record<string, unknown> | null;
+        policyConfigs.monitoringSettings = await buildMonitoringConfigUpdate(scoped.deviceId, cachedPolicyOpts) as Record<string, unknown> | null;
       } catch (err) {
         console.error(`[agents] failed to build monitoring config update for ${agentId}:`, err);
         captureException(err);

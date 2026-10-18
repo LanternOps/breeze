@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -32,6 +33,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/collectors/workloads"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/desktopfence"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/elevaccount"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
@@ -43,7 +45,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/mgmtdetect"
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
-	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
@@ -130,7 +131,17 @@ type HeartbeatPayload struct {
 	// with no helper version offered. Omitted when there is none, so older
 	// servers (which strip unknown keys) and healthy devices send nothing.
 	HelperInstallIssue string `json:"helperInstallIssue,omitempty"`
-	WatchdogVersion    string `json:"watchdogVersion,omitempty"`
+	// ECHActive is true while the most recent successful TLS dial to the
+	// control plane was accepted over Encrypted Client Hello (#8869): wire
+	// truth, not the dialer's mode, and it stays true after ECH is switched
+	// off until a plain dial succeeds. FilterSignatureSeenAt is when a network
+	// filter last answered the TLS handshake with plaintext HTTP (RFC 3339
+	// UTC), omitted once a plain handshake has succeeded since. Both
+	// omitempty: a healthy device sends neither, and older servers strip the
+	// unknown keys.
+	ECHActive             bool   `json:"echActive,omitempty"`
+	FilterSignatureSeenAt string `json:"filterSignatureSeenAt,omitempty"`
+	WatchdogVersion       string `json:"watchdogVersion,omitempty"`
 	// WatchdogInstall describes a watchdog that is NOT installed and is being
 	// (or will not be) repaired (#8619). Omitted on a healthy host. Closed
 	// enums only; an API that predates it strips the unknown key.
@@ -423,6 +434,11 @@ type Heartbeat struct {
 	endpointMessages     *messageStore
 	endpointMessagesOnce sync.Once
 	messageEventSink     func(messageEvent)
+	// Endpoint live chat (#8743): in-memory conversation store and the
+	// injectable reply-post seam (nil = post to the API; tests override it).
+	endpointChat     *chatStore
+	endpointChatOnce sync.Once
+	chatReplySink    func(chatReplyEvent) (int, error)
 	// unifiCollectorWake is signalled when configUpdate says this device has
 	// UniFi collectors (#7970); see unifi_collector_hint.go.
 	unifiCollectorWake        atomic.Pointer[func()]
@@ -788,6 +804,12 @@ type Heartbeat struct {
 	cachedSysInfo      *collectors.SystemInfo
 	lastSysInfoRefresh time.Time
 
+	// Last control_plane health component recorded (#8869), so the monitor is
+	// only updated when it changes (Monitor.Update warn-logs every non-healthy
+	// call). Guarded by mu.
+	lastControlPlaneStatus  health.Status
+	lastControlPlaneMessage string
+
 	// Tracks whether the read-only FS error has been logged (prevents log spam)
 	updateReadOnlyLogged bool
 
@@ -1063,18 +1085,14 @@ func New(cfg *config.Config) *Heartbeat {
 }
 
 func newHeartbeatHTTPClient(tlsCfg *tls.Config) *http.Client {
-	// Clone DefaultTransport so proxy support (ProxyFromEnvironment) and the
-	// idle-conn/timeout defaults survive; a bare &http.Transport{} would
-	// silently strand proxied agents. Dials then go through the
-	// last-known-good DNS cache (#2288); TLS (including the mTLS client
-	// cert) sits above it, so hostname verification is unchanged — the cache
-	// alters where we dial, never what we trust.
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DialContext = netcache.Shared().DialContext
-	if tlsCfg != nil {
-		transport.TLSClientConfig = tlsCfg
-	}
-	return &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	// ech.NewTransport clones DefaultTransport so proxy support
+	// (ProxyFromEnvironment) and the idle-conn/timeout defaults survive; a
+	// bare &http.Transport{} would silently strand proxied agents. Dials go
+	// through the last-known-good DNS cache (#2288) and TLS through the shared
+	// ECH dialer (#8869), plain-first. TLS (including the mTLS client cert)
+	// sits above the cache, so hostname verification is unchanged — the cache
+	// alters where we dial, never what we trust. A nil tlsCfg is handled.
+	return &http.Client{Timeout: 30 * time.Second, Transport: ech.NewTransport(tlsCfg)}
 }
 
 func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureString, tlsCfg *tls.Config) *Heartbeat {
@@ -1082,6 +1100,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	if secToken == nil && cfg.AuthToken != "" {
 		secToken = secmem.NewSecureString(cfg.AuthToken)
 	}
+
+	// The shared ECH dialer reads no config; this process configures it
+	// before any transport over it is built (#8869).
+	ech.Configure(cfg.ECH, cfg.ECHServerEnabled)
 
 	// Build HTTP client with optional mTLS transport
 	httpClient := newHeartbeatHTTPClient(tlsCfg)
@@ -1721,6 +1743,12 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		log.Debug("notify result from user helper", "uid", session.UID)
 	case ipc.TypeMessagePresented, ipc.TypeMessageAck, ipc.TypeMessageDismissed:
 		h.handleMessageEventFromHelper(session, env)
+	case ipc.TypeChatReply:
+		h.handleChatReplyFromHelper(session, env)
+	case ipc.TypeChatPresented:
+		// A chat_presented answering a live chat_open/chat_message is consumed
+		// by its waiter; one arriving here follows a replay and is ignored.
+		log.Debug("unsolicited chat_presented ignored", "sessionId", session.SessionID)
 	case ipc.TypeSASRequest:
 		go func() {
 			defer func() {
@@ -3351,6 +3379,60 @@ func (h *Heartbeat) applyRequireManifestSigningKeyIDConfig(raw any) {
 	}
 }
 
+// decideECHEnabledUpdate is the pure decision core for a pushed ech_enabled
+// value (the server-side ECH kill switch, #8869). It accepts a JSON boolean or
+// the strings "true"/"false"; anything else is ignored (ok=false) rather than
+// coerced. changed is false when value already matches current, so a server
+// pushing the same value every heartbeat never causes a write.
+func decideECHEnabledUpdate(raw any, current bool) (value bool, changed bool, ok bool) {
+	switch v := raw.(type) {
+	case bool:
+		value = v
+	case string:
+		switch v {
+		case "true":
+			value = true
+		case "false":
+			value = false
+		default:
+			log.Warn("ignoring unrecognized ech_enabled config update payload")
+			return false, false, false
+		}
+	default:
+		log.Warn("ignoring non-boolean ech_enabled config update payload")
+		return false, false, false
+	}
+	return value, value != current, true
+}
+
+// applyECHEnabledConfig applies the server-side ECH kill switch. The dialer
+// flag flips BEFORE persistence so a disk failure cannot leave the switch
+// unapplied for the life of the process. It deliberately never touches
+// h.wsClient: the switch only affects subsequent dials and must not tear down
+// live connections.
+func (h *Heartbeat) applyECHEnabledConfig(raw any) {
+	h.mu.Lock()
+	current := h.config.ECHServerEnabled
+	h.mu.Unlock()
+
+	value, changed, ok := decideECHEnabledUpdate(raw, current)
+	if !ok || !changed {
+		return
+	}
+	h.mu.Lock()
+	h.config.ECHServerEnabled = value
+	h.mu.Unlock()
+	ech.Shared().SetServerEnabled(value)
+	if err := config.SetAndPersist("ech_server_enabled", value); err != nil {
+		log.Warn("failed to persist ech_server_enabled; applied in memory only", "error", err.Error())
+	}
+	if value {
+		log.Info("encrypted client hello re-enabled by control plane; applies to new connections")
+	} else {
+		log.Info("encrypted client hello disabled by control plane; applies to new connections")
+	}
+}
+
 func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	if len(update) == 0 {
 		return
@@ -3429,6 +3511,16 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasRMSK {
 		h.applyRequireManifestSigningKeyIDConfig(rmskRaw)
+	}
+
+	// Server-side ECH kill switch (#8869). Key absent = no change. Must stay
+	// above the policy-probe early return below.
+	echRaw, hasECH := update["ech_enabled"]
+	if !hasECH {
+		echRaw, hasECH = update["echEnabled"]
+	}
+	if hasECH {
+		h.applyECHEnabledConfig(echRaw)
 	}
 
 	// Apply onedrive_helper_settings if present (Phase 2). No-op on non-Windows.
@@ -4579,6 +4671,82 @@ func (h *Heartbeat) runHeartbeat() {
 	h.sendHeartbeat()
 }
 
+// controlPlaneComponentName is the health component carrying the control
+// plane's ECH / network-filter state (#8869).
+const controlPlaneComponentName = "control_plane"
+
+// filterSignatureCurrent reports whether st's filter signature is newer than
+// its last plain success. A plain handshake after the signature means the host
+// is reachable, so the signature is stale.
+func filterSignatureCurrent(st ech.HostStatus) bool {
+	return !st.FilterSignatureSeenAt.IsZero() && st.FilterSignatureSeenAt.After(st.LastPlainSuccessAt)
+}
+
+// controlPlaneComponent maps a host's ECH state to the control_plane health
+// component. Row order matters: ECH active with ECH switched off (the live
+// connection is still ECH, but the next reconnect dials plain), then ECH
+// active while the host is in cooldown, then ECH active, then a current filter signature (newer than the last plain success)
+// seen within the last 10 minutes, then cooldown.
+func controlPlaneComponent(st ech.HostStatus) (status health.Status, message string) {
+	switch {
+	case st.ECHActive && st.Disabled == ech.DisabledByConfig:
+		return health.Degraded, "encrypted client hello disabled by configuration; the next reconnect dials plain"
+	case st.ECHActive && st.Disabled == ech.DisabledByServer:
+		return health.Degraded, "encrypted client hello disabled by control plane; the next reconnect dials plain"
+	case st.ECHActive && st.InCooldown:
+		// ECH state is per host and shared by every client in the process:
+		// another client exhausted ECH while this connection is still live,
+		// so the next reconnect is stranded until the cooldown ends.
+		return health.Degraded, "encrypted client hello unavailable; retrying later"
+	case st.ECHActive:
+		return health.Healthy, "reachable via encrypted client hello"
+	case filterSignatureCurrent(st) && time.Since(st.FilterSignatureSeenAt) < 10*time.Minute:
+		return health.Degraded, "control plane blocked by a network security filter (plaintext HTTP answered on the TLS port)"
+	case st.InCooldown:
+		return health.Degraded, "encrypted client hello unavailable; retrying later"
+	default:
+		return health.Healthy, ""
+	}
+}
+
+// serverHost returns raw's hostname (no port), or "" when raw does not parse.
+func serverHost(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// observeControlPlane reads the shared ECH dialer's state for the primary
+// control plane and records the control_plane health component, but only when
+// (status, message) changed since the last beat.
+func (h *Heartbeat) observeControlPlane() ech.HostStatus {
+	st := ech.Shared().Status(serverHost(h.serverURL()))
+	status, message := controlPlaneComponent(st)
+	h.mu.Lock()
+	changed := status != h.lastControlPlaneStatus || message != h.lastControlPlaneMessage
+	if changed {
+		h.lastControlPlaneStatus = status
+		h.lastControlPlaneMessage = message
+	}
+	h.mu.Unlock()
+	if changed && h.healthMon != nil {
+		h.healthMon.Update(controlPlaneComponentName, status, message)
+	}
+	return st
+}
+
+// setECHStatus copies st into the payload's echActive/filterSignatureSeenAt
+// fields. filterSignatureSeenAt is omitted when no signature was seen or a
+// plain handshake succeeded since (the signature is stale).
+func (p *HeartbeatPayload) setECHStatus(st ech.HostStatus) {
+	p.ECHActive = st.ECHActive
+	if filterSignatureCurrent(st) {
+		p.FilterSignatureSeenAt = st.FilterSignatureSeenAt.UTC().Format(time.RFC3339)
+	}
+}
+
 func (h *Heartbeat) serverURL() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -4923,6 +5091,9 @@ func (h *Heartbeat) sendHeartbeat() {
 		updateRelocationFDAHealth(h.healthMon, defaultRelocationFDAProbe())
 	}
 
+	// Before the snapshot so this beat's control_plane component is current.
+	echStatus := h.observeControlPlane()
+
 	healthSnapshot := h.healthMon.Snapshot(health.SnapshotMetadata{
 		DeviceID:         h.config.DeviceID,
 		AgentVersion:     h.agentVersion,
@@ -4954,6 +5125,7 @@ func (h *Heartbeat) sendHeartbeat() {
 	// install (invalidateBackupVersionCache); unknown while the probe gets
 	// no answer.
 	payload.setBackupProtocols(h.backupProtocols())
+	payload.setECHStatus(echStatus)
 	payload.SecurityCapabilities.PamLifetimeProtocolVersion = h.pamLifetimeProtocolVersion()
 	pamReconciliation := h.pamReconciliationStatus()
 	payload.SecurityCapabilities.PamReconciliation = &pamReconciliation
@@ -5120,6 +5292,11 @@ func (h *Heartbeat) doHeartbeatPost(baseURL string, payload *HeartbeatPayload) (
 	if err != nil {
 		log.Error("failed to send heartbeat", "server", baseURL, "error", err.Error())
 		h.healthMon.Update("heartbeat", health.Unhealthy, err.Error())
+		// #8934: the server answered, it is just overloaded — the loop is
+		// alive, and the watchdog must not restart it for that.
+		if status, ok := serverOverloadAnswer(err); ok {
+			h.noteServerUnavailableLiveness(status)
+		}
 		return nil, false
 	}
 	defer resp.Body.Close()
@@ -6799,6 +6976,7 @@ func (h *Heartbeat) handleHelperSessionAuthenticated(session *sessionbroker.Sess
 	// Endpoint messaging (#8293): resend still-open cards to a (re)started
 	// Assist helper. Independent of the token push below.
 	h.replayEndpointMessages(session)
+	h.replayChat(session)
 	if session == nil || !shouldPushHelperToken(session.AllowedScopes) {
 		return
 	}

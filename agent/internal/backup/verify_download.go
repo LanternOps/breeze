@@ -44,10 +44,16 @@ type VerifyOptions struct {
 // whose VerifyOptions.TimeBudget elapsed.
 var errVerifyTimeBudget = errors.New("verification time budget exhausted")
 
+// budgetContext bounds a run by its TimeBudget (used only when TimeBudget > 0).
+// It is a package var solely so tests can end the budget at a chosen point in
+// the run instead of racing a wall-clock deadline against a loaded scheduler
+// (#8765); production code never reassigns it.
+var budgetContext = context.WithTimeoutCause
+
 // runContext derives the context a verify/test-restore run works under.
 func (o VerifyOptions) runContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if o.TimeBudget > 0 {
-		return context.WithTimeoutCause(ctx, o.TimeBudget, errVerifyTimeBudget)
+		return budgetContext(ctx, o.TimeBudget, errVerifyTimeBudget)
 	}
 	return context.WithCancel(ctx)
 }

@@ -27,6 +27,8 @@ export const PATCH_TOOL_ALLOWLIST = [
   'get_device_details',
   'get_device_hardware_health',
   'get_device_time_status', 'list_time_sync_issues',
+  // #8584: whether a System Restore checkpoint was requested/created before a past patch run.
+  'list_device_restore_point_attempts',
   'get_device_context',
   'get_device_vulnerabilities',
   'manage_patches:list',

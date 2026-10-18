@@ -36,7 +36,8 @@ export type OrgMergePolicy =
   | { kind: 'derived'; note: string } // trigger-maintained; never written directly
   | { kind: 'follows-parent'; note: string } // no org_id column; rows travel with their parent
   | { kind: 'loser-shell' } // organizations itself
-  | { kind: 'blocks-merge'; note: string }; // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
+  | { kind: 'blocks-merge'; note: string } // rows FORBID the merge outright; engine refuses pre-walk — see specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md
+  | { kind: 'epoch-frozen'; note: string }; // PAM chain evidence: never written by a merge; stays at its loser epoch (evidence hold). Pre-walk refusal is transfer-mode dependent — see collectMergeBlockers
 
 // device_commands / user_sso_identities / sso_sessions / psa_ticket_mappings /
 // deployment_results have no org_id column of their own:
@@ -416,6 +417,10 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // own grant wins and the loser's is dropped, exactly like ai_budgets. Partner
   // CEILING rows have org_id NULL and are not merge participants at all.
   ai_script_policies: { kind: 'keep-survivor' }, // verified: ai_script_policies_org_uq (org_id) WHERE org_id IS NOT NULL
+  // AI device file read policy (#8852): org override row is singleton org config
+  // (ai_data_policies_org_uq, total UNIQUE on org_id); survivor's wins. Partner
+  // default rows have org_id NULL and are not merge participants.
+  ai_data_policies: { kind: 'keep-survivor' }, // verified: ai_data_policies_org_uq (org_id)
   // llm_egress_events (#3922 phase 2, landed on main 2026-08-27): per-request
   // egress telemetry — which org attempted which outbound LLM dial, allowed or
   // blocked. Repointing would attribute the loser org's egress history to the
@@ -447,18 +452,27 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   ai_usage_charge_runs: { kind: 'leave-for-erasure', note: 'per-(org, month) close marker; unique (org_id, period_start)' },
 
   // Durable PAM actuation evidence (Track E org-merge contract,
-  // specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md): never
-  // re-tenanted, never destroyed, never bypassed — a loser org holding ANY
-  // row is refused outright. Repoint is physically unreachable
-  // (pam_actuation_results: UPDATE revoked from breeze_app + unconditional
-  // 42501 trigger; the composite (id, org_id) FK chain has no ON UPDATE
-  // CASCADE), and leave-for-erasure would break
-  // pam_actuations(device_id, org_id) -> devices(id, org_id) the moment the
-  // devices repoint runs — which devices_pam_history_move_guard RAISEs 23514
-  // on anyway. The engine refuses BEFORE the walk (collectMergeBlockers), so
-  // neither trigger can fire mid-merge.
-  pam_actuations: { kind: 'blocks-merge', note: 'durable PAM lifecycle evidence is source-frozen; any loser row refuses the merge — devices_pam_history_move_guard applied at org granularity' },
-  pam_actuation_results: { kind: 'blocks-merge', note: 'append-only PAM evidence (UPDATE revoked + unconditional RAISE); cannot exist without a pam_actuations parent — listed for registry completeness and preview counting' },
+  // specs/2026-08-31-s0-track-e-pam-org-merge-contract-design.md; PAM
+  // ownership epochs W6 #8208, spec §8): never re-tenanted, never destroyed,
+  // never bypassed. Repoint is physically unreachable (pam_actuation_results:
+  // UPDATE revoked from breeze_app + unconditional 42501 trigger; the chain is
+  // anchored to its ownership epoch by breeze_pam_chain_epoch_guard).
+  //
+  // `epoch-frozen` (non-mutating): the rows stay at the loser's org_id and
+  // epoch and keep the loser as an evidence-hold shell. Pre-walk refusal
+  // (collectMergeBlockers) depends on the transfer mode: OFF — any loser row
+  // refuses, exactly the former blocks-merge; ON (PAM_OWNERSHIP_EPOCH_TRANSFER
+  // + the database switch) — only an actuation that is not
+  // pam_actuation_is_closed() refuses. devices_pam_history_move_guard applies
+  // the same rule per device at the devices repoint (TOCTOU backstop).
+  pam_actuations: { kind: 'epoch-frozen', note: 'durable PAM lifecycle evidence stays at its loser epoch under an evidence hold; refused while any loser actuation is not closed (transfer on) or exists at all (transfer off)' },
+  pam_actuation_results: { kind: 'epoch-frozen', note: 'append-only PAM evidence (UPDATE revoked + unconditional RAISE) follows its actuation: stays with the held loser shell; refusal is decided on pam_actuations (transfer on) or on any row (transfer off)' },
+  // Un-actuated requests follow their device into the survivor (the devices
+  // restamp trigger, cause org_merge) after the resolve half expires the live
+  // ones (OD4); actuated ones are frozen evidence and stay with the held
+  // shell. See orgMergeCustomExecutors.ts resolveElevationRequests.
+  elevation_requests: { kind: 'custom', note: 'resolve: expire live un-actuated loser requests (OD4, ownership_changed); move: none — devices_restamp_unactuated_elevation_requests carries un-actuated rows with their device, actuated rows stay at their epoch under the evidence hold' },
+  elevation_audit: { kind: 'derived', note: 'follows its request: devices_restamp_unactuated_elevation_requests restamps the audit rows of every request it moves (composite (elevation_request_id, org_id) FK, deferred for the merge); rows of requests that stay remain with the held loser shell' },
 
   // partner_export_configuration_org_state is trigger-maintained (SECURITY
   // DEFINER triggers on the policy tables regenerate it — verified in
@@ -704,6 +718,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   incidents: { kind: 'custom', note: "NULL the colliding loser row's source_ref (it leaves the incidents_source_ref_unique partial index, which is WHERE source_ref IS NOT NULL) and record the old value in `summary`; NEVER delete — incident_actions/incident_evidence are NOT NULL NO ACTION children and an incident is a case file, not a derived row" },
   contacts: { kind: 'custom', note: 'clear loser is_primary if survivor has one, then repoint (partial unique)' },
   backup_configs: { kind: 'custom', note: 'clear loser is_default if survivor has one, then repoint (org-owned storage creds must NOT be dropped)' },
+  trust_pages: { kind: 'custom', note: 'public identity — loser page always retired (children cascade); never repointed' },
   audit_baselines: { kind: 'custom', note: 'deactivate (is_active=false) colliding active baselines; NEVER DELETE — audit_baseline_results and audit_baseline_apply_approvals are ON DELETE CASCADE' },
   pax8_orders: { kind: 'custom', note: 'delete loser direct draft/awaiting orders colliding with survivor partial unique, repoint rest' },
   // CORRECTED (review): repoint-dedupe would DELETE colliding loser
@@ -778,6 +793,9 @@ const REPOINT_TABLES: readonly string[] = [
   // (org_id) grant for it — so usage history follows the merged client
   // (spec §5.5; chargeback W10).
   "ai_invocations",
+  // AI model registry W08b (#7606): legacy AI model config archive (history,
+  // partner axis); org-level rows follow the merged client.
+  "ai_model_registry_legacy_archive",
   "ai_screenshots",
   "ai_sessions",
   // AI chargeback (#7608): billed history and unbilled charges follow the
@@ -977,8 +995,22 @@ const REPOINT_TABLES: readonly string[] = [
   "edr_detections",
   "edr_endpoints",
   "edr_tenants",
-  "elevation_audit",
-  "elevation_requests",
+  // elevation_requests / elevation_audit: see SPECIAL (PAM ownership epochs W6).
+  // Endpoint live chat (#8743 W03): plain repoints under SET CONSTRAINTS ALL
+  // DEFERRED; the (conversation_id, org_id) and (device_id, org_id) composite
+  // FKs re-resolve at commit. The only unique keys are (conversation_id,
+  // client_nonce) and the one-live-chat-per-device partial index, neither of
+  // which carries org_id, so a repoint cannot collide.
+  "endpoint_conversation_messages",
+  "endpoint_conversations",
+  // Endpoint messaging (#8742 W02): plain repoints under SET CONSTRAINTS ALL
+  // DEFERRED, so the (x, org_id) composite FKs between them re-resolve at
+  // commit. No org-scoped unique key: endpoint_messages is deliberately not
+  // unique on (org_id, batch_id), because a cross-org send's two rows would
+  // collide in the survivor.
+  "endpoint_message_deliveries",
+  "endpoint_message_receipts",
+  "endpoint_messages",
   "escalation_policies",
   // event_delivery_receipts (durable dispatch bookkeeping, #4117, landed on
   // main 2026-08-27 — the same PR dropped event_bus_events, which used to be
@@ -1239,6 +1271,16 @@ const REPOINT_TABLES: readonly string[] = [
   "topology_site_template_bindings",
   "topology_telemetry_arms",
   "topology_view_exclusions",
+  // Children of trust_pages: ON DELETE CASCADE removes them with the loser's page in the custom executor; a plain repoint here only ever sees zero rows and keeps the registry total.
+  "trust_page_documents",
+  "trust_page_snapshots",
+  // Trust Center W2 (#8770 W02a): same reasoning — each cascades with the loser's page
+  // (access_tokens via access_requests).
+  "trust_page_access_requests",
+  "trust_page_access_tokens",
+  "trust_page_declarations",
+  "trust_page_faq_items",
+  "trust_page_subprocessors",
   "tunnel_sessions",
   "unifi_clients",
   "unifi_collectors",

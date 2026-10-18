@@ -77,8 +77,6 @@ export default function ConnectionsCard({
   const { t } = useTranslation('settings');
   const [drawer, setDrawer] = useState<DrawerState>({ mode: 'closed' });
   const [chooserOpen, setChooserOpen] = useState(false);
-  // compat_uq: one Anthropic-dialect (BYOK or catalog) connection per partner.
-  const hasCompatConnection = snapshot.connections.some((c) => c.id !== null && (c.kind === 'anthropic_byok' || c.kind === 'catalog'));
   const modelCount = (id: string | null) => snapshot.offerings.filter((o) => o.connectionId === id).length;
   const editing = drawer.mode === 'edit' ? snapshot.connections.find((c) => c.id === drawer.id) ?? null : null;
 
@@ -103,22 +101,17 @@ export default function ConnectionsCard({
             </button>
             {chooserOpen && (
               <div data-testid="ai-connection-add-chooser" className="absolute right-0 z-10 mt-1 w-64 space-y-1 rounded-md border bg-background p-2 shadow-md">
-                {ADDABLE_CONNECTION_KINDS.map((k) => {
-                  const unavailable = k === 'anthropic_byok' && hasCompatConnection;
-                  return (
-                    <button
-                      key={k}
-                      type="button"
-                      data-testid={ADD_KIND_TEST_IDS[k]}
-                      disabled={unavailable}
-                      onClick={() => { setChooserOpen(false); setDrawer({ mode: 'create', kind: k }); }}
-                      className="block w-full rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <span className="block font-medium">{t(/* i18n-dynamic */ ADD_KIND_LABEL_KEYS[k])}</span>
-                      {unavailable && <span className="block text-xs text-muted-foreground">{t('aiModels.connections.alreadyConnected')}</span>}
-                    </button>
-                  );
-                })}
+                {ADDABLE_CONNECTION_KINDS.map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    data-testid={ADD_KIND_TEST_IDS[k]}
+                    onClick={() => { setChooserOpen(false); setDrawer({ mode: 'create', kind: k }); }}
+                    className="block w-full rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
+                  >
+                    <span className="block font-medium">{t(/* i18n-dynamic */ ADD_KIND_LABEL_KEYS[k])}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>

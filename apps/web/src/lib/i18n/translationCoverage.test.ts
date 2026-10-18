@@ -14,6 +14,7 @@ type TranslatedLocale = (typeof translatedLocales)[number];
 // same `Français (Canada)` value in every catalog.
 const namespaceDuplicateBaselines = {
   'pt-BR': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in pt-BR.
     'contactResponsibilities.json': 1,
     // +6: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Status" are
@@ -191,6 +192,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 14,
   },
   'es-419': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in es-419.
     'contactResponsibilities.json': 1,
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
@@ -279,7 +281,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -357,6 +360,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'fr-FR': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.admin — "Administration" is the same French word.
     'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
@@ -456,7 +460,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -471,7 +476,7 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-FR.
     'monitoring.json': 7,
-    'organizations.json': 11, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
+    'organizations.json': 12, // +1 Trust Center: sections.documentsHeading "Documents" is a fr-FR cognate; W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
     // +1 W03 account board: "PSA" is a locale-invariant acronym.
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
@@ -560,6 +565,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'fr-CA': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.admin — "Administration" is the same French word.
     'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Actions", "Notes"
@@ -653,7 +659,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -667,7 +674,7 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-CA.
     'monitoring.json': 7,
-    'organizations.json': 10, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
+    'organizations.json': 11, // +1 Trust Center: sections.documentsHeading "Documents" is a fr-CA cognate; W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
     // +1 W03 account board: "PSA" is a locale-invariant acronym.
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
     // here) made titles.scripts an intentional cognate ("Script" is the
@@ -758,6 +765,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 17,
   },
   'de-DE': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in de-DE.
     'contactResponsibilities.json': 1,
     // +8: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Name", "Status"
@@ -866,7 +874,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +1 (W03 #6011): backupProviders.cove is a protected proper noun pinned
@@ -952,6 +961,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 21,
   },
   'it-IT': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.escalation — "Escalation" is the standard Italian term.
     'contactResponsibilities.json': 1,
     // +7: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Input", "Output"
@@ -1029,7 +1039,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -1104,6 +1115,7 @@ const namespaceDuplicateBaselines = {
     'vulnerabilities.json': 18,
   },
   'tr-TR': {
+    'trustCenter.json': 0,
     // +1 contactResponsibilities roles.portal — "Portal" is the product name, identical in tr-TR.
     'contactResponsibilities.json': 1,
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
@@ -1170,7 +1182,8 @@ const namespaceDuplicateBaselines = {
     // +2 (Part of #3859, Wave E3a review): ASSIGNEE_NOT_FOUND and
     // ASSIGNEE_PARTNER_MISMATCH added as English placeholders too.
     // +1 (Part of #3859, Wave E4a): NO_UPDATES_PROVIDED added as an English placeholder too.
-    'errors.json': 29,
+    // #8977: every ERROR_CODES value is translated; no exact-English duplicates allowed.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     // +2 (W03 #6011): backupProviders.cove and backupProviders.namePlaceholder

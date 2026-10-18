@@ -28,6 +28,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backup/rebuild"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/ech"
 	"github.com/breeze-rmm/agent/internal/ipc"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/secmem"
@@ -246,6 +247,7 @@ func initLogging(cfg *config.Config) func() {
 		AgentVersion: version + "-backup",
 		MinLevel:     cfg.LogShippingLevel,
 		AuthMonitor:  authstate.NewMonitor(3),
+		HTTPClient:   newShipperHTTPClient(),
 		// Follows the agent's set_log_level override (#7416).
 		LevelOverridePath: config.LogLevelOverridePath(),
 	})
@@ -265,6 +267,9 @@ func runBackupHelper() {
 		cfg = config.Default()
 	}
 	helperAgentID = cfg.AgentID
+	// The log shipper and the storage-session control client dial the
+	// control plane through the shared ECH dialer.
+	ech.Configure(cfg.ECH, cfg.ECHServerEnabled)
 
 	stopLogging := initLogging(cfg)
 	log := logging.L("backup-helper")

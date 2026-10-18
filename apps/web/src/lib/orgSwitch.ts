@@ -90,8 +90,10 @@ export async function applyOrgSwitch(
   destination?: string,
 ): Promise<void> {
   const store = useOrgStore.getState();
-  if (orgId) store.selectOrganization(orgId);
-  else store.selectAllOrgs();
+  if (orgId) {
+    store.selectOrganization(orgId);
+    store.recordRecentOrg(orgId);
+  } else store.selectAllOrgs();
   stashSwitchToast(toastMessage);
   await waitForPendingRefresh();
   const target = destination

@@ -155,6 +155,10 @@ vi.mock('../services/dispatchDeviceCommand', () => ({
 // calls are hoisted above top-level variable initializers, so a `dbMock`
 // declared outside this factory and merely referenced inside it would throw
 // "Cannot access 'dbMock' before initialization" at import time.
+// PATCH /devices/:id requests a dynamic-group re-evaluation after commit (#8832);
+// stub the producer (covered in jobs/deviceGroupJobs.test.ts).
+vi.mock('../jobs/deviceGroupJobs', () => ({ requestDeviceGroupReevaluationAfterCommit: vi.fn() }));
+
 vi.mock('../db', () => {
   const dbMock: Record<string, ReturnType<typeof vi.fn>> = {
     select: vi.fn(() => ({

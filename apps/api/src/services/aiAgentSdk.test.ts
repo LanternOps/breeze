@@ -100,7 +100,10 @@ vi.mock('./aiCostTracker', () => ({
 
 const mockSanitizeUserMessage = vi.fn();
 const mockSanitizePageContext = vi.fn();
-vi.mock('./aiInputSanitizer', () => ({
+// Partial: the output compactor (aiToolOutput.ts) fences device text with the
+// real sanitizer (#8852 W04); only the two chat-input entry points are stubbed.
+vi.mock('./aiInputSanitizer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiInputSanitizer')>()),
   sanitizeUserMessage: (...args: unknown[]) => mockSanitizeUserMessage(...args),
   sanitizePageContext: (...args: unknown[]) => mockSanitizePageContext(...args),
 }));

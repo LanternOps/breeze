@@ -93,6 +93,10 @@ Every 30 minutes Breeze compares each container's local image digest with the re
 
 In the **Workloads** tab each container row shows an image status badge, and the tab has a status filter. `pending`, `private`, `unsupported_registry` and `error` display as **Not checked**, never as up to date.
 
+<Aside type="caution" title="Local builds on Docker 29.0–29.2 with the containerd image store">
+  On Docker's containerd image store (the default for new Docker 29 installs), Docker lists a registry-style digest for every named image, local builds included. From Docker 29.3 (Engine API 1.54) the agent asks Docker where each image came from, so a local build shows **Local build** and its name is never sent to a registry. Docker 29.0 to 29.2 cannot answer that question: on those versions a locally built image is still looked up on the registry its name points to (Docker Hub for an unqualified name), usually shows **Not checked** ("Private registry — credentials required") instead of **Local build**, and counts in the "images not checked" figure. Upgrade Docker to 29.3 or later to get the correct status. Hosts on Docker's classic image store are not expected to be affected ([#8993](https://github.com/LanternOps/breeze/issues/8993)).
+</Aside>
+
 ## Patch compliance
 
 Container images count toward patch compliance. Each distinct image (repository and tag) on a device counts once, however many containers or replicas run it.

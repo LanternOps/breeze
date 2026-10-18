@@ -40,6 +40,7 @@ const SETTINGS = {
   enableSoftwareInventory: false,
   enableNetworkVisibility: false,
   enableEdrVisibility: false,
+  enableTrustPageEditing: false,
   enableHourBlock: false,
   enablePatchDetail: false,
   enableVulnerabilityDetail: false,
@@ -87,6 +88,64 @@ describe('OrgPortalSettingsEditor', () => {
     expect((screen.getByTestId('org-portal-toggle-enableSelfService') as HTMLInputElement).checked).toBe(false);
     expect((screen.getByTestId('org-portal-support-email') as HTMLInputElement).value).toBe('help@msp.example');
     expect((screen.getByTestId('org-portal-support-phone') as HTMLInputElement).value).toBe('');
+  });
+
+  // #7510 (settings rules 3 + 4): the org "Footer text" is the org override of
+  // the partner document footer. It says it prints on documents, and while it
+  // is blank it shows the inherited partner value and where it comes from.
+  describe('document footer (#7510)', () => {
+    it('says the footer prints on quotes and invoices', async () => {
+      mockApi({ ...SETTINGS, partnerInvoiceFooter: 'Thanks for your business' });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      expect(await screen.findByTestId('org-portal-footer-help')).toHaveTextContent(/quotes and invoices/i);
+    });
+
+    it('shows the inherited partner footer and its source while the org footer is blank', async () => {
+      mockApi({ ...SETTINGS, footerText: null, partnerInvoiceFooter: 'Thanks for your business' });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      const input = (await screen.findByTestId('org-portal-footer')) as HTMLInputElement;
+      expect(input.value).toBe('');
+      expect(input.placeholder).toBe('Thanks for your business');
+      expect(screen.getByText('Inherits from Partner document footer')).toBeInTheDocument();
+    });
+
+    it('says the org footer overrides the partner footer once set', async () => {
+      mockApi({ ...SETTINGS, footerText: 'Org line', partnerInvoiceFooter: 'Thanks for your business' });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      expect(((await screen.findByTestId('org-portal-footer')) as HTMLInputElement).value).toBe('Org line');
+      expect(screen.getByText('Overrides Partner document footer (Thanks for your business)')).toBeInTheDocument();
+    });
+
+    it('says no partner footer is configured when neither level sets one', async () => {
+      mockApi({ ...SETTINGS, footerText: null, partnerInvoiceFooter: null });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-portal-footer');
+      expect(screen.getByText('No Partner document footer configured')).toBeInTheDocument();
+    });
+
+    // Blank = inherit: a cleared (or whitespace-only) org footer saves as NULL,
+    // never '', so it cannot suppress the partner footer on documents.
+    it.each(['', '   '])('saves a cleared org footer (%j) as null', async (blank) => {
+      mockApi({ ...SETTINGS, footerText: 'Org line', partnerInvoiceFooter: 'Thanks for your business' });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      fireEvent.change(await screen.findByTestId('org-portal-footer'), { target: { value: blank } });
+      fireEvent.click(screen.getByTestId('org-portal-save'));
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      expect(JSON.parse(String(patchCall![1]!.body)).footerText).toBeNull();
+    });
+
+    it('never sends the inherited partner footer back on save', async () => {
+      mockApi({ ...SETTINGS, footerText: null, partnerInvoiceFooter: 'Thanks for your business' });
+      render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      fireEvent.change(await screen.findByTestId('org-portal-footer'), { target: { value: '  Org line  ' } });
+      fireEvent.click(screen.getByTestId('org-portal-save'));
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+      const body = JSON.parse(String(patchCall![1]!.body));
+      expect(body.footerText).toBe('Org line');
+      expect(body).not.toHaveProperty('partnerInvoiceFooter');
+    });
   });
 
   it('marks dirty when a toggle changes', async () => {
@@ -255,6 +314,26 @@ describe('OrgPortalSettingsEditor', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalled());
     const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
     expect(JSON.parse(String(patchCall![1]!.body)).enableEdrVisibility).toBe(true);
+  });
+
+  it('shows the trust-page editing permission with its help text, keeps it out of "Enable all", and saves it (Trust Center W3d)', async () => {
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    const toggle = (await screen.findByTestId('org-portal-toggle-enableTrustPageEditing')) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    const row = toggle.closest('label')!;
+    expect(within(row).getByText('Customer trust page editing')).toBeTruthy();
+    expect(within(row).getByText(/admin contact/i)).toBeTruthy();
+    expect(within(row).getByText(/you still publish/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('org-portal-enable-all-visibility'));
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enableTrustPageEditing).toBe(true);
   });
 
   it('"Enable all" turns EDR visibility on (not a sensitive flag)', async () => {

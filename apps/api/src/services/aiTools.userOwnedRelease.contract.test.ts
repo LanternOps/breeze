@@ -118,7 +118,7 @@ const ACTION_GUARD_ALIASES: ReadonlyMap<string, readonly string[]> = new Map([
   // edr_actions.requested_by for EVERY action. There is no `if (action === …)`
   // guard: the action flows straight into the dispatch. The model is offered
   // isolate/unisolate/scan, the whole input_schema enum (proven below).
-  ['services/aiToolsEdr.ts:233', ['isolate', 'unisolate', 'scan']],
+  ['services/aiToolsEdr.ts:239', ['isolate', 'unisolate', 'scan']],
 ]);
 
 /**
@@ -170,13 +170,13 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   ['services/aiToolsIntegrations.ts:340', 'userId is in the webhook worker event payload, never in the webhookDeliveries DB insert'],
   // (c) — execute_command / registry_operations: same aiExecuteCommand ->
   // resolveCommandCreatedBy path.
-  ['services/aiToolsScripts.ts:841', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
-  ['services/aiToolsScripts.ts:1837', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:874', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
+  ['services/aiToolsScripts.ts:1870', 'aiExecuteCommand -> resolveCommandCreatedBy degrade, not a raw column write'],
   // (c) — cancel_script_execution: cancelScriptExecution's own comment says
   // it "probes-and-degrades [actorId] against users rather than raising
   // 23503" — the same resolver shape as resolveCommandCreatedBy, just local
   // to scriptCancellation.ts.
-  ['services/aiToolsScripts.ts:943', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
+  ['services/aiToolsScripts.ts:976', 'cancelScriptExecution probes-and-degrades actorId against users, not a raw column write'],
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.
@@ -345,7 +345,7 @@ describe('agent-mintable users-FK writes are user-owned on release (#6907, #6911
 
     const edrSrc = readFileSync(join(API_SRC, 'services/aiToolsEdr.ts'), 'utf8');
     const edrLines = edrSrc.split('\n');
-    expect(edrLines[232], 'aiToolsEdr.ts:233 moved — re-key ACTION_GUARD_ALIASES').toMatch(/^\s*requestedBy: auth\.user\.id,$/);
+    expect(edrLines[238], 'aiToolsEdr.ts:239 moved — re-key ACTION_GUARD_ALIASES').toMatch(/^\s*requestedBy: auth\.user\.id,$/);
     expect(edrSrc.match(/requestedBy: auth\.user\.id/g)?.length, 'edr_endpoint_action must keep ONE write site').toBe(1);
     expect(edrSrc).toMatch(/const EDR_AI_ENDPOINT_ACTIONS = \['isolate', 'unisolate', 'scan'\] as const;/);
     expect(edrSrc).not.toMatch(/if \(action === /);

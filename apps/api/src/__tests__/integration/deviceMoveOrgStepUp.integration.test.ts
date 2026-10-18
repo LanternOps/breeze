@@ -79,7 +79,8 @@ import { mintStepUpGrant, moveOrgResourceDigest } from '../../services/mfaStepUp
 import { lockActorAssurance } from '../../services/stepUpActorAssurance';
 import type { AuthContext } from '../../middleware/auth';
 import { createIntegrationTestClient, createOrganization, createSite } from './db-utils';
-import { getTestDb } from './setup';
+import { getTestDb, getTestRedis } from './setup';
+import { allDevicePolicyCacheKeys, DEVICE_POLICY_CACHE_FEATURES, devicePolicyCacheKey, writeDevicePolicyCache } from '../../services/devicePolicyCache';
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -312,6 +313,32 @@ describe('device move-org step-up: denial leaves the device and its children unt
       expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
       expect((await readDeviceRow(deviceId)).org_id).toBe(targetOrgId);
       expect(await readChildOrg(deviceId)).toBe(targetOrgId);
+    });
+
+    it('#8257: a committed move drops the device\'s org-bound heartbeat policy caches', async () => {
+      // Real Redis, real route: entries resolved for the SOURCE org must not
+      // survive the move (the org binding already refuses them to the target).
+      // Org-bound entries, plus the pre-#8257 unbound and self-bound keys an
+      // older replica or the time-sync/workload caches may hold.
+      const keys = allDevicePolicyCacheKeys(deviceId);
+      for (const f of DEVICE_POLICY_CACHE_FEATURES) {
+        await writeDevicePolicyCache(f, deviceId, sourceOrgId, { fixture: true }, 120);
+      }
+      for (const key of keys) {
+        if (!(await getTestRedis().exists(key))) await getTestRedis().set(key, '{}', 'EX', 120);
+      }
+      const otherDeviceKey = devicePolicyCacheKey('pam', randomUUID());
+      await getTestRedis().set(otherDeviceKey, '{}', 'EX', 120);
+      expect(await getTestRedis().exists(...keys)).toBe(keys.length);
+
+      const { post } = await assuredSession();
+      const res = await post(`/devices/${deviceId}/move-org`, body());
+      expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+
+      // The invalidation runs after the request context commits; give it a moment.
+      await vi.waitFor(async () => expect(await getTestRedis().exists(...keys)).toBe(0), { timeout: 5_000 });
+      expect(await getTestRedis().exists(otherDeviceKey)).toBe(1);
+      await getTestRedis().del(otherDeviceKey);
     });
 
     it.each(['api_key', 'oauth_grant'])('denies a %s principal with no state change — the interactive gate, not MFA, is doing the work', async (kind) => {

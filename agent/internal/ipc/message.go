@@ -265,6 +265,10 @@ type AuthRequest struct {
 	// message cards. Drives the messaging scope grant. Additive: absent/false
 	// on older helpers, which therefore get the native fallback.
 	SupportsMessaging bool `json:"supportsMessaging,omitempty"`
+
+	// SupportsChat advertises that this Assist helper renders endpoint live
+	// chat windows (#8743). Drives the chat scope grant. Additive.
+	SupportsChat bool `json:"supportsChat,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -587,11 +591,16 @@ type LaunchProcessResult struct {
 // TCCStatus reports macOS TCC (Transparency, Consent, Control) permission
 // state from the user helper to the root daemon.
 type TCCStatus struct {
-	ScreenRecording bool      `json:"screenRecording"`
-	Accessibility   bool      `json:"accessibility"`
-	FullDiskAccess  bool      `json:"fullDiskAccess"`
-	RemoteDesktop   *bool     `json:"remoteDesktop,omitempty"`
-	CheckedAt       time.Time `json:"checkedAt"`
+	ScreenRecording bool `json:"screenRecording"`
+	// ScreenRecordingState is what the non-capturing check could establish
+	// (#8390): "granted", "denied" or "unknown". Unknown (macOS 26+ only,
+	// where preflight can misreport) keeps ScreenRecording true so a session
+	// can be attempted; its own capture is the precise check.
+	ScreenRecordingState string    `json:"screenRecordingState,omitempty"`
+	Accessibility        bool      `json:"accessibility"`
+	FullDiskAccess       bool      `json:"fullDiskAccess"`
+	RemoteDesktop        *bool     `json:"remoteDesktop,omitempty"`
+	CheckedAt            time.Time `json:"checkedAt"`
 }
 
 // SessionInfoItem describes one interactive Windows session for the
@@ -674,6 +683,13 @@ type StateSync struct {
 	// ignore it, and LastHeartbeat stays empty so they cannot mistake it for
 	// a successful heartbeat.
 	AuthRejectedAt string `json:"authRejectedAt,omitempty"`
+	// ServerUnavailableAt (RFC3339) is set instead of LastHeartbeat when the
+	// agent's heartbeat loop is alive but the server answered with an
+	// overload status (429/502/503/504). The watchdog treats a fresh value as
+	// "running, server overloaded" and does not restart the agent for its
+	// stale heartbeat (#8934). Same compatibility contract as AuthRejectedAt:
+	// older watchdogs ignore it and LastHeartbeat stays empty.
+	ServerUnavailableAt string `json:"serverUnavailableAt,omitempty"`
 }
 
 // IntegrityCheck asks the agent to verify the integrity of the given targets.

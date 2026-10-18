@@ -117,6 +117,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/siteLocation.ts': 'listing: sites a technician may match an arrival against (#4186); excludes hidden orgs, never reads devices',
   'services/backupHealthReadModel.ts': 'read model: backup health',
   'services/contractQuantities.ts': 'billing: contract quantities',
+  'services/endpointMessaging/history.ts': 'read model: endpoint message send history and per-device delivery detail (#8742); lists existing deliveries, selects no targets',
   'services/deviceStats.ts': 'read model: fleet device counts by status (GET /devices/stats and the AI tool); excludes parked devices',
   'services/hardwareLifecycleReport.ts': 'report: hardware lifecycle',
   'services/partnerDeviceCapacity.ts': 'billing: partner device capacity',
@@ -134,7 +135,6 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/reportSeries/combine.ts': 'report: multi-org series Combine candidates, series-eligible orgs only (hidden org types excluded)',
   'services/reportSeries/reconcile.ts': 'report: multi-org series repair sweep, mirrors the targets.ts eligibility rule in SQL',
   'services/reportSeries/targets.ts': 'report: multi-org series target orgs (org-level report definitions, not devices; hidden org types excluded)',
-  'services/securityComplianceReport.ts': 'report: security compliance',
   'services/backupProviders/mapping.ts': 'vendor-customer to org mapping: which org a backup customer is shown under; the holding org and Quick Support are never candidates',
   'services/edrProviders/mapping.ts': 'vendor-tenant to org mapping: the holding org and Quick Support are never candidates',
   'services/timeSuggestionService.ts': 'billing: time suggestions',
@@ -188,6 +188,9 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/endpointMessaging/chat.ts': 'request path (#8743): opens/messages ONE device the caller named and reached under RLS + the site axis; selects no targets, and chat_open/chat_message to a parked device is refused by command delivery',
+  'services/endpointMessaging/chatReads.ts': 'read model (#8743): conversations and messages of one device or one conversation the caller already reaches; selects no targets',
+  'services/endpointMessaging/retract.ts': 'request path (#8742): retracts the live deliveries of ONE existing message by id in the caller\'s RLS context; selects no new targets, and a retract_message queued to a parked device is refused by command delivery',
   'services/migrationWindows.ts': 'ticket migration windows (#8313): validates the orgs an admin names for a window (hidden orgs are refused); never reads devices or dispatches device work',
   'services/automationTargetValidation.ts': 'write-time validation of an automation target config: reads device_groups/devices ids only to check they sit in the owner org; selects no targets and dispatches nothing',
   'services/scriptRunTargets.ts': 'resolves saved device groups (org-owned; the holding org has none) via the shared resolver, which keeps eq(devices.orgId, groupOrgId) on every query; the resulting run goes through executeScriptOnDevices admission, and command delivery refuses parked devices',
@@ -217,6 +220,7 @@ const EXEMPT: Record<string, string> = {
   'services/aiToolsTicketing.ts': 'identity match pinned to the ticket\'s own org',
   'services/auditFallbackOrg.ts': 'request path: reads the org of the one device the request URL named, to file its audit row; not a selector',
   'services/restorePointRequest.ts': 'reads the org/OS of the ONE device a claimed command already targets (by id) to re-stamp its restore-point snapshot at delivery; selects no targets',
+  'services/filesystemScanGenerationRelease.ts': 'reads the osType of the ONE device a timed-out/failed filesystem_analysis command already names (by id) to release that command\'s own scan-generation registration; selects no targets and never queues work',
   'services/edrProviders/read.ts': 'request-path EDR read model (#8166): joins only the device already linked to a visible EDR row, and resolves the caller\'s allowed-site device ids; selects no targets and dispatches no work',
   'services/auditOrgResolver.ts': 'resolves the org an audit row belongs to',
   'services/callerVerification/deliverers/workstation.ts': 'request path + derived: prepare re-reads the one device the technician selected (within the verification org); delivery reads the device a pending caller_verify command already names. The insert chokepoint and the delivery claim both refuse parked devices',

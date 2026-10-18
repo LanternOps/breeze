@@ -54,6 +54,7 @@ import { relativeTime } from '../../../lib/relativeTime';
 import { useNetworkConnected } from '../../../lib/useNetworkConnected';
 import { ToastOutlet, useToast } from '../../../components/toast/ToastHost';
 import { notificationsRowCopy, type NotificationsRowCopy } from './pushUnavailableCopy';
+import { AiApprovalModeRow } from './AiApprovalModeRow';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
 import { LocationSuggestionsRow } from '../../settings/LocationSuggestionsRow';
@@ -476,6 +477,11 @@ function SheetBody({
         {/* Only meaningful once a push token exists — otherwise the server has
             nowhere to send what these settings govern (#4336). */}
         {pushRegistered ? <TicketPushPreferenceRows theme={theme} /> : null}
+
+        <SectionDivider color={theme.border} />
+
+        <SectionHeader label="AI chat" theme={theme} />
+        <AiApprovalModeRow />
 
         <SectionDivider color={theme.border} />
 

@@ -9,6 +9,23 @@ beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 'wt-')); });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 describe('writeEnvStack', () => {
+  // #8155 W03 — e2e-tests/helpers/tunnelOriginStack.ts turns Network Proxy host
+  // mode on after `up` (the template carries caddy's published port). A re-up
+  // must keep it, or the next `up` silently drops the stack back to path mode.
+  it('keeps the tunnel-origin runtime keys across a re-up', () => {
+    writeFileSync(path.join(dir, '.env'), '');
+    const values = {
+      TUNNEL_ORIGIN_TEMPLATE: 'http://{id}.tunnel.localhost:5',
+      TUNNEL_FRAME_ANCESTOR: 'http://app.localhost:5',
+      TUNNEL_SITE_ADDRESS: 'http://*.tunnel.localhost, http://*.*.tunnel.localhost',
+      TUNNEL_HOST_SUFFIX: 'tunnel.localhost',
+      PUBLIC_PORTAL_URL: 'http://app.localhost:5/portal',
+    };
+    setStackEnvValues(dir, values);
+    writeEnvStack(dir, { arch: 'x64' });
+    for (const [k, v] of Object.entries(values)) expect(readStackEnvValue(dir, k)).toBe(v);
+  });
+
   it('writes all secrets the API config validator requires to boot', () => {
     const p = writeEnvStack(dir);
     const env = readFileSync(p, 'utf8');

@@ -6,6 +6,7 @@ import { pgErrorCode } from '../utils/pgErrors';
 // edge. See setConnectTimeoutClassifier below for why that matters.
 import type { ConnectTimeoutDiagnosis } from './postgresConnectTimeout';
 import {
+  TUNNEL_HOST_ROUTE_LABEL,
   UNMATCHED_ROUTE_LABEL,
   safeMatchedRouteLabel,
 } from './safeRequestLabel';
@@ -248,6 +249,13 @@ const ALLOWED_TAG_NAMES = new Set([
   // provably-unsent rows failed, so they wait on the stale reaper instead).
   // Carries no tenant, device or job identifier.
   'backup_dispatch_issue',
+  // #8022: why a device command dispatch was refused, as the closed
+  // `CommandDispatchRefusal` union (services/commandQueue.ts) — the dispatch
+  // seam's refusal codes plus 'cancelled' — or the literal 'unclassified'.
+  // The refusal's `error` text interpolates ids and never reaches Sentry, so
+  // without this tag a refusal report carries no reason at all.
+  // Carries no tenant, device or command identifier.
+  'command_dispatch_refusal',
   // These were being passed to captureMessage and silently dropped — the same
   // defect as `worker`, found by auditing every tag key against this list
   // rather than trusting that a passed tag arrives.
@@ -491,7 +499,7 @@ function isBoundedTagValue(value: unknown): value is string | number | boolean {
 }
 
 function isSafeRouteTemplateTag(value: unknown): value is string {
-  if (value === UNMATCHED_ROUTE_LABEL) return true;
+  if (value === UNMATCHED_ROUTE_LABEL || value === TUNNEL_HOST_ROUTE_LABEL) return true;
   if (typeof value !== 'string') return false;
   const c = { req: { routePath: value } } as unknown as Context;
   return safeMatchedRouteLabel(c) === value;

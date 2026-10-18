@@ -6,30 +6,55 @@ import { useApprovalTheme, spacing, type } from '../../../theme';
 import type { ChatMessage } from '../../../store/aiChatSlice';
 import { renderBlockForOutput } from '../blocks';
 
+import { describeTurnModel } from '../modelPicker';
+import { isPlanTool } from '../planState';
 import { MarkdownBody } from './MarkdownBody';
+import { PlanCard } from './PlanCard';
 import { StreamingPulse } from './StreamingPulse';
 import { ToolIndicator } from './ToolIndicator';
 import { toolRowStatus } from './toolIndicatorLogic';
 
 interface Props {
   message: Extract<ChatMessage, { role: 'assistant' }>;
+  /**
+   * Whether this row's reply turn is still streaming (`turnIsLive`). A turn
+   * is one row per model message, so a plan's row stops streaming while the
+   * server still waits on, or runs, that plan (#8888). Defaults to the
+   * row's own `isStreaming` (a single-row transcript).
+   */
+  turnLive?: boolean;
   inFlightTool: { toolUseId: string; toolName: string; input?: Record<string, unknown> } | null;
   onRetry?: () => void;
+  onPlanDecide?: (approved: boolean) => Promise<string | null>;
+  onPlanStop?: () => Promise<string | null>;
 }
 
-// AI messages are unboxed text-on-canvas. No bubble, no avatar bezel. The
-// row contains: completed tool events (rendered as ToolIndicator), streamed
-// text content, then either a pulse (waiting for first delta) or an
-// in-flight tool caption.
-export function AiMessage({ message, inFlightTool, onRetry }: Props) {
+const noPlanAction = async () => null;
+
+// AI messages are unboxed text-on-canvas. No bubble, no avatar bezel. A row
+// is one model message (one server `ai_messages` assistant row, #8888), whose
+// text normally precedes its tool calls: streamed text content (the server
+// joins a message's text blocks with "\n\n"), completed tool events (rendered
+// as ToolIndicator), the plan card, then either a pulse (waiting for first
+// delta) or an in-flight tool caption.
+export function AiMessage({ message, turnLive, inFlightTool, onRetry, onPlanDecide, onPlanStop }: Props) {
   const theme = useApprovalTheme('dark');
+  // The plan card stands in for the propose_action_plan tool row and its
+  // RUNNING caption: while the server waits on the plan, the card says so.
+  const toolCaption = inFlightTool && !isPlanTool(inFlightTool.toolName) ? inFlightTool : null;
   const showPulse =
     message.isStreaming && !message.content && !inFlightTool;
 
   return (
     <Animated.View entering={FadeIn.duration(240)} style={{ marginTop: spacing[5] }}>
+      {message.content ? (
+        <View style={{ paddingHorizontal: spacing[6] }}>
+          <MarkdownBody content={message.content} streaming={message.isStreaming} />
+        </View>
+      ) : null}
+
       {message.toolEvents
-        .filter((t) => t.state === 'completed')
+        .filter((t) => t.state === 'completed' && !(message.plan && isPlanTool(t.toolName)))
         .map((t) => {
           const status = toolRowStatus({ isError: t.isError, output: t.output, handoff: t.handoff });
           // Anything that is not a plain completion renders as the audit
@@ -59,10 +84,13 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
           );
         })}
 
-      {message.content ? (
-        <View style={{ paddingHorizontal: spacing[6] }}>
-          <MarkdownBody content={message.content} streaming={message.isStreaming} />
-        </View>
+      {message.plan ? (
+        <PlanCard
+          plan={message.plan}
+          live={turnLive ?? message.isStreaming}
+          onDecide={onPlanDecide ?? noPlanAction}
+          onStop={onPlanStop ?? noPlanAction}
+        />
       ) : null}
 
       {showPulse ? (
@@ -71,8 +99,18 @@ export function AiMessage({ message, inFlightTool, onRetry }: Props) {
         </View>
       ) : null}
 
-      {message.isStreaming && inFlightTool ? (
-        <ToolIndicator toolName={inFlightTool.toolName} state="started" input={inFlightTool.input} />
+      {message.isStreaming && toolCaption ? (
+        <ToolIndicator toolName={toolCaption.toolName} state="started" input={toolCaption.input} />
+      ) : null}
+
+      {message.turnModel && !message.isStreaming ? (
+        // W05: the model and options that ACTUALLY answered (AiTurnModelBadge on web).
+        <Text
+          testID="ai-turn-model"
+          style={[type.meta, { color: theme.textLo, paddingHorizontal: spacing[6], paddingTop: spacing[2] }]}
+        >
+          {describeTurnModel(message.turnModel)}
+        </Text>
       ) : null}
 
       {message.failed ? (

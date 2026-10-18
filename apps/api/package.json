@@ -24,6 +24,7 @@
     "dry-run:labour-pricing": "tsx scripts/labour-pricing-dry-run.ts",
     "m365-sync:benchmark": "tsx scripts/m365-sync-benchmark.ts",
     "partner-trust:backfill-cards": "tsx scripts/partner-trust-backfill-cards.ts",
+    "trust:signing-key": "tsx scripts/trust-signing-key.ts",
     "reports:reprovision-portal-definitions": "tsx scripts/reprovision-portal-report-definitions.ts",
     "deliverables:backfill-first-customer": "tsx scripts/backfill-first-customer-deliverables.ts",
     "evidence:link": "tsx scripts/link-evidence-reports.ts",

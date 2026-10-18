@@ -94,7 +94,7 @@ describe('reservation with real PostgreSQL', () => {
     let result: any;
     if (dispatcher === 'sdk') result = await sdk.makeHandler(toolName!, () => auth)(input);
     else {
-      mocks.key = { id: randomUUID(), orgId: null, accessibleOrgIds: [f.invoice.orgId], partnerId: f.invoice.partnerId, createdBy: auth.user.id, name: 'Synthetic key', scopes: ['ai:read', 'ai:write'], rateLimit: 1000 };
+      mocks.key = { id: randomUUID(), orgId: null, accessibleOrgIds: [f.invoice.orgId], partnerId: f.invoice.partnerId, createdBy: auth.user.id, name: 'Synthetic key', scopes: ['ai:read', 'ai:write'], rateLimit: 1000, mcpDomains: null };
       const response = await new Hono().route('/mcp', mcpServerRoutes).request('/mcp/message', {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'brz_synthetic' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: toolName, arguments: input } }),

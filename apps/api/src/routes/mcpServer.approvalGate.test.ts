@@ -94,6 +94,7 @@ vi.mock('../middleware/apiKeyAuth', () => ({
       partnerId: 'partner-1',
       name: 'test',
       keyPrefix: 'brz_test',
+      mcpDomains: null,
       scopes: testState.scopes,
       rateLimit: 1000,
       createdBy: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -370,6 +371,8 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
       expect(body.error).toEqual({
         code: -32603,
         message: 'Tool "registry_operations" requires ai:write scope',
+        // B-W02 (#6156): tier-scope denials carry a structured reason.
+        data: { reason: 'insufficient_scope', requiredScope: 'ai:write' },
       });
       expect(mocks.executeTool).not.toHaveBeenCalled();
     });

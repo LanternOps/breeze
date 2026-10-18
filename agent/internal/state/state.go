@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/breeze-rmm/agent/internal/atomicrename"
 )
 
 const FileName = "agent.state"
@@ -43,10 +45,18 @@ type AgentState struct {
 	// watchdog restart-churns it, discarding its backoff every time (#2796).
 	// Zeroed by UpdateHeartbeat on the next successful heartbeat.
 	AuthRejectedAt time.Time `json:"auth_rejected_at,omitempty"`
-	Timestamp      time.Time `json:"timestamp"`
+	// ServerUnavailableAt is the last time the agent's heartbeat loop got an
+	// overload answer from the server (429/502/503/504, typically with
+	// Retry-After). Like AuthRejectedAt it is liveness evidence while the
+	// heartbeat cannot succeed: the loop is running and its transport reached
+	// the server, so a watchdog restart would add a reconnect to the overload
+	// without fixing anything (#8934). Never written for a transport failure
+	// with no HTTP answer. Zeroed by UpdateHeartbeat.
+	ServerUnavailableAt time.Time `json:"server_unavailable_at,omitempty"`
+	Timestamp           time.Time `json:"timestamp"`
 }
 
-// Rename retry bounds. On Windows 10 1607+ the renameReplace primitive uses
+// Rename retry bounds. On Windows 10 1607+ atomicrename.Replace uses
 // POSIX rename semantics so a concurrent reader (the watchdog polling
 // agent.state) never blocks the swap — that was the 2026-07-22 US prod
 // restart-storm root cause, where MoveFileEx(REPLACE_EXISTING) failed ~78%
@@ -61,8 +71,8 @@ const (
 )
 
 // renameStateFile is a seam for tests to inject rename failures. It defaults to
-// renameReplace: POSIX-semantics rename on Windows, os.Rename elsewhere.
-var renameStateFile = renameReplace
+// atomicrename.Replace: POSIX-semantics rename on Windows, os.Rename elsewhere.
+var renameStateFile = atomicrename.Replace
 
 // Write atomically writes the state file as JSON.
 func Write(path string, s *AgentState) error {
@@ -133,9 +143,10 @@ func UpdateHeartbeat(path string, t time.Time) error {
 		s = &AgentState{PID: os.Getpid()}
 	}
 	s.LastHeartbeat = t
-	// The server just accepted the credentials, so any auth-rejected marker
-	// is obsolete.
+	// The server just accepted the credentials and served the request, so
+	// both "could not heartbeat" markers are obsolete.
 	s.AuthRejectedAt = time.Time{}
+	s.ServerUnavailableAt = time.Time{}
 	s.Timestamp = time.Now()
 	return Write(path, s)
 }
@@ -153,6 +164,24 @@ func UpdateAuthRejected(path string, t time.Time) error {
 		s = &AgentState{PID: os.Getpid()}
 	}
 	s.AuthRejectedAt = t
+	s.Timestamp = time.Now()
+	return Write(path, s)
+}
+
+// UpdateServerUnavailable records that the agent's heartbeat loop is alive but
+// the server answered with an overload status (see
+// AgentState.ServerUnavailableAt). Same contract as UpdateAuthRejected:
+// LastHeartbeat is untouched and a missing file is recreated with this
+// process's PID.
+func UpdateServerUnavailable(path string, t time.Time) error {
+	s, err := Read(path)
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		s = &AgentState{PID: os.Getpid()}
+	}
+	s.ServerUnavailableAt = t
 	s.Timestamp = time.Now()
 	return Write(path, s)
 }

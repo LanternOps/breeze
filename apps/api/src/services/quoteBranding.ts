@@ -17,7 +17,7 @@ import { portalBranding } from '../db/schema/portal';
 import { buildSellerSnapshot, type SellerSnapshot } from './sellerSnapshot';
 import { resolveThemeId, resolvePageSize, type DocumentThemeId, type DocumentPageSize } from './documentThemes';
 import { resolvePartnerDocumentLocale } from './documentLocale';
-import { resolveDocumentFooter } from './documentFooter';
+import { resolveDocumentFooter, resolveInheritedDocumentFooter, type DocumentFooterSource } from './documentFooter';
 import { resolveInvoicePresentation, type InvoicePresentationSource } from './invoicePresentation';
 import { resolveDocumentBrand } from './partnerDocumentBrand';
 
@@ -32,12 +32,12 @@ export interface QuoteBranding {
   /** Partner secondary brand colour (hex) — quote PDFs set headings in it when
    *  it is dark enough to read. Null for invoices and unbranded partners. */
   secondaryColor: string | null;
-  /** Footer / terms line. Precedence: quote.terms → partner footer → portal footer. */
+  /** Footer / terms line. Precedence: quote.terms → org footer → partner footer (#7510). */
   footer: string | null;
-  /** What the footer would be with NO per-quote override (partner footer → portal
+  /** What the footer would be with NO per-quote override (org footer → partner
    *  footer) and which one it came from, so the editor can show the inherited
    *  value while the override is blank (#6648). Null when neither is set. */
-  inheritedFooter: { text: string; source: 'partner' | 'brand' } | null;
+  inheritedFooter: { text: string; source: DocumentFooterSource } | null;
   /** Resolved currency for money formatting. */
   currencyCode: string;
   /** Render locale for money glyphs. Precedence: quote.documentLocale (send-time
@@ -147,11 +147,10 @@ async function resolveDocumentBranding(
       partnerFooter: partner?.invoiceFooter ?? null,
       brandingFooter: brand?.footerText ?? null,
     }),
-    inheritedFooter: partner?.invoiceFooter != null
-      ? { text: partner.invoiceFooter, source: 'partner' }
-      : brand?.footerText != null
-        ? { text: brand.footerText, source: 'brand' }
-        : null,
+    inheritedFooter: resolveInheritedDocumentFooter({
+      partnerFooter: partner?.invoiceFooter ?? null,
+      brandingFooter: brand?.footerText ?? null,
+    }),
     currencyCode: doc.currencyCode ?? partner?.currencyCode ?? 'USD',
     locale: doc.documentLocale ?? resolvePartnerDocumentLocale(partner),
     seller,

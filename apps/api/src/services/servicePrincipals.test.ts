@@ -17,6 +17,8 @@ vi.mock('../db/schema', () => ({
     principalType: 'principalType',
     status: 'status',
     scopes: 'scopes',
+    mcpDomains: 'mcpDomains',
+    createdAt: 'createdAt',
   },
 }));
 
@@ -33,6 +35,7 @@ import {
   migrateHumanKeyToServicePrincipal,
   ServicePrincipalNotFoundError,
   ApiKeyNotFoundError,
+  ServicePrincipalMcpDomainsConflictError,
 } from './servicePrincipals';
 
 const PRINCIPAL_ID = 'principal-1';
@@ -45,6 +48,15 @@ function mockSelectOnce(result: unknown[]) {
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue(result),
       }),
+    }),
+  } as any);
+}
+
+// The prior-keys read that rotation uses to carry mcp_domains (#6156).
+function mockPriorKeysOnce(result: unknown[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue(result) }),
     }),
   } as any);
 }
@@ -111,6 +123,7 @@ describe('rotateServicePrincipalKey', () => {
 
   it('revokes any prior active key for the principal, mints a new one, and returns the raw key once', async () => {
     mockSelectOnce([{ id: PRINCIPAL_ID, orgId: ORG_ID, name: 'CI bot', status: 'active', scopes: ['ai:read'] }]);
+    mockPriorKeysOnce([]);
     const revokeWhere = mockBareUpdateOnce();
     mockInsertOnce([
       { id: 'key-new', orgId: ORG_ID, name: 'CI bot (service key)', keyPrefix: 'brz_abcdefgh', scopes: ['ai:read'], status: 'active' },
@@ -126,6 +139,86 @@ describe('rotateServicePrincipalKey', () => {
     expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
     const auditCall = vi.mocked(createAuditLogAsync).mock.calls[0]?.[0];
     expect(JSON.stringify(auditCall)).not.toContain(result.key);
+  });
+});
+
+describe('rotateServicePrincipalKey mcp_domains carry (#6156)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function captureInsert(result: unknown[]) {
+    const captured: { values?: Record<string, unknown> } = {};
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn((v: Record<string, unknown>) => {
+        captured.values = v;
+        return { returning: vi.fn().mockResolvedValue(result) };
+      }),
+    } as any);
+    return captured;
+  }
+
+  it('rotation carries mcp_domains from the revoked key', async () => {
+    mockSelectOnce([{ id: PRINCIPAL_ID, orgId: ORG_ID, name: 'CI bot', status: 'active', scopes: ['ai:read'] }]);
+    // The active key is read (to carry its domains) before it is revoked.
+    mockPriorKeysOnce([{ mcpDomains: ['tickets'], status: 'active' }]);
+    mockBareUpdateOnce();
+    const captured = captureInsert([{ id: 'key-new', keyPrefix: 'brz_abcdefgh' }]);
+
+    await rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID);
+
+    expect(captured.values).toHaveProperty('mcpDomains', ['tickets']);
+  });
+
+  it('rotation after the restricted key was revoked still carries its domains', async () => {
+    mockSelectOnce([{ id: PRINCIPAL_ID, orgId: ORG_ID, name: 'CI bot', status: 'active', scopes: ['ai:read'] }]);
+    // Newest first: no active key; the most recent (revoked) key was restricted.
+    mockPriorKeysOnce([
+      { mcpDomains: ['devices'], status: 'revoked' },
+      { mcpDomains: null, status: 'revoked' },
+    ]);
+    mockBareUpdateOnce();
+    const captured = captureInsert([{ id: 'key-new', keyPrefix: 'brz_abcdefgh' }]);
+
+    await rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID);
+
+    expect(captured.values).toHaveProperty('mcpDomains', ['devices']);
+  });
+
+  it('two active keys with different domains carry the narrower (never the union, never null)', async () => {
+    mockSelectOnce([{ id: PRINCIPAL_ID, orgId: ORG_ID, name: 'CI bot', status: 'active', scopes: ['ai:read'] }]);
+    mockPriorKeysOnce([
+      { mcpDomains: null, status: 'active' },
+      { mcpDomains: ['devices', 'tickets'], status: 'active' },
+      { mcpDomains: ['tickets', 'scripts'], status: 'active' },
+    ]);
+    mockBareUpdateOnce();
+    const captured = captureInsert([{ id: 'key-new', keyPrefix: 'brz_abcdefgh' }]);
+
+    await rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID);
+
+    expect(captured.values).toHaveProperty('mcpDomains', ['tickets']);
+  });
+
+  it('disjoint active restrictions refuse the rotation before anything is revoked', async () => {
+    mockSelectOnce([{ id: PRINCIPAL_ID, orgId: ORG_ID, name: 'CI bot', status: 'active', scopes: ['ai:read'] }]);
+    mockPriorKeysOnce([
+      { mcpDomains: ['tickets'], status: 'active' },
+      { mcpDomains: ['devices'], status: 'active' },
+    ]);
+
+    await expect(rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID)).rejects.toBeInstanceOf(ServicePrincipalMcpDomainsConflictError);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('rotation with no prior key at all mints an unrestricted (null) key', async () => {
+    mockSelectOnce([{ id: PRINCIPAL_ID, orgId: ORG_ID, name: 'CI bot', status: 'active', scopes: ['ai:read'] }]);
+    mockPriorKeysOnce([]);
+    mockBareUpdateOnce();
+    const captured = captureInsert([{ id: 'key-new', keyPrefix: 'brz_abcdefgh' }]);
+
+    await rotateServicePrincipalKey(PRINCIPAL_ID, ACTOR_ID);
+
+    expect(captured.values).toHaveProperty('mcpDomains', null);
   });
 });
 

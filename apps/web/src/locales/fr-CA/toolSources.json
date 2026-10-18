@@ -1,9 +1,9 @@
 {
   "title": "Sources d’outils",
-  "subtitle": "Connectez un serveur MCP pour que ses outils deviennent accessibles au clavardage IA, avec des niveaux de risque et des approbations par outil.",
+  "subtitle": "Connectez un serveur MCP ou une API OpenAPI (REST) pour que ses outils deviennent accessibles au clavardage IA, avec des niveaux de risque et des approbations par outil.",
   "empty": {
     "title": "Aucune source d’outils pour l’instant",
-    "body": "Ajoutez un serveur MCP pour donner à l’assistant un accès en lecture et en écriture aux systèmes que votre équipe utilise déjà."
+    "body": "Ajoutez un serveur MCP ou une API OpenAPI pour donner à l’assistant un accès en lecture et en écriture aux systèmes que votre équipe utilise déjà."
   },
   "list": {
     "add": "Ajouter une source",
@@ -24,9 +24,14 @@
     "slugHelp": "Préfixe chaque outil de cette source, par exemple hudu__get_asset. Lettres minuscules et chiffres seulement.",
     "kind": "Type",
     "kindMcp": "Serveur MCP",
-    "kindOpenapiSoon": "OpenAPI (à venir dans une version ultérieure)",
+    "kindOpenapi": "OpenAPI (API REST)",
     "endpoint": "URL du point de terminaison",
+    "endpointMcp": "URL du serveur MCP",
+    "endpointOpenapi": "URL de base de l’API",
     "endpointHelp": "Utilisez HTTPS, ou HTTP si les connexions sortantes vers les réseaux privés sont activées sur un serveur autohébergé. Les identifiants sont envoyés uniquement à cette origine.",
+    "endpointHelpOpenapi": "Chaque opération est appelée sur cette URL, et les identifiants sont envoyés uniquement à son origine. Les URL de serveur indiquées dans le document sont ignorées.",
+    "specUrl": "URL du document OpenAPI",
+    "specUrlHelp": "Endroit où Breeze lit la description de l’API. L’identifiant n’est envoyé avec cette requête que si le document est servi depuis la même origine que l’URL de base de l’API.",
     "authKind": "Authentification",
     "rateLimit": "Appels par minute",
     "scope": "Disponibilité",
@@ -62,9 +67,25 @@
     "deleteTitle": "Supprimer cette source d’outils?",
     "deleteConfirm": "Ses outils découverts cessent immédiatement d’être offerts au clavardage IA, et son identifiant enregistré est détruit. Cette action est irréversible.",
     "endpoint": "Point de terminaison",
+    "specUrl": "Document OpenAPI",
     "lastDiscovered": "Dernière découverte",
     "discovering": "Découverte des outils en cours…",
     "loadFailed": "Impossible de charger cette source d’outils.",
+    "skippedHeading": "Opérations ignorées",
+    "skippedBody": "Ces opérations n’ont pas été converties en outils. Breeze ignore ce qu’il ne peut pas appeler en toute sécurité plutôt que de deviner.",
+    "skippedShowing": "Affichage de {{shown}} sur {{total}}",
+    "summaryAt": "Issu de la découverte du {{at}}.",
+    "serverOriginWarning": "Le document indique des URL de serveur sur d’autres origines. Elles ont été ignorées : les opérations sont envoyées uniquement à l’URL de base de l’API.",
+    "skipReasons": {
+      "unsupported_method": "Méthode HTTP non prise en charge (OPTIONS/TRACE)",
+      "unsupported_path": "Le chemin ne peut pas être appelé en toute sécurité",
+      "unsupported_param_style": "Style ou emplacement de paramètre non pris en charge (témoin, deepObject, …)",
+      "unsupported_request_body": "Le corps de la requête n’est pas du JSON",
+      "unsupported_security_location": "Nécessite un identifiant dans la chaîne de requête, un témoin, OpenID Connect ou le TLS mutuel",
+      "schema_too_large": "Le schéma d’entrée généré dépasse 64 Ko",
+      "too_many_parameters": "Plus de 100 paramètres",
+      "name_not_addressable": "Le nom dépasse la limite de 64 caractères pour un nom d’outil"
+    },
     "status": {
       "active": "Active",
       "error": "Erreur",
@@ -75,6 +96,8 @@
     "heading": "Outils découverts",
     "empty": "Aucun outil découvert pour l’instant. Lancez une découverte pour récupérer la liste des outils de ce serveur.",
     "name": "Outil",
+    "method": "Méthode",
+    "path": "Chemin",
     "description": "Descriptif",
     "proposedTier": "Proposé",
     "tier": "Niveau de risque",

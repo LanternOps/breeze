@@ -34,6 +34,11 @@ import { enqueueTenantErasure } from '../jobs/tenantErasure';
 import { getOrgMergeQueue } from '../jobs/orgMerge';
 import { MERGE_PRIOR_STATUS_KEY } from './orgMerge';
 import {
+  ARCHIVE_PURGE_WARN_14_SENT_AT_KEY,
+  ARCHIVE_PURGE_WARN_1_SENT_AT_KEY,
+  ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY,
+} from './orgSettingsInternalKeys';
+import {
   EVIDENCE_HOLD_RELEASED_ACTION,
   EVIDENCE_HOLD_SCOPED_ERASURE_KEY,
   findEvidenceHold,
@@ -151,8 +156,8 @@ function inCallerOrSystemDbContext<T>(
  */
 const DB_NOW = sql`now()`;
 
-export const ARCHIVE_PURGE_WARN_14_SENT_AT_KEY = 'archivePurgeWarn14SentAt';
-export const ARCHIVE_PURGE_WARN_1_SENT_AT_KEY = 'archivePurgeWarn1SentAt';
+// Declared in orgSettingsInternalKeys.ts (a leaf module); re-exported here.
+export { ARCHIVE_PURGE_WARN_14_SENT_AT_KEY, ARCHIVE_PURGE_WARN_1_SENT_AT_KEY };
 export type ArchivePurgeWarningMarker =
   | typeof ARCHIVE_PURGE_WARN_14_SENT_AT_KEY
   | typeof ARCHIVE_PURGE_WARN_1_SENT_AT_KEY;
@@ -174,7 +179,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * unit test injecting rows straight past the WHERE clause can't tell a
  * 15-minute floor apart from no floor at all.
  */
-export const ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY = 'purgingRecoveryAttempts';
+export { ARCHIVE_PURGING_RECOVERY_ATTEMPTS_KEY }; // declared in orgSettingsInternalKeys.ts (a leaf module)
 
 /**
  * How many times the backstop will re-run the erasure handoff for one `purging`

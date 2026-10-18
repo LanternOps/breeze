@@ -1,6 +1,7 @@
 import { and, eq, gt, gte, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { oauthAuthorizationCodes, oauthGrants, oauthRefreshTokens } from '../db/schema';
+import { nudgeConnectionHealth } from '../services/connectionHealth/nudge';
 
 /**
  * Durable Grant activity is the authority for every OAuth mint and use path.
@@ -116,4 +117,14 @@ export async function revokeGrantsDurablyInCurrentDbContext(
       inArray(oauthGrants.id, grantIds),
       isNull(oauthGrants.revokedAt),
     ));
+
+  // Connection health (spec §1.3, W4): observe the oauth_grant kind in about a
+  // minute rather than at the next poll. Fire-and-forget, outside this
+  // transaction (a rollback only costs one no-op run); never fails the
+  // revocation.
+  try {
+    nudgeConnectionHealth('oauth_grant');
+  } catch {
+    // nudgeConnectionHealth never throws; this guards the revocation path anyway.
+  }
 }

@@ -89,6 +89,7 @@ import {
 import { pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
 import { validateCustomFieldMap, INVALID_CUSTOM_FIELD_VALUE_MESSAGE } from '../../services/customFields/validateValueMap';
 import { persistDeviceCustomFieldValues, type CustomFieldValueWrite } from '../../services/customFields/queries';
+import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { requireCapability } from '../../services/partnerTrust';
 import {
@@ -356,6 +357,18 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_workload_runtimes', 'device_workloads',
   'dns_event_aggregations', 'dns_security_events',
   'elevation_requests',
+  // Endpoint live chat (#8743 W03): chat history follows the device (the
+  // breeze_cascade_device_org_id() trigger restamps both tables; their
+  // composite FKs are DEFERRABLE INITIALLY DEFERRED for exactly that).
+  // moveDeviceOrgInTransaction.ts first ends a live conversation in the
+  // source org (close_reason 'device_moved').
+  'endpoint_conversation_messages', 'endpoint_conversations',
+  // Endpoint messaging (#8742 W02): delivery/receipt history follows the
+  // device. moveDeviceOrgInTransaction.ts first detaches
+  // endpoint_message_id (the message stays with the source org); the
+  // breeze_cascade_device_org_id() trigger then restamps both tables, so this
+  // loop's UPDATE normally matches nothing.
+  'endpoint_message_deliveries', 'endpoint_message_receipts',
   'fleet_finding_devices',
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
@@ -440,7 +453,11 @@ export function getDeviceOrgDenormalizedTables(): readonly string[] {
   return withExtensionDeviceOrgDenormalized(CORE_DEVICE_ORG_DENORMALIZED_TABLES);
 }
 
-const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
+// Delete-on-move disposition. A device-scoped table gets exactly one org-move disposition (restamp,
+// DEVICE_ORG_FK_CASCADE_TABLES, this list, or a reviewed exemption); moveOrg.coverage.test.ts
+// ('device org-move disposition (#8634)') enforces it from the schema, and requires each entry here to
+// carry a composite (x, org_id) FK to a source-org row.
+export const CORE_DEVICE_ORG_MOVE_DELETE_TABLES: readonly string[] = [
   // Site location W2 (#7886): (matched_site_id, org_id) and assigned_site_id name SOURCE-org sites, so a
   // restamp is unrepresentable; the evaluator rebuilds the row in the target org.
   'topology_device_presence',
@@ -588,8 +605,9 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * event-time site_id — it belongs to the org that owned the device then, even
  * when that is the same org (A -> B -> A). Only the device's current-epoch rows
  * follow the site change. Read after the devices row has been updated, so on
- * an org move this is the NEW epoch, which the un-actuated requests have just
- * been re-anchored into.
+ * an org move this is the NEW epoch, which holds no request yet: since W6
+ * (#8208) every request stays in the epoch it was created in on a device move,
+ * so the move's site rewrite matches nothing for this table.
  */
 const DEVICE_SITE_REWRITE_FILTERS: Readonly<Record<string, (deviceId: string) => SQL>> = {
   elevation_requests: (deviceId) =>
@@ -740,6 +758,12 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // devices by FK; it is deleted by device_id.
   'pam_actuation_results', 'pam_actuations', 'elevation_requests',
   'device_ownership_epoch_closures', 'device_ownership_epochs', 'pam_ledger_retirements',
+  // Endpoint messaging (#8742 W02): receipts before deliveries (receipts ->
+  // deliveries FK, ON DELETE CASCADE either way).
+  'endpoint_message_receipts', 'endpoint_message_deliveries',
+  // Endpoint live chat (#8743 W03): messages before conversations (messages ->
+  // conversations FK, ON DELETE CASCADE either way).
+  'endpoint_conversation_messages', 'endpoint_conversations',
   'peripheral_policy_delivery_events', 'peripheral_policy_device_states', 'peripheral_events',
   'agent_rollback_events', 'agent_rollback_directives',
   's1_agents', 's1_threats', 's1_actions',
@@ -2275,6 +2299,27 @@ coreRoutes.patch(
         .where(eq(devices.id, deviceId))
         .returning();
       updated = row;
+    }
+
+    // Dynamic groups store membership, so a rule on any field this PATCH wrote
+    // is stale until a re-evaluation runs (#8832). Custom-field values are not
+    // listed: persistDeviceCustomFieldValues requests `custom.<key>` itself for
+    // the keys that actually changed. `siteId` makes the worker re-evaluate
+    // every dynamic group, which a move needs (site rules + site-scoped groups).
+    const groupFilterFields = [
+      ...(data.tags !== undefined ? ['tags'] : []),
+      ...(data.displayName !== undefined ? ['displayName'] : []),
+      ...(data.deviceRole !== undefined ? ['deviceRole'] : []),
+      ...(siteChanged ? ['siteId'] : []),
+    ];
+    if (groupFilterFields.length > 0) {
+      requestDeviceGroupReevaluationAfterCommit({
+        deviceId,
+        orgId: device.orgId,
+        eventType: 'device.updated',
+        changedFields: groupFilterFields,
+        reason: 'device_patch',
+      });
     }
 
     if (siteChanged) {

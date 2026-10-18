@@ -617,6 +617,37 @@
           "security-abuse": "Sécurité et abus",
           "integrations": "Intégrations"
         }
+      },
+      "connectionHealthJobs": {
+        "title": "Tâches de fond de l’état des connexions",
+        "description": "Indique si les tâches qui surveillent l’état des connexions sont en cours d’exécution. Vérifié via les signaux de vie dans Redis.",
+        "jobs": {
+          "reconcile": {
+            "label": "Réconciliateur d’incidents",
+            "description": "Ouvre et résout les incidents de connexion toutes les 15 minutes."
+          },
+          "digest": {
+            "label": "E-mail de synthèse quotidien",
+            "description": "Envoie la synthèse de l’état des connexions ; s’exécute toutes les heures."
+          }
+        },
+        "state": {
+          "ok": "Normal",
+          "stale": "Obsolète",
+          "missing": "Aucun signal de vie",
+          "failing": "En échec"
+        },
+        "lastRun": "Dernière exécution {{relative}}",
+        "neverRun": "Aucun signal de vie enregistré",
+        "kindsHeading": "Sources surveillées",
+        "lastOk": "Dernier succès {{relative}}",
+        "neverOk": "Jamais réussi",
+        "failureStreak": "Échecs consécutifs : {{count}}",
+        "redisUnavailable": "L’état des tâches est illisible, car Redis est indisponible. Cela ne signifie pas que les tâches sont arrêtées.",
+        "errors": {
+          "load": "Impossible de charger l’état des tâches."
+        },
+        "retry": "Réessayer"
       }
     },
     "aiModels": {

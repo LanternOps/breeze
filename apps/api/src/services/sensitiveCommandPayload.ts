@@ -172,6 +172,12 @@ export const TERMINAL_PAYLOAD_STRIP_KEYS: readonly string[] = [
  */
 export const TYPE_SCOPED_TERMINAL_STRIP_KEYS: Readonly<Record<string, readonly string[]>> = {
   [CommandTypes.NOTIFY_USER]: ['title', 'body'],
+  // Endpoint live chat (#8743): `message` holds the chat body and the sender
+  // name. The top-level `conversationId` / `chatMessageId` survive: the chat
+  // result handlers and forensics key on them. Bodies live (with retention)
+  // in endpoint_conversation_messages, never here.
+  [CommandTypes.CHAT_OPEN]: ['message'],
+  [CommandTypes.CHAT_MESSAGE]: ['message'],
 };
 
 /**

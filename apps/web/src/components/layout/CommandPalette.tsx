@@ -609,7 +609,7 @@ export default function CommandPalette() {
       >
         <Search className="h-4 w-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">{t('layout.search.prompt')}</span>
-        <span className="shrink-0 rounded border bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+        <span className="shrink-0 rounded border bg-muted px-1.5 py-0.5 text-[11px] font-semibold uppercase text-foreground/70">
           {modifierLabel ? `${modifierLabel}+K` : 'K'}
         </span>
       </button>
@@ -635,7 +635,7 @@ export default function CommandPalette() {
                 placeholder={t('layout.search.placeholder')}
                 className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden"
               />
-              <span className="rounded border px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+              <span className="rounded border px-2 py-0.5 text-[11px] font-semibold uppercase text-foreground/70">
                 Esc
               </span>
             </div>
@@ -716,10 +716,10 @@ export default function CommandPalette() {
                                 aria-hidden="true"
                                 data-testid="palette-item-number"
                                 className={cn(
-                                  'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold',
+                                  'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[11px] font-semibold',
                                   isActive
                                     ? 'border-primary-foreground/40 text-primary-foreground/90'
-                                    : 'bg-muted text-muted-foreground'
+                                    : 'bg-muted text-foreground/70'
                                 )}
                               >
                                 {itemIndex + 1}

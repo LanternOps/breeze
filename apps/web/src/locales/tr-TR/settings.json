@@ -81,6 +81,45 @@
       }
     }
   },
+  "aiDataPolicy": {
+    "title": "Yapay zeka verileri ve gizlilik",
+    "orgDescription": "Breeze AI'nın bu kuruluşun cihazlarında neleri okuyabileceği ve yapay zeka araç çıktılarının ne kadar süre saklanacağı. Boş bırakmak iş ortağı varsayılanını devralır; kuruluş yalnızca daha sıkı hale getirebilir.",
+    "partnerDescription": "Her kuruluş için varsayılanlar. Kuruluş bunları kendi yapay zeka sekmesinde sıkılaştırabilir ancak asla gevşetemez.",
+    "levelLabel": "Yapay zekanın cihaz dosyalarını okuması",
+    "levels": {
+      "off": {
+        "label": "Kapalı",
+        "help": "Yapay zeka cihazlardaki dosya içeriklerini okuyamaz veya klasörlere göz atamaz; tanılama erişim istekleri reddedilir. Disk kullanım özetleri ve kendi kütüphane betikleriniz kullanılabilir kalır."
+      },
+      "no_user_profiles": {
+        "label": "Kullanıcı profili klasörleri hariç",
+        "help": "Sistem ve uygulama yolları onayla; Belgeler, Masaüstü ve ana klasörler, bir yönetici süre sınırlı bir tanılama izni onaylamadıkça reddedilir."
+      },
+      "any_with_approval": {
+        "label": "Herhangi bir yol, onayla",
+        "help": "Her okuma yine de bir teknisyenin onayını gerektirir ve denetlenir; kimlik bilgisi depoları engelli kalır."
+      }
+    },
+    "inherit": "Devral: {{value}} ({{source}})",
+    "retentionLabel": "Yapay zeka araç çıktılarını şu kadar sakla (gün)",
+    "retentionInherit": "Devral: {{value}} ({{source}})",
+    "retentionHelp": "Bundan eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir. Boş bırakmak devralır; iş ortağı çıktıları süresiz saklamayı seçebilir.",
+    "keepForever": "süresiz",
+    "sourceOrg": "bu kuruluş",
+    "sourcePartner": "iş ortağı varsayılanı",
+    "sourceDefault": "Breeze varsayılanı",
+    "abovePartnerCeiling": "Kullanılamaz: iş ortağı varsayılanı daha sıkı.",
+    "aboveCeilingLevel": "Kullanılamaz: iş ortağı varsayılanı daha sıkı.",
+    "retentionAboveCeiling": "İş ortağınız çıktıları en fazla {{days}} gün saklar.",
+    "saved": "Yapay zeka veri ilkesi kaydedildi",
+    "failedToSave": "Yapay zeka veri ilkesi kaydedilemedi",
+    "partnerInheritDefault": "Breeze varsayılanı: {{value}}",
+    "readOnly": "Bu varsayılanları değiştirme izniniz yok.",
+    "retentionKeepDays": "Şu kadar sakla (gün)",
+    "retentionKeepForever": "Süresiz sakla",
+    "retentionBreezeDefault": "Breeze varsayılanı: {{days}} gün",
+    "partnerRetentionHelp": "Yapay zeka araç çıktılarının ne kadar saklanacağını seçin veya süresiz saklayın. Daha eski çıktılar gece çalışmasında bir işaretçiyle değiştirilir."
+  },
   "partnerServicePrincipals": {
     "title": "Hizmet sorumluları",
     "description": "İş ortağı kapsamındaki makine kimliklerini ve bunların erişim anahtarlarını yönetin.",
@@ -327,7 +366,6 @@
       "supportedGeos": "Desteklenen: {{geos}}",
       "refreshQueued": "Model yenileme sıraya alındı",
       "refreshFailed": "Model yenileme sıraya alınamadı.",
-      "alreadyConnected": "Zaten bağlı",
       "addKind": {
         "anthropic_byok": "Anthropic API anahtarı",
         "openai_compatible": "OpenAI uyumlu uç nokta"
@@ -982,6 +1020,11 @@
       "schemeRequired": "URL şablonu bir şemayla başlamalı ve ardından iki nokta üst üste gelmelidir (ör. Rustdesk:, https:)",
       "schemeBlocked": "Bu URL şemasına izin verilmiyor — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: ve filesystem: engellendi.",
       "idRequired": "URL şablonu, cihaz başına değer için {id} yer tutucusunu içermelidir."
+    },
+    "networkProxy": {
+      "title": "Ağ Proxy’si",
+      "label": "Ağ Proxy’sini ayrılmış bir kaynaktan sun",
+      "help": "Tüm kuruluşlara uygulanır; kuruluşlar bunu geçersiz kılamaz. Yalnızca bölgenizin ayrılmış bir kaynak sunduğu yerlerde etkili olur ve cihaz web arayüzleriyle uyumluluğu artırır."
     }
   },
   "partnerSettingsPage": {
@@ -1011,6 +1054,10 @@
       }
     },
     "tabs": {
+      "trustCenter": {
+        "label": "Güven Merkezi",
+        "description": "Müşterilerinizin güven sayfaları için varsayılanlar"
+      },
       "company": {
         "label": "Şirket",
         "description": "İsim, adres, kişiler"
@@ -1915,6 +1962,10 @@
       "title": "Portal özellikleri",
       "description": "Bu müşterinin portalında neler yapabileceğini kontrol edin. Her kuruluş bağımsızdır.",
       "toggles": {
+        "enableTrustPageEditing": {
+          "label": "Müşterinin güven sayfasını düzenlemesi",
+          "description": "Portal girişi olan müşteri yönetici kişileri güven sayfası taslağını düzenleyebilir: güvenlik iletişimi, web sitesi, gizli kontroller ve sayfanın gösterdikleri. Değişiklikleri yine siz yayımlarsınız. Yayımlanmış sayfayı geri de çekebilirler."
+        },
         "enableTickets": {
           "label": "Bilet gönderimi",
           "description": "Müşteriler portaldan destek bildirimleri açabilir ve takip edebilir."
@@ -2036,7 +2087,9 @@
       "email": "Destek e-postası",
       "phone": "Destek telefonu",
       "welcomeMessage": "Hoş geldiniz mesajı",
-      "footerText": "Altbilgi metni"
+      "footerText": "Altbilgi metni",
+      "footerTextHelp": "Müşteri portalının altında gösterilir ve bu kuruluşun fiyat tekliflerine ve faturalarına iş ortağı belge altbilgisi yerine basılır. İş ortağı altbilgisini basmak için boş bırakın.",
+      "footerTextInheritedSource": "İş ortağı belge altbilgisi"
     }
   },
   "orgPortalUsersEditor": {
@@ -3429,6 +3482,7 @@
         "delete_tenant": "Bir organizasyonu sil",
         "detect_log_correlations": "Günlük korelasyonlarını tespit et",
         "disk_cleanup": "Disk temizliği",
+        "edr_endpoint_action": "EDR: cihazı yalıt, serbest bırak veya tara",
         "execute_command": "Bir sistem komutu çalıştır",
         "execute_playbook": "Bir playbook çalıştır",
         "file_operations": "Dosya işlemleri",
@@ -3516,6 +3570,7 @@
         "security_scan": "Güvenlik taraması",
         "set_agent_log_level": "Aracı günlük düzeyini ayarla",
         "set_device_context": "Cihaz bağlamını ayarla",
+        "sync_edr_data": "EDR verilerini eşitle",
         "sync_huntress_data": "Huntress verilerini eşitle",
         "system_cleanup": "Sistem temizliği",
         "take_screenshot": "Ekran görüntüsü al"
@@ -4371,7 +4426,8 @@
     "reEnterYourNewPassword": "Yeni şifrenizi tekrar girin",
     "confirmPassword": "onaylaŞifre",
     "newPassword2": "yeniŞifre",
-    "changingPassword": "Şifre değiştiriliyor..."
+    "changingPassword": "Şifre değiştiriliyor...",
+    "noPasswordNotice": "Bu hesap kuruluşunuzun kimlik sağlayıcısı üzerinden oturum açar ve parolası yoktur, bu nedenle burada değiştirilecek bir şey yoktur. Kuruluşunuz çoklu oturum açmayı zorunlu kılmıyorsa, oturum açma sayfasındaki Parolamı unuttum seçeneğiyle bir parola belirleyebilirsiniz."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Tek oturum açma bağlandı.",
@@ -4389,7 +4445,8 @@
     "sessionInvalid": "Bağlantı tamamlanmadan oturumunuz değiştirildi. Lütfen tekrar oturum açın ve tekrar deneyin.",
     "providerInactive": "Bu tek oturum açma sağlayıcısı artık etkin değil. Yöneticinizle iletişime geçin.",
     "configChanged": "Bağlanırken tek oturum açma yapılandırması değişti. Lütfen tekrar deneyin.",
-    "emailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulandığını onaylamadı. Yöneticinizle iletişime geçin."
+    "emailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulandığını onaylamadı. Yöneticinizle iletişime geçin.",
+    "idpVerifyFailed": "Breeze, kimlik sağlayıcınızın döndürdüğü oturum açmayı doğrulayamadı. Lütfen tekrar deneyin."
   },
   "connectedAppsList": {
     "loadingConnectedApps": "Bağlı uygulamalar yükleniyor…",
@@ -4590,6 +4647,7 @@
     "ssoReauthProviderInactive": "Çoklu oturum açma bu hesap için artık kullanılamıyor. Yöneticinize danışın, sonra tekrar deneyin.",
     "ssoReauthConfigChanged": "Doğrulama sırasında çoklu oturum açma ayarlarınız değişti. Doğrulamayı yeniden başlatın.",
     "ssoReauthEmailUnverified": "Kimlik sağlayıcınız e-posta adresinizin doğrulanmadığını bildiriyor. Adresi orada doğrulayıp tekrar deneyin.",
+    "ssoReauthIdpVerifyFailed": "Breeze, kimlik sağlayıcınızın döndürdüğü oturum açmayı doğrulayamadı. Tekrar deneyin. Sorun devam ederse yöneticinizden sunucu günlüklerini kontrol etmesini isteyin.",
     "ssoReauthProofExpired": "Kimlik sağlayıcısı doğrulamanızın süresi doldu. Çok faktörlü kimlik doğrulama kurulumunu tamamlamak için yeniden doğrulayın.",
     "thisAccountSignsInThroughAnIdentityProviderVerifyBeforeAddingAPasskey": "Bu hesap bir kimlik sağlayıcı üzerinden oturum açıyor ve parolası yok. Geçiş anahtarı eklemeden önce sağlayıcınızda yeniden doğrulayın.",
     "yourIdentityIsVerifiedNameThisPasskeyAndContinue": "Kimliğiniz doğrulandı. Bu geçiş anahtarına bir ad verin ve devam edin.",
@@ -4622,6 +4680,11 @@
     "systemRoles": "Sistem rolleri",
     "customRoles": "Özel roller",
     "createRole": "Rol Oluştur",
+    "ownerScope": "Kapsam",
+    "ownerScopePartner": "İş ortağı",
+    "ownerScopePartnerHelp": "Kendi personeliniz için. Kullanıcılar sayfasında atayın.",
+    "ownerScopeOrganization": "Organizasyon",
+    "ownerScopeOrganizationHelp": "Bir organizasyonun kullanıcıları ve SSO varsayılan rolü için.",
     "name": "Ad",
     "type": "Tür",
     "inheritsFrom": "Miras Aldı",
@@ -5679,6 +5742,7 @@
     }
   },
   "organizationForm": {
+    "trustSlugWarning": "Bu kuruluşun yayımlanmış bir Güven Merkezi sayfası var. URL kısa adını değiştirmek herkese açık adresini değiştirir ve eski bağlantı artık çalışmaz.",
     "actions": {
       "save": "Organizasyonu kaydet"
     },
@@ -5851,6 +5915,12 @@
         "merge": "Birleştirme başlatılamadı",
         "missingResult": "Birleştirme tamamlandı ancak sonuç verisi döndürmedi. Tekrar deneyin.",
         "mfaRequired": "Kuruluşları birleştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
+      },
+      "blockers": {
+        "pam_open_actuation": "Birleştirilerek kapatılacak kuruluşta temizliği henüz tamamlanmamış ayrıcalıklı erişim (PAM) oturumları var. Oturumların kapanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
+        "pam_evidence": "Birleştirilerek kapatılacak kuruluşun ayrıcalıklı erişim (PAM) geçmişi var ve PAM geçmişinin kuruluşlar arasında taşınması bu dağıtımda etkin değil. Ters yönde birleştirin veya bu kuruluşları birleştirmeyin.",
+        "payment_in_flight": "Birleştirilerek kapatılacak kuruluşun işlemdeki bir ödemesi var. Ödemenin tamamlanmasını bekleyin, ardından birleştirmeyi yeniden deneyin.",
+        "lineage_depth": "Bu kuruluşlar zaten çok kez birleştirildi ve bu birleştirme azami birleştirme geçmişi derinliğini aşacak."
       }
     },
     "archive": {
@@ -5994,6 +6064,8 @@
     },
     "columns": {
       "timezone": "Saat Dilimi",
+      "address": "Adres",
+      "contact": "Kişi",
       "devices": "Cihazlar"
     },
     "empty": "Hiçbir site bulunamadı. Başlamak için bir site ekleyin."
@@ -6773,5 +6845,16 @@
     "invalidKey": "Pushover kullanıcı anahtarı 30 harf veya rakamdan oluşur.",
     "loadFailed": "Pushover ayarınız yüklenemedi.",
     "saveFailed": "Pushover ayarınız kaydedilemedi."
+  },
+  "emailNotificationSettings": {
+    "title": "E-posta bildirimleri",
+    "description": "Breeze'in size hangi e-postaları göndereceğini seçin. Uygulama içi bildirimler her zaman açık kalır.",
+    "digestLabel": "Günlük bağlantı sağlığı özeti",
+    "digestHelp": "Düzeltebileceğiniz bozuk entegrasyonların ve oturum açma sorunlarının, ayrıca düzelenlerin sabah özeti. Günde en fazla bir kez gönderilir.",
+    "enabledToast": "Bağlantı sağlığı özeti açıldı",
+    "disabledToast": "Bağlantı sağlığı özeti kapatıldı",
+    "loadFailed": "E-posta tercihleri yüklenemedi.",
+    "saveFailed": "E-posta tercihleri kaydedilemedi.",
+    "retry": "Yeniden dene"
   }
 }

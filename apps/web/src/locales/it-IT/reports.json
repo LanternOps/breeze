@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Torna ai report",
+      "backupPreview": {
+        "description": "Genera lo snapshot di backup corrente con le opzioni sopra. Viene eseguito solo su richiesta.",
+        "error": "Impossibile generare l'anteprima.",
+        "run": "Genera anteprima",
+        "title": "Anteprima"
+      },
       "description": "Aggiorna la configurazione per \"{{name}}\".",
       "errors": {
         "fetchReport": "Impossibile recuperare il report",
@@ -1067,6 +1073,13 @@
         "business": "Attività",
         "general": "Generale",
         "businessDescription": "Numeri interni dell’MSP — rispetto degli SLA, fatturabilità dei tecnici e crediti scaduti — riservati al personale."
+      },
+      "delivery": {
+        "contactsLoading": "Caricamento dei contatti dell’organizzazione…",
+        "contactsFailed": "Impossibile caricare i contatti di questa organizzazione. Puoi comunque aggiungere indirizzi email.",
+        "noContacts": "Questa organizzazione non ha contatti con un indirizzo email.",
+        "removeEmail": "Rimuovi {{email}}",
+        "recipientsFailed": "Il report \"{{name}}\" è stato creato, ma non è stato possibile aggiungere tutti i destinatari. Aggiungili dal report."
       }
     },
     "threatDetectionOptions": {

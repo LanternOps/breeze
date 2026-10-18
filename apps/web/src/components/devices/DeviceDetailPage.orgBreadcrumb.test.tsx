@@ -1,12 +1,15 @@
 import '@/lib/i18n';
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceDetailPage from './DeviceDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
+import { useOrgStore } from '@/stores/orgStore';
+import { showToast } from '../shared/Toast';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../../hooks/useEventStream', () => ({ useEventStream: () => ({ subscribe: vi.fn() }) }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: () => vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
@@ -23,7 +26,25 @@ vi.mock('../../services/deviceActions', () => ({
   WakeCommandError: class WakeCommandError extends Error {},
   wakeFriendlyErrorMessage: vi.fn(),
 }));
-vi.mock('./DeviceDetails', () => ({ default: () => null }));
+vi.mock('./DeviceDetails', () => ({
+  default: ({
+    onBack,
+    workingOrgId,
+    onSwitchToDeviceOrg,
+  }: {
+    onBack: () => void;
+    workingOrgId?: string | null;
+    onSwitchToDeviceOrg?: () => void;
+  }) => (
+    <>
+      <button onClick={onBack}>back</button>
+      <span data-testid="working-org-prop">{String(workingOrgId)}</span>
+      {onSwitchToDeviceOrg && <button onClick={onSwitchToDeviceOrg}>switch-scope</button>}
+    </>
+  ),
+}));
+const { applyOrgSwitchMock } = vi.hoisted(() => ({ applyOrgSwitchMock: vi.fn() }));
+vi.mock('@/lib/orgSwitch', () => ({ applyOrgSwitch: applyOrgSwitchMock }));
 vi.mock('./DeviceSettingsModal', () => ({ default: () => null }));
 vi.mock('./ChangeSiteModal', () => ({ default: () => null }));
 // The real dialog pulls in the org store, which needs more of stores/auth than this suite mocks.
@@ -40,6 +61,7 @@ const DEVICE_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 describe('DeviceDetailPage organization breadcrumb (#3839)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
   });
 
   it('links the organization name in the breadcrumb to the org settings page', async () => {
@@ -79,5 +101,119 @@ describe('DeviceDetailPage organization breadcrumb (#3839)', () => {
 
     await screen.findByText('alpha-01');
     expect(screen.queryByRole('link', { name: 'Unknown Org' })).not.toBeInTheDocument();
+  });
+});
+
+describe('Devices crumb (ui-flow A4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
+      id: DEVICE_ID,
+      hostname: 'alpha-01',
+      osType: 'windows',
+      status: 'online',
+      orgId: 'org-42',
+      orgName: 'Acme Corp',
+      siteId: 'site-1',
+      siteName: 'HQ',
+    }), { status: 200 }));
+  });
+
+  it('goes to /devices in fleet view', async () => {
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect(await screen.findByRole('link', { name: 'Devices' })).toHaveAttribute('href', '/devices');
+  });
+
+  it('goes to /devices when the working org is the device org', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-42', allOrgs: false } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect(await screen.findByRole('link', { name: 'Devices' })).toHaveAttribute('href', '/devices');
+  });
+
+  it("goes to the device org's Devices tab when the working org differs, and so does Back", async () => {
+    useOrgStore.setState({ currentOrgId: 'org-99', allOrgs: false } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect(await screen.findByRole('link', { name: 'Devices' })).toHaveAttribute(
+      'href',
+      '/organizations/org-42#devices',
+    );
+    fireEvent.click(screen.getByText('back'));
+    expect(navigateTo).toHaveBeenCalledWith('/organizations/org-42#devices');
+  });
+
+  it('explains the cross-org Devices crumb in its tooltip (#9027)', async () => {
+    useOrgStore.setState({
+      currentOrgId: 'org-99',
+      allOrgs: false,
+      organizations: [{ id: 'org-99', name: 'Acme Dental' }],
+    } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    const crumb = await screen.findByRole('link', { name: 'Devices' });
+    const text = "Opens Acme Corp's Devices tab; your working org stays Acme Dental";
+    expect(crumb).toHaveAttribute('title', text);
+    expect(crumb).toHaveAttribute('aria-description', text);
+  });
+
+  it('gives crumb links a 32px tap height below md (#9028)', async () => {
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect((await screen.findByRole('link', { name: 'Devices' })).className).toContain('max-md:min-h-[32px]');
+    expect(screen.getByRole('link', { name: 'Acme Corp' }).className).toContain('max-md:min-h-[32px]');
+  });
+
+  it('gives the Devices crumb no tooltip when the scopes match (#9027)', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-42', allOrgs: false } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    const crumb = await screen.findByRole('link', { name: 'Devices' });
+    expect(crumb).not.toHaveAttribute('title');
+  });
+
+  it('switches to the device org and stays on this record (#9027)', async () => {
+    useOrgStore.setState({ currentOrgId: 'org-99', allOrgs: false } as never);
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    expect(await screen.findByTestId('working-org-prop')).toHaveTextContent('org-99');
+    applyOrgSwitchMock.mockReturnValue(new Promise(() => {}));
+    fireEvent.click(screen.getByText('switch-scope'));
+    fireEvent.click(screen.getByText('switch-scope'));
+    expect(applyOrgSwitchMock).toHaveBeenCalledTimes(1);
+    expect(applyOrgSwitchMock).toHaveBeenCalledWith('org-42', 'Switched to Acme Corp', `/devices/${DEVICE_ID}`);
+  });
+
+  it('surfaces a failed switch instead of swallowing it (#9027)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    useOrgStore.setState({ currentOrgId: 'org-99', allOrgs: false } as never);
+    applyOrgSwitchMock.mockRejectedValue(new Error('refresh failed'));
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    fireEvent.click(await screen.findByText('switch-scope'));
+    await vi.waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
+  });
+});
+
+describe('crumb leaf (#9026)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: null, allOrgs: true } as never);
+  });
+
+  it('shows the display name with the hostname in the title', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
+      id: DEVICE_ID,
+      hostname: 'DESKTOP-7QK2',
+      displayName: 'Front desk PC',
+      osType: 'windows',
+      status: 'online',
+      orgId: 'org-42',
+      orgName: 'Acme Corp',
+      siteId: 'site-1',
+      siteName: 'HQ',
+    }), { status: 200 }));
+    render(<DeviceDetailPage deviceId={DEVICE_ID} />);
+    const nav = await screen.findByRole('navigation', { name: /breadcrumb/i });
+    const leaf = await within(nav).findByText('Front desk PC');
+    expect(leaf).toHaveAttribute('title', 'DESKTOP-7QK2');
+    expect(within(nav).queryByText('DESKTOP-7QK2')).toBeNull();
   });
 });

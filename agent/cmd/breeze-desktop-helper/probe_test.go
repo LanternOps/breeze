@@ -13,7 +13,8 @@ import (
 
 type probeCalls struct {
 	capture     []desktop.CaptureProbeOptions
-	tccProbeArg []bool // allowCaptureProbe passed to ProbeTCCPermissions
+	tccProbeArg []bool // reportRemoteDesktop passed to ProbeTCCPermissions
+	access      int    // non-capturing access checks
 }
 
 // stubProbes replaces the capture, TCC and verdict seams. report/err script
@@ -21,8 +22,14 @@ type probeCalls struct {
 func stubProbes(t *testing.T, report desktop.CaptureProbeReport, err error) *probeCalls {
 	t.Helper()
 	calls := &probeCalls{}
-	saveCapture, saveTCC, saveVerdict := probeCaptureFn, probeTCCFn, sckVerdictFn
-	t.Cleanup(func() { probeCaptureFn, probeTCCFn, sckVerdictFn = saveCapture, saveTCC, saveVerdict })
+	saveCapture, saveTCC, saveVerdict, saveAccess := probeCaptureFn, probeTCCFn, sckVerdictFn, captureAccessFn
+	t.Cleanup(func() {
+		probeCaptureFn, probeTCCFn, sckVerdictFn, captureAccessFn = saveCapture, saveTCC, saveVerdict, saveAccess
+	})
+	captureAccessFn = func(desktop.CaptureConfig) desktop.CaptureAccessReport {
+		calls.access++
+		return desktop.CaptureAccessReport{State: desktop.CaptureAccessGranted, Reason: "preflight"}
+	}
 	probeCaptureFn = func(_ desktop.CaptureConfig, opts desktop.CaptureProbeOptions) (desktop.CaptureProbeReport, error) {
 		calls.capture = append(calls.capture, opts)
 		return report, err
@@ -163,5 +170,24 @@ func TestProbeCommand_SCKFlagWiring(t *testing.T) {
 	}
 	if len(calls.capture) != 2 || calls.capture[0].AllowScreenCaptureKit || !calls.capture[1].AllowScreenCaptureKit {
 		t.Fatalf("capture options = %+v, want [no SCK, SCK]", calls.capture)
+	}
+}
+
+// #8390: the helper's startup log collects the non-capturing report only.
+// A real capture at startup raised macOS 15's monthly screen-capture
+// acknowledgement alert on every helper restart.
+func TestStartupProbe_NeverCaptures(t *testing.T) {
+	calls := stubProbes(t, desktop.CaptureProbeReport{Granted: true}, nil)
+
+	out := collectProbeOutput(startupProbeOptions())
+
+	if len(calls.capture) != 0 {
+		t.Fatalf("startup probe captured %d times, want 0", len(calls.capture))
+	}
+	if len(calls.tccProbeArg) != 1 || calls.tccProbeArg[0] {
+		t.Fatalf("ProbeTCCPermissions reportRemoteDesktop = %v, want a single call with false", calls.tccProbeArg)
+	}
+	if calls.access != 1 || out.CaptureAccess == nil || out.CaptureAccess.State != "granted" || !out.CaptureAccess.CanCapture {
+		t.Fatalf("access checks = %d, captureAccess = %+v; want one check reported", calls.access, out.CaptureAccess)
 	}
 }

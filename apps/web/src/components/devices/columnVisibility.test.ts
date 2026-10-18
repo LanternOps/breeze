@@ -5,6 +5,8 @@ import {
   COLUMN_STORAGE_KEY,
   DEFAULT_VISIBLE_COLUMNS,
   isValidColumnId,
+  ORG_TAB_COLUMN_PRESET,
+  ORG_TAB_COLUMN_STORAGE_KEY,
   readColumnOrder,
   readColumnVisibility,
   resetColumns,
@@ -285,6 +287,38 @@ describe('columnVisibility', () => {
     });
   });
 
+  describe('column presets', () => {
+    const ORG_TAB_DEFAULTS = ['hostname', 'site', 'os', 'status', 'attention', 'cpu', 'ram', 'lastSeen'];
+
+    it('the orgTab preset defaults to exactly hostname, site, os, status, attention, cpu, ram, lastSeen', () => {
+      expect(readColumnVisibility(ORG_TAB_COLUMN_PRESET)).toEqual(new Set(ORG_TAB_DEFAULTS));
+    });
+
+    it('writes under breeze.devices.columns.orgTab and leaves breeze.devices.columns untouched', () => {
+      writeColumnVisibility(['hostname'], ORG_TAB_COLUMN_PRESET);
+      expect(window.localStorage.getItem(COLUMN_STORAGE_KEY)).toBeNull();
+      expect(window.localStorage.getItem(ORG_TAB_COLUMN_STORAGE_KEY)).not.toBeNull();
+      expect(ORG_TAB_COLUMN_STORAGE_KEY).toBe('breeze.devices.columns.orgTab');
+      expect(readColumnVisibility()).toEqual(new Set(DEFAULT_VISIBLE_COLUMNS));
+    });
+
+    it("all-hidden falls back to the preset's defaults", () => {
+      window.localStorage.setItem(
+        ORG_TAB_COLUMN_STORAGE_KEY,
+        JSON.stringify({ v: 1, columns: COLUMN_IDS.map((id) => ({ id, visible: false })) }),
+      );
+      expect(readColumnVisibility(ORG_TAB_COLUMN_PRESET)).toEqual(new Set(ORG_TAB_DEFAULTS));
+    });
+
+    it('resetColumns(preset) restores the preset defaults under its own key', () => {
+      writeColumnVisibility(['hostname'], ORG_TAB_COLUMN_PRESET);
+      const cols = resetColumns(ORG_TAB_COLUMN_PRESET);
+      expect(new Set(cols.filter((c) => c.visible).map((c) => c.id))).toEqual(new Set(ORG_TAB_DEFAULTS));
+      expect(readColumnVisibility(ORG_TAB_COLUMN_PRESET)).toEqual(new Set(ORG_TAB_DEFAULTS));
+      expect(window.localStorage.getItem(COLUMN_STORAGE_KEY)).toBeNull();
+    });
+  });
+
   it('registers Hardware without enabling it for existing users', () => {
     expect(COLUMN_IDS).toContain('hardwareHealth');
     expect(COLUMN_LABELS.hardwareHealth).toBe('Hardware');
@@ -292,5 +326,37 @@ describe('columnVisibility', () => {
     expect(readColumnVisibility().has('hardwareHealth')).toBe(false);
     writeColumnVisibility([...DEFAULT_VISIBLE_COLUMNS, 'hardwareHealth']);
     expect(readColumnVisibility().has('hardwareHealth')).toBe(true);
+  });
+
+  describe('Attention column (#9038)', () => {
+    it('is in the catalog, labelled, and default-visible right after Status on both presets', () => {
+      expect(COLUMN_IDS).toContain('attention');
+      expect(COLUMN_LABELS.attention).toBe('Attention');
+      expect(DEFAULT_VISIBLE_COLUMNS[0]).toBe('hostname');
+      expect(DEFAULT_VISIBLE_COLUMNS.indexOf('attention')).toBe(DEFAULT_VISIBLE_COLUMNS.indexOf('status') + 1);
+      const orgTab = ORG_TAB_COLUMN_PRESET.defaultVisible;
+      expect(orgTab[0]).toBe('hostname');
+      expect(orgTab.indexOf('attention')).toBe(orgTab.indexOf('status') + 1);
+    });
+
+    it('sits right after Status in the catalog order a fresh user sees', () => {
+      const order = readColumnOrder();
+      expect(order[0]).toBe('hostname');
+      expect(order.indexOf('attention')).toBe(order.indexOf('status') + 1);
+      expect(readColumnVisibility().has('attention')).toBe(true);
+    });
+
+    it('leaves a saved column set in place and appends Attention at the end (no storage migration)', () => {
+      const saved = COLUMN_IDS.filter((id) => id !== 'attention').reverse();
+      window.localStorage.setItem(
+        COLUMN_STORAGE_KEY,
+        JSON.stringify({ v: 1, columns: saved.map((id) => ({ id, visible: id === 'hostname' || id === 'cpu' })) }),
+      );
+      const order = readColumnOrder();
+      expect(order.slice(0, -1)).toEqual(saved);
+      expect(order[order.length - 1]).toBe('attention');
+      // A read never rewrites the stored value.
+      expect(JSON.parse(window.localStorage.getItem(COLUMN_STORAGE_KEY)!).columns).toHaveLength(saved.length);
+    });
   });
 });

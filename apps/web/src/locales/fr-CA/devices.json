@@ -10,7 +10,7 @@
     "site": "Site client",
     "policy": "Stratégie",
     "states": {
-      "not_reported": "Aucune donnée horaire pour le moment — une mise à jour de l’agent incluant la synchronisation de l’heure est nécessaire",
+      "not_reported": "Aucune donnée horaire pour le moment — mise à jour de l’agent requise pour la synchronisation de l’heure",
       "unsupported_os": "Pas encore pris en charge sur ce système d’exploitation"
     },
     "health": {
@@ -384,6 +384,7 @@
     "hide": "masquer"
   },
   "deviceActions": {
+    "moreActions": "Plus d'actions",
     "unavailable": {
       "offline": "L’appareil est hors ligne",
       "maintenance": "L’appareil est en mode maintenance",
@@ -469,7 +470,7 @@
     },
     "runScript": "Exécuter un script",
     "remoteTools": "Outils à distance",
-    "reRunAgentInventoryCollectorsSo": "Relancez les collecteurs d’inventaire de l’agent pour que l’interface puisse voir de nouvelles données matérielles/logicielles/réseau sans attendre le prochain cycle de battements de cœur",
+    "reRunAgentInventoryCollectorsSo": "Collecter l’inventaire maintenant",
     "refresh": "Actualiser",
     "reboot": "Redémarrer",
     "wake": "Veillée",
@@ -864,7 +865,10 @@
     "loadingDevice": "Dispositif de chargement...",
     "backToDevices": "Retour aux appareils",
     "goBack": "Retourne",
-    "devices": "Dispositifs"
+    "devices": "Dispositifs",
+    "devicesCrumbOtherOrg": "Ouvre l’onglet Appareils de {{deviceOrg}}; votre organisation de travail reste {{workingOrg}}",
+    "devicesCrumbOtherOrgUnnamed": "Ouvre l’onglet Appareils de {{deviceOrg}}; votre organisation de travail ne change pas",
+    "switchOrgFailed": "Impossible de changer d’organisation. Réessayez."
   },
   "deviceDetails": {
     "overview": "Aperçu",
@@ -898,7 +902,7 @@
     "scriptExecutionHistory": "Historique d’exécution des scripts",
     "management": "Gestion",
     "agentSettingsAndDeviceManagement": "Paramètres de l’agent et gestion des appareils",
-    "config": "Configuration",
+    "config": "Configuration appliquée",
     "resolvedConfigurationFromAllAssignedPolicies": "Configuration résolue à partir de toutes les politiques assignées",
     "security": "Sécurité",
     "playbooks": "Procédures",
@@ -913,7 +917,7 @@
     "changeHistoryTitle": "Modifications de configuration et d’inventaire suivies pour cet appareil",
     "diskCleanup": "Nettoyage des disques",
     "diskUsageAnalysisAndCleanup": "Analyse et nettoyage de l’utilisation du disque",
-    "bootPerf": "Perf. de démarrage",
+    "bootPerf": "Performances de démarrage",
     "systemRestore": "Restauration du système",
     "startupTimeAndBootProcessAnalysis": "Temps de démarrage et analyse du processus de démarrage",
     "backup": "Sauvegarde",
@@ -950,7 +954,13 @@
       "extensions": "Modules complémentaires"
     },
     "workloads": "Charges de travail",
-    "workloadsTitle": "Conteneurs et machines virtuelles sur cet hôte"
+    "workloadsTitle": "Conteneurs et machines virtuelles sur cet hôte",
+    "offlineLastSeen": "Hors ligne · vu pour la dernière fois {{ago}}",
+    "locatedIn": "chez <org/> › <site/>",
+    "scopeCue": {
+      "viewing": "Vous consultez un appareil de {{org}}",
+      "switch": "Passer à {{org}}"
+    }
   },
   "deviceEdrPanel": {
     "failedToIsolateDevice": "Impossible d’isoler le dispositif",
@@ -1367,7 +1377,7 @@
       "unknown": "Breeze Assist est activé mais non installé (depuis le {{since}})."
     },
     "watchdogInstall": {
-      "gaveUp": "Le watchdog n’a pas pu être installé automatiquement (depuis le {{since}}) : {{reason}}. Exécutez `breeze-agent service install --watchdog` sur l’hôte pour réessayer.",
+      "gaveUp": "Le watchdog n’a pas pu être installé automatiquement (depuis le {{since}}) : {{reason}}. Exécutez <code>breeze-agent service install --watchdog</code> sur l’hôte pour réessayer.",
       "unsupported": "L’installation automatique du watchdog n’est pas prise en charge sur cet hôte (depuis le {{since}}).",
       "reason": {
         "network": "le téléchargement est inaccessible",
@@ -1509,7 +1519,8 @@
     "tags": "Étiquettes",
     "customFields": "Champs personnalisés",
     "text2": "*",
-    "edit": "Modifier"
+    "edit": "Modifier",
+    "roleNotAssessed": "Rôle pas encore évalué"
   },
   "deviceIpHistoryTab": {
     "true": "Vrai",
@@ -1591,6 +1602,7 @@
       "os": "OS",
       "role": "Rôle",
       "status": "Statut",
+      "attention": "À traiter",
       "cpu": "CPU %",
       "ram": "RAM %",
       "lastSeen": "Dernière apparition",
@@ -1766,6 +1778,26 @@
       "equalTooltip": "Correspond à la version effective {{version}}",
       "aheadTooltip": "En avance sur l'épinglage {{version}}",
       "behindTooltip": "En retard sur l'épinglage {{version}}"
+    },
+    "attention": {
+      "alerts": {
+        "critical_one": "{{count}} critique",
+        "critical_other": "{{count}} critiques",
+        "high_one": "{{count}} élevée",
+        "high_other": "{{count}} élevées",
+        "medium_one": "{{count}} moyenne",
+        "medium_other": "{{count}} moyennes",
+        "low_one": "{{count}} faible",
+        "low_other": "{{count}} faibles",
+        "info_one": "{{count}} informative",
+        "info_other": "{{count}} informatives"
+      },
+      "tickets_one": "{{count}} ticket ouvert",
+      "tickets_other": "{{count}} tickets ouverts",
+      "alertsTitle": "Alertes ouvertes : {{breakdown}}",
+      "none": "Rien à traiter",
+      "unavailable": "Nombre d’alertes et de tickets non disponible",
+      "loading": "Chargement du nombre d’alertes et de tickets"
     }
   },
   "deviceLogsTab": {
@@ -2019,16 +2051,18 @@
     },
     "loading": "Chargement des graphiques de performance...",
     "metrics": {
-      "cpu": "CPU",
+      "cpu": "Processeur",
       "disk": "Disque",
       "download": "Télécharger",
-      "ram": "Ram",
+      "ram": "Mémoire vive",
       "readThroughput": "Débit de lecture",
       "upload": "Téléverser",
       "writeThroughput": "Débit d’écriture"
     },
     "networkBandwidth": "Bande passante réseau",
-    "title": "Graphiques de performance"
+    "title": "Graphiques de performance",
+    "noSamples": "Aucun échantillon sur les dernières {{range}}",
+    "offlineSince": "Appareil hors ligne · vu pour la dernière fois {{ago}}"
   },
   "devicePeripheralsTab": {
     "actions": {
@@ -2105,7 +2139,7 @@
     "details": "Détails",
     "disabled": "Le score de fiabilité est désactivé pour cette organisation.",
     "distinctEvents": "Événements distincts du {{window}}.",
-    "empty": "Aucun instantané de fiabilité disponible pour l’instant.",
+    "empty": "Aucune donnée de fiabilité pour l’instant",
     "errors": {
       "loadDetail": "Impossible de charger le détail de fiabilité",
       "loadScore": "Impossible de charger le score de fiabilité",
@@ -2451,7 +2485,7 @@
     "loadFailed": "Impossible de charger la garantie.",
     "lookupUnavailable": "Recherche de garantie non disponible pour ce fabricant",
     "manufacturer": "Fabricant",
-    "noInformation": "Aucune information sur la garantie",
+    "noInformation": "Aucune garantie enregistrée",
     "renews": "Renouvellements",
     "serialNumber": "Numéro de série",
     "source": "Source : {{source}}",
@@ -2477,7 +2511,8 @@
       "refreshing": "Garantie rafraîchissante...",
       "stillInProgress": "La refonte de la garantie est encore en cours ; La carte sera mise à jour une fois terminée.",
       "updated": "Informations sur la garantie mises à jour."
-    }
+    },
+    "lookUp": "Rechercher"
   },
   "devicesPage": {
     "accessDenied": "Vous n’avez pas la permission de voir les appareils.",
@@ -2612,6 +2647,21 @@
       "installAgent": "Installer l'agent…",
       "addNetworkAsset": "Ajouter un actif réseau…",
       "addManualAsset": "Ajouter un actif manuellement…"
+    },
+    "confirmBulkCommand": {
+      "message": "{{action}} sera envoyé à {{count}} appareil(s) {{scope}}.",
+      "messageSplit": "{{action}} sera envoyé à {{count}} appareil(s) {{scope}} : {{online}} en ligne maintenant · {{queued}} en file d'attente jusqu'au prochain check-in.",
+      "scopeMulti": "dans {{count}} organisations ({{orgs}})",
+      "scopeSingle": "dans {{org}}",
+      "title": "{{action}} : {{count}} appareil(s) ?",
+      "verbs": {
+        "lock": "Verrouiller",
+        "maintenanceOff": "Terminer la maintenance",
+        "reboot": "Redémarrer",
+        "reboot_safe_mode": "Redémarrer en mode sans échec",
+        "shutdown": "Arrêter",
+        "wake": "Réveiller"
+      }
     }
   },
   "filterAddDropdown": {
@@ -2941,7 +2991,9 @@
     "submitting": "En cours…",
     "cancel": "Annuler",
     "genericError": "Impossible de déplacer l'appareil.",
-    "timeout": "Le déplacement prend plus de temps que prévu et est peut-être encore en cours sur le serveur. Attendez une minute, puis actualisez la page pour vérifier dans quelle organisation se trouve l'appareil avant de réessayer."
+    "timeout": "Le déplacement prend plus de temps que prévu et est peut-être encore en cours sur le serveur. Attendez une minute, puis actualisez la page pour vérifier dans quelle organisation se trouve l'appareil avant de réessayer.",
+    "pamMoveActive": "Cet appareil a une session d'accès privilégié (PAM) dont le nettoyage n'est pas terminé. Attendez qu'elle se ferme, puis déplacez de nouveau l'appareil.",
+    "pamMoveBlocked": "Cet appareil a un historique d'accès privilégié (PAM), et le déplacement d'appareils PAM entre organisations n'est pas activé sur ce déploiement."
   },
   "networkDeviceDetailPage": {
     "approval": {
@@ -4085,7 +4137,7 @@
       "offNote": "Les runtimes sont toujours détectés, mais la liste des charges de travail reste désactivée tant qu’une politique ne l’active pas.",
       "enabled": "Lister les charges de travail",
       "runtimesHeading": "Runtimes à lister",
-      "laterRelease": "La liste pour Hyper-V et Proxmox VE arrivera avec une version ultérieure de l’agent; ces options prendront effet à ce moment-là.",
+      "agentSupport": "Les options Hyper-V et Proxmox VE ne s’appliquent qu’aux agents qui incluent ces pilotes; les agents plus anciens les ignorent.",
       "interval": "Intervalle de collecte (minutes)",
       "invalidInterval": "L’intervalle doit être un nombre entier de minutes entre {{min}} et {{max}}."
     },
@@ -4160,6 +4212,42 @@
       "false_positive": "Faux positif",
       "dismissed": "Ignorée",
       "unknown": "Inconnu"
+    },
+    "actions": {
+      "label": {
+        "isolate": "Isoler l’appareil",
+        "unisolate": "Lever l’isolement",
+        "scan": "Lancer une analyse",
+        "update_agent": "Mettre à jour l’agent"
+      },
+      "unavailable": "Non disponible",
+      "mfaRequired": "Vérifiez avec l’AMF pour exécuter des actions de réponse",
+      "error": "Impossible de demander l’action de réponse.",
+      "requested": "{{action}} demandé pour {{device}}",
+      "inProgress": "Une autre action de réponse est déjà en cours pour cet appareil.",
+      "confirming": "Demandé — confirmation en cours auprès de {{vendor}}",
+      "reasonLabel": "Motif (facultatif)",
+      "confirm": {
+        "isolate": {
+          "title": "Isoler {{device}} ?",
+          "message": "{{vendor}} va isoler {{device}} : l’appareil perd l’accès au réseau, sauf vers {{vendor}}. Vous pourrez lever l’isolement plus tard."
+        },
+        "unisolate": {
+          "title": "Lever l’isolement de {{device}} ?",
+          "message": "{{vendor}} rétablira l’accès normal au réseau pour {{device}}."
+        }
+      }
+    },
+    "history": {
+      "heading": "Actions de réponse récentes",
+      "checking": "Vérification",
+      "aiBadge": "IA",
+      "status": {
+        "queued": "En file",
+        "submitted": "En cours",
+        "succeeded": "Réussie",
+        "failed": "Échouée"
+      }
     }
   },
   "endpointMessages": {
@@ -4238,6 +4326,161 @@
       "titleHtml": "Le HTML n'est pas autorisé dans le titre.",
       "titleLinks": "Les liens ne sont pas autorisés dans le titre.",
       "invalid": "Le message contient du contenu non autorisé."
+    },
+    "history": {
+      "title": "Messages aux terminaux",
+      "description": "Messages envoyés aux personnes sur leurs appareils, et ce qu'il est advenu de chacun.",
+      "empty": "Aucun message n'a encore été envoyé.",
+      "loading": "Chargement...",
+      "loadFailed": "Impossible de charger les messages.",
+      "retry": "Réessayer",
+      "loadMore": "Charger plus",
+      "selectPrompt": "Sélectionnez un message pour voir les détails de livraison.",
+      "detailLoadFailed": "Impossible de charger ce message.",
+      "notFound": "Ce message est introuvable.",
+      "noAccess": "Vous n'avez pas l'autorisation de consulter les messages aux terminaux.",
+      "purgedTitle": "Contenu supprimé",
+      "purgedBody": "Le texte du message a été supprimé après 90 jours. L'historique de livraison est conservé.",
+      "purgedListTitle": "(contenu supprimé)",
+      "badgeRetracted": "Retiré",
+      "badgeAi": "IA",
+      "devicesLabel": "Appareils : {{count}}",
+      "fields": {
+        "body": "Contenu",
+        "deliveries": "Appareils",
+        "host": "Appareil",
+        "status": "Statut",
+        "surface": "Affiché dans",
+        "error": "Erreur",
+        "sent": "Envoyé",
+        "expires": "Expire",
+        "delivered": "Livré",
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "retracted": "Retiré",
+        "receipts": "Accusés",
+        "noReceipts": "Aucun",
+        "requiresAck": "Confirmation requise"
+      },
+      "receiptEvents": {
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "expired": "Expiré"
+      },
+      "surface": {
+        "assist": "Carte Assist",
+        "native": "Notification native"
+      },
+      "statuses": {
+        "queued": "En file",
+        "delivered": "Livré",
+        "displayed": "Affiché",
+        "acknowledged": "Confirmé",
+        "dismissed": "Fermé",
+        "expired": "Expiré",
+        "retracted": "Retiré",
+        "failed": "Échec",
+        "superseded": "Remplacé"
+      },
+      "actions": {
+        "retract": "Retirer",
+        "retracting": "Retrait...",
+        "resend": "Renvoyer aux échecs ou expirés",
+        "resending": "Renvoi..."
+      },
+      "retractConfirm": {
+        "title": "Retirer ce message ?",
+        "message": "Il sera retiré des appareils qui l'affichent. Les appareils qui ne l'ont pas encore reçu ne le recevront pas.",
+        "confirm": "Retirer"
+      },
+      "messages": {
+        "retractSuccess": "Message retiré.",
+        "retractPartial": "Message retiré, mais {{count}} appareils n'ont pas pu être mis à jour.",
+        "retractFailed": "Impossible de retirer le message.",
+        "resendSuccess": "Message renvoyé. Appareils : {{count}}.",
+        "resendFailed": "Impossible de renvoyer le message."
+      },
+      "resendErrors": {
+        "retracted": "Ce message a été retiré et ne peut pas être renvoyé.",
+        "body_purged": "Le texte du message a été supprimé, il ne peut donc pas être renvoyé.",
+        "in_progress": "Un envoi de ce message est déjà en cours.",
+        "idempotency_conflict": "Ce renvoi a déjà été soumis avec des détails différents.",
+        "nothing_to_resend": "Aucun appareil en échec ou expiré à qui renvoyer."
+      }
     }
+  },
+  "endpointChat": {
+    "tabLabel": "Clavardage en direct",
+    "tabTitle": "Chat en direct avec la personne devant cet appareil",
+    "unsupported": "Pas de chat sur cet appareil. Le chat nécessite Breeze Assist dans une session console Windows.",
+    "footer": "L'utilisateur le voit comme une fenêtre de chat. Un chat n'accorde jamais d'accès à distance.",
+    "startHeading": "Démarrer un chat",
+    "firstMessageLabel": "Premier message",
+    "startChat": "Démarrer le chat",
+    "starting": "Démarrage...",
+    "recentHeading": "Chats récents",
+    "empty": "Aucun chat avec cet appareil pour le moment.",
+    "loadFailed": "Impossible de charger les chats.",
+    "loading": "Chargement...",
+    "back": "Retour aux chats",
+    "endChat": "Terminer le chat",
+    "ending": "Fin du chat...",
+    "messageLabel": "Votre message",
+    "send": "Envoyer",
+    "sending": "Envoi...",
+    "openExisting": "Ouvrir le chat existant",
+    "user": "Utilisateur",
+    "technician": "Technicien",
+    "fromUser": "{{name}} (utilisateur)",
+    "undelivered": "Non remis",
+    "status": {
+      "opening": "En attente que l'utilisateur voie la fenêtre de chat...",
+      "open": "Chat ouvert",
+      "closed": "Ce chat est terminé.",
+      "expired": "Ce chat s'est terminé après 30 minutes d'inactivité.",
+      "failed": "Le chat n'a pas pu être démarré."
+    },
+    "statusShort": {
+      "opening": "Ouverture",
+      "open": "Ouvert",
+      "closed": "Terminé",
+      "expired": "Expiré",
+      "failed": "Échec"
+    },
+    "errors": {
+      "chat_requires_assist": "Le chat nécessite Breeze Assist dans une session console Windows.",
+      "agent_unsupported": "L'agent de cet appareil ne prend pas encore en charge le chat.",
+      "device_offline": "L'appareil est hors ligne. Réessayez lorsqu'il sera en ligne.",
+      "platform_unsupported": "Le chat n'est disponible que sur les appareils Windows.",
+      "conversation_active": "Un chat avec cet appareil est déjà en cours.",
+      "rate_limited": "Trop de chats ou de messages envoyés récemment. Réessayez plus tard.",
+      "open_timeout": "L'appareil n'a pas répondu à temps ; le chat n'a donc pas démarré.",
+      "chat_window_failed": "L'appareil n'a pas pu afficher la fenêtre de chat.",
+      "conversation_not_open": "Ce chat n'est plus ouvert.",
+      "feature_disabled": "Le chat n'est pas activé pour cette organisation.",
+      "no_permission": "Vous n'avez pas l'autorisation de discuter avec cet appareil.",
+      "device_not_found": "Cet appareil est introuvable.",
+      "generic": "Un problème est survenu avec le chat. Réessayez.",
+      "open_failed": "Le chat n'a pas pu être démarré. Réessayez.",
+      "send_failed": "Le message n'a pas pu être envoyé. Réessayez.",
+      "close_failed": "Le chat n'a pas pu être terminé. Réessayez."
+    },
+    "updatesPaused": "Mises à jour en direct suspendues — nouvelle tentative en cours",
+    "closeNotAnnounced": "Le chat est fermé ici. La fenêtre de chat de l'utilisateur peut rester ouverte jusqu'à la reconnexion de son appareil ou jusqu'à sa réponse.",
+    "unavailable": "Ce chat n'est plus disponible"
+  },
+  "deviceOverviewState": {
+    "label": "État de l’appareil",
+    "lastCheckIn": "Dernier signalement {{ago}}",
+    "openAlerts_one": "{{count}} alerte ouverte",
+    "openAlerts_other": "{{count}} alertes ouvertes",
+    "openTickets_one": "{{count}} billet ouvert",
+    "openTickets_other": "{{count}} billets ouverts",
+    "noOpenAlerts": "Aucune alerte ouverte",
+    "untitledAlert": "Alerte signalée",
+    "alertsUnavailable": "Impossible de charger les alertes ouvertes",
+    "viewAlerts": "Voir les alertes"
   }
 }

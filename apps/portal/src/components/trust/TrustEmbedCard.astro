@@ -1,0 +1,32 @@
+---
+// Trust Center W03a (#8771): the compact, JS-free card a customer frames on its own website. Shows only what the
+// public card already shows (no controls, documents or method) and links out to the full page in a new tab.
+import type { TrustEmbedCard } from '../../lib/trustEmbed';
+
+interface Props {
+  card: TrustEmbedCard;
+  fullPageUrl: string;            // absolute URL of the full trust page
+}
+const { card, fullPageUrl } = Astro.props;
+const logo = card.logoUrl && card.logoUrl.startsWith('https://') ? card.logoUrl : null;
+const verifiedOn = (card.lastEvaluatedAt ?? card.publishedAt).slice(0, 10);
+---
+<article class="flex items-start gap-3 rounded-lg border bg-card p-4 text-card-foreground" data-testid="trust-embed-card">
+  {logo && <img src={logo} alt="" width="40" height="40" class="h-10 w-10 shrink-0 rounded object-contain" loading="lazy" referrerpolicy="no-referrer" />}
+  <div class="min-w-0 flex-1">
+    <p class="truncate text-sm font-semibold" data-testid="trust-embed-org">{card.orgName}</p>
+    <p class="doc-accent-text text-xs font-medium">Security posture · verified by Breeze</p>
+    <p class="mt-1 text-xs text-muted-foreground" data-testid="trust-embed-summary">{card.summaryLine}</p>
+    <p class="mt-0.5 text-xs text-muted-foreground">
+      Last verified <time datetime={verifiedOn}>{verifiedOn}</time>
+      {card.stale && <span class="ml-1" data-testid="trust-embed-stale">· Verification paused</span>}
+    </p>
+    <a
+      class="mt-2 inline-block text-xs font-medium underline underline-offset-2"
+      href={fullPageUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-testid="trust-embed-link"
+    >View the full trust page</a>
+  </div>
+</article>

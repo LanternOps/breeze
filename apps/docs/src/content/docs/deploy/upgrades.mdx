@@ -149,6 +149,34 @@ docker compose config --quiet
 
 Use the same `-f` options and profiles you normally deploy for validation, pull, and restart so your overrides are included. Validation checks the Compose configuration; it does not prove that a trusted proxy address matches the running proxy.
 
+### v0.123.0 — ECH and retain-state switches, admission control, 25 newly passed API settings
+
+The [v0.123.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.123.0/docker-compose.yml) change the `api` environment:
+
+| Change | Required action |
+|---|---|
+| `AGENT_ECH_ENABLED` and `HEARTBEAT_RETAIN_STATE_ENABLED` are mapped in both files as `${VAR:-true}`. Both accept only `true` or `false`; any other value stops the API from booting. | Nothing for the defaults. Never set `AGENT_ECH_ENABLED=false` casually; see [Agent connection switches](/deploy/environment/#agent-connection-switches). |
+| `BREEZE_ADMISSION_MODE` and its seven `BREEZE_ADMISSION_*` tuning knobs, `AGENT_BODY_RECEIVE_TIMEOUT_MS`, `AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS`, `BREEZE_EDR_ACTIONS_ENABLED`, `TUNNEL_ORIGIN_TEMPLATE`, `TUNNEL_FRAME_ANCESTOR` and the three `LLM_EGRESS_EVENTS_RETENTION_*` settings are mapped in both files as `${VAR:-}`, so unset keeps the built-in default. | Copy the lines into your own Compose file if you want to set any of them. See [Environment Variables](/deploy/environment/). |
+| Both files pass 22 existing variables that Compose used to ignore (25 in the root file): `CF_ACCESS_TRUST_ENABLED`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`, `CF_ACCESS_TRUSTS_MFA`, `CSP_REPORT_URI`, `EMAIL_SUPPORT_ADDRESS`, `GOOGLE_WORKSPACE_ENABLED`, `M365_ENABLED`, `HP_WARRANTY_ENABLED`, `IP_CLASSIFY_PROVIDER`, `IP_CLASSIFY_API_KEY`, the six `MCP_LLM_*` settings, `NVD_API_KEY`, `PARTNER_MEETING_URL`, `PARTNER_TRUST_MODE`, `SENTRY_PROFILES_SAMPLE_RATE` and `STRIPE_ACCOUNT_CACHE_REFRESH_ENABLED`. The root `docker-compose.yml` also gains `APPLE_APP_ATTEST_APP_ID`, `APPLE_APP_ATTEST_ENVIRONMENT` and `PARTNER_HOOKS_URL`. | **A value already in your `.env` now takes effect.** Check `.env` for stale entries before upgrading: a leftover `CF_ACCESS_TRUST_ENABLED=true` without its team domain and AUD, or a malformed `MCP_LLM_*` value, stops the API from booting. `PARTNER_TRUST_MODE` has no effect unless `IS_HOSTED=true`. |
+| `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` is mapped in both files, and `deploy/docker-compose.prod.yml` gains the four `PARTNER_API_*` ticket and idempotency settings from v0.122.1. | Nothing, unless you added your own mapping for them on v0.122.1; keep one. |
+| `MIGRATION_WINDOW_MAX_DAYS`, `MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR` and `MIGRATION_WINDOW_MAX_WRITES_PER_HOUR` are mapped in the root `docker-compose.yml` only in v0.123.0; `deploy/docker-compose.prod.yml` maps them from the next release. | On v0.123.0 with `deploy/docker-compose.prod.yml`, add them to the `api` service's `environment:` block if you need them. The defaults apply without them. |
+| `PUBLIC_ENABLE_ENDPOINT_MESSAGING` is a web **build-time** flag, default off. | Only takes effect in a web image you build yourself. The published web image is built with it off. |
+| `docker/Caddyfile.prod` gains a global `log default { format filter { … } }` block that redacts credential headers and credential query parameters in every Caddy log. | If you maintain your own copy of `Caddyfile.prod`, carry the block over. |
+
+### v0.122.1 — installer token default, 63 newly passed API settings, Partner API ticket settings
+
+The [v0.122.1 Compose files](https://github.com/LanternOps/breeze/blob/v0.122.1/docker-compose.yml) change the `api` environment:
+
+| Change | Required action |
+|---|---|
+| `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` defaults to `10080` (7 days) in both files; it was `1440` (1 day). | Nothing if you want the new default. To keep 1 day, set `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES=1440` in `.env`. Values above `43200` (30 days) are clamped. See [the v0.122.1 notes](#v01221--remote-desktop-clipboard-v2-diagnostic-file-access-partner-api-tickets-restore-integrity). |
+| Both files pass 63 more variables to the API: retention windows, agent ingest quotas and rate limits, screenshot and log-forwarding caps, `DB_POOL_MAX`, the offboarding drain window, the public download key TTL and login lockout. Each is passed as `${VAR:-}`, so an unset value keeps the built-in default. | A value already in your `.env` that Compose used to ignore now takes effect. Check `.env` for stale entries before upgrading. |
+| New optional settings are mapped in both files: `PATCH_REPORT_RETENTION_DAYS`, `PATCH_REPORT_ORPHAN_MIN_AGE_MS`, `DB_POOL_ACQUIRE_TIMEOUT_MS` and `DB_TIMER_LAG_GRACE_MS`. | Copy the lines into your own Compose file if you want to set any of them. See [Environment Variables](/deploy/environment/). |
+| `PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR`, `PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR`, `PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED` and `PARTNER_API_IDEMPOTENCY_RETENTION_DAYS` are mapped in the root `docker-compose.yml` only in v0.122.1; `deploy/docker-compose.prod.yml` maps them from the next release. | On v0.122.1 with `deploy/docker-compose.prod.yml`, add them to the `api` service's `environment:` block if you need to change them. The defaults apply without them. |
+| `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` is not passed to the api container by either v0.122.1 Compose file; both map it from the next release. | On v0.122.1, add it to the `api` service's `environment:` block if you want to change the default of `3`. |
+| The `BREEZE_AI_SCRIPT_REVIEWER_MODEL` mapping is removed; the API no longer reads it. | Delete it from your own Compose file and `.env`. |
+| `docker/Caddyfile.prod` gains a `@webBillingAutopay` matcher that sends `/billing/autopay*` to the web app, ahead of the `/billing/*` route. | If you maintain your own copy of `Caddyfile.prod`, carry the matcher over, or the automatic-payment pages are routed to the wrong service. |
+
 ### v0.121.0 — new optional AI and enrollment settings; production Compose catches up
 
 The [v0.121.0 Compose files](https://github.com/LanternOps/breeze/blob/v0.121.0/docker-compose.yml) change the `api` environment:
@@ -216,15 +244,194 @@ Before upgrading a proxy-fronted deployment to **v0.103.0 or later**, verify tha
 
 ## Version-specific notes
 
-### v0.122.0 — legacy AI model settings removed
+### Next release — legacy AI model columns archived and dropped
 
-The AI model registry (AI Providers & Models) has been the only source of AI model decisions since v0.121.0. This release deletes what it replaced.
+This release drops the storage behind the AI settings retired in v0.122.1: the `partner_llm_configs` table, the per-policy model fields (`ai_budgets.allowed_models`, `ai_script_policies.reviewer_model`, `client_ai_org_policies.allowed_models`, `ai_agents.model`), the per-connection legacy default model (`partner_ai_connections.legacy_default_model`), the one-Anthropic-connection index and the cutover-sweep bookkeeping table (`ai_model_registry_state`). Nothing in Breeze has read them since v0.122.1; a report, BI query or integration that still selects them directly fails after this upgrade. Read AI configuration from AI Providers & Models instead.
 
-- **`/api/v1/ai/provider` is gone.** Use `/api/v1/ai/models`: `GET /ai/models`, `POST /ai/models/connections`, `POST /ai/models/connections/:id/key`, `POST /ai/models/connections/:id/endpoint`, `DELETE /ai/models/connections/:id`, and `PUT /ai/models/assignments` for per-feature defaults. Requests to the old paths return 404.
-- **Retired request fields are rejected with HTTP 400** that names the field and its replacement: `reviewerModel` on both script-policy endpoints, `allowedModels` on the AI for Office organization policy, and `model` on AI agent create/update/preview (send `offeringId`). They were already ignored; a client that kept sending them now gets an error instead of a silent no-op. The GET responses no longer include them.
-- **`BREEZE_AI_SCRIPT_REVIEWER_MODEL` and `WORKSPACE_CONTENT_LLM_MODEL` are no longer read.** Remove them from your `.env`. New partners start every feature on the platform default model (`ANTHROPIC_MODEL`, else the default set on Admin → AI models); change any feature under AI Providers & Models.
-- **Skipping releases:** the one-time conversion of legacy AI settings into the registry ran only in v0.121.0. If you upgrade straight from an older release, each partner is set up from the platform default instead; a partner that had its own Anthropic key keeps using that key, but its legacy per-feature choices (script reviewer, AI for Office, AI agent allowlists) are not carried over. Set them again under AI Providers & Models. The next release archives the old values before it drops them (see the next section when it ships).
-- **Database:** no schema change in this release. The legacy table and columns are dropped in the following release, after their values are archived.
+- **Archived first, never refused.** The migration copies every value it drops into a new table, `ai_model_registry_legacy_archive`, and logs the per-source counts as `[auto-migrate]` warnings. It never stops the upgrade because of tenant data: a column that is already gone is skipped and reported.
+- **API keys are not archived.** Live keys are in the registry's connections. The legacy table's copies, including keys partners had since disconnected, are destroyed with the table.
+- **A partner can now hold more than one Anthropic connection** (for example, a second key for another region or cost centre). Only the first one takes over the features that were on the Breeze platform key; models discovered on a later connection arrive disabled until you assign them.
+- **Rolling back.** v0.123.0 reads none of the dropped objects. As with any release that adds a table, an install with a built-in extension enabled refuses to boot an older image while a table it does not know exists, so plan a rollback there as a database restore. Restoring the dropped data itself always needs a database backup taken before the upgrade.
+
+To see what was archived for your deployment:
+
+```sql
+BEGIN READ ONLY;
+SELECT set_config('breeze.scope', 'system', true);
+SELECT source_table, source_column, count(*) AS rows,
+       count(*) FILTER (WHERE NOT had_cutover) AS never_migrated
+  FROM ai_model_registry_legacy_archive GROUP BY 1, 2 ORDER BY 1, 2;
+ROLLBACK;
+```
+
+`never_migrated` counts values whose partner had no registry configuration when the archive ran (only possible on an install that skipped v0.121.0); re-enter those choices under AI Providers & Models.
+
+### v0.123.0 — agent ECH, ticket types, customer work approval, Update Ring app rules
+
+<Aside type="caution" title="The Update Ring backfill can add rings, and can stop the upgrade">
+  `2026-12-26-230000-ring-app-rules-backfill.sql` moves per-app block and pin rules from configuration-policy patch links onto Update Rings. It may create rings named `<policy> — app rules` and clone rings named `<ring> — <policy>`, and it **aborts the migration, so the API does not boot,** if a rule it would move has a package id with non-ASCII characters, or if a ring already carries different non-empty rules. Read [Update Ring app-rules backfill](#update-ring-app-rules-backfill) below before upgrading.
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. Back up the database.
+2. Check `.env` for stale entries that Compose used to ignore and now passes to the API, especially `CF_ACCESS_*` and `MCP_LLM_*` (see [Compose file changes](#v01230--ech-and-retain-state-switches-admission-control-25-newly-passed-api-settings)).
+3. Upgrade the server. Check how your install pins its images with `grep '^BREEZE_API_IMAGE_REF=' .env`:
+   - **Digest-pinned** (the value ends in `@sha256:…`; every `guided-setup.sh` install since v0.112.0): fetch the current `guided-setup.sh` from `main`, then run `bash guided-setup.sh --upgrade 0.123.0`. It verifies the signed image inventory, updates `BREEZE_VERSION` and all four image digests, then pulls and restarts. Don't edit only `BREEZE_VERSION` on a digest-pinned install; that re-pulls the images you already run.
+   - **Tag-form** (the value ends in `:${BREEZE_VERSION}`): set `BREEZE_VERSION=0.123.0`, then run `docker compose pull api web portal && docker compose up -d`.
+4. `--upgrade` does not change your `docker-compose.yml`. To set any of this release's new optional variables, add them to the `api` service's `environment:` block, or take the v0.123.0 Compose file, which already maps them. A value only in `.env` does not reach the API.
+5. Watch the API start log for warnings containing `ring_app_rules_backfill <metric>=<n>` and for `[auto-migrate] Applied 51 migration(s)` (from v0.122.1; an older install applies more).
+6. Let agents, Breeze Assist and Breeze Viewer update to 0.123.0. Encrypted Client Hello, heartbeat retain-state, the watchdog install retry, workload inventory and the viewer's **Physical keys** mode need this release's agent.
+</Steps>
+
+#### Stricter than before
+
+No default was flipped for existing installs, but four changes can surface on an install with pre-existing bad data or a custom setup:
+
+- **Update Ring app-rules backfill** can stop the API from booting (see [below](#update-ring-app-rules-backfill)).
+- **A patch policy linked to an invalid or cross-partner Update Ring fails closed.** Per-app rules now come from the linked ring only, and such a policy denies every patch candidate with `ring_reference_invalid`; the policy's Patch tab offers a repair prompt. A policy with no ring and a manual approval stays approved. Saving a changed `apps` list, or a newly set `autoApprove: true`, on a policy patch link returns 400 `APPROVAL_RULES_MOVED_TO_RING`; reload a stale tab. See [Patch Management](/features/patch-management/).
+- **Windows MSI downloads are verified on every binary source.** With `BINARY_SOURCE=local`, the MSI is checked against the signed manifest pair at the binaries volume root and `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS`. A volume with no staged manifest pair, a manifest older than v0.105.0, or no `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` now gets `503 MSI not available`. `BINARY_SOURCE=github` without a manifest key also refuses instead of serving an unverified MSI. See [Verify installer](/deploy/verify-installer/).
+- **Device filter values outside their allowed set return 400**, naming the allowed values, instead of being dropped. Before, `osType notEquals "Windows"` with a bad value could widen a target to every device. A stored deployment target or dynamic group rule with such a value now fails visibly.
+
+#### Behaviour changes and feature flags
+
+- **Agent Encrypted Client Hello.** Some ISP gateway filters (CUJO-based ones such as Comcast xFi Advanced Security and Spectrum Security Shield) match the Breeze hostname in the TLS SNI and answer with a plaintext redirect, so the agent logs `tls: first record does not look like a TLS handshake`. With this release's agent, a device that sees that filter twice in 10 minutes retries with the hostname encrypted. ECH engages only when your API hostname's DNS publishes an `ech=` HTTPS record (for example a Cloudflare-proxied hostname); a self-hosted edge without one stays plain, and the device's `control_plane` health component reports the filter. Not covered: HTTP-proxied agent connections and the `install.sh` / PowerShell installer downloads. A device opts out with `ech: false` in `agent.yaml`. `AGENT_ECH_ENABLED=false` is the server-wide switch and a last resort: devices that can only connect over ECH go offline and cannot receive the setting back. See [Encrypted Client Hello](/agents/advanced-install/#encrypted-client-hello-ech).
+- **Agent admission control ships observe-only.** `BREEZE_ADMISSION_MODE` (`off | observe | enforce`) defaults to `observe`: the API counts the low-priority agent telemetry and WebSocket upgrades it would refuse (`breeze_admission_*` metrics) and refuses nothing. Set `enforce` once the counters look right for your fleet. Heartbeats and recovery traffic are never refused. See [Agent admission control](/deploy/environment/#agent-admission-control).
+- **Heartbeat retain-state.** `HEARTBEAT_RETAIN_STATE_ENABLED` defaults to `true`; agents that support it keep their PAM, Breeze Assist and remote-management state on a heartbeat where the server could not decide that setting.
+- **Agent request bodies are received before a database connection is held.** A stalled upload gets 408 instead of pinning a pooled connection (`AGENT_BODY_RECEIVE_TIMEOUT_MS`, `AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS`). Agent WebSocket credential re-checks keep the socket open for up to 120 s when the database cannot answer, instead of closing it with `4001`.
+- **Several API instances:** a write on one instance drops the matching cached setting on every instance within about a second through Redis, instead of waiting out the 60 s / 5 min cache lifetime.
+- **Endpoint messaging is hidden.** The three **Send message** entry points sit behind the web build-time flag `PUBLIC_ENABLE_ENDPOINT_MESSAGING`, default off, and the server side also needs a per-device rollout flag that is off. The `endpoint_messages:send` and `endpoint_messages:read` permissions are granted on upgrade to Org Admin, Org Technician and Partner Technician.
+- **Caller verification is dark.** Every route answers 404 and every web surface is hidden unless `CALLER_VERIFICATION_ENABLED=true` (default `false`). Nothing enforces a verification in this release.
+- **EDR response actions** (isolate, release, scan) are off for every connection; only a partner admin with MFA can turn them on, through the API in this release. `BREEZE_EDR_ACTIONS_ENABLED` is the server-wide off switch. See [EDR provider framework](/features/edr-provider-framework/).
+- **System Protection** is server side only. The new policy tab and outcome badges are live, but checkpoint creation ships with a later agent release; until then every attempt reads **Awaiting the device**. See [Configuration Policies](/features/configuration-policies/).
+- **Off by default:** customer work approval, workload inventory enumeration (including Hyper-V and Proxmox), the portal toggles for EDR visibility, support hours, patch detail and vulnerability detail (only EDR visibility is included in **Enable all**), the Network Proxy dedicated tunnel origin, and mobile *Location suggestions*.
+- **Patch compliance counts out-of-date container images** on devices with workload inventory on: a stale image counts as pending, a current one as installed, and unchecked images never count. Each partner gains a built-in `container_image_out_of_date` monitor (low severity, not attached to any policy). See [Workload Inventory](/features/workload-inventory/).
+- **Tag-targeted compliance policies evaluate again, observe-only.** They write compliance rows but run no remediation and publish no `policy.*` events.
+- **Automation targets are validated.** An unknown target type, an empty group or device list, or ids from another organization are rejected; partner-wide automations reject `groups` and `devices` targets. A stored broken target makes the run `failed` with the reason in its log instead of reaching every device in the organization.
+- **DNS filtering:** domains left unsynced by an earlier release reach the provider on that policy's next sync; you no longer need to remove and re-add them.
+- **Security & Compliance Posture report** coverage percentages use assessed devices as the denominator and exclude decommissioned devices. Expect larger "not assessed" counts on fleets with offline devices.
+- **Breeze Viewer:** in the default **Type what I see** keyboard mode the viewer no longer sends physical key codes; the remote resolves keys through its own layout. Choose **Physical keys** for numpad and right-modifier distinctions. See [Remote Access](/features/remote-access/).
+- **Session Timeout** can be set up to 12 hours; writes above 720 minutes are rejected and a stored value above 720 is enforced as 720.
+- **API contract changes:** `GET /backup/snapshots/:id/browse` returns one directory level per request (`dir`, `limit`, `cursor`; entries no longer carry `children`). `POST /tunnels/:id/http-ticket` returns `{ ticket, url, mode }` and rejects a `mode` other than `frame` or `tab`. A request carrying `x-breeze-tunnel-site` gets 421 unless it is for a tunnel host with the dedicated origin on.
+- **`breeze-agent enroll --site-id` is deprecated** and ignored; the site comes from the enrollment key. Scripts that pass it keep working and print a warning.
+- **Trust Center** needs no configuration and no ingress change: public pages use the existing `/portal` route. If your proxy strips `X-Forwarded-Proto` / `X-Forwarded-Host`, canonical URLs fall back to the internal origin. See [Trust Center](/security/trust-center/).
+
+#### Environment variables
+
+**No new required variables.** New optional: `AGENT_ECH_ENABLED`, `HEARTBEAT_RETAIN_STATE_ENABLED`, `BREEZE_ADMISSION_MODE` and its tuning knobs, `AGENT_BODY_RECEIVE_TIMEOUT_MS`, `AGENT_BODY_RECEIVE_TOTAL_TIMEOUT_MS`, `BREEZE_EDR_ACTIONS_ENABLED`, `LLM_EGRESS_EVENTS_RETENTION_DAYS` / `_BATCH_SIZE` / `_MAX_BATCHES`, `TUNNEL_ORIGIN_TEMPLATE`, `TUNNEL_FRAME_ANCESTOR`, the three `MIGRATION_WINDOW_*` settings, and the web build-time flag `PUBLIC_ENABLE_ENDPOINT_MESSAGING`. `AGENT_ECH_ENABLED` and `HEARTBEAT_RETAIN_STATE_ENABLED` accept only `true` or `false`; a malformed `TUNNEL_ORIGIN_TEMPLATE`, or one that shares a registrable domain with an app origin, also stops the API from booting. See [Environment Variables](/deploy/environment/).
+
+#### Migrations
+
+51 idempotent migrations apply on boot when upgrading from v0.122.1 (`[auto-migrate] Applied 51 migration(s)`); none of the earlier files were modified or removed. Most DDL is additive: new tables for restore-point attempts, operator plan approvals, caller verification links, migration windows, topology presence, ticket links, LLM egress rollups, connection health incidents, EDR actions, trust pages, the service catalog and org evidence holds. No migration adds a `NOT NULL` column without a constant default.
+
+##### Update Ring app-rules backfill
+
+`2026-12-26-230000-ring-app-rules-backfill.sql` is a data migration. It moves per-app block and pin rules from configuration-policy patch links onto Update Rings, normalised the way the runtime does:
+
+- A link with no ring that carries rules gets a **new ring** named `<policy> — app rules`, which approves nothing.
+- Where the policies sharing one ring disagree, the ring keeps one set, and each other set gets a **clone** named `<ring> — <policy>` with that ring's patch approvals copied. These rings appear in the Update Rings list.
+- Links to an invalid ring are skipped and counted; those policies now fail closed (`ring_reference_invalid`).
+- It **aborts the migration, and the API does not boot,** if a rule it would move has a package id with non-ASCII characters, or if a ring already carries different non-empty rules. The error names the policy feature link or the ring: edit that rule, or make the ring's rules match, then restart (see [Migration Failure Recovery](#migration-failure-recovery)). On a successful run the API start log has warnings containing `ring_app_rules_backfill <metric>=<n>` with the counts.
+- Policy-level auto-approve is not converted. While it relinks, it briefly locks the affected partners and their organizations.
+
+##### Other migrations worth knowing about
+
+- **PAM org-move trigger** (`2026-12-27-170000`). Restamps only un-actuated elevation requests when a device moves organization. Fixes org moves that aborted with error 42501.
+- **Backfills over existing rows:** `device_epoch` is set on existing elevation requests and PAM actuations, then three foreign keys are validated (a scan of those tables); every time-entry line on a **draft** invoice is marked as hand-edited, so **Refresh from time entries** never overwrites a description that existed before the upgrade (issued and void invoices are untouched); the endpoint messaging permissions are granted as described above.
+- **Concurrent index builds** on `discovery_jobs`, `organization_users`, `automations`, `tickets`, `ticket_comments`, `ticket_external_refs` and `device_commands` wait for long-running transactions and don't block writes. If one of the `discovery_jobs`, `organization_users`, `automations` or ticket builds is interrupted, the next start refuses with an "INVALID index" message naming the index: run `DROP INDEX CONCURRENTLY <name>;` and restart. The `device_commands` build has no such check: after an interrupted start, check `idx_device_commands_set_log_level_device_completed` for `indisvalid = false` and drop it if so.
+- **`metric_rollups` partitions** get tighter autovacuum-analyze settings (does not block reads or writes), and the audit-chain verify functions are replaced in place.
+- **One-way enum additions** (Postgres cannot drop an enum value): `config_feature_type` `system_protection` and `security_agents`, `security_provider` `unknown`, `monitor_kind` `container_image_currency`, `notification_type` `integration`, and the new ticket type enum.
+
+#### Known gaps
+
+- **Workload inventory on Docker with the containerd image store** misclassifies a locally built image as "Not checked / private registry" instead of "Local build" ([#8993](https://github.com/LanternOps/breeze/issues/8993)). Fix planned for the next release.
+- **Caller verification**, if you enable it: on a deployment with no email transport, a rejected workstation verification is retried every 5 s ([#8998](https://github.com/LanternOps/breeze/issues/8998)). Leave the flag off, as shipped, or configure email first.
+- **PAM on an RDS session host:** the on-demand helper lifecycle leaves no SYSTEM helper, so elevation never completes unless `helper_lifecycle_mode: always-on` is set in `agent.yaml` ([#8996](https://github.com/LanternOps/breeze/issues/8996)). Pre-existing.
+
+### v0.122.1 — remote desktop clipboard v2, diagnostic file access, Partner API tickets, restore integrity
+
+<Aside type="caution" title="v0.122.0 was never released">
+  The v0.122.0 tag and container images exist, but one of its migrations fails on installations that have security policy links. Upgrade from v0.121.x straight to v0.122.1, and don't deploy v0.122.0. If you already started v0.122.0 and the API keeps restarting with `cannot ALTER TABLE "config_policy_feature_links" because it has pending trigger events`, move to v0.122.1: the failed migration rolled back, and v0.122.1 applies the corrected file.
+</Aside>
+
+<Aside type="caution" title="Roll forward only for installers">
+  Installer bootstrap tokens are stored as a keyed hash (using `ENROLLMENT_KEY_PEPPER`) from the first start. A background sweep hashes existing tokens and logs `[startup] Installer bootstrap tokens hashed: X/Y token(s) …`. After that, rolling back strands every installer issued since the upgrade, and the older tokens the sweep hashed stop working on the old version too. Re-issue installers if you roll back. Rotating `ENROLLMENT_KEY_PEPPER` now invalidates every outstanding installer link and every downloaded installer that has not enrolled yet.
+</Aside>
+
+**Upgrade order.**
+
+<Steps>
+1. Back up the database. Avoid a database backup window for the upgrade itself (see Migrations below).
+2. Update agents and rebuild recovery media to v0.120.0 or later, if you have not already: restores from older backup helpers are refused once the server is on v0.122.1.
+3. Review partner service principals: remove `tickets:*` scopes that should not be live, and have each principal's owner rotate any key another admin issued (details below).
+4. Upgrade the server: `bash guided-setup.sh --upgrade 0.122.1` on a digest-pinned install (fetch the current `guided-setup.sh` from `main` first), or set `BREEZE_VERSION=0.122.1` and run `docker compose pull api web portal && docker compose up -d`.
+5. Merge the [Compose file changes](#v01221--installer-token-default-65-newly-passed-api-settings-partner-api-ticket-settings) if you maintain your own Compose file.
+6. Let agents, Breeze Assist and Breeze Viewer update to 0.122.1. Clipboard v2, diagnostic file access and identity sync after a device move need this release's agent.
+</Steps>
+
+#### Breaking changes
+
+- **Legacy AI model settings removed.** The AI model registry (AI Providers & Models) is now the only AI model configuration.
+  - `/api/v1/ai/provider` is gone (404). Use `/api/v1/ai/models`: `GET /ai/models`, `POST /ai/models/connections`, `POST /ai/models/connections/:id/key`, `POST /ai/models/connections/:id/endpoint`, `DELETE /ai/models/connections/:id`, and `PUT /ai/models/assignments` for per-feature defaults. See the [API reference](/reference/api/#ai-model-registry).
+  - Retired request fields are rejected with HTTP 400 that names the field and its replacement: `reviewerModel` on both script-policy endpoints, `allowedModels` on the AI for Office organization policy, and `model` on AI agent create/update/preview (send `offeringId`). They were already ignored; GET responses no longer include them.
+  - `BREEZE_AI_SCRIPT_REVIEWER_MODEL` and `WORKSPACE_CONTENT_LLM_MODEL` are no longer read. Remove them from `.env`. New partners start every feature on the platform default model (`ANTHROPIC_MODEL`, else the default set on Admin → AI models).
+  - **Skipping releases:** the one-time conversion of legacy AI settings into the registry ran only in v0.121.0. If you upgrade straight from an older release, each partner is set up from the platform default instead; a partner with its own Anthropic key keeps using it, but its legacy per-feature choices (script reviewer, AI for Office, AI agent allowlists) are not carried over. Set them again under AI Providers & Models.
+  - No schema change for this in v0.122.1. The legacy table and columns are archived and dropped in the next release.
+- **Restores need a v0.120.0 or later backup helper.** Restores that write, import or boot a backup (file, SQL Server, Hyper-V, restore as VM, instant boot, bare-metal recovery and rebuild) are refused for devices whose backup helper cannot check restores against snapshot attestations, with "Update the Breeze agent on this device, then try again." Recovery media and recovery tools older than v0.120.0 are refused. Verification and test restores are unchanged. Snapshots taken before attestations existed show as **Not verified**; restoring one needs a technician's two-factor confirmation, and AI tools and DR plans refuse them. See [Integrity checks on restore](/backup/restoring/#integrity-checks-on-restore).
+- **Partner API `tickets:*` grants take effect.** v0.121.x let admins grant `tickets:read` and `tickets:write` to a partner service principal before the ticket routes existed. This release adds the routes (`/api/v1/partner-api/tickets*`), and a principal that already holds those scopes can use them immediately: `tickets:read` reads every ticket and comment, including internal notes, in every organization the principal reaches, and `tickets:write` creates and updates tickets and posts comments, including customer-visible replies that email the requester. Before upgrading, review which principals hold `tickets:*` (Settings → Partner Service Principals) and remove the scopes where they don't belong. Scopes granted before the upgrade are not re-checked against the granting admin's own permissions.
+- **Partner service principal keys belong to the principal's owner.** Only the admin who created a principal can issue or rotate its keys, re-enable it, add a scope, or widen its expiry or source-CIDR restriction; other partner-wide admins get `403` but can still revoke keys, disable the principal, remove scopes and rename it. Every scope is a delegation the granter must hold. Keys stop when the owner's password is changed or reset, the owner's account status or MFA factors change, or the owner is removed from the partner; signing out does not stop them. Existing keys are bound to their owner's current state on upgrade and keep working.
+  - Over MCP, a key that another admin issued on someone else's principal is refused until the owner rotates it (the Partner API keeps accepting it). Have principal owners rotate such keys before upgrading.
+  - **Plan for owner off-boarding:** an integration whose principal belongs to a departing admin stops when that admin is disabled or removed. Create a replacement principal under another admin first.
+  - Organization API keys: only a key's creator can rotate it (`403` for anyone else, who can still revoke it).
+  - **Rolling deploys:** API containers still on v0.121 cannot issue or rotate service principal keys once the migration has run.
+  - See [Who can manage a partner service principal](/reference/api-keys/#who-can-manage-a-partner-service-principal).
+- **New `webhooks:read` permission.** Viewing webhooks and their delivery history (the Webhooks tab, `GET /webhooks*` and the assistant's `query_webhooks` tool) needs `webhooks:read` instead of `organizations:read`; managing them still needs `organizations:write`. Org Admin, Org Technician, Partner Technician and any custom role with `organizations:write` receive it on upgrade. **Partner Viewer, Partner Security Approver and any custom role with `organizations:read` but not `organizations:write` lose webhook visibility** until an administrator adds `webhooks:read` under Settings → Roles. The migration logs a `webhooks-read-permission:` warning with the count and up to 20 names of the affected custom roles. The delivery list no longer returns delivery `payload` or `responseBody`. See [Webhooks](/features/webhooks/).
+
+#### Other behaviour changes
+
+- **Installer bootstrap tokens default to 7 days and last at most 30 days.** `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` defaults to `10080` in code and both Compose files (it was `1440` under Compose); values above `43200` are clamped with a startup warning. An explicit `ttlMinutes` above `43200` on the installer download or `POST /enrollment-keys/:id/bootstrap-token` returns `400`. The Add Device Installer tab offers up to 30 days. Installer links and enrollment keys still accept up to a year, but each installer downloaded from a link carries a token of at most 30 days. Installers already downloaded keep their expiry. See [Installer Bootstrap Tokens](/agents/enrollment-keys/#installer-bootstrap-tokens).
+- **Patch compliance report files are kept for 30 days**, then removed by a daily job; the report shows as `expired` and its download returns 410. Set `PATCH_REPORT_RETENTION_DAYS` to change the window. On the first run after upgrading, existing reports older than the window are expired.
+- **Diagnostic file access** lets the AI assistant list and read approved folders on one device, read-only and time-boxed, after an administrator approves. Credential material is never grantable, file content is redacted for secrets, and a sole operator approving their own request must use a passkey or Breeze Authenticator. Diagnostic reads need agents from this release. See [Diagnostic File Access](/features/diagnostic-file-access/).
+- **AI for Office prompt templates have their own permissions**, `client_ai_templates:read` and `client_ai_templates:write`, replacing `organizations:read` / `organizations:write` on the template manager. Roles holding `organizations:read` receive read and roles holding `organizations:write` receive write on upgrade, which gives the built-in Org Admin new write access. Org Technician and Org Viewer get neither. Template changes also require MFA when your MFA policy requires it.
+- **Second-factor confirmations.** Approving an audit baseline apply request requires an MFA session when `ENABLE_2FA` is on (API keys cannot approve), and is refused with 409 when a target device has since been decommissioned, deleted or moved. **Charge now**, saving payment settings when a value changes, and sending an automatic-payment request to an address other than the billing contact ask for a fresh authenticator code or passkey from a signed-in session. Closing a remote tunnel needs `devices:execute`, `remote:access` and MFA; fleet findings status changes need MFA; opening the live event stream needs `devices:read`.
+- **CIS hardening and IOC auto-quarantine run under an approving user.** Editing CIS baselines or remediations and turning on IOC auto-quarantine need `devices:execute` and MFA. An existing schedule keeps running while its creator is active and holds `devices:execute`; otherwise it pauses with "Needs re-approval", an IOC scan runs detect-only, and a remediation returns to pending approval until someone with `devices:execute` and MFA saves it again. Approved CIS remediations not dispatched within 7 days return to pending approval.
+- **Automatic payments run only for active partners.** For a suspended, churned, offboarding, pending or deleted partner, enrollment, charges, retries and card-expiry emails stop for all of its clients; stop and skip links keep working. An invoice's **Reset link** also revokes the automatic-payment links sent for it. An invoice over the client's automatic-payment limit is refused before anything is created at Stripe. See [Online Payments](/features/online-payments/).
+- **Device purge and organization erasure keep backup objects in storage.** Storage cleanup no longer deletes them later, including those past retention, so storage is not reclaimed on purge or erasure. A legal hold on a backup or configuration policy blocks purge and erasure (`409`). Organization erasure now completes for an organization that is in use.
+- **Deleting a role that an access review covered returns 409** ("Role is referenced by access reviews"). Deleting a notification channel keeps the delivery history it produced, and deleting a maintenance window removes all of its occurrences.
+- **Moved devices take their new organization and site** through a signed identity update and restart their agent once, after a random 0–60 s delay. This needs a deployment signing key. The server creates one the first time it signs anything: registering its own agent binaries (`BINARY_SOURCE=local`), issuing an agent rollback, or approving a diagnostic file access grant. Until then (the usual state on the default `BINARY_SOURCE=github`) a moved agent keeps its enrolled organization and site, as before, and the API logs a one-time warning. Agents with `BREEZE_ORG_ID` / `BREEZE_SITE_ID` in their environment cannot take the new identity; they retry the restart at most twice and then stop.
+- **Bounded database pool waits.** A request queued behind a saturated pool now fails after `DB_POOL_ACQUIRE_TIMEOUT_MS` (default 10000; `0` restores the unbounded wait), logged as `[db-pool-acquire]`. Workers may show more job retries under saturation. With `DB_POOL_MAX` below 3 the API logs a warning at startup.
+- **Several API instances:** some organization and partner settings (agent update policy, version pins, topology flags, helper settings, policy probe, PAM fallback) are cached per API process for up to 60 s, and the remote-management relay setting for up to 180 s. The instance that handled a change applies it immediately. A reinstated device or tenant can take up to 60 s to be accepted again.
+- **Breeze Assist** starts hidden in the tray when the agent starts it, its tray menu no longer has **Exit**, and the `showTrayIcon` policy option is removed. The Helper API returns 403 for a device whose effective Helper setting is off.
+- **Breeze Viewer shortcuts** move to a prefix chord: Ctrl+Alt+Shift+F/V/R on Windows and Linux, ⌃⌥⌘F/V/R on macOS (fullscreen, paste as keystrokes, release stuck keys), so Ctrl/Cmd+Shift+V and +F reach the remote.
+- **Add Device:** the Windows install one-liner enrolls before installing the service and no longer ends with `service start`. On split deployments the install command uses `PUBLIC_API_URL` (else `API_URL`) from the API, so set `PUBLIC_API_URL` on the API when the dashboard and API are on different hosts. With object storage configured, watchdog downloads stream through the API instead of redirecting.
+- **Enrollment keys** with an `expiresAt` in the past are refused with 400. Discovery profiles with a subnet larger than /16 need deep scan.
+- **Cloudflare Gateway DNS Security** tokens also need **Account Analytics: Read**. DNS filtering policy edits now reach providers; changes left pending by an earlier release are not pushed automatically, so remove and re-add those domains (see [DNS Security](/features/dns-security/)). Sending-domain auto-suspension now runs; on self-hosted installs it is on only if you set an `EMAIL_DOMAINS_AUTOSUSPEND_*` variable.
+- **Microsoft 365 Customer Graph executors you run yourself** must be updated to images that serve `POST /v1/verify-identity` (read and actions) **before** you upgrade the API, or onboarding fails as `executor_unavailable`. A consent in progress during the upgrade must be restarted. On Azure Container Apps, executors can bind to loopback with `M365_GRAPH_READ_EXECUTOR_BIND_HOST=127.0.0.1` / `M365_GRAPH_ACTIONS_EXECUTOR_BIND_HOST=127.0.0.1`.
+- **Email:** customer-facing mail uses your company name as the display name when `EMAIL_FROM` is a bare address; an `EMAIL_FROM` with its own display name is sent unchanged.
+- **Webhooks and automations** receive `ticket.commented` for customer email replies. The assignee notification for a new ticket arrives on the next outbox pass, about 5 seconds later.
+- **Linux patches on deferred update rings** start auto-approving once the deferral has passed since the device first reported the patch. Windows and macOS patches with no release date still wait for manual approval.
+- **Policy assignment ties:** when two configuration policy assignments tie on every ranking key, the earliest-created now wins. A device decided by an exact tie may change once after the upgrade.
+- **Metric anomaly episodes** need three 5-minute buckets (`METRIC_ANOMALY_EPISODE_MIN_BUCKETS`, was 2), and RAM growth opens one only on a new 7-day high.
+- **Helper screenshot cleanup catches up:** the first retention run deletes expired screenshots and orphaned files that accumulated before. With several API containers, each sweeps only its own local files.
+- **Quotes** use the partner's Settings → Branding logo and colours; contract PDFs generated from now on may paginate slightly differently. Hardware lines without a SKU or part number are left out of the parts order.
+- **Time capture settings:** Settings → Ticketing → Time capture used to show both suggestion toggles as off and save those defaults back over the stored values. If you saved that card on an earlier version, re-check "Suggest time entries from remote sessions" and its thresholds.
+- **Building the agent from source needs Go 1.26.9.** With the default `GOTOOLCHAIN=auto`, `go build` fetches it; with `GOTOOLCHAIN=local`, install it first. Pre-built agent binaries need no action.
+
+#### Environment variables
+
+**No new required variables.** New optional: `PATCH_REPORT_RETENTION_DAYS`, `PATCH_REPORT_ORPHAN_MIN_AGE_MS`, `DB_POOL_ACQUIRE_TIMEOUT_MS`, `DB_TIMER_LAG_GRACE_MS`, `PARTNER_API_TICKET_WRITE_RATE_LIMIT_PER_HOUR`, `PARTNER_API_TICKET_WRITE_PARTNER_RATE_LIMIT_PER_HOUR`, `PARTNER_API_IDEMPOTENCY_RETENTION_ENABLED` and `PARTNER_API_IDEMPOTENCY_RETENTION_DAYS`. Changed default: `INSTALLER_BOOTSTRAP_TOKEN_TTL_MINUTES` (`10080`, capped at `43200`) and `METRIC_ANOMALY_EPISODE_MIN_BUCKETS` (`3`). Changed meaning: `MCP_UNATTENDED_TIER3_PRINCIPALS` also accepts `partner_sp:<principal id>`. No longer read: `BREEZE_AI_SCRIPT_REVIEWER_MODEL`, `WORKSPACE_CONTENT_LLM_MODEL`. See [Environment Variables](/deploy/environment/) and the [Compose file changes](#v01221--installer-token-default-65-newly-passed-api-settings-partner-api-ticket-settings).
+
+#### Migrations
+
+76 idempotent migrations apply on boot (`[auto-migrate] Applied 76 migration(s)`). A 77th file, under `migrations/preflight/`, is a read-only check for the next release's legacy AI drop and is never applied automatically. Most DDL is additive: new tables (diagnostic access grants, backup restore authorizations, Partner API idempotency keys, EDR providers, device ownership history, reliability baselines, physical placements, contact roles, fix memory and others), new columns, the new permissions above, and RLS policy updates.
+
+- **Brief exclusive locks: avoid a backup window.** The `2026-12-13-110000`, `-110100` and `-110200` migrations redefine foreign keys on child tables of `users`, `devices`, `alerts`, `tickets`, `roles` and others. Each swap briefly takes an ACCESS EXCLUSIVE lock on the child and the parent table and waits at most 5 s for it. If a long-running reader (a large report, a `pg_dump`) holds one of those tables, the migration stops, the API fails to boot with a lock-timeout error, and it re-applies cleanly on the next restart. No data is rewritten; the new constraints are validated afterwards without blocking writes. The `time_entries`, `tickets`/`ticket_parts` and `sites` column migrations use the same 5 s lock timeout.
+- **`audit_logs` index and validation scan.** `2026-12-05-110100-audit-logs-partner-scope-index.sql` builds an index with `CREATE INDEX CONCURRENTLY` and then validates a constraint. Audit writes continue, but on a large `audit_logs` table this can add minutes to the first boot. If the build is interrupted, the next start refuses with an "INVALID index" message: run `DROP INDEX CONCURRENTLY audit_logs_partner_scope_idx;` and restart. Partner-level audit events recorded before the upgrade stay hidden.
+- **Other concurrent index builds** on `remote_sessions`/`tunnel_sessions`, `tickets`, `time_entries` and `sites` wait for long-running transactions and don't block writes. If one is interrupted, the next start names the index; drop it with `DROP INDEX CONCURRENTLY <name>;` and restart.
+- **Backfills.** Network-monitor alerts are rewritten so endpoints show as scheme and host (each rewritten alert is re-delivered once on the Partner API alerts feed); one ownership row is created per existing device, in batches; report run ownership is copied from each report, briefly holding report generation; contact roles are back-filled from existing contacts; existing partner service principal keys are bound to their owner's current state; grandfathered CIS and IOC approvals are logged with counts.
+- **`backup_configs.encryption_key` is dropped.** The column has no writer. If any row still holds a value, the migration refuses and the API does not boot (`refusing to drop backup_configs.encryption_key: N row(s) still hold a non-null value`). Review and clear those rows, then restart.
+- **New permissions** granted to roles as described above: `webhooks:read`, `client_ai_templates:read` / `:write`, `sites:set_location` (Partner Technician, Org Technician and Org Admin) and `tickets:record_approval` (every role that holds `tickets:manage`).
 
 ### v0.121.0 — AI model registry, BYO OpenAI-compatible models, encrypted backup credentials
 
@@ -234,7 +441,7 @@ The AI model registry (AI Providers & Models) has been the only source of AI mod
 
 **Security.** v0.121.0 fixes [GHSA-vjqq-fmr4-m576](https://github.com/LanternOps/breeze/security/advisories/GHSA-vjqq-fmr4-m576) (High: a user who can configure a webhook, alert channel or image-from-URL field, or whoever runs the URL it points at, could repeatedly stop the API process) and [GHSA-7xq8-mcq6-j438](https://github.com/LanternOps/breeze/security/advisories/GHSA-7xq8-mcq6-j438) (Low: a technician limited to selected organizations could read, edit or delete ticket comments in the partner's other organizations). Upgrade from 0.120.0 or earlier.
 
-**Don't skip this release on the way to v0.122.0.** The one-time move of legacy AI settings (script reviewer, AI for Office and AI agent model choices) into the AI model registry runs in v0.121.0. An install that jumps straight to v0.122.0 starts each partner from the platform default and loses those choices.
+**Don't skip this release on the way to v0.122.1.** The one-time move of legacy AI settings (script reviewer, AI for Office and AI agent model choices) into the AI model registry runs in v0.121.0. An install that jumps straight to v0.122.1 starts each partner from the platform default and loses those choices.
 
 **Upgrade order.**
 
@@ -262,7 +469,7 @@ The instance-wide OpenAI-compatible chat path becomes a connection in the AI mod
 
 - Model choices from the Office policy editor, the script-reviewer model fields and the partner AI provider default are migrated once, on first start, into **Partner Settings → AI Providers & Models**. The API logs `[startup] AI model registry cutover sweep: … N partner(s) cut over, 0 failed`.
 - `BREEZE_AI_SCRIPT_REVIEWER_MODEL` and `WORKSPACE_CONTENT_LLM_MODEL` are no longer read at runtime; their values are migrated at that first start. `ANTHROPIC_MODEL` remains the bootstrap default.
-- **Deprecated, removed in v0.122.0:** `/api/v1/ai/provider` and the `reviewerModel`, `allowedModels` and AI agent `model` request fields. In v0.121.0 they still work and the retired fields are ignored. See the [API reference](/reference/api/#ai-model-registry) for the replacements.
+- **Deprecated, removed in v0.122.1:** `/api/v1/ai/provider` and the `reviewerModel`, `allowedModels` and AI agent `model` request fields. In v0.121.0 they still work and the retired fields are ignored. See the [API reference](/reference/api/#ai-model-registry) for the replacements.
 - **Residency switch.** Turning on the residency requirement disables every AI feature whose model can't guarantee it; BYO OpenAI-compatible models are never residency-eligible. `AI_PLATFORM_INFERENCE_GEO` (new, optional) accepts `us` or `global`; any other value takes platform models offline, and the API warns at boot.
 - **AI chargeback is off until you configure it.** Every billing profile starts as **not billed**, and usage from before this release is never billable. A daily job (05:28 UTC) closes the previous UTC month per organization. Chargeable usage is kept at least 156 days regardless of `AI_INVOCATIONS_RETENTION_DAYS`. Installs without a billing service never mark AI usage for credit debit. See [AI Usage Chargeback](/features/ai-usage-chargeback/).
 

@@ -591,12 +591,12 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       [],
     ]);
 
-    const result = await buildMonitoringConfigUpdate(DEVICE_ID);
+    const result = await buildMonitoringConfigUpdate(DEVICE_ID, { orgId: ORG_ID });
 
     expect(result?.watches).toEqual([]);
     expect(redisMock.set).toHaveBeenCalledWith(
-      `monitoring:settings:device:${DEVICE_ID}`,
-      JSON.stringify({ check_interval_seconds: 90, watches: [] }),
+      `monitoring:settings:v2:device:${DEVICE_ID}`,
+      JSON.stringify({ orgId: ORG_ID, settings: { check_interval_seconds: 90, watches: [] } }),
       'EX',
       120,
     );

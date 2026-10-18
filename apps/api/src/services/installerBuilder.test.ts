@@ -1800,3 +1800,96 @@ describe('installers for a BINARY_VERSION pinned before the edition field (#7830
     });
   });
 });
+
+// #8333 — POST /enrollment-keys/:id/installer-link (macOS) calls
+// assertMacosInstallerPkgsReachable under the request's held transaction; on a
+// cold cache that is a safeFetch inside the tx (#1105 tripwire). A LAZY warmer,
+// armed by the first pre-flight, keeps the verified-pkg cache hot, and skips the
+// body download whenever the signed manifest digest is unchanged.
+describe('lazy macOS pkg cache warmer (#8333)', () => {
+  const originalEnv = process.env;
+  const pkgs: Record<string, Buffer> = {
+    'breeze-agent-darwin-amd64.pkg': Buffer.from('amd64-pkg'),
+    'breeze-agent-darwin-arm64.pkg': Buffer.from('arm64-pkg'),
+  };
+
+  function serve(version: Record<string, Buffer>) {
+    const signed = signedReleaseManifestEntries(Object.entries(version).map(([name, bytes]) => ({
+      name,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      size: bytes.length,
+      platformTrust: 'macos-developer-id-notarization-required',
+      edition: 'self-host',
+      signingIdentity: 'Developer ID Installer: LanternOps LLC (D8W6N2JYMA)',
+      signingTeamId: 'D8W6N2JYMA',
+    })));
+    process.env.RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS = signed.publicKey;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/release-artifact-manifest.json')) return new Response(signed.manifest);
+      if (url.endsWith('/release-artifact-manifest.json.ed25519')) return new Response(signed.signature);
+      for (const [name, bytes] of Object.entries(version)) {
+        if (url.endsWith(`/${name}`)) return new Response(new Uint8Array(bytes));
+      }
+      return new Response('not found', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+  const pkgBodyCalls = (m: ReturnType<typeof serve>) =>
+    m.mock.calls.filter(([u]) => String(u).endsWith('.pkg')).length;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    process.env.BINARY_SOURCE = 'github';
+    process.env.BINARY_VERSION = '1.2.3';
+    __resetVerifiedMacosPkgCache();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    __stopRegularMsiCacheWarmer();
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    __resetVerifiedMacosPkgCache();
+  });
+
+  it('does nothing until the first pre-flight arms it', async () => {
+    const fetchMock = serve(pkgs);
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshes by manifest digest only: no pkg body re-download while unchanged', async () => {
+    const fetchMock = serve(pkgs);
+    await assertMacosInstallerPkgsReachable();
+    expect(pkgBodyCalls(fetchMock)).toBe(2);
+    const manifestBefore = fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/release-artifact-manifest.json')).length;
+
+    await vi.advanceTimersByTimeAsync(4.5 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(4.5 * 60 * 1000);
+
+    expect(pkgBodyCalls(fetchMock)).toBe(2); // bodies skipped
+    const manifestAfter = fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/release-artifact-manifest.json')).length;
+    expect(manifestAfter).toBeGreaterThan(manifestBefore); // but the digest was checked
+    // Entry stayed warm past the original 5 min TTL: a request is a pure cache hit.
+    const before = fetchMock.mock.calls.length;
+    await assertMacosInstallerPkgsReachable();
+    expect(fetchMock.mock.calls.length).toBe(before);
+  });
+
+  it('re-downloads the body when the signed digest changed', async () => {
+    let fetchMock = serve(pkgs);
+    await assertMacosInstallerPkgsReachable();
+    expect(pkgBodyCalls(fetchMock)).toBe(2);
+
+    fetchMock = serve({
+      'breeze-agent-darwin-amd64.pkg': Buffer.from('amd64-pkg-v2'),
+      'breeze-agent-darwin-arm64.pkg': Buffer.from('arm64-pkg-v2'),
+    });
+    await vi.advanceTimersByTimeAsync(4.5 * 60 * 1000);
+    expect(pkgBodyCalls(fetchMock)).toBe(2);
+    await expect(fetchVerifiedMacosPkg('arm64')).resolves.toMatchObject({ buffer: Buffer.from('arm64-pkg-v2') });
+  });
+});
