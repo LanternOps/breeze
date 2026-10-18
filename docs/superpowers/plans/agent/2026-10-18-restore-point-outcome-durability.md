@@ -48,7 +48,7 @@
 | W3: outcome persisted, result not yet handed off | journal entry with outcome | synthetic failure carries the recorded outcome (e.g. `created`) |
 | W4: real result written to the outbox, journal not yet ended | outbox entry (carries `Report()`) | real result wins (existing `outbox.has` check). `has` is existence-only, so if the entry turns out corrupt it is dropped at flush and the command is reaped → #8582. Task 5 adds fsync to `Enqueue` so a power cut cannot leave a zero-length entry |
 | W5: result queued on the WS channel then hard crash, or frame written but never committed server-side | journal ended, nothing | whole command result lost. This is a pre-existing #8296 gap for every command type, out of scope. Row `requested` → #8582 |
-| G1: graceful stop, handler still running | synthetic "agent is shutting down" result (refused by the stopped client → outboxed under the command id; journal entry **not** ended because `executed=false`) | the synthetic result carries the in-memory recorded outcome or `interrupted`. If the handler then finishes before exit, its real result overwrites the same outbox file (`entryPath(commandID)`) and wins. If the process exits first, `Recover` (D3) **amends** the outboxed synthetic result with an outcome the journal recorded after it was written |
+| G1: graceful stop, handler still running | synthetic "agent is shutting down" result (refused by the stopped client → outboxed under the command id; journal entry **not** ended because `executed=false`) | the synthetic result carries the in-memory recorded outcome or `interrupted`. The handler's real result is **discarded**: the dispatch loop has returned and its `resultCh` (`heartbeat.go` ~L7197) is never read again. So the only route for an outcome recorded after the synthetic result is `Recover`'s **amend** at the next start (D3) |
 | G2: host reboot mid-command | as W1–W3 | as W1–W3. Journal restore-point writes are fsync'd so a power-cut does not lose them |
 
 Two further windows are recorded for #8582, not fixed here:
@@ -61,7 +61,8 @@ Two further windows are recorded for #8582, not fixed here:
 - Observer callbacks take only `j.mu`. The journal never takes the checkpoint's mutex, so there is no lock inversion with `Take`, which holds `c.mu` across the uncancellable native call.
 - The shutdown path reads the **journal snapshot** (`syntheticRestorePoint`). It never calls `cp.Report()`, because `Report` would block on `c.mu` behind `SRSetRestorePointW` and hang shutdown.
 - A late callback for an ended entry is a no-op and never re-creates the file.
-- A request id already bound to a different command id is refused (Warn), so the first binding wins.
+- A request id that a second command id tries to bind (Begin of B while A holds it) is **poisoned**. Neither entry records any further observer notification for that id: the observer only sees request ids, so it cannot tell A's checkpoint from B's. Both entries then recover as `interrupted`. This is anomalous (the server mints a fresh request id per command, including on refresh), so the conservative answer is acceptable.
+- `Recover` holds `j.mu` through its WMI lookup (≤ 10 s). This is safe only because it runs in `New` before `h.accepting.Store(true)`, so no command and therefore no observer callback can run yet. Task 5 must keep it there (a comment plus an assertion in `TestNewWithVersion_RecoversInterruptedCommands`).
 
 **Quorum:** AGREE. Codex (gpt-6-astra, xhigh, read-only) agreed with the journal extension and added safeguards, all adopted:
 
@@ -91,7 +92,7 @@ Its strongest objection was the G1 race. It is accepted and documented: `interru
 ### D3. Idempotency and dedupe
 
 - **Server:** unchanged. A replayed or duplicate synthetic result loses the `device_commands` terminal CAS (`finalized === 'stale'`) and never reaches ingest. If it does reach ingest, the ledger CAS on `requested` matches 0 rows (`already_terminal`).
-- **Agent, one request id → no second OS checkpoint while Windows still lists the first.**
+- **Agent, one request id → no second OS checkpoint while Windows still lists the first** (Task 6. It can be separated from the rest, and Todd decides whether to keep it; the default is to include it).
   - **The suffix carries the full request id.** `buildDescription` for a **stamped** request changes from the first 8 characters to the **full request UUID**: `" [" + requestId + "]"`, 39 of the 200-rune budget, with the label truncated to fit. Eight hex characters are only 32 bits of identity, so two requests with the same label and a colliding prefix would be falsely deduped. W07 is unreleased, so no fielded point uses the short form. The legacy nonce path is unchanged.
   - **The dedupe check.** In `systemrestore.createWith`, the pre-call snapshot (`before`, already read under the VSS gate) is checked for a point whose description **exactly equals** `buildDescription(req)`. If one exists, **do not call `SRSetRestorePointW`**. Report **`interrupted`** carrying that point's `sequenceNumber` and `description`, with the message "a restore point for this request already exists from an earlier attempt whose completion was not confirmed; no new point was created".
   - **Not `existing_accepted`** (quorum correction). A matching point can survive a failed or never-issued END_SYSTEM_CHANGE, and `Create` itself reports `failed` when END fails even if WMI finds the point (`create.go` ~L158). A retry must not upgrade that to an accepted observation.
@@ -129,7 +130,7 @@ Record results on #9163. Lab recipe: `docs/superpowers/plans/agent/2026-09-02-wi
 2. **A journal write that fails** (full disk, permissions) must not skip the checkpoint or fail the command. Pinned in Task 4 (`TestJournalObserver_PersistFailureStillTakesCheckpoint`).
 3. **A second delivery of the same command** (duplicate, `Abandon`ed checkpoint) must not overwrite the running execution's journal outcome. Pinned in Task 4 (`TestJournalObserver_AbandonedCheckpointRecordsNothing`).
 4. **Recover's WMI lookup hanging** must not hold agent startup past its budget. Pinned in Task 5 (`TestCommandJournal_RecoverLookupIsBounded`).
-5. **Pool-full synthetic results.** When the journal has an **active** entry for the command id, this is a duplicate delivery of a running execution, so attach **no** outcome (it would race the real one). When there is no active entry, the command never ran in this process, so attach `skipped_no_mutation` for a stamped, enabled block (truthful: nothing was changed). Pinned in Task 5 (`TestExecuteViaPool_PoolFullDuplicateAttachesNothing`, `TestExecuteViaPool_PoolFullFirstDeliveryReportsSkippedNoMutation`).
+5. **Pool-full synthetic results carry no outcome.** `Begin` runs inside the pool worker (after `markCommandSeen`). An earlier delivery that is queued but not started therefore has no journal entry, so "no active entry" does **not** prove the command will never run. Attaching `skipped_no_mutation` could win the ledger CAS and mask the real checkpoint (plan-review finding). The branch stays as today; a pool-full that truly ran nothing leaves the row `requested` → #8582. Pinned in Task 5 (`TestExecuteViaPool_PoolFullAttachesNoRestorePoint`).
 
 ---
 
@@ -183,7 +184,7 @@ Record results on #9163. Lab recipe: `docs/superpowers/plans/agent/2026-09-02-wi
 
 - [ ] **Step 2: Run, expect FAIL** — `cd apps/api && npx vitest run src/routes/agents/restorePointResultSchema.test.ts src/services/restorePointIngest.test.ts` (2 files reported) and `cd packages/shared && npx vitest run src/types/restorePoint.test.ts`. Expected: unknown-status and enum assertions fail.
 
-- [ ] **Step 3: Implement.** Append `'interrupted'` after `'failed'` in all three constant lists and in the Drizzle `check()` SQL. Migration header: `-- Add 'interrupted' to the device_restore_point_attempts status CHECK (#9163). Fix-forward; no column, no table: no cascade/export-policy change.` The body is the `2026-12-31-110000` shape (`DROP CONSTRAINT IF EXISTS` then `ADD CONSTRAINT … CHECK (status IN (…, 'failed', 'interrupted'))`). Update the doc comment on `RESTORE_POINT_STATUSES` to name `interrupted` as agent-reported, "outcome unknown after an agent restart".
+- [ ] **Step 3: Implement.** Append `'interrupted'` after `'failed'` in all three constant lists and in the Drizzle `check()` SQL. Migration header: `-- Add 'interrupted' to the device_restore_point_attempts status CHECK (#9163). Fix-forward; no column, no table: no cascade/export-policy change.` The body is the `2026-12-31-110000` shape (`DROP CONSTRAINT IF EXISTS` then `ADD CONSTRAINT … CHECK (status IN (…, 'failed', 'interrupted'))`). Update the doc comment on `RESTORE_POINT_STATUSES` to name `interrupted` as agent-reported, "outcome unknown after an agent restart". Fix the stale status counts in the doc comments above `RESTORE_POINT_OUTCOME_STATUSES` (`schemas.ts` ~L630) and `RESTORE_POINT_STATUSES`.
 
 - [ ] **Step 4: Run unit tests, expect PASS.** Then `pnpm db:check-drift` (expect no drift), `scripts/check-migration-naming.sh --against-ref origin/main` (expect exit 0), and re-grep the cascade lists (Global Constraint 7) and paste the hits into the PR body.
 
@@ -208,7 +209,7 @@ Record results on #9163. Lab recipe: `docs/superpowers/plans/agent/2026-09-02-wi
 ## Task 3: `interrupted` status and the observer seam in `systemrestore` (PR 2)
 
 **Files:**
-- Modify: `agent/internal/systemrestore/types.go`, `agent/internal/systemrestore/checkpoint.go`, `agent/internal/systemrestore/create.go` (`buildDescription` suffix only)
+- Modify: `agent/internal/systemrestore/types.go`, `agent/internal/systemrestore/checkpoint.go`
 - Create: `agent/internal/systemrestore/observer.go`
 - Test: `agent/internal/systemrestore/types_test.go`, `agent/internal/systemrestore/checkpoint_test.go`, `agent/internal/systemrestore/observer_test.go` (create)
 
@@ -227,13 +228,12 @@ Record results on #9163. Lab recipe: `docs/superpowers/plans/agent/2026-09-02-wi
   - `TestCheckpoint_SkipNotifiesRecorded`.
   - `TestCheckpoint_UnstampedOrAbandonedNotifiesNothing`: an unstamped legacy patch request and an `Abandon`ed checkpoint produce zero calls.
   - `TestCheckpoint_ReportSynthesisNotifiesRecordedOnce`: the first `Report()` that synthesizes `skipped_no_mutation` stores it as the outcome and calls `Recorded` once. A crash between the handler returning and the hand-off then replays `skipped_no_mutation`, not `interrupted` (quorum). Later `Report()` calls return the stored copy without notifying.
-  - `TestDescriptionFor_StampedUsesFullRequestID`: suffix `" [" + requestId + "]"`, total ≤ 200 runes and ≤ 255 UTF-16 units with a 300-rune label. Legacy (empty id) keeps the 8-hex nonce.
+  - `TestDescriptionFor_MatchesBuildDescription`: `DescriptionFor(req) == buildDescription(req)` for a stamped request, and `""` for an empty request id. `buildDescription` itself uses a random nonce there, which is exactly why the helper must not call it in that case.
 - [ ] **Step 2: Run** `cd agent && go test -race ./internal/systemrestore/ -run 'Interrupted|Notif|Observer'`. Expect FAIL (undefined).
 - [ ] **Step 3: Implement.**
   - In `Take`, call `Starting` **before** `c.create`, and `Recorded` after the outcome is stored, both under `c.mu` so ordering per checkpoint is total.
   - `Skip`, and `Report`'s first synthesis, call `Recorded` when they store an outcome. `Report` now stores the synthesized outcome in `c.outcome`, so a later `Take` returns it without creating. This is safe because `Report` runs only on the handler's exit path, after its last possible `Take`.
   - No observer call when `!c.stamped` or `c.abandoned`.
-  - `buildDescription` takes the full request id for a stamped request (Task 6 relies on this).
   - Observer calls must not block on I/O longer than one fsync'd file write (documented on the interface).
 - [ ] **Step 4: Run, expect PASS**, plus the full `go test -race ./internal/systemrestore/...`.
 - [ ] **Step 5: Commit** `feat(agent): systemrestore interrupted status and outcome observer (#9163)`.
@@ -260,7 +260,7 @@ Record results on #9163. Lab recipe: `docs/superpowers/plans/agent/2026-09-02-wi
   - `TestJournalObserver_UnknownRequestIDIsNoop`: `Recorded` for a request id not indexed (an ended entry, a non-UUID software path) touches no file.
   - `TestJournalObserver_LateRecordedAfterEndDoesNotResurrect`: `End(cmd)` then `Recorded(outcome)` → no file exists for `cmd`.
   - `TestJournalObserver_RecordedRacingEnd`: 100 iterations of concurrent `Recorded` and `End` under `-race` → the final state is "no file" or "file with the outcome". Never a partial file, and never a file after `End` returned.
-  - `TestCommandJournal_ConflictingRequestBindingRefused`: Begin of command B carrying the request id already bound to A → B's entry has no `restorePoint`, and A's binding is unchanged.
+  - `TestCommandJournal_ConflictingRequestBindingPoisons`: Begin of command B carrying the request id already bound to A → B's entry has no `restorePoint`, and a later `Recorded(created)` for that id changes neither file. `Recover` reports A as `interrupted`.
   - `TestJournalObserver_ShutdownSnapshotDoesNotBlockOnTake`: a fake `create` blocked inside `Take` → `syntheticRestorePoint` returns `interrupted` within 100 ms.
 - [ ] **Step 2: Run** `go test -race ./internal/heartbeat/ -run 'CommandJournal|JournalObserver'`. Expect FAIL.
 - [ ] **Step 3: Implement.**
@@ -294,9 +294,10 @@ Record results on #9163. Lab recipe: `docs/superpowers/plans/agent/2026-09-02-wi
   - `TestCommandJournal_RecoverNeverOverwritesARealOutcome`: outbox holds `existing_accepted`, journal holds `created` → unchanged.
   - `TestCommandJournal_RecoverOldEntryWithoutRestorePointUnchanged`: an entry without the field → a synthetic failure with no `restorePoint` (today's bytes).
   - `TestExecuteViaPool_ShutdownAttachesRestorePoint`: a running script with a stamped block plus `stopChan` closed → the synthetic result has `RestorePoint.Status == "interrupted"`. With a recorded outcome, it carries that outcome.
-  - `TestExecuteViaPool_PoolFullDuplicateAttachesNothing`: journal active for `cmd.ID` → `RestorePoint == nil`.
-  - `TestExecuteViaPool_PoolFullFirstDeliveryReportsSkippedNoMutation`: not active, with a stamped enabled block → `skipped_no_mutation` with the block's request id. Unstamped → nil.
+  - `TestExecuteViaPool_PoolFullAttachesNoRestorePoint`: a stamped enabled block, journal active or not → `RestorePoint == nil`.
+  - `TestCommandJournal_RecoverSkipsLookupWithoutDescription`: an entry with a request id but empty `Description` (died before `Take`; `Begin` cannot know the fallback label) → no lookup call, and `interrupted` with no sequence.
   - `TestBackupResultOutbox_EnqueueSyncsBeforeRename`: through a `syncFn` seam, `Sync` is called on the temp file before `Rename`.
+  - `TestBackupResultOutbox_EnqueueSyncFailureReturnsFalse`: `syncFn` errors → `Enqueue` returns false, the temp file is removed, and no entry exists. This matches today's write-failure contract, so the journal pins the entry.
   - `TestCommandJournal_RecoverAmendOfCorruptOutboxEntryReenqueues`: an outbox entry that fails to parse → replaced by a fresh synthetic failure carrying the journal outcome.
   - `lookup_test.go`: exact-match only (a description with a different label but the same `[abcd1234]` suffix is not found).
 - [ ] **Step 2: Run** `go test -race ./internal/heartbeat/ ./internal/systemrestore/ -run 'Recover|ExecuteViaPool|FindByDescription'`. Expect FAIL.
@@ -306,8 +307,9 @@ Record results on #9163. Lab recipe: `docs/superpowers/plans/agent/2026-09-02-wi
     - otherwise, one `recoverLookup(ctx, Description)` under a single `context.WithTimeout(recoverLookupBudget)` shared by every entry → `Interrupted(...)`, with `SequenceNumber`/`Description` when found.
   - Message copy (agent → ledger `message`): `"the agent restarted before it reported this checkpoint's outcome"` (+ `"; Windows lists restore point <seq> with this request's description"` when found).
   - Shutdown branches: `RestorePoint: h.commandJournal.syntheticRestorePoint(cmd.ID, "the agent shut down before it reported this checkpoint's outcome")`.
-  - Pool-full branch: implement the Review Focus 5 rule through `func (j *commandJournal) isActive(commandID string) bool`. The synthesized outcome uses message `"the agent's worker pool was full; the command did not run"`.
-  - `backupResultOutbox.Enqueue`: write the temp file, `Sync`, close, rename (the `pamReconciliationOutbox` `syncFn` seam shape). Every outboxed result gets this; the cost is one fsync per outboxed result.
+  - The pool-full branch is untouched (Review Focus 5).
+  - In `Recover`, skip the lookup when `Description` is empty.
+  - `backupResultOutbox.Enqueue`: write the temp file, `Sync`, close, rename (the `pamReconciliationOutbox` `syncFn` seam shape). This is a **cross-feature behaviour change**: every outboxed result, backup results included, pays one fsync. Say so in the PR body.
 - [ ] **Step 4: Run, expect PASS**, then the whole `go test -race ./internal/heartbeat/... ./internal/systemrestore/...` and `GOOS=windows go vet ./internal/systemrestore/ ./internal/heartbeat/`.
 - [ ] **Step 5: Commit** `fix(agent): synthetic results carry the restore-point outcome (#9163)`.
 
@@ -317,8 +319,13 @@ Record results on #9163. Lab recipe: `docs/superpowers/plans/agent/2026-09-02-wi
 - Modify: `agent/internal/systemrestore/create.go`
 - Test: `agent/internal/systemrestore/create_test.go`
 
-**Interfaces:** none new. `Create`'s contract gains: "a point already carrying this request's exact description is reported `interrupted` (with its sequence and description) without a native call". This depends on Task 3's full-UUID description.
+**Separable (decision for Todd, default: include).** Tasks 1–5 fix #9163 without this task. Task 6 is the D3 "no second checkpoint for one request id" guarantee the brief asked for. It changes the description format, and plan review flagged it as defense-in-depth: no current server path redelivers a request id after its command went terminal (`agentCommandRelay` sent-marker; claims take only `pending`). Dropping it removes D5 items 5–6 from the lab matrix.
 
+**Interfaces:** none new. `Create`'s contract gains: "a point already carrying this request's exact description is reported `interrupted` (with its sequence and description) without a native call".
+
+- [ ] **Step 0: Full-UUID suffix.**
+  - In `buildDescription`, a **stamped** request whose `RequestID` is a canonical UUID gets the suffix `" [" + RequestID + "]"`. Anything else keeps the current 8-character form, so a long non-UUID id can never eat the label budget (`ParseRequest` does not validate the id).
+  - Test `TestBuildDescription_StampedUUIDUsesFullID`: suffix is the full UUID; total ≤ 200 runes and ≤ 255 UTF-16 units with a 300-rune label; the label is non-empty. A non-UUID 150-character id → 8-character suffix. Legacy (empty id) → 8-hex nonce.
 - [ ] **Step 1: Failing tests.**
   - `TestCreate_SameRequestDescriptionAlreadyPresent_NoNativeCall`: `before` contains `{Seq: 7, Description: buildDescription(req), CreationTime: now-30m}` → `native.begin` call count 0, `Status interrupted`, `SequenceNumber "7"`, `Description` equal to that description, and the message from D3.
   - `TestCreate_UnstampedLegacyNeverDedupes`: empty `RequestID` → begin is called once.
