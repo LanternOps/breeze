@@ -430,7 +430,8 @@ const postUntil = (frame: HTMLElement, data: unknown, check: () => void) =>
       postFromFrame(frame, data);
       check();
     },
-    { timeout: 5000 },
+    // Kept under the 5s per-test timeout so a real failure reports the assertion, not a bare timeout.
+    { timeout: 3000 },
   );
 
 describe('ProxyTunnelPage host mode', () => {
