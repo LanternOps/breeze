@@ -114,6 +114,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // only callers are the mutating routes in routes/security/yara.ts, each of
   // which runs `set.orgId === null && !canManagePartnerWidePolicies(auth)`
   // (writeDenial) first; it refuses the built-in set outright.
+  'services/yaraBuiltinPackStore.ts': 'boot-only system-scope upsert of THE built-in set (both owners NULL); never reachable from a route or a caller — routes 403 the built-in set (#6263 W03b)',
   'services/yaraRuleSetPublisher.ts': 'writes only version/publish columns + compile_error of a set the caller already passed routes/security/yara.ts writeDenial (canManagePartnerWidePolicies for partner-wide); re-locks FOR UPDATE under the caller RLS; refuses the built-in set',
   'services/edrProviders/actions.ts': 'vendor-outcome bookkeeping only (reauth_required on a rejected key, a licence denial on the acted-on tenant), system context, ids from the authorized row; no caller-chosen value',
   'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',

@@ -91,6 +91,8 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   // #6263 W03a. Called only from the mutating routes in
   // routes/security/yara.ts, each of which runs writeDenial
   // (canMutateOrgWideGovernance) before reaching it.
+  'services/yaraBuiltinPackStore.ts':
+    'boot-only system-scope upsert of THE built-in set (no org, no site); no caller, so no site-restricted actor can reach it (#6263 W03b)',
   'services/yaraRuleSetPublisher.ts':
     'reached only through routes/security/yara.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing either file',
   // Background probe of a destination's create-only write support, started
