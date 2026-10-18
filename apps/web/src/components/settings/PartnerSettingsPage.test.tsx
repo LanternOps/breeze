@@ -639,6 +639,80 @@ describe('PartnerSettingsPage Email templates tab', () => {
   });
 });
 
+// #8155 W03: the dedicated-tunnel-origin opt-in rides the page Save under
+// `settings.networkProxy` (server: orgs.ts partnerSettingsSchema, shallow merge).
+describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => {
+  const partnerWith = (extraSettings: Record<string, unknown>) => ({
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+      ...extraSettings,
+    },
+  });
+
+  const openRemoteAccess = async (extraSettings: Record<string, unknown>) => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerWith(extraSettings)));
+    window.location.hash = '#remote-access';
+    render(<PartnerSettingsPage />);
+    return screen.findByTestId('partner-network-proxy-dedicated-origin');
+  };
+
+  const patchedSettings = () => {
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    return JSON.parse((patchCall![1] as RequestInit).body as string).settings;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('hydrates an opted-in partner, marks the tab dirty on toggle, and saves the explicit choice', async () => {
+    const toggle = await openRemoteAccess({ networkProxy: { dedicatedTunnelOrigin: true } });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    const saveBtn = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(true);
+
+    const user = userEvent.setup();
+    await user.click(toggle);
+    expect(saveBtn.disabled).toBe(false);
+    await user.click(saveBtn);
+
+    expect(patchedSettings().networkProxy).toEqual({ dedicatedTunnelOrigin: false });
+  });
+
+  it('leaves the choice unset for a partner who never chose, so a later default flip still reaches them', async () => {
+    const toggle = await openRemoteAccess({});
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    const user = userEvent.setup();
+    // An unrelated edit on another tab makes the page saveable.
+    await user.click(screen.getByRole('link', { name: /^company$/i }));
+    await user.type(await screen.findByLabelText(/company name/i), ' Inc.');
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    expect(patchedSettings()).not.toHaveProperty('networkProxy');
+  });
+});
+
 describe('PartnerSettingsPage sidebar nav & save contract', () => {
   const partnerResponse = {
     id: 'partner-1',

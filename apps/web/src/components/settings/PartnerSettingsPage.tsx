@@ -62,6 +62,7 @@ import type {
   InheritableAiBudgetSettings,
   AiApprovalSettings,
   InheritableRemoteAccessSettings,
+  PartnerNetworkProxySettings,
   IpAllowlistStatus,
   SendingDomainsCapabilityDto
 } from '@breeze/shared';
@@ -245,6 +246,8 @@ export default function PartnerSettingsPage() {
   const [aiBudgetsValid, setAiBudgetsValid] = useState(true);
   const [aiApprovalsData, setAiApprovalsData] = useState<AiApprovalSettings>({});
   const [remoteAccessData, setRemoteAccessData] = useState<InheritableRemoteAccessSettings>({});
+  // `settings.networkProxy` (#8155): partner-only, shown on the Remote Access tab.
+  const [networkProxyData, setNetworkProxyData] = useState<PartnerNetworkProxySettings>({});
   // Registered agent/watchdog versions for the pin selectors (#2124).
   const [pinnableVersions, setPinnableVersions] = useState<PinnableVersions | null>(null);
   // Capability only: the tab does its own full read. `checked` distinguishes
@@ -266,12 +269,12 @@ export default function PartnerSettingsPage() {
     branding: JSON.stringify(brandingData),
     aiBudgets: JSON.stringify(aiBudgetsData),
     aiApprovals: JSON.stringify(aiApprovalsData),
-    remoteAccess: JSON.stringify(remoteAccessData),
+    remoteAccess: JSON.stringify({ remoteAccessData, networkProxyData }),
   }), [
     companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature,
     timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours,
     securityData, notificationsData, eventLogsData, defaultsData, brandingData,
-    aiBudgetsData, aiApprovalsData, remoteAccessData,
+    aiBudgetsData, aiApprovalsData, remoteAccessData, networkProxyData,
   ]);
   const [baseline, setBaseline] = useState<Snapshot | null>(null);
   // fetchPartner can't read the state it just set (updates are async), so it
@@ -344,6 +347,9 @@ export default function PartnerSettingsPage() {
       setAiBudgetsData(settings.aiBudgets || {});
       setAiApprovalsData(settings.aiApprovals || {});
       setRemoteAccessData(settings.remoteAccessProviders || {});
+      // Keep only a real boolean: anything else is "never chose" (platform default).
+      const dedicated = settings.networkProxy?.dedicatedTunnelOrigin;
+      setNetworkProxyData(typeof dedicated === 'boolean' ? { dedicatedTunnelOrigin: dedicated } : {});
 
       // Re-baseline dirty tracking against the values that were just fetched.
       baselinePending.current = true;
@@ -495,6 +501,12 @@ export default function PartnerSettingsPage() {
     settings.aiBudgets = aiBudgetsData;
     settings.aiApprovals = aiApprovalsData;
     settings.remoteAccessProviders = remoteAccessData;
+    // Only an explicit choice is written. An unset value stays unset so the
+    // platform default (TUNNEL_ORIGIN_PARTNER_DEFAULT) can later flip for
+    // partners who never chose (plan W04 Task 19).
+    if (typeof networkProxyData.dedicatedTunnelOrigin === 'boolean') {
+      settings.networkProxy = networkProxyData;
+    }
 
     const payload: Record<string, unknown> = { settings };
     const trimmedName = companyName.trim();
@@ -780,7 +792,12 @@ export default function PartnerSettingsPage() {
 
           {activeTab === 'remoteAccess' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerRemoteAccessTab data={remoteAccessData} onChange={setRemoteAccessData} />
+              <PartnerRemoteAccessTab
+                data={remoteAccessData}
+                onChange={setRemoteAccessData}
+                networkProxy={networkProxyData}
+                onNetworkProxyChange={setNetworkProxyData}
+              />
             </section>
           )}
 

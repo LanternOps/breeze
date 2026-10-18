@@ -1020,6 +1020,11 @@
       "schemeRequired": "Le modèle URL doit commencer par un schéma suivi de deux-points (par exemple rustdesk:, https:)",
       "schemeBlocked": "Ce schéma URL n’est pas autorisé — javascript :, data :, vbscript :, file :, about :, chrome :, jar :, blob :, view-source : et filesystem : sont bloqués.",
       "idRequired": "Le modèle URL doit inclure le marqueur {id} pour la valeur par appareil."
+    },
+    "networkProxy": {
+      "title": "Proxy réseau",
+      "label": "Servir le proxy réseau depuis une origine dédiée",
+      "help": "S'applique à toutes les organisations ; les organisations ne peuvent pas le remplacer. Ne prend effet que là où votre région propose une origine dédiée, et améliore la compatibilité avec les interfaces web des appareils."
     }
   },
   "partnerSettingsPage": {

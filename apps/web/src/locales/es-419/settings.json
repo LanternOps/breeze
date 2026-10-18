@@ -1020,6 +1020,11 @@
       "schemeRequired": "La plantilla URL debe comenzar con un esquema seguido de dos puntos (por ejemplo, rustdesk:, https:)",
       "schemeBlocked": "Ese esquema URL no está permitido: javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: y filesystem: están bloqueados.",
       "idRequired": "La plantilla URL debe incluir el marcador de posición {id} para el valor por dispositivo."
+    },
+    "networkProxy": {
+      "title": "Proxy de red",
+      "label": "Servir el proxy de red desde un origen dedicado",
+      "help": "Se aplica a todas las organizaciones; las organizaciones no pueden anularlo. Solo tiene efecto donde su región ofrece un origen dedicado y mejora la compatibilidad con las interfaces web de los dispositivos."
     }
   },
   "partnerSettingsPage": {

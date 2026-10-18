@@ -1020,6 +1020,11 @@
       "schemeRequired": "URL Vorlage muss mit einem Schema gefolgt von einem Doppelpunkt beginnen (z. B. rustdesk:, https:)",
       "schemeBlocked": "Dieses URL-Schema ist nicht zulässig – javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: und filesystem: sind blockiert.",
       "idRequired": "Die Vorlage URL muss den Platzhalter {id} für den Wert pro Gerät enthalten."
+    },
+    "networkProxy": {
+      "title": "Netzwerk-Proxy",
+      "label": "Netzwerk-Proxy über einen eigenen Ursprung bereitstellen",
+      "help": "Gilt für alle Organisationen; Organisationen können dies nicht überschreiben. Wirkt nur, wo Ihre Region einen eigenen Ursprung anbietet, und verbessert die Kompatibilität mit Weboberflächen von Geräten."
     }
   },
   "partnerSettingsPage": {

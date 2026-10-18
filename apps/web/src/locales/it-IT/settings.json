@@ -1020,6 +1020,11 @@
       "schemeRequired": "Il template URL deve iniziare con uno schema seguito da due punti (ad es. rustdesk:, https:)",
       "schemeBlocked": "Questo schema URL non è consentito — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: e filesystem: sono bloccati.",
       "idRequired": "Il template URL deve includere il placeholder {id} per il valore per-dispositivo."
+    },
+    "networkProxy": {
+      "title": "Proxy di rete",
+      "label": "Servi il proxy di rete da un’origine dedicata",
+      "help": "Si applica a tutte le organizzazioni; le organizzazioni non possono sovrascriverlo. Ha effetto solo dove la tua regione offre un’origine dedicata e migliora la compatibilità con le interfacce web dei dispositivi."
     }
   },
   "partnerSettingsPage": {

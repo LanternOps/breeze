@@ -1020,6 +1020,11 @@
       "schemeRequired": "URL şablonu bir şemayla başlamalı ve ardından iki nokta üst üste gelmelidir (ör. Rustdesk:, https:)",
       "schemeBlocked": "Bu URL şemasına izin verilmiyor — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: ve filesystem: engellendi.",
       "idRequired": "URL şablonu, cihaz başına değer için {id} yer tutucusunu içermelidir."
+    },
+    "networkProxy": {
+      "title": "Ağ Proxy’si",
+      "label": "Ağ Proxy’sini ayrılmış bir kaynaktan sun",
+      "help": "Tüm kuruluşlara uygulanır; kuruluşlar bunu geçersiz kılamaz. Yalnızca bölgenizin ayrılmış bir kaynak sunduğu yerlerde etkili olur ve cihaz web arayüzleriyle uyumluluğu artırır."
     }
   },
   "partnerSettingsPage": {

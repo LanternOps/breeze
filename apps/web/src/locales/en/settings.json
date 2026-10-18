@@ -1020,6 +1020,11 @@
       "schemeRequired": "URL template must start with a scheme followed by a colon (e.g. rustdesk:, https:)",
       "schemeBlocked": "That URL scheme is not permitted — javascript:, data:, vbscript:, file:, about:, chrome:, jar:, blob:, view-source: and filesystem: are blocked.",
       "idRequired": "URL template must include the {id} placeholder for the per-device value."
+    },
+    "networkProxy": {
+      "title": "Network Proxy",
+      "label": "Serve Network Proxy from a dedicated origin",
+      "help": "Applies to all organizations; organizations cannot override it. Takes effect only where your region offers a dedicated origin, and improves compatibility with device web UIs."
     }
   },
   "partnerSettingsPage": {
