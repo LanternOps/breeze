@@ -123,7 +123,7 @@ branch: feature/6154-mcp-modernization/wave-6156
 
 ## Migration
 
-`apps/api/migrations/2026-12-30-180000-mcp-tool-domains.sql` is free on `0b146d32d7` and sorts after the newest migration, `2026-12-30-120700-portal-branding-trust-page-editing.sql`. Re-check before committing with `bash scripts/check-migration-naming.sh --staged --against-ref origin/main`. If the hook rejects the slot, keep the `2026-12-30-` prefix, take the next free `HHMMSS` and say so in the PR body.
+`apps/api/migrations/2026-12-30-200100-mcp-tool-domains.sql` is free on `0b146d32d7` and sorts after the newest migration, `2026-12-30-120700-portal-branding-trust-page-editing.sql`. Re-check before committing with `bash scripts/check-migration-naming.sh --staged --against-ref origin/main`. If the hook rejects the slot, keep the `2026-12-30-` prefix, take the next free `HHMMSS` and say so in the PR body.
 
 ```sql
 -- B-W02 (#6156): per-grant MCP tool domains. NULL = unrestricted (every
@@ -168,7 +168,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
 |---|---|
 | `packages/shared/src/types/aiToolDomains.ts` (modify) | `MCP_GRANTABLE_DOMAINS` (the 13 non-core domains) and `McpGrantableDomain` |
 | `packages/shared/src/validators/mcpDomains.ts` (create) + `validators/index.ts` export | `mcpDomainsInputSchema` (Zod) and `normalizeMcpDomainsInput` |
-| `apps/api/migrations/2026-12-30-180000-mcp-tool-domains.sql` (create) | The two columns and their shape checks |
+| `apps/api/migrations/2026-12-30-200100-mcp-tool-domains.sql` (create) | The two columns and their shape checks |
 | `apps/api/src/db/schema/apiKeys.ts`, `schema/oauth.ts` (modify) | `mcpDomains: text('mcp_domains').array()` |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts` (modify) | `excludedOpen += mcp_domains` on both tables |
 | `apps/api/src/services/mcpDomains.ts` (create) | Parses the stored value into a grant, holds the predicate, maps resources to domains and builds the denial payload |
@@ -217,7 +217,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
 ### Task 2: Migration, Drizzle columns, export-policy classification
 
 **Files:**
-- Create: `apps/api/migrations/2026-12-30-180000-mcp-tool-domains.sql` (text in "Migration" above)
+- Create: `apps/api/migrations/2026-12-30-200100-mcp-tool-domains.sql` (text in "Migration" above)
 - Modify: `apps/api/src/db/schema/apiKeys.ts`, `apps/api/src/db/schema/oauth.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts`
 - Create: `apps/api/src/__tests__/integration/mcpDomainsColumns.integration.test.ts`
 
@@ -554,7 +554,7 @@ These are the five inputs the spec implies but no happy-path test hits. Each one
 
 ## Exit checklist
 
-- [ ] Migration `2026-12-30-180000-mcp-tool-domains.sql` is idempotent. Applying it twice is a no-op, verified by re-running `db:migrate` on the stack. It writes no rows. The naming hook and `db:check-drift` are green.
+- [ ] Migration `2026-12-30-200100-mcp-tool-domains.sql` is idempotent. Applying it twice is a no-op, verified by re-running `db:migrate` on the stack. It writes no rows. The naming hook and `db:check-drift` are green.
 - [ ] `mcp_domains` is classified as `excludedOpen` on `api_keys` and `oauth_grants`, and `tenant-export-policy` plus `tenantExportErasureRoundtrip` are green under the integration config.
 - [ ] No cascade, merge, device-list or ticket-list change was needed. That is confirmed by `tenantCascade`, `orgMergeRegistry` and `rls-coverage` being green, not by judgement.
 - [ ] An unrestricted principal's `tools/list` is identical to `main`'s, pinned by the test.

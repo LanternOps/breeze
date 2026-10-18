@@ -297,6 +297,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MAX_ACTIVE_REMOTE_SESSIONS_PER_USER: 'rate limit knob',
   // MCP_*
   MCP_EXECUTE_TOOL_ALLOWLIST: 'MCP tool policy',
+  MCP_INSUFFICIENT_SCOPE_HTTP_403: 'MCP step-up challenge flag',
   MCP_MAX_SSE_SESSIONS_PER_KEY: 'rate limit knob',
   MCP_MESSAGE_MAX_BODY_BYTES: 'request size limit',
   MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: 'rate limit knob',

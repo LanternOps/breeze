@@ -12,7 +12,7 @@ import postgres from 'postgres';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
 const RUN = !!process.env.DATABASE_URL;
-const MIGRATION = '2026-12-30-180000-mcp-tool-domains.sql';
+const MIGRATION = '2026-12-30-200100-mcp-tool-domains.sql';
 const migrationSql = readFileSync(join(__dirname, '../../../migrations', MIGRATION), 'utf8');
 const adminSql = postgres(process.env.DATABASE_URL ?? '', { max: 1 });
 afterAll(async () => { await adminSql.end({ timeout: 5 }); });
