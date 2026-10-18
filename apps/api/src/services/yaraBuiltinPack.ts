@@ -29,6 +29,13 @@
  *
  * Never throws and never blocks boot (index.ts does not await it): every
  * failure is logged and returns 'skipped' with the existing row untouched.
+ *
+ * Kill switch: BREEZE_YARA_BUILTIN_PACK_DISABLED=1 disables the built-in set
+ * on the next boot (scan dispatch then reports it `disabled` and the agent
+ * fetch route 404s it) and loads nothing. The pack auto-quarantines (D7) and
+ * an older release can never roll it back, so this is how an operator stops a
+ * bad pack before a fixed one ships. Unsetting it re-enables the set. The env
+ * var is the only thing that ever disables the built-in row.
  */
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -62,7 +69,7 @@ import {
   verifyReleaseArtifactBuffer,
 } from './releaseArtifactManifest';
 import { assertGithubFetchableEdition } from './releaseAssetTrust';
-import { applyBuiltinPack, readBuiltinPackRow, type BuiltinPackRow } from './yaraBuiltinPackStore';
+import { applyBuiltinPack, readBuiltinPackRow, setBuiltinPackEnabled, type BuiltinPackRow } from './yaraBuiltinPackStore';
 import { precheckYaraBundle, yaraLintOnlyAllowed, yaracVersion } from './yaraPrecheck';
 
 export type BuiltinYaraPackOutcome = 'unchanged' | 'updated' | 'skipped';
@@ -325,7 +332,8 @@ export async function loadVerifiedBuiltinPack(): Promise<LoadedBuiltinPack | nul
     const local = await loadLocalPack();
     if (local) return local;
     if (getBinaryEdition() === 'hosted') {
-      console.warn(`${LOG} ${YARA_BUILTIN_PACK_ASSET_NAME} is not staged in the binaries volume; hosted deployments never fetch it from the public release`);
+      const log = process.env.NODE_ENV === 'production' ? console.error : console.warn;
+      log(`${LOG} ${YARA_BUILTIN_PACK_ASSET_NAME} is not staged in the binaries volume; hosted deployments never fetch it from the public release`);
       return null;
     }
     console.log(`${LOG} ${YARA_BUILTIN_PACK_ASSET_NAME} is not staged locally; fetching it from the signed GitHub release`);
@@ -335,29 +343,56 @@ export async function loadVerifiedBuiltinPack(): Promise<LoadedBuiltinPack | nul
 
 // ---- orchestration ---------------------------------------------------------
 
+function builtinPackDisabled(): boolean {
+  const v = process.env.BREEZE_YARA_BUILTIN_PACK_DISABLED?.trim().toLowerCase();
+  return v === '1' || v === 'true';
+}
+
 export async function syncBuiltinYaraPack(): Promise<BuiltinYaraPackOutcome> {
   try {
+    if (builtinPackDisabled()) {
+      const changed = await setBuiltinPackEnabled(false);
+      console.warn(`${LOG} BREEZE_YARA_BUILTIN_PACK_DISABLED is set: the built-in set is disabled and no pack is loaded${changed ? ' (disabled now)' : ''}`);
+      return changed ? 'updated' : 'unchanged';
+    }
+
     const loaded = await loadVerifiedBuiltinPack();
     if (!loaded) return 'skipped';
     const pack = parseBuiltinPack(loaded.bytes);
     const ctx = { version: pack.version, sha256: loaded.sha256, release: loaded.release, origin: loaded.origin };
 
-    const decision = decideBuiltinPackAction(await readBuiltinPackRow(), { version: pack.version, sha256: loaded.sha256 });
+    const row = await readBuiltinPackRow();
+    let reenabled = false;
+    if (row && row.isBuiltin && !row.enabled) {
+      // Only the kill switch disables the built-in row; it is no longer set.
+      reenabled = await setBuiltinPackEnabled(true);
+      if (reenabled) console.warn(`${LOG} kill switch lifted: built-in set re-enabled`, ctx);
+    }
+    const kept: BuiltinYaraPackOutcome = reenabled ? 'updated' : 'unchanged';
+    const decision = decideBuiltinPackAction(row, { version: pack.version, sha256: loaded.sha256 });
     if (decision === 'not_builtin') {
       console.error(`${LOG} the built-in rule-set id is held by a non-built-in row; refusing to touch it`, ctx);
       return 'skipped';
     }
     if (decision === 'same_version_conflict') {
       console.warn(`${LOG} pack has the same version as the published built-in set but different bytes; keeping the published one (bump pack.lock version)`, ctx);
-      return 'unchanged';
+      return kept;
     }
-    if (decision === 'older' || decision === 'current') return 'unchanged';
+    if (decision === 'older') {
+      console.warn(`${LOG} pack is older than the published built-in set; keeping the newer one (a release rollback never downgrades it)`, {
+        ...ctx,
+        publishedVersion: row?.publishedVersion,
+      });
+      return kept;
+    }
+    if (decision === 'current') return kept;
 
     const check = await precheckYaraBundle(pack.json, { timeoutMs: BUILTIN_PACK_PRECHECK_TIMEOUT_MS });
     let engine: string | null = null;
     let policy: number | null = null;
     if (check.ok) {
       const v = await yaracVersion();
+      if (!v) console.warn(`${LOG} breeze-yarac version probe failed after a clean pre-check; publishing without an engine stamp`, ctx);
       engine = v?.engine ?? null;
       policy = v?.policy ?? null;
     } else if ('errors' in check) {

@@ -201,9 +201,61 @@ describe('syncBuiltinYaraPack (real Postgres, real signed manifest)', () => {
       expect(updated).toHaveLength(0);
       const deleted = await as(ctx, () => db.delete(yaraRules).where(eq(yaraRules.ruleSetId, YARA_BUILTIN_RULE_SET_ID)).returning({ id: yaraRules.id }));
       expect(deleted).toHaveLength(0);
+      const ruleUpdated = await as(ctx, () =>
+        db.update(yaraRules).set({ source: 'rule x { condition: true }' }).where(eq(yaraRules.ruleSetId, YARA_BUILTIN_RULE_SET_ID)).returning({ id: yaraRules.id }),
+      );
+      expect(ruleUpdated).toHaveLength(0);
+      const setDeleted = await as(ctx, () => db.delete(yaraRuleSets).where(eq(yaraRuleSets.id, YARA_BUILTIN_RULE_SET_ID)).returning({ id: yaraRuleSets.id }));
+      expect(setDeleted).toHaveLength(0);
+      // A tenant must never inject a rule into the auto-quarantining built-in
+      // set: the inherit trigger copies the built-in (owner-less) parent, and
+      // the FOR ALL WITH CHECK then rejects it.
+      await expect(
+        as(ctx, () => db.insert(yaraRules).values({ ruleSetId: YARA_BUILTIN_RULE_SET_ID, name: 'tenant_injected', source: 'rule tenant_injected { condition: true }' })),
+      ).rejects.toThrow();
     }
     expect((await builtinRow())!.autoQuarantine).toBe(true);
     expect((await builtinRules()).length).toBe(2);
+  });
+
+  it('a rule id held by another set rolls the whole apply back (never adopted)', async () => {
+    const partnerId = (await createPartner()).id;
+    const orgId = (await createOrganization({ partnerId })).id;
+    const v3 = pack(3, [1, 2]);
+    stage(v3);
+    await expect(syncBuiltinYaraPack()).resolves.toBe('updated');
+
+    const [custom] = await as(SYSTEM_CTX, () =>
+      db.insert(yaraRuleSets).values({ orgId, name: 'Custom', source: 'custom' }).returning({ id: yaraRuleSets.id }),
+    );
+    await as(SYSTEM_CTX, () =>
+      db.insert(yaraRules).values({ id: rule(3).id, ruleSetId: custom!.id, name: 'custom_rule', source: 'rule custom_rule { condition: true }' }),
+    );
+
+    stage(pack(4, [1, 3]));
+    await expect(syncBuiltinYaraPack()).resolves.toBe('skipped');
+    const row = await builtinRow();
+    expect(row!.publishedVersion).toBe(3);
+    expect(Buffer.from(row!.publishedBundle!).equals(v3)).toBe(true);
+    expect((await builtinRules()).map((r) => r.id).sort()).toEqual([rule(1).id, rule(2).id]);
+    const [customRule] = await as(SYSTEM_CTX, () => db.select().from(yaraRules).where(eq(yaraRules.id, rule(3).id)));
+    expect(customRule).toMatchObject({ ruleSetId: custom!.id, name: 'custom_rule', orgId, isBuiltin: false });
+  });
+
+  it('kill switch disables the published set (and loads nothing); lifting it re-enables the set', async () => {
+    stage(pack(3, [1]));
+    await expect(syncBuiltinYaraPack()).resolves.toBe('updated');
+
+    process.env.BREEZE_YARA_BUILTIN_PACK_DISABLED = '1';
+    stage(pack(4, [1, 2]));
+    await expect(syncBuiltinYaraPack()).resolves.toBe('updated');
+    expect(await builtinRow()).toMatchObject({ enabled: false, publishedVersion: 3 });
+    await expect(syncBuiltinYaraPack()).resolves.toBe('unchanged');
+
+    delete process.env.BREEZE_YARA_BUILTIN_PACK_DISABLED;
+    stage(pack(3, [1]));
+    await expect(syncBuiltinYaraPack()).resolves.toBe('updated');
+    expect(await builtinRow()).toMatchObject({ enabled: true, publishedVersion: 3 });
   });
 
   const realYarac = process.env.BREEZE_YARAC_TEST_PATH;

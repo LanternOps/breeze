@@ -11,7 +11,8 @@ Not a docs page; it records how the pipeline works and how to change it.
 | `forge.sha256` | The pinned YARA Forge **core** release: `<sha256>  <tag>/yara-forge-rules-core.zip`. The build refuses any other tag or bytes. |
 | `LICENSES.allow` | SPDX ids the pack may ship. `filter.go` caps this list at Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause and CC0-1.0. |
 | `denylist.txt` | Rules excluded by name, each with a reason. This is how a false positive gets fixed. |
-| `pack.lock` | `version` (the integer the API compares) + `inputs_sha256` (a hash of every input file). |
+| `pack.lock` | `version` (the integer the API compares) + `inputs_sha256` (a hash of every input: this directory's files, the yarac compile policy `agent/internal/yarascan/yarac/yarac.go`, and the yaraxwasm/wazero pin lines of `agent/go.mod`/`go.sum`). |
+| `scan-corpus.sh`, `check-scan.mjs` | Clean-corpus false-positive scan + its gate (any match, scan error, too few files scanned, too many unscannable files fails). |
 | `filter.go` | The filter: parse, licence, module and score filters, selection, `breeze-yarac validate` loop, canonical bundle, report. Stdlib only. |
 | `build-pack.sh` | Downloads and verifies the Forge release, builds `breeze-yarac` from `agent/`, runs the filter. |
 
@@ -49,7 +50,7 @@ Any change to an input file needs a version bump. Input files include `forge.sha
 2. Bump `version` in `pack.lock` by at least 1.
 3. Set `inputs_sha256` to the output of `build-pack.sh --print-inputs-hash`.
 
-`build-pack.sh --check-lock` runs in the blocking CI security job, and `build-pack.sh` runs in the release. Both fail until the lock matches. This matters because the boot upsert only replaces the built-in set with a **strictly newer** version. A content change that kept the old version would never reach the fleet.
+`build-pack.sh --check-lock --base-lock <main's pack.lock>` runs in the blocking CI security job, and `build-pack.sh` runs in the release. Both fail until the lock matches; against main the version may never go backwards and changed inputs need a strictly higher version. An agent PR that edits `yarac.go` or moves the yaraxwasm pin therefore bumps `pack.lock` too — the compiler decides which rules survive. This matters because the boot upsert only replaces the built-in set with a **strictly newer** version. A content change that kept the old version would never reach the fleet.
 
 To move the Forge pin:
 
@@ -63,6 +64,8 @@ The `YARA Pack FP` workflow (`.github/workflows/yara-pack.yml`) builds the pack 
 
 Any match fails the job and prints the rule and the file. To fix it, add `RULE_NAME  matched <file> on <runner>` to `denylist.txt`, then bump the version.
 
+The release runs the same scan (`yara-pack-fp-gate`) on the exact bytes it is about to publish, on both corpora, and `create-release` needs it: a release never ships a pack that matches a clean system file.
+
 ## Boot upsert
 
 `apps/api/src/services/yaraBuiltinPack.ts`:
@@ -72,3 +75,7 @@ Any match fails the job and prints the rule and the file. To fix it, add `RULE_N
 - Re-derives the canonical bytes.
 - Runs the same `breeze-yarac validate` pre-check as custom rule sets.
 - Upserts the row only when the pack version is newer than the published one.
+
+## Kill switch
+
+The pack auto-quarantines and a release rollback can never downgrade it. To stop a bad pack before a fixed one ships, set `BREEZE_YARA_BUILTIN_PACK_DISABLED=1` on the API and restart: the boot upsert disables the built-in set (scan dispatch reports it `disabled`, the agent fetch route 404s it) and loads no pack. Unset it to re-enable.

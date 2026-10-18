@@ -15,8 +15,10 @@ vi.mock('./yaraPrecheck', async (importOriginal) => ({
 
 const readRowMock = vi.fn();
 const applyMock = vi.fn();
+const setEnabledMock = vi.fn();
 vi.mock('./yaraBuiltinPackStore', () => ({
   readBuiltinPackRow: () => readRowMock(),
+  setBuiltinPackEnabled: (enabled: boolean) => setEnabledMock(enabled),
   applyBuiltinPack: (w: unknown, decide: unknown) => applyMock(w, decide),
 }));
 
@@ -83,6 +85,8 @@ beforeEach(() => {
   versionMock.mockReset().mockResolvedValue({ engine: 'v1.1.0', policy: 1 });
   readRowMock.mockReset().mockResolvedValue(null);
   applyMock.mockReset().mockResolvedValue({ applied: true, decision: 'apply' });
+  setEnabledMock.mockReset().mockResolvedValue(false);
+  delete process.env.BREEZE_YARA_BUILTIN_PACK_DISABLED;
   githubFetchMock.mockReset();
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -140,7 +144,7 @@ describe('parseBuiltinPack', () => {
 
 describe('decideBuiltinPackAction', () => {
   const row = (publishedVersion: number, publishedSha256: string | null = 'a'.repeat(64), isBuiltin = true) =>
-    ({ isBuiltin, publishedVersion, publishedSha256, currentVersion: publishedVersion });
+    ({ isBuiltin, enabled: true, publishedVersion, publishedSha256, currentVersion: publishedVersion });
   it.each([
     ['no row yet', null, 3, 'apply'],
     ['never published', row(0, null), 3, 'apply'],
@@ -199,6 +203,13 @@ describe('loadVerifiedBuiltinPack (BINARY_SOURCE=local)', () => {
     process.env.BINARY_EDITION = 'hosted';
     await expect(loadVerifiedBuiltinPack()).resolves.toBeNull();
     expect(githubFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('not staged on hosted in production is an error, not a warning', async () => {
+    process.env.BINARY_EDITION = 'hosted';
+    process.env.NODE_ENV = 'production';
+    await expect(loadVerifiedBuiltinPack()).resolves.toBeNull();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('not staged'));
   });
 
   it('not staged on self-host local mode: falls back to the signed GitHub release', async () => {
@@ -264,22 +275,54 @@ describe('syncBuiltinYaraPack', () => {
   it('same version already published: unchanged, no pre-check, no write', async () => {
     const bytes = Buffer.from(packJson(3));
     stage(bytes);
-    readRowMock.mockResolvedValue({ isBuiltin: true, publishedVersion: 3, publishedSha256: sha(bytes), currentVersion: 3 });
+    readRowMock.mockResolvedValue({ isBuiltin: true, enabled: true, publishedVersion: 3, publishedSha256: sha(bytes), currentVersion: 3 });
     await expect(syncBuiltinYaraPack()).resolves.toBe('unchanged');
     expect(precheckMock).not.toHaveBeenCalled();
     expect(applyMock).not.toHaveBeenCalled();
   });
 
-  it('an older pack never replaces a newer published version', async () => {
+  it('an older pack never replaces a newer published version, and says so', async () => {
     stage(Buffer.from(packJson(2)));
-    readRowMock.mockResolvedValue({ isBuiltin: true, publishedVersion: 5, publishedSha256: 'c'.repeat(64), currentVersion: 5 });
+    readRowMock.mockResolvedValue({ isBuiltin: true, enabled: true, publishedVersion: 5, publishedSha256: 'c'.repeat(64), currentVersion: 5 });
     await expect(syncBuiltinYaraPack()).resolves.toBe('unchanged');
+    expect(applyMock).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('older'), expect.objectContaining({ version: 2, publishedVersion: 5 }));
+  });
+
+  it('a clean pre-check whose engine-version probe fails still publishes, with a warning', async () => {
+    stage(Buffer.from(packJson(3)));
+    versionMock.mockResolvedValue(null);
+    await expect(syncBuiltinYaraPack()).resolves.toBe('updated');
+    expect(applyMock.mock.calls[0]![0]).toMatchObject({ engine: null, policy: null });
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('version probe'), expect.anything());
+  });
+
+  it('kill switch: BREEZE_YARA_BUILTIN_PACK_DISABLED=1 disables the published set and loads nothing', async () => {
+    process.env.BREEZE_YARA_BUILTIN_PACK_DISABLED = '1';
+    stage(Buffer.from(packJson(9)));
+    setEnabledMock.mockResolvedValue(true);
+    await expect(syncBuiltinYaraPack()).resolves.toBe('updated');
+    expect(setEnabledMock).toHaveBeenCalledWith(false);
+    expect(readRowMock).not.toHaveBeenCalled();
+    expect(precheckMock).not.toHaveBeenCalled();
+    expect(applyMock).not.toHaveBeenCalled();
+    setEnabledMock.mockResolvedValue(false);
+    await expect(syncBuiltinYaraPack()).resolves.toBe('unchanged');
+  });
+
+  it('kill switch lifted: a set it disabled is re-enabled even when the pack is unchanged', async () => {
+    const bytes = Buffer.from(packJson(3));
+    stage(bytes);
+    readRowMock.mockResolvedValue({ isBuiltin: true, enabled: false, publishedVersion: 3, publishedSha256: sha(bytes), currentVersion: 3 });
+    setEnabledMock.mockResolvedValue(true);
+    await expect(syncBuiltinYaraPack()).resolves.toBe('updated');
+    expect(setEnabledMock).toHaveBeenCalledWith(true);
     expect(applyMock).not.toHaveBeenCalled();
   });
 
   it('same version with different bytes: unchanged, loud warning, existing row kept', async () => {
     stage(Buffer.from(packJson(3)));
-    readRowMock.mockResolvedValue({ isBuiltin: true, publishedVersion: 3, publishedSha256: 'd'.repeat(64), currentVersion: 3 });
+    readRowMock.mockResolvedValue({ isBuiltin: true, enabled: true, publishedVersion: 3, publishedSha256: 'd'.repeat(64), currentVersion: 3 });
     await expect(syncBuiltinYaraPack()).resolves.toBe('unchanged');
     expect(applyMock).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('same version'), expect.anything());
@@ -343,7 +386,7 @@ describe('syncBuiltinYaraPack', () => {
 
   it('the id is held by a non-built-in row: skipped', async () => {
     stage(Buffer.from(packJson(3)));
-    readRowMock.mockResolvedValue({ isBuiltin: false, publishedVersion: 0, publishedSha256: null, currentVersion: 0 });
+    readRowMock.mockResolvedValue({ isBuiltin: false, enabled: true, publishedVersion: 0, publishedSha256: null, currentVersion: 0 });
     await expect(syncBuiltinYaraPack()).resolves.toBe('skipped');
     expect(applyMock).not.toHaveBeenCalled();
   });
@@ -360,5 +403,18 @@ describe('syncBuiltinYaraPack', () => {
     process.env.BINARY_EDITION = 'hosted';
     await expect(syncBuiltinYaraPack()).resolves.toBe('skipped');
     expect(readRowMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---- boot wiring (source contract) -----------------------------------------
+
+describe('index.ts boot wiring', () => {
+  const src = readFileSync(resolve(__dirname, '../index.ts'), 'utf8');
+  it('calls syncBuiltinYaraPack after syncBinaries, fire-and-forget (a pack problem must never block boot)', () => {
+    const call = src.indexOf('void syncBuiltinYaraPack()');
+    expect(call).toBeGreaterThan(-1);
+    expect(src.indexOf('await syncBinaries()')).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(src.indexOf('await syncBinaries()'));
+    expect(src).not.toMatch(/await\s+syncBuiltinYaraPack\s*\(/);
   });
 });

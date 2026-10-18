@@ -131,6 +131,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_TRUST_CIS_FRAMEWORK_VIEW: 'Trust Center CIS v8 framework view rollout gate; set only after CIS licensing confirmation (spec §18.13)',
   BREEZE_UPGRADE_PREFLIGHT_STRICT: 'upgrade CLI flag',
   BREEZE_YARAC_PATH: 'filesystem path (YARA pre-check binary; image default /usr/local/bin/breeze-yarac)',
+  BREEZE_YARA_BUILTIN_PACK_DISABLED: 'operator kill switch: disable the built-in YARA rule set at boot and load no pack (#6263 W03b)',
   BREEZE_YARA_LINT_ONLY: 'dev/test-only escape hatch: publish YARA rules without the pre-check (ignored unless NODE_ENV is development/test)',
   // CALLER_*
   CALLER_VERIFICATION_ENABLED: 'feature flag',

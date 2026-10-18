@@ -3,7 +3,7 @@
 # build-pack.sh — build the Breeze built-in YARA pack (#6263 W03b).
 #
 #   build-pack.sh [--out DIR] [--yarac PATH] [<forge-tag>]
-#   build-pack.sh --check-lock          # pack.lock vs. inputs only; no download
+#   build-pack.sh --check-lock [--base-lock FILE]  # pack.lock vs. inputs (and vs. main's lock); no download
 #   build-pack.sh --print-inputs-hash   # the value pack.lock's inputs_sha256 must hold
 #
 # Downloads the YARA Forge "core" release pinned in forge.sha256 (tag AND
@@ -18,8 +18,14 @@
 # Version lock: the pack's `version` (pack.lock) is the integer the API's boot
 # upsert compares — a newer version replaces the built-in rule set, an equal or
 # older one is ignored. So the version MUST change whenever the pack's inputs
-# do. inputs_sha256 hashes every input file; a mismatch fails the build and
+# do. inputs_sha256 hashes every input: this directory's files, the yarac
+# compile policy (agent/internal/yarascan/yarac/yarac.go — breeze-yarac
+# validate decides which rules survive) and the YARA-X engine pin (only the
+# yaraxwasm/wazero lines of agent/go.mod and go.sum, so unrelated agent
+# dependency bumps do not force a pack bump). A mismatch fails the build and
 # --check-lock (run by CI) until `version` is bumped and the hash updated.
+# With --base-lock (CI passes main's pack.lock) the version may never go
+# backwards, and changed inputs need a strictly higher version.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +38,9 @@ MAX_ZIP_BYTES=$((64 * 1024 * 1024))
 MAX_CORE_BYTES=$((256 * 1024 * 1024))
 # Every file whose content changes the pack. pack.lock is not one of them.
 INPUT_FILES=(build-pack.sh denylist.txt filter.go forge.sha256 go.mod LICENSES.allow)
+# Inputs outside this directory, relative to the repo root.
+EXTERNAL_INPUT_FILES=(agent/internal/yarascan/yarac/yarac.go)
+ENGINE_PIN_RE='github\.com/(niallnsec/yaraxwasm|tetratelabs/wazero) '
 
 die() { echo "build-pack: $*" >&2; exit 1; }
 
@@ -52,15 +61,25 @@ inputs_hash() {
     cat "$here/$f" >>"$tmp"
     printf '\0' >>"$tmp"
   done
+  for f in "${EXTERNAL_INPUT_FILES[@]}"; do
+    [ -f "$repo_root/$f" ] || die "missing input $f"
+    printf '%s\0' "$f" >>"$tmp"
+    cat "$repo_root/$f" >>"$tmp"
+    printf '\0' >>"$tmp"
+  done
+  local pins
+  pins="$(grep -hE "$ENGINE_PIN_RE" "$repo_root/agent/go.mod" "$repo_root/agent/go.sum" | sed -E 's/^[[:space:]]+//' | LC_ALL=C sort)"
+  [ -n "$pins" ] || die "no yaraxwasm pin found in agent/go.mod / go.sum"
+  printf 'engine-pins\0%s\0' "$pins" >>"$tmp"
   sha256_of "$tmp"
   rm -f "$tmp"
 }
 
 lock_value() {
-  local key="$1" v
-  v="$(sed -nE "s/^${key}=([^[:space:]]+)[[:space:]]*$/\1/p" "$here/pack.lock")"
-  [ -n "$v" ] || die "pack.lock has no ${key}= line"
-  [ "$(printf '%s\n' "$v" | wc -l | tr -d ' ')" = 1 ] || die "pack.lock has more than one ${key}= line"
+  local key="$1" file="${2:-$here/pack.lock}" v
+  v="$(sed -nE "s/^${key}=([^[:space:]]+)[[:space:]]*$/\1/p" "$file")"
+  [ -n "$v" ] || die "$file has no ${key}= line"
+  [ "$(printf '%s\n' "$v" | wc -l | tr -d ' ')" = 1 ] || die "$file has more than one ${key}= line"
   printf '%s' "$v"
 }
 
@@ -80,15 +99,31 @@ the built-in rule set with a NEWER version) and set inputs_sha256=$got
 EOF
     exit 1
   fi
+  if [ -n "$base_lock" ]; then
+    [ -f "$base_lock" ] || die "base lock $base_lock does not exist"
+    local base_version base_inputs
+    base_version="$(lock_value version "$base_lock")"
+    base_inputs="$(lock_value inputs_sha256 "$base_lock")"
+    [[ "$base_version" =~ ^[1-9][0-9]{0,8}$ ]] || die "base lock version must be a positive integer (got '$base_version')"
+    if [ "$version" -lt "$base_version" ]; then
+      die "pack.lock version $version is lower than the base's $base_version: the version must never go backwards (the API would ignore this pack everywhere)"
+    fi
+    if [ "$got" != "$base_inputs" ] && [ "$version" -le "$base_version" ]; then
+      die "pack inputs changed since the base but pack.lock version is still $version: bump it above $base_version"
+    fi
+  fi
   printf '%s' "$version"
 }
 
 out_dir="$repo_root/dist/yara-pack"
 yarac=""
 tag_arg=""
+base_lock=""
+mode=build
 while [ $# -gt 0 ]; do
   case "$1" in
-    --check-lock) v="$(check_lock)"; echo "pack.lock ok: version $v"; exit 0 ;;
+    --check-lock) mode=check; shift ;;
+    --base-lock) [ $# -ge 2 ] || die "--base-lock needs a file"; base_lock="$2"; shift 2 ;;
     --print-inputs-hash) inputs_hash; exit 0 ;;
     --out) [ $# -ge 2 ] || die "--out needs a directory"; out_dir="$2"; shift 2 ;;
     --yarac) [ $# -ge 2 ] || die "--yarac needs a path"; yarac="$2"; shift 2 ;;
@@ -97,6 +132,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ "$mode" = check ]; then
+  v="$(check_lock)"
+  echo "pack.lock ok: version $v${base_lock:+ (vs. base lock)}"
+  exit 0
+fi
 pack_version="$(check_lock)"
 
 pin_line="$(grep -vE '^[[:space:]]*(#|$)' "$here/forge.sha256")"

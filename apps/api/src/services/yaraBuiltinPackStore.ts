@@ -21,6 +21,7 @@ import type { BuiltinPackDecision } from './yaraBuiltinPack';
 
 export interface BuiltinPackRow {
   isBuiltin: boolean;
+  enabled: boolean;
   publishedVersion: number;
   publishedSha256: string | null;
   currentVersion: number;
@@ -50,6 +51,7 @@ const LOCK_KEY = 'yara-builtin-pack';
 
 const rowColumns = {
   isBuiltin: yaraRuleSets.isBuiltin,
+  enabled: yaraRuleSets.enabled,
   publishedVersion: yaraRuleSets.publishedVersion,
   publishedSha256: yaraRuleSets.publishedSha256,
   currentVersion: yaraRuleSets.currentVersion,
@@ -65,6 +67,27 @@ export async function readBuiltinPackRow(): Promise<BuiltinPackRow | null> {
         .limit(1);
       return row ?? null;
     }, 'yara-builtin-pack:read'),
+  );
+}
+
+/**
+ * The kill switch (BREEZE_YARA_BUILTIN_PACK_DISABLED). True when the row's
+ * `enabled` actually changed; a missing row is a no-op.
+ */
+export async function setBuiltinPackEnabled(enabled: boolean): Promise<boolean> {
+  return runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const changed = await db
+        .update(yaraRuleSets)
+        .set({ enabled, updatedAt: new Date() })
+        .where(and(
+          eq(yaraRuleSets.id, YARA_BUILTIN_RULE_SET_ID),
+          eq(yaraRuleSets.isBuiltin, true),
+          eq(yaraRuleSets.enabled, !enabled),
+        ))
+        .returning({ id: yaraRuleSets.id });
+      return changed.length > 0;
+    }, 'yara-builtin-pack:enabled'),
   );
 }
 

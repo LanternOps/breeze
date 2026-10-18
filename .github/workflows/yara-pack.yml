@@ -16,7 +16,9 @@ name: YARA Pack FP
 #     to block unrelated merges. It is path-filtered for PRs that touch the
 #     pack, and nightly so a runner-image change is seen within a day.
 # The pack's version lock and filter unit tests DO block: they run in ci.yml's
-# Security Audit job.
+# Security Audit job. And release.yml runs the same scan (scan-corpus.sh) on
+# the exact bytes it is about to publish: a release never ships a pack that
+# matches these clean corpora.
 
 on:
   pull_request:
@@ -80,10 +82,12 @@ jobs:
             corpus: /usr
             workers: 4
             min_files: 20000
+            max_failed_ratio: '0.02'
           - os: windows-latest
             corpus: 'C:\Windows\System32'
             workers: 2
             min_files: 5000
+            max_failed_ratio: '0.05'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -104,21 +108,13 @@ jobs:
           name: yara-pack
           path: dist/yara-pack
 
-      - name: Build breeze-yarac
-        shell: bash
-        working-directory: agent
-        run: CGO_ENABLED=0 go build -trimpath -o "../dist/bin/breeze-yarac$(go env GOEXE)" ./cmd/breeze-yarac
-
       - name: Scan the clean corpus
         shell: bash
         env:
           CORPUS: ${{ matrix.corpus }}
           WORKERS: ${{ matrix.workers }}
           MIN_FILES: ${{ matrix.min_files }}
+          MAX_FAILED_RATIO: ${{ matrix.max_failed_ratio }}
         run: |
-          set -u
-          status=0
-          "./dist/bin/breeze-yarac$(go env GOEXE)" scan --bundle dist/yara-pack/breeze-yara-builtin.json \
-            --workers "$WORKERS" --max-file-mb 50 "$CORPUS" > scan.jsonl 2> scan.err || status=$?
-          tail -c 2000 scan.err || true
-          node scripts/security/yara-pack/check-scan.mjs scan.jsonl "$status" "$MIN_FILES"
+          bash scripts/security/yara-pack/scan-corpus.sh dist/yara-pack/breeze-yara-builtin.json \
+            "$CORPUS" "$WORKERS" "$MIN_FILES" "$MAX_FAILED_RATIO"

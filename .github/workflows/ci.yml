@@ -1396,8 +1396,24 @@ jobs:
       # only with a NEWER pack version, so a pack input change without a
       # version bump would never reach the fleet: the lock check blocks that.
       # The clean-corpus false-positive scan lives in yara-pack.yml (non-blocking).
+      - name: Test built-in YARA pack build gates
+        run: node --test scripts/security/yara-pack/build-pack.test.mjs
+
+      # Against main's lock too: the version may never go backwards, and
+      # changed inputs need a strictly higher version. A failed fetch fails the
+      # step; only a main that has no pack.lock yet skips the comparison.
       - name: Check built-in YARA pack version lock
-        run: bash scripts/security/yara-pack/build-pack.sh --check-lock
+        run: |
+          set -euo pipefail
+          git fetch --quiet --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+          base="$RUNNER_TEMP/base-pack.lock"
+          if git cat-file -e origin/main:scripts/security/yara-pack/pack.lock 2>/dev/null; then
+            git show origin/main:scripts/security/yara-pack/pack.lock > "$base"
+            bash scripts/security/yara-pack/build-pack.sh --check-lock --base-lock "$base"
+          else
+            echo "::notice::main has no scripts/security/yara-pack/pack.lock yet; checking the lock against its inputs only"
+            bash scripts/security/yara-pack/build-pack.sh --check-lock
+          fi
 
       - name: Setup Go (YARA pack filter)
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7

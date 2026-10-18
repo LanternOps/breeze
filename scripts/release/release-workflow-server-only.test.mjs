@@ -428,7 +428,7 @@ test('the job-graph snapshot is the pre-change graph and the current graph only 
   const added = Object.keys(currentGraph).filter((name) => !(name in BASELINE)).sort();
   // build-yara-pack (#6263 W03b) is a later, unrelated addition: server
   // content built for both release kinds, needed only by create-release.
-  assert.deepEqual(added, ['build-yara-pack', 'carry-forward-binaries', 'classify-release']);
+  assert.deepEqual(added, ['build-yara-pack', 'carry-forward-binaries', 'classify-release', 'yara-pack-fp-gate']);
   const removed = Object.keys(BASELINE).filter((name) => !(name in currentGraph));
   assert.deepEqual(removed, []);
   for (const [name, entry] of Object.entries(BASELINE)) {
@@ -439,7 +439,7 @@ test('the job-graph snapshot is the pre-change graph and the current graph only 
       assert.ok(
         ['classify-release', 'carry-forward-binaries'].includes(need)
           || (['release-integrity-gate', 'create-release'].includes(name) && BINARY_JOBS.includes(need))
-          || (name === 'create-release' && need === 'build-yara-pack'),
+          || (name === 'create-release' && ['build-yara-pack', 'yara-pack-fp-gate'].includes(need)),
         `${name} gained an unexpected need: ${need}`,
       );
     }
@@ -501,7 +501,7 @@ for (const statusModel of ['transitive', 'direct']) {
         'validate-release-lineage', 'classify-release', 'carry-forward-binaries', 'build-api', 'build-web',
         'build-docker-api', 'build-docker-web', 'build-docker-portal', 'build-docker-m365-graph-read-executor',
         'build-docker-m365-graph-actions-executor', 'build-docker-m365-communications-executor',
-        'release-integrity-gate', 'create-release', 'promote-signed-release-images', 'build-yara-pack',
+        'release-integrity-gate', 'create-release', 'promote-signed-release-images', 'build-yara-pack', 'yara-pack-fp-gate',
       ]) {
         assert.equal(results[name], 'success', `${name} must run for a server-only release (${JSON.stringify(vars)})`);
       }
@@ -612,9 +612,20 @@ test('manifest: both release kinds refuse to ship without the built-in YARA pack
   }
 });
 
+test('create-release downloads the YARA pack artifact (its download pattern is an allowlist)', () => {
+  const { lines } = stepLines('create-release', 'Download all artifacts');
+  const text = lines.map((line) => (typeof line === 'string' ? line : line.content)).join('\n');
+  const pattern = text.match(/pattern:\s*'\{([^}]*)\}'/u);
+  assert.ok(pattern, 'Download all artifacts must keep its brace-list pattern');
+  assert.ok(pattern[1].split(',').includes('breeze-yara-builtin'), 'breeze-yara-builtin must be downloaded or Prepare release assets refuses every release');
+});
+
 test('create-release needs the YARA pack job, which runs for both release kinds', () => {
   assert.ok(currentGraph['create-release'].needs.includes('build-yara-pack'));
   assert.ok(ifConjuncts('create-release').includes("needs.build-yara-pack.result == 'success'"));
+  assert.ok(currentGraph['create-release'].needs.includes('yara-pack-fp-gate'), 'a pack that matches a clean corpus must never publish');
+  assert.ok(ifConjuncts('create-release').includes("needs.yara-pack-fp-gate.result == 'success'"));
+  assert.deepEqual(currentGraph['yara-pack-fp-gate'].needs, ['build-yara-pack'], 'the gate scans the exact uploaded bytes');
   assert.ok(!currentGraph['build-yara-pack'].needs.includes('classify-release'), 'the pack is server content, not gated on release kind');
 });
 
