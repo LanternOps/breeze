@@ -159,6 +159,13 @@ mod tests {
     }
 
     #[test]
+    fn fresh_dev_build_still_follows_the_default_rule_when_remote_is_newer() {
+        // Only a newer dev-marker build could be "newer" than 999.x; the default
+        // rule must still let it through, not hard-code "never update".
+        assert!(release_supersedes(BuildKind::DevFresh, 999, true));
+    }
+
+    #[test]
     fn stale_dev_build_is_replaced_by_any_real_release() {
         // The #8956 machine: a 999.0.0 bundle built six months ago, offered 0.13.14.
         assert!(release_supersedes(BuildKind::DevStale, 0, false));

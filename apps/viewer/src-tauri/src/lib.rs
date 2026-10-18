@@ -364,15 +364,18 @@ fn own_install_path() -> String {
 }
 
 /// Time since the running executable was written — for a local build, roughly
-/// when it was built. `None` when that cannot be read, or the timestamp lies in
-/// the future; [`dev_build::classify_build`] treats both as stale.
+/// when it was built (a copy that resets mtime, or re-signing, restarts it).
+/// `Err` says why the age is unknown: unreadable metadata, or a timestamp in the
+/// future. [`dev_build::classify_build`] treats an unknown age as stale.
 #[cfg_attr(debug_assertions, allow(dead_code))] // only `auto_update` (release builds) uses it
-fn running_build_age() -> Option<std::time::Duration> {
-    let modified = std::fs::metadata(std::env::current_exe().ok()?)
-        .ok()?
-        .modified()
-        .ok()?;
-    std::time::SystemTime::now().duration_since(modified).ok()
+fn running_build_age() -> Result<std::time::Duration, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot resolve own path: {e}"))?;
+    let modified = std::fs::metadata(&exe)
+        .and_then(|m| m.modified())
+        .map_err(|e| format!("cannot read modification time of {}: {e}", exe.display()))?;
+    std::time::SystemTime::now()
+        .duration_since(modified)
+        .map_err(|_| format!("modification time of {} is in the future", exe.display()))
 }
 
 /// Per-window pending deep link URLs. Key = window label, value = deep link URL.
@@ -1172,17 +1175,25 @@ async fn auto_update(app: tauri::AppHandle) {
     // A dev-marker build past its grace period accepts any real release, so a
     // forgotten local build stops outranking every published version (#8956).
     // Release builds get exactly the plugin's default "remote is newer" rule.
+    let build_age = running_build_age();
     let build_kind =
-        dev_build::classify_build(app.package_info().version.major, running_build_age());
+        dev_build::classify_build(app.package_info().version.major, build_age.clone().ok());
     if build_kind == dev_build::BuildKind::DevStale {
+        let age = match &build_age {
+            Ok(age) => format!("built {} days ago", age.as_secs() / 86_400),
+            Err(why) => format!("age unknown: {why}"),
+        };
         log_update(
             &app,
             &format!(
-                "Running development build {current} older than {} days (or of unknown age): any published release will replace it",
+                "Running development build {current} ({age}; grace {} days): any published release will replace it",
                 dev_build::DEV_BUILD_UPDATE_GRACE.as_secs() / 86_400
             ),
         );
     }
+    // Setting a comparator replaces the plugin's default rule entirely,
+    // including `plugins.updater.allowDowngrades` (unset for the viewer). Add
+    // any downgrade policy to `release_supersedes`, not to the config.
     let updater = match app
         .updater_builder()
         .version_comparator(move |current, release| {
