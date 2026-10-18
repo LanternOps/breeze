@@ -76,6 +76,8 @@ const EXPECTED_WORKER_NAMES = [
   'backupProviderSyncWorker',
   // EDR provider framework W01 (#8164).
   'edrProviderSyncWorker',
+  // Security agent coverage reconciliation (#6960 W03).
+  'securityAgentCoverageWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',

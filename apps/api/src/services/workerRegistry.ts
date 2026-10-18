@@ -1069,6 +1069,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Security agent coverage reconciliation (#6960 W03). 'global': its import
+    // closure reaches alertService + eventBus (createSourcedAlert) but no
+    // socket-local dispatch, the same shape as edrProviderSyncWorker.
+    name: 'securityAgentCoverageWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/securityAgentCoverageWorker');
+      return { init: m.initializeSecurityAgentCoverageWorker, shutdown: m.shutdownSecurityAgentCoverageWorker };
+    },
+  },
+  {
     // socket-owner, not global: its runtime import closure reaches
     // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
     // -> services/m365ControlPlane/readActionService.ts ->

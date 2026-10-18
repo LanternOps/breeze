@@ -222,6 +222,7 @@ const EXEMPT: Record<string, string> = {
   'services/auditFallbackOrg.ts': 'request path: reads the org of the one device the request URL named, to file its audit row; not a selector',
   'services/restorePointRequest.ts': 'reads the org/OS of the ONE device a claimed command already targets (by id) to re-stamp its restore-point snapshot at delivery; selects no targets',
   'services/filesystemScanGenerationRelease.ts': 'reads the osType of the ONE device a timed-out/failed filesystem_analysis command already names (by id) to release that command\'s own scan-generation registration; selects no targets and never queues work',
+  'services/securityAgents/vendorEndpointSources.ts': 'derived (#6960 W03): reads devices only inside the org the coverage fan-out chose (plus that partner\'s device hostnames) to match vendor agents; selects no targets and dispatches no work',
   'services/edrProviders/read.ts': 'request-path EDR read model (#8166): joins only the device already linked to a visible EDR row, and resolves the caller\'s allowed-site device ids; selects no targets and dispatches no work',
   'services/auditOrgResolver.ts': 'resolves the org an audit row belongs to',
   'services/callerVerification/deliverers/workstation.ts': 'request path + derived: prepare re-reads the one device the technician selected (within the verification org); delivery reads the device a pending caller_verify command already names. The insert chokepoint and the delivery claim both refuse parked devices',

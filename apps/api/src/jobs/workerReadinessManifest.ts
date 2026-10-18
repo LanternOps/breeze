@@ -156,6 +156,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('huntressSyncWorker'),
   consumers('backupProviderSyncWorker'),
   consumers('edrProviderSyncWorker'),
+  // #6960 W03 — security agent coverage reconciliation; one Worker, no flag gate.
+  consumers('securityAgentCoverageWorker'),
   // The Worker is constructed unconditionally and attached unconditionally;
   // M365_TENANT_SYNC_ENABLED gates the TICK registration and the processor
   // body, not the construction. A flag-gated construction would need its own
