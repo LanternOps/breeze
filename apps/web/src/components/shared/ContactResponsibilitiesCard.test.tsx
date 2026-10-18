@@ -86,4 +86,23 @@ describe('ContactResponsibilitiesCard', () => {
 
     expect(await screen.findByText('Could not load responsible contacts.')).toBeTruthy();
   });
+
+  // #9029: on the device Overview an empty card is one muted line with a next step.
+  it('collapses to one line with an Assign link when nothing resolves and assignHref is set', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(jsonResponse({ responsibilities: [] }));
+    render(
+      <ContactResponsibilitiesCard
+        orgId={ORG_ID}
+        siteId={SITE_ID}
+        deviceId="dev-1"
+        assignHref={`/organizations/${ORG_ID}#contacts`}
+      />,
+    );
+    const row = await screen.findByTestId('contact-responsibilities-empty');
+    expect(row).toHaveTextContent('No responsible contacts');
+    const assign = screen.getByRole('link', { name: 'Assign' });
+    expect(assign).toHaveAttribute('href', `/organizations/${ORG_ID}#contacts`);
+    expect(screen.queryByRole('heading')).toBeNull();
+    expect(screen.queryByTestId('contact-responsibilities-card')).toBeNull();
+  });
 });

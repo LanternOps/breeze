@@ -494,7 +494,10 @@
       "createFirst": "Cree su primer filtro",
       "created": "Creado {{date}}",
       "deleteConfirm": "¿Eliminar este filtro?",
-      "duplicate": "Duplicado"
+      "duplicate": "Duplicado",
+      "saveFailed": "No se pudo guardar el filtro",
+      "deleteFailed": "No se pudo eliminar el filtro",
+      "ownerOrgHint": "Los filtros guardados pertenecen a una organización. Elige a cuál pertenece este filtro."
     },
     "targets": {
       "modes": {
@@ -2692,7 +2695,8 @@
     "dismiss": "Descartar el recordatorio de autenticación de dos factores"
   },
   "mfaPolicyOffBanner": {
-    "message": "La autenticación multifactor no es obligatoria para su equipo. Las sesiones solo con contraseña pueden ejecutar scripts, mover dispositivos y cambiar políticas.",
+    "label": "Recordatorio de MFA",
+    "message": "MFA no es obligatoria para su equipo: con solo contraseña se pueden ejecutar scripts.",
     "cta": "Exigir MFA",
     "dismiss": "Descartar el recordatorio de la política de MFA por hoy"
   },

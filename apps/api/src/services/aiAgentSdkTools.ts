@@ -201,6 +201,7 @@ export const TOOL_TIERS = {
   get_device_details: 1,
   get_device_hardware_health: 1,
   get_device_time_status: 1,
+  list_device_restore_point_attempts: 1,
   query_device_workloads: 1,
   list_time_sync_issues: 1,
   analyze_metrics: 1,
@@ -1735,6 +1736,13 @@ export function buildBreezeSdkTools(
       registryDescription('get_device_time_status'),
       { deviceId: uuid },
       makeHandler('get_device_time_status', getAuth, onPreToolUse, onPostToolUse),
+    ),
+
+    tool(
+      'list_device_restore_point_attempts',
+      registryDescription('list_device_restore_point_attempts'),
+      inputShape('list_device_restore_point_attempts'),
+      makeHandler('list_device_restore_point_attempts', getAuth, onPreToolUse, onPostToolUse),
     ),
 
     tool(

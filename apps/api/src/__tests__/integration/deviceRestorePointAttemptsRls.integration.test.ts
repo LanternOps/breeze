@@ -15,6 +15,10 @@ import {
   type DbAccessContext,
 } from '../../db';
 import { devices } from '../../db/schema';
+import {
+  deploymentResultRestorePointSql,
+  scriptExecutionRestorePointSql,
+} from '../../services/restorePointInline';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -176,6 +180,37 @@ describe('device_restore_point_attempts tenancy contract', () => {
       SELECT status FROM device_restore_point_attempts WHERE id = ${foreignId}::uuid
     `) as unknown as Array<{ status: string }>;
     expect(still).toEqual([{ status: 'requested' }]);
+  });
+
+  runDb("the inline badge subqueries never surface another org's row through a shared link id (#8584)", async () => {
+    // The badge subqueries (services/restorePointInline.ts) filter ONLY on the
+    // link id (+ device for software). script_execution_id and
+    // software_deployment_id carry no FK, so a row stamped with org B can name
+    // an id that belongs to org A; RLS on the ambient request connection is
+    // the only thing keeping it out of org A's badge.
+    const { orgA, orgB, deviceB } = await seedFixture();
+    const executionId = randomUUID();
+    const deploymentId = randomUUID();
+    await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO device_restore_point_attempts
+        (request_id, org_id, device_id, trigger, status, script_execution_id, software_deployment_id)
+      VALUES (${randomUUID()}::uuid, ${orgB.id}::uuid, ${deviceB.id}::uuid, 'script', 'failed',
+              ${executionId}::uuid, ${deploymentId}::uuid)
+    `));
+    const badges = () => db.execute(sql`select
+      ${scriptExecutionRestorePointSql(sql`${executionId}::uuid`)} as script,
+      ${deploymentResultRestorePointSql(sql`${deploymentId}::uuid`, sql`${deviceB.id}::uuid`)} as software`);
+
+    // Control: the row is there and both subqueries match it without RLS.
+    const unscoped = Array.from(await withSystemDbAccessContext(badges) as unknown as Array<{ script: unknown; software: unknown }>)[0]!;
+    expect(unscoped.script).toMatchObject({ status: 'failed' });
+    expect(unscoped.software).toMatchObject({ status: 'failed' });
+
+    const asOrgA = Array.from(await withDbAccessContext(orgContext(orgA.id), badges) as unknown as Array<{ script: unknown; software: unknown }>)[0]!;
+    expect(asOrgA).toEqual({ script: null, software: null });
+
+    const asOrgB = Array.from(await withDbAccessContext(orgContext(orgB.id), badges) as unknown as Array<{ script: unknown; software: unknown }>)[0]!;
+    expect(asOrgB.script).toMatchObject({ status: 'failed' });
   });
 
   runDb('rejects re-tenanting an own row to another org with 42501 (UPDATE WITH CHECK)', async () => {

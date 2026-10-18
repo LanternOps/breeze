@@ -34,6 +34,10 @@ import { checkTenantToolRateLimit } from './guardrails';
 import { writeAuditEvent } from '../auditEvents';
 import { decryptToolSourceAuth } from './secrets';
 import { toolSourcesAllowPrivateEgress } from '../../config/env';
+import type { ToolSourceToolRow as W2ToolRow } from '../../db/schema';
+
+/** The fresh tool row the dispatch-time reload returns (W2); MCP dispatch never reads it. */
+const MCP_TOOL_ROW = { annotations: {} } as unknown as W2ToolRow;
 
 function makeDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
   return {
@@ -108,7 +112,7 @@ describe('executeTenantTool', () => {
   // nothing else in this file asserts `loadTenantToolForExecution`'s args.
   it('threads opts.orgId through to loadTenantToolForExecution as the targetOrgId for the dispatch-time reload', async () => {
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false });
 
     const descriptor = makeDescriptor();
@@ -120,7 +124,7 @@ describe('executeTenantTool', () => {
 
   it('passes undefined targetOrgId through when the caller omits opts.orgId (partner-wide-only reload)', async () => {
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false });
 
     const descriptor = makeDescriptor();
@@ -133,7 +137,7 @@ describe('executeTenantTool', () => {
   it('wires TOOL_SOURCES_ALLOW_PRIVATE_EGRESS into the McpClient it constructs for dispatch', async () => {
     vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(true);
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false });
 
     await executeTenantTool(makeDescriptor(), { id: 'a1' }, makeAuth(), { surface: 'chat' });
@@ -179,7 +183,7 @@ describe('executeTenantTool', () => {
 
   it('success path: structuredContent is returned as the result string', async () => {
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     mockCallTool.mockResolvedValue({ content: [], structuredContent: { assetId: 'a1', name: 'Widget' }, isError: false });
 
     const result = await executeTenantTool(makeDescriptor(), { id: 'a1' }, makeAuth(), { surface: 'chat' });
@@ -190,7 +194,7 @@ describe('executeTenantTool', () => {
 
   it('success path: falls back to concatenated text parts when structuredContent is absent', async () => {
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'Asset: ' }, { type: 'text', text: 'Widget' }], isError: false });
 
     const result = await executeTenantTool(makeDescriptor(), { id: 'a1' }, makeAuth(), { surface: 'chat' });
@@ -200,7 +204,7 @@ describe('executeTenantTool', () => {
 
   it('isError result: wraps the (redacted, truncated) text as { error }', async () => {
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'upstream boom' }], isError: true });
 
     const result = await executeTenantTool(makeDescriptor(), { id: 'a1' }, makeAuth(), { surface: 'chat' });
@@ -213,7 +217,7 @@ describe('executeTenantTool', () => {
     vi.mocked(decryptToolSourceAuth).mockReturnValue({ authKind: 'bearer', token: 'sekret-token-abc123' });
     vi.mocked(loadTenantToolForExecution).mockResolvedValue({
       descriptor: makeDescriptor(),
-      source: makeSource({ authKind: 'bearer' }),
+      source: makeSource({ authKind: 'bearer' }), tool: MCP_TOOL_ROW,
     });
     mockCallTool.mockResolvedValue({
       content: [{ type: 'text', text: 'echoed Authorization: Bearer sekret-token-abc123 back to you' }],
@@ -228,7 +232,7 @@ describe('executeTenantTool', () => {
 
   it('truncates a result over 262,144 chars and appends the truncation marker', async () => {
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     const huge = 'x'.repeat(300_000);
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: huge }], isError: false });
 
@@ -241,7 +245,7 @@ describe('executeTenantTool', () => {
 
   it('audits the call with metadata only — never the input values or the output', async () => {
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
-    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource(), tool: MCP_TOOL_ROW });
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'Widget details: super-secret-value-9' }], isError: false });
 
     const auth = makeAuth();

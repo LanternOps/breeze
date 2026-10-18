@@ -3,6 +3,11 @@
 #   run-perf.sh --profile nightly-200|smoke --out-dir <dir> [--label clean|inject]
 # Brings up this checkout's wt-stack, runs the W02 simulator under sample.sh, and
 # writes $OUT/{idle.csv,samples.csv,agentsim.json,hardware.json,stack.json,kpi.json}.
+#   run-perf.sh --storm <scenario> --out-dir <dir> [-- storm.sh flags...]   (#8642)
+# Storm mode brings up the same throwaway stack (admission enforce, caddy port
+# pinned) and runs load-tests/agentsim/storm.sh instead of the KPI run; the
+# storm report is copied to $OUT/storm.json, storm.sh's exit code (3 = a gate failed)
+# is passed through, and no KPI record is built.
 # Exit: 0 ok, 1 a step failed, 2 invalid run (refused .env, failed acceptance), 64 usage.
 # Lab values are exported in this shell only; nothing here is a code default.
 set -euo pipefail
@@ -30,19 +35,28 @@ go_dur() {
   echo "$out"
 }
 
-usage() { echo "usage: run-perf.sh --profile nightly-200|smoke --out-dir <dir> [--label clean|inject]" >&2; exit 64; }
+usage() { echo "usage: run-perf.sh --profile nightly-200|smoke --out-dir <dir> [--label clean|inject] | --storm <scenario> --out-dir <dir> [-- storm.sh flags...]" >&2; exit 64; }
 
-PROFILE=""; OUT=""; LABEL="clean"
+PROFILE=""; OUT=""; LABEL="clean"; STORM=""; STORM_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --profile) PROFILE="${2:-}"; shift 2 || usage ;;
     --out-dir) OUT="${2:-}"; shift 2 || usage ;;
     --label)   LABEL="${2:-}"; shift 2 || usage ;;
+    --storm)   STORM="${2:-}"; shift 2 || usage ;;
+    --) shift; STORM_ARGS=("$@"); break ;;
     *) usage ;;
   esac
 done
-[ -n "$PROFILE" ] && [ -n "$OUT" ] || usage
-profile_params "$PROFILE" || { echo "run-perf: unknown profile '$PROFILE'" >&2; usage; }
+[ -n "$OUT" ] || usage
+if [ -n "$STORM" ]; then
+  [ -z "$PROFILE" ] || usage
+  PROFILE="storm:$STORM"
+  AGENTS=0; RAMP=1; WARMUP_S=0; WINDOW_S=0
+else
+  [ -n "$PROFILE" ] && [ ${#STORM_ARGS[@]} -eq 0 ] || usage
+  profile_params "$PROFILE" || { echo "run-perf: unknown profile '$PROFILE'" >&2; usage; }
+fi
 case "$LABEL" in clean|inject) ;; *) echo "run-perf: --label must be clean or inject" >&2; usage ;; esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -137,6 +151,14 @@ chmod 600 "$ENV_FILE"
 
 # --- 2. Stack.
 export AGENT_ENROLL_RATE_LIMIT=5000 FORCE_HTTPS=false BREEZE_ADMISSION_MODE=observe
+if [ -n "$STORM" ]; then
+  # Gates are only meaningful with admission shedding live (README "Storm
+  # scenarios"); a pinned caddy port keeps the simulator reachable across the
+  # socket-drop caddy restart (#8718).
+  export BREEZE_ADMISSION_MODE=enforce
+  : "${BREEZE_WT_CADDY_PORT:=18080}"
+  export BREEZE_WT_CADDY_PORT
+fi
 echo "run-perf: profile=$PROFILE label=$LABEL duration=$DURATION out=$OUT" >&2
 echo "$LABEL" >"$OUT/label.txt"
 ( cd "$REPO" && pnpm wt-stack up )
@@ -145,6 +167,22 @@ echo "$LABEL" >"$OUT/label.txt"
 mkdir -p "$SIM/.state"
 chmod 700 "$SIM/.state"
 ( umask 077; "$SIM/lab-setup.sh" >"$SIM/.state/lab.env" )
+
+# --- 3b. Storm mode: run the scenario and stop; there is no KPI record.
+if [ -n "$STORM" ]; then
+  ulimit -n 16384 2>/dev/null || true
+  storm_rc=0
+  mark="$(mktemp)"
+  "$SIM/storm.sh" "$STORM" ${STORM_ARGS[@]+"${STORM_ARGS[@]}"} &
+  SIM_PID=$!
+  wait "$SIM_PID" || storm_rc=$?
+  SIM_PID=""
+  # storm.sh owns the report path (reports/storm-<name>-<stamp>.json); keep the newest at $OUT/storm.json.
+  report="$(find "$SIM/reports" -maxdepth 1 -name 'storm-*.json' -newer "$mark" 2>/dev/null | sort | tail -n1)"
+  rm -f "$mark"
+  [ -z "$report" ] || cp "$report" "$OUT/storm.json"
+  exit "$storm_rc"
+fi
 
 # --- 4. Idle sample, no agents.
 "$HERE/sample.sh" "$OUT/idle.csv" &

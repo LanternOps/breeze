@@ -16,7 +16,6 @@ import {
   changeAnthropicEndpoint,
   createAnthropicKeyConnection,
   deleteAnthropicConnection,
-  hasAnthropicConnection,
   rotateAnthropicKey,
 } from '../../services/aiModels/anthropicConnectionWrites';
 import { updateConnectionSettings } from '../../services/aiModels/connectionSettings';
@@ -79,12 +78,8 @@ aiModelConnectionRoutes.post('/', ...partnerWrite, zValidator('json', connection
   return registryWrite(c, partnerId, async () => {
     switch (body.kind) {
       case 'anthropic_byok': {
-        // R1 cap (partner_ai_connections_compat_uq): one live Anthropic API
-        // connection per partner; re-checked under the registry lock. Gateway
-        // kinds are not bound by it.
-        if (await hasAnthropicConnection(partnerId)) {
-          return c.json({ error: 'This partner already has an Anthropic connection. Rotate its key instead.', code: 'conflict' }, 409);
-        }
+        // A partner may hold several Anthropic connections (W08b, #7606); only
+        // its first takes over the features on the platform key.
         const result = await createAnthropicKeyConnection({ partnerId, apiKey: body.apiKey, userId });
         // Two writes, not one: the key save probes the provider outside any
         // transaction (W03). If the settings write fails, the connection still

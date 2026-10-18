@@ -15,6 +15,14 @@ vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn()
 }));
 
+// This file pins the metrics request lifecycle by counting fetchWithAuth
+// calls; the attention pills' batched request (#9038) is covered in
+// DeviceCard.attention.test.tsx, so keep it out of these counts.
+vi.mock('./deviceAttentionCounts', () => ({
+  useDeviceAttentionCounts: () => () => ({ status: 'loading' }),
+  DeviceAttentionPills: () => null,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>

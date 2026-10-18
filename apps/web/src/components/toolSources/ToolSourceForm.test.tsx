@@ -166,7 +166,7 @@ describe('ToolSourceForm', () => {
     const user = userEvent.setup();
     const existing = {
       id: 's-1', orgId: null, partnerId: 'p-1', slug: 'hudu', name: 'Hudu', kind: 'mcp' as const,
-      endpointUrl: 'https://hudu.example.test/mcp', credentialOrigin: 'https://hudu.example.test',
+      endpointUrl: 'https://hudu.example.test/mcp', credentialOrigin: 'https://hudu.example.test', specUrl: null, lastDiscoverySummary: null,
       authKind: 'bearer' as const, hasCredential: true, status: 'active' as const,
       lastDiscoveredAt: null, lastError: null, rateLimitPerMinute: 120, toolCount: 0, enabledToolCount: 0,
       createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z',
@@ -189,11 +189,11 @@ describe('ToolSourceForm', () => {
     expect(updateToolSource).toHaveBeenCalledTimes(1); // still just the first save
   });
 
-  it('offers openapi as a DISABLED option rather than hiding it (W2 ships it)', () => {
+  it('offers openapi as a selectable option', () => {
     renderCreate();
     const openapi = screen.getByTestId('tool-source-kind').querySelector('option[value="openapi"]') as HTMLOptionElement;
     expect(openapi).toBeTruthy();
-    expect(openapi.disabled).toBe(true);
+    expect(openapi.disabled).toBe(false);
   });
 
   it('hides the ownership selector entirely for an org-scoped user', () => {
@@ -216,7 +216,7 @@ describe('ToolSourceForm', () => {
           name: 'Hudu',
           kind: 'mcp',
           endpointUrl: 'https://hudu.example.test/mcp',
-          credentialOrigin: 'https://hudu.example.test',
+          credentialOrigin: 'https://hudu.example.test', specUrl: null, lastDiscoverySummary: null,
           authKind: 'bearer',
           hasCredential: true,
           status: 'active',
@@ -247,5 +247,102 @@ describe('ToolSourceForm', () => {
     expect(body).not.toHaveProperty('slug');
     // An untouched credential field must not blank the stored credential.
     expect(body).not.toHaveProperty('authConfig');
+  });
+});
+
+describe('ToolSourceForm — openapi kind (#5217)', () => {
+  it('lets the user pick openapi and shows the spec URL field only then', async () => {
+    const user = userEvent.setup();
+    renderCreate();
+    expect(screen.queryByTestId('tool-source-spec-url')).toBeNull();
+    await user.selectOptions(screen.getByTestId('tool-source-kind'), 'openapi');
+    const spec = screen.getByTestId('tool-source-spec-url') as HTMLInputElement;
+    expect(spec.type).toBe('url');
+    expect(spec.required).toBe(true);
+    await user.selectOptions(screen.getByTestId('tool-source-kind'), 'mcp');
+    expect(screen.queryByTestId('tool-source-spec-url')).toBeNull();
+  });
+
+  it('relabels the endpoint per kind', async () => {
+    const user = userEvent.setup();
+    renderCreate();
+    expect(screen.getByText('MCP server URL')).toBeTruthy();
+    await user.selectOptions(screen.getByTestId('tool-source-kind'), 'openapi');
+    expect(screen.getByText('API base URL')).toBeTruthy();
+    expect(screen.queryByText('MCP server URL')).toBeNull();
+    expect(screen.getByText(/Server URLs listed inside the document are ignored/)).toBeTruthy();
+  });
+
+  it('posts kind openapi with specUrl', async () => {
+    const user = userEvent.setup();
+    renderCreate();
+    await user.selectOptions(screen.getByTestId('tool-source-kind'), 'openapi');
+    await user.type(screen.getByTestId('tool-source-name'), 'Vendor');
+    await user.type(screen.getByTestId('tool-source-endpoint'), 'https://api.vendor.example.test/v1');
+    await user.type(screen.getByTestId('tool-source-spec-url'), 'https://api.vendor.example.test/openapi.json');
+    await user.click(screen.getByTestId('tool-source-submit'));
+    await waitFor(() => expect(createToolSource).toHaveBeenCalled());
+    expect(createToolSource.mock.calls[0]![1]).toMatchObject({
+      kind: 'openapi',
+      endpointUrl: 'https://api.vendor.example.test/v1',
+      specUrl: 'https://api.vendor.example.test/openapi.json',
+    });
+  });
+
+  it('does not post specUrl for an mcp source, even after toggling kind', async () => {
+    const user = userEvent.setup();
+    renderCreate();
+    await user.selectOptions(screen.getByTestId('tool-source-kind'), 'openapi');
+    await user.type(screen.getByTestId('tool-source-spec-url'), 'https://x.example.test/o.json');
+    await user.selectOptions(screen.getByTestId('tool-source-kind'), 'mcp');
+    await fillRequired(user);
+    await user.click(screen.getByTestId('tool-source-submit'));
+    await waitFor(() => expect(createToolSource).toHaveBeenCalled());
+    const body = createToolSource.mock.calls[0]![1];
+    expect(body.kind).toBe('mcp');
+    expect(body).not.toHaveProperty('specUrl');
+  });
+
+  const openapiSource = {
+    id: 's-1', orgId: null, partnerId: 'p-1', slug: 'vendor', name: 'Vendor', kind: 'openapi',
+    endpointUrl: 'https://api.vendor.example.test/v1',
+    specUrl: 'https://api.vendor.example.test/openapi.json',
+    authKind: 'none', rateLimitPerMinute: 120,
+  } as never;
+
+  it('edit: shows kind as static text and the spec URL pre-filled; sends specUrl only when changed', async () => {
+    const user = userEvent.setup();
+    render(<ToolSourceForm source={openapiSource} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.queryByTestId('tool-source-kind')).toBeNull();
+    expect(screen.getByTestId('tool-source-kind-static').textContent).toBe('OpenAPI (REST)');
+    const spec = screen.getByTestId('tool-source-spec-url') as HTMLInputElement;
+    expect(spec.value).toBe('https://api.vendor.example.test/openapi.json');
+
+    await user.click(screen.getByTestId('tool-source-submit'));
+    await waitFor(() => expect(updateToolSource).toHaveBeenCalledTimes(1));
+    expect(updateToolSource.mock.calls[0]![2]).not.toHaveProperty('specUrl');
+    expect(updateToolSource.mock.calls[0]![2]).not.toHaveProperty('kind');
+
+    await user.clear(spec);
+    await user.type(spec, 'https://api.vendor.example.test/v2.json');
+    await user.click(screen.getByTestId('tool-source-submit'));
+    await waitFor(() => expect(updateToolSource).toHaveBeenCalledTimes(2));
+    expect(updateToolSource.mock.calls[1]![2]).toMatchObject({ specUrl: 'https://api.vendor.example.test/v2.json' });
+  });
+
+  it('edit of an mcp source shows no spec URL field and sends no specUrl', async () => {
+    const user = userEvent.setup();
+    render(
+      <ToolSourceForm
+        source={{ ...(openapiSource as object), kind: 'mcp', specUrl: null } as never}
+        onSaved={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('tool-source-spec-url')).toBeNull();
+    expect(screen.getByTestId('tool-source-kind-static').textContent).toBe('MCP server');
+    await user.click(screen.getByTestId('tool-source-submit'));
+    await waitFor(() => expect(updateToolSource).toHaveBeenCalled());
+    expect(updateToolSource.mock.calls[0]![2]).not.toHaveProperty('specUrl');
   });
 });

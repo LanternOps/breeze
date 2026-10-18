@@ -216,13 +216,25 @@ describe('handleFilesystemAnalysisCommandResult — baseline completion', () => 
     expect(upsertFilesystemScanState).not.toHaveBeenCalled();
   });
 
-  it('keeps the generation for any other failure code', async () => {
+  it.each([
+    ['failed', 'path_not_found'],
+    ['failed', undefined],
+    ['timeout', undefined],
+  ])('releases the generation on a %s result (errorCode %s) so older good results are not superseded (#8945)', async (status, errorCode) => {
+    selectQueue.push([{ osType: 'windows' }]);
+    const command = {
+      id: '00000000-0000-4000-8000-0000000000ee',
+      deviceId: DEVICE_ID,
+      payload: { scanMode: 'baseline', trigger: 'on_demand', path: 'c:/' },
+      createdBy: null,
+    } as never;
     await handleFilesystemAnalysisCommandResult(
-      baselineCommand(),
-      { commandId: 'c', status: 'failed', exitCode: 1, error: 'path does not exist', errorCode: 'path_not_found' } as never,
+      command,
+      { commandId: 'c', status, exitCode: 1, error: 'boom', errorCode } as never,
       ORG_ID,
     );
-    expect(clearFilesystemScanGeneration).not.toHaveBeenCalled();
+    expect(clearFilesystemScanGeneration).toHaveBeenCalledWith(DEVICE_ID, 'C:\\', '00000000-0000-4000-8000-0000000000ee');
+    expect(saveFilesystemSnapshot).not.toHaveBeenCalled();
   });
 
   it('warns and releases nothing when the refused command\u2019s device row is gone', async () => {

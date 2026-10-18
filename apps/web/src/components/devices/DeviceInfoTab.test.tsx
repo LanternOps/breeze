@@ -56,6 +56,24 @@ function mockInitialLoad(displayName: string | null) {
   });
 }
 
+describe('DeviceInfoTab — headings and role copy (#9030)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('starts at h2 (no h1 → h3 skip) and says an unassessed role is not assessed yet', async () => {
+    mockInitialLoad(null);
+    render(<DeviceInfoTab deviceId={deviceId} />);
+    await screen.findByText('Operating System');
+    const headings = screen.getAllByRole('heading');
+    expect(headings.length).toBeGreaterThan(0);
+    expect(headings[0]!.tagName).toBe('H2');
+    expect(screen.queryAllByRole('heading', { level: 3 })).toHaveLength(0);
+    expect(screen.getByText('Role not assessed yet')).toBeInTheDocument();
+    expect(screen.queryByText(/^Unknown$/)).toBeNull();
+  });
+});
+
 describe('DeviceInfoTab — OS version display', () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { TELEMETRY_CONTROL_IDS, TRUST_CONTROL_CATEGORY_ORDER, TRUST_FRAMEWORKS, W1_TELEMETRY_CONTROL_IDS } from '../trustCenter/types';
 import { DECLARED_CONTROL_IDS } from '../trustCenter/declaredCatalog';
+import { FRAMEWORK_CROSSWALK } from '../trustCenter/frameworkCrosswalk';
 import { SUPPORTED_LOCALES } from '../utils/locale';
 
 export const TRUST_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -30,6 +31,19 @@ export const telemetryControlIdSchema = z.enum(TELEMETRY_CONTROL_IDS);
 
 const frameworkRefSchema = z.strictObject({ framework: trustFrameworkSchema, ref: z.string().min(1).max(32) });
 
+/** Max safeguards one control may carry (W3e): bounded well above the mapped set so the payload cannot bloat. */
+export const TRUST_CONTROL_SAFEGUARDS_MAX = 40;
+/** Identifier + status + counts only; labels come from FRAMEWORK_CROSSWALK at render time (spec §5.5, §18.13). */
+export const trustPublicSafeguardSchema = z.strictObject({
+  framework: z.literal('cis_v8'),
+  ref: z.string().min(1).max(32),
+  status: trustControlStatusSchema,
+  reason: trustNotAssessedReasonSchema.nullable(),
+  percent: z.number().int().min(0).max(100).nullable(),
+  assessed: z.number().int().min(0).nullable(),
+  eligible: z.number().int().min(0).nullable(),
+});
+
 export const trustPagePublicControlSchema = z.strictObject({
   id: telemetryControlIdSchema,
   category: z.enum(TRUST_CONTROL_CATEGORY_ORDER),
@@ -42,7 +56,28 @@ export const trustPagePublicControlSchema = z.strictObject({
   eligible: z.number().int().min(0).nullable(),
   evidenceAsOf: isoDate.nullable(),
   frameworkRefs: z.array(frameworkRefSchema).max(12),
+  /** hardening_baseline only, only while the CIS framework view is on (W3e). Optional: older snapshots lack it. */
+  safeguards: z.array(trustPublicSafeguardSchema).max(TRUST_CONTROL_SAFEGUARDS_MAX).optional(),
 }).superRefine((c, ctx) => {
+  if (c.safeguards !== undefined) {
+    if (c.id !== 'hardening_baseline') {
+      ctx.addIssue({ code: 'custom', path: ['safeguards'], message: 'only hardening_baseline may carry safeguards' });
+    }
+    const seen = new Set<string>();
+    c.safeguards.forEach((sg, i) => {
+      if (!FRAMEWORK_CROSSWALK.cis_v8[sg.ref]) {
+        ctx.addIssue({ code: 'custom', path: ['safeguards', i, 'ref'], message: 'unknown CIS v8 safeguard' });
+      }
+      if (seen.has(sg.ref)) ctx.addIssue({ code: 'custom', path: ['safeguards', i, 'ref'], message: 'duplicate safeguard' });
+      seen.add(sg.ref);
+      if (sg.status === 'not_assessed' && (sg.percent !== null || sg.reason === null)) {
+        ctx.addIssue({ code: 'custom', path: ['safeguards', i], message: 'not_assessed carries a reason and no percent' });
+      }
+      if (sg.status !== 'not_assessed' && sg.reason !== null) {
+        ctx.addIssue({ code: 'custom', path: ['safeguards', i], message: 'reason only with not_assessed' });
+      }
+    });
+  }
   if (c.status === 'not_assessed' && (c.percent !== null || c.reason === null)) {
     ctx.addIssue({ code: 'custom', message: 'not_assessed carries a reason and no percent' });
   }

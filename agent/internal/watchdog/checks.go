@@ -81,6 +81,10 @@ type HealthChecker struct {
 	// (state_sync). Same file-or-sync corroboration as lastSyncedHeartbeat —
 	// see AgentAuthRejectedAlive.
 	lastSyncedAuthRejected time.Time
+	// lastSyncedServerUnavailable is the freshest ServerUnavailableAt
+	// received over IPC (state_sync). Same file-or-sync corroboration as
+	// lastSyncedHeartbeat — see AgentServerUnavailableAlive.
+	lastSyncedServerUnavailable time.Time
 
 	// ipcProbeInterval sizes the state_sync recency window used by
 	// vetoIPCFailureForBackup (D3). Defaults to defaultIPCProbeInterval;
@@ -213,7 +217,9 @@ func (h *HealthChecker) LastIPCCheckVetoed() bool {
 
 // NoteStateSync records the agent-reported LastHeartbeat and in-flight
 // backup-run count delivered over IPC (state_sync). The agent only sends a
-// state_sync after a successful HTTP-200 heartbeat, so this is authoritative
+// heartbeat-bearing state_sync after a successful HTTP-200 heartbeat (the
+// auth-rejected and server-unavailable syncs pass a zero heartbeat, which
+// never regresses the stored one), so this is authoritative
 // liveness evidence even when the on-disk agent.state cannot be written.
 // Out-of-order or unparsable heartbeat values never regress the stored
 // timestamp. activeBackupRuns and the receipt time always overwrite —
@@ -280,6 +286,44 @@ func (h *HealthChecker) LastKnownAuthRejected(s *state.AgentState) time.Time {
 	return t
 }
 
+// NoteServerUnavailable records an agent-reported server-overload liveness
+// timestamp delivered over IPC (state_sync). Never regresses.
+func (h *HealthChecker) NoteServerUnavailable(t time.Time) {
+	if t.After(h.lastSyncedServerUnavailable) {
+		h.lastSyncedServerUnavailable = t
+	}
+}
+
+// LastKnownServerUnavailable returns the freshest server-overload liveness
+// timestamp from either the on-disk agent.state or IPC state_sync.
+func (h *HealthChecker) LastKnownServerUnavailable(s *state.AgentState) time.Time {
+	t := h.lastSyncedServerUnavailable
+	if s != nil && s.ServerUnavailableAt.After(t) {
+		t = s.ServerUnavailableAt
+	}
+	return t
+}
+
+// AgentServerUnavailableAlive reports whether the agent is demonstrably
+// running but the server is shedding its heartbeats (#8934; decision 2 on
+// #8148): within staleThreshold its heartbeat loop got a 429/502/503/504
+// answer — typically 503 with Retry-After from admission control or
+// DB-saturation shedding. A restart cannot add server capacity, and every
+// restart adds a reconnect (and a full re-sync) to the load that caused the
+// shedding.
+//
+// Like AgentAuthRejectedAlive this hold is unbounded, and for the same
+// reason it is safe: the marker is written by the heartbeat loop itself on
+// every overload answer, so a wedged loop stops refreshing it and falls back
+// to the ordinary staleness path. The agent never writes it for a transport
+// failure without an HTTP answer — that cannot be told apart from a broken
+// transport on the agent's side, which restarts and the watchdog's FAILOVER
+// channel exist to work around.
+func (h *HealthChecker) AgentServerUnavailableAlive(s *state.AgentState) bool {
+	at := h.LastKnownServerUnavailable(s)
+	return !at.IsZero() && time.Since(at) <= h.staleThreshold
+}
+
 // AgentAuthRejectedAlive reports whether the agent is demonstrably running
 // but locked out by the server (#2796): its heartbeat loop has written an
 // auth-rejected marker within staleThreshold.
@@ -296,16 +340,17 @@ func (h *HealthChecker) AgentAuthRejectedAlive(s *state.AgentState) bool {
 }
 
 // AgentAlive reports whether there is fresh evidence that the agent process
-// is running its heartbeat loop: a heartbeat within staleThreshold, or a
-// fresh auth-rejected marker (AgentAuthRejectedAlive). Used for the FAILOVER
-// self-recovery exit, the STANDBY "agent still here" check and restart
-// verification — none of which a restart could improve on for an agent whose
-// only problem is rejected credentials.
+// is running its heartbeat loop: a heartbeat within staleThreshold, a fresh
+// auth-rejected marker (AgentAuthRejectedAlive), or a fresh server-overload
+// marker (AgentServerUnavailableAlive). Used for the FAILOVER self-recovery
+// exit, the STANDBY "agent still here" check and restart verification — none
+// of which a restart could improve on for an agent whose only problem is
+// rejected credentials or an overloaded server.
 func (h *HealthChecker) AgentAlive(s *state.AgentState) bool {
 	if hb := h.LastKnownHeartbeat(s); !hb.IsZero() && time.Since(hb) <= h.staleThreshold {
 		return true
 	}
-	return h.AgentAuthRejectedAlive(s)
+	return h.AgentAuthRejectedAlive(s) || h.AgentServerUnavailableAlive(s)
 }
 
 // CheckHeartbeatStaleness returns CheckOK if the freshest known heartbeat
@@ -319,12 +364,16 @@ func (h *HealthChecker) AgentAlive(s *state.AgentState) bool {
 func (h *HealthChecker) CheckHeartbeatStaleness(s *state.AgentState) string {
 	hb := h.LastKnownHeartbeat(s)
 	if hb.IsZero() {
-		// No successful heartbeat yet. An auth-rejected marker still proves
-		// the agent got past startup and ran its heartbeat loop (#2796), so
-		// it takes the heartbeat's place as the staleness reference —
-		// otherwise a loop that wedged after being rejected would sit in the
-		// startup grace below forever.
+		// No successful heartbeat yet. An auth-rejected (#2796) or
+		// server-overload (#8934) marker still proves the agent got past
+		// startup and ran its heartbeat loop, so the fresher of the two takes
+		// the heartbeat's place as the staleness reference — otherwise a loop
+		// that wedged after being refused would sit in the startup grace
+		// below forever.
 		hb = h.LastKnownAuthRejected(s)
+		if busy := h.LastKnownServerUnavailable(s); busy.After(hb) {
+			hb = busy
+		}
 	}
 	if s == nil && hb.IsZero() {
 		return CheckHeartbeatStale
@@ -398,6 +447,12 @@ const (
 	// agent's in-memory auth backoff. Holds for as long as the marker stays
 	// fresh.
 	StaleAuthRejected
+	// StaleServerUnavailable — stale, but the agent is alive and the server
+	// is answering its heartbeats with an overload status (#8934). No
+	// restart and no veto budget spent: a restart cannot add server capacity
+	// and would add a reconnect to the overload. Holds for as long as the
+	// marker stays fresh.
+	StaleServerUnavailable
 )
 
 // EvaluateStaleHeartbeat is the complete heartbeat-ticker decision:
@@ -415,6 +470,10 @@ func (h *HealthChecker) EvaluateStaleHeartbeat(s *state.AgentState, ipcConnected
 	if h.AgentAuthRejectedAlive(s) {
 		h.staleVetoCount = 0
 		return StaleAuthRejected, 0
+	}
+	if h.AgentServerUnavailableAlive(s) {
+		h.staleVetoCount = 0
+		return StaleServerUnavailable, 0
 	}
 	vetoesBefore := h.staleVetoCount
 	if h.ShouldRestartOnStaleHeartbeat(ipcConnected) {

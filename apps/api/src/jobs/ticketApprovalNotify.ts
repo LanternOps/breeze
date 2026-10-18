@@ -130,7 +130,10 @@ export function approvalSnapshotText(req: SnapshotFields): string {
 interface LoadedContext {
   req: TicketApprovalRequest;
   ticket: { id: string; orgId: string; internalNumber: string | null; ticketNumber: string | null; subject: string; assignedTo: string | null; deviceId: string | null; partnerId: string };
+  /** Staff-facing label (internal number first). */
   label: string;
+  /** Customer-facing label: tickets.ticket_number, the id the portal shows (#8965). */
+  customerLabel: string;
   orgName: string;
 }
 
@@ -158,6 +161,7 @@ async function loadTicketContext(req: TicketApprovalRequest): Promise<LoadedCont
     req,
     ticket: { ...t, partnerId },
     label: t.internalNumber ?? t.ticketNumber ?? t.id,
+    customerLabel: t.ticketNumber ?? t.id,
     orgName: org?.name ?? '',
   };
 }
@@ -218,7 +222,7 @@ function composeMail(
     id,
     custom: partnerEmailCustomFromSettings(partner.settings, id),
     vars: {
-      ticket_number: ctx.label,
+      ticket_number: ctx.customerLabel,
       ticket_subject: ctx.ticket.subject,
       org_name: ctx.orgName,
       partner_name: partner.name,
@@ -227,7 +231,7 @@ function composeMail(
     },
     ctaUrl,
     brandName: partner.name,
-    internalNumber: ctx.label,
+    ticketNumber: ctx.customerLabel,
     ticketSubject: ctx.ticket.subject,
   });
   return { subject: rendered.subject, html: rendered.html, partnerId: ctx.ticket.partnerId, partnerName: partner.name.trim() || null };

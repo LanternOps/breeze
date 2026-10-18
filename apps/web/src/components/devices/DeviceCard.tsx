@@ -25,6 +25,7 @@ import { asRecord, toPercent, toPercentNullable } from "@/lib/deviceUtils";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import { EntityLink } from "@/components/shared/EntityLink";
+import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
 
 type DeviceCardProps = {
   device: Device;
@@ -249,6 +250,11 @@ export default function DeviceCard({
   const deviceClass = device.deviceClass ?? "agent";
   const isNetwork = deviceClass === "network";
   const isManual = deviceClass === "manual";
+  const isAgent = !isNetwork && !isManual;
+
+  // #9038: same alert/ticket pills as the list's Attention column. Every card
+  // calls this, but the loader coalesces them into ceil(cards/100) requests.
+  const attentionFor = useDeviceAttentionCounts(isAgent ? [device.id] : [], isAgent);
 
   useEffect(() => {
     // A discovered asset or a manual asset has no agent and no metric
@@ -373,7 +379,15 @@ export default function DeviceCard({
                 {t("deviceList.manual")}
               </span>
             ) : (
-              <p className="text-xs text-muted-foreground">{device.osVersion}</p>
+              <>
+                <p className="text-xs text-muted-foreground">{device.osVersion}</p>
+                <DeviceAttentionPills
+                  deviceId={device.id}
+                  entry={attentionFor(device.id)}
+                  pillsOnly
+                  className="mt-1"
+                />
+              </>
             )}
           </div>
         </div>

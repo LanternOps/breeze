@@ -272,7 +272,7 @@ func TestProbeCaptureBackends_NoFallbackSingleAttempt(t *testing.T) {
 	}
 }
 
-func TestProbeCaptureAccess_UsesPlatformPlanAndReportsResult(t *testing.T) {
+func TestProbeCapture_UsesPlatformPlanAndReportsResult(t *testing.T) {
 	restore := platformCaptureProbePlan
 	t.Cleanup(func() { platformCaptureProbePlan = restore })
 
@@ -293,16 +293,16 @@ func TestProbeCaptureAccess_UsesPlatformPlanAndReportsResult(t *testing.T) {
 		}
 	}
 
-	granted, err := ProbeCaptureAccess(DefaultConfig())
-	if err != nil || !granted {
-		t.Fatalf("ProbeCaptureAccess = %v, %v; want true, nil via the fallback", granted, err)
+	report, err := ProbeCapture(DefaultConfig(), CaptureProbeOptions{})
+	if err != nil || !report.Granted {
+		t.Fatalf("ProbeCapture = %+v, %v; want granted via the fallback", report, err)
 	}
 	if got == nil || got.backend != "coregraphics" || !got.primaryCaptureFailed {
 		t.Fatalf("onSuccess got %+v, want coregraphics after a primary capture failure", got)
 	}
 }
 
-func TestProbeCaptureAccess_FailureDoesNotCallOnSuccess(t *testing.T) {
+func TestProbeCapture_FailureDoesNotCallOnSuccess(t *testing.T) {
 	restore := platformCaptureProbePlan
 	t.Cleanup(func() { platformCaptureProbePlan = restore })
 
@@ -315,9 +315,9 @@ func TestProbeCaptureAccess_FailureDoesNotCallOnSuccess(t *testing.T) {
 		}
 	}
 
-	granted, err := ProbeCaptureAccess(DefaultConfig())
-	if granted || !errors.Is(err, errSCKTimeout) {
-		t.Fatalf("ProbeCaptureAccess = %v, %v; want false with the primary error", granted, err)
+	report, err := ProbeCapture(DefaultConfig(), CaptureProbeOptions{})
+	if report.Granted || !errors.Is(err, errSCKTimeout) {
+		t.Fatalf("ProbeCapture = %+v, %v; want not granted with the primary error", report, err)
 	}
 }
 

@@ -440,6 +440,66 @@ describe('filter routes', () => {
       const body = await res.json();
       expect(body.error).toContain('orgId is required');
     });
+
+    // #8330: the web create form now names the owning org. With two or more
+    // accessible orgs the route cannot infer it, so the explicit body orgId must
+    // be honoured when the caller can access it and refused when it cannot.
+    describe('partner with two orgs and an explicit orgId (#8330)', () => {
+      const ORG_ID_3 = '44444444-4444-4444-8444-444444444444';
+
+      beforeEach(() => {
+        vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+          c.set('auth', {
+            user: { id: 'user-456', email: 'partner@example.com', name: 'Partner User' },
+            scope: 'partner',
+            orgId: null,
+            partnerId: PARTNER_ID,
+            accessibleOrgIds: [ORG_ID, ORG_ID_2],
+            canAccessOrg: (orgId: string) => [ORG_ID, ORG_ID_2].includes(orgId)
+          });
+          return next();
+        });
+      });
+
+      it('creates the filter in the accessible org named in the body', async () => {
+        const values = vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([makeFilter({ orgId: ORG_ID_2 })])
+        });
+        vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+
+        const res = await app.request('/filters', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+            name: 'Filter',
+            orgId: ORG_ID_2,
+            conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] }
+          })
+        });
+
+        expect(res.status).toBe(201);
+        expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID_2, createdBy: 'user-456' }));
+        const body = await res.json();
+        expect(body.data.orgId).toBe(ORG_ID_2);
+      });
+
+      it('refuses an orgId the partner cannot access, without inserting', async () => {
+        const res = await app.request('/filters', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+          body: JSON.stringify({
+            name: 'Filter',
+            orgId: ORG_ID_3,
+            conditions: { operator: 'AND', conditions: [{ field: 'status', operator: 'equals', value: 'online' }] }
+          })
+        });
+
+        expect(res.status).toBe(403);
+        const body = await res.json();
+        expect(body.error).toContain('Access to this organization denied');
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+    });
   });
 
 });

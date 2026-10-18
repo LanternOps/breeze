@@ -328,6 +328,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // (cascade + a deferrable composite), partner_ai_models (partner axis, not in
   // this list), partners. Nothing references it.
   'ai_model_assignments',
+  // AI model registry W08b (#7606): snapshot of the dropped legacy AI model
+  // config. Partner axis (shape 3) like legacy_labour_pricing_archive; org_id
+  // is metadata on org-level rows. Its composite (org_id, partner_id) FK to
+  // organizations is also ON DELETE CASCADE (W08 D12: the previous release's
+  // cascade list does not know the table, so a rollback must not abort an
+  // erasure on it). Nothing references it.
+  'ai_model_registry_legacy_archive',
   // AI Operator thin slice (#5205 W03, #5208). All three are Shape 1 with a
   // NOT NULL org_id, so all three are required here.
   //   - ai_operator_operations references action_intents and ai_agent_runs,

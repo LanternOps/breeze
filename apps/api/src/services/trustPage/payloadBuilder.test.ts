@@ -1,5 +1,5 @@
 // apps/api/src/services/trustPage/payloadBuilder.test.ts
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   TRUST_CONTROL_CATALOG, TELEMETRY_CONTROL_IDS, W1_TELEMETRY_CONTROL_IDS, DEFAULT_TRUST_EVALUATION_POLICY, evaluateTrustControls, emptyControlEvidence,
   resolveFrozenConfig, trustPublishedConfigSchema, type TrustPagePublicDeclaredControl, type TrustPublishedConfigResolved,
@@ -194,5 +194,62 @@ describe('sanitizeIntro', () => {
   it('returns null for empty/whitespace input', () => {
     expect(sanitizeIntro('   ')).toBeNull();
     expect(sanitizeIntro(null)).toBeNull();
+  });
+});
+
+describe('hardening safeguards (W3e)', () => {
+  const FRESH = '2026-10-13T11:00:00.000Z';
+  const sgEvidence = { '4.5': { eligible: 12, assessed: 12, passing: 12, newestEvidenceAt: FRESH }, '8.5': { eligible: 12, assessed: 12, passing: 11, newestEvidenceAt: FRESH }, '4.8': { eligible: 12, assessed: 6, passing: 6, newestEvidenceAt: FRESH } };
+  const withSafeguards = (over: Partial<BuildPayloadInput> = {}) => {
+    const ev = emptyControlEvidence();
+    ev.hardening_baseline = { eligible: 12, assessed: 12, passing: 12, aggregatePct: 99, newestEvidenceAt: FRESH, safeguards: sgEvidence };
+    return input({ assessments: evaluateTrustControls(TRUST_CONTROL_CATALOG, ev, DEFAULT_TRUST_EVALUATION_POLICY, AS_OF), ...over });
+  };
+  const hardeningOf = (p: ReturnType<typeof buildTrustPagePayload>) => p.controls.find((c) => c.id === 'hardening_baseline')!;
+  const prev = process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+  afterEach(() => { if (prev === undefined) delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW; else process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = prev; });
+
+  it('gate off → no safeguards key, even when the assessment carries them', () => {
+    delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+    const p = buildTrustPagePayload(withSafeguards());
+    expect(hardeningOf(p)).not.toHaveProperty('safeguards');
+  });
+
+  it('gate on → safeguards present; percent/assessed/eligible null unless show_percentages', () => {
+    process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'true';
+    const hidden = hardeningOf(buildTrustPagePayload(withSafeguards())).safeguards!;
+    expect(hidden.map((s) => s.ref)).toEqual(['4.5', '4.8', '8.5']);
+    expect(hidden.every((s) => s.percent === null && s.assessed === null && s.eligible === null)).toBe(true);
+    expect(hidden.find((s) => s.ref === '4.8')).toMatchObject({ status: 'not_assessed', reason: 'insufficient_telemetry' });
+    const shown = hardeningOf(buildTrustPagePayload(withSafeguards({ config: cfg({ showPercentages: true }) }))).safeguards!;
+    expect(shown.find((s) => s.ref === '4.5')).toMatchObject({ status: 'met', percent: 100, assessed: 12, eligible: 12 });
+    expect(shown.find((s) => s.ref === '8.5')).toMatchObject({ status: 'attention', percent: 92 });
+    expect(shown.find((s) => s.ref === '4.8')).toMatchObject({ percent: null, assessed: null, eligible: null }); // not_assessed stays bare
+  });
+
+  it('no other control carries safeguards', () => {
+    process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'true';
+    const p = buildTrustPagePayload(withSafeguards());
+    expect(p.controls.filter((c) => c.safeguards !== undefined).map((c) => c.id)).toEqual(['hardening_baseline']);
+  });
+
+  it('footer.frameworkAttributions includes cis_v8 when only a safeguard references it', () => {
+    process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'true';
+    // Strip the control's own cis refs so only the safeguard list can attribute CIS.
+    const base = withSafeguards({ config: cfg({ hiddenControlIds: TRUST_CONTROL_CATALOG.filter((c) => c.id !== 'hardening_baseline').map((c) => c.id) }) });
+    const assessments = base.assessments.map((a) => (a.id === 'hardening_baseline' ? { ...a, frameworkRefs: a.frameworkRefs.filter((r) => r.framework !== 'cis_v8') } : a));
+    const on = buildTrustPagePayload({ ...base, assessments });
+    expect(on.footer.frameworkAttributions).toContain('cis_v8');
+    delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+    const off = buildTrustPagePayload({ ...base, assessments });
+    expect(off.footer.frameworkAttributions).not.toContain('cis_v8');
+  });
+
+  it('changes the payload hash when the safeguards appear (the refresh republishes)', () => {
+    process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW = 'true';
+    const a = payloadSha256(buildTrustPagePayload(withSafeguards()));
+    delete process.env.BREEZE_TRUST_CIS_FRAMEWORK_VIEW;
+    const b = payloadSha256(buildTrustPagePayload(withSafeguards()));
+    expect(a).not.toBe(b);
   });
 });

@@ -231,6 +231,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/mssql/backup/'],
     ['POST', '/api/v1/backup/hyperv/backup'],
     ['POST', '/api/v1/backup/hyperv/backup/'],
+    // #8333 — the recovery-media catalog fetches the signed release manifest
+    // (safeFetch, 1-2 s) per arch; read-only, so it must not pin a connection.
+    ['GET', '/api/v1/backup/bmr/boot-media'],
+    ['GET', '/api/v1/backup/bmr/boot-media/'],
   ];
 
   const NO_MATCH: ReadonlyArray<[string, string, string]> = [
@@ -440,6 +444,8 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/backup/providers/connections//test', 'empty connection id must not match'],
     ['POST', '/api/v1/backup/providers/connections/conn-1/test/extra', 'extra segment must not match'],
     ['GET', '/api/v1/backup/providers/connections/conn-1/test', 'test is POST-only'],
+    ['GET', '/api/v1/backup/bmr/media', 'no outbound fetch (#8333 ruled it out)'],
+    ['POST', '/api/v1/backup/bmr/boot-media', 'only the GET catalog opts out'],
   ];
 
   const SNMP_MATCH: ReadonlyArray<[string, string]> = [

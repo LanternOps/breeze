@@ -53,6 +53,12 @@ describe('trust center export policy', () => {
     expect(cfg?.openContainerReviewed).toBe(true);
   });
 
+  it('W3a: includes the embed allowlist (text[] of public website origins, not an open container)', () => {
+    const col = getTenantExportPolicyRegistry()['trust_pages']?.columns['embed_allowed_origins'];
+    expect(col?.decision).toBe('include');
+    expect(col?.openContainerReviewed).toBeFalsy();
+  });
+
   it('includes payload_sha256 as a reviewed integrity digest', () => {
     const digest = getTenantExportPolicyRegistry()['trust_page_snapshots']?.columns['payload_sha256'];
     expect(digest?.decision).toBe('include');

@@ -19,6 +19,9 @@ export const COLUMN_IDS = [
   'role',
   'isHeadless',
   'status',
+  // #9038 — open alerts by severity + open tickets, fetched per page of rows
+  // (GET /devices/attention-counts). Default-on: it is the triage signal.
+  'attention',
   'pendingReboot',
   'cpu',
   'ram',
@@ -68,6 +71,7 @@ export const COLUMN_LABELS: Record<ColumnId, string> = {
   role: 'Role',
   isHeadless: 'Headless',
   status: 'Status',
+  attention: 'Attention',
   pendingReboot: 'Pending Reboot',
   cpu: 'CPU %',
   ram: 'RAM %',
@@ -110,6 +114,7 @@ export const DEFAULT_VISIBLE_COLUMNS: ReadonlyArray<ColumnId> = [
   'os',
   'role',
   'status',
+  'attention',
   'cpu',
   'ram',
   'lastSeen',
@@ -137,7 +142,7 @@ export const ORG_TAB_COLUMN_STORAGE_KEY = 'breeze.devices.columns.orgTab';
 // The record's tab is already scoped to one org, so no Organization/Class/Role.
 export const ORG_TAB_COLUMN_PRESET: ColumnPreset = {
   storageKey: ORG_TAB_COLUMN_STORAGE_KEY,
-  defaultVisible: ['hostname', 'site', 'os', 'status', 'cpu', 'ram', 'lastSeen'],
+  defaultVisible: ['hostname', 'site', 'os', 'status', 'attention', 'cpu', 'ram', 'lastSeen'],
 };
 const STORAGE_VERSION = 1;
 

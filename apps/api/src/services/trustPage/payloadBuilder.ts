@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
-  FRAMEWORK_META, TRUST_CONTROL_CATALOG_VERSION, TRUST_DOCUMENTS_MAX, TRUST_FRAMEWORKS, TRUST_INTRO_STORED_MAX_CHARS,
+  FRAMEWORK_META, TRUST_CONTROL_CATALOG_VERSION, TRUST_CONTROL_SAFEGUARDS_MAX, TRUST_DOCUMENTS_MAX, TRUST_FRAMEWORKS, TRUST_INTRO_STORED_MAX_CHARS,
   trustPagePublicPayloadSchema, type TrustControlAssessment, type TrustDocumentVisibility, type TrustFramework,
   type TrustPagePublicPayload, type TrustPublishedConfigResolved,
 } from '@breeze/shared';
+import { trustCisFrameworkViewEnabled } from '../../config/env';
 import { resolveDocumentBrand } from '../partnerDocumentBrand';
 import { sanitizeFlowRichTextHtml } from '../richTextSanitize';
 import type { OrgDocumentView } from '../orgDocumentService';
@@ -81,8 +82,13 @@ export function buildTrustPagePayload(input: BuildPayloadInput): TrustPagePublic
   const shown = input.assessments.filter((a) => catalog.has(a.id) && !hidden.has(a.id));
   const brand = resolveDocumentBrand(input.orgBrand ?? undefined, input.partner.settings);
   const partnerBrand = resolveDocumentBrand(undefined, input.partner.settings);
+  // W3e: hardening safeguards are CIS v8 content, so they render only while the CIS framework view is on —
+  // read at build time, so flipping the switch off removes them from the next refresh of an existing page.
+  const cisGate = trustCisFrameworkViewEnabled();
+  const safeguardsOf = (a: TrustControlAssessment) =>
+    cisGate && a.id === 'hardening_baseline' ? (a.safeguards ?? []).slice(0, TRUST_CONTROL_SAFEGUARDS_MAX) : [];
   const referenced = (fw: TrustFramework) =>
-    shown.some((a) => a.frameworkRefs.some((r) => r.framework === fw))
+    shown.some((a) => a.frameworkRefs.some((r) => r.framework === fw) || (fw === 'cis_v8' && safeguardsOf(a).length > 0))
     || sections.declaredControls.some((d) => d.frameworkRefs.some((r) => r.framework === fw))
     || sections.frameworks.includes(fw);
   const attributions = TRUST_FRAMEWORKS.filter(referenced);
@@ -123,6 +129,14 @@ export function buildTrustPagePayload(input: BuildPayloadInput): TrustPagePublic
       eligibilityNote: TRUST_ELIGIBILITY_NOTE,
     },
     controls: shown.map((a) => ({
+      ...(safeguardsOf(a).length > 0 ? {
+        safeguards: safeguardsOf(a).map((sg) => ({
+          framework: sg.framework, ref: sg.ref, status: sg.status, reason: sg.reason,
+          percent: config.showPercentages && sg.status !== 'not_assessed' ? sg.percent : null,
+          assessed: config.showPercentages && sg.status !== 'not_assessed' ? sg.assessed : null,
+          eligible: config.showPercentages && sg.status !== 'not_assessed' ? sg.eligible : null,
+        })),
+      } : {}),
       id: a.id, category: a.category, source: 'telemetry', unit: a.unit,
       status: a.status, reason: a.reason,
       percent: config.showPercentages && a.status !== 'not_assessed' ? a.percent : null,

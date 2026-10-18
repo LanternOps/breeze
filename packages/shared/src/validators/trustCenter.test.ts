@@ -6,6 +6,7 @@ import {
   trustPagePublicPayloadV1Schema, trustPagePublishSchema, trustPageUpdateSchema,
 } from './trustCenter';
 import { W1_TELEMETRY_CONTROL_IDS } from '../trustCenter/types';
+import { FRAMEWORK_CROSSWALK } from '../trustCenter/frameworkCrosswalk';
 
 const control = {
   id: 'disk_encryption', category: 'data_protection', source: 'telemetry', unit: 'devices',
@@ -285,5 +286,52 @@ describe('trustPublishedConfigSchema (frozen publication config, Ruling 20)', ()
   it('stored intro cap is 8x the editor cap (mirrored by the trust_pages CHECK)', () => {
     expect(TRUST_INTRO_STORED_MAX_CHARS).toBe(TRUST_INTRO_MAX_CHARS * 8);
     expect(TRUST_INTRO_STORED_MAX_CHARS).toBe(40_000);
+  });
+});
+
+describe('control safeguards (W3e)', () => {
+  const sg = (over: Record<string, unknown> = {}) => ({ framework: 'cis_v8', ref: '4.5', status: 'met', reason: null, percent: null, assessed: null, eligible: null, ...over });
+  const hardening = (safeguards?: unknown) => ({
+    ...control, id: 'hardening_baseline', category: 'patching_hardening', frameworkRefs: [{ framework: 'cis_v8', ref: '4.1' }],
+    ...(safeguards === undefined ? {} : { safeguards }),
+  });
+  const parse = (c: unknown) => trustPagePublicPayloadSchema.safeParse({ ...payload, controls: [c] });
+
+  it('safeguards is optional: a payload without the key (every pre-W3e snapshot) still parses', () => {
+    expect(parse(hardening()).success).toBe(true);
+    expect(trustPagePublicPayloadSchema.safeParse(payload).success).toBe(true);
+    expect(trustPagePublicPayloadV1Schema.safeParse(payloadV1).success).toBe(true);
+  });
+
+  it('accepts a well-formed safeguards list, numeric counts or null', () => {
+    expect(parse(hardening([sg(), sg({ ref: '4.7', percent: 92, assessed: 12, eligible: 12, status: 'attention' }), sg({ ref: '4.8', status: 'not_assessed', reason: 'no_data' })])).success).toBe(true);
+  });
+
+  it('is strict: no extra keys on a safeguard (no check id / title can ride along)', () => {
+    expect(parse(hardening([{ ...sg(), checkId: '9.1.1' }])).success).toBe(false);
+    expect(parse(hardening([{ ...sg(), title: 'Ensure something' }])).success).toBe(false);
+    expect(parse(hardening([sg({ framework: 'nist_csf_2' })])).success).toBe(false);
+  });
+
+  it('only hardening_baseline may carry safeguards', () => {
+    expect(parse({ ...control, safeguards: [sg()] }).success).toBe(false);
+  });
+
+  it('at most 40 entries', () => {
+    const refs = Object.keys(FRAMEWORK_CROSSWALK.cis_v8);
+    expect(refs.length).toBeGreaterThanOrEqual(40);
+    expect(parse(hardening(refs.slice(0, 40).map((ref) => sg({ ref })))).success).toBe(true);
+    expect(parse(hardening([...refs.slice(0, 40), refs[40]].map((ref) => sg({ ref })))).success).toBe(false);
+  });
+
+  it('each ref resolves in the crosswalk and appears once', () => {
+    expect(parse(hardening([sg({ ref: '99.99' })])).success).toBe(false);
+    expect(parse(hardening([sg(), sg()])).success).toBe(false);
+  });
+
+  it('keeps the not_assessed invariants per safeguard', () => {
+    expect(parse(hardening([sg({ status: 'not_assessed', reason: null })])).success).toBe(false);
+    expect(parse(hardening([sg({ status: 'not_assessed', reason: 'no_data', percent: 50 })])).success).toBe(false);
+    expect(parse(hardening([sg({ status: 'met', reason: 'no_data' })])).success).toBe(false);
   });
 });

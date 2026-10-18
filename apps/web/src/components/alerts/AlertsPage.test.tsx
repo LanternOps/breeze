@@ -637,6 +637,56 @@ describe('AlertsPage — suppress duration picker', () => {
     expect(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i })).toBeInTheDocument();
   });
 
+  it('Undo on the suppress toast lifts the mute server-side (#8966)', async () => {
+    listOnlyMock(() => Promise.resolve(makeJsonResponse({ id: ALERT_ID, status: 'suppressed' })));
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input) === `/alerts/${ALERT_ID}/unsuppress` && init?.method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ id: ALERT_ID, status: 'active' }));
+      }
+      return base(input, init);
+    });
+
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i }));
+    fireEvent.click(await screen.findByTestId('suppress-confirm'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'undo' })));
+
+    const undoToast = showToast.mock.calls.map(([a]) => a).find((a) => a.type === 'undo');
+    undoToast.onUndo();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/alerts/${ALERT_ID}/unsuppress`,
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+    // The row is restored locally too.
+    expect(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i })).toBeInTheDocument();
+  });
+
+  it('surfaces the server error when the Undo is rejected', async () => {
+    listOnlyMock(() => Promise.resolve(makeJsonResponse({ id: ALERT_ID, status: 'suppressed' })));
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input) === `/alerts/${ALERT_ID}/unsuppress` && init?.method === 'POST') {
+        return Promise.resolve(makeJsonResponse({ error: 'Alert is no longer suppressed' }, false, 409));
+      }
+      return base(input, init);
+    });
+
+    render(<AlertsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /Suppress: High CPU on SRV-01/i }));
+    fireEvent.click(await screen.findByTestId('suppress-confirm'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'undo' })));
+
+    showToast.mock.calls.map(([a]) => a).find((a) => a.type === 'undo').onUndo();
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+  });
+
   it('hides the Mute button on resolved alerts (the suppress endpoint rejects them)', async () => {
     const resolvedAlert = { ...activeAlert, status: 'resolved' };
     fetchMock.mockImplementation((input, init) => {

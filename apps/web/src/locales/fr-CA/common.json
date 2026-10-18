@@ -494,7 +494,10 @@
       "createFirst": "Créez votre premier filtre",
       "created": "Créé {{date}}",
       "deleteConfirm": "Supprimer ce filtre ?",
-      "duplicate": "Duplique"
+      "duplicate": "Duplique",
+      "saveFailed": "Impossible d'enregistrer le filtre",
+      "deleteFailed": "Impossible de supprimer le filtre",
+      "ownerOrgHint": "Les filtres enregistrés appartiennent à une organisation. Choisissez celle à laquelle ce filtre appartient."
     },
     "targets": {
       "modes": {
@@ -2692,7 +2695,8 @@
     "dismiss": "Fermer le rappel d’authentification à deux facteurs"
   },
   "mfaPolicyOffBanner": {
-    "message": "L'authentification multifacteur n'est pas exigée pour votre équipe. Les sessions avec mot de passe seulement peuvent exécuter des scripts, déplacer des appareils et modifier des politiques.",
+    "label": "Rappel AMF",
+    "message": "AMF non exigée pour votre équipe : un mot de passe seul permet de lancer des scripts.",
     "cta": "Exiger l'AMF",
     "dismiss": "Masquer le rappel de politique AMF pour aujourd'hui"
   },

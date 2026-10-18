@@ -7,6 +7,27 @@ import { findTicketIdsByMessageIds } from '../ticketEmailLinks';
 // Per-partner ticket display number, e.g. T-2026-0001.
 export const TICKET_TOKEN_RE = /\bT-(\d{4})-(\d{4,})\b/;
 
+// Customer-facing id (tickets.ticket_number = nanoid(10), uppercased) as it appears
+// in customer email subjects, e.g. [KQ04YOHZ-N]. Brackets are required so a bare
+// uppercase word in a subject can never select a ticket (#8965).
+const CUSTOMER_TOKEN_RE = /\[([A-Z0-9_-]{10})\]/;
+
+/** Remove staff and customer ticket tokens from a subject (used when persisting a new ticket's subject). */
+export function stripTicketTokens(subject: string): string {
+  return subject.replace(new RegExp(`\\[?${TICKET_TOKEN_RE.source}\\]?`), '').replace(CUSTOMER_TOKEN_RE, '').replace(/\s{2,}/g, ' ').trim();
+}
+
+/** Subject tokens that may identify a ticket: staff internal number and/or customer ticket_number. */
+function subjectTicketTokens(subject: string | null | undefined): string[] {
+  const text = subject ?? '';
+  const out: string[] = [];
+  const internal = text.match(TICKET_TOKEN_RE);
+  if (internal) out.push(internal[0]);
+  const customer = text.match(CUSTOMER_TOKEN_RE);
+  if (customer) out.push(customer[1]!);
+  return out;
+}
+
 // Shared shape consumed by the live/closed thread matchers. A NormalizedInboundEmail
 // structurally satisfies this (it carries these four fields plus more) — callers pass
 // it through directly without adapting it.
@@ -194,9 +215,9 @@ export async function findTicketInPartner(
     }
   }
 
-  // 2) subject token [T-YYYY-NNNN] (scoped to partner, live tickets only)
-  const m = (input.subject ?? '').match(TICKET_TOKEN_RE);
-  if (m) {
+  // 2) subject token [T-YYYY-NNNN] or customer [ticket_number] (scoped to partner, live tickets only)
+  const tokens = subjectTicketTokens(input.subject);
+  if (tokens.length > 0) {
     const query = db
       .select(MATCH_COLS)
       .from(tickets)
@@ -204,7 +225,7 @@ export async function findTicketInPartner(
         eq(tickets.partnerId, partnerId),
         ne(tickets.status, 'closed'),
         isNull(tickets.deletedAt),
-        eq(tickets.internalNumber, m[0])
+        or(inArray(tickets.internalNumber, tokens), inArray(tickets.ticketNumber, tokens))
       ));
     // Inbound sender authorization and the eventual append/reopen must
     // linearize with requester reassignment. The worker holds this transaction
@@ -272,8 +293,8 @@ export async function findClosedTicketInPartner(
     }
   }
 
-  const m = (input.subject ?? '').match(TICKET_TOKEN_RE);
-  if (m) {
+  const tokens = subjectTicketTokens(input.subject);
+  if (tokens.length > 0) {
     const query = db
       .select(MATCH_COLS)
       .from(tickets)
@@ -281,7 +302,7 @@ export async function findClosedTicketInPartner(
         eq(tickets.partnerId, partnerId),
         eq(tickets.status, 'closed'),
         isNull(tickets.deletedAt),
-        eq(tickets.internalNumber, m[0])
+        or(inArray(tickets.internalNumber, tokens), inArray(tickets.ticketNumber, tokens))
       ));
     const rows = sender
       ? await query.for('update').limit(1)

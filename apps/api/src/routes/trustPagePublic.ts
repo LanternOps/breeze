@@ -19,7 +19,7 @@ import { getTrustedClientIp, rateLimitIpKey } from '../services/clientIp';
 import { getBlobStream, BlobStorageError } from '../services/blobStorage';
 import { contentDispositionFor } from '../services/attachmentFilename';
 import { isServing, readCachedSnapshotPayload, cacheSnapshotPayload, trustServingMember } from '../services/trustPage/servingSet';
-import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage } from '../services/trustPage/resolve';
+import { parseTrustSlugs, resolvePublishedTrustPage, type ResolvedTrustPage, type ResolvedTrustPageWithEmbed } from '../services/trustPage/resolve';
 import { verifyTrustPreviewToken } from '../services/trustPage/previewToken';
 import { buildSnapshotForPage } from '../services/trustPage/publication';
 import { normalizeTrustPagePayload, type TrustPagePublicPayload } from '@breeze/shared';
@@ -46,7 +46,7 @@ function publicHeaders(c: Context, r: { searchIndexable: boolean }, cache: strin
  * `requireServingSet` = true for the unlimited card path: an unknown serving-set state (Redis down, or the set
  * never built) is a 503, never a fall-through to SQL. The rate-limited paths fall through to the live resolve.
  */
-async function admit(c: Context, partnerSlug: string, orgSlug: string | undefined, requireServingSet: boolean): Promise<ResolvedTrustPage | Response> {
+async function admit(c: Context, partnerSlug: string, orgSlug: string | undefined, requireServingSet: boolean): Promise<ResolvedTrustPageWithEmbed | Response> {
   const slugs = parseTrustSlugs(partnerSlug, orgSlug);
   if (!slugs) return notFound(c);
   const serving = await isServing(trustServingMember(slugs.partnerSlug, slugs.orgSlug ?? undefined));
@@ -73,7 +73,9 @@ async function card(c: Context, partnerSlug: string, orgSlug?: string) {
   if (r instanceof Response) return r;
   const payload = await payloadFor(r);
   if (!payload) return notFound(c);
-  publicHeaders(c, r, PUBLIC_CACHE);
+  // W03a (quorum A3): no-store. The card carries the LIVE frame-ancestors allowlist and its only consumer is portal
+  // SSR, so caching it buys nothing and would keep a removed origin framing the embed until the cache expired.
+  publicHeaders(c, r, 'no-store');
   const s = payload.summary;
   return c.json({ data: {
     title: `${payload.org.name} · Security posture`,
@@ -84,6 +86,8 @@ async function card(c: Context, partnerSlug: string, orgSlug?: string) {
     stale: isStale(r.lastEvaluatedAt), searchIndexable: r.searchIndexable,
     // W02h: the portal localizes <title>/description/<html lang> from these; title/summaryLine stay English.
     locale: payload.locale, controlsShown: s.controlsShown, catalogTotal: s.catalogTotal, controlsMet: s.controlsMet,
+    // W03a: origins allowed to frame /portal/trust/embed/*. From the live row, never the payload.
+    frameAncestors: r.embedAllowedOrigins,
   } });
 }
 trustPagePublicRoutes.get('/card/:partnerSlug', (c) => card(c, c.req.param('partnerSlug')));
