@@ -7,6 +7,7 @@ import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze
  * via Zod schemas and calls the existing handler with org-scoped auth context.
  */
 
+import { GENERATE_REPORT_TYPES } from './aiReportTypes';
 import { z } from 'zod';
 import { fixProblemSchema } from './fixMemory/problemSignature';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
@@ -2631,7 +2632,7 @@ export function buildBreezeSdkTools(
       {
         action: z.enum(['list', 'generate', 'data', 'create', 'update', 'delete', 'history']),
         reportId: uuid.optional(),
-        reportType: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']).optional(),
+        reportType: z.enum(GENERATE_REPORT_TYPES).optional(),
         name: z.string().max(255).optional(),
         config: z.record(z.string(), z.unknown()).optional(),
         schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
