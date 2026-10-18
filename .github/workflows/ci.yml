@@ -1392,6 +1392,26 @@ jobs:
       - name: Run release trust allowlist drift guard
         run: node scripts/security/check-release-trust-allowlist.mjs
 
+      # Built-in YARA pack (#6263 W03b). The API replaces the built-in rule set
+      # only with a NEWER pack version, so a pack input change without a
+      # version bump would never reach the fleet: the lock check blocks that.
+      # The clean-corpus false-positive scan lives in yara-pack.yml (non-blocking).
+      - name: Check built-in YARA pack version lock
+        run: bash scripts/security/yara-pack/build-pack.sh --check-lock
+
+      - name: Setup Go (YARA pack filter)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Test built-in YARA pack filter (race)
+        working-directory: scripts/security/yara-pack
+        run: CGO_ENABLED=1 go test -race -count=1 ./...
+
+      - name: Test YARA pack clean-corpus checker
+        run: node --test scripts/security/yara-pack/check-scan.test.mjs
+
       - name: Run M365 signing secret runtime smoke
         run: bash scripts/security/check-m365-graph-read-runtime.sh
 

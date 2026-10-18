@@ -1,0 +1,124 @@
+name: YARA Pack FP
+
+# Clean-corpus false-positive gate for the built-in YARA pack (#6263 W03b).
+#
+# Builds the pack exactly as release.yml does (pinned + sha256-verified YARA
+# Forge release, breeze-yarac built from agent/) and scans files that must not
+# match: a fresh ubuntu-latest runner's /usr and a windows-latest runner's
+# C:\Windows\System32. Any match fails the job and names the rule and file; the
+# fix is a denylist.txt entry (scripts/security/yara-pack/README.md).
+#
+# A separate workflow on purpose, and NOT a required check:
+#   - ci.yml has no schedule trigger, and adding one would run the whole CI
+#     suite nightly just to give this job a cron;
+#   - the corpus is the runner image, which GitHub updates under us — a new
+#     system file matching a rule is a pack-maintenance signal, not a reason
+#     to block unrelated merges. It is path-filtered for PRs that touch the
+#     pack, and nightly so a runner-image change is seen within a day.
+# The pack's version lock and filter unit tests DO block: they run in ci.yml's
+# Security Audit job.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/security/yara-pack/**'
+      - '.github/workflows/yara-pack.yml'
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.26.9'
+
+permissions:
+  contents: read
+
+jobs:
+  build-pack:
+    name: Build built-in YARA pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Check-scan guard self-test
+        run: node --test scripts/security/yara-pack/check-scan.test.mjs
+
+      - name: Build the pack (verifies the pinned YARA Forge release)
+        run: bash scripts/security/yara-pack/build-pack.sh --out dist/yara-pack
+
+      - name: Upload pack
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: yara-pack
+          path: dist/yara-pack/
+          retention-days: 7
+          if-no-files-found: error
+
+  yara-pack-fp:
+    name: yara-pack-fp (${{ matrix.os }})
+    needs: [build-pack]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            corpus: /usr
+            workers: 4
+            min_files: 20000
+          - os: windows-latest
+            corpus: 'C:\Windows\System32'
+            workers: 2
+            min_files: 5000
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Download pack
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: yara-pack
+          path: dist/yara-pack
+
+      - name: Build breeze-yarac
+        shell: bash
+        working-directory: agent
+        run: CGO_ENABLED=0 go build -trimpath -o "../dist/bin/breeze-yarac$(go env GOEXE)" ./cmd/breeze-yarac
+
+      - name: Scan the clean corpus
+        shell: bash
+        env:
+          CORPUS: ${{ matrix.corpus }}
+          WORKERS: ${{ matrix.workers }}
+          MIN_FILES: ${{ matrix.min_files }}
+        run: |
+          set -u
+          status=0
+          "./dist/bin/breeze-yarac$(go env GOEXE)" scan --bundle dist/yara-pack/breeze-yara-builtin.json \
+            --workers "$WORKERS" --max-file-mb 50 "$CORPUS" > scan.jsonl 2> scan.err || status=$?
+          tail -c 2000 scan.err || true
+          node scripts/security/yara-pack/check-scan.mjs scan.jsonl "$status" "$MIN_FILES"

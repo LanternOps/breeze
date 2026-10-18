@@ -42,6 +42,8 @@ const PIN_FILES = [
   // #6263 W03a: the API images build breeze-yarac from agent/ sources.
   'apps/api/Dockerfile',
   'docker/Dockerfile.api',
+  // #6263 W03b: the built-in YARA pack filter is its own Go module.
+  'scripts/security/yara-pack/go.mod',
 ];
 
 function pinLayout() {
@@ -66,7 +68,7 @@ test('pin check passes on an unmodified copy of the repo', () => {
   assert.equal(r.status, 0, r.stderr);
 });
 
-for (const wf of ['ci.yml', 'security.yml', 'release.yml', 'dev-build-agent.yml']) {
+for (const wf of ['ci.yml', 'security.yml', 'release.yml', 'dev-build-agent.yml', 'yara-pack.yml']) {
   test(`pin check fails when ${wf} loses its GO_VERSION declaration`, () => {
     const root = pinLayout();
     stripLines(root, wf, /^\s*GO_VERSION:/);
@@ -107,6 +109,22 @@ test('pin check fails when a Dockerfile loses its golang stage entirely', () => 
   const r = runPins(root);
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /apps\/api\/Dockerfile has no golang build stage/);
+});
+
+test('pin check fails when the YARA pack go.mod drifts from agent/go.mod', () => {
+  const root = pinLayout();
+  rewriteFile(root, 'scripts/security/yara-pack/go.mod', /^go \d+\.\d+\.\d+$/m, 'go 1.25.12');
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /scripts\/security\/yara-pack\/go\.mod go 1\.25\.12 !=/);
+});
+
+test('pin check fails when the YARA pack go.mod loses its go directive', () => {
+  const root = pinLayout();
+  rewriteFile(root, 'scripts/security/yara-pack/go.mod', /^go \d+\.\d+\.\d+$/m, '');
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /scripts\/security\/yara-pack\/go\.mod has no fully-qualified/);
 });
 
 test('pin check fails when codeql.yml loses its literal go-version', () => {
