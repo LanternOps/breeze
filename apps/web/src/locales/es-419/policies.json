@@ -1362,7 +1362,12 @@
       "installAttempts": "{{count}} intento(s)",
       "installLastAttempt": "Último intento de instalación: ",
       "managedByConfigPolicy": "Administrada por una política de configuración",
-      "managedByConfigPolicyHint": "Esta política se genera a partir de una política de configuración y es de solo lectura aquí. Cámbiala en Políticas de configuración."
+      "managedByConfigPolicyHint": "Esta política se genera a partir de una política de configuración y es de solo lectura aquí. Cámbiala en Políticas de configuración.",
+      "securityAgentCoverage": "Cobertura de agentes de seguridad",
+      "coverageDevice": "Dispositivo",
+      "coverageVendor": "Proveedor",
+      "coverageReason": "Motivo",
+      "vendorOnlyAgent": "Agente solo del proveedor"
     },
     "deploymentList": {
       "running": "En ejecución",

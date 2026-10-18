@@ -113,3 +113,65 @@ describe('DeviceEdrPanel error + status gating', () => {
     expect(screen.queryByTestId('edr-threat-quarantine-t9')).toBeNull();
   });
 });
+
+describe('DeviceEdrPanel security agent coverage', () => {
+  const coverageRow = {
+    id: 'c1',
+    orgId: 'org-1',
+    deviceId: 'dev-1',
+    deviceName: 'Device-01',
+    vendor: 'huntress',
+    state: 'gap',
+    reasonCode: 'install_failed',
+    detail: 'Installer exited with code 1603',
+    lastEvaluatedAt: '2026-06-22T00:00:00Z',
+    stateChangedAt: '2026-06-21T00:00:00Z',
+  };
+
+  function routeWithCoverage(coverage: () => Promise<Response>) {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [], pagination: { total: 0, limit: 50, offset: 0 } }));
+      if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
+      if (url.startsWith('/edr/security-agents/coverage')) return coverage();
+      return Promise.resolve(ok({ data: [] }));
+    });
+  }
+
+  it('lists managed security agent rows with vendor, state, reason, detail and since', async () => {
+    routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [coverageRow], pagination: { limit: 50, offset: 0, total: 1 } })));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    const block = await screen.findByTestId('device-security-agent-coverage');
+    expect(block).toHaveTextContent('Huntress');
+    expect(block).toHaveTextContent('Gap');
+    expect(block).toHaveTextContent('Install failed');
+    expect(block).toHaveTextContent('Installer exited with code 1603');
+    expect(block).toHaveTextContent(/since/i);
+    const url = fetchWithAuth.mock.calls.map((c) => String(c[0])).find((u) => u.startsWith('/edr/security-agents/coverage'));
+    expect(url).toContain('orgId=org-1');
+    expect(url).toContain('deviceId=dev-1');
+  });
+
+  it('falls back to the raw reason code when it is unknown', async () => {
+    routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [{ ...coverageRow, reasonCode: 'brand_new_reason' }], pagination: { limit: 50, offset: 0, total: 1 } })));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    expect(await screen.findByTestId('device-security-agent-coverage')).toHaveTextContent('brand_new_reason');
+  });
+
+  it('renders no block when there are no rows', async () => {
+    routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [], pagination: { limit: 50, offset: 0, total: 0 } })));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('device-security-agent-coverage')).toBeNull();
+  });
+
+  it('logs a failed coverage fetch without showing the block or the panel error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    routeWithCoverage(() => Promise.resolve({ ok: false, status: 500, statusText: 'err', json: async () => ({}) } as Response));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    await waitFor(() => expect(errSpy).toHaveBeenCalled());
+    expect(screen.queryByTestId('device-security-agent-coverage')).toBeNull();
+    expect(screen.queryByTestId('edr-error')).toBeNull();
+    errSpy.mockRestore();
+  });
+});

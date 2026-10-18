@@ -1362,7 +1362,12 @@
       "installAttempts": "{{count}} deneme",
       "installLastAttempt": "Son yükleme denemesi: ",
       "managedByConfigPolicy": "Yapılandırma politikası tarafından yönetilir",
-      "managedByConfigPolicyHint": "Bu politika bir yapılandırma politikasından oluşturulmuştur ve burada salt okunurdur. Yapılandırma Politikaları bölümünden değiştirin."
+      "managedByConfigPolicyHint": "Bu politika bir yapılandırma politikasından oluşturulmuştur ve burada salt okunurdur. Yapılandırma Politikaları bölümünden değiştirin.",
+      "securityAgentCoverage": "Güvenlik aracısı kapsamı",
+      "coverageDevice": "Cihaz",
+      "coverageVendor": "Sağlayıcı",
+      "coverageReason": "Neden",
+      "vendorOnlyAgent": "Yalnızca sağlayıcıda bilinen aracı"
     },
     "deploymentList": {
       "running": "Koşuyor",

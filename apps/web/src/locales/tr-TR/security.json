@@ -2192,5 +2192,34 @@
     "scansTab": "Taramalar",
     "threatsTab": "Tehditler",
     "backToThreats": "Tehditlere geri dön"
+  },
+  "securityAgentCoverage": {
+    "title": "Güvenlik aracısı kapsamı",
+    "states": {
+      "covered": "Kapsanıyor",
+      "gap": "Boşluk",
+      "vendorOnly": "Yalnızca sağlayıcıda",
+      "vendorOffline": "Sağlayıcı çevrimdışı",
+      "mismatchedOrg": "Kuruluş uyuşmuyor",
+      "notApplicable": "Uygulanamaz",
+      "pending": "Beklemede"
+    },
+    "reasons": {
+      "orgNotMapped": "Kuruluş sağlayıcıyla eşlenmedi",
+      "integrationInactive": "Entegrasyon etkin değil",
+      "orgKeyMissing": "Kuruluş anahtarı eksik",
+      "accountKeyMissing": "Hesap anahtarı eksik",
+      "platformUnsupported": "Platform desteklenmiyor",
+      "requiresMdmApproval": "MDM onayı gerekiyor",
+      "platformNotSelected": "Platform seçilmedi",
+      "varMissing": "Dağıtım değişkeni eksik",
+      "vendorUnavailable": "Sağlayıcı kullanılamıyor",
+      "installFailed": "Kurulum başarısız oldu",
+      "installNotArmed": "Kurulum etkinleştirilmedi",
+      "installPending": "Kurulum beklemede",
+      "awaitingVendorReport": "Sağlayıcı raporu bekleniyor",
+      "awaitingEvaluation": "Değerlendirme bekleniyor",
+      "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor"
+    }
   }
 }

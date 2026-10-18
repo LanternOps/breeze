@@ -22,7 +22,20 @@ import { runAction, ActionError } from "@/lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
-import { replaceUrl } from '../../lib/replaceUrl';
+import { replaceUrl, seedRouterHistoryState } from '../../lib/replaceUrl';
+import SecurityAgentCoverageStateBadge from "../security/SecurityAgentCoverageStateBadge";
+import {
+  COVERAGE_STATES,
+  coverageReasonLabel,
+  coverageStateLabel,
+  fetchSecurityAgentCoverage,
+  isCoverageState,
+  totalCounts,
+  vendorLabel,
+  type CoverageRow,
+  type CoverageState,
+  type CoverageVendorSummary,
+} from "../../lib/securityAgentCoverage";
 type Policy = {
   id: string;
   name: string;
@@ -137,10 +150,30 @@ function parsePolicyMode(
     ? value
     : null;
 }
+const COVERAGE_HASH_KEY = "coverage";
+
+/** The selected coverage state from `#coverage=<state>`, composing with any other hash pairs. */
+function readCoverageHash(): CoverageState | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.hash.replace(/^#/, "")).get(
+    COVERAGE_HASH_KEY,
+  );
+  return isCoverageState(value) ? value : null;
+}
+
+function writeCoverageHash(state: CoverageState | null): void {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  if (state) params.set(COVERAGE_HASH_KEY, state);
+  else params.delete(COVERAGE_HASH_KEY);
+  seedRouterHistoryState();
+  window.location.hash = params.toString();
+}
+
 export default function ComplianceDashboard({
   prefill,
 }: ComplianceDashboardProps = {}) {
   useTranslation("policies");
+  const { t: tSecurity } = useTranslation("security");
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [overview, setOverview] = useState<ComplianceOverview>({
     total: 0,
@@ -203,6 +236,56 @@ export default function ComplianceDashboard({
   // creators may own a policy partner-wide.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  // Security agent coverage (read-only). Own fetch: a failure only omits the strip.
+  const [coverageSummary, setCoverageSummary] = useState<
+    CoverageVendorSummary[]
+  >([]);
+  const [coverageRows, setCoverageRows] = useState<CoverageRow[]>([]);
+  const [coverageFilter, setCoverageFilter] = useState<CoverageState | null>(
+    readCoverageHash,
+  );
+  useEffect(() => {
+    const onHashChange = () => setCoverageFilter(readCoverageHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchSecurityAgentCoverage({
+          orgId: currentOrgId,
+          limit: 200,
+        });
+        if (cancelled) return;
+        setCoverageSummary(res.summary);
+        setCoverageRows(res.data);
+      } catch (err) {
+        if (cancelled) return;
+        console.error(
+          "[ComplianceDashboard] security agent coverage failed:",
+          err,
+        );
+        setCoverageSummary([]);
+        setCoverageRows([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentOrgId]);
+  const coverageCounts = totalCounts(coverageSummary);
+  const hasCoverage =
+    coverageRows.length > 0 ||
+    COVERAGE_STATES.some((st) => coverageCounts[st] > 0);
+  const visibleCoverageRows = coverageFilter
+    ? coverageRows.filter((r) => r.state === coverageFilter)
+    : coverageRows;
+  const toggleCoverageFilter = (state: CoverageState) => {
+    const next = coverageFilter === state ? null : state;
+    setCoverageFilter(next);
+    writeCoverageHash(next);
+  };
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -584,6 +667,75 @@ export default function ComplianceDashboard({
           <p className="mt-2 text-2xl font-bold">{overview.violations}</p>
         </div>
       </div>
+
+      {hasCoverage && (
+        <div
+          className="rounded-lg border bg-card"
+          data-testid="compliance-security-agent-coverage"
+        >
+          <div className="border-b px-4 py-3">
+            <h2 className="font-semibold">
+              {i18n.t("policies:software.complianceDashboard.securityAgentCoverage")}
+            </h2>
+          </div>
+          <div className="flex flex-wrap gap-2 px-4 py-3">
+            {COVERAGE_STATES.map((state) => (
+              <button
+                key={state}
+                type="button"
+                data-testid={`coverage-chip-${state}`}
+                aria-pressed={coverageFilter === state}
+                onClick={() => toggleCoverageFilter(state)}
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm hover:bg-muted/40 ${coverageFilter === state ? "border-primary bg-primary/10" : ""}`}
+              >
+                <span>{coverageStateLabel(tSecurity, state)}</span>
+                <span className="font-semibold">{coverageCounts[state]}</span>
+              </button>
+            ))}
+          </div>
+          {visibleCoverageRows.length > 0 && (
+            <div className="overflow-x-auto border-t">
+              <table className="min-w-full text-sm">
+                <thead className="bg-muted/30 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2">
+                      {i18n.t("policies:software.complianceDashboard.coverageDevice")}
+                    </th>
+                    <th className="px-4 py-2">
+                      {i18n.t("policies:software.complianceDashboard.coverageVendor")}
+                    </th>
+                    <th className="px-4 py-2">{i18n.t("common:labels.status")}</th>
+                    <th className="px-4 py-2">
+                      {i18n.t("policies:software.complianceDashboard.coverageReason")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleCoverageRows.map((row) => (
+                    <tr
+                      key={row.id}
+                      className="border-t"
+                      data-testid="coverage-row"
+                    >
+                      <td className="px-4 py-2">
+                        {row.deviceName ??
+                          i18n.t("policies:software.complianceDashboard.vendorOnlyAgent")}
+                      </td>
+                      <td className="px-4 py-2">{vendorLabel(row.vendor)}</td>
+                      <td className="px-4 py-2">
+                        <SecurityAgentCoverageStateBadge state={row.state} />
+                      </td>
+                      <td className="px-4 py-2 text-muted-foreground">
+                        {coverageReasonLabel(tSecurity, row.reasonCode)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="rounded-lg border bg-card">
         <div className="border-b px-4 py-3">

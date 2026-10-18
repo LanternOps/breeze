@@ -983,7 +983,9 @@
     "sentineloneWillCutTheDeviceOff": "SentinelOne disconnetterà il dispositivo dalla rete finché non rimuovi l'isolamento. Le sessioni attive verranno interrotte.",
     "sentineloneWillRestoreThisDeviceS": "SentinelOne ripristinerà la connettività di rete di questo dispositivo.",
     "cancel": "Annulla",
-    "isolate": "Isola"
+    "isolate": "Isola",
+    "managedSecurityAgents": "Agent di sicurezza gestiti",
+    "since": "Dal {{date}}"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Caricamento della configurazione effettiva...",

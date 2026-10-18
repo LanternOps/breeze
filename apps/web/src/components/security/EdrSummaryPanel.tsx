@@ -6,6 +6,13 @@ import { fetchWithAuth } from "../../stores/auth";
 import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import AccessDenied from "../shared/AccessDenied";
 import SecurityStatCard from "./SecurityStatCard";
+import {
+  COVERAGE_STATES,
+  coverageStateLabel,
+  fetchSecurityAgentCoverage,
+  vendorLabel,
+  type CoverageVendorSummary,
+} from "@/lib/securityAgentCoverage";
 interface S1Summary {
   totalAgents: number;
   mappedDevices: number;
@@ -57,6 +64,7 @@ export default function EdrSummaryPanel() {
   const { t } = useTranslation("security");
   const [s1, setS1] = useState<S1Status | null>(null);
   const [huntress, setHuntress] = useState<HuntressStatus | null>(null);
+  const [coverage, setCoverage] = useState<CoverageVendorSummary[]>([]);
   const [loading, setLoading] = useState(true);
   // Was a single `fetchFailed` boolean, which collapsed a 403 into the same bit
   // as a 500 and reported a permission denial as "EDR status unavailable" — i.e.
@@ -65,9 +73,10 @@ export default function EdrSummaryPanel() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [s1Res, huntressRes] = await Promise.allSettled([
+      const [s1Res, huntressRes, coverageRes] = await Promise.allSettled([
         getJson<S1Status>("/s1/status"),
         getJson<HuntressStatus>("/huntress/status"),
+        fetchSecurityAgentCoverage(),
       ]);
       if (cancelled) return;
       // `allSettled` swallows the reasons — without this, a 500 from either
@@ -82,6 +91,17 @@ export default function EdrSummaryPanel() {
           huntressRes.reason,
         );
       }
+      // Coverage is supplementary: a failure is logged and the section is
+      // omitted, but it never feeds failureKind or hides the provider cards.
+      if (coverageRes.status === "rejected") {
+        console.error(
+          "[EdrSummaryPanel] /edr/security-agents/coverage failed:",
+          coverageRes.reason,
+        );
+      }
+      setCoverage(
+        coverageRes.status === "fulfilled" ? coverageRes.value.summary : [],
+      );
       setS1(s1Res.status === "fulfilled" ? s1Res.value : null);
       setHuntress(
         huntressRes.status === "fulfilled" ? huntressRes.value : null,
@@ -99,6 +119,7 @@ export default function EdrSummaryPanel() {
   }, []);
   const showS1 = s1?.integration != null;
   const showHuntress = huntress?.integration != null;
+  const showCoverage = coverage.length > 0;
   if (loading) {
     return (
       <div
@@ -112,7 +133,7 @@ export default function EdrSummaryPanel() {
       </div>
     );
   }
-  if (!showS1 && !showHuntress) {
+  if (!showS1 && !showHuntress && !showCoverage) {
     if (failureKind === "none") return null;
     // A 403 is terminal for this user — a retry hits the same permission gate, and
     // "EDR status unavailable" would misreport a permission denial as an outage.
@@ -197,6 +218,40 @@ export default function EdrSummaryPanel() {
           </>
         )}
       </div>
+      {showCoverage && (
+        <div
+          className="mt-6 border-t pt-4"
+          data-testid="edr-security-agent-coverage"
+        >
+          <h4 className="mb-3 text-sm font-semibold">
+            {t("securityAgentCoverage.title")}
+          </h4>
+          <div className="space-y-3">
+            {coverage.map((v) => (
+              <div key={v.vendor} data-testid={`coverage-vendor-${v.vendor}`}>
+                <p className="mb-1 text-sm font-medium">
+                  {vendorLabel(v.vendor)}
+                </p>
+                <dl className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
+                  {COVERAGE_STATES.map((state) => (
+                    <div key={state} className="flex items-center gap-1.5">
+                      <dt className="text-muted-foreground">
+                        {coverageStateLabel(t, state)}
+                      </dt>
+                      <dd
+                        className="font-semibold"
+                        data-testid={`coverage-count-${v.vendor}-${state}`}
+                      >
+                        {v.counts?.[state] ?? 0}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

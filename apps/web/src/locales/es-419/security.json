@@ -2192,5 +2192,34 @@
     "scansTab": "Escaneos",
     "threatsTab": "Amenazas",
     "backToThreats": "Volver a las amenazas"
+  },
+  "securityAgentCoverage": {
+    "title": "Cobertura de agentes de seguridad",
+    "states": {
+      "covered": "Cubierto",
+      "gap": "Brecha",
+      "vendorOnly": "Solo en el proveedor",
+      "vendorOffline": "Proveedor sin conexión",
+      "mismatchedOrg": "Organización no coincide",
+      "notApplicable": "No aplica",
+      "pending": "Pendiente"
+    },
+    "reasons": {
+      "orgNotMapped": "Organización no asignada al proveedor",
+      "integrationInactive": "Integración inactiva",
+      "orgKeyMissing": "Falta la clave de la organización",
+      "accountKeyMissing": "Falta la clave de la cuenta",
+      "platformUnsupported": "Plataforma no compatible",
+      "requiresMdmApproval": "Requiere aprobación de MDM",
+      "platformNotSelected": "Plataforma no seleccionada",
+      "varMissing": "Falta la variable de implementación",
+      "vendorUnavailable": "Proveedor no disponible",
+      "installFailed": "Falló la instalación",
+      "installNotArmed": "Instalación no habilitada",
+      "installPending": "Instalación pendiente",
+      "awaitingVendorReport": "En espera del informe del proveedor",
+      "awaitingEvaluation": "En espera de evaluación",
+      "vendorOrgMismatch": "El proveedor informa otra organización"
+    }
   }
 }

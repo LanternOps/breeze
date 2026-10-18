@@ -983,7 +983,9 @@
     "sentineloneWillCutTheDeviceOff": "SentinelOne will cut the device off the network until you remove isolation. Active sessions will drop.",
     "sentineloneWillRestoreThisDeviceS": "SentinelOne will restore this device's network connectivity.",
     "cancel": "Cancel",
-    "isolate": "Isolate"
+    "isolate": "Isolate",
+    "managedSecurityAgents": "Managed security agents",
+    "since": "Since {{date}}"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Loading effective configuration...",

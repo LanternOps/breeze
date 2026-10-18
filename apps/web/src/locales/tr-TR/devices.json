@@ -983,7 +983,9 @@
     "sentineloneWillCutTheDeviceOff": "SentinelOne, siz izolasyonu kaldırana kadar cihazın ağ bağlantısını kesecektir. Aktif oturumlar düşecek.",
     "sentineloneWillRestoreThisDeviceS": "SentinelOne bu cihazın ağ bağlantısını geri yükleyecektir.",
     "cancel": "İptal",
-    "isolate": "İzole"
+    "isolate": "İzole",
+    "managedSecurityAgents": "Yönetilen güvenlik aracıları",
+    "since": "{{date}} tarihinden beri"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Etkili yapılandırma yükleniyor...",

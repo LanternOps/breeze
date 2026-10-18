@@ -1362,7 +1362,12 @@
       "installAttempts": "{{count}} Versuch(e)",
       "installLastAttempt": "Letzter Installationsversuch: ",
       "managedByConfigPolicy": "Von Konfigurationsrichtlinie verwaltet",
-      "managedByConfigPolicyHint": "Diese Richtlinie wird aus einer Konfigurationsrichtlinie erzeugt und ist hier schreibgeschützt. Ändern Sie sie unter Konfigurationsrichtlinien."
+      "managedByConfigPolicyHint": "Diese Richtlinie wird aus einer Konfigurationsrichtlinie erzeugt und ist hier schreibgeschützt. Ändern Sie sie unter Konfigurationsrichtlinien.",
+      "securityAgentCoverage": "Abdeckung durch Sicherheits-Agents",
+      "coverageDevice": "Gerät",
+      "coverageVendor": "Hersteller",
+      "coverageReason": "Grund",
+      "vendorOnlyAgent": "Nur beim Hersteller bekannter Agent"
     },
     "deploymentList": {
       "running": "Wird ausgeführt",

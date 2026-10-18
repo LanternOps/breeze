@@ -21,6 +21,13 @@ import { handleActionError } from "../../lib/runAction";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 import DeviceEdrGenericSection from "./DeviceEdrGenericSection";
+import SecurityAgentCoverageStateBadge from "../security/SecurityAgentCoverageStateBadge";
+import {
+  coverageReasonLabel,
+  fetchSecurityAgentCoverage,
+  vendorLabel,
+  type CoverageRow,
+} from "../../lib/securityAgentCoverage";
 
 const severityBadge: Record<string, string> = {
   low: "bg-blue-500/20 text-blue-700 border-blue-500/30",
@@ -48,6 +55,8 @@ type Props = { deviceId: string; orgId: string; timezone?: string };
 
 export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   const { t } = useTranslation("devices");
+  const { t: tSecurity } = useTranslation("security");
+  const [coverageRows, setCoverageRows] = useState<CoverageRow[]>([]);
   const [threats, setThreats] = useState<S1Threat[]>([]);
   const [incidents, setIncidents] = useState<HuntressIncident[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,6 +82,21 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
       setError(friendlyFetchError(err));
     } finally {
       setLoading(false);
+    }
+  }, [orgId, deviceId]);
+
+  // Read-only coverage: its own fetch so a failure never touches `error`.
+  const loadCoverage = useCallback(async () => {
+    try {
+      const res = await fetchSecurityAgentCoverage({
+        orgId,
+        deviceId,
+        limit: 50,
+      });
+      setCoverageRows(res.data);
+    } catch (err) {
+      console.error("[DeviceEdrPanel] security agent coverage failed:", err);
+      setCoverageRows([]);
     }
   }, [orgId, deviceId]);
 
@@ -127,6 +151,10 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void loadCoverage();
+  }, [loadCoverage]);
 
   return (
     <div
@@ -330,6 +358,45 @@ export default function DeviceEdrPanel({ deviceId, orgId, timezone }: Props) {
           )}
         </div>
       </div>
+
+      {coverageRows.length > 0 && (
+        <div className="mt-6" data-testid="device-security-agent-coverage">
+          <h4 className="mb-3 text-sm font-semibold">
+            {t("deviceEdrPanel.managedSecurityAgents")}
+          </h4>
+          <div className="space-y-2">
+            {coverageRows.map((row) => (
+              <div
+                key={row.id}
+                className="rounded-md border bg-background p-3"
+                data-testid="device-security-agent-coverage-row"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-medium">
+                    {vendorLabel(row.vendor)}
+                  </p>
+                  <SecurityAgentCoverageStateBadge state={row.state} />
+                  {row.reasonCode && (
+                    <span className="text-xs text-muted-foreground">
+                      {coverageReasonLabel(tSecurity, row.reasonCode)}
+                    </span>
+                  )}
+                </div>
+                {row.detail && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {row.detail}
+                  </p>
+                )}
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("deviceEdrPanel.since", {
+                    date: fmt(row.stateChangedAt, timezone),
+                  })}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <DeviceEdrGenericSection deviceId={deviceId} orgId={orgId} timezone={timezone} />
 

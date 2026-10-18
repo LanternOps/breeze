@@ -983,7 +983,9 @@
     "sentineloneWillCutTheDeviceOff": "SentinelOne trennt das Gerät vom Netzwerk, bis Sie die Isolierung aufheben. Aktive Sitzungen werden gelöscht.",
     "sentineloneWillRestoreThisDeviceS": "SentinelOne stellt die Netzwerkkonnektivität dieses Geräts wieder her.",
     "cancel": "Abbrechen",
-    "isolate": "Isolieren"
+    "isolate": "Isolieren",
+    "managedSecurityAgents": "Verwaltete Sicherheits-Agents",
+    "since": "Seit {{date}}"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Effektive Konfiguration wird geladen...",
