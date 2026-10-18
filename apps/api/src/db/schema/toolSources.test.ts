@@ -57,4 +57,14 @@ describe('toolSources schema', () => {
       expect(cols).toContain(c);
     }
   });
+
+  it('tool_sources carries the W2 spec_url and last_discovery_summary columns, both nullable', () => {
+    const cols = getTableColumns(toolSources);
+    expect(cols.specUrl.name).toBe('spec_url');
+    expect(cols.specUrl.notNull).toBe(false);
+    expect(cols.specUrl.columnType).toBe('PgText');
+    expect(cols.lastDiscoverySummary.name).toBe('last_discovery_summary');
+    expect(cols.lastDiscoverySummary.notNull).toBe(false);
+    expect(cols.lastDiscoverySummary.columnType).toBe('PgJsonb');
+  });
 });

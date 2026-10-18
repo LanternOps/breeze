@@ -5,6 +5,7 @@
  * vitest without aliasing (mirrors apps/web/src/lib/csp.ts). The middleware wires
  * these into the request lifecycle.
  */
+import { normalizeEmbedOrigin } from '@breeze/shared';
 
 /** Build the `connect-src` directive, widening for the configured API origin (+ dev). */
 export function resolveConnectSrcDirective(options?: { isDev?: boolean }): string {
@@ -105,4 +106,38 @@ export function resolvePortalCspHeader(opts: {
     patchedCsp = `${patchedCsp}; style-src-elem ${sources} 'nonce-${opts.styleNonce}'`;
   }
   return { action: 'set', value: patchedCsp };
+}
+
+/**
+ * Trust Center W03a: the `frame-ancestors` directive for the embed card. `deleteXfo` is true only when at least
+ * one origin is allowed — with none, the card stays `'none'` + `X-Frame-Options: DENY` like every other page.
+ * Throws on a source that is not an exact, normalized https origin (see withFrameAncestors).
+ */
+export function embedFramingHeaders(origins: readonly string[]): { frameAncestors: string; deleteXfo: boolean } {
+  for (const origin of origins) {
+    if (typeof origin !== 'string' || normalizeEmbedOrigin(origin) !== origin) {
+      throw new Error('frame-ancestors source is not a normalized https origin');
+    }
+  }
+  return origins.length > 0
+    ? { frameAncestors: `frame-ancestors ${origins.join(' ')}`, deleteXfo: true }
+    : { frameAncestors: "frame-ancestors 'none'", deleteXfo: false };
+}
+
+/**
+ * Replace (never merge) every `frame-ancestors` directive in `csp` with one listing `sources` (`'none'` when
+ * empty), at the position of the first one (appended when absent). Astro's `insertDirective` merges, which would
+ * yield `'none' https://x` — read by browsers as "none". Each source is re-validated with the shared normalizer
+ * (defence in depth: the API validated it already, but a value reaching a response header must be its own
+ * normalization, so no `;`, space or keyword can smuggle in another directive).
+ */
+export function withFrameAncestors(csp: string, sources: readonly string[]): string {
+  const { frameAncestors } = embedFramingHeaders(sources);
+  const isFrameAncestors = (d: string) => /^frame-ancestors(?:\s|$)/i.test(d);
+  const directives = csp.split(';').map((d) => d.trim()).filter((d) => d.length > 0);
+  const first = directives.findIndex(isFrameAncestors);
+  const kept = directives.filter((d) => !isFrameAncestors(d));
+  if (first === -1) kept.push(frameAncestors);
+  else kept.splice(first, 0, frameAncestors);
+  return kept.join('; ');
 }

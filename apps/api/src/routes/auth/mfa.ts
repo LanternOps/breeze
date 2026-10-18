@@ -73,6 +73,7 @@ import {
 import { installAuthBindingReplacement, requestAuthBinding } from './binding';
 
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
+import { preContextCheck } from '../../middleware/preContextChecks';
 import { captureException } from '../../services/sentry';
 import { enforceIpAllowlist, IP_NOT_ALLOWED_BODY, isBlocked } from '../../services/ipAllowlist';
 
@@ -1266,7 +1267,33 @@ const RESOURCE_BOUND_OPERATIONS = {
   caller_verification_administrative_disable: callerVerificationAdministrativeStepUpResource,
 } as const;
 
-mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchema), async (c) => {
+/**
+ * Per-user rate limit for POST /mfa/step-up (I2). Every other MFA-verification
+ * endpoint throttles per user; without this the only bound is the 300/60s-per-IP
+ * global limit, leaving a 6-digit TOTP / SMS code brute-forceable to a step-up
+ * grant across a handful of IPs. Fail closed (503) when Redis is unavailable.
+ *
+ * A pre-context check (#8334 / #1105): authMiddleware evaluates it before
+ * opening the request transaction, so the Redis round-trip does not pin a
+ * pooled connection. Key prefix `mfa:stepup-rl:` is deliberately disjoint from
+ * the grant store's `mfa:stepup:` (mfaStepUpGrant.ts) so the rate-limiter's
+ * sorted-set never shares a namespace with a grant key.
+ */
+const mfaStepUpRateLimit = preContextCheck(async (c) => {
+  if (!ENABLE_2FA) return null; // the handler answers mfaDisabledResponse
+  const auth = c.get('auth');
+  const redis = getRedis();
+  if (!redis) {
+    return c.json({ error: 'Service temporarily unavailable' }, 503);
+  }
+  const stepUpRate = await rateLimiter(redis, `mfa:stepup-rl:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
+  if (!stepUpRate.allowed) {
+    return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many attempts. Please try again later.');
+  }
+  return null;
+});
+
+mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('json', mfaStepUpSchema), async (c) => {
   if (!ENABLE_2FA) {
     return mfaDisabledResponse(c);
   }
@@ -1291,21 +1318,8 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, zValidator('json', mfaStepUpSchem
     return c.json({ error: 'Passkey resource binding is only valid for passkey deletion' }, 400);
   }
 
-  // Rate-limit per user (I2). Every other MFA-verification endpoint throttles
-  // per user; without this the only bound is the 300/60s-per-IP global limit,
-  // leaving a 6-digit TOTP / SMS code brute-forceable to a step-up grant across
-  // a handful of IPs. Fail closed (503) when Redis is unavailable.
-  const redis = getRedis();
-  if (!redis) {
-    return c.json({ error: 'Service temporarily unavailable' }, 503);
-  }
-  // Key prefix `mfa:stepup-rl:` is deliberately disjoint from the grant store's
-  // `mfa:stepup:` (mfaStepUpGrant.ts) so the rate-limiter's sorted-set never
-  // shares a namespace with a grant key.
-  const stepUpRate = await rateLimiter(redis, `mfa:stepup-rl:${auth.user.id}`, mfaLimiter.limit, mfaLimiter.windowSeconds);
-  if (!stepUpRate.allowed) {
-    return jsonError(c, 429, ERROR_CODES.RATE_LIMITED, 'Too many attempts. Please try again later.');
-  }
+  // Rate limiting for this route runs in `mfaStepUpRateLimit` (registered ahead of
+  // the validator), evaluated by authMiddleware BEFORE the request transaction opens (#8334).
 
   // A step-up must prove a factor that is allowed NOW, not a stale credential
   // left on the row after a method/policy change. Resolve once, fail closed,

@@ -77,16 +77,9 @@ type CaptureProbeReport struct {
 	ScreenCaptureKitCalls int
 }
 
-// ProbeCaptureAccess is the permission-check probe: one real capture attempt
-// that reports whether a frame came back. On macOS it never calls
-// ScreenCaptureKit (#8058); see CaptureProbeOptions.
-func ProbeCaptureAccess(config CaptureConfig) (bool, error) {
-	report, err := ProbeCapture(config, CaptureProbeOptions{})
-	return report.Granted, err
-}
-
 // ProbeCapture performs a real capture attempt and reports which backend, if
-// any, produced a frame.
+// any, produced a frame. Only the CLI probe calls it: the helper's permission
+// checks use CheckCaptureAccess, which never captures (#8390).
 //
 // By default that is a single attempt with the backend NewScreenCapturer
 // selects. A platform can install platformCaptureProbePlan to choose the

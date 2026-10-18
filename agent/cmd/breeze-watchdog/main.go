@@ -608,6 +608,10 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 	// authRejectedJournaled rate-limits check.heartbeat_stale_auth_rejected
 	// to one entry per locked-out episode.
 	var authRejectedJournaled bool
+	// serverUnavailableJournaled does the same for
+	// check.heartbeat_stale_server_unavailable (#8934): one entry per
+	// overload episode, not one per heartbeat tick.
+	var serverUnavailableJournaled bool
 
 	// --- STANDBY policy (#5252) ---------------------------------------
 	// Details of the shutdown the agent last announced. Only meaningful
@@ -845,9 +849,24 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 						"auth_rejected_at": healthChecker.LastKnownAuthRejected(agentState).Format(time.RFC3339),
 					})
 				}
+			case watchdog.StaleServerUnavailable:
+				// #8934: running, and the server is answering its
+				// heartbeats with 429/502/503/504. A restart cannot add
+				// server capacity and would add a reconnect to the
+				// overload. Journal on entry only.
+				if !serverUnavailableJournaled {
+					serverUnavailableJournaled = true
+					journal.Log(watchdog.LevelWarn, "check.heartbeat_stale_server_unavailable", map[string]any{
+						"server_unavailable_at": healthChecker.LastKnownServerUnavailable(agentState).Format(time.RFC3339),
+						"last_heartbeat":        healthChecker.LastKnownHeartbeat(agentState).Format(time.RFC3339),
+					})
+				}
 			}
 			if decision != watchdog.StaleAuthRejected {
 				authRejectedJournaled = false
+			}
+			if decision != watchdog.StaleServerUnavailable {
+				serverUnavailableJournaled = false
 			}
 
 		case env := <-ipcMessages:
@@ -896,13 +915,15 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 						"path": statePath, "error": err.Error(),
 					})
 				}
-				// Success = heartbeat (or, #2796, an auth-rejected marker)
-				// advanced past (startedAt + grace).
+				// Success = heartbeat (or, #2796, an auth-rejected marker,
+				// or, #8934, a server-overload marker) advanced past
+				// (startedAt + grace).
 				verifyDeadline := pendingVerify.startedAt.Add(cfg.Watchdog.RestartVerificationGrace)
-				if ok, viaAuth := recoveryVerified(agentState, healthChecker, verifyDeadline); ok {
+				if ok, via := recoveryVerified(agentState, healthChecker, verifyDeadline); ok {
 					fields := map[string]any{
 						"elapsed_ms":    elapsed.Milliseconds(),
-						"auth_rejected": viaAuth,
+						"auth_rejected": via == verifiedViaAuthRejected,
+						"verified_via":  via,
 					}
 					if agentState != nil {
 						fields["last_heartbeat"] = agentState.LastHeartbeat.Format(time.RFC3339)
@@ -1003,8 +1024,9 @@ func runWatchdog(stopCh <-chan struct{}, powerCh <-chan powerNotice) {
 			// them. MONITORING will not restart it (StaleAuthRejected).
 			if ipcClient.IsConnected() && healthChecker.AgentAlive(agentState) {
 				journal.Log(watchdog.LevelInfo, "failover.agent_healthy_recovered", map[string]any{
-					"last_heartbeat": healthChecker.LastKnownHeartbeat(agentState).Format(time.RFC3339),
-					"auth_rejected":  healthChecker.AgentAuthRejectedAlive(agentState),
+					"last_heartbeat":     healthChecker.LastKnownHeartbeat(agentState).Format(time.RFC3339),
+					"auth_rejected":      healthChecker.AgentAuthRejectedAlive(agentState),
+					"server_unavailable": healthChecker.AgentServerUnavailableAlive(agentState),
 				})
 				// recovery.Reset() happens in the MONITORING block on the
 				// next tick — no need to duplicate it here.
@@ -1127,6 +1149,9 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 		if sync.AuthRejectedAt != "" {
 			syncFields["authRejectedAt"] = sync.AuthRejectedAt
 		}
+		if sync.ServerUnavailableAt != "" {
+			syncFields["serverUnavailableAt"] = sync.ServerUnavailableAt
+		}
 		journal.Log(watchdog.LevelInfo, "agent.state_sync", syncFields)
 		// #2796: an agent whose credentials the server rejects never sends a
 		// heartbeat-bearing sync, so without this it reads as wedged and gets
@@ -1145,9 +1170,25 @@ func handleIPCMessage(env *ipc.Envelope, wd *watchdog.Watchdog, journal *watchdo
 				})
 			}
 		}
+		// #8934: same shape for an agent whose heartbeats an overloaded
+		// server is answering with 429/502/503/504.
+		if health != nil && sync.ServerUnavailableAt != "" {
+			if at, perr := time.Parse(time.RFC3339, sync.ServerUnavailableAt); perr == nil {
+				health.NoteServerUnavailable(at)
+				if sync.LastHeartbeat == "" {
+					health.NoteStateSync(time.Time{}, sync.ActiveBackupRuns)
+				}
+			} else {
+				journal.Log(watchdog.LevelWarn, "ipc.bad_state_sync_server_unavailable", map[string]any{
+					"value": sync.ServerUnavailableAt, "error": perr.Error(),
+				})
+			}
+		}
 		// Feed the staleness check AND the D3 in-flight-backup IPC veto: the
-		// agent sends a state_sync only after a successful server heartbeat,
-		// so this is authoritative liveness evidence even when agent.state on
+		// agent sends a heartbeat-bearing state_sync only after a successful
+		// server heartbeat (the auth-rejected and server-unavailable syncs
+		// above leave LastHeartbeat empty), so this is authoritative liveness
+		// evidence even when agent.state on
 		// disk is unwritable (AV/EDR sharing violations). Without the
 		// heartbeat half, the file alone drove restart decisions and a
 		// blocked writer read as a dead agent (#2763). Without the backup-run
@@ -1212,19 +1253,30 @@ func applyFailoverTokenUpdate(fc *watchdog.FailoverClient, mon *authstate.Monito
 	}
 }
 
+// Evidence a restart verification succeeded on (recoveryVerified).
+const (
+	verifiedViaHeartbeat         = "heartbeat"
+	verifiedViaAuthRejected      = "auth_rejected"
+	verifiedViaServerUnavailable = "server_unavailable"
+)
+
 // recoveryVerified reports whether a restart dispatched before verifyDeadline
 // has produced a running agent: its heartbeat advanced past the deadline, or
-// (#2796) it wrote an auth-rejected marker past the deadline — the new process
-// is up and running its heartbeat loop, and the server is refusing its
-// credentials, which no further restart can change. viaAuth reports which.
-func recoveryVerified(s *state.AgentState, health *watchdog.HealthChecker, verifyDeadline time.Time) (ok, viaAuth bool) {
+// it wrote an auth-rejected (#2796) or server-overload (#8934) marker past the
+// deadline — the new process is up and running its heartbeat loop, and the
+// server is refusing its credentials or shedding its load, which no further
+// restart can change. via names the evidence ("" when not verified).
+func recoveryVerified(s *state.AgentState, health *watchdog.HealthChecker, verifyDeadline time.Time) (ok bool, via string) {
 	if s != nil && s.LastHeartbeat.After(verifyDeadline) {
-		return true, false
+		return true, verifiedViaHeartbeat
 	}
 	if health != nil && health.LastKnownAuthRejected(s).After(verifyDeadline) {
-		return true, true
+		return true, verifiedViaAuthRejected
 	}
-	return false, false
+	if health != nil && health.LastKnownServerUnavailable(s).After(verifyDeadline) {
+		return true, verifiedViaServerUnavailable
+	}
+	return false, ""
 }
 
 // handleFailoverPoll sends a heartbeat and polls for commands during failover.

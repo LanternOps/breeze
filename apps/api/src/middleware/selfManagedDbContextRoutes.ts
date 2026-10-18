@@ -573,6 +573,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // #2417). The handler reads the owner-bound session in one short
   // withAuthDbAccessContext and runs the loader reads with no context held.
   { method: 'GET', pattern: /^\/api\/v1\/ai\/models\/choices\/(chat|ai-agents)\/?$/ },
+  // #8333: the recovery-media catalog looks up the signed release manifest
+  // (safeFetch, 1-2 s) once per arch. Its only DB work is the permission gate,
+  // which opens its own short context; the handler itself is read-only and
+  // touches no table, so it needs no ambient request transaction.
+  { method: 'GET', pattern: /^\/api\/v1\/backup\/bmr\/boot-media\/?$/ },
 ];
 
 /**

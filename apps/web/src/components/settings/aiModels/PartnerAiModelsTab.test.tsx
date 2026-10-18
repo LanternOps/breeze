@@ -19,7 +19,7 @@ describe('PartnerAiModelsTab', () => {
     expect(fetchWithAuth).toHaveBeenCalledWith('/ai/models');
     expect(screen.queryByTestId('ai-connection-edit-platform')).toBeNull();
     expect(screen.getByTestId(`ai-connection-edit-${CONN}`)).toBeTruthy();
-    expect(screen.getByTestId('ai-connection-add')).toBeTruthy(); // always visible; the chooser disables a second Anthropic connection (compat_uq)
+    expect(screen.getByTestId('ai-connection-add')).toBeTruthy(); // always visible
     const rows = screen.getAllByTestId(/^ai-connection-row-/);
     expect(rows[0].getAttribute('data-testid')).toBe('ai-connection-row-platform');
   });

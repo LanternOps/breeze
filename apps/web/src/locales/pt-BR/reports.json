@@ -248,6 +248,12 @@
     },
     "reportEditPage": {
       "backToReports": "Voltar para Relatórios",
+      "backupPreview": {
+        "description": "Gera o instantâneo de backup atual com as opções acima. Só é executado quando você solicitar.",
+        "error": "Não foi possível gerar a pré-visualização.",
+        "run": "Gerar pré-visualização",
+        "title": "Pré-visualização"
+      },
       "description": "Atualize a configuração de \"{{name}}\".",
       "errors": {
         "fetchReport": "Falha ao buscar relatório",

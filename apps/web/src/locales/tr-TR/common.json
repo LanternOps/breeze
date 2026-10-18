@@ -494,7 +494,10 @@
       "createFirst": "İlk filtrenizi oluşturun",
       "created": "Oluşturuldu {{date}}",
       "deleteConfirm": "Bu filtre silinsin mi?",
-      "duplicate": "Çoğalt"
+      "duplicate": "Çoğalt",
+      "saveFailed": "Filtre kaydedilemedi",
+      "deleteFailed": "Filtre silinemedi",
+      "ownerOrgHint": "Kayıtlı filtreler tek bir kuruluşa aittir. Bu filtrenin hangi kuruluşa ait olacağını seçin."
     },
     "targets": {
       "modes": {
@@ -2664,7 +2667,8 @@
     "dismiss": "İki faktörlü kimlik doğrulama hatırlatıcısını kapat"
   },
   "mfaPolicyOffBanner": {
-    "message": "Ekibiniz için çok faktörlü kimlik doğrulama zorunlu değil. Yalnızca parola ile açılan oturumlar betik çalıştırabilir, cihazları taşıyabilir ve ilkeleri değiştirebilir.",
+    "label": "MFA hatırlatması",
+    "message": "Ekibiniz için MFA zorunlu değil. Yalnızca parolalı oturumlar betik çalıştırabilir.",
     "cta": "MFA'yı zorunlu kıl",
     "dismiss": "MFA ilkesi hatırlatmasını bugünlük kapat"
   },

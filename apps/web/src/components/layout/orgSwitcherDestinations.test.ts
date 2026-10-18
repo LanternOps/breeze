@@ -1,6 +1,36 @@
 import { describe, expect, it } from 'vitest';
 
-import { destinationTarget, visibleDestinations } from './orgSwitcherDestinations';
+import { destinationTarget, recordStayDestination, visibleDestinations } from './orgSwitcherDestinations';
+
+describe('recordStayDestination (#9027)', () => {
+  it('keeps the user on a device, org or ticket record', () => {
+    expect(recordStayDestination('/devices/abc123')).toBe('/devices/abc123');
+    expect(recordStayDestination('/organizations/org-1')).toBe('/organizations/org-1');
+    expect(recordStayDestination('/tickets/t-9', '?from=queue')).toBe('/tickets/t-9?from=queue');
+  });
+
+  it.each(['compare', 'groups', 'network', 'posture', 'time', 'unassigned'])(
+    'treats /devices/%s as a page, not a record',
+    (sibling) => {
+      expect(recordStayDestination(`/devices/${sibling}`)).toBeUndefined();
+    },
+  );
+
+  it('handles a trailing slash, deeper paths and /tickets/new', () => {
+    expect(recordStayDestination('/devices/abc123/')).toBe('/devices/abc123/');
+    expect(recordStayDestination('/devices/abc123/extra')).toBeUndefined();
+    expect(recordStayDestination('/tickets/new')).toBeUndefined();
+  });
+
+  it('returns undefined for list routes and static siblings', () => {
+    expect(recordStayDestination('/devices')).toBeUndefined();
+    expect(recordStayDestination('/devices/compare')).toBeUndefined();
+    expect(recordStayDestination('/devices/groups')).toBeUndefined();
+    expect(recordStayDestination('/tickets')).toBeUndefined();
+    expect(recordStayDestination('/organizations')).toBeUndefined();
+    expect(recordStayDestination('/alerts/a-1')).toBeUndefined();
+  });
+});
 
 const ALL = [{ resource: '*', action: '*' }] as never;
 

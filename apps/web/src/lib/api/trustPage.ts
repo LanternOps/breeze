@@ -37,6 +37,8 @@ export interface TrustPageDraft {
   frameworkView: TrustFramework[] | null;
   ndaText: string | null;
   accessRequestCreatesTicket: boolean;
+  /** W03a: exact https origins allowed to frame the embed card. Live (no republish needed). */
+  embedAllowedOrigins: string[];
   publicationAuthorizedBy: string | null;
   publicationAuthorizedAt: string | null;
   lastEvaluatedAt: string | null;
@@ -61,6 +63,8 @@ export interface TrustPageState {
   publicPath: string;
   /** Base-relative badge path, e.g. `/api/v1/trust/public/nw/acme/badge.svg`. */
   badgePath: string;
+  /** W03a: base-relative embed card path, e.g. `/portal/trust/embed/nw/acme`. */
+  embedPath: string;
   slugs: { partnerSlug: string; orgSlug: string; valid: boolean; problems: string[] };
   canPublish: { allowed: boolean; reason: string | null };
   /** Linked documents in display order (editor view; includes superseded/deleted rows). */
@@ -137,6 +141,11 @@ export function unpublishTrustPage(f: Fetcher, orgId: string): Promise<Response>
 
 export function setPartnerHome(f: Fetcher, orgId: string, isPartnerHome: boolean): Promise<Response> {
   return f(`${base(orgId)}/partner-home`, jsonInit('POST', { isPartnerHome }));
+}
+
+/** W03a: PUT → `{ data: { embedAllowedOrigins } }` (normalized). MFA-gated; 403 MFA_REQUIRED without it. */
+export function updateTrustEmbedOrigins(f: Fetcher, orgId: string, origins: string[]): Promise<Response> {
+  return f(`${base(orgId)}/embed`, jsonInit('PUT', { origins }));
 }
 
 /** POST → `{ data: { token, expiresInSeconds, previewPath } }`; `previewPath` is

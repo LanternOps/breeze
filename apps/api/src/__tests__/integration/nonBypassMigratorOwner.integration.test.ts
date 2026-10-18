@@ -11,6 +11,8 @@
  *  1. 2026-11-12-110000-partner-llm-catalog-pin-default-model.sql ran before
  *     partner_llm_configs had a role-agnostic system policy, so on such an
  *     install it pinned 0 rows (#7618). The replay migration re-applies it.
+ *     (W08b dropped that table; these cases restore it in a rolled-back
+ *     transaction.)
  *  2. The multi-org report series guard triggers (SECURITY DEFINER, owned by
  *     whoever ran migrations) read `report_series`, whose only policy was
  *     `TO breeze_app`. Owned by any other NOBYPASSRLS role, the two
@@ -28,6 +30,7 @@ import { join } from 'node:path';
 import postgres, { type Sql, type TransactionSql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrganization, createPartner } from './db-utils';
+import { RESTORE_AI_MODEL_LEGACY_CONFIG_SQL } from './fixtures/aiModelRegistryLegacyConfig';
 
 const MIGRATIONS = join(__dirname, '../../../migrations');
 const ORIGINAL_PIN = join(MIGRATIONS, '2026-11-12-110000-partner-llm-catalog-pin-default-model.sql');
@@ -77,7 +80,7 @@ beforeAll(async () => {
   // RLS, not privilege, is what is under test.
   await admin.unsafe(`
     GRANT USAGE ON SCHEMA public TO ${MIGRATOR};
-    GRANT SELECT, UPDATE ON public.partner_llm_configs, public.partner_ai_connections TO ${MIGRATOR};
+    GRANT SELECT, UPDATE ON public.partner_ai_connections TO ${MIGRATOR};
     GRANT SELECT ON public.llm_provider_catalog, public.llm_provider_catalog_revisions TO ${MIGRATOR};
     GRANT SELECT, DELETE ON public.report_series_org_targets TO ${MIGRATOR};
     GRANT SELECT, UPDATE ON public.reports TO ${MIGRATOR};
@@ -106,90 +109,91 @@ describe('migration role is NOSUPERUSER NOBYPASSRLS and not breeze_app', () => {
   });
 
   describe('catalog default-model pin (#7618)', () => {
-    async function seedCatalogPartner(mapsSonnet46: boolean) {
-      const partner = await createPartner();
+    // partner_llm_configs and partner_ai_connections.legacy_default_model were
+    // dropped by AI model registry W08b (#7606); a fresh migrate runs both pin
+    // migrations before that drop. Each case restores the legacy objects in a
+    // rolled-back transaction, so the live schema is never changed.
+    async function restoreLegacy(tx: TransactionSql) {
+      await tx`SELECT set_config('breeze.scope', 'system', true)`;
+      await tx.unsafe(RESTORE_AI_MODEL_LEGACY_CONFIG_SQL);
+      await tx.unsafe(`GRANT SELECT, UPDATE ON public.partner_llm_configs TO ${MIGRATOR}`);
+      await tx`SELECT set_config('breeze.scope', 'none', true)`;
+    }
+
+    // The partner is created (committed) BEFORE the transaction: the restore
+    // holds locks on partners / partner_ai_connections that a second
+    // connection's insert would wait on for the rest of the transaction.
+    async function seedCatalogPartner(tx: TransactionSql, partnerId: string, mapsSonnet46: boolean) {
       const entryId = randomUUID();
       const revisionId = randomUUID();
       const configId = randomUUID();
       const modelMap = mapsSonnet46
         ? { 'claude-sonnet-4-6': 'vendor/sonnet-4-6' }
         : { 'claude-opus-4-6': 'vendor/opus-4-6' };
-      await admin`INSERT INTO llm_provider_catalog (id, slug, name, status)
+      await tx`INSERT INTO llm_provider_catalog (id, slug, name, status)
         VALUES (${entryId}, ${`pin-test-${entryId}`}, 'Pin test endpoint', 'listed')`;
-      await admin`INSERT INTO llm_provider_catalog_revisions (id, catalog_entry_id, revision, base_url, auth_mode, model_map)
-        VALUES (${revisionId}, ${entryId}, 1, 'https://llm.example.test', 'x-api-key', ${admin.json(modelMap)})`;
-      await admin`UPDATE llm_provider_catalog SET active_revision_id = ${revisionId} WHERE id = ${entryId}`;
-      await admin`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, catalog_entry_id)
-        VALUES (${configId}, ${partner.id}, 'ciphertext', 'abcd', 'fp', ${entryId})`;
-      await admin`INSERT INTO partner_ai_connections (id, partner_id, kind, name, api_key_encrypted, key_last4, key_fingerprint, catalog_entry_id)
-        VALUES (${configId}, ${partner.id}, 'catalog', 'Pin test endpoint', 'ciphertext', 'abcd', 'fp', ${entryId})`;
+      await tx`INSERT INTO llm_provider_catalog_revisions (id, catalog_entry_id, revision, base_url, auth_mode, model_map)
+        VALUES (${revisionId}, ${entryId}, 1, 'https://llm.example.test', 'x-api-key', ${tx.json(modelMap)})`;
+      await tx`UPDATE llm_provider_catalog SET active_revision_id = ${revisionId} WHERE id = ${entryId}`;
+      await tx`INSERT INTO partner_llm_configs (id, partner_id, api_key_encrypted, key_last4, key_fingerprint, catalog_entry_id)
+        VALUES (${configId}, ${partnerId}, 'ciphertext', 'abcd', 'fp', ${entryId})`;
+      await tx`INSERT INTO partner_ai_connections (id, partner_id, kind, name, api_key_encrypted, key_last4, key_fingerprint, catalog_entry_id)
+        VALUES (${configId}, ${partnerId}, 'catalog', 'Pin test endpoint', 'ciphertext', 'abcd', 'fp', ${entryId})`;
       return { configId, entryId };
     }
 
-    async function readPin(configId: string) {
-      const [cfg] = await admin<{ default_model: string | null; config_version: number }[]>`
+    async function readPin(tx: TransactionSql, configId: string) {
+      const [cfg] = await tx<{ default_model: string | null; config_version: number }[]>`
         SELECT default_model, config_version FROM partner_llm_configs WHERE id = ${configId}`;
-      const [conn] = await admin<{ legacy_default_model: string | null }[]>`
+      const [conn] = await tx<{ legacy_default_model: string | null }[]>`
         SELECT legacy_default_model FROM partner_ai_connections WHERE id = ${configId}`;
       return { ...cfg!, legacy_default_model: conn!.legacy_default_model };
     }
 
-    async function applyAsMigrator(file: string) {
-      await admin.begin(async (tx) => {
-        await tx.unsafe(`SET LOCAL ROLE ${MIGRATOR}`);
-        await tx.unsafe(readFileSync(file, 'utf8'));
-      });
-    }
-
-    async function cleanupCatalog(entryIds: string[]) {
-      await admin`DELETE FROM partner_ai_connections WHERE catalog_entry_id = ANY(${entryIds}::uuid[])`;
-      await admin`DELETE FROM partner_llm_configs WHERE catalog_entry_id = ANY(${entryIds}::uuid[])`;
-      await admin`UPDATE llm_provider_catalog SET active_revision_id = NULL WHERE id = ANY(${entryIds}::uuid[])`;
-      await admin`DELETE FROM llm_provider_catalog WHERE id = ANY(${entryIds}::uuid[])`;
+    async function applyAsMigrator(tx: TransactionSql, file: string) {
+      await tx.unsafe(`SET LOCAL ROLE ${MIGRATOR}`);
+      await tx.unsafe(readFileSync(file, 'utf8'));
+      await tx.unsafe('RESET ROLE');
     }
 
     runDb('control: the shipped pin matches nothing for this role while partner_llm_configs has only its breeze_app policy', async () => {
-      const seeded = await seedCatalogPartner(true);
-      try {
-        await inRolledBackTx(async (tx) => {
-          // Recreate the database as it was when the shipped pin ran: the
-          // role-agnostic system policy arrived two days later (2026-11-14).
-          await tx.unsafe('DROP POLICY partner_llm_configs_system_only ON public.partner_llm_configs');
-          await tx.unsafe(`SET LOCAL ROLE ${MIGRATOR}`);
-          await tx.unsafe(readFileSync(ORIGINAL_PIN, 'utf8'));
-          await tx.unsafe('RESET ROLE');
-          const [row] = await tx<{ default_model: string | null }[]>`
-            SELECT default_model FROM partner_llm_configs WHERE id = ${seeded.configId}`;
-          expect(row!.default_model).toBeNull();
-        });
-      } finally {
-        await cleanupCatalog([seeded.entryId]);
-      }
+      const partner = await createPartner();
+      await inRolledBackTx(async (tx) => {
+        await restoreLegacy(tx);
+        const seeded = await seedCatalogPartner(tx, partner.id, true);
+        // Recreate the database as it was when the shipped pin ran: the
+        // role-agnostic system policy arrived two days later (2026-11-14).
+        await tx.unsafe('DROP POLICY partner_llm_configs_system_only ON public.partner_llm_configs');
+        await applyAsMigrator(tx, ORIGINAL_PIN);
+        const [row] = await tx<{ default_model: string | null }[]>`
+          SELECT default_model FROM partner_llm_configs WHERE id = ${seeded.configId}`;
+        expect(row!.default_model).toBeNull();
+      });
     });
 
     runDb('the replay pins tracking catalog rows and their connection mirror, leaves the rest alone, and is idempotent', async () => {
-      const tracking = await seedCatalogPartner(true);
-      const unmapped = await seedCatalogPartner(false);
-      try {
-        await applyAsMigrator(PIN_REPLAY);
+      const [p1, p2] = [await createPartner(), await createPartner()];
+      await inRolledBackTx(async (tx) => {
+        await restoreLegacy(tx);
+        const tracking = await seedCatalogPartner(tx, p1.id, true);
+        const unmapped = await seedCatalogPartner(tx, p2.id, false);
+        await applyAsMigrator(tx, PIN_REPLAY);
 
-        expect(await readPin(tracking.configId)).toEqual({
+        expect(await readPin(tx, tracking.configId)).toEqual({
           default_model: 'claude-sonnet-4-6',
           config_version: 2,
           legacy_default_model: 'claude-sonnet-4-6',
         });
         // Its revision does not map claude-sonnet-4-6: it was never served it.
-        expect(await readPin(unmapped.configId)).toEqual({
+        expect(await readPin(tx, unmapped.configId)).toEqual({
           default_model: null,
           config_version: 1,
           legacy_default_model: null,
         });
 
-        await applyAsMigrator(PIN_REPLAY);
-        expect((await readPin(tracking.configId)).config_version).toBe(2);
-      } finally {
-        await cleanupCatalog([tracking.entryId, unmapped.entryId]);
-      }
+        await applyAsMigrator(tx, PIN_REPLAY);
+        expect((await readPin(tx, tracking.configId)).config_version).toBe(2);
+      });
     });
   });
 

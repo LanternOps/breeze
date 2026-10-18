@@ -3,7 +3,7 @@ import {
   TRUST_CONTROL_CATALOG, TRUST_CONTROL_CATALOG_VERSION, TELEMETRY_CONTROL_IDS, trustControlById,
 } from './controlCatalog';
 import { DECLARED_CONTROL_CATALOG } from './declaredCatalog';
-import { FRAMEWORK_CROSSWALK, FRAMEWORK_META, TRUST_FRAMEWORKS } from './frameworkCrosswalk';
+import { CIS_BENCHMARK_CHECK_SAFEGUARDS, FRAMEWORK_CROSSWALK, FRAMEWORK_META, TRUST_FRAMEWORKS } from './frameworkCrosswalk';
 import { W1_TELEMETRY_CONTROL_IDS } from './types';
 
 /** Crosswalk entries kept for framework completeness with no Breeze control mapped yet (exempt from the orphan check). */
@@ -42,6 +42,10 @@ describe('trust control catalog', () => {
         expect(FRAMEWORK_CROSSWALK[r.framework][r.ref], `${c.id} → ${r.framework} ${r.ref}`).toBeDefined();
         used.add(`${r.framework}:${r.ref}`);
       }
+    }
+    // W3e: a safeguard that only the benchmark-check mapping references is in use too (hardening safeguards).
+    for (const table of Object.values(CIS_BENCHMARK_CHECK_SAFEGUARDS)) {
+      for (const refs of Object.values(table)) for (const ref of refs) used.add(`cis_v8:${ref}`);
     }
     for (const fw of TRUST_FRAMEWORKS) {
       for (const ref of Object.keys(FRAMEWORK_CROSSWALK[fw])) {

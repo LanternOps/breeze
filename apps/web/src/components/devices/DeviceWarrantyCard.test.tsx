@@ -262,3 +262,30 @@ describe('DeviceWarrantyCard — refresh feedback (#1723)', () => {
     });
   });
 });
+
+describe('DeviceWarrantyCard — compact empty state (#9029)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('collapses to one muted line with a Look up step that queues a warranty lookup', async () => {
+    fetchWithAuthMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/warranty/refresh') && init?.method === 'POST') {
+        return jsonResponse({ message: 'Warranty refresh queued' });
+      }
+      return jsonResponse({ warranty: null });
+    });
+
+    render(<DeviceWarrantyCard deviceId={deviceId} compact />);
+    const row = await screen.findByTestId('device-warranty-empty');
+    expect(row).toHaveTextContent('No warranty on file');
+    fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
+    await waitFor(() =>
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(
+        `/devices/${deviceId}/warranty/refresh`,
+        expect.objectContaining({ method: 'POST' }),
+      ),
+    );
+  });
+});

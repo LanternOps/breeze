@@ -422,6 +422,63 @@ export async function getPolicyComplianceMap(policyIds: string[], allowedSiteIds
   return complianceMap;
 }
 
+/**
+ * Distinct-device compliance overview across legacy policies and config-policy
+ * feature links (#8967). `automation_policy_compliance` holds one row per
+ * (policy, device), so summing per-policy totals counts a device once per
+ * policy that targets it. Here each device is counted once at its worst status:
+ * non_compliant > pending/error (unknown) > compliant.
+ * @param allowedSiteIds null/undefined = unrestricted, [] = none.
+ */
+export async function getDistinctDeviceCompliance(
+  policyIds: string[],
+  featureLinkIds: string[],
+  allowedSiteIds?: string[] | null
+) {
+  const empty = { total: 0, compliant: 0, nonCompliant: 0, unknown: 0 };
+  if ((policyIds.length === 0 && featureLinkIds.length === 0) || allowedSiteIds?.length === 0) {
+    return empty;
+  }
+
+  const sources: SQL[] = [];
+  if (policyIds.length > 0) {
+    sources.push(inArray(automationPolicyCompliance.policyId, policyIds));
+  }
+  if (featureLinkIds.length > 0) {
+    sources.push(and(
+      isNull(automationPolicyCompliance.policyId),
+      isNotNull(automationPolicyCompliance.configPolicyId),
+      inArray(automationPolicyCompliance.configPolicyId, featureLinkIds)
+    ) as SQL);
+  }
+
+  const rows = await db
+    .select({
+      deviceId: automationPolicyCompliance.deviceId,
+      status: automationPolicyCompliance.status,
+    })
+    .from(automationPolicyCompliance)
+    .where(and(or(...sources), complianceSiteCondition(allowedSiteIds)))
+    .groupBy(automationPolicyCompliance.deviceId, automationPolicyCompliance.status);
+
+  // 2 = non_compliant, 1 = unknown (pending/error), 0 = compliant
+  const worst = new Map<string, number>();
+  for (const row of rows) {
+    const rank = row.status === 'non_compliant' ? 2 : row.status === 'compliant' ? 0 : 1;
+    const prev = worst.get(row.deviceId);
+    if (prev === undefined || rank > prev) worst.set(row.deviceId, rank);
+  }
+
+  const result = { ...empty };
+  for (const rank of worst.values()) {
+    result.total += 1;
+    if (rank === 2) result.nonCompliant += 1;
+    else if (rank === 1) result.unknown += 1;
+    else result.compliant += 1;
+  }
+  return result;
+}
+
 // ============================================
 // Config Policy Compliance Helpers
 // ============================================

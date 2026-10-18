@@ -56,13 +56,12 @@ const writes = () => m.statements.filter((s) => /^(WITH .*?\) )?(UPDATE|INSERT|D
 const deletes = () => m.statements.filter((s) => /\bDELETE FROM\b/.test(s.text));
 const LOCKED = { id: CONN, kind: 'anthropic_byok', catalog_entry_id: null, config_version: 3, connected_by: null, verified_at: null };
 
-/** A partner with registry rows, and (unless overridden) a legacy table that still exists. */
+/** A partner with registry rows. */
 function baseRespond(extra: (text: string, params: unknown[]) => unknown[] | undefined = () => undefined) {
   return (text: string, params: unknown[]): unknown[] => {
     const hit = extra(text, params);
     if (hit) return hit;
     if (text.includes('FROM ai_model_registry_partner_cutover')) return [{ ok: 1 }];
-    if (text.includes("to_regclass('public.partner_llm_configs')")) return [{ present: true }];
     return [];
   };
 }
@@ -235,7 +234,7 @@ describe('connectAnthropicConnection', () => {
 });
 
 describe('disconnectAnthropicConnection', () => {
-  it('returns only that connection\'s references to platform offerings, then SOFT-disconnects it and purges the legacy key copy', async () => {
+  it('returns only that connection\'s references to platform offerings, then SOFT-disconnects it (never deletes)', async () => {
     m.respond = baseRespond((text) => {
       if (text.includes('FOR UPDATE')) return [LOCKED];
       if (text.startsWith('WITH') && text.includes('AS model_id')) return [{ id: B, model_id: 'm1' }];
@@ -253,9 +252,9 @@ describe('disconnectAnthropicConnection', () => {
     expect(insert.text).toContain("'platform'");
     expect(insert.text).toContain('ON CONFLICT (partner_id, platform_model_id) WHERE connection_id IS NULL DO UPDATE SET enabled = true');
     // Never deleted: a delete cascades to offerings in-flight turns are bound to.
-    // The only delete is the frozen legacy row holding the revoked key (finding 4).
-    expect(deletes().map((d) => d.text)).toEqual(['DELETE FROM partner_llm_configs WHERE partner_id = $1::uuid']);
-    expect(deletes()[0]!.params).toEqual([P]);
+    // (The legacy partner_llm_configs key-copy purge went with the table, W08b #7606.)
+    expect(deletes()).toEqual([]);
+    expect(m.statements.some((s) => s.text.includes('partner_llm_configs'))).toBe(false);
     const soft = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_connections SET'))!;
     expect(soft.text).toContain("status = 'disconnected'");
     expect(soft.text).toContain('api_key_encrypted = NULL, key_last4 = NULL, key_fingerprint = NULL');
@@ -288,20 +287,10 @@ describe('disconnectAnthropicConnection', () => {
     m.ensurePlatformModelRow.mockResolvedValueOnce(null);
     await expect(disconnectAnthropicConnection(P, CONN)).rejects.toMatchObject({ status: 409, message: expect.stringContaining('No platform AI model') });
   });
-
-  it('skips the legacy purge once W08b has dropped the table (rollback-safe)', async () => {
-    m.respond = baseRespond((text) => {
-      if (text.includes('FOR UPDATE')) return [LOCKED];
-      if (text.includes("to_regclass('public.partner_llm_configs')")) return [{ present: false }];
-      return undefined;
-    });
-    expect(await disconnectAnthropicConnection(P, CONN)).toBe(true);
-    expect(deletes()).toEqual([]);
-  });
 });
 
 describe('rotateAnthropicConnectionKey', () => {
-  it('rotates in place by id and drops the legacy partner_llm_configs copy of the revoked key (#7700 finding 4)', async () => {
+  it('rotates in place by id; nothing is deleted', async () => {
     m.respond = baseRespond((text) => {
       if (text.includes('FOR UPDATE')) return [LOCKED];
       if (text.startsWith('UPDATE partner_ai_connections SET')) return [{ config_version: 4 }];
@@ -311,8 +300,8 @@ describe('rotateAnthropicConnectionKey', () => {
       .toEqual({ configVersion: 4 });
     const update = m.statements.find((s) => s.text.startsWith('UPDATE partner_ai_connections SET'))!;
     expect(update.params).toEqual(expect.arrayContaining([CONN, P, '0001']));
-    expect(deletes().map((d) => d.text)).toEqual(['DELETE FROM partner_llm_configs WHERE partner_id = $1::uuid']);
-    expect(deletes()[0]!.params).toEqual([P]);
+    expect(deletes()).toEqual([]);
+    expect(m.statements.some((s) => s.text.includes('partner_llm_configs'))).toBe(false);
   });
 
   it('a disconnected (or foreign) id is refused before any write', async () => {

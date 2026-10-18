@@ -39,7 +39,7 @@ function pageRow(overrides: Partial<TrustPageRow> = {}): TrustPageRow {
     id: 'pg', orgId: 'o', partnerId: 'p', isPartnerHome: false, publishedAt: null, publicationRevision: 0,
     searchIndexable: false, showPercentages: false, showDeviceCount: false, showManagedBy: true,
     securityContactEmail: null, websiteUrl: null, introHtml: null, hiddenControlIds: [],
-    frameworkView: null, showHistory: null, ndaText: null, accessRequestCreatesTicket: false,
+    frameworkView: null, showHistory: null, ndaText: null, accessRequestCreatesTicket: false, embedAllowedOrigins: [],
     publicationAuthorizedBy: null, publicationAuthorizedAt: null, publicationAuthorizedByUserId: null,
     lastEvaluatedAt: null, publishedConfig: null, createdByUserId: null, updatedByUserId: null, createdAt: now, updatedAt: now,
     ...overrides,

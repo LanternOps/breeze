@@ -119,6 +119,7 @@ import { formatDeviceOsVersion } from "./osDisplay";
 import { type ListFilters, DEFAULT_LIST_FILTERS } from "./deviceListFilters";
 import { getAgentVersionRelation } from "./agentVersionRelation";
 import { EntityLink } from "@/components/shared/EntityLink";
+import { DeviceAttentionPills, useDeviceAttentionCounts } from "./deviceAttentionCounts";
 import { useTranslation } from "react-i18next";
 import "../../lib/i18n";
 
@@ -475,6 +476,8 @@ const AGENT_ONLY_COLUMNS: ReadonlySet<ColumnId> = new Set<ColumnId>([
   "reliability",
   "hardwareHealth",
   "vpn",
+  // #9038 — alerts/tickets hang off the device record, which non-agent rows lack.
+  "attention",
 ]);
 
 type DeviceListProps = {
@@ -747,6 +750,9 @@ const sortValue: Record<ColumnId, (d: Device) => string | number | null> = {
   isHeadless: (d) =>
     typeof d.isHeadless === "boolean" ? (d.isHeadless ? 1 : 0) : null,
   status: (d) => statusSortRank[d.status],
+  // #9038: the header is not sortable (counts arrive per page, outside the
+  // list payload); this keeps the Record total and is never reached.
+  attention: () => null,
   // false/absent renders as a dash (see the cell), so it maps to null like
   // isHeadless — keeping the blanks-last invariant consistent for booleans.
   pendingReboot: (d) => (d.pendingReboot ? 1 : null),
@@ -1425,6 +1431,20 @@ export default function DeviceList({
       visibleColumns.has(id) && isColumnAvailable(id) && classAllowsColumn(id),
   );
 
+  // #9038 Attention column: one batched count request per page of rows, only
+  // while the column is rendered. Non-agent rows have no device record.
+  const attentionIds = useMemo(
+    () =>
+      paginatedDevices
+        .filter((d) => (d.deviceClass ?? "agent") === "agent")
+        .map((d) => d.id),
+    [paginatedDevices],
+  );
+  const attentionFor = useDeviceAttentionCounts(
+    attentionIds,
+    renderedColumns.includes("attention"),
+  );
+
   // sortHeader factors out the repeated header pattern for sortable
   // columns to keep the column-defs table below readable. The column id
   // doubles as the sort key.
@@ -2022,6 +2042,28 @@ export default function DeviceList({
         </td>
         );
       },
+    },
+    // #9038: not sortable yet — a server-side sort needs the counts in the
+    // list query; the counts are fetched per page instead.
+    attention: {
+      header: () => (
+        <th
+          key="attention"
+          scope="col"
+          data-testid="device-list-header-attention"
+          className="px-3 py-3"
+        >
+          {t("deviceList.tableColumns.attention")}
+        </th>
+      ),
+      cell: (device) => (
+        <td key="attention" className="px-3 py-3 text-sm">
+          {agentCell(
+            device,
+            <DeviceAttentionPills deviceId={device.id} entry={attentionFor(device.id)} />,
+          )}
+        </td>
+      ),
     },
     pendingReboot: {
       header: () =>

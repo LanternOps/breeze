@@ -46,6 +46,9 @@ func (p sckSessionPolicy) openSessionCapturer(b macCaptureBackends, sckAttempts 
 
 	capturer, res, err := openCaptureBackends(macUserSessionPlan(b, sckAttempts, sckRetryDelay))
 	if err != nil {
+		if res.primaryPermissionDenied {
+			p.clearAccess()
+		}
 		return nil, err
 	}
 	p.record(res)
@@ -92,8 +95,8 @@ func (p sckSessionPolicy) applicableVerdict() *sckVerdict {
 
 // record updates the verdict after a session opened its capturer through the
 // ScreenCaptureKit plan.
-//   - ScreenCaptureKit produced the frame: a leftover (stale) verdict is
-//     removed.
+//   - ScreenCaptureKit produced the frame: the capture-access record is
+//     saved (#8390) and a leftover (stale) verdict is removed.
 //   - ScreenCaptureKit reached the capture phase and failed, and CoreGraphics
 //     then captured: record it ("declined" when the user refused, -3801, else
 //     "capture_failed"). If it cannot be written, latch for this process.
@@ -104,6 +107,7 @@ func (p sckSessionPolicy) applicableVerdict() *sckVerdict {
 func (p sckSessionPolicy) record(res captureProbeResult) {
 	switch {
 	case res.backend == captureBackendScreenCaptureKit:
+		p.recordAccess()
 		store, err := p.store()
 		if err != nil {
 			slog.Warn("cannot locate the ScreenCaptureKit verdict to clear it", "error", err.Error())
@@ -169,13 +173,17 @@ func (p sckSessionPolicy) status() ScreenCaptureKitVerdictStatus {
 	return status
 }
 
-// reset removes the recorded verdict.
+// reset removes the recorded verdict and the capture-access record, so the
+// next session starts from nothing.
 func (p sckSessionPolicy) reset() (path string, removed bool, err error) {
 	store, err := p.store()
 	if err != nil {
 		return "", false, err
 	}
 	removed, err = store.clear()
+	if _, accessErr := store.clearAccess(); accessErr != nil && err == nil {
+		err = accessErr
+	}
 	return store.path(), removed, err
 }
 

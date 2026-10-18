@@ -25,8 +25,19 @@
 //                     CIS framework view stays behind BREEZE_TRUST_CIS_FRAMEWORK_VIEW (default off) until then.
 //   essential_eight — completed to all eight mitigation strategies (application control, patch applications,
 //                     Microsoft Office macro settings added), recorded 2026-10-16.
+//
+// W3e (recorded 2026-10-17):
+//   cis_v8          — added 3.3, 4.3, 4.4, 4.7, 4.8, 8.5, 10.5 for the benchmark-check mapping
+//                     (benchmarkSafeguards.ts). Numbers and IG tiers were transcribed from the v8.1 safeguard
+//                     numbering; benchmark-check mapping NOT yet verified against the CIS Benchmark PDFs
+//                     (status 'candidate' in CIS_BENCHMARK_MAPPING_SOURCES) — a human records "verified <date> by
+//                     <name>" there and here when they have. Renders only behind BREEZE_TRUST_CIS_FRAMEWORK_VIEW.
 import type { TrustFramework } from './types';
 export { TRUST_FRAMEWORKS } from './types';
+export {
+  CIS_BENCHMARK_CHECK_SAFEGUARDS, CIS_BENCHMARK_MAPPING_SOURCES, safeguardsForCheck,
+  type BenchmarkMappingSource, type BenchmarkOs,
+} from './benchmarkSafeguards';
 
 export interface CrosswalkEntry { label: string; ig?: 1 | 2 | 3 }
 
@@ -60,10 +71,15 @@ export const FRAMEWORK_CROSSWALK: Record<TrustFramework, Record<string, Crosswal
     '1.1': { label: 'Maintain a detailed asset inventory', ig: 1 },
     '3.1': { label: 'Data management process', ig: 1 },
     '3.2': { label: 'Data inventory', ig: 1 },
+    '3.3': { label: 'Data access control lists', ig: 1 },
     '3.6': { label: 'Encrypt data on end-user devices', ig: 1 },
     '4.1': { label: 'Maintain a secure configuration process', ig: 1 },
     '4.2': { label: 'Secure configuration for network infrastructure', ig: 1 },
+    '4.3': { label: 'Automatic session locking', ig: 1 },
+    '4.4': { label: 'Firewall on servers', ig: 1 },
     '4.5': { label: 'Host-based firewall on end-user devices', ig: 1 },
+    '4.7': { label: 'Default accounts managed', ig: 1 },
+    '4.8': { label: 'Unnecessary services disabled', ig: 2 },
     '5.1': { label: 'Inventory of accounts', ig: 1 },
     '5.2': { label: 'Unique, strong passwords', ig: 1 },
     '5.3': { label: 'Disable dormant accounts', ig: 1 },
@@ -77,9 +93,11 @@ export const FRAMEWORK_CROSSWALK: Record<TrustFramework, Record<string, Crosswal
     '6.8': { label: 'Role-based access control', ig: 3 },
     '7.3': { label: 'Automated operating-system patching', ig: 1 },
     '8.2': { label: 'Collect audit logs', ig: 1 },
+    '8.5': { label: 'Detailed audit logging', ig: 2 },
     '9.2': { label: 'DNS filtering', ig: 1 },
     '10.1': { label: 'Anti-malware deployed and maintained', ig: 1 },
     '10.2': { label: 'Automatic anti-malware signature updates', ig: 1 },
+    '10.5': { label: 'Anti-exploitation features enabled', ig: 2 },
     '10.7': { label: 'Behavior-based anti-malware', ig: 2 },
     '11.1': { label: 'Data recovery process', ig: 1 },
     '11.2': { label: 'Automated backups', ig: 1 },

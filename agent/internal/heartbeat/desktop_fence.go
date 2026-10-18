@@ -176,6 +176,14 @@ type desktopFence struct {
 	// waiters are callers blocked in the sync-on-unknown round trip, keyed by
 	// session id, woken by noteSync / noteStop / noteSyncUnavailable.
 	waiters map[string][]desktopFenceWaiter
+	// arriving counts, per session and generation, the generation-carrying
+	// starts currently inside admission (beginAdmission .. its release). A
+	// start that has arrived is proof the server has issued its generation,
+	// so an older start still deciding must lose to it even though the newer
+	// one has not been admitted yet — both may be parked on the resync round
+	// trip, and the older one's answer can echo the older generation (#8955).
+	// Process-local and never persisted; bounded by in-flight starts.
+	arriving map[string]map[int64]int
 }
 
 type desktopFenceWaiter struct {
@@ -246,6 +254,13 @@ func (f *desktopFence) admitStart(sessionID string, in desktopStartFenceInput) d
 		return desktopFenceDecision{Reason: desktopFenceReasonSuperseded, HighWater: entry.HighWater}
 	}
 
+	// A newer start for this session has already arrived and is still being
+	// admitted (typically parked on its own resync). It supersedes this one
+	// now: waiting for it to be admitted would let this start run first.
+	if newer, ok := f.newerArrivingLocked(sessionID, in.Generation); ok {
+		return desktopFenceDecision{Reason: desktopFenceReasonSuperseded, HighWater: newer}
+	}
+
 	// The control plane has not confirmed this session in THIS process —
 	// never seen, loaded from disk, or the state that knew it is gone. The
 	// payload alone cannot be ordered against a terminal that a failed write
@@ -282,6 +297,62 @@ func (f *desktopFence) admitStart(sessionID string, in desktopStartFenceInput) d
 	}
 
 	return desktopFenceDecision{Reason: desktopFenceReasonSuperseded, HighWater: entry.HighWater}
+}
+
+// beginAdmission records that a generation-carrying start for sessionID has
+// arrived and is being admitted, until the returned release is called. Call it
+// before the first admitStart and release once the admission decision is
+// final: by then an admitted start has raised the high-water mark, which
+// supersedes older starts on its own, and a refused one supersedes nothing.
+// A generationless start is not recorded — there is nothing to order.
+func (f *desktopFence) beginAdmission(sessionID string, in desktopStartFenceInput) (release func()) {
+	if !in.HasGeneration {
+		return func() {}
+	}
+	f.mu.Lock()
+	if f.arriving == nil {
+		f.arriving = make(map[string]map[int64]int)
+	}
+	gens := f.arriving[sessionID]
+	if gens == nil {
+		gens = make(map[int64]int)
+		f.arriving[sessionID] = gens
+	}
+	gens[in.Generation]++
+	f.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			gens := f.arriving[sessionID]
+			if gens == nil {
+				return
+			}
+			if gens[in.Generation] <= 1 {
+				delete(gens, in.Generation)
+			} else {
+				gens[in.Generation]--
+			}
+			if len(gens) == 0 {
+				delete(f.arriving, sessionID)
+			}
+		})
+	}
+}
+
+// newerArrivingLocked reports the highest generation above gen that is
+// currently arriving for sessionID, if any.
+func (f *desktopFence) newerArrivingLocked(sessionID string, gen int64) (int64, bool) {
+	var newest int64
+	found := false
+	for g := range f.arriving[sessionID] {
+		if g > gen && (!found || g > newest) {
+			newest, found = g, true
+		}
+	}
+	return newest, found
 }
 
 // noteStop installs the absolute terminal tombstone for a session — even when

@@ -366,7 +366,6 @@
       "supportedGeos": "Supports: {{geos}}",
       "refreshQueued": "Model refresh queued",
       "refreshFailed": "Couldn't queue a model refresh.",
-      "alreadyConnected": "Already connected",
       "addKind": {
         "anthropic_byok": "Anthropic API key",
         "openai_compatible": "OpenAI-compatible endpoint"
@@ -4422,7 +4421,8 @@
     "reEnterYourNewPassword": "Re-enter your new password",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Changing password..."
+    "changingPassword": "Changing password...",
+    "noPasswordNotice": "This account signs in through your organization's identity provider and has no password, so there is nothing to change here. If your organization does not require single sign-on, use Forgot password on the sign-in page to set one."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single sign-on connected.",

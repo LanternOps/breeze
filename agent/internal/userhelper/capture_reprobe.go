@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 )
 
 // Capture re-probe (#6105). The macOS desktop helper decides CanCapture with a
@@ -14,10 +15,11 @@ import (
 // restarted. The broker accepts a later capabilities message and overwrites
 // the stored set, so recovering only needs a re-probe and a re-send.
 //
-// Like the connect-time probe it re-runs (detectCapabilities), the re-probe is
-// a permission check and never calls ScreenCaptureKit (#8058): it runs while
-// capture is failing, which on Sequoia is exactly when a ScreenCaptureKit call
-// would keep putting macOS's consent dialog back in front of the user.
+// Like the connect-time check it re-runs (detectCapabilities), the re-probe is
+// a permission check: it never captures (#8390) and never calls
+// ScreenCaptureKit (#8058). It runs while capture is denied, which on Sequoia
+// is exactly when a capture would put macOS's consent or acknowledgement
+// dialog in front of the user.
 
 const (
 	captureReprobeInitialDelay = 30 * time.Second
@@ -33,6 +35,8 @@ var runCaptureReprobe = runCaptureReprobeLoop
 var (
 	detectCapabilitiesFn = detectCapabilities
 	captureReprobeGOOS   = runtime.GOOS
+	// checkCaptureAccessFn is the non-capturing access check (#8390).
+	checkCaptureAccessFn = desktop.CheckCaptureAccess
 )
 
 type captureReprobeConfig struct {

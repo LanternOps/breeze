@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Cihazlar",
-        "devicesSub": "{{total}} cihazdan {{online}} çevrimiçi",
         "alerts": "Açık uyarılar",
-        "alertsSub": "{{critical}} kritik · {{high}} yüksek",
         "tickets": "Açık biletler",
-        "ticketsSub": "{{count}} müşteri yanıtı bekliyor",
         "contracts": "Aktif sözleşmeler",
         "contractsSub": "Sonraki yenileme {{date}}",
         "contractsNoRenewal": "Yaklaşan yenileme yok",
-        "invoices": "Bekleyen tutar",
         "invoicesSub": "Sonraki vade {{date}}",
         "invoicesOverdue_one": "{{count}} gecikmiş",
         "invoicesOverdue_other": "{{count}} gecikmiş",
@@ -94,7 +90,23 @@
       },
       "lastActivity": "Son etkinlik {{date}}",
       "noSummary": "Özet sayılar şu anda kullanılamıyor.",
-      "archivedNotice": "Arşivlenmiş kuruluşlar için genel bakış verileri gösterilmez."
+      "archivedNotice": "Arşivlenmiş kuruluşlar için genel bakış verileri gösterilmez.",
+      "fleet": {
+        "title": "Filo durumu",
+        "total": "Toplam",
+        "allOnline": "Tümü çevrimiçi",
+        "noDevices": "Cihaz yok",
+        "critical": "Kritik",
+        "high": "Yüksek",
+        "otherAlerts": "Diğer",
+        "noAlerts": "Açık uyarı yok",
+        "awaitingCustomer": "Müşteri yanıtı bekliyor",
+        "noTickets": "Açık bilet yok"
+      },
+      "account": {
+        "title": "Hesap",
+        "invoices": "Ödenmemiş faturalar"
+      }
     },
     "archived": {
       "banner": "Bu kuruluş arşivlendi ve salt okunur. Değişiklik yapmak için geri yükleyin.",
@@ -531,6 +543,29 @@
         "copy": "Parçayı kopyala",
         "copied": "Parça kopyalandı",
         "copyFailed": "Parça kopyalanamadı."
+      },
+      "embed": {
+        "title": "Web sitenize yerleştirin",
+        "description": "Kendi web sitenizde bir iframe içinde kompakt, güncel bir güvenlik durumu kartı gösterin. Bunu yalnızca burada listelenen web siteleri görüntüleyebilir; tam güven sayfasının kendisi hiçbir zaman yerleştirilemez.",
+        "liveNote": "Değişiklikler, yerleştirilen kart bir sonraki yüklendiğinde geçerli olur; yeniden yayımlamaya gerek yoktur.",
+        "unpublishedNote": "Yerleştirilen kart, sayfa yayımlandıktan sonra görünür.",
+        "originLabel": "Web sitesi adresi (yalnızca https, yol olmadan)",
+        "add": "Web sitesi ekle",
+        "remove": "Kaldır",
+        "save": "Web sitelerini kaydet",
+        "saved": "Yerleştirme web siteleri kaydedildi",
+        "saveFailed": "Yerleştirme web siteleri kaydedilemedi.",
+        "invalidOrigin": "Yol, joker karakter veya IP adresi içermeyen tam bir https adresi girin; örneğin https://www.example.com",
+        "duplicateOrigin": "Bu web sitesi zaten listede.",
+        "maxReached": "En fazla {{max}} web sitesine izin verebilirsiniz.",
+        "preview": "Şu şekilde kaydedilecek:",
+        "snippetLabel": "Yerleştirme HTML kodu",
+        "frameTitle": "Güvenlik durumu kartı",
+        "copy": "Kodu kopyala",
+        "copied": "Kod kopyalandı",
+        "copyFailed": "Kod kopyalanamadı.",
+        "emptyNote": "Yerleştirmeyi etkinleştirmek için en az bir web sitesi ekleyin.",
+        "mfaRequired": "Yerleştirme web sitelerini değiştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirip yeniden deneyin."
       }
     },
     "documents": {

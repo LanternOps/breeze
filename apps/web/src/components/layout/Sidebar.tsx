@@ -1131,7 +1131,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const sidebarContent = (
     <aside
       className={cn(
-        'flex h-full flex-col border-r bg-card transition-all duration-200',
+        'flex h-full flex-col border-r bg-card transition-shadow duration-200',
         // Hide completely on mobile — the overlay handles it
         isMobile && 'hidden',
         // z-30: app-chrome overlay band. In-page sticky chrome (e.g. the quote/
@@ -1191,7 +1191,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       </nav>
 
       {showLabels && (
-        <div className="border-t px-4 py-2 text-[10px] text-muted-foreground/50">
+        <div className="border-t px-4 py-2 text-[11px] text-muted-foreground">
           <p>
             Web <VersionSpan version={WEB_VERSION} latest={latestVersion} component="Web" />
             {apiVersion && apiVersion !== 'unavailable' && (
@@ -1204,7 +1204,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           <button
             type="button"
             onClick={() => window.dispatchEvent(new Event(REOPEN_EVENT))}
-            className="hover:text-muted-foreground hover:underline"
+            className="hover:text-foreground hover:underline"
           >
             {t('whatsNew.link')}
           </button>
