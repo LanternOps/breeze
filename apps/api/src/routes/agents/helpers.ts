@@ -48,7 +48,6 @@ import { releaseFilesystemScanGenerationForCommand } from '../../services/filesy
 import { parseCisCollectorOutput } from '../../services/cisHardening';
 import {
   claimFilesystemScanGeneration,
-  clearFilesystemScanGeneration,
   setFilesystemScanGeneration,
   getFilesystemScanState,
   mergeFilesystemAnalysisPayload,
