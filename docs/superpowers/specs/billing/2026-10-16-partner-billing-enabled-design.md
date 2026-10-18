@@ -1,209 +1,244 @@
 # Partner billing toggle (`billingEnabled`) — Design Spec
 
-**Status:** Revised after maintainer review (CHANGES_REQUESTED on PR #8916, 2026-10-17). Awaiting re-review.
+**Status:** Revised after second maintainer review (CHANGES_REQUESTED on PR #8916, 2026-10-18). Awaiting re-review.
 **Discussion:** LanternOps/breeze#8807 ("Add a Native RMM + Ticketing Mode Without Billing").
-**Maintainer decisions:** https://github.com/LanternOps/breeze/discussions/8807#discussioncomment-18955440 (2026-10-15) and the PR #8916 review by @ToddHebebrand (2026-10-17).
+**Maintainer decisions:** Discussion #8807 comment (2026-10-15) and PR #8916 reviews by @ToddHebebrand (2026-10-17, 2026-10-18).
 
 ---
 
 ## 1. Summary
 
-Partners can run Breeze for RMM and ticketing without Breeze billing, and bill through Breeze
-without Breeze tickets. A partner-level `billingEnabled` flag controls billing independently of
-`service_management_mode`. The mode keeps deciding only where tickets live.
+Partners can run Breeze for RMM and ticketing without Breeze billing, and bill through Breeze without
+Breeze tickets. A partner-level `billing_enabled` flag controls billing independently of
+`service_management_mode`. The mode decides only where tickets live.
 
 ## 2. Background
 
-`service_management_mode` (`native`, `external`, `off`) decides where tickets live. Today the
-web and the API also use it to hide billing:
+`service_management_mode` (`native`, `external`, `off`) decides where tickets live. Today the web UI also
+uses it to hide billing, and the billing backend does not check it at all. So hiding in the UI does not stop
+billing work:
 
-- `apps/web/src/lib/navGates.ts:31,57`: the `requiresModule: 'service_management'` key is shared by
-  the Service Desk and Billing entries and shows them only when the mode is `native`.
-- `apps/web/src/components/layout/Sidebar.tsx:379,400` and `:1046`: the Billing section carries the
-  same `requiresModule`, and the section-level gate hides the whole section unless the mode is `native`.
-- `apps/web/src/components/organizations/record/orgRecordTabs.ts`: the org Billing tab is part of
-  the service-management tab derivation.
-- `apps/api/src/routes/orgAccountReadiness.ts:229-238`: `invoices` and `contracts` readiness use
-  `native`; `tickets` also uses `native` and stays that way.
-- `apps/api/src/services/tenantCascade.ts:1212,2596`: merge and reset set `service_management_mode`
-  back to `native`.
+- `apps/web/src/lib/navGates.ts`: the `requiresModule: 'service_management'` key is shared by the Service Desk
+  and Billing entries and shows them only when the mode is `native`.
+- `apps/web/src/components/layout/Sidebar.tsx`: the Billing section carries the same `requiresModule`, and the
+  section-level gate hides it unless the mode is `native`.
+- `apps/web/src/components/organizations/record/orgRecordTabs.ts`: the org Billing tab is part of the
+  service-management tab derivation.
+- `apps/api/src/routes/orgAccountReadiness.ts`: `invoices` and `contracts` readiness use `native`; `tickets`
+  also uses `native` and stays that way.
+- `apps/api/src/services/tenantCascade.ts`: forced PSA un-wires reset `service_management_mode` to `native`.
 
-The billing API routes do not check the mode at all today. The UI hides billing; the routes do not.
-That is why hiding is not enough for billing: a route 404 is not the same as stopping scheduled work.
+## 3. Maintainer decisions
 
-## 3. Maintainer decisions (approved)
-
-These are the maintainer's answers and are not proposals from this spec.
+These are the maintainer's answers. They are not proposals from this spec.
 
 3.1. A partner-level flag, no fourth value in `service_management_mode`, default on for new rows, no
-organisation override (#8807 review, 2026-10-15).
+organisation override (#8807, 2026-10-15).
 
-3.2. **Billing is allowed under every mode.** `external` and `off` can both run with billing on.
-The spec covers all six combinations of mode × `billing_enabled`, not four (PR #8916 review, Q1).
+3.2. Billing is allowed under every mode: all six combinations of mode × `billing_enabled` are valid (PR #8916, Q1).
 
-3.3. **Gating is on `billing_enabled` alone, never on mode,** for billing routes and billing UI
-(PR #8916 review, Q3). This is new server-side gating.
+3.3. Gating is on `billing_enabled` alone, never on mode, for billing routes and billing UI (PR #8916, Q3).
 
-3.4. **Backfill, not a plain default,** for existing partners (PR #8916 review, Q2). See §5.
+3.4. Existing partners are backfilled, not given a plain default (PR #8916, Q2). See §5.
 
-3.5. **No automatic re-coupling on mode change** (PR #8916 review, Q4). The `off` rule proposed in the
-earlier draft is removed. The two settings are shown side by side so the state is visible when the mode changes.
+3.5. No automatic re-coupling of billing to mode. The earlier §4.1 rule for `off` is removed (PR #8916, Q4).
+The two settings sit side by side so the state is visible when the mode changes.
 
-3.6. **Setting home:** Partner Settings → Modules, next to the mode selector in `PartnerModulesCard.tsx`.
-Saved on change, like the rest of that card. There is no "Service Management" tab.
+3.6. Setting home: Partner Settings → Modules, next to the mode selector in `PartnerModulesCard.tsx`, saved on
+change like the rest of that card. There is no "Service Management" tab.
 
-## 4. Configuration (CLAUDE.md, rule 9)
+3.7. Scheduled work must stop, not just be hidden. A route 404 does not stop invoices being generated, sent or
+charged (PR #8916, 2026-10-17, must-fix).
+
+3.8. Issued invoices stay payable through public pay links, the Stripe webhook keeps reconciling, PDF rendering
+for existing documents keeps running, and the portal keeps read-only history. The MSP's own Breeze subscription
+is out of scope (PR #8916, 2026-10-17).
+
+3.9. `/tickets/:id/invoice` creates invoices, so it is gated, not exempted (PR #8916, 2026-10-17).
+
+3.10. Turning billing off must not turn off staff's ability to stop autopay. The turn-off direction of
+`PATCH` on autopay stays open (PR #8916, 2026-10-18).
+
+3.11. Proposal, not a maintainer decision: customers can always stop autopay, even with billing off. Confirm in review.
+
+3.12. `tenantCascade` forced PSA un-wires must **not** change `billing_enabled`. Automatic re-enabling was ruled
+out (PR #8916, 2026-10-18, §9.2).
+
+## 4. Configuration (CLAUDE.md rule 9)
 
 - **Home:** Partner Settings → Modules (`apps/web/src/components/settings/PartnerModulesCard.tsx`).
 - **Level:** partner only. No organisation override.
 - **Resolver:** the partner value. No cascade.
-- **Places the concept is configured, before / after:** before: 1 (mode selector). After: 2 (mode
-  selector and `billingEnabled` switch).
+- **Places the billing concept is configured, before / after:** 1 → 1 (count as stated by the maintainer, PR #8916, 2026-10-18).
 
 ## 5. Migration
 
-5.1. Add `partners.billing_enabled boolean NOT NULL DEFAULT true`.
+Order matters so that a re-run keeps an admin's change (PR #8916, 2026-10-18):
 
-5.2. **Backfill** (runs once, then never overwrites an admin's later choice):
+5.1. Add `partners.billing_enabled boolean` as **nullable**.
 
-- `billing_enabled = true` when `service_management_mode = 'native'`, **or** the partner already has live billing:
-  active contracts, unpaid invoices, or autopay enrolments.
-- `billing_enabled = false` for every other partner (for example `external` or `off` with no billing in use).
+5.2. Backfill, only rows where the value is still NULL:
 
-Basing this on the mode alone would stop invoicing for an `external` or `off` partner that bills through
-Breeze today. The backfill is written so a re-run keeps any value an admin has changed.
+- `true` when `service_management_mode = 'native'`, **or** the partner has live billing: active contracts,
+  unpaid invoices, or autopay enrolments.
+- `false` for every other partner.
 
-5.3. The backfill writes rows, so the migration sets `SELECT set_config('breeze.scope', 'system', true);`
-before its DML, as the other data migrations in `apps/api/migrations/` do.
+5.3. Set `DEFAULT true` and `NOT NULL`.
 
-5.4. `partners` has no `org_id`, so it needs no `tenantCascade` or export-policy entry of its own. The
-`service_management_psa_connection_id` foreign key is already handled by the existing `partners` pre-clear.
+5.4. The backfill writes rows, so the migration sets `SELECT set_config('breeze.scope', 'system', true);` before
+its DML, as the other data migrations in `apps/api/migrations/` do.
 
-5.5. Keep the column rather than a JSON field in `partners.settings`: the value is queried by the gates
-and by the backfill.
+5.5. `partners` has no `org_id`, so it needs no `tenantCascade` or export-policy entry of its own.
+
+5.6. A column, not a JSON field in `partners.settings`, because the gates and the job predicates query it.
 
 ## 6. Scheduled jobs
 
-These run regardless of mode today and must respect `billing_enabled`:
+Gating happens **per partner inside each job's due-rows query**, the same way
+`buildAutomationEligibleOrgPredicate` does, not by stopping the whole job. Behaviour with `billing_enabled = false`:
 
-| Job | With billing off |
+| Job | Behaviour with billing off |
 |---|---|
-| `contractWorker.ts` | Stops generating contract periods. |
-| `invoiceWorker.ts` | Stops generating and emailing invoices. |
-| `autopayWorker.ts` | Stops charging. Work already queued is not charged. |
-| `quoteSendQueue.ts` | Stops sending quotes. Queued sends are not delivered. |
+| `invoiceWorker` → `render-pdf` | **Keep.** PDFs of existing documents. |
+| `invoiceWorker` → `overdue-sweep` | **Keep.** Status of existing invoices. |
+| `contractWorker` → `billing-sweep`, billing step | **Stop.** No new contract periods are billed, invoiced or emailed. |
+| `contractWorker` → `billing-sweep`, renewal step | **Keep** (proposal). Contract lifecycle, creates no invoice. |
+| `contractWorker` → `billing-sweep`, hour-block close-out | **Keep** (proposal). Internal bookkeeping. |
+| `contractWorker` → `billing-sweep`, alerts | **Keep** (proposal). Internal alerts. |
+| `autopayWorker` → `collection-run` | **Stop.** No charges, including work already queued. |
+| `autopayWorker` → `control-reconcile` | **Keep.** Reconciles existing state. |
+| `autopayWorker` → `notice-dispatch`, charge notices | **Stop** (proposal). No "will be charged" notices. |
+| `autopayWorker` → `notice-dispatch`, payment-method detaches | **Keep.** Drains detaches already requested. |
+| `autopayWorker` → `reminder-sweep` | **Stop** (proposal). No reminders to add payment methods. |
+| `autopayWorker` → `card-expiry-check` | **Keep** (proposal). Card expiry happens regardless; no client messages are sent. |
+| `quoteSendQueue` | **Stop.** Queued sends are not delivered. |
+| `quoteExpiryReaper` | **Keep.** Maintainer. |
+| `stripeReconcileSweep.ts` | **Keep.** Maintainer. |
+| Cleanup jobs | **Keep.** |
 
-These keep running, because they reconcile or clean up existing data:
+Items marked "proposal" are our suggestions and need the maintainer's confirmation.
 
-- Payment reconciliation and Stripe webhook processing.
-- PDF rendering for documents already issued.
-- `quoteExpiryReaper.ts` and the cleanup jobs.
+### 6.1 Re-enabling billing (proposal, needs confirmation)
 
-**Re-enabling billing (our proposal, to confirm with the maintainer):** only future periods are
-generated. Periods that were missed while billing was off are listed for the admin to bill manually.
-Automatic catch-up is not proposed, because re-enabling could issue invoices and autopay charges for
-several periods at once, with amounts the client did not expect. Catch-up in bulk would need a separate
-decision about duplicate charges and autopay consent.
+Contracts whose `nextBillingAt` is in the past would be billed on the next sweep. Without a rule, re-enabling
+could bill several periods at once. Proposed mechanism:
 
-## 7. Billing routes
+- When `billing_enabled` changes from `false` to `true`, record the switch time `T`.
+- For each contract with `nextBillingAt < T`, advance `nextBillingAt` to the first period boundary at or after `T`.
+- Each skipped period is listed on the org Billing tab for the admin to bill manually. Nothing is billed automatically.
+- No autopay charge is created for a skipped period.
+- Invoices already issued before `T` remain collectable.
 
-With `billing_enabled = false`, every route that **creates, changes, sends, charges or issues** money-related
-documents returns 404 with one shared body. Reads stay open. Operations are grouped by family, from the
-route files under `apps/api/src/routes/` (contracts/, invoices/, quotes/, autopay/).
+Where the list is stored (derived from contracts, or a small table) is open: Q7.
 
-### 7.1 Blocked (404)
+## 7. Enforcement points
 
-| Family | Operations |
+The rule is enforced in the **services**, the way `assertTicketCreationAllowed` works in
+`apps/api/src/services/serviceManagement.ts`. Routes call the same services, so every entry point inherits the
+check. The list below is what the tests check (PR #8916, 2026-10-18).
+
+### 7.1 HTTP routes, blocked with billing off (404)
+
+| Family (file) | Operations |
 |---|---|
-| Invoices (`invoices/invoices.ts`, `invoices/bulk.ts`) | create, edit, delete, add/edit/delete lines (catalog and bundle too), currency change, due-date change, refresh time lines, bulk delete / issue / void |
+| Invoices (`routes/invoices/invoices.ts`, `invoices/bulk.ts`) | create, edit, delete, add/edit/delete lines (incl. catalog and bundle), currency, due date, refresh time lines; bulk delete / issue / void |
 | Invoice lifecycle (`invoices/lifecycle.ts`) | issue, send, resend, void, `public-link`, `reset-link` |
-| Invoice pay link (`invoices/stripe.ts`) | `POST /:id/pay-link` (staff creates a pay link) |
-| Invoice assembly (`invoices/assembly.ts`) | `POST /orgs/:orgId/invoices/assemble`, `POST /tickets/:ticketId/invoice` (maintainer: gated, not exempted) |
-| Autopay on invoices (`invoices/autopay.ts`) | `PATCH /:id/autopay`, `POST /:id/autopay/charge-now` |
-| Autopay, org and staff (`autopay/index.ts`) | `POST /billing/autopay/requests`, `PATCH /orgs/:orgId/autopay` |
-| Autopay, customer setup (`autopay/public.ts`) | `setup-session`, `setup-return` (new enrolment) |
-| Contracts (`contracts/*.ts`) | create, edit, delete, currency, bulk delete / cancel, `generate`, add/edit/delete lines |
-| Quotes (`quotes/quotes.ts`, `quotes/bulk.ts`) | create, clone, revise, edit, delete, blocks and lines (incl. catalog and device-count refresh), currency, orders (create and edit), bulk delete / send |
+| Invoice pay link (`invoices/stripe.ts`) | `POST /:id/pay-link` |
+| Invoice assembly (`invoices/assembly.ts`) | `POST /orgs/:orgId/invoices/assemble`, `POST /tickets/:ticketId/invoice` |
+| Invoice autopay (`invoices/autopay.ts`) | `POST /:id/autopay/charge-now`; `PATCH /:id/autopay` **only when enabling** |
+| Autopay, org and staff (`routes/autopay/index.ts`) | `POST /billing/autopay/requests`; `PATCH /orgs/:orgId/autopay` **only when enabling** |
+| Autopay, customer (`routes/autopay/public.ts`) | `setup-session`, `setup-return` (new enrolment); `POST /:token/confirm` |
+| Contracts (`routes/contracts/*.ts`) | create, edit, delete, currency, bulk delete / cancel, `generate`, add/edit/delete lines |
+| Quotes (`routes/quotes/quotes.ts`, `quotes/bulk.ts`) | create, clone, revise, edit, delete, blocks and lines, currency, orders (create and edit), bulk delete / send |
 | Quote send and acceptance (`quotes/lifecycle.ts`, `quotes/acceptanceEvidence.ts`) | send, schedule-send and its delete, resend, share-link, `accept-on-behalf`, images upload, acceptance evidence upload |
 | Public quote acceptance (`quotesPublic`) | `POST /quotes/public/:token/accept` |
-| Billing settings writes (`invoices/settings.ts`) | `PATCH /partner/billing-settings`, `PATCH /orgs/:orgId/billing-settings` (our proposal) |
+| `POST /charge` (`routes/billingStepUp.ts`) | Charges a card. |
 
-### 7.2 Kept
+### 7.2 HTTP routes, kept
 
 | Family | Operations | Why |
 |---|---|---|
-| Issued invoices, public (`invoicesPublic`) | view, `/pdf`, `/pay`, `/settle-return` | Maintainer: issued invoices stay payable through public pay links. |
-| Invoice reads and PDF (`invoices/payments.ts` GET, `invoices/pdf.ts`) | list, get, payments list, PDF | Maintainer: PDF rendering of existing documents keeps running. |
-| Recording a payment (`invoices/payments.ts` POST, DELETE) | record and remove a payment on an issued invoice | Our proposal: reconciliation of money already received. |
-| Stripe webhooks (`webhooks`) | Stripe, QuickBooks, Xero | Maintainer: reconciliation keeps running. |
-| Quote reads and PDF (`quotes/quotes.ts` GET), quote images and contract-file reads | reads | No new billing. |
-| Quote decline (`quotesPublic` `/decline`, `decline-on-behalf`) | decline | Creates nothing; the client can always decline. |
-| Contract reads, templates, hour periods, deliverables, documents | reads | No money movement. |
-| Contract templates (`contracts/templates.ts`) writes | create, archive | Our proposal: templates are configuration, not billing. Open question Q5. |
-| Billing reporting reads (`invoices/settings.ts`) | `/billing/reporting-totals`, currency impact | Reads only. |
-| Billing profiles and billing settings reads | `/billing-profiles` GET, `/orgs/:orgId/billing-profile` GET, billing-settings GET | Reads only. Writes to billing profiles: Q3. |
-| **Customer stops autopay** (`autopay/public.ts`) | `GET` and `POST /:token/stop` | **Must stay open.** A client can always stop autopay, even with billing off. |
-| Partner Stripe Connect (`/partner/stripe-connect`) | connection management | Needed to re-enable billing. Our proposal. |
-| MSP's own Breeze subscription | all | Maintainer: out of scope. |
-| Portal read-only history | reads | Maintainer. |
+| Public issued invoices (`invoicesPublic`) | view, `/pdf`, `/pay`, `/settle-return` | §3.8 |
+| Invoice reads and PDF (`invoices/payments.ts` GET, `invoices/pdf.ts`) | list, get, payments list, PDF | §3.8 |
+| Recording a payment (`invoices/payments.ts` POST, DELETE) | record and remove a payment on an issued invoice | Reconciliation of money already received (our proposal) |
+| Stripe, QuickBooks, Xero webhooks | all | §3.8 |
+| Quote reads and PDF (`quotes/quotes.ts` GET), quote images and contract-file reads | reads | No new billing |
+| Quote decline (`quotesPublic` `/decline`, `decline-on-behalf`) | decline | Creates nothing |
+| Contract reads, hour periods, deliverables, documents | reads | No money movement |
+| Contract templates (`contracts/templates.ts`) | reads **and writes** | Configuration (Q5, Q3 rule) |
+| Billing reporting reads (`invoices/settings.ts`) | `/billing/reporting-totals`, currency impact | Reads |
+| Billing profiles (`routes/billingProfiles.ts`, `orgBillingProfile.ts`) | reads **and writes** | Configuration (Q3) |
+| Billing settings writes (`invoices/settings.ts`) | `PATCH /partner/billing-settings`, `PATCH /orgs/:orgId/billing-settings` | Configuration, same rule as Q3 |
+| Billing payment settings reads | GET | Reads |
+| Autopay turn-off (`PATCH` autopay) | disabling | §3.10 |
+| Customer stops autopay (`autopay/public.ts`) | `GET` and `POST /:token/stop` | §3.11 |
+| Customer skip (`autopay/public.ts`) | `POST /:token/skip` | Q6 |
+| Partner Stripe Connect (`/partner/stripe-connect`) | connection management | Needed to re-enable billing (Q4) |
+| Portal read-only history | reads | §3.8 |
+| MSP's own Breeze subscription | all | §3.8 |
 
-### 7.3 To decide with the maintainer
+### 7.3 Surfaces without an HTTP route
 
-| Operation | Question |
+| Surface | Rule |
 |---|---|
-| `autopay/public.ts` `skip` and `confirm` | Customer actions on a due invoice. Keep (they pay existing invoices) or block? Q6. |
-| Billing profile writes (`/billing-profiles` POST, PATCH, PUT, DELETE, clone) | Block, or keep as configuration? Q3. |
+| AI tools `manage_invoices` (`services/aiToolsBilling.ts`), `manage_quotes` (`services/aiToolsQuotes.ts`), `manage_contracts` (`services/aiToolsContracts.ts`) | Block writes. Reads kept. Checked in the services, not the tool wrapper. |
+| Partner API contract writes (`routes/partnerApi/contracts.ts`) | Block writes. Reads kept. |
+| Portal quote acceptance and pay (`routes/portal/quotes.ts`) | Block. Decline kept. |
+| Portal autopay setup (`routes/portal/paymentMethods.ts`) | Block new enrolment. Removal kept. |
 
-Portal and public routes return the same 404 body as any other gated route, so the UI can show one message.
+Portal and public routes return the same 404 body as any other gated route, so the UI shows one message.
 
 ## 8. Gates (web)
 
-8.1. Billing gets its own gate key. Today `requiresModule: 'service_management'` covers both Service
-Desk and Billing (`navGates.ts:31,57`). The gate type is widened to add a billing key, which the Billing
-entries and the Billing section use.
+8.1. Billing gets its own gate key. `requiresModule: 'service_management'` (`navGates.ts`) keeps covering Service
+Desk only. The gate type is widened to add a billing key.
 
-8.2. The Billing section gate in `Sidebar.tsx:1046` uses the billing key, not the mode.
+8.2. The Billing section gate in `Sidebar.tsx` uses the billing key, not the mode.
 
-8.3. The org Billing tab (`orgRecordTabs.ts`) is shown from `billing_enabled`, not from the mode. The
-existing test that pins the service-management tabs for `external` mode is updated: `external` no longer hides the Billing tab.
+8.3. The org Billing tab (`orgRecordTabs.ts`) is shown from `billing_enabled`. The test that pins the
+service-management tabs for `external` mode is updated, because `external` no longer hides Billing.
 
 8.4. Tickets stay on `service_management_mode`.
 
+Anchors in this spec use file and symbol names, not line numbers, because line numbers move.
+
 ## 9. Readiness and cascades (API)
 
-9.1. `orgAccountReadiness.ts:229-238`: `invoices` and `contracts` capabilities use `billing_enabled`.
-`tickets` keeps the mode check.
+9.1. `orgAccountReadiness.ts`: `invoices` and `contracts` use `billing_enabled`. `tickets` keeps the mode check.
 
-9.2. `tenantCascade.ts:1212,2596`: merge and reset also set `billing_enabled` to the value they restore
-(`true` for `native`; the same backfill rule otherwise).
+9.2. `tenantCascade.ts` forced PSA un-wires (merge and reset): **do not change `billing_enabled`**. Test that the
+flag is untouched in both paths (§3.12).
 
 ## 10. Open questions
 
-Q1. **Catch-up** (§6): confirm the manual-list approach, or the maintainer's preference.
+Answered by the maintainer (PR #8916, 2026-10-18, second review). Recorded here for traceability:
 
-Q2. **Quote acceptance** (§7): confirm that `POST /quotes/public/:token/accept` is blocked while billing is off.
+- Q1, catch-up: accepted as a manual list of missed periods, no bulk automatic billing on re-enable.
+- Q2, public quote acceptance: blocked while billing is off.
+- Q3, billing profiles: configuration, reads and writes open, same rule as templates.
+- Q4, Stripe Connect: open.
+- Q5, contract templates: editable.
+- Q6, autopay: keep customer `skip`, block `confirm`.
 
-Q3. **Billing profiles and billing settings reads** (§7): confirm that reads stay open and writes are blocked.
+Still open:
 
-Q4. **Stripe Connect** (§7): confirm that connection management stays open so billing can be re-enabled.
-
-Q5. **Contract templates** (§7.2): confirm that templates stay editable while billing is off.
-
-Q6. **Autopay skip and confirm** (§7.3): keep or block.
+- **Q7, re-enable list (§6.1):** store the skipped-period list as a derived view over contracts, or as a small table?
+- **Q8, job proposals (§6):** confirm the rows marked "proposal".
 
 ## 11. Testing
 
 - Nav gate and Sidebar: billing visible or hidden for each combination of mode and `billing_enabled`.
-- Routes: 404 for each blocked operation when `billing_enabled = false`; unchanged response when `true`;
-  public pay and Stripe webhook unaffected in both states.
-- Jobs: each billing job does nothing with billing off; reconciliation still runs.
-- Migration: idempotent; backfill matches §5 for native, external, off, with and without live billing; a
-  re-run keeps an admin's changed value.
-- Cascades: merge and reset set `billing_enabled`.
+- Routes and services: each blocked operation in §7 returns 404 with `billing_enabled = false` and succeeds with `true`.
+  Each kept operation in §7.2 is unaffected in both states.
+- Jobs: each row in §6 behaves as stated in both states. Reconciliation and webhooks run in both states.
+- Migration: nullable → backfill → `DEFAULT`/`NOT NULL` order; backfill matches §5 for native, external and off, with
+  and without live billing; a re-run keeps an admin's changed value.
+- Cascades: forced PSA un-wires leave `billing_enabled` unchanged.
+- Re-enable: contracts with `nextBillingAt` in the past are advanced and listed, not billed (§6.1).
 
 ## 12. Out of scope
 
 - Any change to `service_management_mode` values or their CHECK constraints.
 - Per-organisation overrides.
 - Changes to the Service Desk gate or to ticket routing.
-- Bulk catch-up of missed billing periods (see §6 and Q1).
+- Bulk catch-up of missed billing periods.
