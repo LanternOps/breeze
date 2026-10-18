@@ -67,6 +67,7 @@ import {
 } from '../services/mcpDomains';
 import { MCP_WHOAMI_TOOL_NAME } from '../services/aiToolNames';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
+import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
 import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader } from '../services/mcpProtocol';
 import {
@@ -163,8 +164,8 @@ const MCP_MESSAGE_MAX_BODY_BYTES = envInt('MCP_MESSAGE_MAX_BODY_BYTES', 64 * 102
 
 function setWwwAuthenticate(c: Context) {
   if (!MCP_OAUTH_ENABLED) return;
-  const resourceUrl = `${OAUTH_ISSUER}/.well-known/oauth-protected-resource`;
-  c.header('WWW-Authenticate', `Bearer realm="breeze", resource_metadata="${resourceUrl}"`);
+  // B-W02 (#6156, D-B7): the challenge also names the mcp scopes.
+  c.header('WWW-Authenticate', buildBearerChallenge());
 }
 
 function requestIp(c: Context | undefined): string | null {
@@ -606,6 +607,11 @@ async function preflightMcpRequest(
   }
 
   if (!apiKey || !apiKey.scopes.includes('ai:read')) {
+    // B-W02 (#6156, D-B7): a bearer learns which scope to re-authorize for.
+    // Additive (the status was already 403) and independent of the step-up flag.
+    if (apiKey?.oauthGrantId) {
+      c.header('WWW-Authenticate', buildBearerChallenge({ error: 'insufficient_scope', scope: ['mcp:read'] }));
+    }
     return { kind: 'response', status: 403, body: { jsonrpc: '2.0', id: body.id ?? null, error: { code: -32001, message: 'API key missing required scope: ai:read' } } satisfies JsonRpcResponse };
   }
 
@@ -779,12 +785,15 @@ mcpServerRoutes.post(
     if (trustedSessionId) {
       const session = sseSessionQueues.get(trustedSessionId);
       if (session && session.principalKey === principalKey) {
+        // The 2024-11-05 HTTP+SSE transport predates MCP authorization: the
+        // error is delivered on the stream and the POST stays 202, never a
+        // step-up 403 (plan Open Decision 2, default A).
         session.queue.push(response);
         return c.json({ status: 'accepted' }, 202);
       }
     }
 
-    return c.json(response);
+    return c.json(response, applyInsufficientScopeChallenge(c, apiKey, response));
   }
 );
 
@@ -1035,7 +1044,7 @@ mcpServerRoutes.post(
     }
 
     const response = await dispatchAndAudit(c, pre.body, trustedSessionId, auth, apiKey);
-    return c.json(response);
+    return c.json(response, applyInsufficientScopeChallenge(c, apiKey, response));
   }
 );
 
@@ -1551,6 +1560,12 @@ function structuredFromSafeText(safeText: string): Record<string, unknown> | und
   }
 }
 
+// B-W02 (#6156, D-B7): ONLY the two tier-scope denials carry this reason —
+// the one thing a client can fix by re-authorizing with a wider mcp scope.
+// ai:execute_admin, approval, MFA, RBAC, allowlist and domain denials never do.
+const INSUFFICIENT_SCOPE_EXECUTE = { reason: 'insufficient_scope', requiredScope: 'ai:execute' } as const;
+const INSUFFICIENT_SCOPE_WRITE = { reason: 'insufficient_scope', requiredScope: 'ai:write' } as const;
+
 async function handleToolsCall(
   id: string | number,
   params: Record<string, unknown>,
@@ -1711,13 +1726,13 @@ async function handleToolsCall(
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   if (tier >= 3 && !hasExecute) {
-    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`);
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`, INSUFFICIENT_SCOPE_EXECUTE);
   }
   if (tier >= 3 && requireExecuteAdmin && !hasExecuteAdmin) {
     return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute_admin scope in production`);
   }
   if (tier === 2 && !hasWrite) {
-    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`);
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
   }
 
   // In production, enforce tool allowlist for tier 3+ (destructive) tools
@@ -2036,13 +2051,13 @@ async function handleTenantToolCall(
   const hasWrite = hasExecute || scopes.includes('ai:write');
 
   if (tier >= 3 && !hasExecute) {
-    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`);
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`, INSUFFICIENT_SCOPE_EXECUTE);
   }
   if (tier >= 3 && requireExecuteAdmin && !hasExecuteAdmin) {
     return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute_admin scope in production`);
   }
   if (tier === 2 && !hasWrite) {
-    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`);
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
   }
   // RBAC permission check
   try {

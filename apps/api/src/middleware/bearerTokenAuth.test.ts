@@ -181,7 +181,9 @@ function createContext(headers: Record<string, string | undefined> = {}): TestCo
       store.set(key, value);
     },
     get: (key: string) => store.get(key),
-  } as TestContext;
+    // B-W02: 401s set WWW-Authenticate on the context before throwing.
+    header: () => undefined,
+  } as unknown as TestContext;
 }
 
 async function mintToken(claims: Record<string, unknown>, opts: { issuer?: string; audience?: string; ttlSeconds?: number } = {}) {
@@ -747,6 +749,52 @@ describe('bearerTokenAuthMiddleware', () => {
     ]));
     expect(sql).toContain('is null');
     expect(sql).toContain('>=');
+  });
+
+  describe('B-W02 (#6156): bearer 401s carry the challenge', () => {
+    // Through a real Hono app whose onError rebuilds the body the way
+    // apps/api/src/index.ts does (it ignores HTTPException#res), proving the
+    // header set on the context before the throw survives.
+    async function requestThroughApp(authorization: string) {
+      const { Hono } = await import('hono');
+      const { HTTPException } = await import('hono/http-exception');
+      const app = new Hono();
+      app.use('*', bearerTokenAuthMiddleware);
+      app.get('/mcp', (c) => c.json({ ok: true }));
+      app.onError((err, c) => {
+        if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+        return c.json({ error: 'Internal Server Error' }, 500);
+      });
+      return app.request('/mcp', { headers: { Authorization: authorization } });
+    }
+    const CHALLENGE =
+      'Bearer realm="breeze", error="invalid_token", resource_metadata="https://issuer.test/.well-known/oauth-protected-resource", scope="mcp:read mcp:write mcp:execute"';
+
+    it('expired-token 401 carries the bearer challenge', async () => {
+      const token = await mintToken({ sub: userId, partner_id: partnerId, org_id: orgId, scope: 'mcp:read' }, { ttlSeconds: -60 });
+      const res = await requestThroughApp(`Bearer ${token}`);
+      expect(res.status).toBe(401);
+      expect(res.headers.get('www-authenticate')).toBe(CHALLENGE);
+    });
+
+    it('revoked-grant and live-authorization 401s carry it too', async () => {
+      dbState.liveUserRows = [{ id: userId, status: 'active', authEpoch: 1, grantActive: false, mcpDomains: null }];
+      const revoked = await requestThroughApp(`Bearer ${await mintToken({ sub: userId, partner_id: partnerId, org_id: orgId, jti: 'j-rev' })}`);
+      expect(revoked.status).toBe(401);
+      expect(revoked.headers.get('www-authenticate')).toBe(CHALLENGE);
+
+      dbState.liveUserRows = [{ id: userId, status: 'disabled', authEpoch: 1, grantActive: true, mcpDomains: null }];
+      const inactive = await requestThroughApp(`Bearer ${await mintToken({ sub: userId, partner_id: partnerId, org_id: orgId, jti: 'j-inactive' })}`);
+      expect(inactive.status).toBe(401);
+      expect(inactive.headers.get('www-authenticate')).toBe(CHALLENGE);
+    });
+
+    it('a 503 (verification unavailable) carries no challenge', async () => {
+      dbState.liveUserError = new Error('db down');
+      const res = await requestThroughApp(`Bearer ${await mintToken({ sub: userId, partner_id: partnerId, org_id: orgId, jti: 'j-503' })}`);
+      expect(res.status).toBe(503);
+      expect(res.headers.get('www-authenticate')).toBeNull();
+    });
   });
 
   describe('B-W02 (#6156): grant mcp_domains', () => {

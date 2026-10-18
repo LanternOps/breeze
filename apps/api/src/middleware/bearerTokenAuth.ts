@@ -1,5 +1,6 @@
 import type { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { buildBearerChallenge } from '../services/mcpAuthChallenge';
 import * as Sentry from '@sentry/node';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from 'jose';
 import { and, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
@@ -385,13 +386,25 @@ async function filterBlockedOAuthClientOrgIds(orgIds: string[], clientId: string
   });
 }
 
+/**
+ * B-W02 (#6156, D-B7): every bearer-path 401 carries the Bearer challenge so a
+ * client holding an expired or revoked token learns where to re-authorize.
+ * Set on the context BEFORE the throw: `app.onError` rebuilds the response
+ * with `c.json(...)` and ignores an HTTPException's own `res`/headers, but
+ * keeps headers already on the context.
+ */
+function unauthorized(c: Context, opts: { message: string }): HTTPException {
+  c.header('WWW-Authenticate', buildBearerChallenge({ error: 'invalid_token' }));
+  return new HTTPException(401, opts);
+}
+
 export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
   if (!OAUTH_ISSUER || !OAUTH_RESOURCE_URL) {
     throw new HTTPException(500, { message: 'OAuth not configured: OAUTH_ISSUER and OAUTH_RESOURCE_URL must be set' });
   }
 
   const auth = c.req.header('Authorization') ?? '';
-  if (!auth.startsWith('Bearer ')) throw new HTTPException(401, { message: 'missing bearer token' });
+  if (!auth.startsWith('Bearer ')) throw unauthorized(c, { message: 'missing bearer token' });
 
   const token = auth.slice(7);
   let payload: JWTPayload & {
@@ -422,12 +435,12 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
       console.error('[oauth] jwt verification failed for non-token reason (jwks fetch?)', e);
       throw new HTTPException(503, { message: 'oauth verification temporarily unavailable' });
     }
-    throw new HTTPException(401, { message: `invalid token: ${code ?? (e as Error).message}` });
+    throw unauthorized(c, { message: `invalid token: ${code ?? (e as Error).message}` });
   }
 
   if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
     recordLiveOAuthAuthorization('user_missing', payload.auth_epoch === undefined);
-    throw new HTTPException(401, { message: 'token missing required claims' });
+    throw unauthorized(c, { message: 'token missing required claims' });
   }
 
   // Read the claim now (not to reject on it yet — rejection order below is
@@ -441,28 +454,28 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     const message = liveUser.status === 503
       ? `oauth live authorization temporarily unavailable: ${liveUser.reason}`
       : `oauth live authorization denied: ${liveUser.reason}`;
-    throw new HTTPException(liveUser.status, { message });
+    throw liveUser.status === 401 ? unauthorized(c, { message }) : new HTTPException(liveUser.status, { message });
   }
   recordLiveOAuthAuthorization('authorized', liveUser.legacyClaim);
 
   if (typeof payload.jti === 'string' && await isJtiRevoked(payload.jti)) {
-    throw new HTTPException(401, { message: 'token revoked' });
+    throw unauthorized(c, { message: 'token revoked' });
   }
   // Grant-wide revocation: when a refresh token is revoked or a connected app
   // is deleted, every access JWT minted from the same Grant must die. The
   // grant_id claim is set by buildExtraTokenClaims (see oauth/provider.ts).
   if (!grantIdClaim) {
-    throw new HTTPException(401, { message: 'token missing required claims' });
+    throw unauthorized(c, { message: 'token missing required claims' });
   }
   // Redis first (eager, cheap, covers the window before a durable sweep
   // lands), then the durable answer already fetched alongside the user. A DB
   // failure never reaches here as "active": assertLiveOAuthUser has already
   // returned 503 for it, so uncertainty is fail-closed on both halves.
   if (await isGrantRevoked(grantIdClaim)) {
-    throw new HTTPException(401, { message: 'token revoked' });
+    throw unauthorized(c, { message: 'token revoked' });
   }
   if (!liveUser.grantActive) {
-    throw new HTTPException(401, { message: 'token revoked' });
+    throw unauthorized(c, { message: 'token revoked' });
   }
   const clientIdClaim = typeof (payload as { client_id?: unknown }).client_id === 'string'
     ? (payload as { client_id?: string }).client_id
@@ -482,7 +495,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     }
   }
   if (!payload.partner_id) {
-    throw new HTTPException(401, { message: 'token missing required claims' });
+    throw unauthorized(c, { message: 'token missing required claims' });
   }
   try {
     // OAuth bearers run with `strictForOauth: true` — pending/suspended/churned
@@ -503,7 +516,7 @@ export async function bearerTokenAuthMiddleware(c: Context, next: Next) {
     );
   } catch (err) {
     if (err instanceof TenantInactiveError) {
-      throw new HTTPException(401, { message: 'tenant inactive' });
+      throw unauthorized(c, { message: 'tenant inactive' });
     }
     throw err;
   }
