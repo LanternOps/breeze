@@ -78,6 +78,43 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Built-in YARA detection-rule pack (#6263 W03b). Server-side content, not
+  # an agent binary: built for BOTH release kinds (no classify-release gate),
+  # listed in the signed release-artifact-manifest.json like every other
+  # release asset, and upserted by the API at boot (yaraBuiltinPack.ts), which
+  # verifies it against that signed manifest. build-pack.sh refuses a YARA
+  # Forge download that does not match the tag + sha256 pinned in
+  # scripts/security/yara-pack/forge.sha256, and a pack.lock that does not
+  # match the pack inputs.
+  build-yara-pack:
+    name: Build built-in YARA pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: agent/go.sum
+
+      - name: Build the pack
+        run: bash scripts/security/yara-pack/build-pack.sh --out "$RUNNER_TEMP/yara-pack"
+
+      - name: Upload pack
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: breeze-yara-builtin
+          path: |
+            ${{ runner.temp }}/yara-pack/breeze-yara-builtin.json
+            ${{ runner.temp }}/yara-pack/breeze-yara-builtin-report.json
+          if-no-files-found: error
+          retention-days: 30
+
   build-web:
     name: Build Web
     runs-on: ubuntu-latest
@@ -2646,7 +2683,7 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-api, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor, classify-release, carry-forward-binaries, resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
+    needs: [build-api, build-yara-pack, build-web, build-agent, build-recovery-media, build-windows-unsigned, build-macos-agent, build-macos-installer-app, sign-windows-tauri, build-viewer, build-helper, build-viewer-macos, build-helper-macos, merge-viewer-update-manifest, package-windows-updater, release-integrity-gate, validate-release-lineage, build-binaries-image, build-docker-api, build-docker-web, build-docker-portal, build-docker-m365-graph-read-executor, build-docker-m365-graph-actions-executor, build-docker-m365-communications-executor, classify-release, carry-forward-binaries, resolve-windows-signing-provider, sign-windows-tauri-azure, sign-windows-tauri-sslcom]
     # The last conjunct is the release-kind split. The full branch is exactly
     # the pre-server-only condition; the server-only branch requires the
     # carried binaries and every binary/signing job to have been SKIPPED.
@@ -2657,6 +2694,7 @@ jobs:
       && needs.validate-release-lineage.result == 'success'
       && needs.classify-release.result == 'success'
       && needs.build-api.result == 'success'
+      && needs.build-yara-pack.result == 'success'
       && needs.build-web.result == 'success'
       && needs.release-integrity-gate.result == 'success'
       && needs.build-docker-api.result == 'success'
@@ -2861,6 +2899,17 @@ jobs:
           if [ -d "artifacts/web-dist" ]; then
             tar -czvf release-assets/breeze-web.tar.gz -C artifacts/web-dist .
           fi
+
+          # Built-in YARA pack (#6263 W03b): required for both release kinds.
+          # The API's boot upsert finds it in this release and verifies it
+          # against the signed manifest generated below.
+          for f in breeze-yara-builtin.json breeze-yara-builtin-report.json; do
+            if [ ! -s "artifacts/breeze-yara-builtin/$f" ]; then
+              echo "::error::built-in YARA pack artifact $f is missing — refusing to publish a release without it" >&2
+              exit 1
+            fi
+            cp "artifacts/breeze-yara-builtin/$f" release-assets/
+          done
 
           SOURCE_COMMIT="$(git rev-parse 'HEAD^{commit}')"
           export SOURCE_COMMIT
@@ -3207,8 +3256,12 @@ jobs:
           assert manifest.get("binariesSourceCommit") == os.environ["BINARIES_SHA"], \
               "binariesSourceCommit does not match the base release commit"
 
-          ALLOWED = {"breeze-api.tar.gz", "breeze-web.tar.gz", "latest.json"}
-          REQUIRED = {"breeze-api.tar.gz", "breeze-web.tar.gz"}
+          # breeze-yara-builtin*: the built-in YARA pack (#6263 W03b) is server
+          # content, rebuilt for every release kind.
+          ALLOWED = {"breeze-api.tar.gz", "breeze-web.tar.gz", "latest.json",
+                     "breeze-yara-builtin.json", "breeze-yara-builtin-report.json"}
+          REQUIRED = {"breeze-api.tar.gz", "breeze-web.tar.gz",
+                      "breeze-yara-builtin.json", "breeze-yara-builtin-report.json"}
           BINARY_NAME_RE = re.compile(
               r"-unsigned"
               r"|^breeze-(agent|backup|watchdog|user-helper|desktop-helper|viewer|helper|recovery)"
