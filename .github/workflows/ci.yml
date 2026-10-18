@@ -2512,6 +2512,23 @@ jobs:
           CGO_ENABLED: "0"
         run: go test ./internal/collectors -run '^TestCollectorCommand|^TestCappedBuffer' -v
 
+      # The VPN collector's Windows service query (#8763) is a PowerShell
+      # pipeline that looks up Zscaler drivers by name; a non-zero exit when
+      # they are absent would silently drop every provider's service signal.
+      # Only a real Windows host can prove it exits 0 and emits Name<TAB>DisplayName.
+      - name: Run Windows VPN service query test
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^TestWindowsVPNServiceQuery$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: TestWindowsVPNServiceQuery').Count
+          if ($passes -ne 1) { throw "TestWindowsVPNServiceQuery did not run - renamed or removed without updating this step" }
+
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
       # codes (#2997) against golang.org/x/sys/windows, and those codes drive

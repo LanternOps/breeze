@@ -27,10 +27,10 @@ const (
 	vpnCloudflareWARP = "cloudflare-warp"
 	vpnGeneric        = "generic"
 
-	// Enterprise VPN / SSE clients (#8763). Zscaler Client Connector and
-	// Netskope steer traffic through a filter driver rather than their own
-	// adapter on Windows, so for them the interface-driven "active" signal
-	// usually cannot fire there — see the note on assembleVPNs.
+	// Enterprise VPN / SSE clients (#8763). Zscaler Client Connector steers
+	// traffic through a filter driver rather than its own adapter on Windows
+	// (Netskope may do the same), so for it the interface-driven "active"
+	// signal usually cannot fire there — see the note on assembleVPNs.
 	vpnZscaler           = "zscaler"
 	vpnGlobalProtect     = "globalprotect"
 	vpnCiscoSecureClient = "cisco-secure-client"
@@ -354,13 +354,38 @@ func parseIfconfigVPNAgents(text string) map[string]string {
 		if !ok {
 			continue
 		}
-		if matched := matchVPNServiceTokens(desc); len(matched) == 1 {
+		if matched := matchVPNAgentDescription(desc); len(matched) == 1 {
 			for provider := range matched {
 				attributions[current] = provider
 			}
 		}
 	}
 	return attributions
+}
+
+// vpnAgentDescriptionSignatures adds vendor names that are too broad for a
+// services listing but safe in a network-extension VPN description: that line
+// only exists on a VPN-type tunnel, so "Cisco Secure Client" there names the
+// VPN module, not Umbrella or another module of the same client.
+var vpnAgentDescriptionSignatures = map[string][]string{
+	vpnCiscoSecureClient: {"cisco secure client", "anyconnect"},
+	vpnFortiClient:       {"forticlient", "fortinet"},
+}
+
+// matchVPNAgentDescription matches a macOS network-extension VPN description
+// against the service tokens plus vpnAgentDescriptionSignatures.
+func matchVPNAgentDescription(desc string) map[string]bool {
+	found := matchVPNServiceTokens(desc)
+	lower := strings.ToLower(desc)
+	for provider, sigs := range vpnAgentDescriptionSignatures {
+		for _, sig := range sigs {
+			if strings.Contains(lower, sig) {
+				found[provider] = true
+				break
+			}
+		}
+	}
+	return found
 }
 
 // runningVPNSignals merges cross-platform process signals with per-OS service
@@ -381,23 +406,28 @@ func runningVPNSignals() map[string]string {
 // as a SUBSTRING of the process base name (.exe stripped). Only vendor-branded
 // tokens belong here; short or generic names go in vpnProcessExactNames.
 var vpnProcessSignatures = map[string][]string{
-	vpnWireGuard:         {"wireguard", "wg-quick"},
-	vpnTailscale:         {"tailscaled", "tailscale"},
-	vpnNetBird:           {"netbird"},
-	vpnZeroTier:          {"zerotier-one", "zerotier_one", "zerotier"},
-	vpnOpenVPN:           {"openvpn"},
-	vpnCloudflareWARP:    {"warp-svc", "cloudflarewarp"},
-	vpnGlobalProtect:     {"globalprotect"},
-	vpnCiscoSecureClient: {"anyconnect", "cisco secure client"},
-	vpnFortiClient:       {"forticlient"},
-	vpnNetskope:          {"netskope client"},
+	vpnWireGuard:      {"wireguard", "wg-quick"},
+	vpnTailscale:      {"tailscaled", "tailscale"},
+	vpnNetBird:        {"netbird"},
+	vpnZeroTier:       {"zerotier-one", "zerotier_one", "zerotier"},
+	vpnOpenVPN:        {"openvpn"},
+	vpnCloudflareWARP: {"warp-svc", "cloudflarewarp"},
+	vpnGlobalProtect:  {"globalprotect"},
+	vpnNetskope:       {"netskope client"},
 }
 
 // vpnProcessExactNames maps a provider to lowercase process base names (.exe
 // stripped) that must match EXACTLY. Used where a substring would be unsafe:
-// "zsa*" or "zscaler*" would also catch Zscaler's ZDP processes (zdpagent and
-// friends are data protection, not the tunnel) and "vpnagent"/"vpnui" are
-// generic enough to sit inside another vendor's binary name.
+// a "zscaler" or "zsa" substring would also catch ZscalerPreLogin (the
+// login-window UI, not the client) or any unrelated zsa* binary, and
+// "vpnagent" is generic enough to sit inside another vendor's binary name.
+//
+// Cisco and Fortinet ship multi-module clients, so only their VPN component
+// counts: a shared UI (vpnui, csc_ui, the "Cisco Secure Client" app,
+// FortiClient/FortiTray) or a non-VPN module (Umbrella, FortiClient antivirus)
+// runs on installs that never use the VPN, and claiming it would also stop
+// soleVPNSignal from leaving an unrelated tunnel generic. Cisco's core VPN
+// agent does run on Umbrella-only installs too; that residual is accepted.
 //
 // Zscaler names are field-captured (#8763): Windows ZSATunnel, ZSAService,
 // ZSATray (user tray, not a service), ZSATrayManager, ZSAUpm; macOS Zscaler
@@ -412,14 +442,17 @@ var vpnProcessExactNames = map[string][]string{
 		"com.zscaler.zscaler.trptunnel", "upmservicecontroller",
 	},
 	vpnGlobalProtect:     {"pangpa", "pangps"},
-	vpnCiscoSecureClient: {"vpnagent", "vpnagentd", "vpnui", "csc_ui"},
-	vpnFortiClient:       {"fortitray", "fortisslvpndaemon", "fcdblog"},
+	vpnCiscoSecureClient: {"vpnagent", "vpnagentd"},
+	vpnFortiClient:       {"fortisslvpndaemon"},
 	vpnNetskope:          {"stagentsvc", "stagentui", "stagentsvcmon"},
 }
 
 // kernelCommNameLen is the shortest length at which a process name may have
 // been truncated by the kernel: Linux comm holds 15 characters and macOS p_comm
-// 16, and gopsutil only recovers the full name from argv when it can.
+// 16. gopsutil replaces a 15+ character name with argv[0]'s base name, so a
+// truncated name reaches us only when argv reads back empty or (Linux) argv[0]
+// was rewritten; when argv can't be read at all, Name() errors and the
+// process is skipped.
 const kernelCommNameLen = 15
 
 func runningVPNProcesses() map[string]bool {
@@ -468,10 +501,11 @@ func matchVPNProcessName(name string) map[string]bool {
 }
 
 // processNameIs reports whether a lowercased process base name is the given
-// exact name, accepting a kernel-truncated form (macOS reports
-// "com.zscaler.zsca" for the TRPTunnel extension when argv is unreadable).
-// A truncated name is never shorter than kernelCommNameLen, so a short name
-// that merely starts the same way does not match.
+// exact name, also accepting a kernel-truncated form (e.g. "com.zscaler.zsca"
+// for the TRPTunnel extension, macOS p_comm). Defensive: see kernelCommNameLen
+// for when gopsutil can hand back a truncated name. A truncated name is never
+// shorter than kernelCommNameLen, so a short name that merely starts the same
+// way does not match.
 func processNameIs(name, exact string) bool {
 	if name == exact {
 		return true
@@ -489,8 +523,11 @@ func processNameIs(name, exact string) bool {
 // and are not the tunnel client. The two Zscaler drivers are matched on their
 // DisplayName ("Zscaler LightWeight Filter" for zapprd, "Zscaler Filtering
 // Platform (WFP)" for zsawdrv), since the driver names don't say Zscaler.
-// Likewise no bare "vpnagent" for Cisco. Non-Zscaler enterprise tokens come
-// from vendor documentation and are not yet field-verified.
+// Cisco and Fortinet match only their VPN component (see vpnProcessExactNames):
+// no bare "anyconnect", "cisco secure client" or "forticlient", which also
+// name the Umbrella/ISE/NAM modules and FortiClient's antivirus scheduler.
+// Non-Zscaler enterprise tokens come from vendor documentation and are not
+// yet field-verified.
 var vpnServiceSignatures = map[string][]string{
 	vpnWireGuard:      {"wireguard", "wg-quick"},
 	vpnTailscale:      {"tailscale"},
@@ -503,10 +540,13 @@ var vpnServiceSignatures = map[string][]string{
 		"zscaler lightweight filter", "zscaler filtering platform",
 		"com.zscaler.service", "com.zscaler.tray", "com.zscaler.upmservicecontroller",
 	},
-	vpnGlobalProtect:     {"pangps", "pangpa", "globalprotect"},
-	vpnCiscoSecureClient: {"anyconnect", "cisco secure client", "com.cisco.secureclient", "csc_vpnagent"},
-	vpnFortiClient:       {"forticlient", "fortisslvpn"},
-	vpnNetskope:          {"stagentsvc", "netskope client"},
+	vpnGlobalProtect: {"pangps", "pangpa", "globalprotect"},
+	vpnCiscoSecureClient: {
+		"csc_vpnagent", "anyconnect vpn agent", "anyconnect secure mobility agent",
+		"com.cisco.secureclient.vpnagentd", "com.cisco.anyconnect.vpnagentd",
+	},
+	vpnFortiClient: {"fortisslvpn"},
+	vpnNetskope:    {"stagentsvc", "netskope client"},
 }
 
 // matchVPNServiceTokens scans a running-services listing for provider tokens.

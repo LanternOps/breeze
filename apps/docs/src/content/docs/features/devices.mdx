@@ -214,7 +214,9 @@ A provider is only ever reported when the device gives a concrete signal for it 
 
 ### Clients without a tunnel adapter
 
-Some security-service clients do not create a network adapter of their own. **Zscaler Client Connector on Windows** steers traffic through a filter driver bound to the existing Ethernet and Wi-Fi adapters, so there is no tunnel interface for the agent to see. Breeze can confirm the client is running, but not whether its tunnel is up, so on Windows Zscaler is always shown as **Disconnected** (client running). Treat that state as "installed and running", not as proof the tunnel is down. Netskope can behave the same way.
+Some security-service clients do not create a network adapter of their own. **Zscaler Client Connector on Windows** steers traffic through a filter driver bound to the existing Ethernet and Wi-Fi adapters, so there is normally no tunnel interface for the agent to see. Breeze can confirm the client is running, but not whether its tunnel is up, so on Windows Zscaler is usually shown as **Disconnected** (client running). Treat that state as "installed and running", not as proof the tunnel is down. Netskope may behave the same way.
+
+For Cisco Secure Client and FortiClient, only the VPN component counts: the Cisco VPN agent and the FortiClient SSL-VPN daemon. Their other modules (Cisco Umbrella, FortiClient antivirus and web filtering) are not reported as a VPN. Cisco's VPN agent is part of the core install, so a device running Cisco Secure Client only for Umbrella can still show **Cisco Secure Client — Disconnected**.
 
 On macOS, Zscaler's tunnel is a plain `utun` with no network-extension owner, so it is named by the single-running-client rule described below.
 

@@ -618,18 +618,21 @@ func TestMatchVPNProcessName(t *testing.T) {
 		{"globalprotect PanGPA", "PanGPA.exe", []string{vpnGlobalProtect}},
 		{"globalprotect PanGPS", "PanGPS.exe", []string{vpnGlobalProtect}},
 		{"globalprotect mac app", "GlobalProtect", []string{vpnGlobalProtect}},
-		// Cisco Secure Client / AnyConnect.
+		// Cisco Secure Client / AnyConnect: only the VPN agent counts.
 		{"cisco vpnagent", "vpnagent.exe", []string{vpnCiscoSecureClient}},
 		{"cisco vpnagentd", "vpnagentd", []string{vpnCiscoSecureClient}},
-		{"cisco vpnui", "vpnui.exe", []string{vpnCiscoSecureClient}},
-		{"cisco csc_ui", "csc_ui.exe", []string{vpnCiscoSecureClient}},
-		{"cisco mac app", "Cisco Secure Client", []string{vpnCiscoSecureClient}},
-		{"anyconnect mac app", "Cisco AnyConnect Secure Mobility Client", []string{vpnCiscoSecureClient}},
-		// FortiClient.
-		{"forticlient", "FortiClient.exe", []string{vpnFortiClient}},
-		{"fortitray", "FortiTray.exe", []string{vpnFortiClient}},
+		// FortiClient: only the SSL-VPN daemon counts.
 		{"fortisslvpndaemon", "FortiSSLVPNdaemon.exe", []string{vpnFortiClient}},
-		{"fcdblog", "FCDBLog.exe", []string{vpnFortiClient}},
+		// Shared vendor UI / non-VPN modules: present on Umbrella-only or
+		// FortiClient antivirus-only installs, so they must not name a VPN.
+		{"cisco shared ui vpnui", "vpnui.exe", nil},
+		{"cisco shared ui csc_ui", "csc_ui.exe", nil},
+		{"cisco mac app", "Cisco Secure Client", nil},
+		{"anyconnect mac app", "Cisco AnyConnect Secure Mobility Client", nil},
+		{"cisco umbrella agent", "acumbrellaagent.exe", nil},
+		{"forticlient console", "FortiClient.exe", nil},
+		{"forticlient tray", "FortiTray.exe", nil},
+		{"forticlient log daemon", "FCDBLog.exe", nil},
 		// Netskope.
 		{"netskope stAgentSvc", "stAgentSvc.exe", []string{vpnNetskope}},
 		{"netskope stAgentUI", "stAgentUI.exe", []string{vpnNetskope}},
@@ -700,19 +703,38 @@ func TestMatchVPNServiceTokensEnterpriseClients(t *testing.T) {
 			want: []string{vpnGlobalProtect},
 		},
 		{
-			name: "windows cisco secure client",
+			name: "windows cisco secure client 5 vpn agent",
 			text: "csc_vpnagent\tCisco Secure Client - AnyConnect VPN Agent\n",
 			want: []string{vpnCiscoSecureClient},
 		},
 		{
-			name: "darwin cisco launchd",
-			text: "301\t0\tcom.cisco.secureclient.vpnagentd\n",
+			name: "windows anyconnect 4 vpn agent",
+			text: "vpnagent\tCisco AnyConnect Secure Mobility Agent\n",
 			want: []string{vpnCiscoSecureClient},
 		},
 		{
-			name: "windows forticlient",
-			text: "FA_Scheduler\tFortiClient Service Scheduler\n",
+			name: "darwin cisco launchd",
+			text: "301\t0\tcom.cisco.secureclient.vpnagentd\n-\t0\tcom.cisco.anyconnect.vpnagentd\n",
+			want: []string{vpnCiscoSecureClient},
+		},
+		{
+			// Umbrella / ISE / NAM modules share the vendor prefix but are not VPN.
+			name: "cisco non-vpn modules are not the vpn client",
+			text: "csc_umbrellaagent\tCisco Secure Client - Umbrella Agent\n" +
+				"acumbrellaagent\tCisco AnyConnect Umbrella Roaming Security Agent\n" +
+				"-\t0\tcom.cisco.secureclient.acumbrellaagent\n",
+			want: nil,
+		},
+		{
+			name: "windows forticlient ssl vpn daemon",
+			text: "FortiSslVpnDaemon\tFortiClient SSLVPN daemon\n",
 			want: []string{vpnFortiClient},
+		},
+		{
+			// FortiClient deployed for antivirus / web filter only.
+			name: "forticlient endpoint-protection services are not the vpn client",
+			text: "FA_Scheduler\tFortiClient Service Scheduler\n-\t0\tcom.fortinet.forticlient.fct_launcher\n",
+			want: nil,
 		},
 		{
 			name: "windows netskope",
