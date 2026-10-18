@@ -156,10 +156,17 @@ describe('agreement_requests / agreement_request_recipients RLS (shape 1)', () =
     await insertRecipient(orgA.id, requestA, 'a@example.test');
     const docA = await insertRequestDocument(orgA.id, tv, requestA);
 
-    // Control: with IMMEDIATE checking, moving the parent first is refused —
-    // the recipients' composite FK fires on the parent's org_id change.
-    expect(await sqlstate(() => sys(() =>
-      db.execute(sql`UPDATE agreement_requests SET org_id = ${orgB.id}::uuid WHERE id = ${requestA}::uuid`)))).toBe('23503');
+    // Control: with IMMEDIATE checking, moving a parent before its recipients is
+    // refused by the recipients' composite FK. The control request has NO
+    // contract, so the (contract_id, org_id) FK cannot be what fires.
+    const controlRequest = await insertRequest(orgA.id, tv);
+    await insertRecipient(orgA.id, controlRequest, 'control@example.test');
+    const controlErr = await sys(() =>
+      db.execute(sql`UPDATE agreement_requests SET org_id = ${orgB.id}::uuid WHERE id = ${controlRequest}::uuid`))
+      .then(() => undefined, (e: { cause?: { code?: string; constraint_name?: string }; code?: string; constraint_name?: string }) => e.cause ?? e);
+    expect(controlErr?.code).toBe('23503');
+    expect(controlErr?.constraint_name).toBe('agreement_request_recipients_request_org_fk');
+    await sys(() => db.execute(sql`DELETE FROM agreement_requests WHERE id = ${controlRequest}::uuid`));
 
     // The merge shape (orgMerge.ts): one transaction, SET CONSTRAINTS ALL DEFERRED,
     // parent and children moved in separate statements.

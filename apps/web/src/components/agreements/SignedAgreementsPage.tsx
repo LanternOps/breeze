@@ -262,7 +262,9 @@ export default function SignedAgreementsPage({
                     {/* The no-quote variant exists because quoteId/quoteNumber are
                         left-joined and genuinely null for a deleted quote. */}
                     <div className="text-xs text-muted-foreground" data-testid="signed-agreement-subtitle">
-                      {doc.quoteNumber
+                      {doc.evidenceAvailable === false
+                        ? t('agreements.signedPage.evidenceUnavailable')
+                        : doc.quoteNumber
                         ? t('agreements.signedPage.rowSubtitle', {
                             quoteNumber: doc.quoteNumber,
                             signer: doc.signerName ?? '—',

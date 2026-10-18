@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { computeAgreementSha256, type AgreementHashInput } from './agreementContentHash';
 
 const VERSION_SHA = 'a'.repeat(64);
@@ -29,6 +30,17 @@ describe('computeAgreementSha256', () => {
       vars: { 'dates.effective': 'Oct 01, 2026', 'seller.name': 'MSP LLC', 'client.name': 'Acme Co' },
     };
     expect(computeAgreementSha256(reordered)).toBe(computeAgreementSha256(rendered));
+  });
+
+  it('orders vars by UTF-16 code unit, not by locale collation', () => {
+    // localeCompare puts 'b' before 'C' (case-insensitive collation); code-unit
+    // order puts 'C' (0x43) first. The canonical form must not depend on ICU.
+    const input: AgreementHashInput = { ...rendered, vars: { 'b.x': '1', 'C.x': '2' } };
+    const expected = createHash('sha256').update(JSON.stringify({
+      version: 1, kind: 'rendered', versionSha: VERSION_SHA,
+      vars: { 'C.x': '2', 'b.x': '1' }, renderLocale: 'en', effectiveDate: '2026-10-01',
+    })).digest('hex');
+    expect(computeAgreementSha256(input)).toBe(expected);
   });
 
   it('binds every rendered input: a var value, the locale and the effective date each change the hash', () => {

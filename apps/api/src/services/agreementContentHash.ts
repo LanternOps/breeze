@@ -8,7 +8,7 @@
 //  - 'external': the pinned template version + the uploaded signed copy's
 //    bytes hash and mime (record-signed upload).
 // Same canonicalisation family as computeQuoteSha256: a plain object with
-// sorted variable keys, JSON.stringify'd, sha256 hex. Never change version 1's
+// sorted variable keys (code-unit order), JSON.stringify'd, sha256 hex. Never change version 1's
 // canonical form — add a new version instead (pinned vectors in the test).
 import { createHash } from 'node:crypto';
 
@@ -24,7 +24,9 @@ export function computeAgreementSha256(input: AgreementHashInput, version: Agree
         version,
         kind: input.kind,
         versionSha: input.versionSha,
-        vars: Object.fromEntries(Object.entries(input.vars).sort(([a], [b]) => a.localeCompare(b))),
+        // UTF-16 code-unit order, NOT localeCompare: a hash that must
+        // re-verify forever cannot depend on the runtime's ICU collation.
+        vars: Object.fromEntries(Object.entries(input.vars).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
         renderLocale: input.renderLocale,
         effectiveDate: input.effectiveDate,
       }

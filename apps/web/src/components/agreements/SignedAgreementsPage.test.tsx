@@ -170,6 +170,11 @@ describe('SignedAgreementsPage', () => {
     const rows = await screen.findAllByTestId('contract-document-row');
     expect(within(rows[0]).getByTestId('signed-agreement-signer'))
       .toHaveTextContent('Accepted via quote — acceptance evidence unavailable');
+    // The subtitle says the same thing instead of "Signed by — on —".
+    const subtitle = within(rows[0]).getByTestId('signed-agreement-subtitle');
+    expect(subtitle).toHaveTextContent('Accepted via quote — acceptance evidence unavailable');
+    expect(subtitle).not.toHaveTextContent('—  on');
+    expect(subtitle.textContent).not.toMatch(/by — on —/);
   });
 
   it('links a linked row to its contract', async () => {
