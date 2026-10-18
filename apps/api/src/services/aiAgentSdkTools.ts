@@ -1845,6 +1845,7 @@ export function buildBreezeSdkTools(
         action: z.enum([
           'list', 'add_item', 'update_item', 'delete_item', 'reorder',
           'apply_template', 'list_templates', 'get_template',
+          'save_as_template', 'duplicate_template',
         ]),
         ticketId: uuid.optional(),
         itemId: uuid.optional(),
@@ -1855,6 +1856,9 @@ export function buildBreezeSdkTools(
         mode: z.enum(['append', 'replace_unticked']).optional(),
         orgId: uuid.optional(),
         includeInactive: z.boolean().optional(),
+        name: z.string().min(1).max(200).optional(),
+        description: z.string().max(2000).nullable().optional(),
+        ownerScope: z.enum(['organization', 'partner']).optional(),
       },
       makeHandler('manage_ticket_checklist', getAuth, onPreToolUse, onPostToolUse)
     ),

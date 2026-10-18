@@ -106,7 +106,7 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   ],
   // #6930: ticket-scoped checklist step edits, same family as update_fields.
   // Ticking a step is not a tool action at all (see aiToolsTicketing.ts).
-  manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template'],
+  manage_ticket_checklist: ['add_item', 'update_item', 'delete_item', 'reorder', 'apply_template', 'save_as_template', 'duplicate_template'],
   manage_services: ['list'],
   // Live device inspection: listing processes / scheduled tasks runs a live
   // command on the device (devices:execute, like GET /system-tools/...). Tier 2
@@ -1009,6 +1009,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     delete_item: { resource: 'tickets', action: 'write' },
     reorder: { resource: 'tickets', action: 'write' },
     apply_template: { resource: 'tickets', action: 'write' },
+    save_as_template: { resource: 'tickets', action: 'write' },
+    duplicate_template: { resource: 'tickets', action: 'write' },
   },
   list_invoices: { resource: 'invoices', action: 'read' },
   get_invoice: { resource: 'invoices', action: 'read' },

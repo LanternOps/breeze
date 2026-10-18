@@ -81,7 +81,9 @@
       "high": "Alta",
       "normal": "Normale",
       "low": "Bassa"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} passaggi",
+    "checklistTitle": "Checklist: {{done}} passaggi su {{total}} completati"
   },
   "ticketArchivedList": {
     "emptyTitle": "Nessun ticket archiviato.",

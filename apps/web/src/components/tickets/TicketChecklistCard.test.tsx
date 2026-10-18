@@ -146,12 +146,19 @@ describe('TicketChecklistCard', () => {
     });
   });
 
-  it('shows the edit warning for a DONE step', async () => {
+  it('warns on a DONE step only once the LABEL is changed (a note-only edit keeps the tick)', async () => {
     fetchWithAuth.mockImplementation(
       fakeServer([item({ id: 'i-1', done: true, doneAt: '2026-09-10T00:00:00.000Z', doneByUserId: 'u-1' })]),
     );
     render(<TicketChecklistCard ticketId="tk-1" />);
     fireEvent.click(await screen.findByTestId('ticket-checklist-edit-i-1'));
+    await screen.findByTestId('ticket-checklist-edit-label-i-1');
+    // Unchanged label (note-only edit): no warning.
+    expect(screen.queryByTestId('ticket-checklist-edit-warning')).toBeNull();
+    fireEvent.change(screen.getByTestId('ticket-checklist-edit-detail-i-1'), { target: { value: 'a note' } });
+    expect(screen.queryByTestId('ticket-checklist-edit-warning')).toBeNull();
+    // Changing the label clears the tick, so the warning appears.
+    fireEvent.change(screen.getByTestId('ticket-checklist-edit-label-i-1'), { target: { value: 'Different text' } });
     expect(await screen.findByTestId('ticket-checklist-edit-warning')).toBeTruthy();
   });
 
@@ -486,5 +493,85 @@ describe('operator_task items (recipe spec §6.5)', () => {
       );
     });
     expect(screen.getByTestId('ticket-checklist-item-it-op')).toBeInTheDocument();
+  });
+
+  describe('save as template (#9180)', () => {
+    const saveUrl = () => `${checklistUrl()}/save-as-template`;
+
+    function serverWithSave(items: Item[], saveRes: () => Response) {
+      const base = fakeServer(items);
+      return vi.fn(async (url: string, init?: RequestInit) =>
+        url === saveUrl() && init?.method === 'POST' ? saveRes() : base(url, init));
+    }
+
+    it('is offered only when the ticket has steps', async () => {
+      fetchWithAuth.mockImplementation(fakeServer([item()]));
+      render(<TicketChecklistCard ticketId="tk-1" />);
+      expect(await screen.findByTestId('ticket-checklist-save-template')).toBeTruthy();
+    });
+
+    it('is not offered in compact mode', async () => {
+      fetchWithAuth.mockImplementation(fakeServer([item()]));
+      render(<TicketChecklistCard ticketId="tk-1" mode="compact" />);
+      await screen.findByTestId('ticket-checklist-progress');
+      expect(screen.queryByTestId('ticket-checklist-save-template')).toBeNull();
+    });
+
+    it('POSTs the name as an org-owned template and reports what was left out', async () => {
+      const saved = template({ id: 'tpl-new', name: 'Runbook' });
+      fetchWithAuth.mockImplementation(
+        serverWithSave([item()], () => jsonRes({ template: saved, skipped: { operator: 1, duplicates: 2 } }, 201)),
+      );
+      render(<TicketChecklistCard ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-checklist-save-template'));
+      expect(screen.getByTestId('ticket-checklist-save-template-submit')).toBeDisabled();
+      fireEvent.change(screen.getByTestId('ticket-checklist-save-template-name'), { target: { value: '  Runbook ' } });
+      fireEvent.click(screen.getByTestId('ticket-checklist-save-template-submit'));
+
+      await waitFor(() => {
+        const call = fetchWithAuth.mock.calls.find((c) => c[0] === saveUrl());
+        expect(call).toBeTruthy();
+        expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ name: 'Runbook', ownerScope: 'organization' });
+      });
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: expect.stringContaining('Runbook') }),
+      ));
+      const toast = vi.mocked(showToast).mock.calls.at(-1)![0] as { message: string };
+      expect(toast.message).toContain('1 Operator');
+      expect(toast.message).toContain('2 repeated');
+      await waitFor(() => expect(screen.queryByTestId('ticket-checklist-save-template-form')).toBeNull());
+    });
+
+    it('shows the all-organizations option only when the host allows it, and sends partner scope', async () => {
+      fetchWithAuth.mockImplementation(
+        serverWithSave([item()], () => jsonRes({ template: template(), skipped: { operator: 0, duplicates: 0 } }, 201)),
+      );
+      const { unmount } = render(<TicketChecklistCard ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-checklist-save-template'));
+      expect(screen.queryByTestId('ticket-checklist-save-template-partner')).toBeNull();
+      unmount();
+
+      render(<TicketChecklistCard ticketId="tk-1" canSavePartnerWide />);
+      fireEvent.click(await screen.findByTestId('ticket-checklist-save-template'));
+      fireEvent.click(screen.getByTestId('ticket-checklist-save-template-partner'));
+      fireEvent.change(screen.getByTestId('ticket-checklist-save-template-name'), { target: { value: 'Shared' } });
+      fireEvent.click(screen.getByTestId('ticket-checklist-save-template-submit'));
+      await waitFor(() => {
+        const call = fetchWithAuth.mock.calls.filter((c) => c[0] === saveUrl()).at(-1);
+        expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ name: 'Shared', ownerScope: 'partner' });
+      });
+    });
+
+    it('surfaces a failure (toast) and keeps the form open', async () => {
+      fetchWithAuth.mockImplementation(
+        serverWithSave([item()], () => ({ ok: false, status: 409, json: async () => ({ error: 'exists', code: 'DUPLICATE_CHECKLIST_TEMPLATE_NAME' }) }) as Response),
+      );
+      render(<TicketChecklistCard ticketId="tk-1" />);
+      fireEvent.click(await screen.findByTestId('ticket-checklist-save-template'));
+      fireEvent.change(screen.getByTestId('ticket-checklist-save-template-name'), { target: { value: 'Dup' } });
+      fireEvent.click(screen.getByTestId('ticket-checklist-save-template-submit'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(screen.getByTestId('ticket-checklist-save-template-form')).toBeTruthy();
+    });
   });
 });

@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
-const { serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock, lastSelectColumns } = vi.hoisted(() => {
+const { checklistCountsMock, serviceMocks, ticketTriageMocks, dbSelectMock, dbGroupByMock, authRef, lastWhereArgs, lastOrderByArgs, writeRouteAuditMock, lastSelectColumns } = vi.hoisted(() => {
   const lastSelectColumns: unknown[] = [];
   const lastWhereArgs: { conditions: unknown[] }[] = [];
   const lastOrderByArgs: unknown[][] = [];
   return {
+    checklistCountsMock: vi.fn(async () => new Map()),
     serviceMocks: {
       createTicket: vi.fn(),
       changeTicketStatus: vi.fn(),
@@ -56,6 +57,12 @@ vi.mock('../../services/ticketService', async () => {
 });
 
 vi.mock('../../services/ticketTriage', () => ticketTriageMocks);
+
+// #9180 — the queue's checklist progress comes from ONE grouped count.
+vi.mock('../../services/ticketChecklistService', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketChecklistService')>('../../services/ticketChecklistService');
+  return { ...actual, checklistCountsForTickets: checklistCountsMock };
+});
 
 // #4211 (W01) — aiDrafts.ts (mounted under ticketsRoutes) now imports
 // getLatestTicketProposal, which pulls in runTrace.ts's real dependency
@@ -264,6 +271,37 @@ describe('GET /tickets', () => {
     const body = await res.json();
     expect(body).toHaveProperty('data');
     expect(body).toHaveProperty('pagination');
+  });
+
+  describe('checklist progress on queue rows (#9180)', () => {
+    beforeEach(() => { checklistCountsMock.mockReset(); });
+
+    it('adds checklist {done,total} per row from ONE batched count (null when no steps)', async () => {
+      dbSelectMock.mockResolvedValue([{ id: 't-1' }, { id: 't-2' }]);
+      checklistCountsMock.mockResolvedValue(new Map([['t-1', { done: 2, total: 5 }]]));
+      const res = await makeApp().request('/tickets');
+      const body = await res.json();
+      expect(body.data[0].checklist).toEqual({ done: 2, total: 5 });
+      expect(body.data[1].checklist).toBeNull();
+      expect(checklistCountsMock).toHaveBeenCalledTimes(1);
+      expect(checklistCountsMock).toHaveBeenCalledWith(['t-1', 't-2']);
+    });
+
+    it('never exposes checklist data to an ORG-scoped caller (checklists are internal MSP procedure)', async () => {
+      authRef.current = { ...DEFAULT_AUTH, scope: 'organization', partnerId: null, orgId: 'org-1', canAccessOrg: () => true };
+      dbSelectMock.mockResolvedValue([{ id: 't-1' }]);
+      checklistCountsMock.mockResolvedValue(new Map([['t-1', { done: 1, total: 1 }]]));
+      const res = await makeApp().request('/tickets');
+      const body = await res.json();
+      expect(body.data[0]).not.toHaveProperty('checklist');
+      expect(checklistCountsMock).not.toHaveBeenCalled();
+    });
+
+    it('does not query counts for an empty page', async () => {
+      dbSelectMock.mockResolvedValue([]);
+      await makeApp().request('/tickets');
+      expect(checklistCountsMock).not.toHaveBeenCalled();
+    });
   });
 
   it('selects SLA fields and returns them in list rows (SLA chips)', async () => {

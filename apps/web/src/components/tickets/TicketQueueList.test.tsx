@@ -118,3 +118,37 @@ describe('TicketQueueList org link and row activation (ui-flow W03)', () => {
     expect(screen.queryByTestId('org-record-link')).toBeNull();
   });
 });
+
+describe('TicketQueueList checklist progress (#9180)', () => {
+  it('shows done/total for a ticket with steps, from the row payload (no per-row fetch)', () => {
+    render(
+      <TicketQueueList
+        tickets={[makeTicket({ id: 'tk-1', checklist: { done: 2, total: 5 } })]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    const chip = screen.getByTestId('ticket-checklist-chip-tk-1');
+    expect(chip).toHaveTextContent('2/5');
+    expect(chip.getAttribute('title')).toContain('2 of 5');
+  });
+
+  it('renders no chip when the ticket has no steps, the field is absent, or total is 0', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-null', checklist: null }),
+          makeTicket({ id: 'tk-absent' }),
+          makeTicket({ id: 'tk-zero', checklist: { done: 0, total: 0 } }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+        loading={false}
+      />
+    );
+    expect(screen.queryByTestId('ticket-checklist-chip-tk-null')).toBeNull();
+    expect(screen.queryByTestId('ticket-checklist-chip-tk-absent')).toBeNull();
+    expect(screen.queryByTestId('ticket-checklist-chip-tk-zero')).toBeNull();
+  });
+});

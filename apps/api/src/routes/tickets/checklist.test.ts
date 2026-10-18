@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { authRef, getScopedTicketOr404Mock, checklistMocks, templateMocks } = vi.hoisted(() => ({
   templateMocks: {
     applyChecklistTemplateToTicket: vi.fn(),
+    createChecklistTemplateFromTicket: vi.fn(),
   },
   authRef: {
     current: {
@@ -119,6 +120,7 @@ vi.mock('../../services/sensitiveReadAudit', () => ({
 }));
 
 import { ticketsRoutes } from './index';
+import { PartnerWideWriteDeniedError } from '../../services/partnerWideAccess';
 import { ChecklistServiceError } from '../../services/ticketChecklistService';
 import { HumanWorkStepWaitingError } from '../../services/aiOperator/humanWorkService';
 
@@ -391,5 +393,67 @@ describe('checklist routes', () => {
     templateMocks.applyChecklistTemplateToTicket.mockResolvedValue({ items: [], done: 0, total: 0 });
     const res = await applyTemplate({ templateId: TEMPLATE_ID });
     expect(res.status).toBe(200);
+  });
+
+  // ── save-as-template (#9180) ──────────────────────────────────────────────
+
+  const saveAsTemplate = (body: unknown) =>
+    ticketsRoutes.request(`/${TICKET_ID}/checklist/save-as-template`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+
+  it('save-as-template 404s a ticket out of scope, without touching the service', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(null);
+    const res = await saveAsTemplate({ name: 'Runbook' });
+    expect(res.status).toBe(404);
+    expect(templateMocks.createChecklistTemplateFromTicket).not.toHaveBeenCalled();
+  });
+
+  it('save-as-template passes the TICKET and the parsed body, defaulting to an org-owned template', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    templateMocks.createChecklistTemplateFromTicket.mockResolvedValue({
+      template: { id: 'tpl-1' },
+      skipped: { operator: 1, duplicates: 2 },
+    });
+    const res = await saveAsTemplate({ name: 'Runbook' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({
+      data: { template: { id: 'tpl-1' }, skipped: { operator: 1, duplicates: 2 } },
+    });
+    expect(templateMocks.createChecklistTemplateFromTicket).toHaveBeenCalledWith(
+      { id: TICKET_ID, orgId: 'o-1' },
+      { name: 'Runbook', ownerScope: 'organization' },
+      expect.objectContaining({ userId: 'u-1' }),
+    );
+  });
+
+  it('save-as-template 400s a body that tries to supply items, an org or a partner', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    for (const extra of [{ items: [] }, { orgId: TEMPLATE_ID }, { partnerId: TEMPLATE_ID }]) {
+      const res = await saveAsTemplate({ name: 'Runbook', ...extra });
+      expect(res.status).toBe(400);
+    }
+    expect(templateMocks.createChecklistTemplateFromTicket).not.toHaveBeenCalled();
+  });
+
+  it('save-as-template 400s a missing name', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    expect((await saveAsTemplate({})).status).toBe(400);
+  });
+
+  it('save-as-template maps a partner-wide denial to 403 and a name clash to 409', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    templateMocks.createChecklistTemplateFromTicket.mockRejectedValueOnce(new PartnerWideWriteDeniedError());
+    const denied = await saveAsTemplate({ name: 'Shared', ownerScope: 'partner' });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ code: 'PARTNER_WIDE_WRITE_DENIED' });
+
+    templateMocks.createChecklistTemplateFromTicket.mockRejectedValueOnce(
+      new ChecklistServiceError('exists', 409, 'DUPLICATE_CHECKLIST_TEMPLATE_NAME'),
+    );
+    const clash = await saveAsTemplate({ name: 'Runbook' });
+    expect(clash.status).toBe(409);
   });
 });

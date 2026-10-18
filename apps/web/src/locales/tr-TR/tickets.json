@@ -81,7 +81,9 @@
       "high": "Yüksek",
       "normal": "Normal",
       "low": "Düşük"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} adım",
+    "checklistTitle": "Kontrol listesi: {{total}} adımın {{done}} tanesi tamamlandı"
   },
   "ticketArchivedList": {
     "emptyTitle": "Arşivlenmiş bilet yok.",

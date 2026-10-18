@@ -267,6 +267,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // (or a failed/forbidden load) simply hides the picker.
   const [cannedTemplates, setCannedTemplates] = useState<CannedResponse[]>([]);
   const agentName = useAuthStore((s) => s.user?.name) ?? '';
+  // #9180: offer "all organizations" when saving checklist steps as a template.
+  // UI hint only — the API re-checks canManagePartnerWidePolicies.
+  // Checklists are partner/system-scope only, so this flag alone is the gate.
+  const canSavePartnerWideChecklist = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
 
   // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
   const [fetchedAssignees, setFetchedAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
@@ -1711,7 +1715,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 </div>
               )}
             </div>
-            <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} />
+            <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} canSavePartnerWide={canSavePartnerWideChecklist} />
             <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
             <TicketFeed
               ticketId={ticket.id}

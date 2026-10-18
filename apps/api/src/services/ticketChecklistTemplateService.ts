@@ -4,6 +4,7 @@ import {
   ticketChecklistItems,
   ticketChecklistTemplates,
   ticketChecklistTemplateItems,
+  type TicketChecklistItemRow,
   type TicketChecklistTemplateRow,
   type TicketChecklistTemplateItemRow,
 } from '../db/schema';
@@ -13,6 +14,8 @@ import type {
   ApplyChecklistTemplateInput,
   CreateChecklistTemplateInput,
   CreateChecklistTemplateItemInput,
+  DuplicateChecklistTemplateInput,
+  SaveChecklistAsTemplateInput,
   UpdateChecklistTemplateInput,
   UpdateChecklistTemplateItemInput,
 } from '@breeze/shared';
@@ -372,6 +375,148 @@ export async function createChecklistTemplate(
   } catch (err) {
     mapUniqueViolation(err);
   }
+}
+
+/** The template-items cap on `createChecklistTemplateSchema.items`. */
+const MAX_TEMPLATE_ITEMS = 100;
+
+export interface SaveFromTicketResult {
+  template: ChecklistTemplateView;
+  /** Ticket steps that did NOT make it into the template, so the UI can say so. */
+  skipped: { operator: number; duplicates: number };
+}
+
+/**
+ * Save a ticket's CURRENT steps as a new template (#9180).
+ *
+ * - Operator-sourced rows (`source = 'operator_task'`) are skipped: they are
+ *   machine-created waits tied to one task run, not reusable procedure.
+ * - Labels are de-duplicated (first occurrence wins, exact match — the same
+ *   comparison the `(template_id, label)` unique index makes) so a ticket that
+ *   legitimately repeats a step does not turn into a 409.
+ * - Ticked state is never copied: a template is a procedure, not an attestation.
+ * - Owner is resolved BEFORE the ticket is read, so a caller who may not write
+ *   the requested scope learns nothing about the ticket's steps.
+ */
+export async function createChecklistTemplateFromTicket(
+  ticket: { id: string; orgId: string },
+  input: SaveChecklistAsTemplateInput,
+  actor: ChecklistTemplateActor,
+): Promise<SaveFromTicketResult> {
+  // Reuses create's owner rules (partner-wide gate, org access 404). The org is
+  // the TICKET's, never one from the body.
+  resolveOwner(
+    { ownerScope: input.ownerScope, orgId: ticket.orgId, name: input.name, items: [] },
+    actor,
+  );
+
+  const rows = (await db
+    .select()
+    .from(ticketChecklistItems)
+    .where(eq(ticketChecklistItems.ticketId, ticket.id))
+    .orderBy(
+      asc(ticketChecklistItems.position),
+      asc(ticketChecklistItems.createdAt),
+      asc(ticketChecklistItems.id),
+    )) as TicketChecklistItemRow[];
+
+  let operator = 0;
+  let duplicates = 0;
+  const seen = new Set<string>();
+  const kept: Array<{ label: string; detail: string | null; sortOrder: number }> = [];
+  for (const row of rows) {
+    if (row.source === 'operator_task') {
+      operator++;
+      continue;
+    }
+    if (seen.has(row.label)) {
+      duplicates++;
+      continue;
+    }
+    seen.add(row.label);
+    kept.push({ label: row.label, detail: row.detail, sortOrder: kept.length });
+  }
+
+  if (kept.length === 0) {
+    throw new ChecklistTemplateServiceError(
+      'This ticket has no reusable steps to save as a template',
+      400,
+      'CHECKLIST_NO_STEPS_TO_SAVE',
+      { operatorSkipped: operator },
+    );
+  }
+  if (kept.length > MAX_TEMPLATE_ITEMS) {
+    throw new ChecklistTemplateServiceError(
+      `A template holds at most ${MAX_TEMPLATE_ITEMS} steps; this ticket has ${kept.length} distinct steps`,
+      400,
+      'CHECKLIST_TOO_MANY_STEPS',
+      { max: MAX_TEMPLATE_ITEMS, received: kept.length },
+    );
+  }
+
+  const template = await createChecklistTemplate(
+    {
+      ownerScope: input.ownerScope,
+      orgId: input.ownerScope === 'organization' ? ticket.orgId : undefined,
+      name: input.name,
+      description: input.description ?? null,
+      items: kept,
+    },
+    actor,
+  );
+  return { template, skipped: { operator, duplicates } };
+}
+
+/**
+ * Duplicate a template, same owner as the source (#9180). Duplicating a
+ * partner-wide template creates a partner-wide row, so it is gated exactly as
+ * creating one is. With no explicit name the copy is "Copy of <name>", bumped
+ * to "(2)", "(3)"… on a name collision; an explicit name that collides is a
+ * plain 409 the caller can fix.
+ */
+export async function duplicateChecklistTemplate(
+  templateId: string,
+  input: DuplicateChecklistTemplateInput,
+  actor: ChecklistTemplateActor,
+): Promise<ChecklistTemplateView> {
+  const source = await loadChecklistTemplateOr404(templateId, actor);
+  const ownerScope = ownerScopeOf(source);
+  // Same gates as creating a template in that scope (403 partner-wide / 404 org).
+  resolveOwner(
+    { ownerScope, orgId: source.orgId ?? undefined, name: source.name, items: [] },
+    actor,
+  );
+  const items = (await loadItems([source.id])).get(source.id) ?? [];
+
+  const make = (name: string) =>
+    createChecklistTemplate(
+      {
+        ownerScope,
+        orgId: source.orgId ?? undefined,
+        name,
+        description: source.description,
+        instructions: source.instructions,
+        items: items.map((it) => ({ label: it.label, detail: it.detail, sortOrder: it.sortOrder })),
+      },
+      actor,
+    );
+
+  if (input.name !== undefined) return make(input.name);
+
+  const prefix = 'Copy of ';
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    const suffix = attempt === 1 ? '' : ` (${attempt})`;
+    const name = `${prefix}${source.name}`.slice(0, 200 - suffix.length) + suffix;
+    try {
+      return await make(name);
+    } catch (err) {
+      const collided =
+        err instanceof ChecklistTemplateServiceError &&
+        err.code === 'DUPLICATE_CHECKLIST_TEMPLATE_NAME';
+      if (!collided || attempt === 10) throw err;
+    }
+  }
+  throw new ChecklistTemplateServiceError('Could not pick a copy name', 409, 'DUPLICATE_CHECKLIST_TEMPLATE_NAME');
 }
 
 export async function updateChecklistTemplate(

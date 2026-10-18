@@ -372,6 +372,8 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
       'apply_template',
       'list_templates',
       'get_template',
+      'save_as_template',
+      'duplicate_template',
     ]),
     ticketId: uuid.optional(),
     itemId: uuid.optional(),
@@ -383,6 +385,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     mode: z.enum(['append', 'replace_unticked']).optional(),
     orgId: uuid.optional(),
     includeInactive: z.boolean().optional(),
+    // save_as_template / duplicate_template (#9180). Bounds mirror the shared
+    // saveChecklistAsTemplateSchema / duplicateChecklistTemplateSchema.
+    name: z.string().min(1).max(200).optional(),
+    description: z.string().max(2000).nullable().optional(),
+    ownerScope: z.enum(['organization', 'partner']).optional(),
   }).strict(),
 
   manage_tickets: z.object({

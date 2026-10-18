@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { Plus, Pencil, Trash2, ListChecks } from 'lucide-react';
+import { Plus, Pencil, Trash2, ListChecks, Copy } from 'lucide-react';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwnerScope';
@@ -9,6 +9,7 @@ import {
   addChecklistTemplateItem,
   createChecklistTemplate,
   deleteChecklistTemplate,
+  duplicateChecklistTemplate,
   listChecklistTemplates,
   removeChecklistTemplateItem,
   updateChecklistTemplate,
@@ -198,6 +199,22 @@ export default function TicketChecklistTemplatesPage() {
     }
   };
 
+  // #9180: the copy keeps the source's owner (the server enforces it), so no
+  // scope is asked for. The list is name-sorted, so the copy is slotted in place.
+  const handleDuplicate = async (tpl: ChecklistTemplate) => {
+    try {
+      const copy = await runClientAction(() => duplicateChecklistTemplate(fetchWithAuth, tpl.id), {
+        errorFallback: t('templates.errors.duplicateFailed'),
+        successMessage: (c) => t('templates.duplicateSuccess', { name: c.name }),
+      });
+      setTemplates((prev) =>
+        Array.isArray(prev) ? [...prev, copy].sort((a, b) => a.name.localeCompare(b.name)) : prev,
+      );
+    } catch (err) {
+      handleActionError(err, t('templates.errors.duplicateFailed'));
+    }
+  };
+
   const applyItem = (templateId: string, item: ChecklistTemplateItem, remove = false) => {
     setTemplates((prev) => {
       if (!Array.isArray(prev)) return prev;
@@ -325,6 +342,16 @@ export default function TicketChecklistTemplatesPage() {
                       title={t('actions.edit')}
                     >
                       <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      data-testid={`checklist-template-duplicate-${tpl.id}`}
+                      onClick={() => void handleDuplicate(tpl)}
+                      className="inline-flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                      title={t('templates.duplicate')}
+                      aria-label={t('templates.duplicate')}
+                    >
+                      <Copy className="h-4 w-4" />
                     </button>
                     <button
                       type="button"

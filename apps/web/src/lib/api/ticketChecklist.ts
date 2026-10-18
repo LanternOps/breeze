@@ -15,7 +15,9 @@ import type {
   ChecklistItemPatchInput,
   ChecklistItemSource,
   ApplyChecklistTemplateInput,
+  SaveChecklistAsTemplateInput,
 } from '@breeze/shared';
+import type { ChecklistTemplate } from './ticketChecklistTemplates';
 import { unwrapData, type Fetcher } from './serviceDeliverables';
 
 export type { Fetcher };
@@ -113,5 +115,27 @@ export async function applyChecklistTemplate(
 ): Promise<ChecklistSummary> {
   return unwrapData<ChecklistSummary>(
     await f(`${ticketPath(ticketId)}/apply-template`, jsonInit('POST', body)),
+  );
+}
+
+export interface SaveAsTemplateResult {
+  template: ChecklistTemplate;
+  /** Steps left out of the template: Operator-created ones, and repeated labels. */
+  skipped: { operator: number; duplicates: number };
+}
+
+/**
+ * Save this ticket's current steps as a NEW checklist template (#9180). The
+ * server reads the steps itself; the body carries only the name, optional
+ * description and owner scope (`organization` = the ticket's org, `partner` =
+ * every org, needs full partner admin).
+ */
+export async function saveChecklistAsTemplate(
+  f: Fetcher,
+  ticketId: string,
+  body: SaveChecklistAsTemplateInput,
+): Promise<SaveAsTemplateResult> {
+  return unwrapData<SaveAsTemplateResult>(
+    await f(`${ticketPath(ticketId)}/save-as-template`, jsonInit('POST', body)),
   );
 }

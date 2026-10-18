@@ -152,6 +152,18 @@ function TicketQueueList({ tickets, selectedId, onSelect, loading, config = null
                 {translatedStatusLabel(config, ticket.status, ticket.statusName, t)}
               </span>
               <TicketTypeChip type={ticket.ticketType} testId={`ticket-type-chip-${ticket.id}`} />
+              {ticket.checklist && ticket.checklist.total > 0 && (
+                <span
+                  className={cn(
+                    'inline-flex items-center rounded-md border px-1.5 py-0.5 font-medium tabular-nums',
+                    ticket.checklist.done === ticket.checklist.total && 'text-success'
+                  )}
+                  title={t('ticketQueueList.checklistTitle', { done: ticket.checklist.done, total: ticket.checklist.total })}
+                  data-testid={`ticket-checklist-chip-${ticket.id}`}
+                >
+                  {t('ticketQueueList.checklistProgress', { done: ticket.checklist.done, total: ticket.checklist.total })}
+                </span>
+              )}
               {!hideOrg && ticket.orgName && (
                 <EntityLink kind="org" id={ticket.orgId} name={ticket.orgName} tone="muted" />
               )}

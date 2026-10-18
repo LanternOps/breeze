@@ -81,7 +81,9 @@
       "high": "Élevée",
       "normal": "Normal",
       "low": "Faible"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} étapes",
+    "checklistTitle": "Liste de contrôle : {{done}} étapes sur {{total}} terminées"
   },
   "ticketArchivedList": {
     "emptyTitle": "Pas de tickets archivés.",
