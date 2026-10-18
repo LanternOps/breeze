@@ -121,6 +121,11 @@ export type QuoteServiceErrorCode =
   // An accept must never silently skip its legal snapshot, so this hard-fails
   // (500) and rolls the whole accept back rather than recording a bare acceptance.
   | 'CONTRACT_RENDER_DATA_MISSING'
+  // Signed-agreement freeze (contractDocumentService.freezeSignedAgreement,
+  // #8865): a path that does not allow the quote accept's blank-fill fallback
+  // (standalone agreement requests, W1b) found a {{token}} with no value. 422,
+  // and nothing is persisted.
+  | 'AGREEMENT_VARIABLES_UNRESOLVED'
   // Order-tracking codes (quoteOrderService, Task 11): fulfillment can only be
   // recorded against an accepted/converted quote, submitted allocations must
   // reference lines on THAT quote, and a receipt can never exceed what was
