@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { SecurityAgentsInlineSettings } from '@breeze/shared/validators';
 import { db } from '../../db';
 import { organizations, softwareCatalog, softwareVersions } from '../../db/schema';
-import { getBuiltinPackage } from '../builtinDeploymentPackages';
+import { getBuiltinPackage, installArgsCarryPlaceholders } from '../builtinDeploymentPackages';
 import { getVendor, listVendors, type VendorKey } from './securityAgentVendors';
 
 /**
@@ -82,37 +82,59 @@ export async function readOwnerCatalog(
   if (needsBinary.length > 0) {
     const deployable = await readDeployableVersionCatalogIds(executor, needsBinary.map(([, catalogId]) => catalogId));
     for (const [vendor, catalogId] of needsBinary) {
-      if (!deployable.has(catalogId)) continue;
-      if (versionCoversVendorPlatforms(deployable.get(catalogId), vendor)) uploadedBinaryVendors.add(vendor);
+      const version = deployable.get(catalogId);
+      if (version && versionIsDeployableFor(version, vendor)) uploadedBinaryVendors.add(vendor);
     }
   }
   return { catalogIdByVendor: result, uploadedBinaryVendors };
 }
+
+/** The fields of a latest version that decide whether it can be dispatched. */
+type LatestVersion = { supportedOs: unknown; fileType: string | null; silentInstallArgs: string | null };
 
 /**
  * Catalog ids (of those given) whose LATEST version carries an installer the
  * dispatch path can ship: an uploaded object (`s3_key`) or a stored URL. This
  * is the version `resolvePolicyInstallTarget` picks (built-in packages cannot
  * carry install methods), so "no such row" means every install would fail.
- * Maps each id to the version's `supported_os` for the platform check.
  */
-async function readDeployableVersionCatalogIds(executor: DbExecutor, catalogIds: string[]): Promise<Map<string, unknown>> {
+async function readDeployableVersionCatalogIds(executor: DbExecutor, catalogIds: string[]): Promise<Map<string, LatestVersion>> {
   const rows = await executor
-    .select({ catalogId: softwareVersions.catalogId, supportedOs: softwareVersions.supportedOs })
+    .select({
+      catalogId: softwareVersions.catalogId,
+      supportedOs: softwareVersions.supportedOs,
+      fileType: softwareVersions.fileType,
+      silentInstallArgs: softwareVersions.silentInstallArgs,
+    })
     .from(softwareVersions)
     .where(and(
       inArray(softwareVersions.catalogId, catalogIds),
       eq(softwareVersions.isLatest, true),
       sql`(NULLIF(btrim(${softwareVersions.s3Key}), '') IS NOT NULL OR NULLIF(btrim(${softwareVersions.downloadUrl}), '') IS NOT NULL)`,
     ));
-  return new Map(rows.map((row) => [row.catalogId, row.supportedOs] as const));
+  return new Map(rows.map((row) => [row.catalogId, row] as const));
 }
 
 /**
- * Same rule as the install-target resolver's `versionSupportsOs`: a missing or
- * empty list declares no restriction; otherwise it must name a platform the
- * vendor supports, or no device could ever receive the install.
+ * A latest version installs the vendor correctly only when:
+ *  - its `supported_os` is empty (no restriction, same rule as the install
+ *    target resolver's `versionSupportsOs`) or names a platform the vendor
+ *    supports;
+ *  - its file type is the package's (an MSI for SentinelOne: anything else is
+ *    run the wrong way or is the wrong installer);
+ *  - its install args carry the package template's per-org placeholders
+ *    (`{s1_site_token}`), or the agent would install without its key.
  */
+function versionIsDeployableFor(version: LatestVersion, vendor: VendorKey): boolean {
+  const provider = getVendor(vendor).integrationProvider;
+  if (!provider) return false;
+  const pkg = getBuiltinPackage(provider);
+  return versionCoversVendorPlatforms(version.supportedOs, vendor)
+    && version.fileType?.toLowerCase() === pkg.fileType
+    && installArgsCarryPlaceholders(provider, version.silentInstallArgs);
+}
+
+/** Empty or missing means no restriction; otherwise it must name a platform the vendor supports. */
 function versionCoversVendorPlatforms(supportedOs: unknown, vendor: VendorKey): boolean {
   if (!Array.isArray(supportedOs) || supportedOs.length === 0) return true;
   const platforms = getVendor(vendor).platforms as Readonly<Record<string, string>>;

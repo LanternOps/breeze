@@ -111,7 +111,7 @@ describe('SecurityAgentsTab', () => {
     expect(screen.getByTestId('security-agents-sentinelone-platform-windows')).toBeInTheDocument();
     expect(screen.getByTestId('security-agents-sentinelone-platform-macos')).toHaveTextContent(/not supported/i);
     expect(screen.getByTestId('security-agents-sentinelone-platform-linux')).toHaveTextContent(/not supported/i);
-    expect(screen.getByTestId('security-agents-sentinelone-msi-note')).toHaveTextContent(/upload the SentinelOne MSI.*Versions tab/i);
+    expect(screen.getByTestId('security-agents-sentinelone-msi-note')).toHaveTextContent(/SentinelOne MSI.*Versions tab.*SITE_TOKEN=\{s1_site_token\}/i);
   });
 
   it('renders the binary-missing banner with a deep link to the package Versions tab', () => {

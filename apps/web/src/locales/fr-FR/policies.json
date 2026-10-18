@@ -1138,10 +1138,10 @@
         "catalogMissing": "{{vendors}} n’est pas encore configuré pour ce partenaire. Connectez d’abord l’intégration, puis enregistrez de nouveau.",
         "catalogMissingLink": "Connecter l’intégration",
         "executeRequired": "L’activation des installations exige l’autorisation d’exécuter des commandes sur les appareils, avec l’authentification multifacteur. Demandez à un administrateur disposant de cette autorisation d’enregistrer ce paramètre.",
-        "binaryMissing": "{{vendors}} ne peut pas être activé tant que son programme d’installation n’est pas importé. Importez d’abord le MSI SentinelOne dans l’onglet Versions du paquet intégré, puis enregistrez de nouveau.",
+        "binaryMissing": "{{vendors}} ne peut pas être activé tant que le paquet intégré n’a pas de programme d’installation déployable : un MSI Windows comme dernière version, avec des arguments d’installation qui incluent SITE_TOKEN={s1_site_token}. Corrigez-le dans l’onglet Versions du paquet, puis enregistrez de nouveau.",
         "binaryMissingLink": "Ouvrir l’onglet Versions",
         "platformMacosUnsupported": "macOS : non pris en charge.",
-        "sentinelOneMsiNote": "Importez d’abord le MSI SentinelOne dans l’onglet Versions du paquet SentinelOne intégré. Breeze ne fournit pas le programme d’installation, et SentinelOne ne peut pas être activé tant qu’il n’est pas importé."
+        "sentinelOneMsiNote": "Ajoutez d’abord le MSI SentinelOne dans l’onglet Versions du paquet SentinelOne intégré, avec des arguments d’installation qui incluent SITE_TOKEN={s1_site_token}. Breeze ne fournit pas le programme d’installation, et SentinelOne ne peut pas être activé tant qu’il n’y est pas."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Les alertes de garantie sont facultatives : les appareils sans stratégie de garantie attribuée ne génèrent aucune alerte. Les seuils ci-dessous s’appliquent uniquement aux couvertures à durée déterminée. Les abonnements AppleCare actifs se renouvellent au lieu d’expirer ; leurs alertes d’expiration sont donc toujours masquées.",

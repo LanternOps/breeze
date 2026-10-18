@@ -263,7 +263,7 @@ export async function syncManagedSoftwarePolicy(
     throw new SecurityAgentsLinkWriteError({
       status: 400,
       body: {
-        error: `${desired.missingBinary.map((key) => getVendor(key).label).join(', ')} cannot be enabled until its installer is uploaded to the built-in package's Versions tab.`,
+        error: `${desired.missingBinary.map((key) => getVendor(key).label).join(', ')} cannot be enabled until the built-in package's latest version is a deployable MSI (Windows, install arguments including SITE_TOKEN={s1_site_token}).`,
         code: SECURITY_AGENTS_BINARY_MISSING_CODE,
         vendors: desired.missingBinary,
         setupPath: firstCatalogId ? `/software#versions=${firstCatalogId}` : '/software',
@@ -435,7 +435,7 @@ export async function repairManagedSoftwarePolicies(): Promise<{ links: number; 
         captureException(
           new Error('Security agents: enabled vendor has no catalog package; its rule was not generated'),
           undefined,
-          { area: 'security_agents_repair', vendors: missingCatalog.join(',') },
+          { area: 'security_agents_repair', vendors: missingCatalog.join(','), linkId: id },
           { fingerprint: ['security_agents_repair', 'catalog_missing'] },
         );
       }
@@ -447,7 +447,7 @@ export async function repairManagedSoftwarePolicies(): Promise<{ links: number; 
         captureException(
           new Error('Security agents: enabled vendor has no deployable uploaded installer; its rule was not generated'),
           undefined,
-          { area: 'security_agents_repair', vendors: result.missingBinaryVendors.join(',') },
+          { area: 'security_agents_repair', vendors: result.missingBinaryVendors.join(','), linkId: id },
           { fingerprint: ['security_agents_repair', 'binary_missing'] },
         );
       }

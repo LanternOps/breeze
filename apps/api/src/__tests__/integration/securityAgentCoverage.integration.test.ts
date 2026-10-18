@@ -761,6 +761,37 @@ describe('security agent coverage — SentinelOne on live Postgres (#6960 W04)',
     expect(await deploymentsIn(f.orgs.a.id)).toHaveLength(before.length);
   });
 
+  it("a device moved into org A whose agent sync still files under org B's site is mismatched_org", async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+    await addS1Agent(f, { orgId: f.orgs.b.id, deviceId: f.dev.a, computerName: f.host.a });
+    await reconcileOrgCoverage(f.orgs.a.id);
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ state: 'mismatched_org', reasonCode: 'vendor_org_mismatch' });
+  });
+
+  it("another PARTNER's S1 agent carrying dA's computerName is never matched (integration filter)", async () => {
+    const f = await seedS1();
+    await s1CompliancePass(f);
+    await setS1Installed(f, f.dev.a);
+    await withSystemDbAccessContext(async () => {
+      const [qIntegration] = await db.insert(s1Integrations).values({
+        partnerId: f.q.id,
+        name: 'SentinelOne (other partner)',
+        apiTokenEncrypted: encryptSecret('<s1-api-token>', { aad: 's1_integrations.api_token_encrypted' })!,
+        managementUrl: 'https://<s1-mgmt-url>.example.invalid',
+        isActive: true,
+        lastSyncAt: new Date(),
+      }).returning({ id: s1Integrations.id });
+      await db.insert(s1Agents).values({
+        orgId: f.orgs.z.id, integrationId: qIntegration!.id, s1AgentId: `q-agent-${f.orgs.z.id.slice(0, 8)}`,
+        deviceId: null, status: 'online', metadata: { computerName: f.host.a },
+      });
+    });
+    const result = await reconcileOrgCoverage(f.orgs.a.id);
+    expect(result.alertsRaised).toBe(0);
+    expect(await s1RowFor(f.dev.a)).toMatchObject({ state: 'pending', reasonCode: 'awaiting_vendor_report' });
+  });
+
   it('an unlinked in-org S1 agent no Breeze device matches is vendor_only', async () => {
     const f = await seedS1();
     await s1CompliancePass(f);

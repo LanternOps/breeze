@@ -1138,10 +1138,10 @@
         "catalogMissing": "{{vendors}} is not set up for this partner yet. Connect the integration first, then save again.",
         "catalogMissingLink": "Connect the integration",
         "executeRequired": "Turning on installs requires permission to run commands on devices, with MFA. Ask an administrator who has that permission to save this setting.",
-        "binaryMissing": "{{vendors}} cannot be turned on until its installer is uploaded. Upload the SentinelOne MSI to the built-in package's Versions tab first, then save again.",
+        "binaryMissing": "{{vendors}} cannot be turned on until the built-in package has a deployable installer: a Windows MSI as its latest version, with install arguments that include SITE_TOKEN={s1_site_token}. Fix it in the package's Versions tab, then save again.",
         "binaryMissingLink": "Open the Versions tab",
         "platformMacosUnsupported": "macOS: not supported.",
-        "sentinelOneMsiNote": "Upload the SentinelOne MSI to the built-in SentinelOne package's Versions tab first. Breeze does not provide the installer, and SentinelOne cannot be turned on until it is uploaded."
+        "sentinelOneMsiNote": "Add the SentinelOne MSI to the built-in SentinelOne package's Versions tab first, with install arguments that include SITE_TOKEN={s1_site_token}. Breeze does not provide the installer, and SentinelOne cannot be turned on until it is there."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Warranty alerting is opt-in: devices with no warranty policy assigned never alert. Thresholds below apply to fixed-term coverage only — active AppleCare subscriptions renew rather than expire, so their expiry alerts are always suppressed.",

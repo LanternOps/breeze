@@ -174,6 +174,7 @@ function fakeExecutor(results: unknown[][]) {
     return c;
   };
   const settled = { then: (r: (v: unknown) => unknown) => Promise.resolve(undefined).then(r) };
+  const updates: Array<Record<string, unknown>> = [];
   const executor = {
     select: vi.fn(() => chain(queue.shift() ?? [])),
     insert: vi.fn(() => {
@@ -182,14 +183,16 @@ function fakeExecutor(results: unknown[][]) {
     }),
     update: vi.fn(() => {
       writes.push('update');
-      return { set: () => ({ where: async () => undefined }) };
+      return { set: (values: Record<string, unknown>) => { updates.push(values); return { where: async () => undefined }; } };
     }),
   };
-  return { executor: executor as never, writes, remaining: () => queue.length };
+  return { executor: executor as never, select: executor.select, writes, updates };
 }
 
 const S1_LINK = { id: 'link-s1', configPolicyId: 'cp-1', inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] } };
 const S1_CATALOG_ROW = { id: CATALOG_S1, integrationProvider: 'sentinelone', createdAt: new Date('2026-01-01T00:00:00Z') };
+/** The latest version as a correctly prepared S1 MSI. */
+const S1_MSI = { catalogId: CATALOG_S1, supportedOs: ['windows'], fileType: 'msi', silentInstallArgs: 'SITE_TOKEN={s1_site_token} /q /NORESTART' };
 
 describe('syncManagedSoftwarePolicy — SentinelOne MSI gate (#6960 W04)', () => {
   it('write path: catalog row present but no deployable version -> 400 security_agents_binary_missing with a Versions deep link, nothing written', async () => {
@@ -209,26 +212,37 @@ describe('syncManagedSoftwarePolicy — SentinelOne MSI gate (#6960 W04)', () =>
   });
 
   it('write path with a deployable version: the policy is created armed', async () => {
-    const { executor, writes } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [{ catalogId: CATALOG_S1 }], []]);
+    const { executor, writes } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [S1_MSI], []]);
     const result = await syncManagedSoftwarePolicy(executor, S1_LINK, { onMissingCatalog: 'refuse' });
     expect(result).toMatchObject({ action: 'create', vendors: ['sentinelone'], skippedVendors: [], missingBinaryVendors: [] });
     expect(writes).toEqual(['insert', 'insert']);
   });
 
   it('a latest version declared for platforms SentinelOne does not support (no Windows) does not count', async () => {
-    const { executor } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [{ catalogId: CATALOG_S1, supportedOs: ['macos'] }]]);
+    const { executor } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [{ ...S1_MSI, supportedOs: ['macos'] }]]);
     await expect(syncManagedSoftwarePolicy(executor, S1_LINK)).rejects.toMatchObject({ code: 'security_agents_binary_missing' });
   });
 
   it('a latest version declaring Windows (or no restriction) counts', async () => {
     for (const supportedOs of [['windows'], [], null]) {
-      const { executor } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [{ catalogId: CATALOG_S1, supportedOs }], []]);
+      const { executor } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [{ ...S1_MSI, supportedOs }], []]);
       await expect(syncManagedSoftwarePolicy(executor, S1_LINK)).resolves.toMatchObject({ vendors: ['sentinelone'] });
     }
   });
 
+  it.each<[string, Record<string, unknown>]>([
+    ['the generic msiexec args a blank Versions-tab upload gets (no site token)', { silentInstallArgs: 'msiexec /i "{file}" /qn /norestart' }],
+    ['no install args at all', { silentInstallArgs: null }],
+    ['the tenant-variable form {{s1_site_token}} (the resolver would leave braces)', { silentInstallArgs: 'SITE_TOKEN={{s1_site_token}} /q' }],
+    ['an EXE instead of the MSI', { fileType: 'exe' }],
+    ['an unknown file type', { fileType: null }],
+  ])('a latest version with %s is not deployable: refused', async (_name, override) => {
+    const { executor } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [{ ...S1_MSI, ...override }]]);
+    await expect(syncManagedSoftwarePolicy(executor, S1_LINK)).rejects.toMatchObject({ code: 'security_agents_binary_missing' });
+  });
+
   it('a deployable-version row for some OTHER catalog id does not count', async () => {
-    const { executor } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [{ catalogId: 'some-other-catalog' }]]);
+    const { executor } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [{ ...S1_MSI, catalogId: 'some-other-catalog' }]]);
     await expect(syncManagedSoftwarePolicy(executor, S1_LINK)).rejects.toMatchObject({ code: 'security_agents_binary_missing' });
   });
 
@@ -239,18 +253,21 @@ describe('syncManagedSoftwarePolicy — SentinelOne MSI gate (#6960 W04)', () =>
       catalogIdByVendor: new Map([['sentinelone' as const, CATALOG_S1]]),
       uploadedBinaryVendors: new Set(['sentinelone' as const]),
     }).row;
-    const { executor, writes } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [], [{ id: 'policy-1', ...armed }]]);
+    const { executor, writes, updates } = fakeExecutor([[PARTNER_WIDE], [S1_CATALOG_ROW], [], [{ id: 'policy-1', ...armed }]]);
     const result = await syncManagedSoftwarePolicy(executor, S1_LINK, { onMissingCatalog: 'skip' });
     expect(result).toMatchObject({ action: 'update', vendors: [], skippedVendors: ['sentinelone'], missingBinaryVendors: ['sentinelone'] });
     expect(writes[0]).toBe('update');
+    expect(updates[0]).toMatchObject({ isActive: false, rules: { software: [], allowUnknown: true } });
+    expect(updates[0]).toHaveProperty('approvalGeneration');
   });
 
   it('Huntress never reads software_versions (no uploaded binary needed)', async () => {
     const huntressRow = { id: CATALOG_HUNTRESS, integrationProvider: 'huntress', createdAt: new Date('2026-01-01T00:00:00Z') };
-    const { executor, remaining } = fakeExecutor([[PARTNER_WIDE], [huntressRow], []]);
+    const { executor, select } = fakeExecutor([[PARTNER_WIDE], [huntressRow], []]);
     const result = await syncManagedSoftwarePolicy(executor, { ...S1_LINK, inlineSettings: huntress(true) }, { onMissingCatalog: 'refuse' });
     expect(result).toMatchObject({ action: 'create', vendors: ['huntress'], missingBinaryVendors: [] });
-    expect(remaining()).toBe(0);
+    // config policy, owner catalog, existing row: no software_versions read.
+    expect(select).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -329,7 +346,24 @@ describe('repairManagedSoftwarePolicies', () => {
     const [, , tags, opts] = captureMock.mock.calls[0]!;
     expect(tags).toMatchObject({ area: 'security_agents_repair', vendors: 'sentinelone' });
     expect(opts).toEqual({ fingerprint: ['security_agents_repair', 'binary_missing'] });
+    expect(tags).toMatchObject({ linkId: 'link-s1' });
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/installer/i), expect.objectContaining({ linkId: 'link-s1', vendors: ['sentinelone'] }));
+    warn.mockRestore();
+  });
+
+  it('a missing catalog package and a missing installer are reported separately, each under its own fingerprint', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    selectMock.mockReturnValueOnce({ from: () => ({ where: async () => [{ id: 'link-both' }] }) });
+    transactionMock.mockResolvedValueOnce({
+      policyId: 'policy-1', action: 'none', vendors: [], skippedVendors: ['huntress', 'sentinelone'], missingBinaryVendors: ['sentinelone'],
+    });
+    await repairManagedSoftwarePolicies();
+    expect(captureMock).toHaveBeenCalledTimes(2);
+    const calls = captureMock.mock.calls.map(([, , tags, opts]) => ({ vendors: tags.vendors, fingerprint: opts.fingerprint[1] }));
+    expect(calls).toEqual([
+      { vendors: 'huntress', fingerprint: 'catalog_missing' },
+      { vendors: 'sentinelone', fingerprint: 'binary_missing' },
+    ]);
     warn.mockRestore();
   });
 

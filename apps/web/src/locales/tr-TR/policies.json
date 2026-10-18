@@ -1138,10 +1138,10 @@
         "catalogMissing": "Bu iş ortağı için şu sağlayıcı henüz kurulmadı: {{vendors}}. Önce entegrasyonu bağlayın, ardından tekrar kaydedin.",
         "catalogMissingLink": "Entegrasyonu bağla",
         "executeRequired": "Yüklemeleri açmak için cihazlarda komut çalıştırma izni (MFA ile) gerekir. Bu izne sahip bir yöneticiden bu ayarı kaydetmesini isteyin.",
-        "binaryMissing": "Yükleyici karşıya yüklenene kadar şu sağlayıcı açılamaz: {{vendors}}. Önce SentinelOne MSI dosyasını yerleşik paketin Sürümler sekmesine yükleyin, ardından tekrar kaydedin.",
+        "binaryMissing": "Yerleşik paketin dağıtılabilir bir yükleyicisi olana kadar şu sağlayıcı açılamaz: {{vendors}}. En son sürüm, yükleme bağımsız değişkenleri SITE_TOKEN={s1_site_token} içeren bir Windows MSI olmalıdır. Bunu paketin Sürümler sekmesinde düzeltin, ardından tekrar kaydedin.",
         "binaryMissingLink": "Sürümler sekmesini aç",
         "platformMacosUnsupported": "macOS: desteklenmiyor.",
-        "sentinelOneMsiNote": "Önce SentinelOne MSI dosyasını yerleşik SentinelOne paketinin Sürümler sekmesine yükleyin. Breeze yükleyiciyi sağlamaz ve dosya yüklenene kadar SentinelOne açılamaz."
+        "sentinelOneMsiNote": "Önce SentinelOne MSI dosyasını, yükleme bağımsız değişkenleri SITE_TOKEN={s1_site_token} içerecek şekilde yerleşik SentinelOne paketinin Sürümler sekmesine ekleyin. Breeze yükleyiciyi sağlamaz ve dosya eklenene kadar SentinelOne açılamaz."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Garanti uyarısı isteğe bağlıdır: herhangi bir garanti politikası atanmamış cihazlar asla uyarı vermez. Aşağıdaki eşikler yalnızca sabit vadeli kapsam için geçerlidir; aktif AppleCare abonelikler sona ermek yerine yenilenir, dolayısıyla sona erme uyarıları her zaman bastırılır.",

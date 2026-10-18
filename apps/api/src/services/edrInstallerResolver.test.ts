@@ -89,6 +89,19 @@ describe('resolveEdrInstaller — SentinelOne refusals (#6960 W04)', () => {
     expect(decrypt).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['the generic msiexec args (no placeholder)', 'msiexec /i "{file}" /qn /norestart'],
+    ['no args', null],
+    ['the {{s1_site_token}} tenant-variable form', 'SITE_TOKEN={{s1_site_token}} /q'],
+  ])('refuses %s before reading any mapping or decrypting', async (_name, args) => {
+    queued.push([MAPPING], [{ isActive: true }]);
+    decrypt.mockReturnValue('<site-token>');
+    const result = await resolveEdrInstaller({ provider: 'sentinelone', orgId: ORG, downloadUrlTemplate: null, silentInstallArgsTemplate: args });
+    expect(result).toEqual({ error: expect.stringContaining('{s1_site_token}') });
+    expect(tablesRead).toEqual([]);
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
   it('refuses an undecryptable site token without throwing', async () => {
     queued.push([MAPPING], [{ isActive: true }]);
     decrypt.mockImplementation(() => { throw new Error('bad ciphertext'); });

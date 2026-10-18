@@ -195,8 +195,8 @@ describe('loadOrgInstallerReadiness (sentinelone, #6960 W04)', () => {
     expect(result.get(ORG)).toEqual(expected);
   });
 
-  it('never reports account_key_missing (SentinelOne has no account-key analogue)', async () => {
-    queueS1({ integrations: [{ id: INTEGRATION, partnerId: PARTNER, isActive: true }] });
+  it('never reports account_key_missing (SentinelOne has no account-key analogue): an integration without one is still ready', async () => {
+    queueS1({ integrations: [{ id: INTEGRATION, partnerId: PARTNER, isActive: true, hasAccountKey: false } as never] });
     const result = await loadOrgInstallerReadiness('sentinelone', [ORG]);
     expect(result.get(ORG)).toEqual({ ok: true });
   });

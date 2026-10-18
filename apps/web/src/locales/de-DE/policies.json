@@ -1138,10 +1138,10 @@
         "catalogMissing": "{{vendors}} ist für diesen Partner noch nicht eingerichtet. Verbinden Sie zuerst die Integration und speichern Sie dann erneut.",
         "catalogMissingLink": "Integration verbinden",
         "executeRequired": "Zum Aktivieren von Installationen ist die Berechtigung zum Ausführen von Befehlen auf Geräten (mit MFA) erforderlich. Bitten Sie einen Administrator mit dieser Berechtigung, diese Einstellung zu speichern.",
-        "binaryMissing": "{{vendors}} kann erst aktiviert werden, wenn das Installationsprogramm hochgeladen ist. Laden Sie zuerst das SentinelOne-MSI auf der Registerkarte „Versionen“ des integrierten Pakets hoch und speichern Sie dann erneut.",
+        "binaryMissing": "{{vendors}} kann erst aktiviert werden, wenn das integrierte Paket ein bereitstellbares Installationsprogramm hat: ein Windows-MSI als neueste Version, dessen Installationsargumente SITE_TOKEN={s1_site_token} enthalten. Korrigieren Sie das auf der Registerkarte „Versionen“ des Pakets und speichern Sie dann erneut.",
         "binaryMissingLink": "Registerkarte „Versionen“ öffnen",
         "platformMacosUnsupported": "macOS: nicht unterstützt.",
-        "sentinelOneMsiNote": "Laden Sie zuerst das SentinelOne-MSI auf der Registerkarte „Versionen“ des integrierten SentinelOne-Pakets hoch. Breeze stellt das Installationsprogramm nicht bereit, und SentinelOne kann erst nach dem Hochladen aktiviert werden."
+        "sentinelOneMsiNote": "Fügen Sie zuerst das SentinelOne-MSI auf der Registerkarte „Versionen“ des integrierten SentinelOne-Pakets hinzu, mit Installationsargumenten, die SITE_TOKEN={s1_site_token} enthalten. Breeze stellt das Installationsprogramm nicht bereit, und SentinelOne kann erst danach aktiviert werden."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Bei Garantiebenachrichtigungen handelt es sich um eine Opt-In-Funktion: Geräte, denen keine Garantierichtlinie zugewiesen ist, erhalten keine Warnung. Die unten aufgeführten Schwellenwerte gelten nur für den befristeten Versicherungsschutz – aktive AppleCare-Abonnements verlängern sich und laufen nicht ab, daher werden Ablaufwarnungen immer unterdrückt.",

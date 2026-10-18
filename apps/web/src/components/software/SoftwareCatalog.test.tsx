@@ -455,6 +455,20 @@ describe('SoftwareCatalog deployments tab (hash-driven)', () => {
     expect(window.location.hash).toBe('');
   });
 
+  it('#versions=<id> outside the loaded page is fetched by id and opened', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/software/catalog') return Promise.resolve(jsonResponse({ data: [ITEM] }));
+      if (url === '/software/catalog/cat-far')
+        return Promise.resolve(jsonResponse({ data: { ...ITEM, id: 'cat-far', name: 'SentinelOne Agent', integrationProvider: 'sentinelone' } }));
+      return Promise.resolve(jsonResponse({ data: null }));
+    });
+    setHash('versions=cat-far');
+    render(<SoftwareCatalog />);
+
+    expect(await screen.findByTestId('version-manager-probe')).toHaveTextContent('versions:cat-far');
+    expect(window.location.hash).toBe('');
+  });
+
   it('#versions=<unknown id> opens nothing and is cleared', async () => {
     routeDeployments();
     setHash('versions=cat-unknown');

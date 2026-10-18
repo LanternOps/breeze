@@ -1138,10 +1138,10 @@
         "catalogMissing": "{{vendors}} aún no está configurado para este socio. Primero conecta la integración y luego vuelve a guardar.",
         "catalogMissingLink": "Conectar la integración",
         "executeRequired": "Activar las instalaciones requiere permiso para ejecutar comandos en dispositivos, con MFA. Pide a un administrador con ese permiso que guarde esta configuración.",
-        "binaryMissing": "{{vendors}} no se puede activar hasta que se cargue su instalador. Primero carga el MSI de SentinelOne en la pestaña Versiones del paquete integrado y luego vuelve a guardar.",
+        "binaryMissing": "{{vendors}} no se puede activar hasta que el paquete integrado tenga un instalador implementable: un MSI de Windows como versión más reciente, con argumentos de instalación que incluyan SITE_TOKEN={s1_site_token}. Corrígelo en la pestaña Versiones del paquete y luego vuelve a guardar.",
         "binaryMissingLink": "Abrir la pestaña Versiones",
         "platformMacosUnsupported": "macOS: no compatible.",
-        "sentinelOneMsiNote": "Primero carga el MSI de SentinelOne en la pestaña Versiones del paquete integrado de SentinelOne. Breeze no proporciona el instalador y SentinelOne no se puede activar hasta que se cargue."
+        "sentinelOneMsiNote": "Primero agrega el MSI de SentinelOne en la pestaña Versiones del paquete integrado de SentinelOne, con argumentos de instalación que incluyan SITE_TOKEN={s1_site_token}. Breeze no proporciona el instalador y SentinelOne no se puede activar hasta que esté allí."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Las alertas de garantía son voluntarias: los dispositivos sin una política de garantía asignada nunca alertan. Los umbrales a continuación se aplican únicamente a la cobertura de plazo fijo: las suscripciones activas de AppleCare se renuevan en lugar de caducar, por lo que sus alertas de vencimiento siempre se suprimen.",

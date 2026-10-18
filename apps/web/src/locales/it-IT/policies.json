@@ -1138,10 +1138,10 @@
         "catalogMissing": "{{vendors}} non è ancora configurato per questo partner. Collega prima l’integrazione, quindi salva di nuovo.",
         "catalogMissingLink": "Collega l’integrazione",
         "executeRequired": "Per attivare le installazioni serve l’autorizzazione a eseguire comandi sui dispositivi, con MFA. Chiedi a un amministratore con tale autorizzazione di salvare questa impostazione.",
-        "binaryMissing": "{{vendors}} non può essere attivato finché il suo programma di installazione non viene caricato. Carica prima l’MSI di SentinelOne nella scheda Versioni del pacchetto integrato, quindi salva di nuovo.",
+        "binaryMissing": "{{vendors}} non può essere attivato finché il pacchetto integrato non ha un programma di installazione distribuibile: un MSI Windows come versione più recente, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Correggilo nella scheda Versioni del pacchetto, quindi salva di nuovo.",
         "binaryMissingLink": "Apri la scheda Versioni",
         "platformMacosUnsupported": "macOS: non supportato.",
-        "sentinelOneMsiNote": "Carica prima l’MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non viene caricato."
+        "sentinelOneMsiNote": "Aggiungi prima l’MSI di SentinelOne nella scheda Versioni del pacchetto SentinelOne integrato, con argomenti di installazione che includono SITE_TOKEN={s1_site_token}. Breeze non fornisce il programma di installazione e SentinelOne non può essere attivato finché non è presente."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Gli avvisi di garanzia sono opt-in: i dispositivi senza un criterio di garanzia assegnato non generano mai avvisi. Le soglie sotto si applicano solo alle coperture a termine fisso: gli abbonamenti AppleCare attivi si rinnovano invece di scadere, quindi i relativi avvisi di scadenza vengono sempre soppressi.",
