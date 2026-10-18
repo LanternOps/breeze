@@ -106,6 +106,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('filesystemCleanupRunRetention'),
   // #8581. Plain Redis-required consumer, no feature flag.
   consumers('restorePointAttemptRetention'),
+  // #9128. Plain Redis-required consumer, no feature flag.
+  consumers('webhookDeliveryRetention'),
   consumers('oauthCleanup'),
   consumers('stripeAccountCacheRefresh'),
   consumers('exchangeRateSync'),

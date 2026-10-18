@@ -219,6 +219,10 @@ export const JOB_SCHEDULES = {
   // :03 (above) and the sub-daily `user-risk-scan` at :57; :08 keeps the
   // daily = 3 (mod 5) lane.
   'restore-point-attempt-retention': '8 22 * * *',
+  // #9128 — daily prune of terminal webhook_deliveries rows past
+  // WEBHOOK_DELIVERY_RETENTION_DAYS (default 90). :13 keeps the daily = 3
+  // (mod 5) lane in hour 22.
+  'webhook-delivery-retention': '13 22 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

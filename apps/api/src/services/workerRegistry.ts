@@ -654,6 +654,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #9128 — daily prune of terminal webhook_deliveries rows.
+    name: 'webhookDeliveryRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/webhookDeliveryRetention');
+      return {
+        init: m.initializeWebhookDeliveryRetention,
+        shutdown: m.shutdownWebhookDeliveryRetention,
+      };
+    },
+  },
+  {
     name: 'oauthCleanup',
     placement: 'global',
     load: async () => {
