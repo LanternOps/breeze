@@ -128,6 +128,24 @@ func TestEngineVersionPinned(t *testing.T) {
 	}
 }
 
+// The build-info-free fallback must track the go.mod pin exactly.
+func TestPinnedEngineVersionMatchesGoMod(t *testing.T) {
+	b, err := os.ReadFile("../../../go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == modulePath {
+			if f[1] != pinnedEngineVersion {
+				t.Fatalf("go.mod pins %s, pinnedEngineVersion = %s", f[1], pinnedEngineVersion)
+			}
+			return
+		}
+	}
+	t.Fatalf("%s not found in go.mod", modulePath)
+}
+
 // The engine loads once per process, so the override check runs in a fresh
 // child process where EnsureEngine is the very first engine call.
 func TestEnsureEngineIgnoresGuestOverride(t *testing.T) {

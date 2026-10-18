@@ -67,13 +67,18 @@ const (
 )
 
 const (
-	modulePath       = "github.com/niallnsec/yaraxwasm"
-	guestOverrideEnv = "YARAX_GUEST_WASM"
-	maxMessageLen    = 1024
+	modulePath = "github.com/niallnsec/yaraxwasm"
+	// pinnedEngineVersion mirrors the go.mod pin. It is the fallback when
+	// build info carries no dependency list (coverage-instrumented test
+	// binaries on some toolchains); TestPinnedEngineVersionMatchesGoMod keeps
+	// it in lockstep with go.mod.
+	pinnedEngineVersion = "v1.1.0"
+	guestOverrideEnv    = "YARAX_GUEST_WASM"
+	maxMessageLen       = 1024
 )
 
 // EngineVersion returns the pinned yaraxwasm module version compiled into
-// this binary ("unknown" when build info is unavailable, e.g. some test
+// this binary (the go.mod pin when build info is unavailable, e.g. some test
 // binaries). It is part of the compiled-rules cache key.
 func EngineVersion() string {
 	if bi, ok := debug.ReadBuildInfo(); ok {
@@ -86,7 +91,7 @@ func EngineVersion() string {
 			}
 		}
 	}
-	return "unknown"
+	return pinnedEngineVersion
 }
 
 var (
