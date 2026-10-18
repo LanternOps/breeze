@@ -112,7 +112,10 @@ Quorum: Claude position + Codex `gpt-6-astra` xhigh read-only, 2026-10-18. Outco
 - Kinds `md5 | sha1 | sha256 | filename | filepath | domain | ip | string`. Registry keys, mutex
   names, URLs and anything unclassified are `string`.
 - Input: one IOC per line (`#` comments and blank lines skipped), optional `kind:value` prefix to
-  override classification, or a JSON array of strings or `{ kind, value }` objects.
+  override classification, or a JSON array of strings or `{ kind, value }` objects. A prefix
+  applies **only** when the text before the first `:` is exactly one of the eight kind names
+  (case-insensitive); otherwise the whole line is the value. So `C:\Users\…`, `2001:db8::1`,
+  `http://…` and `nope:x` are values, never prefix errors.
 - Classification order: 32/40/64 hex → md5/sha1/sha256; `HK…\` → string; drive letter, leading `/`,
   or UNC `\\` → filepath; dotted-quad or IPv6 → ip; `name.ext` whose extension is in
   `YARA_IOC_FILE_EXTENSIONS` (`exe dll sys scr bat cmd ps1 psm1 vbs vbe js jse wsf hta lnk msi
@@ -134,7 +137,8 @@ Quorum: Claude position + Codex `gpt-6-astra` xhigh read-only, 2026-10-18. Outco
   - domain: `$i<n> = "<escaped>" ascii wide nocase` (domains are case-insensitive, matching the
     case-insensitive dedupe);
   - ip and string: `$i<n> = "<escaped>" ascii wide` (case-sensitive);
-  - **non-ASCII values** (domain or string): `ascii wide` over UTF-8 escapes would not match UTF-16
+  - **non-ASCII values** (string kind only — domains are ASCII/punycode, IPv6 is canonicalised to
+    compressed lowercase): `ascii wide` over UTF-8 escapes would not match UTF-16
     text, so they become two patterns — `$i<n>` = the UTF-8 bytes as an escaped text string
     (no `wide`) and `$i<n>w` = a hex string of the UTF-16LE bytes; condition stays `any of them`.
   - Escaping: `\` → `\\`, `"` → `\"`, every UTF-8 byte outside `0x20–0x7e` → `\xNN`.
@@ -190,7 +194,13 @@ Quorum: Claude position + Codex `gpt-6-astra` xhigh read-only, 2026-10-18. Outco
   3. applies a **Landlock** ruleset that handles every filesystem access right and allows no path
      (and, at Landlock ABI ≥ 4, every TCP bind/connect right with no port allowed), via
      `golang.org/x/sys/unix` (already in `agent/go.mod`, v0.49.0 — no new dependency). The engine
-     needs no file: the guest wasm is embedded.
+     needs no file: the guest wasm is embedded;
+  4. installs a **seccomp-bpf deny filter** (`SECCOMP_RET_ERRNO(EPERM)`) for `socket`, `socketpair`,
+     `connect`, `bind`, `ptrace`, `process_vm_readv`, `process_vm_writev`, `kcmp`, `execve`,
+     `execveat`, using `unix.Prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, …)` with a hand-built BPF
+     program (no new dependency). Landlock does not cover UDP / unix sockets or cross-process reads
+     of the same-uid API process; this does. The filter must be installed after the Go runtime has
+     started its threads and use `SECCOMP_FILTER_FLAG_TSYNC` so it applies to every thread.
   If Landlock is unavailable (non-Linux, old kernel, blocked by seccomp) `match` exits 3
   `sandbox_unavailable` and the route answers 503 `YARA_TEST_SANDBOX_UNAVAILABLE` — **fail closed**.
   Dev escape hatch: `BREEZE_YARA_TEST_UNSANDBOXED=1`, honoured only when `NODE_ENV` is
@@ -251,7 +261,8 @@ bottom, first match wins**:
 |---|---|---|---|---|
 | 1 | no `publish` key (metadata-only PATCH: name, description) | success | `saved` ("Saved") | — |
 | 2 | `autoQuarantineOnly` (may coexist with `precheckUnavailable` or errors) | warning | `autoQuarantineOnly` ("Auto-quarantine is off on devices now. Your other changes are not live yet.") + the row-4/5/6 reason as a second line | per-rule errors if any |
-| 3 | `published && !stale` | success | `published` ("Saved and published as version {{version}}") | clear errors |
+| 3 | `published && !stale && set.enabled` | success | `published` ("Saved and published as version {{version}}") | clear errors |
+| 3b | `published && !stale && !set.enabled` | success | `savedDisabled` ("Saved. The set is disabled, so devices do not use it.") | clear errors |
 | 4 | `precheckUnavailable` | warning | `checkerUnavailable` ("Saved, not published: the rule checker is unavailable. {{devices}}") | none claimed |
 | 5 | any `errors[].ruleId` | warning | `compileErrors` ("Saved, not published: {{count}} rules have errors. {{devices}}") | per-rule errors with line |
 | 6 | only `ruleId: null` errors | warning | `setErrors` ("Saved, not published: {{message}}. {{devices}}") | set banner |
@@ -400,7 +411,9 @@ Detection rules page ships without the button. Nothing in W04 creates scans.
 
 - [ ] **Step 1: Write the failing tests** in `yaraIocImport.test.ts`:
   - `classifies by shape`: input lines `44d88612fea8a8f36de82e1278abb02f`, `3395856ce81f2b7382dee72602f798b642f14140`, 64-hex, `C:\Users\Public\evil.exe`, `/tmp/x.sh`, `\\srv\share\a.ps1`, `HKLM\Software\Run\x`, `10.0.0.5`, `2001:db8::1`, `evil[.]com`, `payload.dll`, `malware.exe`, `cdn.example.org`, `Global\MutexName` → kinds `md5, sha1, sha256, filepath, filepath, filepath, string, ip, ip, domain, filename, filename, domain, string`; `evil[.]com` normalizes to `evil.com`.
-  - `prefix override`: `filename:invoice.com` → `{ kind: 'filename', value: 'invoice.com' }`; `nope:x` → error `unknown_kind` with `line: 1`.
+  - `prefix override`: `filename:invoice.com` → `{ kind: 'filename', value: 'invoice.com' }`; `SHA256:<64hex>` → sha256; `nope:x` → `{ kind: 'string', value: 'nope:x' }`; `C:\a\b.exe` → filepath; `2001:db8::1` → ip; `hxxp://evil[.]com/x` → string `http://evil.com/x`. A JSON object with `kind: 'nope'` → error `unknown_kind`.
+  - `ip canonical`: `2001:0db8:0000::0001` and `2001:db8::1` dedupe to one IOC (IPv6 is canonicalised to its compressed lowercase form before dedupe and generation).
+  - `domain charset`: a domain with non-ASCII letters is rejected `bad_domain` with copy asking for the punycode (`xn--`) form; domains are ASCII-only, so the domain rule never needs the UTF-16 pattern.
   - `json input`: `["evil.com", {"kind":"string","value":"abcd"}]` parses; `[{"kind":"md5","value":"zz"}]` → error `bad_hash`.
   - `comments, blanks and duplicates`: `# x`, ``, `EVIL.com`, `evil.com` → one domain IOC, one `duplicate` error on line 4.
   - `string length`: `abc` → `too_short`; 257-byte value → `too_long`; `€uro` (6 bytes) accepted.
@@ -457,8 +470,9 @@ Detection rules page ships without the button. Nothing in W04 creates scans.
 - Produces: `yaraIocImportRoutes` (Hono). `yaraAccess.ts` exports `ruleSetAccessCondition(auth)`,
   `loadVisibleSet(auth, id)`, `writeDenial(auth, set)`, `publishBody(result)`, `publishAudit(result)`,
   `auditOwner(set)` — the W03 bodies moved verbatim.
-- Request `POST /security/yara/rule-sets/:id/ioc-import`, body (Zod `yaraIocImportSchema` in `yaraSchemas.ts`):
-  `{ label: string (1..64, trimmed), severity?: YaraRuleSeverity, iocs: YaraIoc[] (1..1000) }`.
+- Request `POST /security/yara/rule-sets/:id/ioc-import`, body (Zod `yaraIocImportSchema` in `yaraSchemas.ts`, `.strict()`):
+  `{ label: string (1..64, trimmed), severity?: YaraRuleSeverity, iocs: YaraIoc[] (1..1000), each value ≤ 512 chars }`.
+  1000 × 512-char values plus JSON overhead stays well under the 1 MiB default body limit (`bodyLimit.ts` `default`); `YARA_IOC_MAX_TEXT_BYTES` (256 KiB) caps only the pasted text in `parseIocText`. Test: a 1000-IOC body at the per-value max is accepted (not a 413).
 - Response 201: `{ data: { rules: [{ id, name, kind, iocCount }] }, publish: <W03 publishBody> }`.
 - Errors: 400 `IOC_INVALID` with `{ index, code }[]`; 400 when existing + generated > 500 (`IOC_TOO_MANY_RULES`);
   403 from `writeDenial`; 404 set not visible; 409 `IOC_BATCH_ALREADY_IMPORTED` (stored source identical)
@@ -516,14 +530,14 @@ Detection rules page ships without the button. Nothing in W04 creates scans.
 **Interfaces:**
 - Produces (Go): `func ScanSample(entry *CacheEntry, filename, filepath string, data []byte, timeout time.Duration) ([]Match, error)` — one scanner, globals `filename`, `filepath` (defaults to `filename` when empty), `extension` from the filename; recovers engine panics into an error.
 - `collectStrings(r io.ReaderAt, rule *yx.Rule) []MatchedString` — `ScanFile` passes the opened `*os.File`, `ScanSample` passes `bytes.NewReader(data)`.
-- `func enterSandbox() error` (cmd package): linux — `oom_score_adj` 1000, `PR_SET_NO_NEW_PRIVS`, Landlock deny-all FS (+ TCP at ABI ≥ 4); other OSes — returns `errSandboxUnavailable`. Skipped only when `BREEZE_YARA_TEST_UNSANDBOXED=1` (the API passes it only under `NODE_ENV` development/test).
+- `func enterSandbox() error` (cmd package): linux — `oom_score_adj` 1000, `PR_SET_NO_NEW_PRIVS`, Landlock deny-all FS (+ TCP at ABI ≥ 4), then the seccomp deny filter from W04-2 step 4 (TSYNC); any step failing → `errSandboxUnavailable`; other OSes — returns `errSandboxUnavailable`. Skipped only when `BREEZE_YARA_TEST_UNSANDBOXED=1` (the API passes it only under `NODE_ENV` development/test).
 - CLI: `breeze-yarac match --filename NAME [--filepath PATH]` reading framed stdin (4-byte BE length, bundle, sample to EOF). Order: read stdin fully → `enterSandbox()` → `yarac.EnsureEngine()` → compile → scan. Exit codes: 0 ok, 1 bundle compile errors (the `validate` error JSON `{ "ok": false, "errors": [...] }`), 2 usage / oversize / engine failure, **3 sandbox unavailable** (`{ "ok": false, "unavailable": "sandbox" }`). Output on exit 0: one JSON object
   `{ "ok": true, "matches": [{ "ruleSetId", "ruleId", "ruleName", "severity", "tags", "matchedStrings" }], "durationMs": n }`.
 
 - [ ] **Step 1: Write the failing Go tests**
   - `yarac_test.go` `TestIocImportGoldenValidates`: decode `../testdata/ioc-import.golden.json`, `ValidateSet(ToYaracSet(b), DefaultPolicy)` returns no errors. (Pins `import "hash"`, `iequals`, `ascii wide nocase`, the UTF-16LE hex pattern and the escaping under the real policy.)
-  - `sample_test.go` `TestScanSampleMatchesAndCaps`: a rule with `$a = "EVILMARK"`, data with 12 occurrences → one match with 10 `MatchedStrings`, each `Data == "EVILMARK"`, offsets ascending; `TestScanSampleGlobals`: `filename iequals "invoice.pdf"` matches when called with `INVOICE.PDF`, and `filepath iequals "C:\\Users\\Public\\x.exe"` matches only when that `filepath` is passed; `TestScanSampleNoDisk`: run with `TMPDIR` set to a fresh empty dir, assert it is still empty after.
-  - `sandbox_linux_test.go` (linux only; `t.Skip` when Landlock ABI < 1): in a re-exec'd child, after `enterSandbox()`, `os.ReadFile("/etc/hostname")` and `os.ReadFile("/proc/self/environ")` fail with `EACCES`, `/proc/self/oom_score_adj` reads `1000`, and `ScanSample` on the golden bundle still matches.
+  - `sample_test.go` `TestScanSampleMatchesAndCaps`: a rule with `$a = "EVILMARK"`, data with 12 occurrences → one match with 10 `MatchedStrings`, each `Data == "EVILMARK"`, offsets ascending; `TestScanSampleGlobals`: `filename iequals "invoice.pdf"` matches when called with `INVOICE.PDF`, and `filepath iequals "C:\\Users\\Public\\x.exe"` matches only when that `filepath` is passed; no-disk is proven structurally — `ScanSample` takes `[]byte`, never a path, and the sandbox test below runs it with every write denied by Landlock and still matches.
+  - `sandbox_linux_test.go` (linux only; `t.Skip` when Landlock ABI < 1): in a re-exec'd child, after `enterSandbox()`, `os.ReadFile("/etc/hostname")` and `os.ReadFile("/proc/self/environ")` fail with `EACCES`, `os.WriteFile("/tmp/x", …)` fails, `net.Dial("udp", "127.0.0.1:9")` and `net.Dial("unix", …)` fail with `EPERM`, `unix.PtraceAttach(os.Getppid())` fails with `EPERM`, `/proc/self/oom_score_adj` was `1000` before the Landlock step, and `ScanSample` on the golden bundle still matches.
   - `main_test.go` `TestMatchFramed` (with `BREEZE_YARA_TEST_UNSANDBOXED=1` on non-linux): frame the golden bundle + a sample containing one golden string → exit 0, one match; `TestMatchCompileError`: a bundle with a bad rule → exit 1 and `"ok":false`; `TestMatchOversize`: sample 10 MiB + 1 → exit 2; `TestMatchSandboxUnavailable` (non-linux, flag unset) → exit 3.
   - `hash_bench_test.go` `BenchmarkHashIocs`: rules with 1 and 1000 `hash.sha256` IOCs, and one rule each for md5/sha1/sha256 × 250, over a 25 MiB non-matching buffer and over 1000 × 64 KiB buffers. Not a pass/fail gate; Step 4 records the numbers.
 
@@ -558,7 +572,7 @@ Detection rules page ships without the button. Nothing in W04 creates scans.
     - `type YaraSampleMatchResult = { ok: true; matches: YaraSampleMatch[]; durationMs: number } | { ok: false; errors: YaraPrecheckError[] } | { ok: false; unavailable: string } | { ok: false; sandboxUnavailable: true }`.
     - `YARA_MATCH_TIMEOUT_MS = 20_000`. The child env is `PATH`, plus `BREEZE_YARA_TEST_UNSANDBOXED=1` only when `yaraTestUnsandboxedAllowed()` (NODE_ENV development/test **and** the API's own `BREEZE_YARA_TEST_UNSANDBOXED=1`; register it in `INTERNAL_ENV_VARS` like W03's `BREEZE_YARA_LINT_ONLY`).
   - Route `POST /security/yara/rule-sets/:id/test?filename=<basename>[&filepath=<path>]`, body `application/octet-stream`.
-- Response codes: 200 result; 400 empty body / bad filename or filepath; 404 set not visible; 413 over 10 MiB (gate); 422 `YARA_TEST_COMPILE_FAILED` with `errors`; 422 `YARA_TEST_NO_RULES` (no enabled rules); 429 `YARA_TEST_BUSY` or rate limit; 503 `YARA_TEST_UNAVAILABLE` (checker missing / timeout / crash); 503 `YARA_TEST_SANDBOX_UNAVAILABLE`.
+- Response codes: 200 result; 400 empty body / bad filename or filepath; 404 set not visible; 413 over 10 MiB (gate, or `YARA_TEST_TOO_LARGE` from the route's own exact check); 422 `YARA_TEST_COMPILE_FAILED` with `errors`; 422 `YARA_TEST_NO_RULES` (no enabled rules); 429 `YARA_TEST_BUSY` or rate limit; 503 `YARA_TEST_UNAVAILABLE` (checker missing / timeout / crash); 503 `YARA_TEST_SANDBOX_UNAVAILABLE`.
 
 - [ ] **Step 1: Write the failing service tests** in `yaraSampleMatch.test.ts` (fake binary via `BREEZE_YARAC_PATH` pointing at a test script, the pattern `yaraPrecheck.test.ts` uses):
   - `frames stdin`: the fake echoes stdin length; assert it received `4 + bundle + sample` bytes and the first 4 bytes are the big-endian bundle length.
@@ -571,6 +585,7 @@ Detection rules page ships without the button. Nothing in W04 creates scans.
 - [ ] **Step 2: Write the failing route tests** in `yaraTest.test.ts`:
   - `404 for a set the caller cannot see`; `200 for the built-in set` for an org user with `devices:write`; `403 without devices:write`.
   - `400` for an empty body and for `filename=../x`; `422 YARA_TEST_NO_RULES` for a set with no enabled rules.
+  - `size cap`: a body of exactly `YARA_TEST_SAMPLE_MAX_BYTES` is accepted; `+1` byte → 413 `YARA_TEST_TOO_LARGE` from the route's own `byteLength` check (the body-limit gate allows 64 KiB slack, so the route must check), and `matchSample` is never called.
   - `admission before body`: when `reserveSampleMatch()` returns `null` the route answers 429 `YARA_TEST_BUSY` and never calls `c.req.arrayBuffer()`.
   - `tests the draft`: `currentVersion` and the `enabled = true` rules come from one joined query in one `withAuthDbAccessContext` call; the bundle is built at `max(currentVersion, 1)`; response `testedVersion`, `publishedVersion`, and `testedDigest` = sha256 of the bundle bytes passed to `matchSample`.
   - Integration (add to `yaraW04Routes.integration.test.ts`, real RLS): an **org** user tests the built-in set and their MSP's partner-wide set → 200 (not 404), with `matchSample` stubbed; an org-B user testing org A's set → 404.
@@ -662,7 +677,7 @@ locales; component tests use `data-testid` selectors only.
 
 - [ ] **Step 1: Write the failing tests** in `DetectionRulesPage.test.tsx`: renders rows with `data-testid="rule-set-row-<id>"`; the built-in row shows `rule-set-badge-builtin`, a partner-wide row `rule-set-badge-all-orgs`, `stale: true` shows `rule-set-badge-errors`, `publishedVersion: 0` shows `rule-set-badge-unpublished`, `enabled: false` shows `rule-set-badge-disabled`; clicking a row sets `window.location.hash` to `#<id>`; loading with `#<id>` opens that set; a 403 list renders `AccessDenied`; "New rule set" offers the "All orgs" owner option only for partner-scope users (server 403 is toasted otherwise).
 - [ ] **Step 2: Run to verify they fail** — `pnpm --filter @breeze/web exec vitest run src/components/security/detectionRules/DetectionRulesPage.test.tsx`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Nav entry next to IOC Scans: `{ name: 'Detection rules', labelKey: 'nav.securityDetectionRules', href: '/security/detection-rules', icon: <lucide FileCode or ListChecks>, requiredPermission: { resource: 'devices', action: 'read' } }`. Breadcrumbs `Security › Detection rules`.
+- [ ] **Step 3: Implement.** Also: the spec §8 EDR-page link — one line in `apps/web/src/components/security/EdrPage.tsx`, "Looking for Breeze IOC scans? →" to `/security/scans` (`data-testid="edr-ioc-scans-link"`, key `security:edrPage.iocScansLink` in all 8 locales, asserted in `EdrPage.test.tsx`); and the copy-rule test `apps/web/src/locales/yaraCopyRule.test.ts` (Task B7 Step 3). Nav entry next to IOC Scans: `{ name: 'Detection rules', labelKey: 'nav.securityDetectionRules', href: '/security/detection-rules', icon: <lucide FileCode or ListChecks>, requiredPermission: { resource: 'devices', action: 'read' } }`. Breadcrumbs `Security › Detection rules`.
 - [ ] **Step 4: Run** the test plus `src/lib/i18n/localeParity.test.ts`, `src/lib/i18n/titleKeyUsage.test.ts`, `src/components/security/security403Sweep.test.tsx`. Expected: PASS.
 - [ ] **Step 5: Commit** — `feat(web): Detection rules page and rule set list (#6267)`
 
@@ -675,7 +690,7 @@ locales; component tests use `data-testid` selectors only.
 **Interfaces:**
 - Produces: `describePublishOutcome(p: YaraPublishBody | undefined, set: { enabled: boolean }): { tone: 'success' | 'warning'; key: string; reasonKey?: string; params: Record<string, string | number>; ruleErrors: Map<string, Array<{ code: string; message: string; line?: number }>>; setErrors: string[] }`, with `YaraPublishBody` = W03 `publishBody` shape. And `publishSuccessMessage(body: { publish?: YaraPublishBody }, set): string` — the `runAction` `successMessage` function: the translated success copy for `tone === 'success'`, `''` otherwise (its type is `(data: T) => string`; `''` is falsy, so no toast).
 
-- [ ] **Step 1: Write the failing tests.** `publishOutcome.test.ts`: one `it` per row of the W04-3 table asserting `tone` and `key`, plus: rows are first-match (`autoQuarantineOnly` + `precheckUnavailable` → key `autoQuarantineOnly`, `reasonKey` `checkerUnavailable`); `published && stale` is never `success`; `{{devices}}` resolves to `devicesKeep` / `neverPublished` / `setDisabled` per the table note; `publishSuccessMessage` returns `''` for every warning row; `ruleErrors` groups by `ruleId` and keeps `line`. `RuleSetEditor.test.tsx`: saving a rule whose response is `{ publish: { published: false, stale: true, errors: [{ ruleId: 'r1', code: 'compile', message: 'syntax error', line: 3 }] } }` shows NO success toast, shows one warning toast, shows `data-testid="rule-error-r1"` containing `line 3`, and the set banner `rule-set-publish-banner`; a `precheckUnavailable` response shows the checker-unavailable banner and no per-rule errors; a built-in set renders read-only (no add/edit/delete controls; rule source viewable); a 403 `AUTO_QUARANTINE_EXECUTE_REQUIRED` toggle shows the friendly copy.
+- [ ] **Step 1: Write the failing tests.** `publishOutcome.test.ts`: one `it` per row of the W04-3 table asserting `tone` and `key`, plus: rows are first-match (`autoQuarantineOnly` + `precheckUnavailable` → key `autoQuarantineOnly`, `reasonKey` `checkerUnavailable`); `published && stale` is never `success`; `{{devices}}` resolves to `devicesKeep` / `neverPublished` / `setDisabled` per the table note; `publishSuccessMessage` returns `''` for every warning row and **never throws** — given `{}`, `null`, or a `publish` with wrong-typed fields it returns `''` (a throwing formatter makes `runAction` show a generic "Done" success toast, `runAction.ts` successMessage catch); `ruleErrors` groups by `ruleId` and keeps `line`. `RuleSetEditor.test.tsx`: saving a rule whose response is `{ publish: { published: false, stale: true, errors: [{ ruleId: 'r1', code: 'compile', message: 'syntax error', line: 3 }] } }` shows NO success toast, shows one warning toast, shows `data-testid="rule-error-r1"` containing `line 3`, and the set banner `rule-set-publish-banner`; a `precheckUnavailable` response shows the checker-unavailable banner and no per-rule errors; a built-in set renders read-only (no add/edit/delete controls; rule source viewable); a 403 `AUTO_QUARANTINE_EXECUTE_REQUIRED` toggle shows the friendly copy.
 - [ ] **Step 2: Run to verify they fail** — vitest on both files. Expected: FAIL.
 - [ ] **Step 3: Implement.** Rule list shows name, severity, tags, enabled, the stored `compileError` (from GET) inline. The editor dialog edits name / severity / tags / source (monospace textarea; no syntax highlighter dependency). After every mutation, re-fetch the set so `stale`, `currentVersion` and stored `compileError` reflect the server.
 - [ ] **Step 4: Run** both test files plus `src/lib/__tests__/no-silent-mutations.test.ts`. Expected: PASS.
@@ -697,7 +712,7 @@ locales; component tests use `data-testid` selectors only.
 
 **Files:** Create `…/detectionRules/RuleTestPanel.tsx`, `RuleTestPanel.test.tsx`; modify `security.json` ×8 (`detectionRules.test.*`).
 
-- [ ] **Step 1: Write the failing tests:** choosing a file over 10 MiB shows the size error and sends nothing; a 200 renders `rule-test-match-<ruleName>` rows with tags and matched strings, and a "No rules matched" state for an empty list; the header says which version was tested and, when it is not the published one, "Testing your unpublished changes"; 422 `YARA_TEST_COMPILE_FAILED` lists the compile errors; 429 `YARA_TEST_BUSY` shows "Another test is running, try again in a few seconds"; 503 `YARA_TEST_SANDBOX_UNAVAILABLE` shows "File tests are not available on this server" and disables the panel; an optional "Path on device" field (`rule-test-filepath`) is sent as `filepath`; the request is `POST …/test?filename=<name>[&filepath=<path>]` with the raw file as body and `Content-Type: application/octet-stream`. The test is a read action, but it is a POST, so it goes through `runAction` with no success toast.
+- [ ] **Step 1: Write the failing tests:** choosing a file over 10 MiB shows the size error and sends nothing; a 200 renders `rule-test-match-<ruleName>` rows with tags and matched strings, and a "No rules matched" state for an empty list; the header says which version was tested and, when it is not the published one, "Testing your unpublished changes"; 422 `YARA_TEST_COMPILE_FAILED` lists the compile errors; 429 `YARA_TEST_BUSY` shows "Another test is running, try again in a few seconds"; 422 `YARA_TEST_NO_RULES` shows "This set has no enabled rules to test"; 503 `YARA_TEST_UNAVAILABLE` shows "The rule checker is unavailable, try again later"; 413 shows the size copy; 503 `YARA_TEST_SANDBOX_UNAVAILABLE` shows "File tests are not available on this server" and disables the panel; an optional "Path on device" field (`rule-test-filepath`) is sent as `filepath`; the request is `POST …/test?filename=<name>[&filepath=<path>]` with the raw file as body and `Content-Type: application/octet-stream`. The test is a read action, but it is a POST, so it goes through `runAction` with no success toast.
 - [ ] **Step 2: Run to verify they fail.** Expected: FAIL.
 - [ ] **Step 3: Implement.** Copy states the file is scanned on the Breeze server and is not stored.
 - [ ] **Step 4: Run** the test + `no-silent-mutations` + `localeParity`. Expected: PASS.
@@ -709,6 +724,7 @@ locales; component tests use `data-testid` selectors only.
 
 **Interfaces:**
 - `RuleSetPicker` props: `{ value: string[]; onChange(ids: string[]): void; policyOwner: { orgId: string | null; partnerId: string | null }; disabled: boolean; onBlockingChange(blocking: boolean): void }`.
+- `FeatureTabProps` gains `partnerId?: string | null`: add it next to `orgId: policy?.orgId ?? null` in `ConfigPolicyDetailPage.tsx` `renderFeatureTab` (`policy.partnerId` is already loaded there), so a system-scope viewer never sees another partner's partner-wide sets as attachable. `attachableRuleSets` matches partner-wide sets on `set.partnerId === owner.partnerId` when it is known.
 - `attachableRuleSets(sets: YaraRuleSetSummary[], owner): YaraRuleSetSummary[]` — exported, mirrors `checkSecurityRuleSetsWrite`.
 - `SecurityTab` gains `ruleSetIds` editing; preselect per W04-4.
 
@@ -742,7 +758,7 @@ locales; component tests use `data-testid` selectors only.
 
 - [ ] **Step 1:** `NODE_OPTIONS=--max-old-space-size=12288 pnpm --filter @breeze/web exec tsc --noEmit; echo exit=$?` → `exit=0`; `pnpm --filter @breeze/web exec astro check` if the repo's CI runs it.
 - [ ] **Step 2:** web tests in batches: `src/components/security`, `src/components/configurationPolicies`, `src/lib`. Expected: PASS; record counts.
-- [ ] **Step 3: Copy check:** `grep -rniE "\b(edr|antivirus|anti-virus|real-time protection|prevention)\b" apps/web/src/locales/*/security.json` shows no hit inside `detectionRules` or `securityThreatDetail.rule` keys.
+- [ ] **Step 3: Copy check** is a test, added in Task B1: `apps/web/src/locales/yaraCopyRule.test.ts` walks `security:detectionRules.*`, `security:securityThreatDetail.rule.*` and `policies:configurationPolicies.featureTabs.securityTab.ruleSets.*` in all 8 locales against a per-locale banned list (en: EDR, antivirus, anti-virus, real-time protection, prevention; plus each locale's translations, e.g. de `Virenschutz`, `Echtzeitschutz`; fr `antivirus`, `protection en temps réel`; es/pt `antivirus`, `tiempo real`/`tempo real`; it `antivirus`, `tempo reale`; tr `antivirüs`, `gerçek zamanlı`). Run it here; expected PASS.
 - [ ] **Step 4: Browser check** on a per-worktree stack (`worktree-stack` skill): create a set, add a broken rule (warning, inline error, no success toast), fix it (success), import 3 IOCs, test the EICAR string against the imported set, attach it to a new policy (built-in preselected), open a threat's Rule panel if a scan produced one. Tear the stack down and say so.
 - [ ] **Step 5: Open PR B** against `main`: title `feat(security): YARA W04b — Detection rules UI, IOC importer, test upload, rule-set picker (#6267)`, body `Part of #6263` / `Closes #6267`. One independent review round.
 
@@ -805,13 +821,13 @@ Defaults are what this plan is written to; each changes in one place.
    `breeze-yarac match` child that is the preferred OOM victim, one at a time per instance, fail
    closed when Landlock is unavailable. Alternative (Codex's preference for memory): a separate,
    memory-limited, network-less sandbox container — stronger isolation, but a new compose service on
-   US, EU and every self-host. Recommend the default: the feature is admin-only, rate-limited,
+   every hosted and self-hosted deployment. Recommend the default: the feature is admin-only, rate-limited,
    single-flight, and the Landlock + OOM measures close the file-read and API-kill paths; the
    separate container stays the fallback if Task A6 Step 4 shows Landlock is blocked in the image or
    peak RSS exceeds 1 GiB.
-2. **Landlock on the droplets.** The default needs Linux ≥ 5.13 with Landlock enabled, and Docker's
+2. **Landlock on production hosts.** The default needs Linux ≥ 5.13 with Landlock enabled, and Docker's
    default seccomp profile allowing the three `landlock_*` syscalls. Task A6 Step 4 proves the image;
-   someone must confirm the US and EU host kernels before PR A deploys (a miss shows "File tests are
+   someone must confirm the production host kernels before PR A deploys (a miss shows "File tests are
    not available on this server", it does not break anything else).
 3. **IOC import path.** Default: set-scoped `POST /security/yara/rule-sets/:id/ioc-import` instead of
    the spec's `POST /yara/ioc-import`. Same operation; no behavioural difference.
