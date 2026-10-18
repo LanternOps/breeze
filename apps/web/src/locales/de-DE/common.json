@@ -697,7 +697,8 @@
       "toast": {
         "showingAll": "Alle Organisationen werden angezeigt",
         "showing": "{{name}} wird angezeigt",
-        "switched": "Zu {{name}} gewechselt"
+        "switched": "Zu {{name}} gewechselt",
+        "linkedOrgUnavailable": "Die verlinkte Organisation ist nicht verfügbar. Stattdessen wird Ihre aktuelle Auswahl angezeigt."
       },
       "fleetView": "Flottenansicht · {{count}} Organisationen",
       "noSelection": "Organisation auswählen",

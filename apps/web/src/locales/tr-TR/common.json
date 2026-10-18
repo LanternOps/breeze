@@ -697,7 +697,8 @@
       "toast": {
         "showingAll": "Tüm kuruluşlar gösteriliyor",
         "showing": "{{name}} gösteriliyor",
-        "switched": "{{name}} olarak değiştirildi"
+        "switched": "{{name}} olarak değiştirildi",
+        "linkedOrgUnavailable": "Bağlantıdaki kuruluş kullanılamıyor. Bunun yerine geçerli seçiminiz gösteriliyor."
       },
       "fleetView": "Filo görünümü · {{count}} kuruluş",
       "noSelection": "Kuruluşu seçin",

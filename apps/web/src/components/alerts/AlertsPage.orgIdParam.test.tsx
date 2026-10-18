@@ -12,7 +12,8 @@ vi.mock('../../stores/auth', () => ({
   useAuthStore: (select: (state: { user: { canManagePartnerWide: boolean } }) => unknown) => select({ user: { canManagePartnerWide: true } }),
 }));
 
-vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+const showToastMock = vi.hoisted(() => vi.fn());
+vi.mock('../shared/Toast', () => ({ showToast: showToastMock }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../filters/DeviceFilterBar', () => ({ DeviceFilterBar: () => null }));
 
@@ -26,12 +27,13 @@ const ORGS = [
 let mockCurrentOrgId: string | null = 'org-1';
 let mockAllOrgs = false;
 let mockOrganizationsLoaded = true;
+let mockOrgListError: string | null = null;
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
       currentOrgId: mockCurrentOrgId,
       allOrgs: mockAllOrgs,
-      error: null,
+      error: mockOrgListError,
       organizationsLoaded: mockOrganizationsLoaded,
       organizations: mockOrganizationsLoaded ? ORGS : [],
     }),
@@ -53,6 +55,7 @@ beforeEach(() => {
   mockCurrentOrgId = 'org-1';
   mockAllOrgs = false;
   mockOrganizationsLoaded = true;
+  mockOrgListError = null;
   fetchMock.mockImplementation(() => Promise.resolve(json({ data: [] })));
 });
 
@@ -66,6 +69,22 @@ describe('AlertsPage — ?orgId= deep link (#9108)', () => {
     expect(applyOrgSwitchMock).toHaveBeenCalledWith('org-2', 'Switched to Beta Logistics', '/alerts');
     // The working org's alerts are never fetched for a link that names another org.
     expect(alertListRequests()).toHaveLength(0);
+  });
+
+  it('rewrites the deep-link entry to the destination BEFORE switching, so Back never re-runs the switch', async () => {
+    setUrl('/alerts?orgId=org-2#hideAiNoise');
+    const historyLength = window.history.length;
+    let urlAtSwitch = '';
+    applyOrgSwitchMock.mockImplementationOnce(() => {
+      urlAtSwitch = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      return Promise.resolve();
+    });
+    render(<AlertsPage />);
+    await waitFor(() => expect(applyOrgSwitchMock).toHaveBeenCalledTimes(1));
+    // applyOrgSwitch's navigation to '/alerts' then targets the current URL (a
+    // replace, not a push) — no '/alerts?orgId=' entry is left behind.
+    expect(urlAtSwitch).toBe('/alerts');
+    expect(window.history.length).toBe(historyLength);
   });
 
   it('switches out of the fleet (All organizations) view too', async () => {
@@ -87,12 +106,30 @@ describe('AlertsPage — ?orgId= deep link (#9108)', () => {
     expect(window.location.hash).toBe('#hideAiNoise');
   });
 
-  it('ignores an org the user cannot see (not in the org list): no switch, param stripped', async () => {
+  it('does not switch to an org the user cannot see; says so, strips the param, loads the current scope', async () => {
     setUrl('/alerts?orgId=org-unknown');
     render(<AlertsPage />);
     await waitFor(() => expect(alertListRequests()).toHaveLength(1));
     expect(applyOrgSwitchMock).not.toHaveBeenCalled();
     expect(window.location.search).toBe('');
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'warning', message: 'The linked organization is not available. Showing your current selection instead.' });
+  });
+
+  it('says so (never silently substitutes the working org) when the org list fails to load', async () => {
+    mockOrganizationsLoaded = false;
+    mockOrgListError = 'Failed to fetch organizations';
+    setUrl('/alerts?orgId=org-2');
+    render(<AlertsPage />);
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'warning', message: 'The linked organization is not available. Showing your current selection instead.' }));
+    expect(applyOrgSwitchMock).not.toHaveBeenCalled();
+    expect(window.location.search).toBe('');
+  });
+
+  it('no notice when the link names the working org', async () => {
+    setUrl('/alerts?orgId=org-1');
+    render(<AlertsPage />);
+    await waitFor(() => expect(alertListRequests()).toHaveLength(1));
+    expect(showToastMock).not.toHaveBeenCalled();
   });
 
   it('waits for the org list before deciding (no switch, no fetch while it loads)', async () => {
