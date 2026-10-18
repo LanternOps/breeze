@@ -32,6 +32,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/safemode"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/internal/securefs"
@@ -852,6 +853,9 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 			logging.SetShipperLevel("info")
 		}
 	}
+	// desktop_debug also lifts pion's own warnings (TURN Allocate failures and
+	// the like) to Warn in the agent log (#9182).
+	desktop.SetPionWarnLogging(cfg.DesktopDebug)
 
 	logProcessStartup(cachedMainProcessStartup())
 
@@ -2213,6 +2217,9 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		}
 		defer logging.StopShipper()
 	}
+	// Same pion warning elevation as the agent: a helper hosts the peer
+	// connection on service installs (#9182).
+	desktop.SetPionWarnLogging(cfg.DesktopDebug)
 
 	// Always record where diagnostics are going; the pre-#5877 code fell
 	// back to stdout silently, so an unwritable directory looked like an

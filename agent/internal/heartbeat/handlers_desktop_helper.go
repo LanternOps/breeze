@@ -489,6 +489,8 @@ func (h *Heartbeat) startDesktopOnSession(session *sessionbroker.Session, sessio
 		return tools.NewErrorResult(fmt.Errorf("failed to unmarshal desktop start response: %w", err), 0), false
 	}
 	h.rememberDesktopOwner(sessionID, session.SessionID)
+	// Only now, with the owner recorded, may the helper trickle (#9182).
+	h.beginHelperICETrickle(session, sessionID, req.StartGeneration)
 
 	return tools.NewSuccessResult(map[string]any{
 		"sessionId": sessionID,

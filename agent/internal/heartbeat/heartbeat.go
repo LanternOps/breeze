@@ -625,6 +625,11 @@ type Heartbeat struct {
 	// Defaults to requestRevocationLeaseRenew; nil is a no-op.
 	leaseRenewRequester func(sessionID string)
 
+	// desktopICESender trickles a desktop session's late local ICE candidate
+	// (nil = end of gathering) to the API (#9182). The WebSocket client's
+	// SendDesktopICECandidate; tests substitute a recorder.
+	desktopICESender func(sessionID, startGeneration string, seq int, cand *websocket.DesktopICECandidate) error
+
 	// desktopStartFence linearizes desktop start decisions against terminal
 	// decisions: a per-session high-water generation plus an
 	// absolute terminal tombstone. See desktop_fence.go. Carries its own lock
@@ -1376,6 +1381,10 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// unconditionally (not only in direct mode): the service process runs the
 	// renewals for helper-hosted sessions too.
 	h.desktopMgr.RequestRevocationLeaseRenew = h.requestRevocationLeaseRenew
+	// Trickle ICE (#9182): late local candidates of sessions hosted in this
+	// process go to the API. Unconditional for the same reason as the lease
+	// renewals: the callback only fires for sessions this process hosts.
+	h.desktopMgr.OnLocalICECandidate = h.forwardLocalICECandidate
 	// The WebSocket fallback stream renews the same lease over the same
 	// socket, and a lease-driven stop is reported like a WebRTC peer drop and
 	// ends the on-screen indicator and notice (handlers_desktop_stream.go).
@@ -1428,6 +1437,10 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 		// whose capture actually runs in a user helper, which is told to stop
 		// over IPC (handleStopDesktop) rather than talking to the API itself.
 		ws.OnRevocationLease = h.applyRevocationLeaseAnswer
+		// Trickle ICE (#9182): late local candidates out, relayed viewer
+		// candidates in.
+		h.desktopICESender = ws.SendDesktopICECandidate
+		ws.OnDesktopICECandidate = h.onRemoteDesktopICECandidate
 	}
 }
 
@@ -1784,6 +1797,8 @@ func (h *Heartbeat) handleUserHelperMessage(session *sessionbroker.Session, env 
 		if h.leaseRenewRequester != nil {
 			h.leaseRenewRequester(renew.SessionID)
 		}
+	case ipc.TypeDesktopLocalICECandidate:
+		h.handleHelperLocalICECandidate(session, env)
 	case ipc.TypeDesktopPeerDisconnected:
 		var notice ipc.DesktopPeerDisconnectedNotice
 		if err := json.Unmarshal(env.Payload, &notice); err != nil {

@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -104,6 +105,16 @@ const (
 	// carrying a generation is never admitted by a helper that has not yet
 	// learned what the service already knows.
 	TypeDesktopFenceSync = "desktop_fence_sync" // agent -> helper
+
+	// Trickle ICE for helper-hosted desktop sessions (#9182). The helper
+	// queues the local candidates it gathers after its answer until the
+	// service, having recorded it as the session's owner, sends
+	// desktop_ice_trickle_begin; it then sends each one (and the
+	// end-of-gathering marker) as desktop_local_ice_candidate. Viewer
+	// candidates the API relays come back as desktop_remote_ice_candidate.
+	TypeDesktopICETrickleBegin    = "desktop_ice_trickle_begin"    // agent -> helper
+	TypeDesktopLocalICECandidate  = "desktop_local_ice_candidate"  // helper -> agent
+	TypeDesktopRemoteICECandidate = "desktop_remote_ice_candidate" // agent -> helper
 
 	// Remote-session consent + banner
 	TypeConsentRequest = "consent_request"
@@ -845,4 +856,59 @@ const (
 type MessageDismissed struct {
 	MessageID string `json:"messageId"`
 	Reason    string `json:"reason,omitempty"`
+}
+
+// MaxICECandidateBytes bounds one ICE candidate line on every hop (#9182).
+const MaxICECandidateBytes = 1024
+
+// ICECandidate is an RTCIceCandidateInit on the IPC wire.
+type ICECandidate struct {
+	Candidate        string  `json:"candidate"`
+	SDPMid           *string `json:"sdpMid,omitempty"`
+	SDPMLineIndex    *uint16 `json:"sdpMLineIndex,omitempty"`
+	UsernameFragment *string `json:"usernameFragment,omitempty"`
+}
+
+// Validate bounds an ICE candidate from another process. An empty candidate
+// line is the browser's end-of-candidates signal, never a candidate to add.
+func (c ICECandidate) Validate() error {
+	if c.Candidate == "" {
+		return fmt.Errorf("ICE candidate is empty")
+	}
+	if len(c.Candidate) > MaxICECandidateBytes {
+		return fmt.Errorf("ICE candidate too large")
+	}
+	if c.SDPMid != nil && len(*c.SDPMid) > 64 {
+		return fmt.Errorf("ICE candidate sdpMid too large")
+	}
+	if c.UsernameFragment != nil && len(*c.UsernameFragment) > 256 {
+		return fmt.Errorf("ICE candidate usernameFragment too large")
+	}
+	return nil
+}
+
+// DesktopICETrickleBegin tells the helper hosting SessionID to start sending
+// its late local candidates, tagged with StartGeneration.
+type DesktopICETrickleBegin struct {
+	SessionID       string `json:"sessionId"`
+	StartGeneration string `json:"startGeneration,omitempty"`
+}
+
+// DesktopLocalICECandidate is one helper trickle entry: a local candidate, or
+// the end-of-gathering marker (Complete, no Candidate). Seq orders a
+// session's entries.
+type DesktopLocalICECandidate struct {
+	SessionID       string        `json:"sessionId"`
+	StartGeneration string        `json:"startGeneration,omitempty"`
+	Seq             int           `json:"seq"`
+	Candidate       *ICECandidate `json:"candidate,omitempty"`
+	Complete        bool          `json:"complete,omitempty"`
+}
+
+// DesktopRemoteICECandidate is a viewer candidate relayed to the helper that
+// hosts SessionID.
+type DesktopRemoteICECandidate struct {
+	SessionID       string       `json:"sessionId"`
+	StartGeneration string       `json:"startGeneration,omitempty"`
+	Candidate       ICECandidate `json:"candidate"`
 }

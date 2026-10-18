@@ -226,6 +226,11 @@ type Client struct {
 	// construction time, before Start().
 	OnRevocationLease func(msg RevocationLeaseMessage)
 
+	// OnDesktopICECandidate, if set, receives viewer ICE candidates the server
+	// relays for a desktop session after the offer (#9182). Must not block: it
+	// runs inline on the read pump. Set once before Start().
+	OnDesktopICECandidate func(msg DesktopICECandidateMessage)
+
 	// resends is the bounded record of recently sent command results the
 	// server may ask for again with RESULT_PROCESSING_FAILED (#7365). See
 	// result_resend.go.
@@ -575,6 +580,13 @@ func (c *Client) readPump() error {
 		if msg.Type == "revocation_lease" || msg.Type == "revocation_lease_revoked" ||
 			msg.Type == "revocation_lease_unavailable" {
 			c.handleRevocationLeaseMessage(msg.Type, message)
+			continue
+		}
+
+		// Relayed viewer ICE candidates carry no id either (#9182). Older
+		// agents fall through to the id-less skip below and ignore them.
+		if msg.Type == "desktop_ice_candidate" {
+			c.handleDesktopICECandidateMessage(message)
 			continue
 		}
 

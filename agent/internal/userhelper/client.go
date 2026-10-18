@@ -195,6 +195,16 @@ func (c *Client) Run() error {
 		}
 	}
 
+	// Trickle ICE (#9182): late local candidates go to the service, which
+	// relays them to the API. Sent in order on pion's serial candidate
+	// callback; nothing is sent before the service's desktop_ice_trickle_begin.
+	c.desktopMgr.mgr.OnLocalICECandidate = func(sessionID, startGeneration string, cand desktop.LocalICECandidate) {
+		notice := localICECandidateNotice(sessionID, startGeneration, cand)
+		if err := c.conn.SendTyped("desk-ice-"+sessionID, ipc.TypeDesktopLocalICECandidate, notice); err != nil {
+			log.Warn("failed to send desktop ICE candidate via IPC", "session", sessionID, "seq", cand.Seq, "error", err)
+		}
+	}
+
 	// Hand each session's clipboard counters to the service for the central
 	// audit log (#1012). Sent once, from session teardown.
 	c.desktopMgr.mgr.OnClipboardSummary = func(sessionID string, summary ipc.ClipboardSummary) {
@@ -502,6 +512,12 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypeDesktopLeaseUpdate:
 			safeGo("desktop_lease_update", func() { c.handleDesktopLeaseUpdate(env) })
+
+		case ipc.TypeDesktopICETrickleBegin:
+			safeGo("desktop_ice_trickle_begin", func() { c.handleDesktopICETrickleBegin(env) })
+
+		case ipc.TypeDesktopRemoteICECandidate:
+			safeGo("desktop_remote_ice_candidate", func() { c.handleDesktopRemoteICECandidate(env) })
 
 		case ipc.TypeDesktopInput:
 			safeGo("desktop_input", func() { c.handleDesktopInput(env) })
@@ -1283,6 +1299,32 @@ func (c *Client) handleDesktopLeaseUpdate(env *ipc.Envelope) {
 			"sessionId", update.SessionID, "reason", update.Reason)
 	}
 	c.desktopMgr.mgr.ApplyLeaseUpdate(update)
+}
+
+func (c *Client) handleDesktopICETrickleBegin(env *ipc.Envelope) {
+	var req ipc.DesktopICETrickleBegin
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid desktop_ice_trickle_begin payload", "error", err)
+		return
+	}
+	if err := c.desktopMgr.beginICETrickle(req); err != nil {
+		log.Debug("desktop ICE trickle not started", "sessionId", req.SessionID, "reason", err.Error())
+	}
+}
+
+func (c *Client) handleDesktopRemoteICECandidate(env *ipc.Envelope) {
+	var req ipc.DesktopRemoteICECandidate
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid desktop_remote_ice_candidate payload", "error", err)
+		return
+	}
+	if err := c.desktopMgr.addRemoteICECandidate(req); err != nil {
+		if errors.Is(err, desktop.ErrNoICESession) || errors.Is(err, desktop.ErrStaleICEGeneration) {
+			log.Debug("dropping relayed viewer ICE candidate", "sessionId", req.SessionID, "reason", err.Error())
+			return
+		}
+		log.Warn("failed to apply relayed viewer ICE candidate", "sessionId", req.SessionID, "error", err.Error())
+	}
 }
 
 func (c *Client) handleDesktopStop(env *ipc.Envelope) {

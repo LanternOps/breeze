@@ -91,13 +91,9 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		slog.Warn("Failed to register playout-delay extension (non-fatal)", "error", regErr.Error())
 	}
 
-	// ICE timeout tuning: keep NAT bindings alive and detect failures faster.
-	se := webrtc.SettingEngine{}
-	se.SetICETimeouts(
-		5*time.Second,  // disconnectedTimeout — detect no-media quickly
-		15*time.Second, // failedTimeout — reduced from 25s default for faster recovery
-		2*time.Second,  // keepAliveInterval — refresh STUN bindings when no media
-	)
+	// ICE timeout tuning (keep NAT bindings alive, detect failures faster)
+	// and pion's logs routed into the agent log (#9182).
+	se := newDesktopSettingEngine()
 
 	api := webrtc.NewAPI(
 		webrtc.WithMediaEngine(mediaEngine),
@@ -125,6 +121,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		sasHandler:   m.OnSASRequest,
 
 		onClipboardSummary: m.OnClipboardSummary,
+		trickle:            newICETrickle(),
 	}
 	session.cursorStreamEnabled.Store(false)
 	session.wireInputEpochHooks()
@@ -637,38 +634,16 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 	})
 
-	// Set remote description (offer from viewer)
-	if err := peerConn.SetRemoteDescription(webrtc.SessionDescription{
-		Type: webrtc.SDPTypeOffer,
-		SDP:  offer,
-	}); err != nil {
-		session.doCleanup()
-		return "", fmt.Errorf("failed to set remote description: %w", err)
-	}
-
-	// Create answer
-	pcAnswer, err := peerConn.CreateAnswer(nil)
-	if err != nil {
-		session.doCleanup()
-		return "", fmt.Errorf("failed to create answer: %w", err)
-	}
-
-	// Set local description
-	if err := peerConn.SetLocalDescription(pcAnswer); err != nil {
-		return "", fmt.Errorf("failed to set local description: %w", err)
-	}
-
-	// Fast ICE gathering: return as soon as we have usable candidates rather
-	// than waiting for full gathering. Host candidates appear in <10ms, STUN
-	// reflexive candidates in ~50-200ms. We wait for the first candidate,
-	// then collect for a short window before returning.
+	// Candidate accounting + trickle (#9182). Installed BEFORE
+	// SetLocalDescription so no candidate's callback can be missed: anything
+	// gathered before the answer snapshot rides the SDP, anything after is
+	// queued for BeginICETrickle.
 	gatherComplete := webrtc.GatheringCompletePromise(peerConn)
-
-	// Channel signalled on first candidate
 	firstCandidate := make(chan struct{}, 1)
 	var candMu sync.Mutex
 	candCounts := map[string]int{}
 	peerConn.OnICECandidate(func(c *webrtc.ICECandidate) {
+		session.trickle.observe(c)
 		if c == nil {
 			// pion signals end-of-gathering with a nil candidate. Summarize
 			// what we gathered so we can tell whether TURN was reachable.
@@ -711,6 +686,34 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		}
 	})
 
+	// Set remote description (offer from viewer)
+	if err := peerConn.SetRemoteDescription(webrtc.SessionDescription{
+		Type: webrtc.SDPTypeOffer,
+		SDP:  offer,
+	}); err != nil {
+		session.doCleanup()
+		return "", fmt.Errorf("failed to set remote description: %w", err)
+	}
+
+	// Create answer
+	pcAnswer, err := peerConn.CreateAnswer(nil)
+	if err != nil {
+		session.doCleanup()
+		return "", fmt.Errorf("failed to create answer: %w", err)
+	}
+
+	// Set local description
+	if err := peerConn.SetLocalDescription(pcAnswer); err != nil {
+		return "", fmt.Errorf("failed to set local description: %w", err)
+	}
+
+	// Fast ICE gathering: return as soon as we have usable candidates rather
+	// than waiting for full gathering. Host candidates appear in <10ms, STUN
+	// reflexive candidates in ~50-200ms. We wait for the first candidate,
+	// then collect for a short window before returning. Candidates gathered
+	// after that (typically TURN relay) are trickled to the viewer once the
+	// caller begins the trickle (#9182), so this window only has to be long
+	// enough for the LAN case.
 	hardTimer := time.NewTimer(iceGatherTimeout)
 	defer hardTimer.Stop()
 
@@ -726,7 +729,7 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 		case <-gatherComplete:
 			collectTimer.Stop()
 		case <-collectTimer.C:
-			slog.Info("ICE early-exit: returning answer with partial candidates",
+			slog.Info("ICE early-exit: returning answer with partial candidates; the rest will trickle",
 				"session", sessionID,
 				"gatheringState", peerConn.ICEGatheringState().String())
 		case <-session.done:
@@ -742,17 +745,10 @@ func (m *SessionManager) StartSession(sessionID string, offer string, iceServers
 	// Streaming starts on PeerConnectionStateConnected to avoid sending the first
 	// keyframe while the receiver is still negotiating.
 
-	ld := peerConn.LocalDescription()
+	ld := session.trickle.snapshot(peerConn.LocalDescription)
 	if ld == nil {
 		return "", fmt.Errorf("local description not available")
 	}
 	slog.Info("StartSession: complete", "session", sessionID, "totalElapsed", time.Since(sessionStart))
 	return ld.SDP, nil
-}
-
-// AddICECandidate adds an ICE candidate to the session
-func (s *Session) AddICECandidate(candidate string) error {
-	return s.peerConn.AddICECandidate(webrtc.ICECandidateInit{
-		Candidate: candidate,
-	})
 }
