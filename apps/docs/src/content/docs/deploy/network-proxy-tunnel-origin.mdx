@@ -1,0 +1,152 @@
+---
+title: Network Proxy Dedicated Origin
+description: Serve Network Proxy device UIs from their own origin per tunnel (host mode) - second domain, wildcard DNS and certificate, Caddy and API settings, boot-time validation, Cloudflare rules, and the Public Suffix List caveat.
+sidebar:
+  order: 11
+  label: Network Proxy Dedicated Origin
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+[Network Proxy](/features/remote-access/#network-proxy) can serve a device's web UI in two ways. **Path mode** is the default and needs no setup. **Host mode** (the dedicated tunnel origin) gives every tunnel its own browser origin. This page covers what host mode needs, how to configure it, and what to do if you can't meet its requirements.
+
+<Aside type="note">
+  Host mode is optional. If you leave the variables below unset, path mode keeps working exactly as before.
+</Aside>
+
+## What host mode changes
+
+In path mode the device UI is served under your Breeze hostname at `/api/v1/tunnel-http/<tunnel-id>/`. Breeze has to rewrite device content and confine it with a sandbox, so device UIs that build absolute URLs or depend on their own cookies or local storage can still break.
+
+In host mode each tunnel is served from its own origin:
+
+```text
+https://<tunnel-id>.<region>.tunnel.example.net
+```
+
+The device owns that origin, so root-relative links, cookies, and local storage behave as they would on the device itself. The dashboard embeds it in a frame, and **Open In New Tab** opens it in its own tab.
+
+This is only safe if the tunnel hostnames sit on a **different registrable domain** from Breeze (`tunnel.example.net` versus `breeze.example.com`). Browsers treat subdomains of one registrable domain as the same site, so device content on a sibling subdomain could read or overwrite dashboard cookies. The API checks this at boot (see [Validation errors](#validation-errors)).
+
+## Requirements
+
+1. **A second registrable domain** (for example `tunnel.example.net`) that you control. A subdomain of your Breeze domain does not work.
+2. **Wildcard DNS** for `*.<region>.tunnel.example.net`, pointing at the same place as your Breeze traffic. `<region>` is any label you choose, such as `us`.
+3. **A wildcard certificate** for the tunnel hostnames, by one of:
+   - **Let's Encrypt DNS-01** with a Caddy build that includes your DNS provider's module. Wildcards cannot use the HTTP challenge.
+   - **A Cloudflare Origin CA certificate** for `*.<region>.tunnel.example.net`, mounted into the Caddy container, with the Cloudflare proxy in front.
+   - **Cloudflare Tunnel with Advanced Certificate Manager (ACM)**, where Cloudflare terminates TLS at the edge and forwards plain HTTP to Caddy. Universal SSL does not cover names this deep, so you need ACM (or an equivalent) for `*.<region>.tunnel.example.net`.
+
+## Configuration
+
+Set these in `.env`. The compose files already pass every one of them through.
+
+```bash
+# API: the origin template and who may frame it
+TUNNEL_ORIGIN_TEMPLATE=https://{id}.us.tunnel.example.net
+TUNNEL_FRAME_ANCESTOR=https://breeze.example.com
+
+# Caddy: which hostnames the tunnel site block answers
+TUNNEL_SITE_ADDRESS=*.us.tunnel.example.net, *.*.us.tunnel.example.net
+TUNNEL_HOST_SUFFIX=us.tunnel.example.net
+```
+
+| Variable | Used by | What it does |
+|---|---|---|
+| `TUNNEL_ORIGIN_TEMPLATE` | API | `https://{id}.<suffix>`, with `{id}` as the whole leftmost label. Unset means path mode. |
+| `TUNNEL_FRAME_ANCESTOR` | API | The exact `https://` origin allowed to frame tunnel content. Defaults to the origin of `PUBLIC_APP_URL`, else `DASHBOARD_URL`. Set it explicitly if neither is set. |
+| `TUNNEL_SITE_ADDRESS` | Caddy | Site address for the tunnel domain. List both wildcards: `*.<suffix>` matches the tunnel host, and `*.*.<suffix>` sends deeper names to the tunnel block (which refuses them) instead of the app. Unset, it matches nothing. |
+| `TUNNEL_HOST_SUFFIX` | Caddy | The bare suffix (`<region>.tunnel.example.net`). Hosts at or under it that miss the wildcards get `421` from the app block instead of being served as the app. |
+| `TUNNEL_TLS_DIRECTIVE` | Caddy | Empty by default. A full `tls <cert> <key>` line when Caddy terminates TLS for the tunnel domain with your own certificate. |
+
+<Aside type="caution">
+  Do not set `TUNNEL_SITE_ADDRESS`, `TUNNEL_HOST_SUFFIX` or `TUNNEL_TLS_DIRECTIVE` to an empty string. Leave them unset when host mode is off; compose supplies a harmless default. An empty site address stops Caddy from starting.
+</Aside>
+
+### Behind Cloudflare Tunnel (TLS at the edge)
+
+Cloudflare terminates TLS and sends plain HTTP to Caddy, so use `http://` site addresses and no certificate on Caddy:
+
+```bash
+TUNNEL_SITE_ADDRESS=http://*.us.tunnel.example.net, http://*.*.us.tunnel.example.net
+```
+
+Add a public hostname for `*.us.tunnel.example.net` to your tunnel, pointing at `http://caddy:80`. The API variables stay `https://`, because that is the origin the browser sees.
+
+### Caddy terminates TLS (Origin CA or your own certificate)
+
+Put the certificate and key where Caddy can read them, then point the directive at them:
+
+```bash
+TUNNEL_SITE_ADDRESS=*.us.tunnel.example.net, *.*.us.tunnel.example.net
+TUNNEL_TLS_DIRECTIVE=tls /etc/caddy/tunnel.pem /etc/caddy/tunnel.key
+```
+
+Compose does not mount the certificate for you. Add the mounts to the `caddy` service in a `docker-compose.override.yml`:
+
+```yaml
+services:
+  caddy:
+    volumes:
+      - ./certs/tunnel.pem:/etc/caddy/tunnel.pem:ro
+      - ./certs/tunnel.key:/etc/caddy/tunnel.key:ro
+```
+
+### Trusted proxies and `FORCE_HTTPS`
+
+The API trusts `X-Forwarded-Proto` only from addresses in `TRUSTED_PROXY_CIDRS`. If Caddy's address is not in that list, the API treats the request as plain HTTP. With `FORCE_HTTPS=true` it then answers every tunnel-host request with `400 FORCE_HTTPS_NON_CANONICAL_HOST`, because a tunnel host is never the canonical API host. (App hosts get a `308` redirect in the same situation.) This is deliberate. Fix the CIDR list rather than disabling `FORCE_HTTPS`.
+
+### Per-partner opt-in
+
+Setting the variables only makes host mode **available**. Each partner turns it on in **Settings → Partner → Remote Access → Serve Network Proxy from a dedicated origin**. The choice applies to all of the partner's organizations. A partner that has not chosen stays on path mode.
+
+## Validation errors
+
+The API refuses to boot if `TUNNEL_ORIGIN_TEMPLATE` is malformed or unsafe, in every `NODE_ENV`. Each message starts with the variable name. The ones you are likely to see:
+
+- Wrong template shape:
+
+  ```text
+  TUNNEL_ORIGIN_TEMPLATE must be exactly https://{id}.<suffix> — lowercase, {id} as the whole leftmost label, no userinfo, path, query, fragment or port
+  ```
+
+  An unusable suffix repeats that sentence followed by `(invalid suffix "<suffix>")`.
+- Shares a registrable domain with an app origin:
+
+  ```text
+  TUNNEL_ORIGIN_TEMPLATE suffix "us.breeze.example.com" shares a registrable domain with PUBLIC_APP_URL origin https://app.breeze.example.com; tunnel content must live on a separate registrable domain
+  ```
+
+  The comparison covers `PUBLIC_APP_URL`, `DASHBOARD_URL`, `PUBLIC_API_URL`, `PUBLIC_PORTAL_URL`, `PUBLIC_WEB_URL`, `PUBLIC_URL`, `API_URL`, `TUNNEL_FRAME_ANCESTOR`, `WEBAUTHN_ORIGIN` and `CORS_ALLOWED_ORIGINS`. The name in the message tells you which one collided.
+- An app origin that can't be checked: `TUNNEL_ORIGIN_TEMPLATE cannot verify separation from <SOURCE> entry "<value>": not a parseable origin` (or `host has no registrable domain`). Fix or remove that entry. For example, a portal URL with no hostname fails here.
+- Scheme and port:
+  - `TUNNEL_ORIGIN_TEMPLATE must use https:// (http is accepted only for *.localhost outside production)`
+  - `TUNNEL_ORIGIN_TEMPLATE must not contain a port (accepted only for *.localhost outside production)`
+- Frame ancestor:
+  - `TUNNEL_FRAME_ANCESTOR is required when TUNNEL_ORIGIN_TEMPLATE is set (no PUBLIC_APP_URL/DASHBOARD_URL to default from)`
+  - `TUNNEL_FRAME_ANCESTOR must be an exact https origin such as https://app.example.com (got "<value>")`. Use `scheme://host` with no trailing slash or path.
+- No registrable domain: `TUNNEL_ORIGIN_TEMPLATE suffix "<suffix>" has no registrable domain`
+
+## Cloudflare
+
+If the tunnel domain is proxied through Cloudflare, configure the tunnel hostnames so Cloudflare does not alter device content:
+
+- **Bypass the cache** for `*.<region>.tunnel.example.net`. Device pages are per-user and per-session.
+- **Turn off challenges** (Bot Fight Mode, managed challenges, and "I'm Under Attack" rules) for those hostnames. A challenge page can't be completed inside the frame, and it breaks asset requests from the device UI.
+- Leave **Rocket Loader**, **Auto Minify** and other content-rewriting features off for the same hostnames.
+
+## Without a second domain
+
+You don't need any of this to use Network Proxy. Leave `TUNNEL_ORIGIN_TEMPLATE`, `TUNNEL_FRAME_ANCESTOR`, `TUNNEL_SITE_ADDRESS`, `TUNNEL_HOST_SUFFIX` and `TUNNEL_TLS_DIRECTIVE` unset and path mode keeps working. Upgrading does not change existing deployments.
+
+## Public Suffix List
+
+Even on a separate registrable domain, devices behind different tunnels share that domain: `a.us.tunnel.example.net` and `b.us.tunnel.example.net` are the same site to a browser. A device UI could set a cookie for the parent domain that every other tunnel on it then receives (cookie tossing).
+
+The [Public Suffix List](https://publicsuffix.org/) closes that gap. Browsers treat a suffix on the list as a boundary no cookie can cross. Once `<region>.tunnel.example.net` is listed, each tunnel is its own site. Inclusion is a request to the list maintainers, and it takes time to reach shipped browsers.
+
+Until your tunnel suffix is listed, treat host mode as **opt-in**. The per-partner switch is off by default, so enable it only for partners who need better compatibility with specific device UIs. If you operate the tunnel domain for others, submit your suffix to the list before relying on host mode.
+
+<Aside type="note">
+  The boot-time check separates the tunnel domain from your app domains. It does not add your suffix to the Public Suffix List.
+</Aside>

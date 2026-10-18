@@ -324,6 +324,12 @@ Network Proxy lets you access web-based admin UIs on an agent's local network wi
   If the target device uses a self-signed certificate and you didn't check the box up front, the request fails with an untrusted-certificate error and the session shows a **Reconnect allowing self-signed certificate** button in place. Clicking it opens a fresh session to the same target with certificate verification skipped — it does not change any persistent trust settings, and it only applies to that session.
 </Aside>
 
+**Path mode and host mode:**
+
+By default Network Proxy runs in **path mode**: the device's pages are served under your Breeze hostname, and Breeze rewrites links and sandboxes the frame. Some device UIs still misbehave, usually ones that build absolute URLs or depend on their own cookies or local storage.
+
+If your administrator has set up a dedicated tunnel domain, a partner can turn on **Serve Network Proxy from a dedicated origin** in **Settings → Partner → Remote Access**. Each tunnel then gets its own origin, so the device UI behaves as it does on its own address. The setting applies to every organization under the partner. If your browser blocks cookies or storage for the embedded device page, a notice appears with an **Open In New Tab** button. Without a second domain, nothing changes and path mode keeps working. Administrators: see [Network Proxy Dedicated Origin](/deploy/network-proxy-tunnel-origin/).
+
 **Session lifetime:**
 
 A proxy session stays alive as long as it's actively used: each request slides the session's expiry forward, so there's no fixed cutoff while you're working — up to an absolute cap of 12 hours from when the session started. If the session sits idle for 10 minutes with no requests, it stops sliding and the page shows a **Session expired — Reconnect** state instead of silently failing behind the scenes. Clicking **Reconnect** reloads the embedded page from scratch, so any in-progress form state on the target device's own web UI (for example, a partially filled-out printer configuration page) is lost — save your work on the target's UI before stepping away for a while.
