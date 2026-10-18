@@ -361,7 +361,10 @@ func handleScriptInner(h *Heartbeat, cmd Command, secretEnv executor.SecretEnv, 
 // Like the executor, the duplicate never releases the reservation: it does
 // not own it. The reservation ends when the owning run returns, so a delivery
 // after completion is governed by the heartbeat's own dedup window, exactly as
-// on the local path.
+// on the local path. Known limit: the reservation and the executor's running
+// map do not see each other, so a redelivery that changes PATH mid-run (a
+// helper that disconnected, sending the second delivery to the local executor)
+// is not refused here.
 func (h *Heartbeat) runOnUserHelperOnce(cmd Command, start time.Time, cp *systemrestore.Checkpoint, run func() tools.CommandResult) tools.CommandResult {
 	if _, loaded := h.helperScriptsInFlight.LoadOrStore(cmd.ID, struct{}{}); loaded {
 		// That run owns the restore-point request, so this delivery answers

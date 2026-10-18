@@ -3,7 +3,9 @@ package heartbeat
 import (
 	"encoding/json"
 	"runtime"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -340,7 +342,7 @@ func TestReplayedCommandProducesOneLedgerOutcomePerRequestID(t *testing.T) {
 // signals arrived when the first script command reaches it and answers that
 // command only once release is closed — a user-context script still running in
 // the helper. Any later command is answered immediately.
-func newHeldRunAsUserHelper(t *testing.T, arrived chan<- struct{}, release <-chan struct{}) *sessionbroker.Session {
+func newHeldRunAsUserHelper(t *testing.T, arrived chan<- struct{}, release <-chan struct{}, received *atomic.Int32) *sessionbroker.Session {
 	t.Helper()
 	serverConn, clientConn := createTestSocketPair(t)
 	serverIPC := ipc.NewConn(serverConn)
@@ -354,6 +356,7 @@ func newHeldRunAsUserHelper(t *testing.T, arrived chan<- struct{}, release <-cha
 			if err != nil {
 				return
 			}
+			received.Add(1)
 			if first {
 				close(arrived)
 				<-release
@@ -368,6 +371,18 @@ func newHeldRunAsUserHelper(t *testing.T, arrived chan<- struct{}, release <-cha
 	return session
 }
 
+// releaseOnce returns a release channel and an idempotent closer that is also
+// registered as cleanup, so a t.Fatal before the in-test release cannot leave
+// the held helper (and the first delivery's goroutine) parked.
+func releaseOnce(t *testing.T) (<-chan struct{}, func()) {
+	t.Helper()
+	ch := make(chan struct{})
+	var once sync.Once
+	closeFn := func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(closeFn)
+	return ch, closeFn
+}
+
 func TestScriptRedeliveredToTheUserHelperWhileRunningReportsNoOutcome(t *testing.T) {
 	// #9164: the user-helper mirror of TestScriptRedeliveredWhileRunningReportsNoOutcome.
 	// The service process checkpoints before the IPC handoff, so a redelivery
@@ -377,8 +392,9 @@ func TestScriptRedeliveredToTheUserHelperWhileRunningReportsNoOutcome(t *testing
 	// the original run's outcome for the ledger row.
 	rec := installCheckpointRecorder(t)
 	arrived := make(chan struct{})
-	release := make(chan struct{})
-	session := newHeldRunAsUserHelper(t, arrived, release)
+	release, doRelease := releaseOnce(t)
+	var received atomic.Int32
+	session := newHeldRunAsUserHelper(t, arrived, release, &received)
 	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
 	payload := func() map[string]any { return withScriptBlock(map[string]any{"runAs": "user"}) }
 
@@ -391,17 +407,23 @@ func TestScriptRedeliveredToTheUserHelperWhileRunningReportsNoOutcome(t *testing
 	}
 
 	second := runScript(h, payload())
-	close(release)
+	reachedHelper := received.Load()
+	doRelease()
 	first := <-firstDone
 
-	if second.Status != "failed" {
-		t.Fatalf("duplicate = %+v, want the already-running refusal", second)
+	// The helper's own duplicate refusals also answer "failed", so the status
+	// alone proves nothing: the reason and "never handed off" are the contract.
+	if second.Status != "failed" || !strings.Contains(second.Error, "already running") {
+		t.Errorf("duplicate = %+v, want the service-side already-running refusal", second)
+	}
+	if reachedHelper != 1 {
+		t.Errorf("commands at the helper while the original ran = %d, want 1 -- the duplicate must not be handed off", reachedHelper)
 	}
 	if second.RestorePoint != nil {
-		t.Fatalf("duplicate RestorePoint = %+v, want nil -- the original run owns the outcome", second.RestorePoint)
+		t.Errorf("duplicate RestorePoint = %+v, want nil -- the original run owns the outcome", second.RestorePoint)
 	}
 	if rec.count() != 1 {
-		t.Fatalf("attempts = %d, want 1 -- a redelivery must not take a second checkpoint", rec.count())
+		t.Errorf("attempts = %d, want 1 -- a redelivery must not take a second checkpoint", rec.count())
 	}
 	if first.Status != "completed" || first.RestorePoint == nil || first.RestorePoint.Status != systemrestore.StatusCreated {
 		t.Fatalf("original = %+v (RestorePoint %+v), want completed with the created outcome", first, first.RestorePoint)
@@ -423,8 +445,9 @@ func TestScriptSessionTargetedRedeliveryLeavesTheOriginalLeaseAndCheckpoint(t *t
 	// ORIGINAL run's ownership while that script was still running.
 	rec := installCheckpointRecorder(t)
 	arrived := make(chan struct{})
-	release := make(chan struct{})
-	session := newHeldRunAsUserHelper(t, arrived, release)
+	release, doRelease := releaseOnce(t)
+	var received atomic.Int32
+	session := newHeldRunAsUserHelper(t, arrived, release, &received)
 	key := sessionbroker.HelperKey{WindowsSessionID: 7, Role: ipc.HelperRoleUser}
 	f := &fakeLifecycle{
 		mode:        "on-demand",
@@ -445,22 +468,45 @@ func TestScriptSessionTargetedRedeliveryLeavesTheOriginalLeaseAndCheckpoint(t *t
 	}
 
 	second := runScript(h, payload())
+	reachedHelper := received.Load()
 	f.mu.Lock()
 	acquired, released := len(f.acquired), len(f.released)
 	f.mu.Unlock()
-	close(release)
+	doRelease()
 	first := <-firstDone
 
-	if second.Status != "failed" || second.RestorePoint != nil {
-		t.Fatalf("duplicate = %+v (RestorePoint %+v), want a refusal with no outcome", second, second.RestorePoint)
+	if second.Status != "failed" || !strings.Contains(second.Error, "already running") || second.RestorePoint != nil {
+		t.Errorf("duplicate = %+v (RestorePoint %+v), want the already-running refusal with no outcome", second, second.RestorePoint)
+	}
+	if reachedHelper != 1 {
+		t.Errorf("commands at the helper while the original ran = %d, want 1", reachedHelper)
 	}
 	if acquired != 1 || released != 0 {
-		t.Fatalf("while the original ran: leases acquired = %d, released = %d; want 1 and 0", acquired, released)
+		t.Errorf("while the original ran: leases acquired = %d, released = %d; want 1 and 0", acquired, released)
 	}
 	if rec.count() != 1 {
-		t.Fatalf("attempts = %d, want 1", rec.count())
+		t.Errorf("attempts = %d, want 1", rec.count())
 	}
 	if first.Status != "completed" || first.RestorePoint == nil || first.RestorePoint.Status != systemrestore.StatusCreated {
 		t.Fatalf("original = %+v (RestorePoint %+v)", first, first.RestorePoint)
+	}
+}
+
+func TestScriptUserHelperReservationIsReleasedWhenTheRunFails(t *testing.T) {
+	// #9164: the reservation must end on EVERY return of the owning run, not
+	// just success -- otherwise one failed handoff refuses every later
+	// delivery of that id as "already running".
+	installCheckpointRecorder(t)
+	serverConn, clientConn := createTestSocketPair(t)
+	session := sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "1000", "u", "quartz", "send-fail-twice", []string{"run_as_user"})
+	_ = clientConn.Close()
+	_ = session.Close() // every send fails: the helper is gone
+	h := newTestHeartbeat(newTestBrokerWithSessions(t, session))
+
+	for i := 1; i <= 2; i++ {
+		res := runScript(h, withScriptBlock(map[string]any{"runAs": "user"}))
+		if res.Status != "failed" || strings.Contains(res.Error, "already running") {
+			t.Fatalf("delivery %d = %+v, want the IPC failure, not a duplicate refusal", i, res)
+		}
 	}
 }
