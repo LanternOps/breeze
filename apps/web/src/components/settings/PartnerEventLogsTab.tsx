@@ -15,21 +15,22 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
+      <label className="flex items-center gap-3">
         <input
           type="checkbox"
           checked={data.enabled ?? false}
           onChange={e => set({ enabled: e.target.checked })}
           className="h-4 w-4 rounded border"
         />
-        <label className="text-sm font-medium">{t('partnerEventLogs.enable')}</label>
-      </div>
+        <span className="text-sm font-medium">{t('partnerEventLogs.enable')}</span>
+      </label>
 
       {data.enabled && (
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerEventLogs.endpoint')}</label>
+            <label htmlFor="partner-event-logs-endpoint" className="text-sm font-medium">{t('partnerEventLogs.endpoint')}</label>
             <input
+              id="partner-event-logs-endpoint"
               type="url"
               value={data.elasticsearchUrl ?? ''}
               onChange={e => set({ elasticsearchUrl: e.target.value || undefined })}
@@ -39,8 +40,9 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerEventLogs.indexPrefix')}</label>
+            <label htmlFor="partner-event-logs-index-prefix" className="text-sm font-medium">{t('partnerEventLogs.indexPrefix')}</label>
             <input
+              id="partner-event-logs-index-prefix"
               type="text"
               value={data.indexPrefix ?? ''}
               onChange={e => set({ indexPrefix: e.target.value || undefined })}
@@ -58,8 +60,9 @@ export default function PartnerEventLogsTab({ data, onChange }: Props) {
           />
 
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerEventLogs.username')}</label>
+            <label htmlFor="partner-event-logs-username" className="text-sm font-medium">{t('partnerEventLogs.username')}</label>
             <input
+              id="partner-event-logs-username"
               type="text"
               value={data.elasticsearchUsername ?? ''}
               onChange={e => set({ elasticsearchUsername: e.target.value || undefined })}

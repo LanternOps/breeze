@@ -57,7 +57,9 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
             <optgroup key={group.label} label={group.label}>
               {group.items.map(item => (
                 <option key={item.key} value={item.key}>
-                  {item.label}{item.dirty ? ' •' : ''}
+                  {/* Words, not a bullet: an option's text is all a screen
+                      reader announces, and a bare "•" reads as nothing. */}
+                  {item.dirty ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
                 </option>
               ))}
             </optgroup>
@@ -88,11 +90,15 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                         e.preventDefault();
                         onNavigate(item.key);
                       }}
+                      // Active carries a primary left accent that hover never
+                      // shows, so the two read differently even at a glance —
+                      // not just by font weight. Inactive items reserve the same
+                      // border width (transparent) so labels do not shift.
                       className={cn(
-                        'flex items-start gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                        'flex items-start gap-3 rounded-md border-l-2 px-3 py-2 text-sm transition-colors',
                         isActive
-                          ? 'bg-muted font-semibold text-foreground'
-                          : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                          ? 'border-primary bg-muted font-semibold text-foreground'
+                          : 'border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground'
                       )}
                     >
                       <Icon className="mt-0.5 h-4 w-4 shrink-0" />

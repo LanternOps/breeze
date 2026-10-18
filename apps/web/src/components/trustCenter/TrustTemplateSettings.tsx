@@ -150,7 +150,7 @@ export default function TrustTemplateSettings() {
                 value={toTri(draft[key])}
                 disabled={disabled}
                 onChange={(e) => set(key, fromTri(e.target.value as TriState))}
-                className="mt-2 h-9 w-full rounded-md border bg-background px-2 disabled:opacity-60"
+                className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-sm disabled:opacity-60"
                 data-testid={`trust-template-${key}`}
               >
                 <option value="inherit" data-testid={`trust-template-${key}-inherit`}>

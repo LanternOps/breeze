@@ -190,3 +190,17 @@ it('sends a stored tier 3 as the achievable tier on save instead of a refused va
   await act(async () => { fireEvent.click(screen.getByTestId('cv-policy-save')); });
   expect(putPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, { ...inheritedDraft(), requiredTierResetPassword: 2 });
 });
+
+// #9168: the h-8 controls at the default font size clipped descenders in the
+// Yes/No selects and the numeric fields. They use the shared settings control
+// size (h-10 + text-sm) that every other partner-settings field uses.
+it('sizes its selects and number fields with the shared h-10 text-sm control style', async () => {
+  vi.mocked(getPolicy).mockResolvedValue(response());
+  render(<CallerVerificationPolicyForm owner={{ ownerScope: 'partner' }} />);
+  const select = await screen.findByTestId('cv-policy-requireTicket');
+  const number = screen.getByTestId('cv-policy-maxAttemptsPerHour');
+  for (const control of [select, number]) {
+    expect(control).toHaveClass('h-10', 'text-sm');
+    expect(control).not.toHaveClass('h-8');
+  }
+});

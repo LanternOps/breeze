@@ -23,6 +23,8 @@ type Props = {
   disabled?: boolean;
   placeholder?: string;
   testId?: string;
+  /** The input's `id`, so the caller's `<label htmlFor>` can name it. */
+  id?: string;
 };
 
 export function parseThresholds(raw: string): { ok: true; value: number[] | undefined } | { ok: false } {
@@ -36,7 +38,7 @@ export function parseThresholds(raw: string): { ok: true; value: number[] | unde
   return { ok: true, value: uniq };
 }
 
-export default function AiBudgetThresholdsInput({ value, onChange, onValidityChange, disabled, placeholder, testId = 'ai-budget-thresholds' }: Props) {
+export default function AiBudgetThresholdsInput({ value, onChange, onValidityChange, disabled, placeholder, testId = 'ai-budget-thresholds', id }: Props) {
   const { t } = useTranslation('settings');
   const [text, setText] = useState(() => value?.join(', ') ?? '');
   const [invalid, setInvalid] = useState(false);
@@ -109,6 +111,7 @@ export default function AiBudgetThresholdsInput({ value, onChange, onValidityCha
         ))}
       </div>
       <input
+        id={id}
         type="text"
         inputMode="numeric"
         data-testid={`${testId}-input`}

@@ -34,6 +34,13 @@ describe('TrustTemplateSettings (W02g)', () => {
     api.updateTrustPageTemplate.mockResolvedValue(okSave(EMPTY, 1));
   });
 
+  // #9168: the h-9 select at the default font size clipped its option text.
+  it('sizes the on/off selects with the shared h-10 text-sm control style', async () => {
+    render(<TrustTemplateSettings />);
+    const select = await screen.findByTestId('trust-template-showManagedBy');
+    expect(select).toHaveClass('h-10', 'text-sm');
+  });
+
   it('a blank field shows the Breeze default it falls through to', async () => {
     render(<TrustTemplateSettings />);
     const managedBy = await screen.findByTestId('trust-template-showManagedBy');

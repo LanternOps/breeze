@@ -160,7 +160,7 @@ function LoadedPolicy({ owner, readOnly = false }: Props) {
                   <p data-testid={`${id}-cap-hint`} className="text-xs text-muted-foreground">{t('policy.tierCapHint', { max: tierMax })}</p>
                 )}
                 {bool && (
-                  <select id={id} data-testid={id} value={String(value(key))} className="h-8 rounded-md border bg-background px-2"
+                  <select id={id} data-testid={id} value={String(value(key))} className="h-10 rounded-md border bg-background px-3 text-sm"
                     onChange={(e) => update(key, e.target.value === 'true')}>
                     {[true, false].map((v) => (
                       <option key={String(v)} value={String(v)}
@@ -230,7 +230,7 @@ function NumberField({ id, min, max, value, onCommit }: { id: string; min: numbe
   };
   return (
     <input id={id} data-testid={id} type="number" step={1} min={min} max={max} value={text}
-      className="h-8 w-28 rounded-md border bg-background px-2"
+      className="h-10 w-28 rounded-md border bg-background px-3 text-sm"
       onChange={(e) => setText(e.target.value)} onBlur={commit}
       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }} />
   );

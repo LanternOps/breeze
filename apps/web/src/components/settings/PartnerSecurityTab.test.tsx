@@ -54,3 +54,25 @@ describe('PartnerSecurityTab allowlist textarea', () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ ipAllowlist: [] }));
   });
 });
+
+// #9168: a dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`. The
+// button shows the familiar dotted quad, but the entry it ADDS stays the exact
+// address the server sees: the allowlist matcher never crosses address
+// families (apps/api/src/services/ipMatch.ts), so adding the bare IPv4 form
+// would not cover the session that added it.
+describe('PartnerSecurityTab add-current-IP button', () => {
+  it('shows an IPv4-mapped address without the ::ffff: prefix, and adds the exact address', () => {
+    const onChange = vi.fn();
+    const { getByRole } = render(
+      <PartnerSecurityTab
+        data={{ ipAllowlist: [] }}
+        onChange={onChange}
+        status={{ currentIp: '::ffff:203.0.113.7', enforced: true, active: true } as never}
+      />,
+    );
+    const button = getByRole('button', { name: /203\.0\.113\.7/ });
+    expect(button.textContent).not.toContain('::ffff:');
+    fireEvent.click(button);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ ipAllowlist: ['::ffff:203.0.113.7'] }));
+  });
+});

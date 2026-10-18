@@ -17,8 +17,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerNotifications.fromAddress')}</label>
+          <label htmlFor="partner-notifications-from-address" className="text-sm font-medium">{t('partnerNotifications.fromAddress')}</label>
           <input
+            id="partner-notifications-from-address"
             type="email"
             value={data.fromAddress ?? ''}
             onChange={e => set({ fromAddress: e.target.value || undefined })}
@@ -28,8 +29,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerNotifications.replyTo')}</label>
+          <label htmlFor="partner-notifications-reply-to" className="text-sm font-medium">{t('partnerNotifications.replyTo')}</label>
           <input
+            id="partner-notifications-reply-to"
             type="email"
             value={data.replyTo ?? ''}
             onChange={e => set({ replyTo: e.target.value || undefined })}
@@ -41,21 +43,22 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
 
       {/* Custom SMTP */}
       <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <div className="flex items-center gap-3">
+        <label className="flex items-center gap-3">
           <input
             type="checkbox"
             checked={data.useCustomSmtp ?? false}
             onChange={e => set({ useCustomSmtp: e.target.checked })}
             className="h-4 w-4 rounded border"
           />
-          <label className="text-sm font-medium">{t('partnerNotifications.useCustomSmtp')}</label>
-        </div>
+          <span className="text-sm font-medium">{t('partnerNotifications.useCustomSmtp')}</span>
+        </label>
 
         {data.useCustomSmtp && (
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('partnerNotifications.smtpHost')}</label>
+              <label htmlFor="partner-notifications-smtp-host" className="text-sm font-medium">{t('partnerNotifications.smtpHost')}</label>
               <input
+                id="partner-notifications-smtp-host"
                 type="text"
                 value={data.smtpHost ?? ''}
                 onChange={e => set({ smtpHost: e.target.value || undefined })}
@@ -64,8 +67,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('partnerNotifications.smtpPort')}</label>
+              <label htmlFor="partner-notifications-smtp-port" className="text-sm font-medium">{t('partnerNotifications.smtpPort')}</label>
               <input
+                id="partner-notifications-smtp-port"
                 type="number"
                 value={data.smtpPort ?? ''}
                 onChange={e => set({ smtpPort: e.target.value ? Number(e.target.value) : undefined })}
@@ -74,8 +78,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('partnerNotifications.smtpUsername')}</label>
+              <label htmlFor="partner-notifications-smtp-username" className="text-sm font-medium">{t('partnerNotifications.smtpUsername')}</label>
               <input
+                id="partner-notifications-smtp-username"
                 type="text"
                 value={data.smtpUsername ?? ''}
                 onChange={e => set({ smtpUsername: e.target.value || undefined })}
@@ -84,8 +89,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
               />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">{t('partnerNotifications.encryption')}</label>
+              <label htmlFor="partner-notifications-smtp-encryption" className="text-sm font-medium">{t('partnerNotifications.encryption')}</label>
               <select
+                id="partner-notifications-smtp-encryption"
                 value={data.smtpEncryption ?? ''}
                 onChange={e => set({ smtpEncryption: (e.target.value || undefined) as InheritableNotificationSettings['smtpEncryption'] })}
                 className="h-10 w-full rounded-md border bg-background px-3 text-sm"
@@ -112,8 +118,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             notSetPlaceholder={t('partnerNotifications.notSet')}
           />
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerNotifications.slackChannel')}</label>
+            <label htmlFor="partner-notifications-slack-channel" className="text-sm font-medium">{t('partnerNotifications.slackChannel')}</label>
             <input
+              id="partner-notifications-slack-channel"
               type="text"
               value={data.slackChannel ?? ''}
               onChange={e => set({ slackChannel: e.target.value || undefined })}
@@ -152,8 +159,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">
-            <label className="text-sm font-medium">{t('partnerNotifications.defaultSound')}</label>
+            <label htmlFor="partner-notifications-pushover-sound" className="text-sm font-medium">{t('partnerNotifications.defaultSound')}</label>
             <input
+              id="partner-notifications-pushover-sound"
               type="text"
               value={data.pushoverDefaultSound ?? ''}
               onChange={e => set({ pushoverDefaultSound: e.target.value || undefined })}
@@ -162,8 +170,9 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
             />
           </div>
           <div className="space-y-2 sm:col-span-2">
-            <label className="text-sm font-medium">{t('partnerNotifications.defaultPriority')}</label>
+            <label htmlFor="partner-notifications-pushover-priority" className="text-sm font-medium">{t('partnerNotifications.defaultPriority')}</label>
             <select
+              id="partner-notifications-pushover-priority"
               value={data.pushoverDefaultPriority ?? ''}
               onChange={e =>
                 set({

@@ -57,11 +57,55 @@ describe('PartnerModulesCard', () => {
     expect(screen.getByTestId('partner-modules-external-note')).toBeTruthy();
   });
 
-  it('choosing Off PATCHes /orgs/partners/me with the parsed mode and adopts it into the store on success', async () => {
+  // #9168: Off hides Service Desk and Billing for every organization the
+  // partner runs, from one radio click. It must restate that and wait for an
+  // explicit confirm before the PATCH goes out.
+  it('choosing Off asks for confirmation first, restating the consequence, and does not save yet', () => {
+    render(<PartnerModulesCard serviceManagementMode="native" />);
+
+    fireEvent.click(screen.getByTestId('partner-modules-mode-off'));
+
+    const dialog = screen.getByTestId('partner-modules-off-confirm-dialog');
+    expect(dialog.textContent).toContain('all organizations');
+    expect(dialog.textContent).toContain('Existing tickets stay readable');
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Nothing moves until the confirm: the radio still shows the saved mode.
+    expect(screen.getByTestId('partner-modules-mode-native')).toBeChecked();
+    expect(screen.getByTestId('partner-modules-mode-off')).not.toBeChecked();
+  });
+
+  it('cancelling the Off confirm leaves the previous mode selected and never PATCHes', async () => {
+    render(<PartnerModulesCard serviceManagementMode="native" />);
+
+    fireEvent.click(screen.getByTestId('partner-modules-mode-off'));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByTestId('partner-modules-off-confirm-dialog')).toBeNull());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('partner-modules-mode-native')).toBeChecked();
+    expect(screen.getByTestId('partner-modules-mode-off')).not.toBeChecked();
+    expect(useOrgStore.getState().serviceManagementMode).toBe('native');
+  });
+
+  it('switching back to native from Off saves immediately, with no confirm', async () => {
+    useOrgStore.setState({ serviceManagementMode: 'off' });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ serviceManagementMode: 'native' }));
+    render(<PartnerModulesCard serviceManagementMode="off" />);
+
+    fireEvent.click(screen.getByTestId('partner-modules-mode-native'));
+
+    expect(screen.queryByTestId('partner-modules-off-confirm-dialog')).toBeNull();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({ serviceManagementMode: 'native' });
+    await waitFor(() => expect(useOrgStore.getState().serviceManagementMode).toBe('native'));
+  });
+
+  it('confirming Off PATCHes /orgs/partners/me with the parsed mode and adopts it into the store on success', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ serviceManagementMode: 'off' }));
     render(<PartnerModulesCard serviceManagementMode="native" />);
 
     fireEvent.click(screen.getByTestId('partner-modules-mode-off'));
+    fireEvent.click(screen.getByTestId('partner-modules-off-confirm'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const [url, init] = fetchMock.mock.calls[0];
@@ -78,6 +122,7 @@ describe('PartnerModulesCard', () => {
     render(<PartnerModulesCard serviceManagementMode="native" />);
 
     fireEvent.click(screen.getByTestId('partner-modules-mode-off'));
+    fireEvent.click(screen.getByTestId('partner-modules-off-confirm'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
