@@ -800,7 +800,7 @@ export default function PartnerSettingsPage() {
           {activeTab === 'aiFeatures' && (
             <section className="rounded-lg border bg-card p-6 shadow-xs">
               <PartnerAiDataPolicyCard />
-              <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={() => void fetchPartner()} />
+              <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={(ml) => setPartner((p) => (p ? { ...p, settings: { ...p.settings, ml } } : p))} />
             </section>
           )}
 
