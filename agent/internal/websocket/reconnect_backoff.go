@@ -77,15 +77,18 @@ func (k disconnectKind) String() string {
 
 // classifyDisconnect maps the error that ended readPump to a disconnect kind
 // and the close code it carried (1006 when there was no close frame). local
-// reports that the agent itself closed the socket, which takes precedence
-// over whatever read error the close produced.
+// reports that ForceReconnect dropped the socket. A close frame from the
+// server outranks the local mark: ForceReconnect closes without reading, so a
+// received close frame means the server closed first, and a rotation that
+// lands in the gap after a server close must not shorten the backoff.
 func classifyDisconnect(err error, local bool) (disconnectKind, int) {
 	code := websocket.CloseAbnormalClosure
 	var ce *websocket.CloseError
-	if errors.As(err, &ce) {
+	gotCloseFrame := errors.As(err, &ce)
+	if gotCloseFrame {
 		code = ce.Code
 	}
-	if local {
+	if local && !gotCloseFrame {
 		return disconnectLocal, code
 	}
 	switch code {

@@ -405,7 +405,9 @@ func (c *Client) connect() error {
 	// reconnect loop honours (#8841).
 	conn, resp, err := dialer.Dial(wsURL, headers)
 	if err != nil {
-		if resp != nil {
+		// gorilla also returns the response for a 101 with malformed
+		// handshake headers; that is not a refusal.
+		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols {
 			return fmt.Errorf("failed to connect: %w", newUpgradeRefusedError(resp, err, time.Now()))
 		}
 		return fmt.Errorf("failed to connect: %w", err)
@@ -484,10 +486,12 @@ func (c *Client) reconnectLoop() {
 				"connectedFor", lasted.Round(time.Second), "retryIn", sleep)
 		}
 
+		timer := time.NewTimer(sleep)
 		select {
 		case <-c.done:
+			timer.Stop()
 			return
-		case <-time.After(sleep):
+		case <-timer.C:
 		}
 	}
 }

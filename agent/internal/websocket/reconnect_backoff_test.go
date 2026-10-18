@@ -45,6 +45,8 @@ func TestClassifyDisconnect(t *testing.T) {
 		{"no close frame (EOF)", io.ErrUnexpectedEOF, false, disconnectAbnormal, websocket.CloseAbnormalClosure},
 		{"nil error (pump recovered)", nil, false, disconnectAbnormal, websocket.CloseAbnormalClosure},
 		{"local ForceReconnect wins over the read error", errors.New("use of closed network connection"), true, disconnectLocal, websocket.CloseAbnormalClosure},
+		{"server close frame outranks a racing local mark", &websocket.CloseError{Code: 4001}, true, disconnectAbnormal, 4001},
+		{"server normal close frame outranks a racing local mark", &websocket.CloseError{Code: websocket.CloseNormalClosure}, true, disconnectServerNormal, 1000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -374,5 +376,66 @@ func TestReconnectLoop_HonoursRetryAfterOnRefusedUpgrade(t *testing.T) {
 	got := waitForDials(t, dials, 2, 10*time.Second)
 	if gap := got[1].Sub(got[0]); gap < 2*time.Second {
 		t.Fatalf("re-dialled %v after a 503 with Retry-After: 2, want >= 2s", gap)
+	}
+}
+
+func TestForceReconnect_MarksDropAsLocal(t *testing.T) {
+	srv := newTestServer(t, func(conn *websocket.Conn) {
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+
+	// No live connection: nothing to mark, so a later server close is not
+	// mistaken for an agent-initiated one.
+	c.ForceReconnect()
+	if c.localClose.Load() {
+		t.Fatal("ForceReconnect with no connection marked a local close")
+	}
+
+	if err := c.connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	c.ForceReconnect()
+	kind, _ := classifyDisconnect(errors.New("use of closed network connection"), c.localClose.Swap(false))
+	if kind != disconnectLocal {
+		t.Fatalf("drop after ForceReconnect classified as %v, want local", kind)
+	}
+	if c.localClose.Load() {
+		t.Fatal("local-close mark not consumed")
+	}
+}
+
+func TestReconnectLoop_StopInterruptsRetryAfterWait(t *testing.T) {
+	// The post-failure wait can be up to 300 s; Stop must cut it short.
+	srv, dials := recordDialTimes(t, func(attempt int, w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	defer srv.Close()
+
+	c := newTestClient(srv.URL, noopHandler)
+	done := make(chan struct{})
+	go func() {
+		c.Start()
+		close(done)
+	}()
+	waitForDials(t, dials, 1, 5*time.Second)
+	time.Sleep(100 * time.Millisecond) // let the loop enter its wait
+
+	c.Stop()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reconnectLoop did not exit within 3s of Stop during a Retry-After wait")
+	}
+	if n := len(dials()); n != 1 {
+		t.Fatalf("saw %d dial attempts, want 1 (the 30s Retry-After was not honoured)", n)
 	}
 }
