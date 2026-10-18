@@ -67,7 +67,7 @@ beforeEach(() => {
   state.sets = {
     [S]: { id: S, enabled: true, publishedVersion: 4, publishedBundle: GOLDEN, publishedSha256: GOLDEN_SHA },
     [P]: { id: P, enabled: true, publishedVersion: 1, publishedBundle: Buffer.from('{}'), publishedSha256: 'a'.repeat(64) },
-    [YARA_BUILTIN_RULE_SET_ID]: { id: YARA_BUILTIN_RULE_SET_ID, enabled: true, publishedVersion: 2, publishedBundle: Buffer.from('{"b":1}'), publishedSha256: 'b'.repeat(64) },
+    [YARA_BUILTIN_RULE_SET_ID]: { id: YARA_BUILTIN_RULE_SET_ID, isBuiltin: true, enabled: true, publishedVersion: 2, publishedBundle: Buffer.from('{"b":1}'), publishedSha256: 'b'.repeat(64) },
   };
   resolvePolicyMock.mockResolvedValue({ settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS, ruleSetIds: [S] }, featureLinkId: 'l' });
 });
@@ -93,6 +93,12 @@ describe('GET /agents/:id/yara/rule-sets/:ruleSetId/:version', () => {
   it('serves the built-in pack even when the policy lists no sets', async () => {
     resolvePolicyMock.mockResolvedValue({ settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS, ruleSetIds: [] }, featureLinkId: 'l' });
     expect((await get(`${YARA_BUILTIN_RULE_SET_ID}/2`)).status).toBe(200);
+  });
+
+  it('the attachment bypass needs the built-in FLAG, not just the well-known id', async () => {
+    resolvePolicyMock.mockResolvedValue({ settings: { ...SECURITY_SCAN_SETTINGS_DEFAULTS, ruleSetIds: [] }, featureLinkId: 'l' });
+    state.sets[YARA_BUILTIN_RULE_SET_ID] = { ...state.sets[YARA_BUILTIN_RULE_SET_ID]!, isBuiltin: false };
+    expect((await get(`${YARA_BUILTIN_RULE_SET_ID}/2`)).status).toBe(404);
   });
 
   it('404 when no policy governs the device at all', async () => {

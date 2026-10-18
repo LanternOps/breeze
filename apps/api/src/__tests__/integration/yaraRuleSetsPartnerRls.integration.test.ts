@@ -263,6 +263,15 @@ describe('yara_rules RLS + owner inheritance', () => {
     expect(after!.orgId).toBe(w.O1a);
   });
 
+  it('org O1a cannot re-parent its own rule under a P1 partner-wide set (42501)', async () => {
+    const [row] = await as(orgCtx(w.O1a, w.P1), () =>
+      db.insert(yaraRules).values({ ...RULE, ruleSetId: w.setO1a }).returning(),
+    );
+    await expect(
+      as(orgCtx(w.O1a, w.P1), () => db.update(yaraRules).set({ ruleSetId: w.setP1 }).where(eq(yaraRules.id, row!.id))),
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+
   it('org O1a cannot insert a rule into a P1 partner-wide set (42501)', async () => {
     await expect(
       as(orgCtx(w.O1a, w.P1), () => db.insert(yaraRules).values({ ...RULE, ruleSetId: w.setP1 })),

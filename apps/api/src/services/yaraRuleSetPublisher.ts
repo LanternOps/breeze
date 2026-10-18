@@ -15,6 +15,14 @@
  *     and leave the last good published snapshot in place — devices keep
  *     scanning with it and never see unpublished text.
  *
+ * Two exceptions keep the fail-safe directions immediate:
+ *  - a set with NO enabled rules is unpublished (published_version 0), so
+ *    scans stop using it instead of running a zero-rule YARA scan;
+ *  - turning auto-quarantine OFF while the set cannot be published republishes
+ *    the last good rules with `autoQuarantine: false` (no recompile: the flag
+ *    does not affect compilation). Otherwise devices would keep quarantining
+ *    with the old bundle until someone fixed an unrelated broken rule.
+ *
  * Pre-check unavailable (binary missing, timeout, engine failure) refuses to
  * publish in production. Lint-only publishing is a dev escape hatch behind
  * `BREEZE_YARA_LINT_ONLY=1` outside production; the set then records
@@ -22,7 +30,7 @@
  */
 import { createHash } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
-import { buildYaraBundleJson, type YaraRuleSeverity } from '@breeze/shared';
+import { buildYaraBundleJson, type YaraBundleRuleInput, type YaraRuleSeverity } from '@breeze/shared';
 import { db, assertInTransaction } from '../db';
 import { yaraRuleSets, yaraRules } from '../db/schema';
 import { precheckYaraBundle, yaracVersion, type YaraPrecheckError } from './yaraPrecheck';
@@ -46,6 +54,11 @@ export interface YaraPublishError {
 export interface PublishRuleSetResult {
   /** True when this call produced a new published version. */
   published: boolean;
+  /**
+   * The new version only flipped auto-quarantine off on the last good rules;
+   * the edit that triggered the publish is NOT live (`stale` stays true).
+   */
+  autoQuarantineOnly?: boolean;
   /** The set's published version after this call (0 = never published). */
   version: number;
   /** The set's edit counter after this call. */
@@ -58,8 +71,22 @@ export interface PublishRuleSetResult {
 
 const COMPILE_ERROR_MAX = 2000;
 
+/** Dev escape hatch only; an unset NODE_ENV is NOT a dev environment. */
 function lintOnlyAllowed(): boolean {
-  return process.env.NODE_ENV !== 'production' && process.env.BREEZE_YARA_LINT_ONLY === '1';
+  const env = process.env.NODE_ENV;
+  return (env === 'development' || env === 'test') && process.env.BREEZE_YARA_LINT_ONLY === '1';
+}
+
+/** The `autoQuarantine` and rules of a stored (already validated) bundle, or null. */
+function parsePublishedBundle(bytes: Buffer | null): { autoQuarantine: boolean; rules: YaraBundleRuleInput[] } | null {
+  if (!bytes) return null;
+  try {
+    const parsed = JSON.parse(bytes.toString('utf8')) as { autoQuarantine?: unknown; rules?: unknown };
+    if (typeof parsed.autoQuarantine !== 'boolean' || !Array.isArray(parsed.rules)) return null;
+    return { autoQuarantine: parsed.autoQuarantine, rules: parsed.rules as YaraBundleRuleInput[] };
+  } catch {
+    return null;
+  }
 }
 
 export async function publishRuleSet(ruleSetId: string): Promise<PublishRuleSetResult> {
@@ -72,6 +99,7 @@ export async function publishRuleSet(ruleSetId: string): Promise<PublishRuleSetR
       publishedVersion: yaraRuleSets.publishedVersion,
       autoQuarantine: yaraRuleSets.autoQuarantine,
       isBuiltin: yaraRuleSets.isBuiltin,
+      publishedBundle: yaraRuleSets.publishedBundle,
     })
     .from(yaraRuleSets)
     .where(eq(yaraRuleSets.id, ruleSetId))
@@ -94,6 +122,27 @@ export async function publishRuleSet(ruleSetId: string): Promise<PublishRuleSetR
     .orderBy(asc(yaraRules.id));
 
   const version = set.currentVersion + 1;
+  const now = new Date();
+
+  if (rules.length === 0) {
+    await db
+      .update(yaraRuleSets)
+      .set({
+        currentVersion: version,
+        publishedVersion: 0,
+        publishedBundle: null,
+        publishedSha256: null,
+        publishedAt: null,
+        publishedEngine: null,
+        publishedPolicy: null,
+        stale: false,
+        ruleCount: 0,
+        updatedAt: now,
+      })
+      .where(eq(yaraRuleSets.id, ruleSetId));
+    return { published: false, version: 0, currentVersion: version, stale: false, errors: [] };
+  }
+
   const json = buildYaraBundleJson({
     ruleSetId,
     version,
@@ -113,9 +162,12 @@ export async function publishRuleSet(ruleSetId: string): Promise<PublishRuleSetR
     errorByRule.set(e.ruleId, (prev ? `${prev}\n${msg}` : msg).slice(0, COMPILE_ERROR_MAX));
   }
 
-  // Only touch rows whose stored error actually changes.
-  const now = new Date();
-  for (const r of rules) {
+  // Per-rule state is only known after a real compile: a clean pass, or a
+  // result that attributes errors to rules. An unavailable pre-check or a
+  // bundle-level-only failure (caps, decode) says nothing about individual
+  // rules, so stored errors are left as they are. Only changed rows are written.
+  const ruleStateKnown = check.ok || precheckErrors.some((e) => e.ruleId && ruleIds.has(e.ruleId));
+  for (const r of ruleStateKnown ? rules : []) {
     const next = errorByRule.get(r.id) ?? null;
     if (next === r.compileError) continue;
     await db.update(yaraRules).set({ compileError: next, updatedAt: now }).where(eq(yaraRules.id, r.id));
@@ -140,6 +192,40 @@ export async function publishRuleSet(ruleSetId: string): Promise<PublishRuleSetR
         lastPublishedVersion: set.publishedVersion,
       });
     }
+
+    const lastGood = parsePublishedBundle(set.publishedBundle);
+    if (set.publishedVersion > 0 && set.publishedBundle && !lastGood) {
+      console.error('[yara] stored published bundle is unreadable; auto-quarantine fail-safe skipped', { ruleSetId });
+    }
+    if (lastGood && lastGood.autoQuarantine && !set.autoQuarantine) {
+      const flagOnly = Buffer.from(
+        buildYaraBundleJson({ ruleSetId, version, autoQuarantine: false, rules: lastGood.rules }),
+        'utf8',
+      );
+      await db
+        .update(yaraRuleSets)
+        .set({
+          currentVersion: version,
+          publishedVersion: version,
+          publishedBundle: flagOnly,
+          publishedSha256: createHash('sha256').update(flagOnly).digest('hex'),
+          publishedAt: now,
+          stale: true,
+          ruleCount: rules.length,
+          updatedAt: now,
+        })
+        .where(eq(yaraRuleSets.id, ruleSetId));
+      return {
+        published: true,
+        autoQuarantineOnly: true,
+        version,
+        currentVersion: version,
+        stale: true,
+        errors,
+        ...(unavailable !== undefined ? { unavailable } : {}),
+      };
+    }
+
     await db
       .update(yaraRuleSets)
       .set({ currentVersion: version, stale: true, ruleCount: rules.length, updatedAt: now })
@@ -155,6 +241,9 @@ export async function publishRuleSet(ruleSetId: string): Promise<PublishRuleSetR
   }
 
   const engine = check.ok ? await yaracVersion() : null;
+  if (check.ok && !engine) {
+    console.warn('[yara] breeze-yarac version probe failed after a clean pre-check; publishing without an engine stamp', { ruleSetId });
+  }
   const bytes = Buffer.from(json, 'utf8');
   await db
     .update(yaraRuleSets)

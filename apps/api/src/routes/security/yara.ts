@@ -121,6 +121,18 @@ function publishBody(result: PublishRuleSetResult) {
     currentVersion: result.currentVersion,
     stale: result.stale,
     errors: result.errors,
+    ...(result.autoQuarantineOnly ? { autoQuarantineOnly: true } : {}),
+    ...(result.unavailable ? { precheckUnavailable: true } : {}),
+  };
+}
+
+/** Publish outcome for audit details: an outage must read differently from a rule error. */
+function publishAudit(result: PublishRuleSetResult) {
+  return {
+    published: result.published,
+    version: result.version,
+    stale: result.stale,
+    ...(result.autoQuarantineOnly ? { autoQuarantineOnly: true } : {}),
     ...(result.unavailable ? { precheckUnavailable: true } : {}),
   };
 }
@@ -303,7 +315,7 @@ yaraRoutes.patch(
       resourceType: 'yara_rule_set',
       resourceId: id,
       resourceName: updated?.name ?? set.name,
-      details: { fields: Object.keys(payload), ...(publish ? { published: publish.published, version: publish.version } : {}) },
+      details: { fields: Object.keys(payload), ...(publish ? publishAudit(publish) : {}) },
     });
 
     return c.json({ data: updated ? summarize(updated) : null, ...(publish ? { publish: publishBody(publish) } : {}) });
@@ -399,7 +411,7 @@ yaraRoutes.post(
       resourceType: 'yara_rule',
       resourceId: ruleId,
       resourceName: payload.name,
-      details: { ruleSetId: id, published: publish.published, version: publish.version, stale: publish.stale },
+      details: { ruleSetId: id, ...publishAudit(publish) },
     });
     return c.json({ data: { id: ruleId }, publish: publishBody(publish) }, 201);
   },
@@ -462,9 +474,7 @@ yaraRoutes.patch(
       details: {
         ruleSetId: found.set.id,
         fields: Object.keys(payload),
-        published: publish.published,
-        version: publish.version,
-        stale: publish.stale,
+        ...publishAudit(publish),
       },
     });
     return c.json({ data: { id: ruleId }, publish: publishBody(publish) });
@@ -493,7 +503,7 @@ yaraRoutes.delete(
       resourceType: 'yara_rule',
       resourceId: ruleId,
       resourceName: found.rule.name,
-      details: { ruleSetId: found.set.id, published: publish.published, version: publish.version, stale: publish.stale },
+      details: { ruleSetId: found.set.id, ...publishAudit(publish) },
     });
     return c.json({ success: true, publish: publishBody(publish) });
   },

@@ -57,13 +57,15 @@ agentYaraRuleSetRoutes.get(
       .limit(1);
     if (!device) return c.json(NOT_FOUND, 404);
 
-    if (setId !== YARA_BUILTIN_RULE_SET_ID) {
+    const isBuiltinId = setId === YARA_BUILTIN_RULE_SET_ID;
+    if (!isBuiltinId) {
       const policy = await resolveSecurityScanPolicyForDevice(device.id);
       if (!policy || !policy.settings.ruleSetIds.includes(setId)) return c.json(NOT_FOUND, 404);
     }
 
     const [set] = await db
       .select({
+        isBuiltin: yaraRuleSets.isBuiltin,
         enabled: yaraRuleSets.enabled,
         publishedVersion: yaraRuleSets.publishedVersion,
         publishedBundle: yaraRuleSets.publishedBundle,
@@ -75,6 +77,9 @@ agentYaraRuleSetRoutes.get(
     if (!set || !set.enabled || set.publishedVersion < 1 || !set.publishedBundle || !set.publishedSha256) {
       return c.json(NOT_FOUND, 404);
     }
+    // The attachment bypass above is keyed on the well-known id; only the real
+    // built-in row (is_builtin, written by the boot upsert) may use it.
+    if (isBuiltinId && !set.isBuiltin) return c.json(NOT_FOUND, 404);
     if (set.publishedVersion !== version) {
       return c.json({ error: 'Rule set version is no longer current', currentVersion: set.publishedVersion }, 409);
     }

@@ -15,6 +15,9 @@
  */
 import './setup';
 import { createHash, randomUUID } from 'node:crypto';
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
@@ -226,7 +229,7 @@ describe('/security/yara routes (real Postgres)', () => {
     expect((await call(w.org, 'POST', `/yara/rule-sets/${set.id}/rules`, { name: 'big', source: 'a'.repeat(65 * 1024) })).status).toBe(400);
   });
 
-  it('rule edit and delete republish; toggling autoQuarantine republishes with it in the bundle', async () => {
+  it('rule edit republishes; deleting the last rule UNpublishes the set (no zero-rule YARA scans)', async () => {
     const w = await seed();
     const set = (await (await call(w.padmin, 'POST', '/yara/rule-sets', { name: 'p', orgId: w.orgA.id })).json()).data;
     const rule = (await (await call(w.padmin, 'POST', `/yara/rule-sets/${set.id}/rules`, { name: 'r1', source: 'rule r1 { condition: true }' })).json()).data;
@@ -235,8 +238,8 @@ describe('/security/yara routes (real Postgres)', () => {
     // padmin's role lacks devices:execute: turning auto-quarantine ON is refused...
     expect((await call(w.padmin, 'PATCH', `/yara/rule-sets/${set.id}`, { autoQuarantine: true })).status).toBe(403);
     const del = await call(w.padmin, 'DELETE', `/yara/rules/${rule.id}`);
-    expect((await del.json()).publish).toMatchObject({ published: true, version: 3 });
-    expect(JSON.parse(Buffer.from((await setRow(set.id)).publishedBundle).toString('utf8')).rules).toEqual([]);
+    expect((await del.json()).publish).toMatchObject({ published: false, version: 0, currentVersion: 3, stale: false });
+    expect(await setRow(set.id)).toMatchObject({ publishedVersion: 0, publishedBundle: null, publishedSha256: null, currentVersion: 3 });
   });
 
   it('deleting a set removes its rules', async () => {
@@ -246,5 +249,94 @@ describe('/security/yara routes (real Postgres)', () => {
     expect((await call(w.org, 'DELETE', `/yara/rule-sets/${set.id}`)).status).toBe(200);
     const rules = await (getTestDb() as any).select().from(yaraRules).where(eq(yaraRules.ruleSetId, set.id));
     expect(rules).toEqual([]);
+  });
+});
+
+/**
+ * The compile-error / stale / fail-safe branches against real rows. CI has no
+ * breeze-yarac binary, so a stand-in honours the exact C5 CLI contract
+ * (`validate` on stdin -> {"ok","errors"} with exit 0/1; `version`): any rule
+ * whose source mentions `undefined_ident` fails to compile.
+ */
+describe('/security/yara publishing against a C5-contract pre-check (real Postgres)', () => {
+  const FAKE_YARAC = `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'version') { process.stdout.write(JSON.stringify({ engine: 'fake-yarac', policy: 1, format: 1 }) + '\\n'); process.exit(0); }
+let buf = '';
+process.stdin.on('data', (d) => { buf += d; });
+process.stdin.on('end', () => {
+  const b = JSON.parse(buf);
+  const errors = b.rules.filter((r) => r.source.includes('undefined_ident'))
+    .map((r) => ({ ruleId: r.id, name: r.name, code: 'compile', message: 'unknown identifier', line: 1 }));
+  process.stdout.write(JSON.stringify({ ok: errors.length === 0, errors }) + '\\n');
+  process.exit(errors.length ? 1 : 0);
+});
+`;
+  let prior: { lint?: string; path?: string };
+
+  beforeAll(() => {
+    prior = { lint: process.env.BREEZE_YARA_LINT_ONLY, path: process.env.BREEZE_YARAC_PATH };
+    const dir = mkdtempSync(join(tmpdir(), 'fake-yarac-'));
+    const bin = join(dir, 'breeze-yarac');
+    writeFileSync(bin, FAKE_YARAC);
+    chmodSync(bin, 0o755);
+    delete process.env.BREEZE_YARA_LINT_ONLY;
+    process.env.BREEZE_YARAC_PATH = bin;
+  });
+
+  afterAll(() => {
+    if (prior.lint === undefined) delete process.env.BREEZE_YARA_LINT_ONLY; else process.env.BREEZE_YARA_LINT_ONLY = prior.lint;
+    if (prior.path === undefined) delete process.env.BREEZE_YARAC_PATH; else process.env.BREEZE_YARAC_PATH = prior.path;
+  });
+
+  it('a breaking edit leaves the last good bundle published, marks the set stale and the rule errored; fixing it republishes', async () => {
+    const w = await seed();
+    const set = (await (await call(w.org, 'POST', '/yara/rule-sets', { name: 'ci' })).json()).data;
+    const good = (await (await call(w.org, 'POST', `/yara/rule-sets/${set.id}/rules`, { name: 'good_rule', source: 'rule good_rule { condition: true }' })).json());
+    expect(good.publish).toMatchObject({ published: true, version: 1, stale: false });
+    const v1 = await setRow(set.id);
+    expect(v1.publishedEngine).toBe('fake-yarac');
+
+    const broke = await call(w.org, 'PATCH', `/yara/rules/${good.data.id}`, { source: 'rule good_rule { condition: undefined_ident }' });
+    expect(broke.status).toBe(200);
+    const body = await broke.json();
+    expect(body.publish).toMatchObject({ published: false, stale: true, version: 1, currentVersion: 2 });
+    expect(body.publish.errors[0]).toMatchObject({ ruleId: good.data.id, code: 'compile' });
+
+    const after = await setRow(set.id);
+    expect(after).toMatchObject({ stale: true, currentVersion: 2, publishedVersion: 1, publishedSha256: v1.publishedSha256 });
+    expect(Buffer.from(after.publishedBundle).equals(Buffer.from(v1.publishedBundle))).toBe(true);
+    const [rule] = await (getTestDb() as any).select().from(yaraRules).where(eq(yaraRules.id, good.data.id));
+    expect(rule.compileError).toMatch(/^compile: unknown identifier/);
+
+    const fixed = await call(w.org, 'PATCH', `/yara/rules/${good.data.id}`, { source: 'rule good_rule { condition: false }' });
+    expect((await fixed.json()).publish).toMatchObject({ published: true, version: 3, stale: false });
+    const [ruleAfterFix] = await (getTestDb() as any).select().from(yaraRules).where(eq(yaraRules.id, good.data.id));
+    expect(ruleAfterFix.compileError).toBeNull();
+    expect((await setRow(set.id)).stale).toBe(false);
+  });
+
+  it('turning auto-quarantine OFF while a broken rule blocks publishing still reaches devices', async () => {
+    const w = await seed();
+    // Seed the set with auto-quarantine ON directly (the org role has no devices:execute).
+    const [row] = await (getTestDb() as any).insert(yaraRuleSets)
+      .values({ orgId: w.orgA.id, name: 'aq', autoQuarantine: true }).returning({ id: yaraRuleSets.id });
+    const setId = row.id as string;
+    await call(w.org, 'POST', `/yara/rule-sets/${setId}/rules`, { name: 'good_rule', source: 'rule good_rule { condition: true }' });
+    expect(JSON.parse(Buffer.from((await setRow(setId)).publishedBundle).toString('utf8')).autoQuarantine).toBe(true);
+    const brokenRes = await call(w.org, 'POST', `/yara/rule-sets/${setId}/rules`, { name: 'bad_rule', source: 'rule bad_rule { condition: undefined_ident }' });
+    expect((await brokenRes.json()).publish).toMatchObject({ published: false, stale: true });
+
+    const off = await call(w.org, 'PATCH', `/yara/rule-sets/${setId}`, { autoQuarantine: false });
+    expect(off.status).toBe(200);
+    expect((await off.json()).publish).toMatchObject({ published: true, autoQuarantineOnly: true, stale: true });
+
+    const live = await setRow(setId);
+    const bundle = JSON.parse(Buffer.from(live.publishedBundle).toString('utf8'));
+    expect(bundle.autoQuarantine).toBe(false);
+    expect(bundle.version).toBe(live.publishedVersion);
+    // Still the last GOOD rules: the broken one is not shipped.
+    expect(bundle.rules.map((r: { name: string }) => r.name)).toEqual(['good_rule']);
+    expect(live.publishedSha256).toBe(createHash('sha256').update(Buffer.from(live.publishedBundle)).digest('hex'));
   });
 });

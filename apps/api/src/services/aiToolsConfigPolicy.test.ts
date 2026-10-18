@@ -72,6 +72,13 @@ vi.mock('../db', () => ({
   },
 }));
 
+const { ruleSetGateMock } = vi.hoisted(() => ({
+  ruleSetGateMock: vi.fn(async (): Promise<unknown> => ({ ok: true })),
+}));
+vi.mock('../routes/configurationPolicies/securityRuleSetGate', () => ({
+  checkSecurityRuleSetsWrite: ruleSetGateMock,
+}));
+
 vi.mock('../db/schema', () => ({
   configurationPolicies: {
     id: 'configurationPolicies.id',
@@ -1659,6 +1666,63 @@ describe('manage_policy_feature_link security auto-quarantine warning', () => {
     }, makeAuth());
 
     expect(JSON.parse(output)).not.toHaveProperty('warning');
+  });
+});
+
+// #6263 W03: the AI tool writes `security` links too, so it must run the same
+// ruleSetIds gate as the HTTP route (tenancy review finding on #9156).
+describe('manage_policy_feature_link security ruleSetIds gate', () => {
+  const SET = 'aaaaaaaa-0000-4000-8000-00000000000a';
+  const REFUSAL = { ok: false, status: 400, body: { error: 'nope', code: 'YARA_RULE_SET_NOT_ATTACHABLE', ruleSetIds: [SET] } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    vi.mocked(getConfigPolicy).mockReset();
+    vi.mocked(addFeatureLink).mockReset();
+    vi.mocked(updateFeatureLink).mockReset();
+    canManagePartnerWidePoliciesMock.mockReset().mockReturnValue(true);
+    policyAccessConditionMock.mockReset().mockReturnValue(undefined);
+    ruleSetGateMock.mockReset().mockResolvedValue({ ok: true });
+    enable2faState.value = true;
+  });
+
+  function toolsWithPolicy(owner: { orgId: string | null; partnerId: string | null } = { orgId: ORG_ID, partnerId: null }) {
+    vi.mocked(getConfigPolicy).mockResolvedValue({ id: POLICY_ID, ...owner, name: 'Policy' } as any);
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+    return tools;
+  }
+
+  it('add: a refused list is an error and nothing is written; the gate sees the policy owner', async () => {
+    ruleSetGateMock.mockResolvedValue(REFUSAL);
+    const output = await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'security',
+      inlineSettings: { autoQuarantine: false, ruleSetIds: [SET] },
+    }, makeAuth());
+    expect(JSON.parse(output)).toMatchObject({ error: 'nope', code: 'YARA_RULE_SET_NOT_ATTACHABLE' });
+    expect(ruleSetGateMock).toHaveBeenCalledWith({ orgId: ORG_ID, partnerId: null }, expect.objectContaining({ ruleSetIds: [SET] }));
+    expect(addFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('update: a refused list is an error and nothing is written', async () => {
+    const tools = toolsWithPolicy();
+    mockSelectRows([{ featureType: 'security' }]);
+    ruleSetGateMock.mockResolvedValue(REFUSAL);
+    const output = await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update', configPolicyId: POLICY_ID, featureLinkId: 'link-1',
+      inlineSettings: { autoQuarantine: false, ruleSetIds: [SET] },
+    }, makeAuth());
+    expect(JSON.parse(output).error).toBe('nope');
+    expect(updateFeatureLink).not.toHaveBeenCalled();
+  });
+
+  it('a non-security link never consults the gate', async () => {
+    vi.mocked(addFeatureLink).mockResolvedValue({ id: 'link-1', featureType: 'patch' } as any);
+    await toolsWithPolicy().get('manage_policy_feature_link')!.handler({
+      action: 'add', configPolicyId: POLICY_ID, featureType: 'patch', inlineSettings: {},
+    }, makeAuth());
+    expect(ruleSetGateMock).not.toHaveBeenCalled();
   });
 });
 

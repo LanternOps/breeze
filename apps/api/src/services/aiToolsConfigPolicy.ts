@@ -17,6 +17,7 @@ import {
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { checkSecurityAgentsLinkWrite, SecurityAgentsLinkWriteError } from './securityAgents/securityAgentsLinkWrite';
+import { checkSecurityRuleSetsWrite } from '../routes/configurationPolicies/securityRuleSetGate';
 import { AI_AUTO_INSTALL_REFUSAL_MESSAGE } from './aiToolsSoftwarePolicyAudit';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
@@ -1176,6 +1177,12 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
         if ('error' in validated) return JSON.stringify({ error: validated.error });
         inlineSettings = validated.value;
 
+        // #6263 W03: same ruleSetIds gate as the HTTP route (featureLinks.ts).
+        if (featureType === 'security') {
+          const ruleSets = await checkSecurityRuleSetsWrite({ orgId: policy.orgId, partnerId: policy.partnerId }, inlineSettings);
+          if (!ruleSets.ok) return JSON.stringify(ruleSets.body);
+        }
+
         // addFeatureLink returns null (instead of throwing) on a duplicate —
         // see the comment on its onConflictDoNothing insert in
         // configurationPolicy.ts for why the raised-violation catch pattern
@@ -1225,6 +1232,10 @@ export function registerConfigPolicyTools(aiTools: Map<string, AiTool>): void {
           const validated = validateInlineSettingsForFeature(existingFeatureType, inlineSettings);
           if ('error' in validated) return JSON.stringify({ error: validated.error });
           inlineSettings = validated.value;
+          if (existingFeatureType === 'security') {
+            const ruleSets = await checkSecurityRuleSetsWrite({ orgId: policy.orgId, partnerId: policy.partnerId }, inlineSettings);
+            if (!ruleSets.ok) return JSON.stringify(ruleSets.body);
+          }
           updates.inlineSettings = inlineSettings;
         }
 

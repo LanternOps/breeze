@@ -134,7 +134,7 @@ describe('publishRuleSet', () => {
   });
 
   // The enabled filter is SQL (pinned against real Postgres in
-  // yaraRuleSetPublisher.integration.test.ts); here we pin that exactly the
+  // yaraRuleSetRoutes.integration.test.ts); here we pin that exactly the
   // returned rows, and nothing else, reach the bundle.
   it('every selected rule, and only those, goes into the bundle', async () => {
     precheckMock.mockResolvedValue({ ok: true });
@@ -174,12 +174,97 @@ describe('publishRuleSet', () => {
     expect(res).toMatchObject({ published: true, version: 4 });
   });
 
-  it('an empty set publishes a valid empty bundle', async () => {
+  it('a set with no enabled rules is UNpublished (devices stop scanning with it), not published empty', async () => {
     state.rules = [];
-    precheckMock.mockResolvedValue({ ok: true });
+    const res = await publishRuleSet('S');
+    expect(precheckMock).not.toHaveBeenCalled();
+    expect(setUpdate()).toMatchObject({
+      currentVersion: 4, publishedVersion: 0, publishedBundle: null, publishedSha256: null,
+      publishedAt: null, publishedEngine: null, publishedPolicy: null, stale: false, ruleCount: 0,
+    });
+    expect(res).toEqual({ published: false, version: 0, currentVersion: 4, stale: false, errors: [] });
+  });
+
+  it('pre-check unavailable: stored per-rule compile errors are left alone (nothing new is known)', async () => {
+    precheckMock.mockResolvedValue({ ok: false, unavailable: 'timeout' });
     await publishRuleSet('S');
-    expect((setUpdate()!.publishedBundle as Buffer).toString('utf8')).toMatch(/"rules":\[\]\}$/);
-    expect(setUpdate()!.ruleCount).toBe(0);
+    expect(ruleUpdates()).toEqual([]);
+  });
+
+  it('bundle-level errors only: stored per-rule compile errors are left alone', async () => {
+    precheckMock.mockResolvedValue({ ok: false, errors: [{ ruleId: '', name: '', code: 'cap_rules', message: 'too many' }] });
+    await publishRuleSet('S');
+    expect(ruleUpdates()).toEqual([]);
+  });
+
+  it('a successful pre-check whose version probe fails still publishes, and says so', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    precheckMock.mockResolvedValue({ ok: true });
+    versionMock.mockResolvedValue(null);
+    const res = await publishRuleSet('S');
+    expect(res.published).toBe(true);
+    expect(setUpdate()).toMatchObject({ publishedEngine: null, publishedPolicy: null });
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('lint-only needs an explicit development/test NODE_ENV (unset NODE_ENV refuses)', async () => {
+    delete process.env.NODE_ENV;
+    process.env.BREEZE_YARA_LINT_ONLY = '1';
+    precheckMock.mockResolvedValue({ ok: false, unavailable: 'ENOENT' });
+    const res = await publishRuleSet('S');
+    expect(res).toMatchObject({ published: false, stale: true });
+  });
+
+  describe('turning auto-quarantine OFF while the set cannot be published (fail-safe)', () => {
+    const lastGood = (autoQuarantine: boolean) => buildYaraBundleJson({
+      ruleSetId: 'S', version: 3, autoQuarantine,
+      rules: [{ id: 'R1', name: 'r_one', severity: 'high', source: 'rule r_one { condition: true }' }],
+    });
+
+    it('republishes the LAST GOOD rules with autoQuarantine false at the new version; the set stays stale', async () => {
+      state.set = { ...state.set!, autoQuarantine: false, publishedBundle: Buffer.from(lastGood(true)), publishedEngine: 'e1', publishedPolicy: 1 };
+      precheckMock.mockResolvedValue({ ok: false, errors: [{ ruleId: 'R2', name: 'r_two', code: 'compile', message: 'x' }] });
+      const res = await publishRuleSet('S');
+
+      const expected = buildYaraBundleJson({
+        ruleSetId: 'S', version: 4, autoQuarantine: false,
+        rules: [{ id: 'R1', name: 'r_one', severity: 'high', source: 'rule r_one { condition: true }' }],
+      });
+      const u = setUpdate()!;
+      expect((u.publishedBundle as Buffer).toString('utf8')).toBe(expected);
+      expect(u).toMatchObject({
+        currentVersion: 4, publishedVersion: 4, stale: true,
+        publishedSha256: createHash('sha256').update(expected, 'utf8').digest('hex'),
+      });
+      // No new compile happened: the engine stamp of the last good publish stands.
+      expect(u).not.toHaveProperty('publishedEngine');
+      expect(u).not.toHaveProperty('publishedPolicy');
+      expect(res).toMatchObject({ published: true, version: 4, stale: true, autoQuarantineOnly: true });
+    });
+
+    it('also applies when the pre-check is unavailable', async () => {
+      process.env.NODE_ENV = 'production';
+      state.set = { ...state.set!, autoQuarantine: false, publishedBundle: Buffer.from(lastGood(true)) };
+      precheckMock.mockResolvedValue({ ok: false, unavailable: 'ENOENT' });
+      const res = await publishRuleSet('S');
+      expect(res).toMatchObject({ published: true, stale: true, autoQuarantineOnly: true, unavailable: 'ENOENT' });
+    });
+
+    it('does nothing extra when the last good bundle already has auto-quarantine off', async () => {
+      state.set = { ...state.set!, autoQuarantine: false, publishedBundle: Buffer.from(lastGood(false)) };
+      precheckMock.mockResolvedValue({ ok: false, errors: [{ ruleId: 'R2', name: 'r_two', code: 'compile', message: 'x' }] });
+      const res = await publishRuleSet('S');
+      expect(setUpdate()).not.toHaveProperty('publishedVersion');
+      expect(res).toMatchObject({ published: false, version: 3 });
+    });
+
+    it('never turns auto-quarantine ON through this path', async () => {
+      state.set = { ...state.set!, autoQuarantine: true, publishedBundle: Buffer.from(lastGood(false)) };
+      precheckMock.mockResolvedValue({ ok: false, errors: [{ ruleId: 'R2', name: 'r_two', code: 'compile', message: 'x' }] });
+      const res = await publishRuleSet('S');
+      expect(setUpdate()).not.toHaveProperty('publishedVersion');
+      expect(res.published).toBe(false);
+    });
   });
 
   it('a missing (or RLS-invisible / not lockable) set throws NotFound', async () => {

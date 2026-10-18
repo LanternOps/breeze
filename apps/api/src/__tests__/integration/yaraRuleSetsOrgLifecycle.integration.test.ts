@@ -42,7 +42,8 @@ async function seed() {
   });
 }
 
-const read = <T>(fn: (db: any) => Promise<T>) => withSystemDbAccessContext(() => fn(getTestDb() as any));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const read = (fn: (db: any) => Promise<any>): Promise<any[]> => withSystemDbAccessContext(() => fn(getTestDb() as any));
 
 describe('yara rule sets through org merge / erasure', () => {
   it('a merge repoints the loser\'s sets AND their rules (derived) to the survivor; partner-wide untouched', async () => {
@@ -61,6 +62,10 @@ describe('yara rule sets through org merge / erasure', () => {
 
     const stranded = await read((db) => db.select({ id: yaraRules.id }).from(yaraRules).where(eq(yaraRules.orgId, s.loserId)));
     expect(stranded).toEqual([]);
+
+    const [builtin] = await read((db) => db.select().from(yaraRuleSets).where(eq(yaraRuleSets.id, YARA_BUILTIN_RULE_SET_ID)));
+    expect(builtin).toMatchObject({ isBuiltin: true, orgId: null, partnerId: null });
+    await read((db) => db.delete(yaraRuleSets).where(eq(yaraRuleSets.id, YARA_BUILTIN_RULE_SET_ID)));
   }, 120000);
 
   it('erasing an org deletes its sets and rules; partner-wide and built-in survive', async () => {

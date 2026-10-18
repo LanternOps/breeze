@@ -161,6 +161,11 @@ function parseRuleErrors(raw: unknown): YaraPrecheckError[] | null {
   return errors;
 }
 
+/** First 120 printable chars of tool output, for server logs (never sent to clients). */
+function snippet(text: string): string {
+  return text.replace(/[^\x20-\x7e]+/g, ' ').trim().slice(0, 120) || 'empty';
+}
+
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
@@ -182,12 +187,12 @@ export async function precheckYaraBundle(json: string): Promise<YaraPrecheckResu
   const parsed = parseJson(run.stdout.trim());
   if (run.code === 0) {
     if ((parsed as { ok?: unknown } | undefined)?.ok === true) return { ok: true };
-    return { ok: false, unavailable: 'bad_output: exit 0 without ok:true' };
+    return { ok: false, unavailable: `bad_output: exit 0 without ok:true (${snippet(run.stdout)})` };
   }
   if (run.code === 1) {
     const errors = parseRuleErrors(parsed);
     if (errors && errors.length > 0) return { ok: false, errors };
-    return { ok: false, unavailable: 'bad_output: exit 1 without a rule error list' };
+    return { ok: false, unavailable: `bad_output: exit 1 without a rule error list (${snippet(run.stdout)})` };
   }
   const stderr = run.stderr.trim().split('\n')[0]?.slice(0, 200) ?? '';
   return { ok: false, unavailable: `exit_${run.code ?? 'signal'}${stderr ? `: ${stderr}` : ''}` };

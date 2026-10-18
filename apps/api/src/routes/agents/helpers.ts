@@ -680,10 +680,21 @@ function parseRuleSetErrors(raw: unknown): ScanRuleSetError[] | undefined {
   return out;
 }
 
-/** Dispatch-time errors first, then the agent's; null when there are none. */
+/**
+ * Dispatch-time errors first, then the agent's, de-duplicated on
+ * (id, version, code) so a retried result does not append twice; null when
+ * there are none.
+ */
 function mergeRuleSetErrors(existing: unknown, reported: ScanRuleSetError[]): ScanRuleSetError[] | null {
-  const prior = parseRuleSetErrors(existing) ?? [];
-  const merged = [...prior, ...reported].slice(0, SCAN_RULE_SET_ERRORS_MAX);
+  const merged: ScanRuleSetError[] = [];
+  const seen = new Set<string>();
+  for (const e of [...(parseRuleSetErrors(existing) ?? []), ...reported]) {
+    const key = `${e.id}|${e.version ?? ''}|${e.code}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(e);
+    if (merged.length >= SCAN_RULE_SET_ERRORS_MAX) break;
+  }
   return merged.length > 0 ? merged : null;
 }
 
@@ -737,13 +748,26 @@ export async function handleSecurityCommandResult(
     const agentEngine = parseScanEngine(resultJson?.engine);
     const agentRuleSetErrors = parseRuleSetErrors(resultJson?.ruleSetErrors);
 
-    let existingScan: { id: string; ruleSetErrors: unknown } | undefined;
+    let existingScan: { id: string; engine: string | null; ruleSetErrors: unknown } | undefined;
     if (isUuid(scanRecordId)) {
       [existingScan] = await db
-        .select({ id: securityScans.id, ruleSetErrors: securityScans.ruleSetErrors })
+        .select({ id: securityScans.id, engine: securityScans.engine, ruleSetErrors: securityScans.ruleSetErrors })
         .from(securityScans)
         .where(and(eq(securityScans.id, scanRecordId), eq(securityScans.deviceId, command.deviceId)))
         .limit(1);
+    }
+
+    // Dispatched as YARA but the agent did not confirm an engine (a malformed
+    // value, or a build without the W02 result keys): never leave it looking
+    // like a clean YARA scan.
+    let reportedErrors = agentRuleSetErrors;
+    if (existingScan?.engine === 'yara' && !agentEngine) {
+      if (resultJson?.engine !== undefined) {
+        console.warn('[agents/helpers] security_scan reported an unknown engine', {
+          deviceId: command.deviceId, scanRecordId, engine: String(resultJson.engine).slice(0, 32),
+        });
+      }
+      reportedErrors = [...(agentRuleSetErrors ?? []), { id: '*', code: 'engine_unreported' }];
     }
 
     if (existingScan) {
@@ -756,8 +780,8 @@ export async function handleSecurityCommandResult(
           threatsFound,
           itemsScanned,
           ...(agentEngine ? { engine: agentEngine } : {}),
-          ...(agentRuleSetErrors !== undefined
-            ? { ruleSetErrors: mergeRuleSetErrors(existingScan.ruleSetErrors, agentRuleSetErrors) }
+          ...(reportedErrors !== undefined
+            ? { ruleSetErrors: mergeRuleSetErrors(existingScan.ruleSetErrors, reportedErrors) }
             : {}),
         })
         .where(eq(securityScans.id, existingScan.id));

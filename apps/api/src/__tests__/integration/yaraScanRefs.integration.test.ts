@@ -152,6 +152,25 @@ describe('YARA rule-set refs: partner-wide fan-out (Partner-Wide First step 5)',
     }
   });
 
+  it('an agent too old for YARA, or with an unparseable version, fails closed on real rows', async () => {
+    const P1 = await seedPartner();
+    const setP1 = await publishedSet({ partnerId: P1, name: 'P1 baseline' }, 1);
+    await partnerWideSecurityPolicy(P1, [setP1.id]);
+    const dev = await seedOrgWithDevice(P1);
+    for (const agentVersion of ['0.1.0', null, '', 'dev']) {
+      const plan = await withDbAccessContext(agentCtx(dev.orgId, P1), async () => {
+        const policy = await resolveSecurityScanPolicyForDevice(dev.deviceId);
+        expect(policy?.settings.ruleSetIds).toEqual([setP1.id]);
+        return planYaraScan({ deviceId: dev.deviceId, agentVersion, ruleSetIds: policy!.settings.ruleSetIds });
+      });
+      expect(plan).toEqual({
+        ruleSets: [],
+        engine: 'legacy',
+        ruleSetErrors: [{ id: '*', code: 'agent_too_old', detail: expect.stringContaining(MIN_AGENT_VERSION_YARA_SCAN) }],
+      });
+    }
+  });
+
   it('a foreign tenant\'s set id that reached a policy never resolves, even in system scope', async () => {
     const P1 = await seedPartner();
     const P2 = await seedPartner();

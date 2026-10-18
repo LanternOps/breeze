@@ -188,6 +188,7 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/yaraScanRefs.ts': 'YARA rule-set refs (#6263 W03a): looks up the ONE device (by id) of a scan the caller already created; selects no targets, and a security_scan to a parked device is refused by command delivery',
   'services/endpointMessaging/chat.ts': 'request path (#8743): opens/messages ONE device the caller named and reached under RLS + the site axis; selects no targets, and chat_open/chat_message to a parked device is refused by command delivery',
   'services/endpointMessaging/chatReads.ts': 'read model (#8743): conversations and messages of one device or one conversation the caller already reaches; selects no targets',
   'services/endpointMessaging/retract.ts': 'request path (#8742): retracts the live deliveries of ONE existing message by id in the caller\'s RLS context; selects no new targets, and a retract_message queued to a parked device is refused by command delivery',

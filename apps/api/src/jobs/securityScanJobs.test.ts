@@ -181,6 +181,16 @@ describe('processDispatchScan', () => {
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ engine: 'legacy', ruleSetErrors: tooOld }));
   });
 
+  it('passes the device\'s agent version (null included) straight to the planner, which fails closed on it', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(chain([{ ...queuedScan, deviceAgentVersion: null }]))
+      .mockReturnValueOnce(chain([{ count: 0 }]))
+      .mockReturnValueOnce(chain([{ count: 0 }]))
+      .mockReturnValueOnce(chain([{ count: 0 }]));
+    await processDispatchScan({ type: 'dispatch-scan', scanId: queuedScan.id, origin: 'manual' });
+    expect(planYaraScan).toHaveBeenCalledWith(expect.objectContaining({ agentVersion: null }));
+  });
+
   it('a device with no governing policy plans with no rule sets', async () => {
     vi.mocked(resolveSecurityScanPolicyForDevice).mockResolvedValue(null);
     admitDispatch();

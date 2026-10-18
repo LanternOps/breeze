@@ -357,6 +357,30 @@ describe('security_scan result: engine + ruleSetErrors (#6263 W03, W02 C3)', () 
     expect(set.ruleSetErrors).toEqual([{ id: SET_A, code: 'http_404' }]);
   });
 
+  it('a retried result does not append the same agent errors twice', async () => {
+    const prior = [{ id: SET_A, code: 'disabled' }, { id: SET_B, version: 3, code: 'compile' }];
+    selectQueue.push([{ orgId: ORG_ID }], [{ id: SCAN_ID, engine: 'yara', ruleSetErrors: prior }]);
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      stdout: JSON.stringify({
+        scanRecordId: SCAN_ID, scanType: 'quick', threatsFound: 0, threats: [],
+        engine: 'yara', ruleSetErrors: [{ id: SET_B, version: 3, code: 'compile' }],
+      }),
+    }));
+    expect(updateSetMock.mock.calls.at(-1)![0].ruleSetErrors).toEqual(prior);
+  });
+
+  it('a scan dispatched as yara whose agent reports no engine is flagged engine_unreported, not left as a clean yara scan', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    selectQueue.push([{ orgId: ORG_ID }], [{ id: SCAN_ID, engine: 'yara', ruleSetErrors: null }]);
+    await handleSecurityCommandResult(scanCommand, makeResult({
+      stdout: JSON.stringify({ scanRecordId: SCAN_ID, scanType: 'quick', threatsFound: 0, threats: [] }),
+    }));
+    const set = updateSetMock.mock.calls.at(-1)![0];
+    expect(set).not.toHaveProperty('engine');
+    expect(set.ruleSetErrors).toEqual([{ id: '*', code: 'engine_unreported' }]);
+    warn.mockRestore();
+  });
+
   it('a scan row created at ingest (no dispatch row) records the agent outcome', async () => {
     selectQueue.push([{ orgId: ORG_ID }], []);
 
