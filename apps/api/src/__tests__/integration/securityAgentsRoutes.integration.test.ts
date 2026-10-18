@@ -12,13 +12,20 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { configPolicyRoutes } from '../../routes/configurationPolicies';
 import { softwarePoliciesRoutes } from '../../routes/softwarePolicies';
-import { configPolicyFeatureLinks, configurationPolicies, softwarePolicies } from '../../db/schema';
+import {
+  configPolicyFeatureLinks,
+  configurationPolicies,
+  softwarePolicies,
+  softwarePolicyAudit,
+} from '../../db/schema';
 import { createAccessToken } from '../../services/jwt';
+import { ensureBuiltinPackage } from '../../services/builtinDeploymentPackages';
 import {
   assignUserToOrganization,
+  assignUserToPartner,
   createOrganization,
   createPartner,
   createRole,
@@ -36,6 +43,7 @@ function buildApp(): Hono {
 
 const DISABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: false }] };
 const ENABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: true }] };
+const S1_ENABLED = { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] };
 
 async function seed(permissions: Array<{ resource: string; action: string }>) {
   const partner = await createPartner();
@@ -62,7 +70,7 @@ async function seed(permissions: Array<{ resource: string; action: string }>) {
     .insert(configurationPolicies)
     .values({ orgId: org.id, name: `SA routes ${randomUUID().slice(0, 8)}`, status: 'active' })
     .returning({ id: configurationPolicies.id });
-  return { orgId: org.id, token, configPolicyId: cp.id as string };
+  return { orgId: org.id, partnerId: partner.id as string, token, configPolicyId: cp.id as string };
 }
 
 function call(app: Hono, token: string, method: string, path: string, body?: unknown) {
@@ -84,7 +92,7 @@ const RW_ONLY = [
 ];
 
 describe('security_agents feature-link writes through the real route (#6960)', () => {
-  it('stores a disabled-only link; refuses featurePolicyId, unknown keys and enabling', async () => {
+  it('stores a disabled-only link; refuses featurePolicyId, unknown keys, a not-enableable vendor, and Huntress without its catalog package', async () => {
     const app = buildApp();
     const { token, configPolicyId } = await seed(RW_EXECUTE);
     const base = `/configuration-policies/${configPolicyId}/features`;
@@ -100,9 +108,24 @@ describe('security_agents feature-link writes through the real route (#6960)', (
     });
     expect(secret.status).toBe(400);
 
+    const enablingS1 = await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: S1_ENABLED });
+    expect(enablingS1.status).toBe(400);
+    expect((await enablingS1.json()).code).toBe('vendor_not_enableable');
+
+    // No Huntress integration connected → no partner catalog package → the
+    // generator refuses inside the write transaction, and nothing is stored.
     const enabling = await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: ENABLED });
     expect(enabling.status).toBe(400);
-    expect((await enabling.json()).code).toBe('vendor_not_enableable');
+    expect(await enabling.json()).toMatchObject({
+      code: 'security_agents_catalog_missing',
+      vendors: ['huntress'],
+      setupPath: '/integrations#huntress',
+    });
+    const afterRefusal = await (getTestDb() as any)
+      .select({ id: configPolicyFeatureLinks.id })
+      .from(configPolicyFeatureLinks)
+      .where(eq(configPolicyFeatureLinks.configPolicyId, configPolicyId));
+    expect(afterRefusal).toEqual([]);
 
     const ok = await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: DISABLED });
     expect(ok.status).toBe(201);
@@ -184,5 +207,133 @@ describe('generated software policies are read-only through the real route (#696
       .from(softwarePolicies)
       .where(eq(softwarePolicies.orgId, orgId));
     expect(rows).toEqual([]);
+  });
+});
+
+async function generatedFor(linkId: string) {
+  const rows = await (getTestDb() as any)
+    .select()
+    .from(softwarePolicies)
+    .where(eq(softwarePolicies.managedByLinkId, linkId));
+  return rows as Array<typeof softwarePolicies.$inferSelect>;
+}
+
+describe('the generated software policy follows the link through the real route (#6960 W02)', () => {
+  it('enable creates it; disable deactivates (same row); re-enable reuses it; generation bumps only on change', async () => {
+    const app = buildApp();
+    const { orgId, partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'huntress', partnerId });
+    const base = `/configuration-policies/${configPolicyId}/features`;
+
+    const created = await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: ENABLED });
+    expect(created.status).toBe(201);
+    const link = await created.json();
+
+    const [policy] = await generatedFor(link.id);
+    expect(policy).toMatchObject({
+      orgId,
+      partnerId: null,
+      mode: 'allowlist',
+      enforceMode: true,
+      isActive: true,
+      approvalGeneration: 1,
+      remediationOptions: { autoInstall: true, autoUninstall: false },
+    });
+    expect(policy!.rules).toMatchObject({ allowUnknown: true, software: [{ name: 'Huntress Agent*', catalogId }] });
+
+    const audits = await (getTestDb() as any)
+      .select({ action: softwarePolicyAudit.action, actor: softwarePolicyAudit.actor })
+      .from(softwarePolicyAudit)
+      .where(eq(softwarePolicyAudit.policyId, policy!.id));
+    expect(audits).toEqual([{ action: 'policy_created', actor: 'user' }]);
+
+    const disabled = await call(app, token, 'PATCH', `${base}/${link.id}`, { inlineSettings: DISABLED });
+    expect(disabled.status).toBe(200);
+    const afterDisable = await generatedFor(link.id);
+    expect(afterDisable).toHaveLength(1);
+    expect(afterDisable[0]).toMatchObject({ id: policy!.id, isActive: false, approvalGeneration: 2 });
+    expect(afterDisable[0]!.rules.software).toEqual([]);
+
+    // Saving the same settings again changes nothing (no generation churn).
+    await call(app, token, 'PATCH', `${base}/${link.id}`, { inlineSettings: DISABLED });
+    expect((await generatedFor(link.id))[0]).toMatchObject({ approvalGeneration: 2 });
+
+    const reEnabled = await call(app, token, 'PATCH', `${base}/${link.id}`, { inlineSettings: ENABLED });
+    expect(reEnabled.status).toBe(200);
+    expect((await generatedFor(link.id))[0]).toMatchObject({ id: policy!.id, isActive: true, approvalGeneration: 3 });
+
+    // The generated row is read-only through the software-policy route…
+    const patchGenerated = await call(app, token, 'PATCH', `/software-policies/${policy!.id}`, { name: 'Hijacked' });
+    expect(patchGenerated.status).toBe(409);
+    // …and cannot be linked as an ordinary software_policy feature.
+    const linkGenerated = await call(app, token, 'POST', base, { featureType: 'software_policy', featurePolicyId: policy!.id });
+    expect(linkGenerated.status).toBe(400);
+
+    // Removing the link removes the generated policy (cascade), never uninstalls.
+    const removed = await call(app, token, 'DELETE', `${base}/${link.id}`);
+    expect(removed.status).toBe(200);
+    expect(await generatedFor(link.id)).toEqual([]);
+  });
+
+  it('a writer without devices.execute may disable an enabled vendor (disarming), and it deactivates', async () => {
+    const app = buildApp();
+    const { partnerId, token, configPolicyId } = await seed(RW_EXECUTE);
+    await ensureBuiltinPackage({ provider: 'huntress', partnerId });
+    const base = `/configuration-policies/${configPolicyId}/features`;
+    const link = await (await call(app, token, 'POST', base, { featureType: 'security_agents', inlineSettings: ENABLED })).json();
+
+    const { token: writerToken } = await (async () => {
+      const tdb = getTestDb() as any;
+      const [cpRow] = await tdb.select({ orgId: configurationPolicies.orgId }).from(configurationPolicies)
+        .where(eq(configurationPolicies.id, configPolicyId));
+      const role = await createRole({ scope: 'organization', orgId: cpRow.orgId, partnerId });
+      await grantRolePermissions(role.id, RW_ONLY);
+      const user = await createUser({ partnerId, orgId: cpRow.orgId, email: `sa-w-${randomUUID().slice(0, 8)}@example.test` });
+      await assignUserToOrganization(user.id, cpRow.orgId, role.id);
+      return {
+        token: await createAccessToken({
+          sub: user.id, email: user.email, roleId: role.id, orgId: cpRow.orgId, partnerId,
+          scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+        }),
+      };
+    })();
+
+    const res = await call(app, writerToken, 'PATCH', `${base}/${link.id}`, { inlineSettings: DISABLED });
+    expect(res.status).toBe(200);
+    expect((await generatedFor(link.id))[0]).toMatchObject({ isActive: false });
+  });
+
+  it('a partner-wide config policy generates a PARTNER-owned policy (org_id NULL)', async () => {
+    const app = buildApp();
+    const partner = await createPartner();
+    await createOrganization({ partnerId: partner.id });
+    const { catalogId } = await ensureBuiltinPackage({ provider: 'huntress', partnerId: partner.id });
+    const user = await createUser({ partnerId: partner.id, orgId: null, email: `sa-p-${randomUUID().slice(0, 8)}@example.test` });
+    const role = await createRole({ scope: 'partner', partnerId: partner.id });
+    await grantRolePermissions(role.id, [{ resource: '*', action: '*' }]);
+    await assignUserToPartner(user.id, partner.id, role.id, 'all');
+    const token = await createAccessToken({
+      sub: user.id, email: user.email, roleId: role.id, orgId: null, partnerId: partner.id, scope: 'partner',
+      mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    const [cp] = await (getTestDb() as any)
+      .insert(configurationPolicies)
+      .values({ orgId: null, partnerId: partner.id, name: `SA partner-wide ${randomUUID().slice(0, 8)}`, status: 'active' })
+      .returning({ id: configurationPolicies.id });
+
+    const res = await call(app, token, 'POST', `/configuration-policies/${cp.id}/features`, {
+      featureType: 'security_agents', inlineSettings: ENABLED,
+    });
+    expect(res.status).toBe(201);
+    const link = await res.json();
+    const [policy] = await generatedFor(link.id);
+    expect(policy).toMatchObject({ orgId: null, partnerId: partner.id, isActive: true });
+    expect(policy!.rules.software).toEqual([expect.objectContaining({ catalogId })]);
+
+    const partnerAudit = await (getTestDb() as any)
+      .select({ partnerId: softwarePolicyAudit.partnerId, orgId: softwarePolicyAudit.orgId })
+      .from(softwarePolicyAudit)
+      .where(and(eq(softwarePolicyAudit.policyId, policy!.id), eq(softwarePolicyAudit.action, 'policy_created')));
+    expect(partnerAudit).toEqual([{ partnerId: partner.id, orgId: null }]);
   });
 });

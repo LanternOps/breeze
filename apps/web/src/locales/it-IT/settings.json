@@ -366,7 +366,6 @@
       "supportedGeos": "Supporta: {{geos}}",
       "refreshQueued": "Aggiornamento dei modelli in coda",
       "refreshFailed": "Impossibile mettere in coda l'aggiornamento dei modelli.",
-      "alreadyConnected": "Già connessa",
       "addKind": {
         "anthropic_byok": "Chiave API Anthropic",
         "openai_compatible": "Endpoint compatibile con OpenAI"
@@ -2083,7 +2082,9 @@
       "email": "email assistenza",
       "phone": "Telefono assistenza",
       "welcomeMessage": "Messaggio di benvenuto",
-      "footerText": "Testo footer"
+      "footerText": "Testo footer",
+      "footerTextHelp": "Mostrato in fondo al portale clienti e stampato su preventivi e fatture di questa organizzazione, al posto del piè di pagina dei documenti del partner. Lascia vuoto per stampare il piè di pagina del partner.",
+      "footerTextInheritedSource": "Piè di pagina dei documenti del partner"
     }
   },
   "orgPortalUsersEditor": {
@@ -4415,7 +4416,8 @@
     "reEnterYourNewPassword": "Reinserisci la nuova password",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Cambio password..."
+    "changingPassword": "Cambio password...",
+    "noPasswordNotice": "Questo account accede tramite il provider di identità della tua organizzazione e non ha una password, quindi qui non c'è nulla da modificare. Se la tua organizzazione non richiede il Single Sign-On, usa «Password dimenticata» nella pagina di accesso per impostarne una."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single sign-on connesso.",
@@ -4668,6 +4670,11 @@
     "systemRoles": "Ruoli di sistema",
     "customRoles": "Ruoli personalizzati",
     "createRole": "Crea ruolo",
+    "ownerScope": "Ambito",
+    "ownerScopePartner": "Livello partner",
+    "ownerScopePartnerHelp": "Per il tuo personale. Assegnalo nella pagina Utenti.",
+    "ownerScopeOrganization": "Organizzazione",
+    "ownerScopeOrganizationHelp": "Per gli utenti di un'organizzazione e il suo ruolo SSO predefinito.",
     "name": "Nome",
     "type": "Tipo",
     "inheritsFrom": "Eredita da",

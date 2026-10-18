@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Devices",
-        "devicesSub": "{{online}} of {{total}} online",
         "alerts": "Open alerts",
-        "alertsSub": "{{critical}} critical · {{high}} high",
         "tickets": "Open tickets",
-        "ticketsSub": "{{count}} awaiting customer",
         "contracts": "Active contracts",
         "contractsSub": "Next renewal {{date}}",
         "contractsNoRenewal": "No upcoming renewal",
-        "invoices": "Outstanding",
         "invoicesSub": "Next due {{date}}",
         "invoicesOverdue_one": "{{count}} overdue",
         "invoicesOverdue_other": "{{count}} overdue",
@@ -94,7 +90,23 @@
       },
       "lastActivity": "Last activity {{date}}",
       "noSummary": "Summary counts are unavailable right now.",
-      "archivedNotice": "Overview data isn't shown for archived organizations."
+      "archivedNotice": "Overview data isn't shown for archived organizations.",
+      "fleet": {
+        "title": "Fleet health",
+        "total": "Total",
+        "allOnline": "All online",
+        "noDevices": "No devices",
+        "critical": "Critical",
+        "high": "High",
+        "otherAlerts": "Other",
+        "noAlerts": "No open alerts",
+        "awaitingCustomer": "Awaiting customer",
+        "noTickets": "No open tickets"
+      },
+      "account": {
+        "title": "Account",
+        "invoices": "Outstanding invoices"
+      }
     },
     "archived": {
       "banner": "This organization is archived and read only. Restore it to make changes.",
@@ -213,12 +225,56 @@
         "title": "Framework view"
       },
       "subprocessors": {
+        "description": "Third parties that process data on your customer’s behalf. Detected tools are suggestions only; nothing is published until you publish the page.",
+        "addDetected": "Add from detected tools",
+        "addManual": "Add manually",
+        "noSuggestions": "No detected tools left to add.",
+        "empty": "No subprocessors listed yet.",
+        "name": "Name",
+        "purpose": "Purpose",
+        "location": "Location",
+        "website": "Website",
+        "websiteInvalid": "Use an https:// address.",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "remove": "Remove",
+        "save": "Save subprocessors",
+        "saved": "Subprocessors saved",
+        "saveFailed": "Could not save subprocessors",
+        "loadFailed": "Could not load subprocessors.",
+        "suggestionsFailed": "Could not load detected tools. Close and reopen to retry.",
+        "duplicate": "The same detected tool appears more than once.",
+        "limit": "Maximum of {{max}} subprocessors reached.",
         "title": "Subprocessors"
       },
       "faq": {
+        "description": "Answers to the questions buyers and auditors ask most. Shown on the page once you publish it.",
+        "add": "Add question",
+        "question": "Question",
+        "questionShort": "The question needs at least {{min}} characters.",
+        "answer": "Answer",
+        "answerTooLong": "This answer is too long; shorten it.",
+        "moveUp": "Move up",
+        "moveDown": "Move down",
+        "remove": "Remove",
+        "save": "Save FAQ",
+        "saved": "FAQ saved",
+        "saveFailed": "Could not save the FAQ",
+        "loadFailed": "Could not load the FAQ.",
+        "empty": "No questions yet.",
+        "limit": "Maximum of {{max}} questions reached.",
         "title": "Frequently asked questions"
       },
       "history": {
+        "toggle": "Show controls met over time",
+        "description": "Adds a 90-day chart of how many controls were met. Each change is recorded when Breeze re-evaluates the page.",
+        "saved": "History setting saved",
+        "saveFailed": "Could not save the history setting",
+        "source": {
+          "page": "Set on this organization",
+          "template": "From partner template",
+          "default": "Default"
+        },
         "title": "Controls met over time"
       },
       "access": {
@@ -487,6 +543,29 @@
         "copy": "Copy snippet",
         "copied": "Snippet copied",
         "copyFailed": "Could not copy the snippet."
+      },
+      "embed": {
+        "title": "Embed on your website",
+        "description": "Show a compact, live security posture card on your own website in an iframe. Only the websites listed here may display it; the full trust page itself can never be embedded.",
+        "liveNote": "Changes apply the next time the embed loads; no republish needed.",
+        "unpublishedNote": "The embed card shows once the page is published.",
+        "originLabel": "Website address (https only, no path)",
+        "add": "Add website",
+        "remove": "Remove",
+        "save": "Save websites",
+        "saved": "Embed websites saved",
+        "saveFailed": "Could not save the embed websites.",
+        "invalidOrigin": "Enter an exact https address with no path, wildcard or IP address, for example https://www.example.com",
+        "duplicateOrigin": "That website is already in the list.",
+        "maxReached": "You can allow at most {{max}} websites.",
+        "preview": "Will be saved as",
+        "snippetLabel": "Embed HTML",
+        "frameTitle": "Security posture card",
+        "copy": "Copy snippet",
+        "copied": "Snippet copied",
+        "copyFailed": "Could not copy the snippet.",
+        "emptyNote": "Add at least one website to enable embedding.",
+        "mfaRequired": "Changing the embed websites requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
       }
     },
     "documents": {

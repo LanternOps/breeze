@@ -50,6 +50,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => undefined),
 }));
 
 import {
@@ -213,6 +214,9 @@ describe('patch feature link writes reject approval-rule edits (#8186)', () => {
   }
 
   const moved = { status: 400, code: 'APPROVAL_RULES_MOVED_TO_RING', message: expect.stringContaining('Update Ring') };
+  // #8678: repairing a broken ring reference onto a ring that lacks the link's
+  // legacy rules is a different refusal than a stale tab editing them.
+  const ringLacksRules = { status: 400, code: 'RING_LACKS_POLICY_APP_RULES', message: expect.stringContaining('Update Ring') };
 
   it('rejects an ADDED app rule with APPROVAL_RULES_MOVED_TO_RING and writes nothing', async () => {
     const tx = txWithStoredPatchLink(PATCH_INPUT_NO_APPROVAL);
@@ -313,7 +317,7 @@ describe('patch feature link writes reject approval-rule edits (#8186)', () => {
       .mockResolvedValueOnce(ring([]));
     const rejected = txWithStoredPatchLink(PATCH_INPUT, 'gone-ring');
     await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2', inlineSettings: rest }, 'policy-1'))
-      .rejects.toMatchObject(moved);
+      .rejects.toMatchObject(ringLacksRules);
     expect(rejected.update).not.toHaveBeenCalled();
 
     resolvePatchPolicyReferenceMock
@@ -433,13 +437,28 @@ describe('patch feature link writes reject approval-rule edits (#8186)', () => {
       .mockResolvedValueOnce(ring([], false, null))  // current: invalid reference
       .mockResolvedValueOnce(ring([]));              // target: a valid ring without the rules
     txWithStoredPatchLink(PATCH_INPUT, 'gone-ring');
-    await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2' }, 'policy-1')).rejects.toMatchObject(moved);
+    await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2' }, 'policy-1')).rejects.toMatchObject(ringLacksRules);
 
     resolvePatchPolicyReferenceMock
       .mockResolvedValueOnce(ring([], false, null))
       .mockResolvedValueOnce(ring(ENFORCED_RULES));
     txWithStoredPatchLink(PATCH_INPUT, 'gone-ring');
     await expect(updateFeatureLink('link-1', { featurePolicyId: 'ring-2' }, 'policy-1')).resolves.not.toBeNull();
+  });
+
+  it('repairing a link off a deleted ring (disabled_ring) needs the legacy rules on the target, with the repair code (#8678)', async () => {
+    loadConfigPolicyPartnerIdMock.mockResolvedValue('partner-1');
+    resolvePatchPolicyReferenceMock
+      .mockResolvedValueOnce({ ...ring([], false, null), classification: 'disabled_ring' })
+      .mockResolvedValueOnce(ring([]));
+    const tx = txWithStoredPatchLink(PATCH_INPUT, 'deleted-ring');
+    const err = await updateFeatureLink('link-1', { featurePolicyId: 'ring-2' }, 'policy-1')
+      .then(() => null, (e: unknown) => e);
+    expect(err).toMatchObject(ringLacksRules);
+    // Still the class the routes and the AI tool map to a 400.
+    const { PolicyApprovalFieldMovedError } = await import('./configPolicyPatching');
+    expect(err).toBeInstanceOf(PolicyApprovalFieldMovedError);
+    expect(tx.update).not.toHaveBeenCalled();
   });
 
   it('does not apply to other feature types', async () => {
@@ -1140,6 +1159,32 @@ describe('updateConfigPolicy / deleteConfigPolicy — partner-wide administratio
 // validateFeaturePolicyExists — software_policy dual-axis (#2126)
 // ============================================================
 
+describe('validateFeaturePolicyExists — patch ring must be enabled (#8678)', () => {
+  beforeEach(() => {
+    vi.mocked(db.select).mockReset();
+  });
+
+  it('rejects linking a deleted (enabled = false) ring', async () => {
+    vi.mocked(db.select).mockReturnValue(selectLimitRows([{ id: 'ring-1', enabled: false }]) as never);
+    const result = await validateFeaturePolicyExists('patch', 'ring-1', { orgId: null, partnerId: 'partner-1' });
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/deleted or disabled/i);
+  });
+
+  it('accepts an enabled ring', async () => {
+    vi.mocked(db.select).mockReturnValue(selectLimitRows([{ id: 'ring-1', enabled: true }]) as never);
+    const result = await validateFeaturePolicyExists('patch', 'ring-1', { orgId: null, partnerId: 'partner-1' });
+    expect(result).toEqual({ valid: true });
+  });
+
+  it('still rejects a ring that does not exist for the partner', async () => {
+    vi.mocked(db.select).mockReturnValue(selectLimitRows([]) as never);
+    const result = await validateFeaturePolicyExists('patch', 'ring-1', { orgId: null, partnerId: 'partner-1' });
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/not found for this partner/i);
+  });
+});
+
 describe('validateFeaturePolicyExists — software_policy dual-axis linking (#2126)', () => {
   beforeEach(() => {
     vi.mocked(db.select).mockReset();
@@ -1177,6 +1222,24 @@ describe('validateFeaturePolicyExists — software_policy dual-axis linking (#21
     mockLookupReturns([{ id: 'sec-1' }]);
     const result = await validateFeaturePolicyExists('security', 'sec-1', { orgId: null, partnerId: 'partner-1' });
     expect(result.valid).toBe(true);
+  });
+
+  it('never resolves a software policy GENERATED from a security_agents link (#6960 carry-forward)', async () => {
+    const chain = selectLimitRows([{ id: 'sw-1' }]);
+    vi.mocked(db.select).mockReturnValue(chain as never);
+    await validateFeaturePolicyExists('software_policy', 'sw-1', { orgId: 'org-1', partnerId: null });
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const rendered = new PgDialect().sqlToQuery(chain.where.mock.calls.at(-1)[0]).sql;
+    expect(rendered).toMatch(/"managed_by_link_id" is null/i);
+  });
+
+  it('does not add the managed predicate to other dual-axis types', async () => {
+    const chain = selectLimitRows([{ id: 'sec-1' }]);
+    vi.mocked(db.select).mockReturnValue(chain as never);
+    await validateFeaturePolicyExists('security', 'sec-1', { orgId: 'org-1', partnerId: null });
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const rendered = new PgDialect().sqlToQuery(chain.where.mock.calls.at(-1)[0]).sql;
+    expect(rendered).not.toMatch(/managed_by_link_id/i);
   });
 
   it('rejects a security policy id that resolves to neither axis', async () => {

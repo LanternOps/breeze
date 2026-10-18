@@ -479,6 +479,7 @@
     "alertResolved": "Alerte résolue",
     "alertSuppressed": "« {{title}} » masquée",
     "failedToSuppressAlert": "Impossible de masquer l’alerte",
+    "failedToRestoreAlert": "Impossible de rétablir l’alerte. Elle est toujours mise en sourdine.",
     "failedBulkAction": "Impossible de {{action}} alertes",
     "skippedCount": "{{count}} sauté",
     "failedCount": "{{count}} échoué",

@@ -146,6 +146,11 @@ export type EventType =
   // that table's file header). Id-only payload: { incidentId, deviceId }.
   // Consumed by the Task 3 durable metric-anomaly subscriber.
   | 'anomaly.incident_opened'
+  // Connection health (spec 2026-10-15 §2.4, W5): published by
+  // connectionHealth/events.ts from the incident event outbox, org incidents
+  // only. Payload: codes and ids, never provider text (eventPayload.ts).
+  | 'integration.health_opened'
+  | 'integration.health_resolved'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -661,6 +666,8 @@ export const EVENT_TYPES = {
   MIGRATION_WINDOW_CLOSED: 'migration.window_closed' as const,
   // Metric-anomaly incidents (#3828 wave-6-4 task 2)
   ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
+  INTEGRATION_HEALTH_OPENED: 'integration.health_opened' as const,
+  INTEGRATION_HEALTH_RESOLVED: 'integration.health_resolved' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,

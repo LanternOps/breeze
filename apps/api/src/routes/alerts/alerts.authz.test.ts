@@ -277,6 +277,11 @@ describe('alert state-change authz (Finding #6)', () => {
     expect(res.status).toBe(403);
   });
 
+  it('403 on POST /alerts/:id/unsuppress without ALERTS_WRITE', async () => {
+    const res = await makeApp().request(`/alerts/${ALERT_ID}/unsuppress`, { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
   it('403 on POST /alerts/bulk with NEITHER alert permission', async () => {
     const res = await makeApp().request('/alerts/bulk', {
       method: 'POST',

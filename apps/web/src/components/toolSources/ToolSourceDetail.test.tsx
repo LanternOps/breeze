@@ -164,3 +164,153 @@ describe('ToolSourceDetail', () => {
     expect(await screen.findByTestId('tool-source-detail-error')).toBeTruthy();
   });
 });
+
+describe('ToolSourceDetail — openapi diagnostics (#5217)', () => {
+  const summary = (overrides: Record<string, unknown> = {}) => ({
+    version: 1,
+    at: '2026-10-16T00:00:00.000Z',
+    operationCount: 10,
+    skipped: [],
+    skippedTotal: 0,
+    warnings: [],
+    ...overrides,
+  });
+
+  it('shows the spec URL next to the endpoint for an openapi source', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({ kind: 'openapi', specUrl: 'https://api.example.test/openapi.json', lastDiscoverySummary: null }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    const el = await screen.findByTestId('tool-source-spec-url');
+    expect(el.textContent).toContain('https://api.example.test/openapi.json');
+  });
+
+  it('renders no spec URL, skipped or warnings for an mcp source with no summary', async () => {
+    api.getToolSource.mockResolvedValue(source({ specUrl: null, lastDiscoverySummary: null }));
+    render(<ToolSourceDetail sourceId="s-1" />);
+    await screen.findByTestId('tool-source-detail');
+    expect(screen.queryByTestId('tool-source-spec-url')).toBeNull();
+    expect(screen.queryByTestId('tool-source-skipped')).toBeNull();
+    expect(screen.queryByTestId('tool-source-warnings')).toBeNull();
+  });
+
+  it('renders nothing for a summary with empty lists', async () => {
+    api.getToolSource.mockResolvedValue(source({ kind: 'openapi', specUrl: 'https://a.test/o.json', lastDiscoverySummary: summary() }));
+    render(<ToolSourceDetail sourceId="s-1" />);
+    await screen.findByTestId('tool-source-detail');
+    expect(screen.queryByTestId('tool-source-skipped')).toBeNull();
+    expect(screen.queryByTestId('tool-source-warnings')).toBeNull();
+  });
+
+  it('lists skipped operations with method, path and a localized reason, and the truncation line', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({
+        kind: 'openapi',
+        specUrl: 'https://a.test/o.json',
+        lastDiscoverySummary: summary({
+          skipped: [
+            { name: 'uploadFile', method: 'POST', path: '/files', reason: 'unsupported_request_body' },
+            { name: 'weird', reason: 'name_not_addressable' },
+          ],
+          skippedTotal: 7,
+        }),
+      }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    const box = await screen.findByTestId('tool-source-skipped');
+    expect(box.textContent).toContain('uploadFile');
+    expect(box.textContent).toContain('POST');
+    expect(box.textContent).toContain('/files');
+    expect(box.textContent).toContain('Request body is not JSON');
+    expect(box.textContent).toContain('weird');
+    expect(box.textContent).toContain('Name does not fit the 64-character tool-name limit');
+    expect(box.textContent).toContain('Showing 2 of 7');
+  });
+
+  it('omits the "Showing" line when nothing is truncated', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({
+        kind: 'openapi',
+        specUrl: 'https://a.test/o.json',
+        lastDiscoverySummary: summary({
+          skipped: [{ name: 'a', reason: 'unsupported_method' }],
+          skippedTotal: 1,
+        }),
+      }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    const box = await screen.findByTestId('tool-source-skipped');
+    expect(box.textContent).not.toContain('Showing');
+  });
+
+  it('renders the origin-mismatch warning with its origins, even when the source is not in error', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({
+        kind: 'openapi',
+        status: 'active',
+        specUrl: 'https://a.test/o.json',
+        lastDiscoverySummary: summary({
+          warnings: [{ code: 'server_origin_mismatch', origins: ['https://evil.example.test', 'https://other.example.test'] }],
+        }),
+      }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    const box = await screen.findByTestId('tool-source-warnings');
+    expect(box.textContent).toContain('other origins');
+    expect(box.textContent).toContain('https://evil.example.test');
+    expect(box.textContent).toContain('https://other.example.test');
+  });
+
+  it('treats summary strings as plain text, never markup', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({
+        kind: 'openapi',
+        specUrl: 'https://a.test/o.json',
+        lastDiscoverySummary: summary({
+          skipped: [{ name: '<img src=x onerror=alert(1)>', reason: 'unsupported_method' }],
+          skippedTotal: 1,
+        }),
+      }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    const box = await screen.findByTestId('tool-source-skipped');
+    expect(box.querySelector('img')).toBeNull();
+    expect(box.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+
+  it('says which discovery run the skips and warnings come from (a failed run keeps the old summary)', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({
+        kind: 'openapi',
+        status: 'error',
+        lastError: 'spec_fetch_failed: HTTP 503',
+        specUrl: 'https://a.test/o.json',
+        lastDiscoverySummary: summary({
+          skipped: [{ name: 'a', reason: 'unsupported_method' }],
+          skippedTotal: 1,
+          warnings: [{ code: 'server_origin_mismatch', origins: ['https://x.example.test'] }],
+        }),
+      }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    expect((await screen.findByTestId('tool-source-skipped-at')).textContent).toMatch(/^From the discovery run at .+\.$/);
+    expect(screen.getByTestId('tool-source-warnings-at').textContent).toMatch(/^From the discovery run at /);
+  });
+
+  it('falls back to the raw code for a skip reason or warning this build does not know', async () => {
+    api.getToolSource.mockResolvedValue(
+      source({
+        kind: 'openapi',
+        specUrl: 'https://a.test/o.json',
+        lastDiscoverySummary: summary({
+          skipped: [{ name: 'a', reason: 'some_future_reason' }],
+          skippedTotal: 1,
+          warnings: [{ code: 'some_future_warning', origins: [] }],
+        }),
+      }),
+    );
+    render(<ToolSourceDetail sourceId="s-1" />);
+    expect((await screen.findByTestId('tool-source-skipped')).textContent).toContain('some_future_reason');
+    expect(screen.getByTestId('tool-source-warnings').textContent).toContain('some_future_warning');
+  });
+});

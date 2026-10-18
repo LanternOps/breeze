@@ -1067,6 +1067,13 @@
         "business": "Business",
         "general": "General",
         "businessDescription": "MSP-facing numbers — SLA attainment, technician billability, and accounts receivable — for staff only."
+      },
+      "delivery": {
+        "contactsLoading": "Loading organization contacts…",
+        "contactsFailed": "Could not load this organization's contacts. You can still add email addresses.",
+        "noContacts": "This organization has no contacts with an email address.",
+        "removeEmail": "Remove {{email}}",
+        "recipientsFailed": "The report \"{{name}}\" was created, but its recipients could not all be added. Add them from the report."
       }
     },
     "threatDetectionOptions": {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../db', () => ({
   db: {},
@@ -15,7 +15,7 @@ vi.mock('../services/featureConfigResolver', () => ({
   isInMaintenanceWindow: vi.fn(),
   resolvePatchConfigForDevice: vi.fn(),
 }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock('../services/patchAlerts', () => ({
   REBOOT_PENDING_ALERT_THRESHOLD_DAYS: 7,
   emitRebootPendingAlert: vi.fn().mockResolvedValue(null),
@@ -31,6 +31,12 @@ import {
 } from './maintenanceRebootWorker';
 import { DEFAULT_REBOOT_DELAY_MINUTES, DEFERRAL_OFF } from '../services/patchRebootHandler';
 import { emitRebootPendingAlert, loadOldestRebootRequiredSince } from '../services/patchAlerts';
+import { captureException, captureMessage } from '../services/sentry';
+
+beforeEach(() => {
+  vi.mocked(captureException).mockClear();
+  vi.mocked(captureMessage).mockClear();
+});
 
 // #3197: the grace period is no longer a constant in this module. It resolves
 // from the device's effective patch policy — the same setting the post-patch
@@ -258,6 +264,60 @@ describe('processRebootCandidate', () => {
     expect(res.reason).toBe(errorMsg);
   });
 
+  // #8022 (BREEZE-45): a refused dispatch used to be reported as
+  // `captureException(new Error(<message with the device id and reason>))`.
+  // scrubEvent rewrites every exception value to '[redacted]' and drops
+  // untagged context, so production saw only a contentless "Error" whose top
+  // frame was processRebootCandidate — read as a throw, when the sweep had in
+  // fact reported a refusal and moved on. The refusal must arrive as a warning
+  // whose only content is bounded, allowlisted tags.
+  it('reports a refused dispatch as a tagged warning, not a contentless exception (#8022)', async () => {
+    const deps = makeDeps({
+      queueCommandForExecution: vi.fn().mockResolvedValue({
+        error: 'TRUST_PROBATION',
+        trust: { capability: 'device_execute', reason: 'probation_default_deny' },
+        refusal: 'trust_denied',
+      }),
+    } as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await processRebootCandidate(winDevice, deps);
+
+      expect(res).toEqual({ issued: false, reason: 'TRUST_PROBATION' });
+      expect(captureException).not.toHaveBeenCalled();
+      expect(captureMessage).toHaveBeenCalledTimes(1);
+      expect(captureMessage).toHaveBeenCalledWith('[MaintenanceReboot] reboot dispatch refused', {
+        eventCode: 'maintenance_reboot_dispatch_refused',
+        level: 'warning',
+        tags: { org_id: 'org-1', command_dispatch_refusal: 'trust_denied' },
+      });
+      // The unbounded detail (device id, full reason) stays on the console line.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dev-1'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('TRUST_PROBATION'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('tags a refusal that carries no class as unclassified rather than dropping the tag (#8022)', async () => {
+    const deps = makeDeps({
+      queueCommandForExecution: vi.fn().mockResolvedValue({ error: 'something new' }),
+    } as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await processRebootCandidate(winDevice, deps);
+
+      expect(captureMessage).toHaveBeenCalledWith(
+        '[MaintenanceReboot] reboot dispatch refused',
+        expect.objectContaining({
+          tags: { org_id: 'org-1', command_dispatch_refusal: 'unclassified' },
+        }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('skips without issuing when the maintenance window is not active (M3)', async () => {
     const deps = makeDeps({
       isInMaintenanceWindow: vi.fn().mockReturnValue({ active: false }),
@@ -402,6 +462,35 @@ describe('runMaintenanceRebootSweep', () => {
       }),
     );
     expect(result).toEqual({ issued: 1, checked: 2 });
+  });
+
+  // #8022: a throw on one candidate is caught, logged with its device id and
+  // reported with tags that survive scrubEvent; the candidates after it are
+  // still processed in the same tick.
+  it('reports a per-device throw with worker + org tags and still processes the next candidate (#8022)', async () => {
+    const boom = new Error('boom');
+    const otherOrgCandidate = { ...candidate2, orgId: 'org-2' };
+    const deps = makeSweepDeps({
+      getRebootCandidates: vi.fn().mockResolvedValue([candidate1, otherOrgCandidate]),
+      processRebootCandidate: vi.fn()
+        .mockRejectedValueOnce(boom)
+        .mockResolvedValueOnce({ issued: true, reason: 'issued' }),
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await runMaintenanceRebootSweep(deps);
+
+      expect(result).toEqual({ issued: 1, checked: 2 });
+      expect(deps.processRebootCandidate).toHaveBeenNthCalledWith(2, otherOrgCandidate);
+      expect(captureException).toHaveBeenCalledTimes(1);
+      expect(captureException).toHaveBeenCalledWith(boom, undefined, {
+        worker: 'maintenanceRebootWorker',
+        org_id: 'org-1',
+      });
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('dev-1'), boom);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it('calls the reboot-pending emitter for a non-issued candidate with the right args', async () => {

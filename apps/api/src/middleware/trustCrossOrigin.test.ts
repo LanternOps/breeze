@@ -31,7 +31,7 @@ describe('index.ts registration', () => {
   it('registers secureHeaders through byTrustCrossOriginPath with a cross-origin twin of the same options', () => {
     // The app-wide registration is the only place the exception can live (secureHeaders writes after next()).
     expect(indexSource).toMatch(
-      /exceptTunnelHttp\(\s*byTrustCrossOriginPath\(\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS \}\),\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' \}\),\s*\)\s*\)/,
+      /exceptTunnelHttp\(\s*routeReferrerPolicyWins\(\s*byTrustCrossOriginPath\(\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS \}\),\s*secureHeaders\(\{ \.\.\.SECURE_HEADERS_OPTIONS, crossOriginResourcePolicy: 'cross-origin' \}\),\s*\)\s*\)\s*\)/,
     );
     // No second, unconditional secureHeaders registration that would overwrite the exception.
     expect(indexSource.match(/secureHeaders\(\{/g)).toHaveLength(2);

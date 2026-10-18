@@ -100,7 +100,21 @@ Choose frameworks in the **Framework view** section of the Trust Center tab. **U
 
 The CIS Controls v8 view requires `BREEZE_TRUST_CIS_FRAMEWORK_VIEW` (default off). Enabling it is an operator decision after CIS licensing is confirmed. While it is off, CIS cannot be selected and the framework view omits it; control cards still show their CIS references. See the [environment reference](/deploy/environment/).
 
+### Hardening safeguards
+
+When the CIS Controls v8 view is enabled, the configuration hardening control gains a collapsed **Safeguards evidenced by hardening checks** list. Breeze maps each hardening check the agent runs, per operating system, to the CIS Controls v8 safeguards it supports, and evaluates each safeguard from the latest scan of every eligible device: a device passes a safeguard only when every mapped check that produced a result passed, and `not applicable` or errored checks do not count for or against it. Each safeguard then uses the same coverage floor and thresholds as every other control, so a safeguard with too little scan coverage shows as not assessed.
+
+The list is partial by construction. Only some hardening checks map to a named safeguard, and a check with no mapping still counts toward the overall hardening pass rate. The public page shows safeguard identifiers, Breeze's own short descriptions and a status. It never shows the hardening checks' own titles or identifiers. The list appears only while `BREEZE_TRUST_CIS_FRAMEWORK_VIEW` is on, and it is not a statement of compliance.
+
 {/* W02f: subprocessors, FAQ, history */}
+
+## Subprocessors, FAQ and history
+
+Three optional blocks give buyers and auditors the context behind the controls. All three are drafted in the Trust Center tab and reach the public page only when you publish.
+
+- **Subprocessors.** List the third parties that process data for your customer. **Add from detected tools** suggests the security products, backup service and Microsoft 365 connection Breeze already knows about, and you can add any others by hand (up to 50). A suggestion is only a prefill: review the purpose, location and website before you save. Websites must start with `https://`.
+- **FAQ.** Up to 30 questions with short formatted answers (2,000 characters each), shown as expandable items. Answers are cleaned of scripts and unsupported formatting when you save and again every time the page is built.
+- **Controls met over time.** Off by default. When on, the page shows a 90-day chart of how many controls were met. The chart is built from the page's earlier snapshots, so turning it on can show changes from before you enabled it. It shows change-points only (a point appears when the number changes at a re-evaluation) and does not claim every hour was verified. The setting follows the usual inheritance (page, then partner template, then default) and the Trust Center tab shows which one applies.
 
 {/* W02g: partner template */}
 

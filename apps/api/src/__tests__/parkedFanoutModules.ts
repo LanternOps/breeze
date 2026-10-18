@@ -13,7 +13,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   // --- shared resolvers -----------------------------------------------------
   'services/postureEvidence.ts': { guards: 1, reason: 'posture evidence device population (report + trust page)' },
   'services/externalDeviceMatching/candidates.ts': { guards: 1, reason: 'candidate devices for external vendor endpoint matching carry the parked-device predicate' },
-  'services/featureConfigResolver.ts': { guards: 5, reason: 'per-device config resolution, partner-wide assignment fan-out, backup and scan device sets' },
+  'services/featureConfigResolver.ts': { guards: 6, reason: 'per-device config resolution, partner-wide assignment fan-out, backup and scan device sets, batched security_agents winner walk (no partner-level assignment for a parked device)' },
   'services/configurationPolicy.ts': { guards: 1, reason: 'effective configuration for a device (no partner-level assignment for a parked device)' },
   'services/policyEvaluationService.ts': { guards: 3, reason: 'policy scope and assignment-target device resolution' },
   'services/monitors/monitorResolver.ts': { guards: 1, reason: 'monitor assignments resolved for a device' },

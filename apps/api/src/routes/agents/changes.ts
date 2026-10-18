@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, withDbTransaction } from '../../db';
 import { devices, deviceChangeLog } from '../../db/schema';
 import { requireAgentRole } from '../../middleware/requireAgentRole';
 import { submitChangesSchema } from './schemas';
@@ -11,6 +11,7 @@ import { getRedis } from '../../services/redis';
 import { checkAndConsumeIngestQuota } from '../../services/ingestQuota';
 import { envInt } from '../../utils/envInt';
 import { stripNul } from '../../utils/stripNul';
+import { isPgDataException, pgErrorCode, pgErrorNode } from '../../utils/pgErrors';
 
 // Async gunzip: a synchronous inflate blocks the event loop for every OTHER
 // agent's request for the duration of the decompression.
@@ -89,6 +90,12 @@ function computeChangeFingerprint(change: {
   return createHash('sha256').update(payload).digest('hex');
 }
 
+/** SQLSTATE plus the driver's own message, without the statement's parameters. */
+function describePgError(err: unknown): string {
+  const message = pgErrorNode(err)?.message;
+  return `${pgErrorCode(err) ?? 'unknown'}: ${typeof message === 'string' ? message : 'no driver message'}`;
+}
+
 changesRoutes.put('/:id/changes', async (c) => {
   const agentId = c.req.param('id');
   let body: unknown;
@@ -142,7 +149,7 @@ changesRoutes.put('/:id/changes', async (c) => {
   }
 
   const seenFingerprints = new Set<string>();
-  const rows = [];
+  const rows: Array<typeof deviceChangeLog.$inferInsert> = [];
   for (const change of data.changes) {
     const fingerprint = computeChangeFingerprint(change);
     if (seenFingerprints.has(fingerprint)) {
@@ -202,31 +209,71 @@ changesRoutes.put('/:id/changes', async (c) => {
     }
   }
 
+  // Each insert runs in its own savepoint (#8301): this route runs inside the
+  // request-long agent transaction, and a failed bare statement would abort
+  // it, so the later chunks and the earlier chunks' already-counted rows would
+  // all be lost at commit. A chunk that fails with a data exception (one row's
+  // VALUES, e.g. text jsonb cannot hold) is retried row by row so only that
+  // row is dropped; any other error stops the loop.
+  const insertRows = (batch: typeof rows) => withDbTransaction(() => db
+    .insert(deviceChangeLog)
+    .values(batch)
+    .onConflictDoNothing({
+      target: [deviceChangeLog.deviceId, deviceChangeLog.fingerprint]
+    })
+    .returning({ id: deviceChangeLog.id }));
+
   let inserted = 0;
-  let insertFailed = false;
-  try {
-    for (let i = 0; i < rows.length; i += 200) {
-      const batch = rows.slice(i, i + 200);
-      const insertedBatch = await db
-        .insert(deviceChangeLog)
-        .values(batch)
-        .onConflictDoNothing({
-          target: [deviceChangeLog.deviceId, deviceChangeLog.fingerprint]
-        })
-        .returning({ id: deviceChangeLog.id });
-      inserted += insertedBatch.length;
+  let dropped = 0;
+  let aborted = false;
+  for (let i = 0; i < rows.length && !aborted; i += 200) {
+    const batch = rows.slice(i, i + 200);
+    try {
+      inserted += (await insertRows(batch)).length;
+    } catch (err) {
+      if (!isPgDataException(err)) {
+        aborted = true;
+        console.error(`[Changes] Error inserting rows for device ${device.id}:`, err);
+        break;
+      }
+      // Log the driver's message, not the DrizzleQueryError: its message
+      // carries every bound parameter of the 200-row statement.
+      console.warn(
+        `[Changes] Chunk insert rejected for device ${device.id} (${describePgError(err)}); retrying row by row`,
+      );
+      for (const row of batch) {
+        try {
+          inserted += (await insertRows([row])).length;
+        } catch (rowErr) {
+          if (!isPgDataException(rowErr)) {
+            aborted = true;
+            console.error(`[Changes] Error inserting rows for device ${device.id}:`, rowErr);
+            break;
+          }
+          dropped += 1;
+          console.error(
+            `[Changes] Dropping one change row for device ${device.id} `
+            + `(${row.changeType} ${JSON.stringify(row.subject)}): ${describePgError(rowErr)}`,
+          );
+        }
+      }
     }
-  } catch (err) {
-    insertFailed = true;
-    console.error(`[Changes] Error inserting rows for device ${device.id}:`, err);
   }
 
-  if (insertFailed && inserted === 0 && rows.length > 0) {
-    return c.json({ error: 'Failed to insert changes', count: 0 }, 500);
+  // Unattempted rows: answer 5xx so the agent keeps its diff baseline and
+  // re-sends (heartbeat.go sendConfigurationChanges commits on any 2xx). The
+  // re-send is idempotent: rows already stored hit the (device_id, fingerprint)
+  // conflict target.
+  if (aborted) {
+    return c.json({ error: 'Failed to insert changes', count: inserted }, 500);
   }
 
+  // Rows dropped on a data exception will fail identically on every re-send,
+  // so they are reported (2xx, `dropped`) rather than failed: a 5xx would make
+  // the agent re-send the same poison row every cycle. `inserted` can also be
+  // below the total because of conflict skips (already-stored duplicates).
   if (inserted < rows.length) {
-    return c.json({ success: true, count: inserted, total: rows.length, partial: true }, 207);
+    return c.json({ success: true, count: inserted, total: rows.length, dropped, partial: true }, 207);
   }
 
   return c.json({ success: true, count: inserted });

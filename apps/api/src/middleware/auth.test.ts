@@ -68,6 +68,10 @@ vi.mock('./mobileDeviceBlocked', () => ({
   }, 403)
 }));
 
+const rateLimitMocks = vi.hoisted(() => ({ rateLimiter: vi.fn() }));
+vi.mock('../services/rate-limit', () => ({ rateLimiter: rateLimitMocks.rateLimiter }));
+vi.mock('../services/redis', () => ({ getRedis: () => ({}) }));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   db: {
@@ -135,6 +139,7 @@ import { authMiddleware, requireScope, requirePermission, requireMfa, requireInt
 import { verifyToken } from '../services/jwt';
 import { isTokenIssuedBeforePasswordChange, isUserTokenRevoked } from '../services/tokenRevocation';
 import { db, withDbAccessContext } from '../db';
+import { userRateLimit } from './userRateLimit';
 import { getUserPermissions, hasPermission, canAccessOrg, canAccessSite } from '../services/permissions';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { getEffectiveMfaPolicy } from '../services/mfaPolicy';
@@ -385,6 +390,68 @@ describe('authMiddleware', () => {
     expect(ipGuardMocks.ipAllowlistGuard.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(withDbAccessContext).mock.invocationCallOrder[0]!,
     );
+  });
+
+  // #8334 / #1105 — a per-user Redis limiter registered as route middleware must
+  // be evaluated BEFORE authMiddleware takes a pooled connection (opens the
+  // request transaction). `runOutsideDbContext` could not do this: it leaves the
+  // outer transaction held. These assert on the real transaction opener.
+  describe('pre-context rate limiters (#8334)', () => {
+    function limitedApp() {
+      let handlerRuns = 0;
+      const app = new Hono();
+      app.use(authMiddleware);
+      app.post('/limited', userRateLimit('enroll-write', 10, 60), (c) => {
+        handlerRuns++;
+        return c.json({ ok: true });
+      });
+      return { app, runs: () => handlerRuns };
+    }
+
+    it('runs the limiter before the request transaction is opened, and only once', async () => {
+      const { app, runs } = limitedApp();
+      vi.mocked(verifyToken).mockResolvedValue(basePayload);
+      mockUserSelect([activeUser]);
+      let contextOpenAtLimiter: boolean | undefined;
+      let contextOpen = false;
+      vi.mocked(withDbAccessContext).mockImplementationOnce(async (_context, fn) => {
+        contextOpen = true;
+        try {
+          return await fn();
+        } finally {
+          contextOpen = false;
+        }
+      });
+      rateLimitMocks.rateLimiter.mockImplementation(async () => {
+        contextOpenAtLimiter = contextOpen;
+        return { allowed: true, remaining: 9, resetAt: new Date() };
+      });
+
+      const res = await app.request('/limited', { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(200);
+      expect(runs()).toBe(1);
+      expect(contextOpenAtLimiter).toBe(false);
+      expect(rateLimitMocks.rateLimiter).toHaveBeenCalledTimes(1);
+      expect(rateLimitMocks.rateLimiter).toHaveBeenCalledWith(expect.anything(), `rl:enroll-write:${activeUser.id}`, 10, 60);
+      expect(rateLimitMocks.rateLimiter.mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(withDbAccessContext).mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it('a denied limiter answers 429 without ever opening the request transaction', async () => {
+      const { app, runs } = limitedApp();
+      vi.mocked(verifyToken).mockResolvedValue(basePayload);
+      mockUserSelect([activeUser]);
+      vi.mocked(withDbAccessContext).mockClear();
+      rateLimitMocks.rateLimiter.mockResolvedValue({ allowed: false, remaining: 0, resetAt: new Date() });
+
+      const res = await app.request('/limited', { method: 'POST', headers: { Authorization: 'Bearer token' } });
+
+      expect(res.status).toBe(429);
+      expect(runs()).toBe(0);
+      expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects a blocked signed mobile binding on an ordinary authenticated API path', async () => {

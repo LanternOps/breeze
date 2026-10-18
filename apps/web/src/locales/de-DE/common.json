@@ -494,7 +494,10 @@
       "createFirst": "Ersten Filter erstellen",
       "created": "Erstellt am {{date}}",
       "deleteConfirm": "Diesen Filter löschen?",
-      "duplicate": "Duplizieren"
+      "duplicate": "Duplizieren",
+      "saveFailed": "Filter konnte nicht gespeichert werden",
+      "deleteFailed": "Filter konnte nicht gelöscht werden",
+      "ownerOrgHint": "Gespeicherte Filter gehören zu einer Organisation. Wählen Sie die Organisation aus, der dieser Filter gehört."
     },
     "targets": {
       "modes": {
@@ -1363,6 +1366,14 @@
           "migrationWindowClosed": {
             "description": "Wird einmal pro Organisation ausgelöst, wenn ein Ticket-Migrationsfenster geschlossen wird, mit den importierten Zählungen.",
             "label": "Migrationsfenster geschlossen"
+          },
+          "integrationHealthOpened": {
+            "description": "Wird ausgelöst, wenn für die Verbindung einer Organisation ein Integritätsvorfall eröffnet wird.",
+            "label": "Integritätsvorfall bei Verbindung eröffnet"
+          },
+          "integrationHealthResolved": {
+            "description": "Wird ausgelöst, wenn ein Integritätsvorfall einer Verbindung behoben wird.",
+            "label": "Integritätsvorfall bei Verbindung behoben"
           }
         },
         "fields": {
@@ -2656,7 +2667,8 @@
     "dismiss": "Erinnerung an die Zwei-Faktor-Authentifizierung schließen"
   },
   "mfaPolicyOffBanner": {
-    "message": "Für Ihr Team ist keine Multi-Faktor-Authentifizierung erforderlich. Sitzungen nur mit Passwort können Skripte ausführen, Geräte verschieben und Richtlinien ändern.",
+    "label": "MFA-Erinnerung",
+    "message": "MFA ist für Ihr Team nicht Pflicht. Reine Passwort-Sitzungen können Skripte ausführen.",
     "cta": "MFA erzwingen",
     "dismiss": "Erinnerung an die MFA-Richtlinie für heute schließen"
   },

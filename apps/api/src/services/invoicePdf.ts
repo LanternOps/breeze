@@ -40,6 +40,7 @@ import { fitFontSize } from './pdfFitText';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { resolveDocumentFooter } from './documentFooter';
 import { tApi } from '../i18n';
+import { pdfPageSize, resolvePageSize, type DocumentPageSize } from './documentThemes';
 
 type InvoiceRow = typeof invoices.$inferSelect;
 type InvoiceLineRow = typeof invoiceLines.$inferSelect & {
@@ -68,6 +69,9 @@ export interface InvoiceBranding {
    *  and a fallback name/email were resolved. Never set for an issued
    *  invoice, so this is a no-op there. */
   billToEmailFallback?: string | null;
+  /** Partner document page-size default, used only when the invoice carries no
+   *  frozen `document_page_size` (drafts/legacy). Unset → A4. */
+  pageSize?: DocumentPageSize | null;
 }
 
 export const APPENDIX_ROW_CAP = 2000;
@@ -420,7 +424,12 @@ export function renderInvoicePdfBuffer(
       // Per-line Tax column only when this invoice carries tax (mirrors the header).
       const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
       const showTax = Number(invoice.taxTotal ?? 0) > 0;
-      const doc = new PDFDocument({ size: 'A4', margin: 50 });
+      const doc = new PDFDocument({
+        // #8969: the page size frozen at Issue wins; drafts/legacy follow the
+        // partner default; last resort A4 (resolvePageSize).
+        size: pdfPageSize(resolvePageSize(invoice.documentPageSize ?? branding.pageSize)),
+        margin: 50,
+      });
       const chunks: Buffer[] = [];
       doc.on('data', (d: Buffer) => chunks.push(d));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -897,6 +906,8 @@ export async function loadInvoiceForRender(invoiceId: string): Promise<{
       // partner's current language.
       locale: invoice.documentLocale ?? resolvePartnerDocumentLocale(partner),
       billToEmailFallback,
+      // Draft/legacy fallback only; the renderer prefers invoice.documentPageSize.
+      pageSize: resolvePageSize(partner?.documentPageSize),
     },
   };
 }

@@ -366,7 +366,6 @@
       "supportedGeos": "Suporta: {{geos}}",
       "refreshQueued": "Atualização de modelos na fila",
       "refreshFailed": "Não foi possível enfileirar a atualização de modelos.",
-      "alreadyConnected": "Já conectada",
       "addKind": {
         "anthropic_byok": "Chave de API da Anthropic",
         "openai_compatible": "Endpoint compatível com OpenAI"
@@ -2083,7 +2082,9 @@
       "email": "E-mail de suporte",
       "phone": "Telefone de suporte",
       "welcomeMessage": "Mensagem de boas-vindas",
-      "footerText": "Texto do rodapé"
+      "footerText": "Texto do rodapé",
+      "footerTextHelp": "Exibido no fim do portal do cliente e impresso nas cotações e faturas desta organização, no lugar do rodapé dos documentos do parceiro. Deixe em branco para imprimir o rodapé do parceiro.",
+      "footerTextInheritedSource": "Rodapé dos documentos do parceiro"
     }
   },
   "orgPortalUsersEditor": {
@@ -4420,7 +4421,8 @@
     "reEnterYourNewPassword": "Digite novamente sua nova senha",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Alterando a senha..."
+    "changingPassword": "Alterando a senha...",
+    "noPasswordNotice": "Esta conta entra pelo provedor de identidade da sua organização e não tem senha, então não há nada para alterar aqui. Se a sua organização não exige login único, use \"Esqueci a senha\" na página de login para definir uma."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Logon único conectado.",
@@ -4673,6 +4675,11 @@
     "systemRoles": "Funções do sistema",
     "customRoles": "Funções personalizadas",
     "createRole": "Criar função",
+    "ownerScope": "Escopo",
+    "ownerScopePartner": "Parceiro",
+    "ownerScopePartnerHelp": "Para sua própria equipe. Atribua na página Usuários.",
+    "ownerScopeOrganization": "Organização",
+    "ownerScopeOrganizationHelp": "Para os usuários de uma organização e sua função padrão de SSO.",
     "name": "Nome",
     "type": "Tipo",
     "inheritsFrom": "Herda de",

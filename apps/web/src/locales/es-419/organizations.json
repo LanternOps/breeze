@@ -62,15 +62,11 @@
     "overview": {
       "tiles": {
         "devices": "Dispositivos",
-        "devicesSub": "{{online}} de {{total}} en línea",
         "alerts": "Alertas abiertas",
-        "alertsSub": "{{critical}} críticas · {{high}} altas",
         "tickets": "Tickets abiertos",
-        "ticketsSub": "{{count}} en espera del cliente",
         "contracts": "Contratos activos",
         "contractsSub": "Próxima renovación {{date}}",
         "contractsNoRenewal": "Sin próxima renovación",
-        "invoices": "Pendiente",
         "invoicesSub": "Próximo vencimiento {{date}}",
         "invoicesOverdue_one": "{{count}} vencida",
         "invoicesOverdue_other": "{{count}} vencidas",
@@ -94,7 +90,23 @@
       },
       "lastActivity": "Última actividad {{date}}",
       "noSummary": "Los totales de resumen no están disponibles en este momento.",
-      "archivedNotice": "Los datos de resumen no se muestran para organizaciones archivadas."
+      "archivedNotice": "Los datos de resumen no se muestran para organizaciones archivadas.",
+      "fleet": {
+        "title": "Estado de la flota",
+        "total": "En total",
+        "allOnline": "Todos en línea",
+        "noDevices": "Sin dispositivos",
+        "critical": "Críticas",
+        "high": "Altas",
+        "otherAlerts": "Otras",
+        "noAlerts": "No hay alertas abiertas",
+        "awaitingCustomer": "En espera del cliente",
+        "noTickets": "No hay tickets abiertos"
+      },
+      "account": {
+        "title": "Cuenta",
+        "invoices": "Facturas pendientes"
+      }
     },
     "archived": {
       "banner": "Esta organización está archivada y es de solo lectura. Restáurela para realizar cambios.",
@@ -213,12 +225,56 @@
         "title": "Vista por marco"
       },
       "subprocessors": {
+        "description": "Terceros que procesan datos en nombre de su cliente. Las herramientas detectadas son solo sugerencias; nada se publica hasta que publique la página.",
+        "addDetected": "Agregar desde las herramientas detectadas",
+        "addManual": "Agregar manualmente",
+        "noSuggestions": "No quedan herramientas detectadas por agregar.",
+        "empty": "Aún no hay subencargados listados.",
+        "name": "Nombre",
+        "purpose": "Finalidad",
+        "location": "Ubicación",
+        "website": "Sitio web",
+        "websiteInvalid": "Use una dirección https://.",
+        "moveUp": "Subir",
+        "moveDown": "Bajar",
+        "remove": "Quitar",
+        "save": "Guardar subencargados",
+        "saved": "Subencargados guardados",
+        "saveFailed": "No se pudieron guardar los subencargados",
+        "loadFailed": "No se pudieron cargar los subencargados.",
+        "suggestionsFailed": "No se pudieron cargar las herramientas detectadas. Cierre y vuelva a abrir para reintentar.",
+        "duplicate": "La misma herramienta detectada aparece más de una vez.",
+        "limit": "Se alcanzó el máximo de {{max}} subencargados.",
         "title": "Subprocesadores"
       },
       "faq": {
+        "description": "Respuestas a las preguntas que más hacen compradores y auditores. Se publican con la página.",
+        "add": "Agregar pregunta",
+        "question": "Pregunta",
+        "questionShort": "La pregunta necesita al menos {{min}} caracteres.",
+        "answer": "Respuesta",
+        "answerTooLong": "Esta respuesta es demasiado larga; acórtela.",
+        "moveUp": "Subir",
+        "moveDown": "Bajar",
+        "remove": "Quitar",
+        "save": "Guardar preguntas frecuentes",
+        "saved": "Preguntas frecuentes guardadas",
+        "saveFailed": "No se pudieron guardar las preguntas frecuentes",
+        "loadFailed": "No se pudieron cargar las preguntas frecuentes.",
+        "empty": "Aún no hay preguntas.",
+        "limit": "Se alcanzó el máximo de {{max}} preguntas.",
         "title": "Preguntas frecuentes"
       },
       "history": {
+        "toggle": "Mostrar los controles cumplidos a lo largo del tiempo",
+        "description": "Agrega un gráfico de 90 días con cuántos controles se cumplieron. Cada cambio se registra cuando Breeze vuelve a evaluar la página.",
+        "saved": "Configuración del historial guardada",
+        "saveFailed": "No se pudo guardar la configuración del historial",
+        "source": {
+          "page": "Definido en esta organización",
+          "template": "De la plantilla del socio",
+          "default": "Predeterminado"
+        },
         "title": "Controles cumplidos a lo largo del tiempo"
       },
       "access": {
@@ -487,6 +543,29 @@
         "copy": "Copiar fragmento",
         "copied": "Fragmento copiado",
         "copyFailed": "No se pudo copiar el fragmento."
+      },
+      "embed": {
+        "title": "Insertar en tu sitio web",
+        "description": "Muestra una tarjeta compacta y actualizada de la postura de seguridad en tu propio sitio web, dentro de un iframe. Solo los sitios indicados aquí pueden mostrarla; la página de confianza completa nunca se puede insertar.",
+        "liveNote": "Los cambios se aplican la próxima vez que se cargue la tarjeta insertada; no hace falta volver a publicar.",
+        "unpublishedNote": "La tarjeta insertada aparece cuando la página está publicada.",
+        "originLabel": "Dirección del sitio (solo https, sin ruta)",
+        "add": "Agregar sitio",
+        "remove": "Quitar",
+        "save": "Guardar sitios",
+        "saved": "Sitios de inserción guardados",
+        "saveFailed": "No se pudieron guardar los sitios de inserción.",
+        "invalidOrigin": "Ingresa una dirección https exacta, sin ruta, comodín ni dirección IP, por ejemplo https://www.example.com",
+        "duplicateOrigin": "Ese sitio ya está en la lista.",
+        "maxReached": "Puedes permitir como máximo {{max}} sitios.",
+        "preview": "Se guardará como",
+        "snippetLabel": "HTML de inserción",
+        "frameTitle": "Tarjeta de postura de seguridad",
+        "copy": "Copiar fragmento",
+        "copied": "Fragmento copiado",
+        "copyFailed": "No se pudo copiar el fragmento.",
+        "emptyNote": "Agrega al menos un sitio para habilitar la inserción.",
+        "mfaRequired": "Cambiar los sitios de inserción requiere autenticación multifactor. Activa la MFA en la configuración de seguridad de tu perfil y vuelve a intentarlo."
       }
     },
     "documents": {

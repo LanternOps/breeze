@@ -307,7 +307,7 @@ function toFullEntry(row: DbRow, includeDetails = true) {
   return entry;
 }
 
-function parseExcludeActions(raw: string | undefined): string[] {
+function parseCommaList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
     .split(',')
@@ -333,16 +333,32 @@ function buildFilterConditions(
     );
   }
 
-  if (filters.action) {
-    conditions.push(ilike(auditLogsTable.action, `%${escapeIlike(filters.action)}%`));
+  // #8975: the UI sends multi-select filters as a comma list; match each term
+  // on its own and OR them rather than as one literal "a,b" substring.
+  // A non-empty filter that yields no terms (e.g. ",") fails closed to zero rows
+  // rather than silently dropping the filter.
+  const actionTerms = parseCommaList(filters.action);
+  if (filters.action && actionTerms.length === 0) {
+    conditions.push(sql`false`);
+  } else if (actionTerms.length > 0) {
+    conditions.push(
+      or(...actionTerms.map((t) => ilike(auditLogsTable.action, `%${escapeIlike(t)}%`)))!
+    );
   }
 
-  if (filters.resource) {
-    const term = `%${escapeIlike(filters.resource)}%`;
+  const resourceTerms = parseCommaList(filters.resource);
+  if (filters.resource && resourceTerms.length === 0) {
+    conditions.push(sql`false`);
+  } else if (resourceTerms.length > 0) {
     conditions.push(
       or(
-        ilike(auditLogsTable.resourceType, term),
-        ilike(auditLogsTable.resourceName, term)
+        ...resourceTerms.flatMap((t) => {
+          const term = `%${escapeIlike(t)}%`;
+          return [
+            ilike(auditLogsTable.resourceType, term),
+            ilike(auditLogsTable.resourceName, term)
+          ];
+        })
       )!
     );
   }
@@ -355,7 +371,7 @@ function buildFilterConditions(
     conditions.push(lte(auditLogsTable.timestamp, new Date(filters.to)));
   }
 
-  const excludeList = parseExcludeActions(filters.excludeActions);
+  const excludeList = parseCommaList(filters.excludeActions);
   if (excludeList.length > 0) {
     conditions.push(not(inArray(auditLogsTable.action, excludeList)));
   }
@@ -680,7 +696,7 @@ function paginatedListHandler(
     // excludeActions is compatible with the fast path — it's applied inside the
     // LATERAL subquery before the per-org LIMIT. The standard path picks it up
     // via buildFilterConditions(orgCond, query) above.
-    const excludeActions = parseExcludeActions(query.excludeActions);
+    const excludeActions = parseCommaList(query.excludeActions);
     // Fast-path org list: a pinned ?orgId= scopes the LATERAL per-org scan to
     // that single org; otherwise it spans every accessible org.
     const fastPathOrgIds: string[] | null = query.orgId

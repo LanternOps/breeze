@@ -18,5 +18,7 @@
     "organization": "Tüm organizasyon",
     "site": "Bu site",
     "device_group": "Cihaz grubu"
-  }
+  },
+  "emptyCompact": "Sorumlu kişi yok",
+  "assign": "Ata"
 }

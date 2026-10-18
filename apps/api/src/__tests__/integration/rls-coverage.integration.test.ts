@@ -106,7 +106,6 @@ const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
   'llm_provider_catalog', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'llm_provider_catalog_revisions', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
   'llm_provider_verifications', // System-wide curated catalog of vetted LLM endpoints; writes gated by platform-admin role + MFA at the route layer.
-  'ai_model_registry_state', // W03 cutover coordinator: one row, no tenant column (#7601). Forced RLS, single system-only policy — its only reader/writer, the system-context cutover sweep, was removed in W08 (#7606); the table is dropped in W08b. No org_id / device_id / partner_id, so no cascade, merge or export registration applies.
   'ai_platform_models', // AI model registry W01 (#7599): system-wide platform model catalog (Anthropic model ids, capabilities, operator prices, option support). No tenant column and NO RLS — same posture as llm_provider_catalog; every request context reads it for pricing and capabilities. Writes are gated to the ai-model-discovery worker and the platform-admin + MFA /admin/ai-models routes. No org_id / device_id, so no cascade, merge or export registration applies. Plan: docs/superpowers/plans/ai-mcp/2026-09-30-ai-model-registry-w01-platform-catalog.md.
   'third_party_release_tests', // System-wide release test results; references catalog (unscoped) and is platform-admin-only at the route layer.
   'supported_currencies', // Global ISO-4217 allowlist (multi-currency spec §4). No tenant axis. Forced RLS: permissive USING (true) SELECT (org-scoped request contexts read it), system-only writes. Mirrors winget_package_index.
@@ -155,6 +154,9 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // prices, partner-axis like its sibling above; org_id is set only on the
   // org_ticket_settings rows and is metadata for cascade/merge/export.
   'legacy_labour_pricing_archive',
+  // AI model registry W08b (#7606): snapshot of the dropped legacy AI model
+  // config; partner-axis like legacy_labour_pricing_archive, org_id is metadata.
+  'ai_model_registry_legacy_archive',
   // Huntress credentials and discovered-org mappings are partner-scoped.
   // org_id is retained only as legacy/mapping metadata and may be NULL for
   // quarantined Huntress orgs.
@@ -259,6 +261,7 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   ['billing_profile_ai_rates', 'partner_id'],
   ['org_billing_profile_assignments', 'partner_id'],
   ['legacy_labour_pricing_archive', 'partner_id'],
+  ['ai_model_registry_legacy_archive', 'partner_id'],
   ['ticket_response_templates', 'partner_id'],
   ['ticket_mailbox_connections', 'partner_id'],
   ['ticket_mailbox_tenant_ownerships', 'partner_id'],
@@ -352,9 +355,8 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // partner. Functional cross-partner forge proof:
   // stripeConnectCredentialsRls.integration.test.ts.
   ['stripe_connect_credentials', 'partner_id'],
-  ['partner_llm_configs', 'partner_id'],
-  // AI model registry W02 (#7600): partner_ai_connections — partner axis like
-  // partner_llm_configs (rows copied with the same id); no org_id, so no
+  // AI model registry W02 (#7600): partner_ai_connections — partner axis (rows
+  // copied with the same id from the legacy table W08b dropped); no org_id, so no
   // org-cascade / export-policy entry. No org-token read branch by design.
   ['partner_ai_connections', 'partner_id'],
   // partner_ai_models (#7600 W02): partner axis + a SEPARATE FOR SELECT

@@ -265,3 +265,29 @@ describe('tool sources API client', () => {
     ).rejects.toMatchObject({ status: 409, code: 'slug_shadows_partner_source' });
   });
 });
+
+describe('tool sources API client — openapi kind (#5217)', () => {
+  it('forwards kind openapi and specUrl on create', async () => {
+    fetcher.mockResolvedValueOnce(ok({ data: { id: 's-9' } }, 201));
+    await createToolSource(fetcher, {
+      ownerScope: 'partner',
+      name: 'Vendor',
+      slug: 'vendor',
+      kind: 'openapi',
+      endpointUrl: 'https://api.vendor.example.test/v1',
+      specUrl: 'https://api.vendor.example.test/openapi.json',
+      rateLimitPerMinute: 120,
+      authKind: 'none',
+    });
+    const body = JSON.parse(fetcher.mock.calls[0]![1].body as string);
+    expect(body.kind).toBe('openapi');
+    expect(body.specUrl).toBe('https://api.vendor.example.test/openapi.json');
+  });
+
+  it('forwards specUrl on update', async () => {
+    fetcher.mockResolvedValueOnce(ok({ data: { id: 's-9' } }));
+    await updateToolSource(fetcher, 's-9', { specUrl: 'https://api.vendor.example.test/v2.json' });
+    const body = JSON.parse(fetcher.mock.calls[0]![1].body as string);
+    expect(body).toEqual({ specUrl: 'https://api.vendor.example.test/v2.json' });
+  });
+});

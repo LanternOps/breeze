@@ -213,3 +213,52 @@ describe('DiscoveredToolsTable', () => {
     expect(screen.getByTestId('tools-empty')).toBeTruthy();
   });
 });
+
+describe('DiscoveredToolsTable — openapi columns (#5217)', () => {
+  const opTool = (id: string, annotations: Record<string, unknown>) =>
+    tool({ id, qualifiedName: `v__${id}`, annotations });
+
+  it('shows Method and Path columns for an openapi source', () => {
+    render(
+      <DiscoveredToolsTable
+        sourceId="s-1"
+        kind="openapi"
+        tools={[
+          opTool('t-1', { operation: { method: 'get', path: '/assets/{id}', operationId: 'getAsset', params: [], body: null, declaredServer: null } }),
+          opTool('t-2', {}),
+        ]}
+        onChanged={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByText('Method').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Path').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('tool-row-t-1-method').textContent).toBe('GET');
+    const path = screen.getByTestId('tool-row-t-1-path');
+    expect(path.textContent).toBe('/assets/{id}');
+    expect(path.getAttribute('title')).toBe('/assets/{id}');
+    // A row from before this wave has no binding: empty cells, no crash.
+    expect(screen.getByTestId('tool-row-t-2-method').textContent).toBe('');
+    expect(screen.getByTestId('tool-row-t-2-path').textContent).toBe('');
+  });
+
+  it('ignores a malformed binding', () => {
+    render(
+      <DiscoveredToolsTable
+        sourceId="s-1"
+        kind="openapi"
+        tools={[opTool('t-3', { operation: { method: 42, path: null } })]}
+        onChanged={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('tool-row-t-3-method').textContent).toBe('');
+  });
+
+  it('renders neither column for an mcp source', () => {
+    renderTable([tool()]);
+    expect(screen.queryByText('Method')).toBeNull();
+    expect(screen.queryByTestId('tool-row-t-1-method')).toBeNull();
+    expect(screen.queryByTestId('tool-row-t-1-path')).toBeNull();
+  });
+});

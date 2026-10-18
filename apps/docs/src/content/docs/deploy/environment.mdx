@@ -331,6 +331,9 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `IP_HISTORY_RETENTION_DAYS` | `90` | Days to keep device IP-address history, clamped to 1–365 |
 | `IP_HISTORY_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `IP_HISTORY_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |
+| `RESTORE_POINT_ATTEMPT_RETENTION_DAYS` | `90` | Days to keep System Restore checkpoint attempts (the device's System Restore tab), clamped to 1–365. An attempt still awaiting the device is kept until its command can no longer report back, whatever this is set to |
+| `RESTORE_POINT_ATTEMPT_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `RESTORE_POINT_ATTEMPT_RETENTION_MAX_BATCHES` | `50` | Maximum batches per sweep, per nightly run |
 | `SNMP_METRICS_RETENTION_DAYS` | `7` | Days to keep raw SNMP-polled metrics, clamped to 1–365 |
 | `SNMP_METRICS_RETENTION_BATCH_SIZE` | `10000` | Rows deleted per batch |
 | `SNMP_METRICS_RETENTION_MAX_BATCHES` | `200` | Maximum batches per nightly run |

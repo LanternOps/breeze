@@ -34,6 +34,9 @@ export const trustPages = pgTable('trust_pages', {
   showHistory: boolean('show_history'),
   ndaText: text('nda_text'),
   accessRequestCreatesTicket: boolean('access_request_creates_ticket').notNull().default(false),
+  /** W03a: exact https origins allowed to frame the embed card. Live (read per request), NOT frozen at publish
+   *  (W3 plan Open Decision 4); written only by the MFA-gated PUT /trust-page/embed. At most 10 (CHECK). */
+  embedAllowedOrigins: text('embed_allowed_origins').array().notNull().default(sql`'{}'::text[]`),
   publicationAuthorizedBy: varchar('publication_authorized_by', { length: 200 }),
   publicationAuthorizedAt: timestamp('publication_authorized_at', { withTimezone: true }),
   publicationAuthorizedByUserId: uuid('publication_authorized_by_user_id').references(() => users.id, { onDelete: 'set null' }),

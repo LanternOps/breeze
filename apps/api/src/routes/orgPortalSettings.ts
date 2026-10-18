@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
-import { organizations, portalBranding } from '../db/schema';
+import { organizations, partners, portalBranding } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -180,21 +180,21 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
   };
 }
 
-async function resolveAccessibleOrg(c: any): Promise<{ id: string } | Response> {
+async function resolveAccessibleOrg(c: any): Promise<{ id: string; partnerId: string } | Response> {
   const auth = c.get('auth') as AuthContext;
   const id = c.req.param('id')!;
   if (auth.scope === 'partner' && !auth.canAccessOrg(id)) {
     return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
   const orgRows = await db
-    .select({ id: organizations.id })
+    .select({ id: organizations.id, partnerId: organizations.partnerId })
     .from(organizations)
     .where(and(eq(organizations.id, id), isNull(organizations.deletedAt)))
     .limit(1);
   if (!orgRows[0]) {
     return c.json({ error: 'Organization not found', code: ERROR_CODES.NOT_FOUND }, 404);
   }
-  return { id };
+  return { id, partnerId: orgRows[0].partnerId };
 }
 
 export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
@@ -214,8 +214,22 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
         .from(portalBranding)
         .where(eq(portalBranding.orgId, org.id))
         .limit(1);
+      // #7510 (settings rule 4): `footerText` is the org override of the
+      // partner's document footer (resolveDocumentFooter, documentFooter.ts),
+      // so report the inherited partner value for the editor to show beside a
+      // blank field. Read-only: not in the PATCH schema, never written here.
+      // Read in the AMBIENT request context, like GET /organizations/:id's
+      // partnerDefaultTaxRate — this route requires `partner` or `system`
+      // scope, and `partners` RLS grants a partner-scoped actor its own row.
+      const [partnerRow] = await db
+        .select({ invoiceFooter: partners.invoiceFooter })
+        .from(partners)
+        .where(eq(partners.id, org.partnerId))
+        .limit(1);
       // No auto-insert on read: defaults are reported until the first PATCH.
-      return c.json({ data: toResponse(org.id, rows[0]) });
+      return c.json({
+        data: { ...toResponse(org.id, rows[0]), partnerInvoiceFooter: partnerRow?.invoiceFooter ?? null }
+      });
     }
   );
 

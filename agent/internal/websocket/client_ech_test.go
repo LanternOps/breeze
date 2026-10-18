@@ -36,6 +36,10 @@ func TestWSConnect_UpgradesOverECHEndToEnd(t *testing.T) {
 	var innerSNI atomic.Value
 	done := make(chan struct{})
 	defer close(done)
+	// The upgrader writes the 101 before the handler can record the upgrade,
+	// so the client's connect() may return first; the handler signals here
+	// once its bookkeeping is done (#9005).
+	handlerReady := make(chan struct{})
 	rig := echtest.Start(t, "localhost", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		echAccepted.Store(r.TLS != nil && r.TLS.ECHAccepted)
 		if r.TLS != nil {
@@ -46,6 +50,7 @@ func TestWSConnect_UpgradesOverECHEndToEnd(t *testing.T) {
 			return
 		}
 		upgraded.Store(true)
+		close(handlerReady)
 		defer func() { _ = conn.Close() }()
 		<-done
 	}))
@@ -69,6 +74,11 @@ func TestWSConnect_UpgradesOverECHEndToEnd(t *testing.T) {
 
 	if !c.IsConnected() {
 		t.Fatal("client does not report connected after a successful connect")
+	}
+	select {
+	case <-handlerReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server handler did not finish the upgrade bookkeeping within 5s")
 	}
 	if !echAccepted.Load() {
 		t.Fatal("server handshake did not accept ECH")

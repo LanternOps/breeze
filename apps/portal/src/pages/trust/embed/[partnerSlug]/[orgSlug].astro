@@ -1,0 +1,15 @@
+---
+// PUBLIC, FRAMABLE (Trust Center W03a). The only portal page that may be framed, and only by the origins on the
+// page's live allowlist (card.frameAncestors → Astro.locals.trustEmbedOrigins → middleware frame-ancestors). An
+// unknown page, a fetch failure or an empty allowlist is a plain 404 (frame-ancestors 'none', DENY, no-store).
+import TrustEmbedLayout from '../../../../layouts/TrustEmbedLayout.astro';
+import TrustEmbedCard from '../../../../components/trust/TrustEmbedCard.astro';
+import { loadTrustEmbedPage } from '../../../../lib/trustEmbed';
+
+const { partnerSlug, orgSlug } = Astro.params;
+const embed = await loadTrustEmbedPage(Astro, partnerSlug!, orgSlug!);
+if (!embed) return new Response('Not Found', { status: 404 });
+---
+<TrustEmbedLayout title={embed.card.title} canonicalUrl={embed.fullPageUrl} accent={embed.card.primaryColor}>
+  <TrustEmbedCard card={embed.card} fullPageUrl={embed.fullPageUrl} />
+</TrustEmbedLayout>

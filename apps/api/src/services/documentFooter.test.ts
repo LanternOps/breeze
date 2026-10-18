@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveDocumentFooter, freezeDocumentFooter } from './documentFooter';
+import { resolveDocumentFooter, freezeDocumentFooter, resolveInheritedDocumentFooter } from './documentFooter';
 
 // Settings consolidation W02-API (M11, audit finding 22) + #6232: the ONE
 // footer/terms resolver, shared by the invoice render/issue paths and the
@@ -7,8 +7,10 @@ import { resolveDocumentFooter, freezeDocumentFooter } from './documentFooter';
 describe('resolveDocumentFooter', () => {
   it.each<[string, { documentTerms: string | null; partnerFooter: string | null; brandingFooter: string | null }, string | null]>([
     ['document terms set — wins over everything', { documentTerms: 'Net 30, document terms', partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, 'Net 30, document terms'],
-    ['document terms null, partner footer set — partner wins over portal', { documentTerms: null, partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, 'Partner footer'],
-    ['document terms null, partner footer null, portal footer set — portal is the last resort', { documentTerms: null, partnerFooter: null, brandingFooter: 'Portal footer' }, 'Portal footer'],
+    // #7510 (settings rule 3): the org's own footer overrides the partner default.
+    ['document terms null, org footer set — org override wins over the partner default', { documentTerms: null, partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, 'Portal footer'],
+    ['document terms null, org footer null — inherits the partner default', { documentTerms: null, partnerFooter: 'Partner footer', brandingFooter: null }, 'Partner footer'],
+    ['document terms null, partner footer null, org footer set — org footer', { documentTerms: null, partnerFooter: null, brandingFooter: 'Portal footer' }, 'Portal footer'],
     ['all three null — no footer at all', { documentTerms: null, partnerFooter: null, brandingFooter: null }, null],
     ['empty string is an explicit value, not "unset" (?? semantics)', { documentTerms: '', partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, ''],
   ])('%s', (_name, input, expected) => {
@@ -22,8 +24,8 @@ describe('resolveDocumentFooter', () => {
 describe('freezeDocumentFooter', () => {
   it.each<[string, { documentTerms: string | null; partnerFooter: string | null; brandingFooter: string | null }, string]>([
     ['document terms set — frozen verbatim', { documentTerms: 'Quote footer', partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, 'Quote footer'],
-    ['inherits the partner footer', { documentTerms: null, partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, 'Partner footer'],
-    ['inherits the portal footer', { documentTerms: null, partnerFooter: null, brandingFooter: 'Portal footer' }, 'Portal footer'],
+    ['org footer set — frozen over the partner default (#7510)', { documentTerms: null, partnerFooter: 'Partner footer', brandingFooter: 'Portal footer' }, 'Portal footer'],
+    ['org footer unset — inherits the partner footer', { documentTerms: null, partnerFooter: 'Partner footer', brandingFooter: null }, 'Partner footer'],
     ['no footer at any level — stamps the explicit empty marker, never NULL', { documentTerms: null, partnerFooter: null, brandingFooter: null }, ''],
     ['an explicit empty document footer stays empty', { documentTerms: '', partnerFooter: 'Partner footer', brandingFooter: null }, ''],
   ])('%s', (_name, input, expected) => {
@@ -38,5 +40,42 @@ describe('freezeDocumentFooter', () => {
 
   it('an unfrozen (NULL) document still resolves live — drafts and pre-#7216 rows', () => {
     expect(resolveDocumentFooter({ documentTerms: null, partnerFooter: 'Added later', brandingFooter: null })).toBe('Added later');
+  });
+});
+
+// #7510: what a document prints when it has no footer of its own, and where
+// that value comes from — the editor shows it beside a blank override field.
+describe('resolveInheritedDocumentFooter', () => {
+  it('org footer set — the org override, even when the partner has a default', () => {
+    expect(resolveInheritedDocumentFooter({ partnerFooter: 'Partner footer', brandingFooter: 'Org footer' }))
+      .toEqual({ text: 'Org footer', source: 'brand' });
+  });
+  it('org footer unset — the partner default', () => {
+    expect(resolveInheritedDocumentFooter({ partnerFooter: 'Partner footer', brandingFooter: null }))
+      .toEqual({ text: 'Partner footer', source: 'partner' });
+  });
+  // Settings rule 4: blank = inherit. The org editor saves a cleared field as
+  // NULL, but PATCH accepts '' and older rows may hold one — a blank org footer
+  // must not silently suppress the partner footer now that the org level wins.
+  it.each(['', '   '])('a blank org footer (%j) inherits the partner default', (blank) => {
+    expect(resolveInheritedDocumentFooter({ partnerFooter: 'Partner footer', brandingFooter: blank }))
+      .toEqual({ text: 'Partner footer', source: 'partner' });
+    expect(resolveDocumentFooter({ documentTerms: null, partnerFooter: 'Partner footer', brandingFooter: blank }))
+      .toBe('Partner footer');
+  });
+  it('a blank partner footer with no org footer is no footer', () => {
+    expect(resolveInheritedDocumentFooter({ partnerFooter: '  ', brandingFooter: null })).toBeNull();
+    expect(freezeDocumentFooter({ documentTerms: null, partnerFooter: '  ', brandingFooter: '' })).toBe('');
+  });
+  it('neither level set — null', () => {
+    expect(resolveInheritedDocumentFooter({ partnerFooter: null, brandingFooter: null })).toBeNull();
+  });
+  it('agrees with resolveDocumentFooter for an unfrozen document', () => {
+    for (const partnerFooter of ['P', null]) {
+      for (const brandingFooter of ['O', null]) {
+        expect(resolveInheritedDocumentFooter({ partnerFooter, brandingFooter })?.text ?? null)
+          .toBe(resolveDocumentFooter({ documentTerms: null, partnerFooter, brandingFooter }));
+      }
+    }
   });
 });

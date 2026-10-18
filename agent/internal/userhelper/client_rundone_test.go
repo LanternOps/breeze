@@ -90,7 +90,7 @@ func TestRunTearsDownPerRunGoroutinesWhenTheConnectionDrops(t *testing.T) {
 	restore := runTCCCheckLoop
 	t.Cleanup(func() { runTCCCheckLoop = restore })
 	gotKind := make(chan string, 1)
-	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, binaryKind string, _ func() bool) {
+	runTCCCheckLoop = func(_ *ipc.Conn, stop chan struct{}, _, binaryKind string) {
 		gotKind <- binaryKind
 		<-stop
 		close(loopReturned)

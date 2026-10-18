@@ -120,6 +120,9 @@ vi.mock('../services/agentCommandAwait', async (importActual) => ({
   sendCommandToAgentAwaitResult: sendCommandMock,
 }));
 
+const { pathMetricMock } = vi.hoisted(() => ({ pathMetricMock: vi.fn() }));
+vi.mock('../services/tunnelHttpMetrics', () => ({ recordTunnelHttpOutcome: pathMetricMock }));
+
 const { checkRemoteAccessMock } = vi.hoisted(() => ({
   checkRemoteAccessMock: vi.fn(async () => ({ allowed: true })),
 }));
@@ -213,10 +216,8 @@ beforeEach(() => {
   sendCommandMock.mockResolvedValue(okAgentResult());
 });
 
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
-  (await vi.importActual<typeof import('../services/agentCommandAwait')>('../services/agentCommandAwait'))
-    .__resetCancelledPrefixTombstonesForTests();
 });
 
 // Helper: run the ticket flow and return the signed auth cookie value.
@@ -1189,21 +1190,19 @@ it('401s a cookie-less request for a non-UUID tunnel id without querying the ses
 
 describe('ticket exchange vs Close (spec §4 revocation)', () => {
   it('a Close landing between the gates and dispatch yields 502 "Tunnel closed" with no agent send', async () => {
-    const actual = await vi.importActual<typeof import('../services/agentCommandAwait')>('../services/agentCommandAwait');
     const app = makeApp();
     const cookie = await mintCookie(app);
-    // Gates have passed by the time the allowlist lookup runs; Close sweeps there.
+    // Gates have passed by the time the allowlist lookup runs; a Close served
+    // by any replica lands there. The dispatch-time status re-read sees it.
     vi.mocked(getActiveAllowlistPatterns).mockImplementationOnce(async () => {
-      actual.cancelPendingAgentCommandsByPrefix(`http-req-${TUNNEL_ID}-`, 'tunnel_closed');
+      setJoinRow(defaultJoinRow({ status: 'disconnected' }));
       return ['192.168.1.0/24'];
     });
-    sendCommandMock.mockImplementationOnce((...args: Parameters<typeof actual.sendCommandToAgentAwaitResult>) =>
-      actual.sendCommandToAgentAwaitResult(...args));
-    agentSendMock.mockClear();
+    sendCommandMock.mockClear();
     const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
     expect(res.status).toBe(502);
     expect(await res.text()).toBe('Tunnel closed');
-    expect(agentSendMock).not.toHaveBeenCalled();
+    expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
   it('does not reopen a session that Close ended between the ownership read and activation', async () => {
@@ -1233,5 +1232,21 @@ describe('ticket exchange vs Close (spec §4 revocation)', () => {
     const res = await app.request(`${TOKEN_BASE}/`, { headers: { cookie } });
     expect(res.status).toBe(502);
     expect(await res.text()).toBe('Tunnel closed');
+  });
+});
+
+describe('path-mode outcome metrics (#8158)', () => {
+  it('counts auth failures, dispatch failures and successes under mode=path', async () => {
+    pathMetricMock.mockClear();
+    const app = makeApp();
+    expect((await app.request(`${BASE}/`)).status).toBe(401);
+    expect(pathMetricMock).toHaveBeenCalledWith('path', 'auth_failed');
+    const cookie = await mintCookie(app);
+    sendCommandMock.mockResolvedValueOnce({ status: 'failed', error: 'boom' });
+    expect((await app.request(`${TOKEN_BASE}/`, { headers: { cookie } })).status).toBe(502);
+    expect(pathMetricMock).toHaveBeenCalledWith('path', 'dispatch_failed');
+    expect((await app.request(`${TOKEN_BASE}/`, { headers: { cookie } })).status).toBe(200);
+    expect(pathMetricMock).toHaveBeenCalledWith('path', 'proxied');
+    expect(pathMetricMock.mock.calls.every((call) => call[0] === 'path')).toBe(true);
   });
 });

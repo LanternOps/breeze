@@ -17,6 +17,11 @@ vi.mock('./m365ControlPlane/readActionService', () => ({
   executeM365ReadAction: vi.fn(),
 }));
 
+vi.mock('./m365ControlPlane/writeActionService', () => ({
+  executeM365WriteActionForAuth: vi.fn(),
+}));
+
+import { executeM365WriteActionForAuth } from './m365ControlPlane/writeActionService';
 import { invokeDelegantTool } from './delegantClient';
 import { loadSession, loadConnection } from './m365Helpers';
 import { hasDirectM365Connection, invokeDirect } from './m365DirectGraph';
@@ -24,6 +29,9 @@ import { executeM365ReadAction } from './m365ControlPlane/readActionService';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
   m365DisableUserHandler, m365ResetPasswordHandler, m365ToolTiers, registerM365Tools,
+  m365RevokeSessionsHandler, m365RemoveLicenseHandler, m365AssignLicenseHandler,
+  m365RemoveFromGroupHandler, m365AddToGroupHandler, m365RetireIntuneDeviceHandler,
+  m365CreateUserHandler, m365SetAutoReplyHandler,
 } from './aiToolsM365';
 import type { AiTool } from './aiTools';
 import type { AuthContext } from '../middleware/auth';
@@ -608,5 +616,124 @@ describe('m365 write tools — site ceiling', () => {
     const out = await m365LookupUserHandler({ userIdentifier: 'u1' }, siteRestricted, 'sess-1');
     expect(out).toContain('M365 user profile');
     expect(invokeDelegantTool).toHaveBeenCalled();
+  });
+});
+
+// ============================================
+// M1 control-plane identity write tools (Operator Recipe Library)
+// ============================================
+describe('M1 control-plane identity write handlers', () => {
+  const GROUP = '55555555-5555-4555-8555-555555555555';
+  const SKU = '66666666-6666-4666-8666-666666666666';
+  const DEVICE = '77777777-7777-4777-8777-777777777777';
+  const writeAuth = { orgId: 'org-A', user: { id: 'tech-1' } } as any;
+  const forAuth = vi.mocked(executeM365WriteActionForAuth);
+
+  type Handler = (i: Record<string, unknown>, a: AuthContext, s: string) => Promise<unknown>;
+  const cases: Array<{ tool: string; handler: Handler; input: Record<string, unknown>; action: Record<string, unknown>; missing: Record<string, unknown> }> = [
+    { tool: 'm365_revoke_sessions', handler: m365RevokeSessionsHandler as Handler,
+      input: { userIdentifier: 'a@b.com', reason: 'r' },
+      action: { type: 'm365.user.revoke_sessions', userIdentifier: 'a@b.com', reason: 'r' },
+      missing: { userIdentifier: 'a@b.com' } },
+    { tool: 'm365_remove_license', handler: m365RemoveLicenseHandler as Handler,
+      input: { userIdentifier: 'a@b.com', skuIds: [SKU], reason: 'r' },
+      action: { type: 'm365.user.license.remove', userIdentifier: 'a@b.com', skuIds: [SKU], reason: 'r' },
+      missing: { userIdentifier: 'a@b.com', skuIds: [SKU] } },
+    { tool: 'm365_assign_license', handler: m365AssignLicenseHandler as Handler,
+      input: { userIdentifier: 'a@b.com', skuIds: [SKU], reason: 'r' },
+      action: { type: 'm365.user.license.assign', userIdentifier: 'a@b.com', skuIds: [SKU], reason: 'r' },
+      missing: { userIdentifier: 'a@b.com', skuIds: [SKU] } },
+    { tool: 'm365_remove_from_group', handler: m365RemoveFromGroupHandler as Handler,
+      input: { groupId: GROUP, userIdentifier: 'a@b.com', reason: 'r' },
+      action: { type: 'm365.group.membership.remove', groupId: GROUP, userIdentifier: 'a@b.com', reason: 'r' },
+      missing: { groupId: GROUP, userIdentifier: 'a@b.com' } },
+    { tool: 'm365_add_to_group', handler: m365AddToGroupHandler as Handler,
+      input: { groupId: GROUP, userIdentifier: 'a@b.com', reason: 'r' },
+      action: { type: 'm365.group.membership.add', groupId: GROUP, userIdentifier: 'a@b.com', reason: 'r' },
+      missing: { groupId: GROUP, userIdentifier: 'a@b.com' } },
+    { tool: 'm365_retire_intune_device', handler: m365RetireIntuneDeviceHandler as Handler,
+      input: { managedDeviceId: DEVICE, reason: 'r' },
+      action: { type: 'm365.intune.device.retire', managedDeviceId: DEVICE, reason: 'r' },
+      missing: { managedDeviceId: DEVICE } },
+    { tool: 'm365_set_auto_reply', handler: m365SetAutoReplyHandler as Handler,
+      input: { userIdentifier: 'a@b.com', status: 'alwaysEnabled', internalReplyMessage: 'away', reason: 'r' },
+      action: { type: 'm365.user.mailbox.auto_reply', userIdentifier: 'a@b.com', status: 'alwaysEnabled', internalReplyMessage: 'away', reason: 'r' },
+      missing: { userIdentifier: 'a@b.com', status: 'disabled' } },
+    { tool: 'm365_create_user', handler: m365CreateUserHandler as Handler,
+      input: { userPrincipalName: 'n@b.com', displayName: 'N', mailNickname: 'n', usageLocation: 'US', reason: 'r' },
+      action: { type: 'm365.user.create', userPrincipalName: 'n@b.com', displayName: 'N', mailNickname: 'n', usageLocation: 'US', reason: 'r' },
+      missing: { userPrincipalName: 'n@b.com', displayName: 'N', mailNickname: 'n', usageLocation: 'US' } },
+  ];
+  const text = (r: unknown): string => (typeof r === 'string' ? r : (r as { llmText: string }).llmText);
+
+  it('registers all eight at tier 3', () => {
+    for (const c of cases) expect(m365ToolTiers[c.tool], c.tool).toBe(3);
+  });
+
+  it.each(cases)('$tool: missing reason returns missing_reason and never calls the service', async ({ handler, missing }) => {
+    const out = await handler(missing, writeAuth, 'ignored');
+    expect(text(out)).toContain('missing_reason');
+    expect(forAuth).not.toHaveBeenCalled();
+  });
+
+  it.each(cases)('$tool: builds the typed action and passes the input orgId, ignoring the session', async ({ handler, input, action }) => {
+    forAuth.mockResolvedValue({ ok: true, result: { success: true, action: action.type, userId: 'u1', temporaryPassword: 'Zq9!hunter2xx' } } as any);
+    await handler({ ...input, orgId: 'org-B' }, writeAuth, 'sess-1');
+    expect(forAuth).toHaveBeenCalledWith(writeAuth, action, 'org-B');
+    expect(loadSession).not.toHaveBeenCalled();
+    expect(invokeDelegantTool).not.toHaveBeenCalled();
+  });
+
+  it.each(cases)('$tool: a service refusal is surfaced verbatim as an error', async ({ handler, input }) => {
+    forAuth.mockResolvedValue({ ok: false, code: 'consent_upgrade_required', message: 'Re-consent needed for this action.' } as any);
+    const out = text(await handler(input, writeAuth, 'sess-1'));
+    expect(out).toContain('consent_upgrade_required');
+    expect(out).toContain('Re-consent needed for this action.');
+  });
+
+  it.each(cases)('$tool: schema-invalid input returns invalid_arguments and never calls the service', async ({ handler, input }) => {
+    const out = text(await handler({ ...input, reason: 'r'.repeat(501) }, writeAuth, 'sess-1'));
+    expect(out).toContain('invalid_arguments');
+    expect(forAuth).not.toHaveBeenCalled();
+  });
+
+  // Tenant-wide identity writes: the same org-wide governance ceiling as the
+  // Delegant pair — a device-bound run or a site-restricted caller (even with
+  // an EMPTY allow-list, which still means restricted) never reaches the service.
+  it.each(cases)('$tool: denies a device-bound run and a site-restricted caller before the service', async ({ handler, input }) => {
+    for (const restricted of [
+      { ...writeAuth, scope: 'organization', allowedDeviceIds: ['dev-1'] },
+      { ...writeAuth, scope: 'organization', allowedSiteIds: [] },
+    ]) {
+      const out = text(await handler(input, restricted as AuthContext, 'sess-1'));
+      expect(out).toContain('Site-restricted');
+    }
+    expect(forAuth).not.toHaveBeenCalled();
+  });
+
+  it('m365_create_user returns a SecretToolResult: password only in secrets, never in llmText', async () => {
+    const PW = 'Zq9!hunter2xx';
+    forAuth.mockResolvedValue({
+      ok: true,
+      result: { success: true, action: 'm365.user.create', userId: 'u1', userPrincipalName: 'n@b.com', temporaryPassword: PW, forceChangeNextSignIn: true },
+    } as any);
+    const result = await m365CreateUserHandler(cases[7]!.input, writeAuth, 'sess-1');
+    expect(result.kind).toBe('success');
+    if (result.kind !== 'success') throw new Error('unreachable');
+    expect(result.secrets.temporaryPassword).toBe(PW);
+    expect(result.llmText).not.toContain(PW);
+    expect(result.llmText).toContain('n@b.com');
+  });
+
+  it('m365_create_user errors when the service returns no credential', async () => {
+    forAuth.mockResolvedValue({ ok: true, result: { success: true, action: 'm365.user.create', userId: 'u1' } } as any);
+    const result = await m365CreateUserHandler(cases[7]!.input, writeAuth, 'sess-1');
+    expect(result.kind).toBe('error');
+  });
+
+  it('m365_set_auto_reply rejects a message over 4000 chars at the schema', async () => {
+    const out = text(await m365SetAutoReplyHandler(
+      { userIdentifier: 'a@b.com', status: 'alwaysEnabled', internalReplyMessage: 'x'.repeat(4001), reason: 'r' }, writeAuth, 's'));
+    expect(out).toContain('invalid_arguments');
   });
 });

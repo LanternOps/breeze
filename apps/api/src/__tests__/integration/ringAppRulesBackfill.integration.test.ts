@@ -48,7 +48,10 @@ import {
   patchPolicies,
 } from '../../db/schema';
 import { normalizeStoredInlineSettingsWithSalvage } from '../../services/configPolicyPatching';
-import { createOrganization, createPartner } from './db-utils';
+import { Hono } from 'hono';
+import { createAccessToken } from '../../services/jwt';
+import { configPolicyRoutes } from '../../routes/configurationPolicies';
+import { createOrganization, createPartner, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
 const MIGRATION_FILE = join(
@@ -602,5 +605,53 @@ describe('2026-12-26-230000 ring app-rules backfill migration (#8186)', () => {
       // abort it.
       await getTestDb().update(patchPolicies).set({ appRules: [] }).where(eq(patchPolicies.id, R3));
     }
+  });
+});
+
+describe('backfill -> feature-link PATCH seam (#8678)', () => {
+  runDb('a PATCH that does not send `apps` preserves the backfilled link\'s inline apps through the real route', async () => {
+    const env = await setupTestEnvironment({ scope: 'partner' });
+    const P = env.partner.id;
+    const firefoxBlock: Rule = { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' };
+    const pol = await seedPolicy({ orgId: env.organization.id, name: 'Seam policy' });
+    const linkId = await seedLink(pol, null, { sources: ['os', 'third_party'], apps: [firefoxBlock] });
+
+    await applyMigration();
+
+    // Non-vacuous: the backfill relinked the link onto a ring carrying the rules.
+    const ringId = await linkTarget(linkId);
+    expect(ringId).not.toBeNull();
+    expect(canonical((await ringsOf(P)).find((r) => r.id === ringId)!.appRules)).toEqual([firefoxBlock]);
+
+    const token = await createAccessToken({
+      sub: env.user.id,
+      email: env.user.email,
+      roleId: env.role.id,
+      orgId: null,
+      partnerId: P,
+      scope: 'partner',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: 'it-session',
+    });
+    // configPolicyRoutes applies the real authMiddleware itself.
+    const app = new Hono();
+    app.route('/configuration-policies', configPolicyRoutes);
+
+    const res = await app.request(`/configuration-policies/${pol}/features/${linkId}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inlineSettings: { scheduleTime: '03:30' } }),
+    });
+    expect(res.status).toBe(200);
+
+    const rows = await getTestDb().execute(sql`
+      SELECT inline_settings->'apps' AS apps, inline_settings->>'scheduleTime' AS schedule_time
+      FROM config_policy_feature_links WHERE id = ${linkId}`);
+    const row = (rows as unknown as Array<{ apps: unknown; schedule_time: string | null }>)[0]!;
+    expect(row.schedule_time).toBe('03:30'); // the PATCH really landed
+    expect(canonical(row.apps)).toEqual([firefoxBlock]); // ...and did not clobber apps
+    expect(await linkTarget(linkId)).toBe(ringId);
   });
 });

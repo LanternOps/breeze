@@ -72,6 +72,11 @@ interface OrgBilling {
   /** Additive field from GET /orgs/organizations/:id (#6229) — the partner's
    *  `invoiceTermsDays`, shown as the inherited value. Never sent back. */
   partnerDefaultInvoiceTermsDays?: number | null;
+  /** Additive field from GET /orgs/organizations/:id (#7510) — the partner's
+   *  currency. NOT an inherited value: the org's own currency is NOT NULL and
+   *  was stamped at creation. Shown only to say the partner default applies to
+   *  new organizations. Never sent back. */
+  partnerDefaultCurrencyCode?: string | null;
   /** Read-only projection of the org's billing contact — the org-level contact
    *  holding the Billing role. Edited in the org record's Contacts tab only. */
   billingContact: { email?: string | null; name?: string | null; phone?: string | null } | null;
@@ -116,6 +121,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
   const [partnerDefaultTaxRate, setPartnerDefaultTaxRate] = useState<string | null>(null);
   const [termsDays, setTermsDays] = useState('');
   const [partnerDefaultTermsDays, setPartnerDefaultTermsDays] = useState<number | null>(null);
+  const [partnerDefaultCurrency, setPartnerDefaultCurrency] = useState<string | null>(null);
   const [billingContact, setBillingContact] = useState<OrgBilling['billingContact']>(null);
   const [line1, setLine1] = useState('');
   const [line2, setLine2] = useState('');
@@ -141,6 +147,7 @@ export default function OrgBillingSettings({ orgId }: Props) {
       // `?? ''` not `|| ''`: an override of 0 (due on receipt) must load as "0".
       setTermsDays(o.invoiceTermsDays === null || o.invoiceTermsDays === undefined ? '' : String(o.invoiceTermsDays));
       setPartnerDefaultTermsDays(o.partnerDefaultInvoiceTermsDays ?? null);
+      setPartnerDefaultCurrency(o.partnerDefaultCurrencyCode ?? null);
       setBillingContact(o.billingContact ?? null);
       setLine1(o.billingAddressLine1 ?? '');
       setLine2(o.billingAddressLine2 ?? '');
@@ -333,12 +340,20 @@ export default function OrgBillingSettings({ orgId }: Props) {
             id="ob-currency" value={selectedCurrency}
             onChange={(e) => onSelectCurrency(e.target.value)}
             data-testid="org-billing-currency"
+            aria-describedby={partnerDefaultCurrency ? 'ob-currency-partner-default' : undefined}
             className={inputCls}
           >
             {currencyOptions(currencyCode).map((code) => (
               <option key={code} value={code}>{currencyLabel(code, i18n.language)}</option>
             ))}
           </select>
+          {/* #7510 (settings rule 3): currency is the stated exception to
+              partner → org inheritance — say so where it applies. */}
+          {partnerDefaultCurrency && (
+            <p id="ob-currency-partner-default" data-testid="org-billing-currency-partner-default" className="mt-1 text-xs text-muted-foreground">
+              {t('orgBillingSettings.currency.partnerDefault', { currency: partnerDefaultCurrency })}
+            </p>
+          )}
         </div>
 
         {billingProfile.panel}

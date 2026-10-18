@@ -33,3 +33,16 @@ describe('substituteS1', () => {
     expect(out.downloadUrl).toBeNull();
   });
 });
+
+describe('resolveEdrInstaller provider dispatch (#6960)', () => {
+  it('an unknown provider is refused, never routed to the SentinelOne branch', async () => {
+    const { resolveEdrInstaller } = await import('./edrInstallerResolver');
+    const result = await resolveEdrInstaller({
+      provider: 'controld' as never,
+      orgId: '00000000-0000-4000-8000-000000000001',
+      downloadUrlTemplate: 'https://example.invalid/x.exe',
+      silentInstallArgsTemplate: '/S',
+    });
+    expect(result).toEqual({ error: expect.stringMatching(/unsupported/i) });
+  });
+});

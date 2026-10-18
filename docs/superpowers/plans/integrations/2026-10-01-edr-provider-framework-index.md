@@ -23,7 +23,7 @@ index — `get_feature_status` before starting any wave). Branch per wave:
 | W01 | [Framework core + Bitdefender GravityZone read path](2026-10-01-edr-w01-framework-bitdefender.md) | 2 (W01a tenancy/migration, W01b framework + adapter + sync + routes) | — |
 | W02 | [Surfacing — incidents feed, UI, portal, alerts, read-only AI tools](2026-10-01-edr-provider-framework-w02-surfacing.md) | 2 (API, web) | W01 |
 | W03 | Actions + AI + push hints (GravityZone first) | 2 (actions + AI, webhook/push) | W01 (W02 recommended first for the UI buttons) |
-| W04 | Emsisoft cloud EMC adapter — **gated on #7436 confirmation** | 1 | W01 (+W03 for actions) |
+| W04 | [Emsisoft cloud EMC adapter](2026-10-17-edr-provider-framework-w04-emsisoft.md) — #7436 gate cleared 2026-10-17 (cloud EMC only) | 2 (PR-A read adapter + framework extension points, PR-B actions + `edr_detection_action`) | W01 (+W03 for actions) |
 | W05 | Sophos Central adapter | 1 | W01 (+W03 for actions) |
 | W06 | Installer dispatch + #6960 hook | 1 | W01 + at least one adapter with `installer !== 'none'` |
 | W07 | Agent detection signatures (absorbs #7551 / PR #7634) | 1 residual (after #7634) | none |
@@ -218,6 +218,12 @@ an unknown normalized action is refused by the guardrail; a forged-but-signed we
 cause an extra poll.
 
 ## W04 — Emsisoft cloud EMC adapter (gated)
+
+> **Superseded by the wave plan** [`2026-10-17-edr-provider-framework-w04-emsisoft.md`](2026-10-17-edr-provider-framework-w04-emsisoft.md)
+> (2026-10-17): gate cleared by the owner (cloud EMC only), now 2 PRs. The OpenAPI check also
+> corrected several §3.1 facts — see the plan's "Spec corrections". The text below is kept as the
+> original sketch. Numbering: this is **W04**; an older #7436 comment calling it W05 predates the
+> re-sequencing.
 
 **Gate before starting:** the #7436 requester confirms they use the **cloud** EMC (D9). Ask via the
 Discord thread (Discord-reporter rule — never block on a GitHub reply). **If the confirmation has

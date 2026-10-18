@@ -137,8 +137,14 @@ describe('ticket.approval_requested', () => {
     expect(mails.map((m) => m.to).sort()).toEqual(['approver@customer.example', 'requester@customer.example']);
     const approver = mails.find((m) => m.to === 'approver@customer.example')!;
     const notify = mails.find((m) => m.to === 'requester@customer.example')!;
-    expect(approver.subject).toBe('[T-1042] Your approval is needed: Server migration');
-    expect(notify.subject).toBe('[T-1042] Approval requested: Server migration');
+    expect(approver.subject).toBe('[TKT-1] Your approval is needed: Server migration');
+    expect(notify.subject).toBe('[TKT-1] Approval requested: Server migration');
+    // #8965: the staff-only internal number never reaches a customer email.
+    for (const m of mails) {
+      expect(m.subject).not.toContain('T-1042');
+      expect(m.html).not.toContain('T-1042');
+    }
+    expect(approver.html).toContain('TKT-1');
     expect(approver.html).toContain('Up to 2 h 30 m');
     expect(approver.html).toContain('$375.00');
     expect(approver.html).toContain('Budget 10 h, used 9 h 45 m');
@@ -172,10 +178,10 @@ describe('ticket.approval_requested', () => {
     } } } });
     await handleTicketEvent(requested());
     const approver = sent().find((m) => m.to === 'approver@customer.example')!;
-    expect(approver.subject).toBe('Please sign off on T-1042');
+    expect(approver.subject).toBe('Please sign off on TKT-1');
     expect(approver.html).toContain('Open the portal');
     // The notify template is not touched by the approver override.
-    expect(sent().find((m) => m.to === 'requester@customer.example')!.subject).toBe('[T-1042] Approval requested: Server migration');
+    expect(sent().find((m) => m.to === 'requester@customer.example')!.subject).toBe('[TKT-1] Approval requested: Server migration');
   });
 
   it('with no approver on file, staff get the in-app notice (once per request) and the requester is still told', async () => {
@@ -316,7 +322,7 @@ describe('ticket.approval_decided', () => {
     expect(notices[0]!.dedupeKey).toBe(`ticket-approval:${REQ}:decided:approved:${notices[0]!.userId}`);
     const mails = sent();
     expect(mails.map((m) => m.to).sort()).toEqual(['approver@customer.example', 'requester@customer.example']);
-    expect(mails[0]!.subject).toBe('[T-1042] Work approval approved: Server migration');
+    expect(mails[0]!.subject).toBe('[TKT-1] Work approval approved: Server migration');
   });
 
   it('does not notify the staff member who recorded the decision themselves', async () => {

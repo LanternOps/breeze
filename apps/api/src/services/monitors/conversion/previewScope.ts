@@ -41,7 +41,35 @@ export function restorePreviewAuth(snapshot: PreviewAccessSnapshot): AuthContext
   return { ...a, token: null, canAccessOrg, orgCondition, canAccessSite: siteAccessCheck(a.allowedSiteIds) };
 }
 
-export const previewScopeHash = (snapshot: PreviewAccessSnapshot): string => sha(canonical(snapshot));
+/**
+ * Copy of `record` with each listed set-valued key sorted. Keys that are absent
+ * stay absent and null stays null: "unrestricted", "none" and "no ceiling" are
+ * distinct scopes and must keep distinct hashes.
+ */
+function withSortedSets<T extends object>(record: T, keys: ReadonlyArray<keyof T & string>): T {
+  const copy = { ...record } as Record<string, unknown>;
+  for (const key of keys) {
+    const value = copy[key];
+    if (Array.isArray(value)) copy[key] = [...(value as string[])].sort();
+  }
+  return copy as T;
+}
+
+/**
+ * The scope fingerprint folded into the policy, template-group and partner
+ * conversion preview hashes and the preview job key (the network-check preview
+ * hash does not use it). The access ceilings are sets with no guaranteed order:
+ * authMiddleware loads a partner user's `accessibleOrgIds` with no ORDER BY, so
+ * two requests with identical access can list the same orgs differently and a
+ * preview would go stale between preview and confirm with nothing changed
+ * (#6888). Every set-valued ceiling is hashed sorted, the others defensively;
+ * every other field is hashed as it is.
+ */
+export const previewScopeHash = (snapshot: PreviewAccessSnapshot): string => sha(canonical({
+  ...snapshot,
+  auth: withSortedSets(snapshot.auth, ['accessibleOrgIds', 'allowedSiteIds', 'allowedDeviceIds']),
+  dbContext: withSortedSets(snapshot.dbContext, ['accessibleOrgIds', 'accessiblePartnerIds', 'reportHistoryOrgIds']),
+}));
 
 export async function authorizePreview(policyId: string, auth: AuthContext) {
   if (!canMutateOrgWideGovernance(auth)) throw new ConversionError('partner_wide_denied', 'Full policy scope is required');

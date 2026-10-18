@@ -366,7 +366,6 @@
       "supportedGeos": "Supports: {{geos}}",
       "refreshQueued": "Model refresh queued",
       "refreshFailed": "Couldn't queue a model refresh.",
-      "alreadyConnected": "Already connected",
       "addKind": {
         "anthropic_byok": "Anthropic API key",
         "openai_compatible": "OpenAI-compatible endpoint"
@@ -2083,7 +2082,9 @@
       "email": "Support email",
       "phone": "Support phone",
       "welcomeMessage": "Welcome message",
-      "footerText": "Footer text"
+      "footerText": "Footer text",
+      "footerTextHelp": "Shown at the bottom of the customer portal and printed on this organization's quotes and invoices, replacing the partner document footer. Leave blank to print the partner footer.",
+      "footerTextInheritedSource": "Partner document footer"
     }
   },
   "orgPortalUsersEditor": {
@@ -4420,7 +4421,8 @@
     "reEnterYourNewPassword": "Re-enter your new password",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Changing password..."
+    "changingPassword": "Changing password...",
+    "noPasswordNotice": "This account signs in through your organization's identity provider and has no password, so there is nothing to change here. If your organization does not require single sign-on, use Forgot password on the sign-in page to set one."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single sign-on connected.",
@@ -4673,6 +4675,11 @@
     "systemRoles": "System roles",
     "customRoles": "Custom roles",
     "createRole": "Create Role",
+    "ownerScope": "Scope",
+    "ownerScopePartner": "Partner",
+    "ownerScopePartnerHelp": "For your own staff. Assign it on the Users page.",
+    "ownerScopeOrganization": "Organization",
+    "ownerScopeOrganizationHelp": "For one organization's users and its SSO default role.",
     "name": "Name",
     "type": "Type",
     "inheritsFrom": "Inherits From",

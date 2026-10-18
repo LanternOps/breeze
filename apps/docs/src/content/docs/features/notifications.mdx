@@ -415,6 +415,18 @@ link is signed with a key derived from `APP_ENCRYPTION_KEY`. Rotating that key
 invalidates the links in emails already sent. People can still unsubscribe from
 My Account, and the next digest carries a fresh link.
 
+### Customer organization admins
+
+Notices and the digest go to MSP staff only by default. Staff who can fix a broken connection are always notified. You can also let the admins of your customer organizations hear about their own organization's connections.
+
+- **Off by default.** Nothing changes for customers until you turn it on.
+- **Where to set it.** Open the **Integrations** page and use the **Health notifications** card. Set a partner default (this needs full partner access, `orgAccess` set to all) and, if you want, a per-organization override of **Inherit**, **On** or **Off** for the organization selected in the organization switcher.
+- **Who is notified.** When the setting is on, users in the customer organization whose organization role grants the permission to repair the connection (typically `organizations:write`) receive the in-app notice and the daily digest for their own organization's connections.
+- **Partner-wide connections stay private.** Partner-wide connections never reach customer admins.
+- **Sender.** Customer digests are sent from the partner's sending identity (the partner email lane), not from the platform sender.
+- **Customers cannot change it.** Customer admins cannot turn the setting on or off themselves.
+- **Changes apply going forward.** A change takes effect on the next notice or digest. Notices already delivered are not retracted.
+
 ---
 
 ## Mobile Push Notifications

@@ -366,7 +366,6 @@
       "supportedGeos": "Admite: {{geos}}",
       "refreshQueued": "Actualización de modelos en cola",
       "refreshFailed": "No se pudo poner en cola la actualización de modelos.",
-      "alreadyConnected": "Ya conectada",
       "addKind": {
         "anthropic_byok": "Clave de API de Anthropic",
         "openai_compatible": "Endpoint compatible con OpenAI"
@@ -2083,7 +2082,9 @@
       "email": "Correo electrónico de soporte",
       "phone": "Teléfono de soporte",
       "welcomeMessage": "Mensaje de bienvenida",
-      "footerText": "Texto de pie de página"
+      "footerText": "Texto de pie de página",
+      "footerTextHelp": "Se muestra al pie del portal de clientes y se imprime en las cotizaciones y facturas de esta organización, en lugar del pie de página de documentos del socio. Déjelo en blanco para imprimir el pie de página del socio.",
+      "footerTextInheritedSource": "Pie de página de documentos del socio"
     }
   },
   "orgPortalUsersEditor": {
@@ -4420,7 +4421,8 @@
     "reEnterYourNewPassword": "Vuelva a ingresar su nueva contraseña",
     "confirmPassword": "confirmPassword",
     "newPassword2": "newPassword",
-    "changingPassword": "Cambiando contraseña..."
+    "changingPassword": "Cambiando contraseña...",
+    "noPasswordNotice": "Esta cuenta inicia sesión mediante el proveedor de identidad de su organización y no tiene contraseña, por lo que no hay nada que cambiar aquí. Si su organización no exige inicio de sesión único, use «Olvidé mi contraseña» en la página de inicio de sesión para establecer una."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Inicio de sesión único conectado.",
@@ -4673,6 +4675,11 @@
     "systemRoles": "Roles del sistema",
     "customRoles": "Roles personalizados",
     "createRole": "Crear rol",
+    "ownerScope": "Alcance",
+    "ownerScopePartner": "Socio",
+    "ownerScopePartnerHelp": "Para su propio personal. Asígnelo en la página Usuarios.",
+    "ownerScopeOrganization": "Organización",
+    "ownerScopeOrganizationHelp": "Para los usuarios de una organización y su rol predeterminado de SSO.",
     "name": "Nombre",
     "type": "Tipo",
     "inheritsFrom": "Hereda de",

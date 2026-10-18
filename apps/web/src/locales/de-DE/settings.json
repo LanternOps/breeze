@@ -366,7 +366,6 @@
       "supportedGeos": "Unterstützt: {{geos}}",
       "refreshQueued": "Modellaktualisierung eingeplant",
       "refreshFailed": "Die Modellaktualisierung konnte nicht eingeplant werden.",
-      "alreadyConnected": "Bereits verbunden",
       "addKind": {
         "anthropic_byok": "Anthropic-API-Schlüssel",
         "openai_compatible": "OpenAI-kompatibler Endpunkt"
@@ -2083,7 +2082,9 @@
       "email": "Support-E-Mail",
       "phone": "Support-Telefon",
       "welcomeMessage": "Willkommensnachricht",
-      "footerText": "Fußzeilentext"
+      "footerText": "Fußzeilentext",
+      "footerTextHelp": "Wird unten im Kundenportal angezeigt und auf die Angebote und Rechnungen dieser Organisation gedruckt – anstelle der Partner-Dokumentfußzeile. Leer lassen, um die Partner-Fußzeile zu drucken.",
+      "footerTextInheritedSource": "Partner-Dokumentfußzeile"
     }
   },
   "orgPortalUsersEditor": {
@@ -4420,7 +4421,8 @@
     "reEnterYourNewPassword": "Geben Sie Ihr neues Passwort erneut ein",
     "confirmPassword": "bestätigenPasswort",
     "newPassword2": "neuesPasswort",
-    "changingPassword": "Passwort ändern..."
+    "changingPassword": "Passwort ändern...",
+    "noPasswordNotice": "Dieses Konto meldet sich über den Identitätsanbieter Ihrer Organisation an und hat kein Passwort, daher gibt es hier nichts zu ändern. Wenn Ihre Organisation kein Single Sign-On vorschreibt, können Sie auf der Anmeldeseite über „Passwort vergessen“ eines festlegen."
   },
   "connectSsoCard": {
     "singleSignOnConnected": "Single Sign-On verbunden.",
@@ -4673,6 +4675,11 @@
     "systemRoles": "Systemrollen",
     "customRoles": "Benutzerdefinierte Rollen",
     "createRole": "Rolle erstellen",
+    "ownerScope": "Geltungsbereich",
+    "ownerScopePartner": "Partnerebene",
+    "ownerScopePartnerHelp": "Für Ihre eigenen Mitarbeitenden. Zuweisung auf der Seite „Benutzer“.",
+    "ownerScopeOrganization": "Organisation",
+    "ownerScopeOrganizationHelp": "Für die Benutzer einer Organisation und deren SSO-Standardrolle.",
     "name": "Name",
     "type": "Typ",
     "inheritsFrom": "Erbt von",

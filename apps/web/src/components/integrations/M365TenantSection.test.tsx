@@ -85,6 +85,11 @@ const READ_GRANTS = [
 const ACTIONS_GRANTS = [
   ["741f803b-c850-494e-b5df-cde7c675a1ca", "User.ReadWrite.All"],
   ["cc117bb9-00cf-4eb8-b580-ea2a878fe8f7", "User-PasswordProfile.ReadWrite.All"],
+  ["77f3a031-c388-4f99-b373-dc68676a979e", "User.RevokeSessions.All"],
+  ["dbaae8cf-10b5-4b86-a4a1-f871c94c6695", "GroupMember.ReadWrite.All"],
+  ["5b07b0dd-2377-4e44-a38d-703f09a0dc3c", "DeviceManagementManagedDevices.PrivilegedOperations.All"],
+  ["6931bccd-447a-43d1-b442-00a195474933", "MailboxSettings.ReadWrite"],
+  ["498476ce-e0fe-48b0-b801-37ba7e2685c6", "Organization.Read.All"],
 ].map(([appRoleId, value]) => ({ resourceApplicationId: GRAPH_APP_ID, appRoleId, value }));
 
 const TENANT_ID = "44444444-4444-4444-8444-444444444444";
@@ -112,7 +117,7 @@ function graphConnection(grants: typeof READ_GRANTS, manifestVersion: number, ov
 const readConnection = (overrides: Record<string, unknown> = {}) =>
   graphConnection(READ_GRANTS, 3, overrides);
 const actionsConnection = (overrides: Record<string, unknown> = {}) =>
-  graphConnection(ACTIONS_GRANTS, 2, { id: "66666666-6666-4666-8666-666666666666", ...overrides });
+  graphConnection(ACTIONS_GRANTS, 3, { id: "66666666-6666-4666-8666-666666666666", ...overrides });
 
 function readEnvelope(onboardingEnabled: boolean, connection: unknown = null) {
   return {
@@ -134,7 +139,7 @@ function actionsEnvelope(onboardingEnabled: boolean, connection: unknown = null)
     profile: {
       id: "customer-graph-actions",
       displayName: "Customer Graph Actions",
-      manifestVersion: 2,
+      manifestVersion: 3,
       requiredGrants: ACTIONS_GRANTS,
     },
     onboardingEnabled,

@@ -106,6 +106,8 @@ For fast recovery validation, use **Instant Boot** to boot a VM directly from a 
 
 From v0.118.0 (with the 0.118 agent), the background sync runs inside the instant-boot command and must finish within the command's run time. If it does not finish in time, the VM keeps running, is reported as **degraded**, and the partial staging data is removed.
 
+Instant boot writes the VM's boot files with the host's own `bcdboot.exe`. If `bcdboot` fails, the instant boot fails before any VM is created, and the job's error shows `bcdboot`'s exit code and output. Earlier agents logged the failure and reported the VM as booted.
+
 ---
 
 ## VM Power State Control

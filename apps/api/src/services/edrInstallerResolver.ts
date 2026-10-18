@@ -57,8 +57,18 @@ export async function resolveEdrInstaller(params: {
   downloadUrlTemplate: string | null;
   silentInstallArgsTemplate: string | null;
 }): Promise<ResolvedInstaller | EdrResolveError> {
-  if (params.provider === 'huntress') return resolveHuntress(params);
-  return resolveSentinelOne(params);
+  // Exhaustive (#6960): a provider without its own branch is refused, never
+  // handed to another vendor's key lookup.
+  switch (params.provider) {
+    case 'huntress':
+      return resolveHuntress(params);
+    case 'sentinelone':
+      return resolveSentinelOne(params);
+    default: {
+      const unsupported: never = params.provider;
+      return { error: `Unsupported integration provider: ${String(unsupported)}` };
+    }
+  }
 }
 
 async function resolveHuntress(params: {

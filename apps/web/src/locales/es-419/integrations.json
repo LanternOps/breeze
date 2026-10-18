@@ -201,6 +201,34 @@
       "revoke": "Para revocar el acceso más adelante, desconecta aquí o quita la aplicación empresarial de Breeze en Microsoft Entra.",
       "continue": "Continuar a Microsoft",
       "defaultTarget": "el inquilino de Microsoft 365 de esta organización"
+    },
+    "v2": {
+      "title": "Se necesita volver a dar consentimiento para las acciones de identidad",
+      "intro": "Este inquilino dio su consentimiento a un conjunto de permisos anterior. Volver a dar consentimiento conserva todo lo que funciona hoy y agrega los permisos siguientes. Nada cambia para el cliente hasta que un administrador apruebe el nuevo consentimiento.",
+      "keepsWorking": "Deshabilitar un usuario y restablecer una contraseña siguen funcionando con el consentimiento actual.",
+      "upgradeAction": "Revisar y aprobar los nuevos permisos",
+      "upgradeFailed": "No se pudo iniciar la aprobación de los nuevos permisos.",
+      "revokedGrant": "Microsoft 365 ya no muestra un permiso que esta conexión ya tenía: {{grants}}. Vuelve a probar y, si sigue faltando, da el consentimiento de nuevo.",
+      "purpose": {
+        "userReadWrite": "Leer y actualizar cuentas de usuario: se usa para bloquear el inicio de sesión, cambiar licencias y crear un usuario.",
+        "userPasswordProfile": "Establecer la contraseña de un usuario: se usa para emitir una contraseña temporal en un restablecimiento o una cuenta nueva.",
+        "userRevokeSessions": "Cerrar todas las sesiones de un usuario: se usa para revocar las sesiones de inicio de sesión cuando una cuenta está comprometida o el empleado deja la organización.",
+        "groupMember": "Leer grupos y cambiar quién pertenece a ellos: se usa para agregar y quitar membresías. No puede crear ni eliminar un grupo.",
+        "intunePrivileged": "Retirar un dispositivo administrado por Intune: elimina los datos de la empresa y cancela la inscripción. Breeze nunca realiza un borrado completo.",
+        "mailboxSettings": "Leer y establecer la configuración del buzón: se usa para activar o desactivar una respuesta automática y confirmar que se aplicó.",
+        "organizationRead": "Leer el inventario de suscripciones del inquilino: se usa para comprobar que hay un puesto de licencia libre antes de asignarlo.",
+        "unknown": "Lo usa una acción de Microsoft 365 en Breeze."
+      }
+    },
+    "staleManifest": {
+      "title": "Organizaciones que necesitan un nuevo consentimiento de Microsoft 365",
+      "description": "Estos clientes siguen con un conjunto de permisos anterior. Abre la organización para iniciar el nuevo consentimiento.",
+      "empty": "Ninguna organización necesita un nuevo consentimiento.",
+      "columnOrganization": "Organización",
+      "columnTenant": "Inquilino",
+      "columnVersion": "Conjunto de permisos",
+      "columnLastVerified": "Última verificación",
+      "loadFailed": "No se pudo cargar la lista de nuevos consentimientos."
     }
   },
   "m365ConfirmTenant": {
@@ -331,6 +359,27 @@
       "verification_failed": "Falló la verificación",
       "unknown": "Requiere atención"
     }
+  },
+  "connectionHealthSettings": {
+    "title": "Notificaciones de estado",
+    "description": "El personal del MSP que puede reparar una conexión averiada siempre recibe su aviso en la aplicación y el resumen diario. Elige si los administradores de las organizaciones cliente también se enteran de las conexiones de su propia organización.",
+    "partnerLabel": "Notificar a los administradores del cliente de forma predeterminada",
+    "partnerDescription": "Se aplica a toda organización que no tenga una configuración propia. Las conexiones de todo el socio nunca llegan a los administradores del cliente.",
+    "partnerReadOnly": "Solo los administradores del socio con acceso a todas las organizaciones pueden cambiar el valor predeterminado.",
+    "orgLabel": "Esta organización",
+    "orgDescription": "Reemplaza el valor predeterminado para la organización seleccionada arriba.",
+    "selectOrg": "Selecciona una organización para reemplazar el valor predeterminado en ella.",
+    "inherit": "Heredar",
+    "inheritOn": "Heredar (activado, {{from}})",
+    "inheritOff": "Heredar (desactivado, {{from}})",
+    "fromPartner": "de la configuración del socio",
+    "fromDefault": "del valor predeterminado integrado",
+    "on": "Activado",
+    "off": "Desactivado",
+    "loadFailed": "No se pudo cargar la configuración de notificaciones de estado.",
+    "retry": "Reintentar",
+    "saved": "Configuración de notificaciones de estado guardada",
+    "saveFailed": "No se pudo guardar la configuración de notificaciones de estado"
   },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Conexión verificada y guardada.",

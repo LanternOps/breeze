@@ -29,7 +29,7 @@ import { devices, deviceCommands } from '../db/schema';
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { attachWorkerObservability } from './workerObservability';
-import { captureException } from '../services/sentry';
+import { captureException, captureMessage } from '../services/sentry';
 import {
   resolveMaintenanceConfigForDevice,
   isInMaintenanceWindow,
@@ -279,10 +279,20 @@ export async function processRebootCandidate(
     expectedOrgId: device.orgId,
   });
   if (result.error) {
-    console.warn(`[MaintenanceReboot] device ${device.id}: ${result.error}`);
-    captureException(
-      new Error(`[MaintenanceReboot] reboot dispatch failed for device ${device.id}: ${result.error}`),
+    // A refusal, not a throw: report it and let the sweep move on. The device
+    // stays a candidate and is re-evaluated on a later sweep. The device id and
+    // the free-text reason go to the console only: scrubEvent redacts every
+    // exception value and deletes the message, so the bounded tags below are
+    // all that reaches Sentry (#8022).
+    console.warn(
+      `[MaintenanceReboot] reboot dispatch refused for device ${device.id} `
+      + `(${result.refusal ?? 'unclassified'}): ${result.error}`,
     );
+    captureMessage('[MaintenanceReboot] reboot dispatch refused', {
+      eventCode: 'maintenance_reboot_dispatch_refused',
+      level: 'warning',
+      tags: { org_id: device.orgId, command_dispatch_refusal: result.refusal ?? 'unclassified' },
+    });
     return { issued: false, reason: result.error };
   }
   console.log(`[MaintenanceReboot] issued ${decision.type} to device ${device.id} (${device.osType})`);
@@ -332,8 +342,14 @@ export async function runMaintenanceRebootSweep(
       });
       if (res.issued) issued++;
     } catch (err) {
+      // One candidate's failure never stops the sweep: the catch is per
+      // candidate and the loop continues. Tagged so the report survives
+      // scrubEvent with more than a stack trace (#8022).
       console.error(`[MaintenanceReboot] error processing device ${device.id}:`, err);
-      captureException(err instanceof Error ? err : new Error(String(err)));
+      captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+        worker: 'maintenanceRebootWorker',
+        org_id: device.orgId,
+      });
     }
   }
   console.log(`[MaintenanceReboot] sweep complete: ${issued} issued / ${candidates.length} candidate(s)`);
