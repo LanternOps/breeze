@@ -24,13 +24,18 @@ import { toCents } from '@breeze/shared';
  *  - key absent: no billed period covers asOf → the contract is not in term;
  *  - `{ cents }`: the covering period's billed value in integer minor-unit×100
  *    (the toCents convention), not yet divided by interval_months;
- *  - `{ cents: null, reason }`: a period covers asOf but its invoice is gone
- *    (deleted draft → invoice_id SET NULL) or voided without a replacement, so
- *    there is no billed amount to report. The caller logs and counts nothing.
+ *  - `{ cents: null, reason }`: a period covers asOf but there is no billed
+ *    amount to report — the invoice is gone (deleted draft → invoice_id SET
+ *    NULL), voided without a replacement, its reissue chain is implausibly long,
+ *    or it carries none of the contract's lines. The caller logs and counts
+ *    nothing.
+ *
+ * Amounts are in the invoice's currency, which is always the contract's
+ * stamped currency (the B2 guard in addContractLine refuses anything else).
  */
 export type BilledFinalTermValue =
   | { cents: number }
-  | { cents: null; reason: 'invoice_missing' | 'invoice_voided' };
+  | { cents: null; reason: 'invoice_missing' | 'invoice_voided' | 'reissue_chain_too_long' | 'no_contract_lines' };
 
 /** A void → reissue chain longer than this is treated as unresolvable. */
 const MAX_REISSUE_HOPS = 10;
@@ -76,10 +81,8 @@ export async function loadBilledFinalTermValues(
       const inv = byId.get(invoiceId);
       if (!inv) { out.set(contractId, { cents: null, reason: 'invoice_missing' }); continue; }
       if ((inv.status as string) !== 'void') { liveInvoiceOf.set(contractId, invoiceId); continue; }
-      if (!inv.replacedByInvoiceId || hop + 1 >= MAX_REISSUE_HOPS) {
-        out.set(contractId, { cents: null, reason: 'invoice_voided' });
-        continue;
-      }
+      if (!inv.replacedByInvoiceId) { out.set(contractId, { cents: null, reason: 'invoice_voided' }); continue; }
+      if (hop + 1 >= MAX_REISSUE_HOPS) { out.set(contractId, { cents: null, reason: 'reissue_chain_too_long' }); continue; }
       chainOf.get(contractId)!.push(inv.replacedByInvoiceId);
       pending.set(contractId, inv.replacedByInvoiceId);
     }
@@ -127,12 +130,20 @@ export async function loadBilledFinalTermValues(
     return true;
   };
 
-  const cents = new Map<string, number>(billedIds.map((id) => [id, 0]));
+  const cents = new Map<string, number>();
+  const matched = new Set<string>();
   for (const l of lines) {
     if (!l.sourceContractId || liveInvoiceOf.get(l.sourceContractId) !== l.invoiceId) continue;
+    matched.add(l.sourceContractId);
     if (isBlockOverageLine(l)) continue;
-    cents.set(l.sourceContractId, cents.get(l.sourceContractId)! + toCents(l.lineTotal));
+    cents.set(l.sourceContractId, (cents.get(l.sourceContractId) ?? 0) + toCents(l.lineTotal));
   }
-  for (const [contractId, value] of cents) out.set(contractId, { cents: value });
+  for (const contractId of billedIds) {
+    // No line of this contract on its own period invoice is an anomaly (every
+    // line removed from the draft, or lineage lost), not a genuine zero.
+    out.set(contractId, matched.has(contractId)
+      ? { cents: cents.get(contractId) ?? 0 }
+      : { cents: null, reason: 'no_contract_lines' });
+  }
   return out;
 }

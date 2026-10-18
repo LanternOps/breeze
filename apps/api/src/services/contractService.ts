@@ -1147,7 +1147,7 @@ export async function summarizeActiveContractMrrByOrg(
     if (basis === 'active') { rows.push(c); continue; }
     if (basis !== 'billed_final_term' || value === undefined) continue;
     if (value.cents === null) {
-      console.warn('[contracts] MRR rollup skipped final term of contract %s: %s', c.id, value.reason);
+      console.warn('[contracts] MRR rollup skipped final term of contract %s (org %s): %s', c.id, c.orgId, value.reason);
       continue;
     }
     addMonthly(c, value.cents);
