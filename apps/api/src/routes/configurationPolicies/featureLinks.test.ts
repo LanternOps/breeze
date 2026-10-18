@@ -1936,7 +1936,8 @@ describe('security_agents feature links (#6960)', () => {
   const WRITE_ONLY = { permissions: [{ resource: 'devices', action: 'write' }] } as any;
   const DISABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: false }] };
   const ENABLED = { version: 1, agents: [{ vendor: 'huntress', enabled: true }] };
-  const S1_ENABLED = { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] };
+  // SentinelOne became enableable in W04; Control D / NextDNS are still not.
+  const NOT_ENABLEABLE = { version: 1, agents: [{ vendor: 'nextdns', enabled: true }] };
   const PARTNER_ID = '99999999-9999-9999-9999-999999999999';
   const SA_LINK = { id: LINK_ID, featureType: 'security_agents' };
 
@@ -2010,11 +2011,11 @@ describe('security_agents feature links (#6960)', () => {
   });
 
   it('(d) POST enabling a vendor that is not enableable yet → 400 vendor_not_enableable', async () => {
-    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: S1_ENABLED });
+    const res = await post(appWith(), { featureType: 'security_agents', inlineSettings: NOT_ENABLEABLE });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe('vendor_not_enableable');
-    expect(body.vendors).toEqual(['sentinelone']);
+    expect(body.vendors).toEqual(['nextdns']);
     expect(addFeatureLinkMock).not.toHaveBeenCalled();
   });
 
@@ -2110,7 +2111,7 @@ describe('security_agents feature links (#6960)', () => {
       [{ featurePolicyId: LINK_ID }, 'security_agents_feature_policy_not_allowed'],
       [{ inlineSettings: { ...DISABLED, orgKey: '<org-key>' } }, 'security_agents_invalid_settings'],
       [{ inlineSettings: null }, 'security_agents_invalid_settings'],
-      [{ inlineSettings: S1_ENABLED }, 'vendor_not_enableable'],
+      [{ inlineSettings: NOT_ENABLEABLE }, 'vendor_not_enableable'],
     ];
     for (const [body, code] of cases) {
       const res = await patch(a, body);
