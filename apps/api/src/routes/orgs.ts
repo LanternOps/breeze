@@ -2331,19 +2331,23 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), requireOr
   // partner row, so `readWithPartnerAxisVisibility` would buy nothing here.
   // #6229 adds the partner's payment terms the same way, for the org's
   // payment-terms InheritedField (org `invoiceTermsDays` NULL = inherit this).
+  // #7510 adds the partner currency — NOT an inherited value (org
+  // `currency_code` is NOT NULL, stamped at creation); the org Billing tab
+  // names it only to say the partner default applies to new organizations.
   const [partnerRow] = await db
-    .select({ defaultTaxRate: partners.defaultTaxRate, invoiceTermsDays: partners.invoiceTermsDays })
+    .select({ defaultTaxRate: partners.defaultTaxRate, invoiceTermsDays: partners.invoiceTermsDays, currencyCode: partners.currencyCode })
     .from(partners)
     .where(eq(partners.id, organization.partnerId))
     .limit(1);
   const partnerDefaultTaxRate = partnerRow?.defaultTaxRate ?? null;
   const partnerDefaultInvoiceTermsDays = partnerRow?.invoiceTermsDays ?? null;
+  const partnerDefaultCurrencyCode = partnerRow?.currencyCode ?? null;
 
   if (isArchiveLifecycleRow(organization)) {
-    return c.json({ ...withMaskedSettings(organization), archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
+    return c.json({ ...withMaskedSettings(organization), archived: true as const, partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays, partnerDefaultCurrencyCode });
   }
 
-  return c.json({ ...withMaskedSettings(organization), partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays });
+  return c.json({ ...withMaskedSettings(organization), partnerDefaultTaxRate, partnerDefaultInvoiceTermsDays, partnerDefaultCurrencyCode });
 });
 
 orgRoutes.get('/organizations/:id/effective-settings',

@@ -97,6 +97,8 @@ export async function prepareWorkstationVerification(row: VerificationRow): Prom
     reverseCode: row.reverseCode,
     choices,
     timeoutMs: Math.max(WORKSTATION_TIMEOUT_MIN_MS, Math.min(WORKSTATION_TIMEOUT_MAX_MS, lifetimeMs)),
+    // A late-claimed command must not restart a full countdown (#8668).
+    deadlineAt: row.expiresAt.toISOString(),
   });
   // A label the card cannot carry (empty technician name, over-long username)
   // is a request error, not a 500.

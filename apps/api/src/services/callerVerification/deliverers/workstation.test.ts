@@ -102,6 +102,12 @@ describe('prepareWorkstationVerification', () => {
     expect(inserted()[0]!.payload.actionLabel).toBe(label);
   });
 
+  it('sends the verification expiry as the absolute deadline (#8668)', async () => {
+    arrangeHappy();
+    await prepareWorkstationVerification(row);
+    expect(inserted()[0]!.payload.deadlineAt).toBe(row.expiresAt.toISOString());
+  });
+
   it('clamps the helper deadline into the shared bounds', async () => {
     arrangeHappy();
     await prepareWorkstationVerification({ ...row, expiresAt: new Date(created.getTime() + 900_000) });
@@ -212,6 +218,15 @@ describe('deliverWorkstation', () => {
     expect(m.dispatch).toHaveBeenCalledWith('agent-1', { id: CMD, type: 'caller_verify', payload: loaded.payload });
     expect(m.release).not.toHaveBeenCalled();
     expect(m.contexts[0]).toBe('outside');
+  });
+
+  it('pushes a stored payload that carries the absolute deadline unchanged (#8668)', async () => {
+    const withDeadline = { ...loaded, payload: { ...payload, deadlineAt: '2026-10-16T12:02:00.000Z' } };
+    state.results.push([withDeadline]);
+    m.claim.mockResolvedValue({ status: 'claimed', id: CMD, executedAt });
+    m.dispatch.mockResolvedValue({ status: 'sent', via: 'local' });
+    await deliverWorkstation(ID);
+    expect(m.dispatch).toHaveBeenCalledWith('agent-1', { id: CMD, type: 'caller_verify', payload: withDeadline.payload });
   });
 
   it.each(['held', 'not_claimable', 'cancelled'])('never pushes a %s claim', async (status) => {

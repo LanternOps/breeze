@@ -2083,7 +2083,9 @@
       "email": "Support email",
       "phone": "Support phone",
       "welcomeMessage": "Welcome message",
-      "footerText": "Footer text"
+      "footerText": "Footer text",
+      "footerTextHelp": "Shown at the bottom of the customer portal and printed on this organization's quotes and invoices, replacing the partner document footer. Leave blank to print the partner footer.",
+      "footerTextInheritedSource": "Partner document footer"
     }
   },
   "orgPortalUsersEditor": {

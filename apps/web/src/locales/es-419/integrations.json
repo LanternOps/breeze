@@ -360,6 +360,27 @@
       "unknown": "Requiere atención"
     }
   },
+  "connectionHealthSettings": {
+    "title": "Notificaciones de estado",
+    "description": "El personal del MSP que puede reparar una conexión averiada siempre recibe su aviso en la aplicación y el resumen diario. Elige si los administradores de las organizaciones cliente también se enteran de las conexiones de su propia organización.",
+    "partnerLabel": "Notificar a los administradores del cliente de forma predeterminada",
+    "partnerDescription": "Se aplica a toda organización que no tenga una configuración propia. Las conexiones de todo el socio nunca llegan a los administradores del cliente.",
+    "partnerReadOnly": "Solo los administradores del socio con acceso a todas las organizaciones pueden cambiar el valor predeterminado.",
+    "orgLabel": "Esta organización",
+    "orgDescription": "Reemplaza el valor predeterminado para la organización seleccionada arriba.",
+    "selectOrg": "Selecciona una organización para reemplazar el valor predeterminado en ella.",
+    "inherit": "Heredar",
+    "inheritOn": "Heredar (activado, {{from}})",
+    "inheritOff": "Heredar (desactivado, {{from}})",
+    "fromPartner": "de la configuración del socio",
+    "fromDefault": "del valor predeterminado integrado",
+    "on": "Activado",
+    "off": "Desactivado",
+    "loadFailed": "No se pudo cargar la configuración de notificaciones de estado.",
+    "retry": "Reintentar",
+    "saved": "Configuración de notificaciones de estado guardada",
+    "saveFailed": "No se pudo guardar la configuración de notificaciones de estado"
+  },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Conexión verificada y guardada.",
     "googleWorkspace": "Google Workspace",

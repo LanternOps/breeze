@@ -484,13 +484,20 @@ where
                             // which the contract fixes to caller-verify-<id>.
                             if env.id != format!("caller-verify-{id}") {
                                 eprintln!("[helper] caller_verify_request: envelope id mismatch");
-                            } else if ctx.caller_verify.insert(env.id.clone(), req).is_ok() {
-                                if let Err(e) = super::caller_verify::show_prompt_window(&ctx.app, &id) {
-                                    eprintln!("[helper] caller verify window could not be shown: {}", e);
-                                    let _ = ctx.caller_verify.submit(&id, "timeout");
-                                }
                             } else {
-                                eprintln!("[helper] caller_verify_request rejected");
+                                match ctx.caller_verify.insert(env.id.clone(), req) {
+                                    Ok(super::caller_verify::Admission::Show) => {
+                                        if let Err(e) = super::caller_verify::show_prompt_window(&ctx.app, &id) {
+                                            eprintln!("[helper] caller verify window could not be shown: {}", e);
+                                            let _ = ctx.caller_verify.submit(&id, "timeout");
+                                        }
+                                    }
+                                    // #8668: delivered after its deadline; answered timeout, never shown.
+                                    Ok(super::caller_verify::Admission::Expired) => {
+                                        eprintln!("[helper] caller_verify_request past its deadline; not shown");
+                                    }
+                                    Err(e) => eprintln!("[helper] caller_verify_request rejected: {}", e),
+                                }
                             }
                         }
                         Err(e) => eprintln!("[helper] bad caller_verify_request payload: {}", e),

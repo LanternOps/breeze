@@ -360,6 +360,27 @@
       "unknown": "Richiede attenzione"
     }
   },
+  "connectionHealthSettings": {
+    "title": "Notifiche di stato",
+    "description": "Il personale dell'MSP che può riparare una connessione guasta riceve sempre la relativa notifica in-app e il riepilogo giornaliero. Scegli se anche gli amministratori delle organizzazioni cliente vengono informati sulle connessioni della propria organizzazione.",
+    "partnerLabel": "Notifica gli amministratori cliente per impostazione predefinita",
+    "partnerDescription": "Si applica a ogni organizzazione senza un'impostazione propria. Le connessioni a livello di partner non raggiungono mai gli amministratori cliente.",
+    "partnerReadOnly": "Solo gli amministratori partner con accesso a tutte le organizzazioni possono modificare il valore predefinito.",
+    "orgLabel": "Questa organizzazione",
+    "orgDescription": "Sostituisce il valore predefinito per l'organizzazione selezionata sopra.",
+    "selectOrg": "Seleziona un'organizzazione per sostituire il valore predefinito per essa.",
+    "inherit": "Eredita",
+    "inheritOn": "Eredita (attivo, {{from}})",
+    "inheritOff": "Eredita (disattivo, {{from}})",
+    "fromPartner": "dall'impostazione del partner",
+    "fromDefault": "dal valore predefinito integrato",
+    "on": "Attivo",
+    "off": "Disattivo",
+    "loadFailed": "Impossibile caricare le impostazioni delle notifiche di stato.",
+    "retry": "Riprova",
+    "saved": "Impostazione delle notifiche di stato salvata",
+    "saveFailed": "Impossibile salvare l'impostazione delle notifiche di stato"
+  },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Connessione verificata e salvata.",
     "googleWorkspace": "Google Workspace",

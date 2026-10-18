@@ -1363,6 +1363,14 @@
           "migrationWindowClosed": {
             "description": "Triggered once per organization when a ticket migration window closes, with the counts it imported.",
             "label": "Migration Window Closed"
+          },
+          "integrationHealthOpened": {
+            "description": "Triggered when a health incident is opened for an organization's connection.",
+            "label": "Connection health incident opened"
+          },
+          "integrationHealthResolved": {
+            "description": "Triggered when a connection health incident is resolved.",
+            "label": "Connection health incident resolved"
           }
         },
         "fields": {

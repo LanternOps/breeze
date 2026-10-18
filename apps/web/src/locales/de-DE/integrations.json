@@ -360,6 +360,27 @@
       "unknown": "Erfordert Aufmerksamkeit"
     }
   },
+  "connectionHealthSettings": {
+    "title": "Integritätsbenachrichtigungen",
+    "description": "Mitarbeitende des MSP, die eine fehlerhafte Verbindung reparieren können, erhalten immer deren In-App-Hinweis und die tägliche Zusammenfassung. Legen Sie fest, ob auch Administratoren der Kundenorganisationen von den Verbindungen ihrer eigenen Organisation erfahren.",
+    "partnerLabel": "Kundenadministratoren standardmäßig benachrichtigen",
+    "partnerDescription": "Gilt für jede Organisation ohne eigene Einstellung. Partnerweite Verbindungen erreichen Kundenadministratoren nie.",
+    "partnerReadOnly": "Nur Partneradministratoren mit Zugriff auf alle Organisationen können den Standard ändern.",
+    "orgLabel": "Diese Organisation",
+    "orgDescription": "Überschreibt den Standard für die oben ausgewählte Organisation.",
+    "selectOrg": "Wählen Sie eine Organisation aus, um den Standard für sie zu überschreiben.",
+    "inherit": "Übernehmen",
+    "inheritOn": "Übernehmen (ein, von {{from}})",
+    "inheritOff": "Übernehmen (aus, von {{from}})",
+    "fromPartner": "der Partnereinstellung",
+    "fromDefault": "dem integrierten Standard",
+    "on": "Ein",
+    "off": "Aus",
+    "loadFailed": "Die Einstellungen für Integritätsbenachrichtigungen konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "saved": "Einstellung für Integritätsbenachrichtigungen gespeichert",
+    "saveFailed": "Die Einstellung für Integritätsbenachrichtigungen konnte nicht gespeichert werden"
+  },
   "googleWorkspaceIntegration": {
     "connectionVerifiedAndSaved": "Verbindung überprüft und gespeichert.",
     "googleWorkspace": "Google Workspace",
