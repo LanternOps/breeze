@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/astro';
 import { AlertTriangle, RotateCcw } from 'lucide-react';
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, Fragment, type ErrorInfo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -90,6 +90,6 @@ export default class IslandErrorBoundary extends Component<Props, State> {
     }
     // Keying on the attempt counter forces a clean re-mount on retry rather
     // than resuming a subtree whose state may be what threw in the first place.
-    return <div key={this.state.attempt} className="contents">{this.props.children}</div>;
+    return <Fragment key={this.state.attempt}>{this.props.children}</Fragment>;
   }
 }

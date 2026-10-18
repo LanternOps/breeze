@@ -10,7 +10,10 @@ vi.mock('@sentry/astro', () => ({
   withScope: (cb: (scope: { setTag: () => void; setContext: () => void; captureException: () => void }) => void) =>
     cb({ setTag: vi.fn(), setContext: vi.fn(), captureException: vi.fn() }),
 }));
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/auth')>()),
+  fetchWithAuth: vi.fn(),
+}));
 vi.mock('../../hooks/useEventStream', () => ({ useEventStream: () => ({ subscribe: vi.fn() }) }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: () => vi.fn() }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));

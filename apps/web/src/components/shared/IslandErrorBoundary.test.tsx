@@ -1,7 +1,7 @@
 import '@/lib/i18n';
 
 import { fireEvent, render, screen } from '@testing-library/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const captureException = vi.fn();
@@ -69,26 +69,32 @@ describe('IslandErrorBoundary', () => {
     expect(ctx?.[1]?.componentStack).toContain('Bomb');
   });
 
-  it('retry re-mounts the children so a transient failure recovers', () => {
-    function Harness() {
-      const [count, setCount] = useState(0);
+  it('retry re-mounts the children with fresh state so a transient failure recovers', () => {
+    let mounts = 0;
+    // Poisoned by its own state: only a fresh mount (key={attempt}) clears it.
+    function Stateful() {
+      const [poisoned, setPoisoned] = useState(false);
+      useEffect(() => {
+        mounts += 1;
+      }, []);
+      if (poisoned) throw new Error('poisoned state');
       return (
-        <>
-          <button type="button" data-testid="arm" onClick={() => setCount((c) => c + 1)}>
-            arm
-          </button>
-          <IslandErrorBoundary island="device-detail">
-            {/* throws only on the first mount */}
-            <Bomb explode={count === 0} />
-          </IslandErrorBoundary>
-        </>
+        <button type="button" data-testid="poison" onClick={() => setPoisoned(true)}>
+          poison
+        </button>
       );
     }
-    render(<Harness />);
-    expect(screen.getByTestId('island-error-fallback')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('arm'));
+    render(
+      <IslandErrorBoundary island="device-detail">
+        <Stateful />
+      </IslandErrorBoundary>,
+    );
+    expect(mounts).toBe(1);
+    fireEvent.click(screen.getByTestId('poison'));
+    expect(screen.getByTestId('island-error-fallback').textContent).toContain('poisoned state');
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));
-    expect(screen.getByTestId('bomb-alive')).toBeTruthy();
     expect(screen.queryByTestId('island-error-fallback')).toBeNull();
+    expect(screen.getByTestId('poison')).toBeTruthy();
+    expect(mounts).toBe(2);
   });
 });
