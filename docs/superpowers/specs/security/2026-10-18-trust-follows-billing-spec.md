@@ -70,7 +70,7 @@ This is the opposite of promotion, where `billingHoldUnknown` fails *closed* (`g
   - `incomplete_expired` is the status most likely to be an overwrite, and the live check handles it. A longer grace would not.
 - **The API's database is the clock.** Billing-side timestamps are not used: the mirror has no "status changed at" column, and `billing_identity_synced_at` is a sync stamp. The grace period must not depend on a clock in another service. Two new columns on `partners` (§4):
   - `trust_lapse_observed_at`: the first **verified** non-entitlement for a candidate, stamped by the reconcile job at the database's `now()`, in `report` or `enforce` mode. It is the episode key. It is cleared as soon as the partner stops being a candidate: the mirror recovers, a live check says entitled, an exemption is set, or the partner is no longer trusted and active.
-  - `trust_lapse_warned_at`: stamped **in `enforce` mode only**, after the warning email has been handed to the transport, or after the job has recorded that the partner has no deliverable admin address. **The enforce grace runs from `trust_lapse_warned_at`, not from `trust_lapse_observed_at`.** That gives two guarantees:
+  - `trust_lapse_warned_at`: stamped **in `enforce` mode only**, and only when the warning sender returns a recipient count above 0. The sender returns the number of addresses it was handed to, as the existing trust senders do, and returns 0 for no email service, no active admin, or a transport failure. A partner with no deliverable admin address is **never** warned, so it is never demoted. It is held and listed in the queue's "Lapse watch" section for an operator to decide (Open Decision 6). **The enforce grace runs from `trust_lapse_warned_at`, not from `trust_lapse_observed_at`.** That gives two guarantees:
     - When the mode flips from `report` to `enforce`, old report-mode observations do not demote anyone on the first enforce run.
     - A crash between the stamp and the send, or a failed send, never leads to a demotion without a warning. The job retries the warning on the next run and does not start the clock until it lands.
 - **The mirror does not start the clock.** If the live check says *entitled* while the mirror contradicts, nothing is stamped and no warning goes out. Instead the job writes one `partner.trust.lapse_mirror_disagreement` audit row per partner and mirror value, and checks again once every 24 h.
@@ -103,11 +103,16 @@ This is a heavy outcome for an MSP whose customers depend on patching. That is w
 - **`trust_reason = 'billing:lapsed'` → `tryBillingRestore`.** It restores to `trusted` with reason **`auto:billing_restored`** when all of these hold:
   1. A **fresh live check returns `entitled: true`.** This overrides the mirror. A paid customer whose mirror is still wrong is restored anyway. An unknown result blocks with `billing_entitlement_unknown`, so the grant path stays fail-closed.
   2. **No current billing hold.** `getSignupRiskHold` returns `none` or `pass`. An unknown result blocks, as it does today.
-  3. **No unresolved `alert`-severity abuse signal** raised after the demotion.
+  3. **No unresolved `alert`-severity abuse signal**, whenever it was raised. This is the same check `gatherPromotionFacts` makes today.
   4. The partner is still `active` and not deleted, re-checked in the guarded update.
 
   It does **not** re-require the onboarding facts: the settled 3DS card, signup-IP class and account age. The partner was vetted once, automatically, by an admin or by grandfathering. The lapse was about payment, not identity.
-- **Hard denies.** The promote job and `tryAutoPromote` do **not** run `restrictOnHardDeny` for `billing:lapsed` partners. While the partner was trusted, hard denies never ran against it (`evaluateHardDenies` targets probation), so skipping them during a lapse gives the same exposure as before. It also avoids turning a billing pause into a permanent `restricted` on historical evidence an admin already reviewed. Fresh evidence still blocks restore through rule 3, and an admin can restrict at any time.
+- **Hard denies still run, minus the signup-time axis.** `evaluateHardDenies` targets `probation`, so a lapse-demoted partner is evaluated on every path that calls it: `tryAutoPromote`, the promote job, and the ip-classify job (`processPartnerTrustJob` → `restrictOnHardDeny`). The rule is the same on all of them. A `billing:lapsed` partner is **not** restricted on `auto:tor_signup`. That axis is a fixed fact from signup, already accepted when the partner was trusted. Everything else stays in force:
+  - the card-fingerprint match against abuse-suspended partners;
+  - the corroborated network match, including the device enrollment IPs;
+  - `hasFraudulentRefundMatch`.
+
+  Those signals can be new. A cancellation after a chargeback or a fraudulent refund is a common route into `canceled`. A resulting `restricted` is reversible by an admin with the existing override.
 - **Every other probation partner** (new signups) goes through the existing `promotionDecision` with one new blocker, **`billing_lapsed`**. It applies when the mirror indicates a lapse *and* a live check does not say entitled. The live check is made only when the mirror indicates a lapse, so a clean mirror adds no billing call. Without this blocker, a signup whose subscription expired could be promoted on a card that settled before the expiry.
 - **Rate limit on the lazy path.** `recordCapabilityDenial` fires `tryAutoPromote` on every gated click. Live checks made for restore are throttled to one per partner per 5 minutes, using the last result already recorded (`trust_lapse_verified_at` plus its outcome, or an in-process cache, decided in the plan). A partner clicking around cannot fan out billing calls.
 - **Latency.** A partner who fixes billing is restored on their next gated click after the 5-minute throttle, or within 15 minutes by the existing job. Neither waits for the mirror to catch up.
@@ -119,7 +124,7 @@ How a lapse-demoted partner differs from a never-trusted one:
 | `trust_reason` | NULL, `auto:*` restriction, or admin | `billing:lapsed` |
 | Audit | no lapse rows | `lapse_observed`, `lapse_warned`, then `partner.trust.probation` with lapse evidence (§3.7) |
 | Way back | `promotionDecision` (onboarding facts) | `tryBillingRestore` (live entitlement, holds, fresh alerts) |
-| Hard denies | evaluated | skipped; fresh alerts block restore |
+| Hard denies | all axes | all axes except `auto:tor_signup`; any unresolved alert blocks restore |
 | Banner | probation checklist and Request review | "Paused: subscription not active" and a billing CTA (§3.6) |
 | Request review | allowed | `409 billing_lapsed`, pointing to billing (§3.6) |
 | Queue | normal review row | badged "Billing lapse", filterable (§3.7) |
@@ -139,7 +144,12 @@ New nullable columns on `partners` (§4): `trust_lapse_exempt_reason` (`internal
 - `POST /admin/partners/:id/trust/promote` (`routes/admin/trust.ts`);
 - the signed approve link `POST /admin/trust/act` (`routes/admin/trustAct.ts`), which today calls `setTrustState(…'trusted'…)` with no CAS and without the restricted-override check.
 
-Both return `409 billing_lapse_requires_exemption` when the partner is a lapse candidate with no exemption. The admin then picks one: set `admin_override` with an expiry, or have the partner fix billing (which restores it through §3.4). The approve link also gains the CAS that the queue route already uses.
+Both return `409 billing_lapse_requires_exemption` when the **target** has no live exemption and either of these holds:
+
+- it is in `probation` with `trust_reason = 'billing:lapsed'` (the common case: an admin trying to promote a lapse-demoted partner);
+- its mirror is in a lapse status (`billingStatusIndicatesLapse`).
+
+The check uses the mirror and stored columns only. There is no live billing call on the request path. Without the check, the admin's promotion would be overruled after the next warned grace, which is not what an admin promoting a partner intends. The admin then picks one: set `admin_override` with an expiry, or have the partner fix billing (which restores it through §3.4). The approve link also gains the CAS that the queue route already uses.
 
 **Precondition audit, run before `enforce`.** This spec defines the query but does not run it.
 
@@ -177,7 +187,7 @@ An operator runs it under a system DB context. The output stays out of the publi
   The existing `account.trust_approved` copy ("has been reviewed and approved") is wrong for a restore. The probation → trusted mail branch in `setTrustState` currently fires on every promotion, so it now picks the template by reason.
 - **Senders** follow `services/partnerTrustPartnerMail.ts`. They are Breeze-branded, on the platform lane, inert unless the effective lapse mode is `enforce` (§3.9), and never throw. The deferral to context exit is not inside the sender: `setTrustState` wraps the approval send in `runAfterDbContextExit` itself (`partnerTrust.ts`). The shared transition effects (§3.3) keep that wrapper, and the job calls the warning sender outside any DB context, after phase 1 has released its connection.
 - **Delivery guarantees.**
-  - The warning is **durable by construction**. Demotion is gated on `trust_lapse_warned_at`, which is stamped only after the send. A lost warning delays demotion; it never skips the warning.
+  - The warning is **durable by construction**. Demotion is gated on a fresh `trust_lapse_warned_at` (no older than 14 days). It is stamped only after `sendTrustBillingLapseWarning` returns a recipient count above 0. A lost or undeliverable warning delays demotion. It never skips the warning.
   - The paused and restored notices are best-effort, matching today's approval email. The banner shows the state either way.
   - Deduplication is structural. There is one warning per `observed_at` episode, one paused notice per guarded update that landed, and one restored notice per restore that landed. Flapping is bounded by the 72 h warned grace, so a partner gets at most one warning and one paused notice per 72 h.
 - **Copy.** It says what pauses, says that devices keep reporting, and gives the billing link. It never names the internal status string.
@@ -186,7 +196,7 @@ An operator runs it under a system DB context. The output stays out of the publi
   - a grace-warning variant, shown while `lapseGraceEndsAt` is set.
 
   New strings go into all 8 locales (`apps/web/src/lib/i18n/localeParity.test.ts`), and new elements carry `data-testid`.
-- **Request review, server side.** `POST /partner/trust/request-review` returns `409 billing_lapsed` for a lapse-demoted partner, with a pointer to billing. Hiding the button alone would not stop the request, and a review would send the "review received" email and an evidence card for what is a billing matter.
+- **Request review, server side.** `POST /partner/trust/request-review` returns `409 billing_lapsed`, with a pointer to billing, for a lapse-demoted partner whose last recorded entitlement is not `true`. A partner that billing already reports entitled, but that is held back by a billing hold or an alert, can still request a review. Billing cannot unblock it, so a human has to. Hiding the button alone would not stop the request, and a review would send the "review received" email and an evidence card for what is a billing matter.
 
 ### 3.7 Audit, evidence, admin override and queue visibility
 
@@ -235,23 +245,30 @@ That worker runs with **concurrency 1** (`jobs/abuseSignalsSweep.ts`), and it is
 
 Each run is two-phase:
 
-1. **Evaluate.** Under a system DB context, select the candidates, plus every row that has `trust_lapse_observed_at` set. Page by keyset in batches of 200, the same pattern as `runPartnerTrustPromote`. For each row, run the live check and apply the state machine: *clear*, *observe* (stamp `observed_at`, guarded by `IS NULL`), *warn* (enforce only; send, then stamp `warned_at`), *hold*, or *ready to demote*. A row is ready to demote when the mode is enforce, `now() - warned_at ≥ 72 h`, and this run's check returned `entitled: false`. Phase 1 writes nothing else. It assembles the full ready set.
+1. **Evaluate.** Under a system DB context, select the candidates, plus every row that has `trust_lapse_observed_at` set. Page by keyset in batches of 200, the same pattern as `runPartnerTrustPromote`. For each row, run the live check and apply the state machine: *clear*, *observe* (stamp `observed_at`, guarded by `IS NULL`), *warn* (enforce only; send, then stamp `warned_at`), *hold*, or *ready to demote*. A row is ready to demote when all of these hold: the mode is enforce, `now() - warned_at` is between 72 h and 14 days, and this run's check returned `entitled: false`. A `warned_at` older than 14 days is stale. That happens when enforce was paused, the partner left eligibility, or the job was unscheduled. A stale `warned_at` is cleared, and the partner is warned again with a fresh grace. A run in `report` mode clears any `warned_at` it finds, so returning to `enforce` always re-warns. Phase 1 writes nothing else. It assembles the full ready set.
 2. **Limit, then act.** The denominator is the trusted, active partners with a non-NULL mirror. Two limits apply:
    - **Per run:** if the ready set is larger than `max(3, 2% of the denominator)`, demote none.
-   - **Rolling 24 h:** if the ready set plus the lapse demotions already landed in the last 24 h exceed `max(5, 3% of the denominator)`, demote none.
+   - **Rolling 24 h:** if the ready set plus the lapse demotions already landed in the last 24 h exceed `max(5, 3% of the denominator)`, demote none. The landed count is the number of `partner.trust.probation` audit rows with `reason = 'billing:lapsed'` and `timestamp` in the last 24 h.
 
-   If either limit trips, write `lapse_circuit_open`, report it to Sentry, and leave the decision to an operator. The floors keep a small population from tripping on one or two real lapses. The rolling limit stops repeated runs from causing damage just under the per-run threshold. A systematic error, such as a billing deploy that writes `canceled` everywhere or an endpoint that wrongly says `entitled: false`, becomes an alert rather than a mass demotion. When the limits pass, demote each ready partner with the guarded update.
+   If either limit trips, write `lapse_circuit_open`, report it to Sentry, and leave the decision to an operator. While the breaker stays tripped, it re-alerts at most once per 24 h, or sooner if the held-back set changes. The floors keep a small population from tripping on one or two real lapses. The rolling limit stops repeated runs from causing damage just under the per-run threshold. A systematic error, such as a billing deploy that writes `canceled` everywhere or an endpoint that wrongly says `entitled: false`, becomes an alert rather than a mass demotion. When the limits pass, demote each ready partner with the guarded update.
 
 **The guarded update** re-checks everything at write time. The trust-only CAS in `writeTrust` (`services/partnerTrust.repo.ts`) would miss a suspension, a newly granted exemption, a same-state admin change, or a trusted → probation → trusted round trip:
 
 ```sql
+-- ms(x) = date_trunc('milliseconds', x). The API round-trips timestamps as JS Dates
+-- (millisecond precision) while Postgres stores microseconds, so every comparison
+-- against a loaded value truncates both sides, and every stamp this feature writes
+-- is written truncated. A plain `=` would never match, and the feature would
+-- silently never demote.
 UPDATE partners SET trust_state = 'probation', trust_reason = 'billing:lapsed',
-       trust_changed_by = NULL, trust_changed_at = now(), updated_at = now(),
+       trust_changed_by = NULL, trust_changed_at = ms(now()), updated_at = now(),
        trust_lapse_observed_at = NULL, trust_lapse_warned_at = NULL
 WHERE id = $1
   AND trust_state = 'trusted' AND status = 'active' AND deleted_at IS NULL
-  AND trust_changed_at IS NOT DISTINCT FROM $loaded_trust_changed_at   -- trust version
-  AND trust_lapse_observed_at = $episode AND trust_lapse_warned_at = $warned
+  AND billing_subscription_status IN ('canceled','unpaid','incomplete_expired','paused')  -- mirror not corrected meanwhile
+  AND ms(trust_changed_at) IS NOT DISTINCT FROM ms($loaded_trust_changed_at)   -- trust version
+  AND ms(trust_lapse_observed_at) = ms($episode) AND ms(trust_lapse_warned_at) = ms($warned)
+  AND trust_lapse_warned_at > now() - interval '14 days'                        -- warning still fresh
   AND (trust_lapse_exempt_reason IS NULL
        OR (trust_lapse_exempt_until IS NOT NULL AND trust_lapse_exempt_until <= now()))
 RETURNING id;
@@ -311,7 +328,10 @@ Unit tests pin each row of that table.
 | The entitlement endpoint wrongly returns `entitled: false` for payers | Batch limits, plus at least 7 days of `report` mode before `enforce`, compared against the precondition audit. |
 | Billing endpoint down, slow or not deployed | Unknown means no demotion (deadlines and run budget apply). Escalation after 7 days. Restore blocks as `billing_entitlement_unknown`. |
 | A paid customer stays locked out because the mirror is still wrong | A live `entitled: true` overrides the mirror on restore. |
-| A paid customer stays locked out because onboarding facts or hard denies fail | Restore is a distinct branch and hard denies are skipped for `billing:lapsed`. |
+| A paid customer stays locked out because onboarding facts or hard denies fail | Restore is a distinct branch with no onboarding facts. The signup-time Tor axis is not re-applied, and every other hard deny stays in force (it is admin-reversible). |
+| A lapse partner has no deliverable admin address | It is never warned, so it is never demoted. It is held in "Lapse watch" for an operator. |
+| Stale warning (enforce paused, then resumed) | `warned_at` must be no older than 14 days. Report mode clears it, and the partner is warned again. |
+| Mirror corrected between phase 1 and phase 2 | The guarded update re-checks the mirror status. |
 | The old promotion path re-promotes a demoted partner at once | `tryAutoPromote` routes `billing:lapsed` partners to `tryBillingRestore`, and new signups get the `billing_lapsed` blocker. |
 | An exempt partner is demoted | Explicit exemption columns, re-checked in the guarded update, plus the precondition audit before `enforce`. |
 | An admin's approval is silently overruled | Both approval writers return 409 `billing_lapse_requires_exemption`. |
@@ -337,8 +357,9 @@ ALTER TABLE partners
 --   trust_lapse_exempt_reason IS NULL OR IN ('internal','comped','invoiced','admin_override')
 --   trust_lapse_exempt_until IS NULL OR trust_lapse_exempt_reason IS NOT NULL
 --   trust_lapse_warned_at IS NULL OR trust_lapse_observed_at IS NOT NULL
--- Partial index for the reconcile scan:
+-- Partial indexes for the reconcile scans:
 --   (id) WHERE trust_state = 'trusted' AND billing_subscription_status IS NOT NULL
+--   (trust_lapse_observed_at) WHERE trust_lapse_observed_at IS NOT NULL
 ```
 
 The plan may add the restore throttle's stamp (`trust_lapse_verified_at` and its outcome) or use an in-process cache instead (§3.4).
@@ -386,11 +407,11 @@ The plan may add the restore throttle's stamp (`trust_lapse_verified_at` and its
 
    **Recommend (a).** Patch installs pausing is the strongest argument for (c). But a lapsed non-payer keeping remote execution on customer endpoints is exactly the gap the issue describes, and a new state multiplies the gate surface. The mitigations are the warning, the fast restore and the explicit consequence list (§3.3, including cancelled queued work).
 4. **How restore works.**
-   - (a) A distinct `tryBillingRestore`: fresh live `entitled: true` overrides the mirror, no current hold, no fresh alert, no onboarding facts, hard denies skipped.
+   - (a) A distinct `tryBillingRestore`: fresh live `entitled: true` overrides the mirror, no current hold, no unresolved alert, no onboarding facts. Hard denies run except the signup-time `auto:tor_signup` axis.
    - (b) Reuse `promotionDecision` with a mirror blocker.
    - (c) Human review.
 
-   **Recommend (a).** (b) locks out paid customers whose mirror is still wrong, plus every grandfathered or admin-approved partner that never met the onboarding facts, and it re-exposes them to permanent hard-deny restriction on reviewed history. (c) turns a billing event into an operator ticket. This was the main disagreement in the quorum. It was resolved in favour of (a) (§8).
+   **Recommend (a).** (b) locks out paid customers whose mirror is still wrong, plus every grandfathered or admin-approved partner that never met the onboarding facts, and it re-applies the signup-time Tor axis to history that was already reviewed. (c) turns a billing event into an operator ticket. This was the main disagreement in the quorum. It was resolved in favour of (a) (§8).
 5. **Exemption shape.**
    - (a) Explicit nullable columns with a reason enum and an expiry.
    - (b) Derive it from `type`, `plan` or `trust_reason`.
@@ -403,7 +424,7 @@ The plan may add the restore throttle's stamp (`trust_lapse_verified_at` and its
    - (c) A durable notification outbox for all three.
    - (d) Banner only.
 
-   **Recommend (a).** The existing copy is false for a lapse or a restore. Gating demotion on `warned_at` gives the one guarantee that matters, "never demoted unwarned", without new outbox infrastructure. The paused and restored notices stay best-effort, like today's approval email.
+   **Recommend (a).** The existing copy is false for a lapse or a restore. Gating demotion on `warned_at` gives the one guarantee that matters, "never demoted unwarned", without new outbox infrastructure. The paused and restored notices stay best-effort, like today's approval email. A partner with zero deliverable admin addresses is held in "Lapse watch" and never auto-demoted. The alternative is to demote it with only the banner as notice. That is rejected, because it breaks "never demoted unwarned".
 7. **Operator surface.**
    - (a) Audit rows only.
    - (b) Audit rows plus a queue badge, a filter, the "Lapse watch" section and evidence-card fields.
@@ -456,7 +477,11 @@ The plan may add the restore throttle's stamp (`trust_lapse_verified_at` and its
   - unknown → `billing_entitlement_unknown`, and a current hold blocks;
   - a fresh alert blocks;
   - a grandfathered or admin-approved partner with no 3DS card is restored;
-  - hard denies are not evaluated for `billing:lapsed`;
+  - `auto:tor_signup` is not applied to `billing:lapsed` partners, and the card-fingerprint, network and refund matches are, on every caller of `restrictOnHardDeny`;
+  - any unresolved alert blocks restore;
+  - timestamp comparisons in the guarded updates match values round-tripped through a JS `Date` (the microsecond-precision trap);
+  - a `warned_at` older than 14 days never demotes, and zero warning recipients never stamp `warned_at`;
+  - request-review returns 409 only when billing is the sole blocker;
   - a restricted partner is never restored;
   - the throttle allows one live check per 5 minutes.
 - New-signup promotion: the `billing_lapsed` blocker applies in enforce, only audits in report, and is ignored in off.
@@ -505,7 +530,20 @@ I formed a position independently first. A read-only `codex exec` at `xhigh` rev
 - Rollback needs an explicit re-promotion batch.
 - Request-review is handled on the server.
 
-**Disagreement, resolved on the merits:** restore. My first draft reused `promotionDecision` with a mirror-based blocker, plus a live-positive requirement. The second opinion showed that this design locks out paid customers whose mirror stays wrong. It also locks out every partner that is grandfathered or admin-approved and lacks the onboarding facts, and it re-exposes them to permanent hard-deny restriction. Adopted: a distinct `tryBillingRestore` in which live entitlement overrides the mirror and hard denies are skipped (§3.4).
+**Disagreement, resolved on the merits:** restore. My first draft reused `promotionDecision` with a mirror-based blocker, plus a live-positive requirement. The second opinion showed that this design locks out paid customers whose mirror stays wrong. It also locks out every partner that is grandfathered or admin-approved and lacks the onboarding facts, and it re-exposes them to permanent hard-deny restriction. Adopted: a distinct `tryBillingRestore`, in which live entitlement overrides the mirror (§3.4). The spec review then narrowed the hard-deny exemption, and only the signup-time Tor axis is skipped. The refund and fingerprint matches can be new evidence, and a cancellation after a chargeback is a common lapse route. A resulting restriction stays admin-reversible.
+
+**Spec review round (Sonnet).** 11 findings were confirmed and fixed:
+- millisecond vs microsecond timestamp equality in the guarded update;
+- a stale `warned_at` after enforce is paused;
+- zero-recipient warnings;
+- the scope of the hard-deny exemption;
+- the alert window;
+- 409 semantics on a lapse-demoted target;
+- the mirror re-check at write time;
+- request-review stranding;
+- the sender's return contract;
+- the rolling-count source;
+- the observed-at index.
 
 **Not adopted:**
 
