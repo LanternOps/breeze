@@ -1673,12 +1673,12 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
     tier: 1 as AiToolTier,
     deviceArgs: [],
     domain: 'tickets',
-    searchHint: 'ticket checklist steps: list, add, edit, delete, reorder, apply a checklist template, list templates, save ticket steps as a template, duplicate a template',
+    searchHint: 'ticket checklist steps and templates: list, edit, reorder, apply, save ticket steps as template, duplicate',
     definition: {
       name: 'manage_ticket_checklist',
       description:
-        'Ticket checklist steps and templates. Actions: list, add_item, update_item (label/detail), delete_item, reorder, apply_template, list_templates, get_template, save_as_template (ticket\'s current steps -> new template), duplicate_template. ' +
-        'Ticking a step done needs a signed-in user on the ticket page; a ticked step cannot be deleted or have its label edited here (its note can be).',
+        'Ticket checklist steps and templates. Actions: list, add_item, update_item, delete_item, reorder, apply_template, list_templates, get_template, save_as_template, duplicate_template. ' +
+        'Ticking needs a signed-in user; a ticked step cannot be deleted or relabeled here.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -1693,9 +1693,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
             description: "reorder: the ticket's COMPLETE checklist item id list in the new order, each exactly once",
           },
           templateId: { type: 'string', description: 'Checklist template UUID (apply_template/get_template/duplicate_template)' },
-          name: { type: 'string', description: 'save_as_template: new template name (required, 1-200). duplicate_template: optional name for the copy (default "Copy of <name>")' },
+          name: { type: 'string', description: 'save_as_template: template name (required). duplicate_template: optional copy name' },
           description: { type: ['string', 'null'], description: 'save_as_template: optional template description' },
-          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: "save_as_template: 'organization' (default, the ticket's org) or 'partner' (partner-wide; needs full partner org access). Operator-created steps are skipped and duplicate labels collapsed." },
+          ownerScope: { type: 'string', enum: ['organization', 'partner'], description: "save_as_template: 'organization' (default, ticket's org) or 'partner' (all orgs)" },
           mode: {
             type: 'string',
             enum: ['append', 'replace_unticked'],
