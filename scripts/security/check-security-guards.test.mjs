@@ -39,6 +39,9 @@ const PIN_FILES = [
   '.github/workflows',
   'apps/docs/src/content/docs/agents/building.mdx',
   'apps/docs/src/content/docs/getting-started/prerequisites.mdx',
+  // #6263 W03a: the API images build breeze-yarac from agent/ sources.
+  'apps/api/Dockerfile',
+  'docker/Dockerfile.api',
 ];
 
 function pinLayout() {
@@ -72,6 +75,39 @@ for (const wf of ['ci.yml', 'security.yml', 'release.yml', 'dev-build-agent.yml'
     assert.match(r.stderr, new RegExp(`${wf.replace('.', '\\.')} declares no GO_VERSION`));
   });
 }
+
+// Rewrite a scratch copy of a repo file (not only workflows).
+function rewriteFile(root, rel, re, replacement) {
+  const p = join(root, rel);
+  const before = readFileSync(p, 'utf8');
+  const changed = before.replace(re, replacement);
+  assert.notEqual(changed, before, `fixture precondition: ${rel} had no text matching ${re}`);
+  writeFileSync(p, changed);
+}
+
+test('pin check fails when a Dockerfile golang stage drifts from agent/go.mod', () => {
+  const root = pinLayout();
+  rewriteFile(root, 'apps/api/Dockerfile', /golang:\d+\.\d+\.\d+-alpine@/, 'golang:1.25.12-alpine@');
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /apps\/api\/Dockerfile golang:1\.25\.12 !=/);
+});
+
+test('pin check fails when a Dockerfile golang stage loses its digest pin', () => {
+  const root = pinLayout();
+  rewriteFile(root, 'docker/Dockerfile.api', /(golang:\d+\.\d+\.\d+-alpine)@sha256:[0-9a-f]{64}/, '$1');
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /docker\/Dockerfile\.api golang stage is not a digest-pinned/);
+});
+
+test('pin check fails when a Dockerfile loses its golang stage entirely', () => {
+  const root = pinLayout();
+  rewriteFile(root, 'apps/api/Dockerfile', /^FROM .*golang:.*$/m, 'FROM scratch AS yarac');
+  const r = runPins(root);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /apps\/api\/Dockerfile has no golang build stage/);
+});
 
 test('pin check fails when codeql.yml loses its literal go-version', () => {
   const root = pinLayout();
